@@ -4267,6 +4267,12 @@ struct SettingsVm {
     /// The rendered connections items' addresses, index-aligned with
     /// the pushed `connection-items` (the callbacks' resolution table).
     items: Vec<ItemAddr>,
+    /// The armed-confirm strip's subject (UX R-2 D-4, #787): the one
+    /// armed item surface-wide, keyed by `ItemAddr` (identity, not
+    /// index — a roster re-derivation keeps the address; a vanished
+    /// subject's strip is dead). Arming touches no lane state; the
+    /// confirm clears the flag BEFORE the send.
+    armed_item: Option<ItemAddr>,
     /// The pickers' option ids, index-aligned with `board-options`.
     local_choices: Vec<uuid::Uuid>,
     /// The board the in-flight Stop/Publish op addresses (round-7
@@ -5104,6 +5110,7 @@ impl Adapter {
             action_label: SharedString::new(),
             action_enabled: false,
             archived: false,
+            armed: false,
         };
         // The backend word per connector (round 6, D-6.8 phase 1): the
         // adapter owns the mapping, the UI stays dumb. Standalone
@@ -5351,8 +5358,29 @@ impl Adapter {
             })
             .collect();
         self.settings.local_choices = choices.iter().map(|board| board.id).collect();
-        let (items, addrs) = Self::connection_items_model(&state, &self.settings);
+        let (mut items, addrs) = Self::connection_items_model(&state, &self.settings);
         self.settings.items = addrs;
+        // The armed strip's pass rules (UX R-2 D-4): the busy lane
+        // disarms (the outcome render for that lane — the disable
+        // grammar prevents re-entry, the disarm keeps the grammar
+        // honest), a vanished subject disarms (the stale-`ItemAddr`
+        // dead-strip rule), and the armed flag mirrors per row.
+        // The busy lane disarms (the outcome render for that lane —
+        // the disable grammar prevents re-entry, the disarm keeps the
+        // grammar honest); a vanished subject disarms (the
+        // stale-`ItemAddr` dead-strip rule).
+        if self.settings.pending.is_some()
+            || self
+                .settings
+                .armed_item
+                .as_ref()
+                .is_none_or(|armed| !self.settings.items.contains(armed))
+        {
+            self.settings.armed_item = None;
+        }
+        for (item, addr) in items.iter_mut().zip(&self.settings.items) {
+            item.armed = self.settings.armed_item.as_ref() == Some(addr);
+        }
         let rows: Vec<crate::ConnectionRow> = self
             .settings
             .rows
@@ -5811,19 +5839,93 @@ impl Adapter {
         );
     }
 
-    /// The account card's Remove seam (round-5 chunk 8): removes the
-    /// card's identity — the app refuses typed while a board is bound
-    /// through it. A stale or non-card index is absorbed silently.
+    /// The account card's Remove seam (round-5 chunk 8; UX R-2 D-4,
+    /// #787): the click ARMS — the card becomes the one armed subject
+    /// (no lane state, no send); the Confirm button routes the exact
+    /// `RemoveConnection`. A stale or non-card index is absorbed
+    /// silently.
     pub(crate) fn settings_remove_item(&mut self, window: &AppWindow, item: usize) {
-        let Some(ItemAddr::Account { connector }) = self.settings.items.get(item).cloned() else {
+        self.settings_arm_item(item);
+        self.push_settings(window);
+    }
+
+    /// The armed strip's arm step (UX R-2 D-4): records the addressed
+    /// item as the one armed subject — arming touches no lane state,
+    /// dispatches nothing. A stale index is absorbed silently; arming
+    /// another item displaces the previous (one armed subject
+    /// surface-wide).
+    pub(crate) fn settings_arm_item(&mut self, item: usize) {
+        let Some(addr) = self.settings.items.get(item).cloned() else {
             return;
         };
+        self.settings.armed_item = Some(addr);
+    }
+
+    /// The armed strip's disarm (UX R-2 D-4): the Cancel buttons, a
+    /// displaced arm, a stale confirm — clears the flag, dispatches
+    /// nothing.
+    pub(crate) fn settings_disarm_item(&mut self) {
+        self.settings.armed_item = None;
+    }
+
+    /// The remove/disconnect confirm seam (UX R-2 D-4): matches the
+    /// armed `ItemAddr` against the addressed item — the armed
+    /// address types the verb (`RemoveConnection` for a card,
+    /// `DetachConnector` for a bound remote row) — clears the flag
+    /// BEFORE the send, then dispatches the exact existing request.
+    /// A stale index (not the armed subject) disarms silently.
+    pub(crate) fn settings_remove_confirmed(&mut self, window: &AppWindow, item: usize) {
+        let Some(addr) = self.settings.items.get(item).cloned() else {
+            self.settings_disarm_item();
+            return;
+        };
+        let Some(armed) = self.settings.armed_item.take() else {
+            return;
+        };
+        if armed != addr {
+            return; // a stale confirm: already disarmed, nothing dispatches
+        }
+        match armed {
+            ItemAddr::Account { connector } => self.settings_send_remove(window, &connector),
+            ItemAddr::Remote {
+                connector,
+                remote,
+                bound: Some(board),
+            } => self.settings_send_detach(window, &connector, remote, board),
+            _ => {}
+        }
+    }
+
+    /// The Files roster's Stop-Sync confirm seam (UX R-2 D-4): the
+    /// armed `FilesBoard` address types the verb; clears the flag
+    /// BEFORE the send. A stale index disarms silently — the Move and
+    /// Publish branches never arm (non-destructive, one-step).
+    pub(crate) fn settings_files_action_confirmed(&mut self, window: &AppWindow, item: usize) {
+        let Some(addr) = self.settings.items.get(item).cloned() else {
+            self.settings_disarm_item();
+            return;
+        };
+        let Some(armed) = self.settings.armed_item.take() else {
+            return;
+        };
+        let ItemAddr::FilesBoard { board, connector } = armed.clone() else {
+            return;
+        };
+        if armed != addr {
+            return;
+        }
+        self.settings_stop_files_sync(window, board, &connector);
+    }
+
+    /// The exact `RemoveConnection` send (round-5 chunk 8's body,
+    /// moved verbatim into the confirm path).
+    fn settings_send_remove(&mut self, window: &AppWindow, connector: &str) {
         if self.settings.pending.is_some() {
             return;
         }
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::RemoveConnection {
-            name: connector.clone(),
+            name: connector.to_owned(),
             reply,
         };
         self.send_connections_op(
@@ -5831,7 +5933,57 @@ impl Adapter {
             request,
             reply_rx,
             PendingKind::Remove,
-            &connector,
+            connector,
+            None,
+        );
+    }
+
+    /// The exact `DetachConnector` send (r2 D33's body, moved
+    /// verbatim into the confirm path).
+    fn settings_send_detach(
+        &mut self,
+        window: &AppWindow,
+        connector: &str,
+        remote: RemoteBoardId,
+        board: BoardId,
+    ) {
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::DetachConnector {
+            board,
+            connector: connector.to_owned(),
+            reply,
+        };
+        self.send_connections_op(
+            window,
+            request,
+            reply_rx,
+            PendingKind::Detach,
+            connector,
+            Some(remote),
+        );
+    }
+
+    /// The exact `StopBoardFilesSync` send (round-7 D-7.3's Stop
+    /// branch body, moved verbatim into the confirm path; the row
+    /// marker set before the send).
+    fn settings_stop_files_sync(&mut self, window: &AppWindow, board: BoardId, connector: &str) {
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::StopBoardFilesSync { board, reply };
+        // The row marker is set BEFORE the send: `send_connections_op`
+        // ends in the busy push that renders it.
+        self.settings.busy_board = Some(board);
+        self.send_connections_op(
+            window,
+            request,
+            reply_rx,
+            PendingKind::StopFilesSync,
+            connector,
             None,
         );
     }
@@ -5936,25 +6088,31 @@ impl Adapter {
         // (gone / re-bound mid-flight) absorbs the click silently —
         // nothing dispatches.
         let kind = match (channel, files_on) {
-            (Some(crate::requests::BoardChannel::Files), true) => PendingKind::StopFilesSync,
+            // The destructive branch (UX R-2 D-4, #787): the click
+            // ARMS — the row becomes the one armed subject; the
+            // strip's Confirm routes the exact Stop request.
+            (Some(crate::requests::BoardChannel::Files), true) => {
+                self.settings_arm_item(item);
+                self.push_settings(window);
+                return;
+            }
             (Some(crate::requests::BoardChannel::Deck), true) => PendingKind::Move,
             (None, true) => PendingKind::PublishFiles,
             _ => return,
         };
         let (reply, reply_rx) = oneshot::channel();
         let request = match kind {
-            PendingKind::StopFilesSync => UiRequest::StopBoardFilesSync { board, reply },
             PendingKind::PublishFiles => UiRequest::PublishBoardToFiles { board, reply },
             // The move ceremony, reused verbatim (US-3) — no new
             // ceremony parameters; its busy marker rides the Files
             // row (`PendingKind::Move`'s existing grammar), not the
             // row's.
             PendingKind::Move => UiRequest::MoveBoardToFiles { board, reply },
-            _ => unreachable!("the roster action dispatches only its three verbs"),
+            _ => unreachable!("the roster action dispatches only its two one-step verbs"),
         };
         // The row marker is set BEFORE the send: `send_connections_op`
         // ends in the busy push that renders it.
-        if matches!(kind, PendingKind::StopFilesSync | PendingKind::PublishFiles) {
+        if matches!(kind, PendingKind::PublishFiles) {
             self.settings.busy_board = Some(board);
         }
         self.send_connections_op(window, request, reply_rx, kind, &connector, None);
@@ -6032,35 +6190,13 @@ impl Adapter {
     }
 
     /// The bound remote row's Disconnect seam (r2 D33's detach, moved
-    /// onto the row by round-5 chunk 8): the same `DetachConnector`
-    /// request and multi-board guard. A stale index or an unbound row
-    /// is absorbed silently.
+    /// onto the row by round-5 chunk 8; UX R-2 D-4, #787): the click
+    /// ARMS — the row becomes the one armed subject; the Confirm
+    /// button routes the exact `DetachConnector` + multi-board guard.
+    /// A stale index or an unbound row is absorbed silently.
     pub(crate) fn settings_disconnect_item(&mut self, window: &AppWindow, item: usize) {
-        let Some(ItemAddr::Remote {
-            connector,
-            remote,
-            bound: Some(board),
-        }) = self.settings.items.get(item).cloned()
-        else {
-            return;
-        };
-        if self.settings.pending.is_some() {
-            return;
-        }
-        let (reply, reply_rx) = oneshot::channel();
-        let request = UiRequest::DetachConnector {
-            board,
-            connector: connector.clone(),
-            reply,
-        };
-        self.send_connections_op(
-            window,
-            request,
-            reply_rx,
-            PendingKind::Detach,
-            &connector,
-            Some(remote),
-        );
+        self.settings_arm_item(item);
+        self.push_settings(window);
     }
 
     /// A Files row's toggle seam (round-5 chunk 8 D-8.6; round-6
@@ -10490,6 +10626,38 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 return;
             };
             a.settings_publish_picked(&window, item, option);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_remove_confirmed, adapter: adapter; // slint: remove-confirmed
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
+                return;
+            };
+            a.settings_remove_confirmed(&window, item);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_remove_cancelled, adapter: adapter; // slint: remove-cancelled
+        bind mut (a, window), args (), {            a.settings_disarm_item();
+            a.push_settings(&window);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_files_action_confirmed, adapter: adapter; // slint: files-action-confirmed
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
+                return;
+            };
+            a.settings_files_action_confirmed(&window, item);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_files_action_cancelled, adapter: adapter; // slint: files-action-cancelled
+        bind mut (a, window), args (), {            a.settings_disarm_item();
+            a.push_settings(&window);
 
         });
     }
