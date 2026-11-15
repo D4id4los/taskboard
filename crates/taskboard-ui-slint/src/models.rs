@@ -922,6 +922,7 @@ pub fn push(
     recur: crate::models::RecurRowPush,
     priority: crate::models::PriorityPickerPush,
     label_form: Option<&crate::models::LabelFormPush>,
+    label_armed_index: i32,
 ) -> IdTables {
     let now = day.now;
     let sets = presentation::due_sets(state, now, due.horizon);
@@ -1054,6 +1055,7 @@ pub fn push(
         recur,
         priority,
         label_form,
+        label_armed_index,
         calendar,
     );
     mutations += push_review(window, state, day, calendar, kiosk, models);
@@ -2025,6 +2027,7 @@ fn push_task_detail(
     recur: crate::models::RecurRowPush,
     priority: crate::models::PriorityPickerPush,
     label_form: Option<&crate::models::LabelFormPush>,
+    label_armed_index: i32,
     calendar: taskboard_domain::DayCalendar,
 ) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
@@ -2441,6 +2444,7 @@ fn push_task_detail(
             })
             .map_or(-1, |p| i32::try_from(p).unwrap_or(i32::MAX)),
     );
+    window.set_label_overlay_armed_index(label_armed_index);
     mutations
 }
 
@@ -4156,6 +4160,7 @@ mod tests {
                 crate::models::RecurRowPush::default(),
                 crate::models::PriorityPickerPush::default(),
                 None,
+                -1,
             )
         }
 

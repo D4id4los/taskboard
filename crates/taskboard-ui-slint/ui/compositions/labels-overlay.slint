@@ -36,6 +36,9 @@ export component LabelsPanel inherits Rectangle {
     in property <string> form-title: "";
     in property <[color]> swatches;
     in property <int> swatch-selected: -1;
+    // The armed delete's pushed mirror (the track-entries armed-index
+    // rule): the armed roster row, or -1.
+    in property <int> armed-index: -1;
 
     // The intents (§5.1): no inline side effects — the id
     // resolution and the pair dispatch live in the adapter.
@@ -52,6 +55,11 @@ export component LabelsPanel inherits Rectangle {
     callback swatch-clicked(int);
     callback form-commit-requested() -> bool;
     callback form-cancelled();
+    // The armed delete (D-2): the first activate arms (the strip
+    // mounts), Confirm dispatches, Cancel/Escape disarms — the r2
+    // grammar on the roster rows.
+    callback delete-clicked(int);
+    callback delete-cancelled();
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
@@ -162,6 +170,50 @@ export component LabelsPanel inherits Rectangle {
                 }
             }
 
+            // The armed strip (D-2): the consequence names the
+            // detachment before anything dispatches (the r2 grammar's
+            // board-view shape) — the armed row's sibling, keyed by
+            // the pushed mirror.
+            if (!root.form-open && root.armed-index >= 0): Rectangle {
+                height: Theme.space-5 + Theme.space-2;
+                border-radius: Theme.radius-small;
+                background: Theme.surface-hover;
+                border-width: Theme.focus-ring-width;
+                border-color: Semantic.danger;
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-1;
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Deletes the label from the board — it detaches from every task that wears it.";
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.danger;
+                        label: "Confirm delete";
+                        description: "Deletes the armed label from the board.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.delete-clicked(root.armed-index);
+                        }
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Cancel delete";
+                        description: "Disarms the delete without dispatching.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.delete-cancelled();
+                        }
+                    }
+                }
+            }
             if (!root.form-open): list := VerticalLayout {
                 spacing: Theme.space-1;
                 for row[index] in root.rows: Rectangle {
@@ -200,6 +252,20 @@ export component LabelsPanel inherits Rectangle {
                             clicked => {
                                 TooltipState.unhover();
                                 root.edit-requested(index);
+                            }
+                        }
+                        // The delete affordance (D-2): arms the row's
+                        // strip (the pointer-grade row verb; the
+                        // second activation confirms — the armed
+                        // strip's Confirm is its pointer twin).
+                        if (root.armed-index != index): IconButton {
+                            icon: IconKind.trash;
+                            tone: Tone.neutral;
+                            label: "Delete label " + row.title;
+                            description: "Arms the delete: the label detaches from every task that wears it.";
+                            clicked => {
+                                TooltipState.unhover();
+                                root.delete-clicked(index);
                             }
                         }
                         // The assignment toggle (D-2): the chip ×'s

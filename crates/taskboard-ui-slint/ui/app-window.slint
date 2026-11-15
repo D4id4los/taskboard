@@ -883,6 +883,7 @@ export component AppWindow inherits Window {
                 form-title: root.label-overlay-form-title;
                 swatches: root.label-overlay-swatches;
                 swatch-selected: root.label-overlay-swatch-selected;
+                armed-index: root.label-overlay-armed-index;
                 row-toggled(index) => root.labels-overlay-row-toggled(index);
                 dismiss-requested() => root.labels-overlay-dismiss-requested();
                 add-requested() => root.labels-overlay-add-requested();
@@ -891,6 +892,8 @@ export component AppWindow inherits Window {
                 swatch-clicked(i) => root.labels-overlay-swatch-clicked(i);
                 form-commit-requested() => root.labels-overlay-form-commit-requested();
                 form-cancelled() => root.labels-overlay-form-cancelled();
+                delete-clicked(index) => root.labels-overlay-delete-clicked(index);
+                delete-cancelled() => root.labels-overlay-delete-cancelled();
             }
 
 
@@ -1782,6 +1785,11 @@ export component AppWindow inherits Window {
     in property <string> label-overlay-form-title;
     in property <[color]> label-overlay-swatches;
     in property <int> label-overlay-swatch-selected;
+    // The armed delete's pushed mirror (the track-entries armed-index
+    // rule): the armed roster row, or -1.
+    in property <int> label-overlay-armed-index;
+    pure callback labels-overlay-delete-clicked(int);
+    pure callback labels-overlay-delete-cancelled();
     pure callback labels-overlay-row-toggled(int);
     pure callback labels-overlay-dismiss-requested();
     pure callback labels-overlay-add-requested();
