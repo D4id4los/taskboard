@@ -523,6 +523,12 @@ pub struct DispatchCtx {
     /// adapter when the form commits; `breakrule.create` routes from
     /// it (`NoTarget` without one).
     pub break_rule_draft: Option<BreakRuleDraft>,
+    /// The alarm window's selected row (T-22, #805): set by the
+    /// window's lanes when a keyboard verb dispatches; the three ids
+    /// route the same commands the buttons build (the shared
+    /// `presentation::alarm_command` constructor — `NoTarget`
+    /// without a row).
+    pub alarm_row: Option<crate::presentation::AlarmRow>,
     /// The armed break-rule row's one-shot target (T-14, #797): the
     /// arm and confirm seams resolve it through the roster's id
     /// table; `breakrule.remove`/`-confirm` route from it (`NoTarget`
@@ -784,6 +790,30 @@ impl ActionRouter {
             ActionId::BreakRuleRemove => DispatchOutcome::NoTarget,
             ActionId::BreakRuleRemoveConfirm => match ctx.break_rule_target {
                 Some(rule) => DispatchOutcome::Command(StateCommand::DeleteBreakRule { id: rule }),
+                None => DispatchOutcome::NoTarget,
+            },
+            // The alarm window's verbs (T-22, #805): the routed
+            // command is structurally the button's — both sides call
+            // the shared `presentation::alarm_command` constructor.
+            ActionId::AlarmDismiss => match &ctx.alarm_row {
+                Some(row) => DispatchOutcome::Command(crate::presentation::alarm_command(
+                    row,
+                    crate::presentation::AlarmVerb::Dismiss,
+                )),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::AlarmSnooze => match &ctx.alarm_row {
+                Some(row) => DispatchOutcome::Command(crate::presentation::alarm_command(
+                    row,
+                    crate::presentation::AlarmVerb::Snooze,
+                )),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::AlarmCancel => match &ctx.alarm_row {
+                Some(row) => DispatchOutcome::Command(crate::presentation::alarm_command(
+                    row,
+                    crate::presentation::AlarmVerb::Cancel,
+                )),
                 None => DispatchOutcome::NoTarget,
             },
             // The habit verbs (DR-6/6, D-P13): +1 from the row target;
@@ -1206,6 +1236,7 @@ mod tests {
             timer_target: None,
             break_rule_draft: None,
             break_rule_target: None,
+            alarm_row: None,
             track_target: None,
             habit_target: None,
             habit_undo: None,
@@ -1323,6 +1354,56 @@ mod tests {
         assert_eq!(
             ActionRouter::dispatch(ActionId::BreakRuleRemoveConfirm, &ctx),
             DispatchOutcome::Command(StateCommand::DeleteBreakRule { id: rule })
+        );
+    }
+
+    /// T-22 (#805) — the alarm window's keyboard verbs route the
+    /// same commands the pointer buttons build: both sides call the
+    /// shared `presentation::alarm_command` constructor, so the
+    /// routed command is structurally the button's (click ≡ key);
+    /// `NoTarget` without a row.
+    #[test]
+    fn alarm_verbs_route_the_button_commands_from_the_selected_row() {
+        let mut ctx = ctx(false);
+        for verb in [
+            ActionId::AlarmDismiss,
+            ActionId::AlarmSnooze,
+            ActionId::AlarmCancel,
+        ] {
+            assert_eq!(
+                ActionRouter::dispatch(verb, &ctx),
+                DispatchOutcome::NoTarget
+            );
+        }
+        let row = crate::presentation::AlarmRow {
+            alarm: taskboard_domain::AdhocAlarmId::from_uuid(Uuid::now_v7()),
+            reminder: taskboard_domain::ReminderRef::Adhoc(
+                taskboard_domain::AdhocAlarmId::from_uuid(Uuid::now_v7()),
+            ),
+            occurrence: chrono::Utc::now(),
+            title: "tea".to_owned(),
+        };
+        ctx.alarm_row = Some(row.clone());
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::AlarmDismiss, &ctx),
+            DispatchOutcome::Command(crate::presentation::alarm_command(
+                &row,
+                crate::presentation::AlarmVerb::Dismiss
+            ))
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::AlarmSnooze, &ctx),
+            DispatchOutcome::Command(crate::presentation::alarm_command(
+                &row,
+                crate::presentation::AlarmVerb::Snooze
+            ))
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::AlarmCancel, &ctx),
+            DispatchOutcome::Command(crate::presentation::alarm_command(
+                &row,
+                crate::presentation::AlarmVerb::Cancel
+            ))
         );
     }
 

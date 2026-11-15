@@ -62,6 +62,11 @@ impl Preset {
             ContextId::Labels,
             ContextId::ReviewWalk,
             ContextId::RecurEditor,
+            // The alarm window (T-22, #805): a total mask like the
+            // other modal surfaces — while the window holds, it owns
+            // the keyboard exactly as a modal should (the window's
+            // own key grammar consumes; nothing underneath fires).
+            ContextId::AlarmWindow,
         ]
     }
 }
@@ -354,6 +359,16 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         &["Down"],
     ),
     (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+    // The alarm window (T-22, #805): the walk + the three verbs, the
+    // window-local grammar's registry mirror (the window's
+    // FocusScope handles the same keys; the ids carry them in the
+    // keymap contract).
+    (ActionId::MenuPrevious, ContextId::AlarmWindow, &["Up"]),
+    (ActionId::MenuNext, ContextId::AlarmWindow, &["Down"]),
+    (ActionId::AlarmDismiss, ContextId::AlarmWindow, &["d"]),
+    (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
+    (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
+    (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -678,6 +693,15 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     ),
     (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
     (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Ctrl+g"]),
+    // The alarm window (T-22, #805): the same window-local grammar
+    // (the context scopes the single keys away from the emacs
+    // chords; nothing collides).
+    (ActionId::MenuPrevious, ContextId::AlarmWindow, &["Up"]),
+    (ActionId::MenuNext, ContextId::AlarmWindow, &["Down"]),
+    (ActionId::AlarmDismiss, ContextId::AlarmWindow, &["d"]),
+    (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
+    (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
+    (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest
@@ -877,6 +901,16 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
         &["Down"],
     ),
     (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+    // The alarm window (T-22, #805): the same window-local grammar —
+    // the arrows are the cursors (the menu-cursor vocabulary) and the
+    // single keys fire the verbs (the context scopes them; nothing
+    // collides in normal mode).
+    (ActionId::MenuPrevious, ContextId::AlarmWindow, &["Up"]),
+    (ActionId::MenuNext, ContextId::AlarmWindow, &["Down"]),
+    (ActionId::AlarmDismiss, ContextId::AlarmWindow, &["d"]),
+    (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
+    (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
+    (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
     // The labels overlay (UX R-3 D-2, #789): Ctrl+L is unbound in
     // normal mode here; the overlay's own context carries the
     // ladder + tab rows (the entries-overlay's vi pattern).

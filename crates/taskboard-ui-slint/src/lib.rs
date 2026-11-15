@@ -483,8 +483,17 @@ pub const TOOLTIP_DELAY_MS: u64 = 600;
 /// Wires the alarm lanes (the window itself is built lazily by the
 /// first pass): the button callbacks dispatch the existing engine
 /// commands onto the same sender the adapter holds (D-I8's reuse
-/// ruling; no new commands, a mouse-only surface). A stray index
-/// degrades to a no-op.
+/// ruling; no new commands). T-22 (#805, 2026-11-15) supersedes the
+/// recorded "mouse-only surface" note: the window gained keyboard
+/// parity — a window-local selection walk and the three verbs bound
+/// in every preset's `AlarmWindow` context, routed through these
+/// SAME callbacks (`presentation::alarm_command` is the one
+/// constructor — click ≡ key is structural equality). The kiosk
+/// fence R3.5.3 is untouched (no window mounts on the appliance;
+/// chunk 1's absence hint covers the fence honestly). The grab
+/// posture stays WM-dependent as recorded: a `no-frame`
+/// `always-on-top` window holds focus where the window manager
+/// grants it (on Wayland both properties no-op by construction).
 fn install_alarm_lanes(
     commands: mpsc::Sender<StateCommand>,
     boot_offset: chrono::FixedOffset,
@@ -804,6 +813,16 @@ fn run_alarm_pass(
             })
             .collect();
         window.set_rows(slint::ModelRc::new(slint::VecModel::from(model)));
+        // The selection walk's clamp (T-22): the selected row tracks
+        // the roster — a shrinking set clamps to the last row; a
+        // single row is pre-selected (index 0, the mount default).
+        let selected = window.get_selected_row();
+        let clamped = if rows.is_empty() {
+            0
+        } else {
+            selected.clamp(0, i32::try_from(rows.len() - 1).unwrap_or(i32::MAX))
+        };
+        window.set_selected_row(clamped);
         if let Err(err) = window.show() {
             tracing::warn!(%err, "alarm window: show failed");
         }
@@ -852,21 +871,25 @@ fn install_alarm_callbacks(
         }
     }
     window.on_dismiss(on_row(rows, commands, "dismiss", |row| {
-        StateCommand::DismissReminder {
-            reminder: row.reminder,
-            occurrence: row.occurrence,
-        }
+        presentation::alarm_command(row, presentation::AlarmVerb::Dismiss)
     }));
     window.on_snooze(on_row(rows, commands, "snooze", |row| {
-        StateCommand::SnoozeReminder {
-            reminder: row.reminder,
-            occurrence: row.occurrence,
-            postpone: presentation::ALARM_WINDOW_SNOOZE,
-        }
+        presentation::alarm_command(row, presentation::AlarmVerb::Snooze)
     }));
     window.on_cancel(on_row(rows, commands, "cancel", |row| {
-        StateCommand::CancelAdhocAlarm { alarm: row.alarm }
+        presentation::alarm_command(row, presentation::AlarmVerb::Cancel)
     }));
+    // The Escape arm (T-22): the window-local close — committing
+    // nothing (the buttons and the d/s/c keys remain the only verbs
+    // that mutate). The next pass re-shows if rows still wait.
+    {
+        let weak = window.as_weak();
+        window.on_escape_requested(move || {
+            if let Some(w) = weak.upgrade() {
+                let _ = w.hide();
+            }
+        });
+    }
 }
 
 impl UiHandle {

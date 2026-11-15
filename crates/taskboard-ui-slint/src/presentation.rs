@@ -2360,6 +2360,37 @@ pub const ALARM_WINDOW_SNOOZE: TimeDelta = TimeDelta::try_minutes(10).expect("no
 /// Deliberately not [`NotificationRow`] — the anchor-card filter and
 /// affordance table differ; each surface keeps one derivation over the
 /// same domain function, nothing second-evaluates.
+/// The alarm window's three verbs (T-22, #805): the buttons and the
+/// keyboard route share this constructor — click ≡ key is structural
+/// equality of the routed command, by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlarmVerb {
+    /// Dismiss the fired occurrence.
+    Dismiss,
+    /// Snooze it by the window's fixed postpone.
+    Snooze,
+    /// Cancel the adhoc alarm.
+    Cancel,
+}
+
+/// The verb's exact engine command over one awaiting row (D-I8's
+/// reuse ruling — the commands exist; only the modality grew).
+#[must_use]
+pub fn alarm_command(row: &AlarmRow, verb: AlarmVerb) -> taskboard_domain::StateCommand {
+    match verb {
+        AlarmVerb::Dismiss => taskboard_domain::StateCommand::DismissReminder {
+            reminder: row.reminder,
+            occurrence: row.occurrence,
+        },
+        AlarmVerb::Snooze => taskboard_domain::StateCommand::SnoozeReminder {
+            reminder: row.reminder,
+            occurrence: row.occurrence,
+            postpone: ALARM_WINDOW_SNOOZE,
+        },
+        AlarmVerb::Cancel => taskboard_domain::StateCommand::CancelAdhocAlarm { alarm: row.alarm },
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlarmRow {
     /// The adhoc alarm (the Cancel command's target).
