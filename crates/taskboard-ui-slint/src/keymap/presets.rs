@@ -150,6 +150,10 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     (ActionId::BoardCreate, ContextId::Board, &["Ctrl+Shift+N"]),
     (ActionId::BoardRename, ContextId::Board, &["Ctrl+F2"]),
+    // The color picker's opener (UX R-4 D-1, #791): the CUA function
+    // sequence continues after F2's rename (the F3/F4 pickers'
+    // precedent, one context over).
+    (ActionId::BoardColorEdit, ContextId::Board, &["Ctrl+F3"]),
     (
         ActionId::BoardDelete,
         ContextId::Board,
@@ -468,6 +472,14 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
         &["Ctrl+c", "Ctrl+b"],
     ),
     (ActionId::BoardRename, ContextId::Board, &["Ctrl+c", "b"]),
+    // The color picker's opener (UX R-4 D-1, #791): the C-c family's
+    // free Ctrl+f second stroke (StackNext owns bare Ctrl+f here —
+    // the chord is unambiguous, exact-match-first).
+    (
+        ActionId::BoardColorEdit,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+f"],
+    ),
     (
         ActionId::BoardDelete,
         ContextId::Board,
@@ -664,6 +676,9 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::StackDelete, ContextId::ViNormal, &["g", "D"]),
     (ActionId::BoardCreate, ContextId::ViNormal, &["g", "n"]),
     (ActionId::BoardRename, ContextId::ViNormal, &["g", "R"]),
+    // The color picker's opener (UX R-4 D-1, #791): the g-family's
+    // free c (colors), beside the rename's g R.
+    (ActionId::BoardColorEdit, ContextId::ViNormal, &["g", "c"]),
     (ActionId::BoardDelete, ContextId::ViNormal, &["g", "d"]),
     // Round 2 (D20): H/G are vim's top/bottom motions, mapped to
     // first/last item in reading order.

@@ -205,6 +205,9 @@ pub enum UiEffect {
     BoardDelete,
     /// Open the board title editor.
     BoardRename,
+    /// Arm the board color picker over the selected board (UX R-4
+    /// D-1, #791) — the strip mounts from the flow.
+    BoardColorEdit,
     /// Focus the first card in reading order.
     FocusFirst,
     /// Focus the last card in reading order.
@@ -375,7 +378,8 @@ impl UiEffect {
             | Self::StackMove
             | Self::BoardCreate
             | Self::BoardDelete
-            | Self::BoardRename => EffectClass::Lifecycle,
+            | Self::BoardRename
+            | Self::BoardColorEdit => EffectClass::Lifecycle,
             Self::BeginCreate { .. } | Self::BeginCreateStack | Self::RequestMove => {
                 EffectClass::Begin
             }
@@ -974,6 +978,7 @@ impl ActionRouter {
             ActionId::BoardCreate => DispatchOutcome::UiEffect(UiEffect::BoardCreate),
             ActionId::BoardDelete => DispatchOutcome::UiEffect(UiEffect::BoardDelete),
             ActionId::BoardRename => DispatchOutcome::UiEffect(UiEffect::BoardRename),
+            ActionId::BoardColorEdit => DispatchOutcome::UiEffect(UiEffect::BoardColorEdit),
             ActionId::NavFirstItem => DispatchOutcome::UiEffect(UiEffect::FocusFirst),
             ActionId::NavLastItem => DispatchOutcome::UiEffect(UiEffect::FocusLast),
             // The today re-commit (chunk 10, D-V4 rider): a fresh

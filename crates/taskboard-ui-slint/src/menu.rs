@@ -223,6 +223,9 @@ pub const BOARD_CONTEXT: &[ActionId] = &[
     ActionId::StackCreate,
     ActionId::BoardCreate,
     ActionId::BoardRename,
+    // The color picker's opener (UX R-4 D-1, #791): beside the rename
+    // row, destructive last.
+    ActionId::BoardColorEdit,
     ActionId::BoardDelete,
 ];
 

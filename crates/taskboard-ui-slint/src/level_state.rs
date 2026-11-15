@@ -322,7 +322,10 @@ impl LevelState {
                 // The armed-delete strip carries no buffer or cursor
                 // (UX R-2 D-2): the armed identity rides the flow
                 // variant itself.
-                | crate::surfaces::FlowTag::ConfirmDelete => Self::Bare {
+                | crate::surfaces::FlowTag::ConfirmDelete
+                // The color picker (UX R-4 D-1): armed-with-no-buffer,
+                // the strip's shape.
+                | crate::surfaces::FlowTag::BoardColorPick => Self::Bare {
                     anchor: FocusAnchor::None,
                 },
                 crate::surfaces::FlowTag::Create

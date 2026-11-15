@@ -16,6 +16,13 @@ import { Dropdown, DropdownRow, DropdownIndicator, DropdownTone } from "../widge
 export global BoardBarFacts {
     in-out property <bool> open: false;
     in-out property <int> highlight: 0;
+    // The color-picker strip's anchor (UX R-4 D-1, #791): the bar's
+    // realized window-space geometry, mirrored for the window-level
+    // strip panel (the DropdownFacts mirror idiom).
+    in-out property <length> anchor-x: 0;
+    in-out property <length> anchor-y: 0;
+    in-out property <length> anchor-width: 0;
+    in-out property <length> anchor-height: 0;
 }
 
 // One board-bar segment (a display model, not a bag of strings). The
@@ -75,6 +82,22 @@ export component BoardBar inherits Rectangle {
     // the restored board. Keyboard parity rides the shared dropdown's
     // own walk — no new ActionId (the chunk-plan D-1 non-goal).
     callback archived-activated(int);
+
+    // The anchor's one-way mirror (the Dropdown widget's idiom):
+    // window-space by definition; the derived-property wraps keep it
+    // live across host scrolls.
+    property <length> anchor-abs-x: root.absolute-position.x;
+    property <length> anchor-abs-y: root.absolute-position.y;
+    changed anchor-abs-x => {
+        BoardBarFacts.anchor-x = self.anchor-abs-x;
+        BoardBarFacts.anchor-width = root.width;
+        BoardBarFacts.anchor-height = root.height;
+    }
+    changed anchor-abs-y => {
+        BoardBarFacts.anchor-y = self.anchor-abs-y;
+        BoardBarFacts.anchor-width = root.width;
+        BoardBarFacts.anchor-height = root.height;
+    }
 
     // The roster's mount rule (D-1's visibility law): exactly when the
     // archived set is non-empty.

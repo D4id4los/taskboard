@@ -58,6 +58,8 @@ pub enum FlowTag {
     /// The labels overlay (UX R-3 D-2, #789): the task-detail's
     /// modal over the subject task.
     Labels,
+    /// The board color picker (UX R-4 D-1, #791).
+    BoardColorPick,
 }
 
 impl Flow {
@@ -91,6 +93,7 @@ impl Flow {
             Flow::WalkDatePick => FlowTag::WalkDatePick,
             Flow::ConfirmDelete(_) => FlowTag::ConfirmDelete,
             Flow::Labels { .. } => FlowTag::Labels,
+            Flow::BoardColorPick { .. } => FlowTag::BoardColorPick,
         }
     }
 }
@@ -560,6 +563,7 @@ mod tests {
             FlowTag::ConfirmDelete => {
                 Flow::ConfirmDelete(crate::view_state::DeleteTarget::Stack(STACK))
             }
+            FlowTag::BoardColorPick => Flow::BoardColorPick { board: BOARD },
         }
     }
 

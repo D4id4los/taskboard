@@ -1735,6 +1735,7 @@ fn armed_stack_index(flow: &Flow, stack_ids: &[StackId]) -> i32 {
 /// in the toolbar (`push_chrome`), so the model carries only the
 /// kanban geometry. Returns the diff's mutation count.
 #[allow(clippy::too_many_arguments)] // the pass's inputs, one bundle
+#[allow(clippy::too_many_lines)] // the board pass, kept flat (the push family's rule)
 fn push_board(
     window: &AppWindow,
     state: &AppState,
@@ -1816,6 +1817,33 @@ fn push_board(
     mutations += models.columns.diff(&columns);
     // The board create/rename fields' window-level slot (r2 D21).
     window.set_board_create_open(matches!(flow, Flow::CreateBoard));
+    // The board color strip's pushed halves (UX R-4 D-1, #791): the
+    // mount flag (armed over the *selected* board — a foreign board's
+    // stale flow is pruned at reconcile, the belt here), the shared
+    // palette, and the current color's ring index (a lenient value
+    // echoes no ring — the honest no-match; the GUI never re-derives).
+    window.set_board_color_strip_open(matches!(
+        flow,
+        Flow::BoardColorPick { board } if Some(board) == vs.board()
+    ));
+    let board_swatches: Vec<slint::Color> = presentation::SWATCHES
+        .iter()
+        .map(|hex| swatch_hex(&taskboard_domain::Color::new(*hex)))
+        .collect();
+    window.set_board_color_swatches(ModelRc::new(slint::VecModel::from(board_swatches)));
+    let armed_board = match flow {
+        Flow::BoardColorPick { board } => state.boards.get(&board),
+        _ => None,
+    };
+    window.set_board_color_strip_selected(
+        armed_board
+            .and_then(|b| {
+                presentation::SWATCHES
+                    .iter()
+                    .position(|hex| *hex == b.color.as_str())
+            })
+            .map_or(-1, |p| i32::try_from(p).unwrap_or(i32::MAX)),
+    );
     // The armed board-delete strip's window-level fact (UX R-2 D-2):
     // the board-bar region's strip mounts while the board is the
     // armed subject.
