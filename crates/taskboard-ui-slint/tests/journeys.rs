@@ -12977,6 +12977,60 @@ fn the_timers_form_carries_the_insistence_rung() {
     );
 }
 
+// -- T-19 (#802): the invoked disabled menu row sets the notice ----------
+
+/// The doctrine's letter: an invoked disabled row reacts — the
+/// status-line notice arms from the row's own registry description
+/// (the why-text), nothing routes, and the menu stays open (the
+/// invocation was refused, not performed).
+#[test]
+fn an_invoked_disabled_menu_row_sets_the_status_notice() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            let entries = window
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_menu_entries();
+            // The first disabled leaf row (the golden state carries
+            // at least one — `app.undo` has no journal history to
+            // undo). Index-resolved through the pushed model (the D2
+            // id-table rule — no text matching).
+            let index = (0..entries.row_count())
+                .find(|i| {
+                    entries
+                        .row_data(*i)
+                        .is_some_and(|row| !row.enabled && !row.action.is_empty())
+                })
+                .unwrap_or_else(|| panic!("a disabled leaf row renders"));
+            let row = entries.row_data(index).expect("the row");
+            window.invoke_menu_entry_invoked(i32::try_from(index).expect("small index"));
+            harness.driver.advance_time(0);
+            assert!(
+                window.get_notice_visible(),
+                "the status-line notice arms — the click reacted"
+            );
+            assert!(
+                window
+                    .global::<taskboard_ui_slint::KeyboardState>()
+                    .get_menu_open(),
+                "the menu stays open (the invocation was refused)"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "a disabled invocation routes nothing"
+            );
+            let _ = row;
+        },
+    );
+}
+
 // -- T-15 (#798): the journal ledger's editor + staged delete ------------
 
 /// The ledger journey: a row click opens the inline editor seeded
