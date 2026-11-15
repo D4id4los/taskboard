@@ -4992,6 +4992,59 @@ fn the_target_free_board_select_opens_the_flyout_walks_and_disarms_clean() {
     });
 }
 
+// -- the today-row context menu's extra row (UX remediation chunk 4, D-8, #796) --
+
+/// The structural composition pin: the today seam's menu includes
+/// `task.due-today`; the board/stack cards' menus (the same helper,
+/// no extras) do not — the verb binds `ContextId::Today` only, and
+/// the today-only filter is what keeps the row honest there.
+#[test]
+fn the_today_context_menu_extends_with_due_today_and_the_card_menus_do_not() {
+    use crate::actions::ActionId;
+    on_slint_thread(|| {
+        let (state, _) = fixture();
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        let ids_of = |rig: &Rig| -> Vec<String> {
+            let rows = rig
+                .handle
+                .window()
+                .global::<crate::KeyboardState>()
+                .get_menu_entries();
+            (0..rows.row_count())
+                .filter_map(|i| rows.row_data(i))
+                .map(|row| row.action.to_string())
+                .collect()
+        };
+        // A board card's menu: the Task context rows, no due-today.
+        adapter
+            .borrow_mut()
+            .open_task_context_menu(rig.handle.window(), 10.0, 10.0, &[]);
+        let card_ids = ids_of(&rig);
+        assert!(
+            !card_ids.iter().any(|id| id == "task.due-today"),
+            "a card's menu never offers the today re-commit"
+        );
+        // The today row's menu: the same rows plus due-today.
+        adapter.borrow_mut().open_task_context_menu(
+            rig.handle.window(),
+            10.0,
+            10.0,
+            &[ActionId::TaskDueToday],
+        );
+        let today_ids = ids_of(&rig);
+        assert!(
+            today_ids.iter().any(|id| id == "task.due-today"),
+            "the today seam's menu offers the today re-commit"
+        );
+        assert_eq!(
+            today_ids.len(),
+            card_ids.len() + 1,
+            "the extension is exactly the one verb"
+        );
+    });
+}
+
 /// The edit journey's sparse mask (D-2/D-9): the form seeds from the
 /// row, and the commit sets only the changed slots — an untouched
 /// color stays `None` in the `LabelChanges`; a no-op edit closes
