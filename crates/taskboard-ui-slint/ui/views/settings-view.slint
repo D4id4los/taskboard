@@ -173,6 +173,11 @@ export global SettingsModel {
     // the journeys assert (the sentence text is presentation, never
     // asserted).
     in-out property <bool> last-error-env-locked: false;
+    // The busy lane's typed detail class (T-38, #821): true when the
+    // retained detail is `RequestPending` — a second click under a
+    // running request refused with its reason (the env-locked fact's
+    // twin projection).
+    in-out property <bool> last-error-request-pending: false;
     // The mapped status sentence (r2 D28): presentation policy lives
     // in src/settings_status.rs; the push lands the string here.
     in-out property <string> status-text: "";

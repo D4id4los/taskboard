@@ -144,6 +144,11 @@ pub enum SettingsError {
     PersistFailed,
     /// The connector lifecycle refused (name in use / draining).
     AttachBusy,
+    /// Another settings operation is still in flight (the busy lane's
+    /// own posture, T-38 #821): the surface runs one request at a
+    /// time, so a click under a pending request is refused until it
+    /// settles. UI-local — never rides the app's reply mapping.
+    RequestPending,
     /// The attach failed (engine, client construction).
     AttachFailed,
     /// The lane or the config vanished mid-flight (a stale form).

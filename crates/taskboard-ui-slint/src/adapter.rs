@@ -4661,7 +4661,11 @@ impl SettingsVm {
             | SettingsError::PersistRejected
             | SettingsError::Gone
             | SettingsError::BindRefused
-            | SettingsError::EnvLocked { .. } => SettingsOutcome::Rejected,
+            | SettingsError::EnvLocked { .. }
+            // The busy lane's own posture (T-38, #821): the surface
+            // runs one request at a time — a click under a pending
+            // request is a refusal, not a failure.
+            | SettingsError::RequestPending => SettingsOutcome::Rejected,
             SettingsError::VerifyUnreachable
             | SettingsError::StoreFailed
             // The publish budget expired with the ceremony still
@@ -5829,6 +5833,13 @@ impl Adapter {
             self.settings.detail,
             Some(SettingsError::EnvLocked { .. })
         ));
+        // The T-38 typed detail fact (the env-locked fact's twin):
+        // the busy lane's RequestPending class renders structurally —
+        // the tests' typed projection of the detail variant.
+        global.set_last_error_request_pending(matches!(
+            self.settings.detail,
+            Some(SettingsError::RequestPending)
+        ));
         self.push_general_settings(&global);
     }
 
@@ -6145,7 +6156,14 @@ impl Adapter {
         // refused click is a *visible* typed refusal — never a silent
         // absorb, and never a routed request (the lane stays clean).
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         if let Some(err) = settings_form::validate(&draft) {
@@ -6597,7 +6615,14 @@ impl Adapter {
             return;
         };
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         let env_locked = self
@@ -6728,7 +6753,14 @@ impl Adapter {
     /// first, then persist over the lane; an `Err` reply reverts (D9).
     pub(crate) fn settings_scale_committed(&mut self, window: &AppWindow, text: &str) {
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         // The typed refusal (round-3 D20a, recorded decision): the
@@ -6798,7 +6830,14 @@ impl Adapter {
             return;
         };
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         if self.settings.snapshot.env_overridden.contains(gf.key()) {
@@ -6932,7 +6971,14 @@ impl Adapter {
             return;
         };
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         if self
@@ -6982,7 +7028,14 @@ impl Adapter {
             return;
         };
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         if self
@@ -7027,7 +7080,14 @@ impl Adapter {
             return;
         };
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         if self
@@ -7073,7 +7133,14 @@ impl Adapter {
             return;
         };
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         if self
@@ -7125,7 +7192,14 @@ impl Adapter {
             return;
         };
         if self.settings.pending.is_some() {
-            self.set_settings_outcome(window, SettingsOutcome::Rejected, None);
+            // T-38 (#821): the busy refusal names its posture — the
+            // typed `RequestPending` detail rides the same lane as
+            // every other refusal (never a silent generic).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
             return;
         }
         if self
@@ -7246,7 +7320,17 @@ impl Adapter {
         let Some(previous) = self.scale_drag.take() else {
             return;
         };
-        if self.settings.pending.is_some() || !value.is_finite() || !(0.5..=3.0).contains(&value) {
+        if self.settings.pending.is_some() {
+            // T-38 (#821): the busy refusal names its posture (the
+            // typed `RequestPending` detail, the other gates' shape).
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
+            return;
+        }
+        if !value.is_finite() || !(0.5..=3.0).contains(&value) {
             // The out-of-gate revert re-anchors too (r3 D20c).
             request_scale_anchor(window);
             #[allow(clippy::cast_possible_truncation)]

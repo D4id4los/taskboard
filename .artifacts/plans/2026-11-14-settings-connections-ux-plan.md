@@ -574,6 +574,12 @@ classification is the triage's.
   (`SettingsOutcome::Rejected` with `None` detail,
   `adapter.rs:5708-5710`) — the user is not told why (walkthrough
   Q3: the refusal's detail is empty for the busy case).
+  **Superseded 2026-11-15 (remediation chunk 6, triage T-38, #821)**:
+  every busy-lane refusal now renders `SettingsOutcome::Rejected`
+  with the typed `SettingsError::RequestPending` detail (a new enum
+  variant, not a stringly channel) through the same status lane as
+  every other refusal — the user is told a request is pending. The
+  observation above stands as the pre-fix record.
 - **SC-8 — the settings view's back affordance is the only exit
   affordance** (user control & freedom, recorded posture). The view
   opens/back closes (`settings-view.slint:643`, seam
