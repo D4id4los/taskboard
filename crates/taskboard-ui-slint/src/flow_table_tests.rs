@@ -164,6 +164,7 @@ enum EK {
     BoardDelete,
     BoardRename,
     BoardColorEdit,
+    BoardDefaultPreset,
     FocusFirst,
     FocusLast,
     OpenSettings,
@@ -252,6 +253,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::BoardDelete => EK::BoardDelete,
         UiEffect::BoardRename => EK::BoardRename,
         UiEffect::BoardColorEdit => EK::BoardColorEdit,
+        UiEffect::BoardDefaultPreset => EK::BoardDefaultPreset,
         UiEffect::FocusFirst => EK::FocusFirst,
         UiEffect::FocusLast => EK::FocusLast,
         UiEffect::OpenSettings => EK::OpenSettings,
@@ -702,6 +704,10 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::Child, E::StackRename, exp(Z, K(KTxt)));
     row(FK::Child, E::StackMove, exp(Z, K(KMove)));
     row(FK::Child, E::BoardCreate, exp(Z, K(KTxt)));
+    // The preset gate (UX R-4 D-5, #795): settle-then-run; the
+    // fixture board is non-empty, so the gate's typed no-op ends
+    // flow-free.
+    row(FK::Child, E::BoardDefaultPreset, exp(Z, N));
     // The color picker (UX R-4 D-1, #791): settle-then-run ends in
     // the armed picker (a kind-None flow, zero commands).
     row(FK::Child, E::BoardColorEdit, exp(Z, K(KNone)));
@@ -731,6 +737,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::Text, E::StackRename, exp(NZ, K(KTxt)));
     row(FK::Text, E::BoardRename, exp(NZ, K(KTxt)));
     row(FK::Text, E::BoardCreate, exp(NZ, K(KTxt)));
+    row(FK::Text, E::BoardDefaultPreset, exp(NZ, N));
     row(FK::Text, E::BoardColorEdit, exp(NZ, K(KNone)));
     row(FK::Text, E::StackMove, exp(NZ, K(KMove)));
     for kind in [FK::Due, FK::Move, FK::Drag, FK::Palette, FK::Capture] {
@@ -739,6 +746,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::StackRename, exp(Z, K(KTxt)));
         row(kind, E::BoardRename, exp(Z, K(KTxt)));
         row(kind, E::BoardCreate, exp(Z, K(KTxt)));
+        row(kind, E::BoardDefaultPreset, exp(Z, N));
         row(kind, E::BoardColorEdit, exp(Z, K(KNone)));
         row(kind, E::StackMove, exp(Z, K(KMove)));
     }
@@ -777,6 +785,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::FocusOverlay, E::StackRename, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::FocusOverlay, E::BoardDefaultPreset, exp(Z, N));
     row(FK::FocusOverlay, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::FocusOverlay, E::StackMove, exp(Z, K(KMove)));
     // The named-inert edits under the live overlay (the resolver's
@@ -791,6 +800,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::None, E::StackRename, exp(Z, K(KTxt)));
     row(FK::None, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::None, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::None, E::BoardDefaultPreset, exp(Z, N));
     row(FK::None, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::None, E::StackMove, exp(Z, K(KMove)));
     // The delete verbs arm the confirm strip (UX R-2 D-2): nothing
@@ -917,6 +927,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::PlanForm, E::StackRename, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::PlanForm, E::BoardDefaultPreset, exp(Z, N));
     row(FK::PlanForm, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::PlanForm, E::StackMove, exp(Z, K(KMove)));
     row(FK::PlanForm, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
@@ -932,6 +943,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::RecurEditor, E::StackRename, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::RecurEditor, E::BoardDefaultPreset, exp(Z, N));
     row(FK::RecurEditor, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::RecurEditor, E::StackMove, exp(Z, K(KMove)));
     row(FK::RecurEditor, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
@@ -984,6 +996,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::ReviewWalk, E::StackRename, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::ReviewWalk, E::BoardDefaultPreset, exp(Z, N));
     row(FK::ReviewWalk, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::ReviewWalk, E::StackMove, exp(Z, K(KMove)));
     row(FK::ReviewWalk, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
@@ -1378,6 +1391,7 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::BoardDelete,
         UiEffect::BoardRename,
         UiEffect::BoardColorEdit,
+        UiEffect::BoardDefaultPreset,
         UiEffect::FocusFirst,
         UiEffect::FocusLast,
         UiEffect::OpenSettings,
@@ -2599,7 +2613,8 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BoardCreate
         | UiEffect::BoardDelete
         | UiEffect::BoardRename
-        | UiEffect::BoardColorEdit => DismissClass::Survive,
+        | UiEffect::BoardColorEdit
+        | UiEffect::BoardDefaultPreset => DismissClass::Survive,
     }
 }
 
@@ -4798,6 +4813,61 @@ fn the_board_color_strip_dispatches_the_exact_setboardcolor_and_disarms_clean() 
             !rig.handle.window().get_board_color_strip_open(),
             "the foreign settle disarmed the picker"
         );
+    });
+}
+
+// -- the empty-board preset gate (UX remediation chunk 4, D-5, #795) --
+
+/// The key twin of the CTA: on an empty board the action dispatches
+/// the explicit ordered `CreateStack` set (the r3 D5 assertion, now
+/// routed through the action); on a non-empty board the dispatch-time
+/// gate is the typed no-op — nothing drains (the R-3 law: a refresh
+/// mid-stroke flips the verdict safely to inert).
+#[test]
+fn the_default_preset_action_dispatches_on_empty_and_is_the_typed_noop_on_content() {
+    on_slint_thread(|| {
+        // The empty-board leg: the fixture board stripped of stacks.
+        let (mut state, fx) = fixture();
+        state.stacks.clear();
+        state.tasks.clear();
+        let mut rig1 = rig(state);
+        let adapter = rig1.adapter();
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig1.handle.window(), UiEffect::BoardDefaultPreset);
+        adapter.borrow_mut().refresh_forced(rig1.handle.window());
+        let commands = rig1.drain_commands();
+        assert_eq!(
+            commands.len(),
+            crate::board_presets::DEFAULT_KANBAN.stacks.len()
+        );
+        for (order, (command, title)) in commands
+            .iter()
+            .zip(crate::board_presets::DEFAULT_KANBAN.stacks)
+            .enumerate()
+        {
+            match command {
+                StateCommand::CreateStack {
+                    board,
+                    title: t,
+                    order: o,
+                } => {
+                    assert_eq!(*board, fx.board, "the selected board");
+                    assert_eq!(t, *title, "table order titles");
+                    assert_eq!(*o, i64::try_from(order).unwrap(), "explicit 0..n orders");
+                }
+                other => panic!("typed outcome expected, got {other:?}"),
+            }
+        }
+        // The non-empty leg: the gate refuses, nothing drains.
+        let (state, _) = fixture();
+        let mut rig2 = rig(state);
+        let adapter = rig2.adapter();
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig2.handle.window(), UiEffect::BoardDefaultPreset);
+        adapter.borrow_mut().refresh_forced(rig2.handle.window());
+        assert_eq!(rig2.drain(), 0, "the gate's typed no-op dispatches nothing");
     });
 }
 

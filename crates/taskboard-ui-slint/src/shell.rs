@@ -226,6 +226,7 @@ impl KeymapShell {
             | UiEffect::BoardDelete
             | UiEffect::BoardRename
             | UiEffect::BoardColorEdit
+            | UiEffect::BoardDefaultPreset
             | UiEffect::FocusFirst
             | UiEffect::FocusLast
             // Chunk 10: the today/inbox jumps and capture live in

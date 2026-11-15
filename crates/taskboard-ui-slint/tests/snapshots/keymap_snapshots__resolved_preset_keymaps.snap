@@ -134,6 +134,9 @@ expression: rows
             - Ctrl+Shift+N
           action: board.create
         - sequence:
+            - P
+          action: board.default-preset
+        - sequence:
             - S
           action: stack.create
         - sequence:
@@ -547,6 +550,10 @@ expression: rows
             - Ctrl+c
             - m
           action: stack.move
+        - sequence:
+            - Ctrl+c
+            - p
+          action: board.default-preset
         - sequence:
             - Ctrl+c
             - r
@@ -1039,6 +1046,10 @@ expression: rows
             - g
             - n
           action: board.create
+        - sequence:
+            - g
+            - p
+          action: board.default-preset
         - sequence:
             - g
             - r

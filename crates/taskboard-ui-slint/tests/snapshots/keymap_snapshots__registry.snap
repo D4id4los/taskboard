@@ -293,6 +293,15 @@ expression: rows
   menu_rank: 100
   description: Opens the board title editor for the current board.
   menu_group: board
+- id: board.default-preset
+  label: Apply default kanban preset
+  contexts:
+    - board
+  category: navigation
+  enabled: true
+  menu_rank: 115
+  description: "Creates the default kanban stacks on the current board; inert while the board has any stacks (the empty-board CTA's key twin)."
+  menu_group: board
 - id: board.color-edit
   label: Board color…
   contexts:

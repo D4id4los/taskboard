@@ -154,6 +154,11 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // sequence continues after F2's rename (the F3/F4 pickers'
     // precedent, one context over).
     (ActionId::BoardColorEdit, ContextId::Board, &["Ctrl+F3"]),
+    // The empty-board preset (UX R-4 D-5, #795): the bare mnemonic —
+    // free in this preset's Board context (verified against the
+    // conflict contract); the dispatch gate makes a non-empty board
+    // the typed no-op.
+    (ActionId::BoardDefaultPreset, ContextId::Board, &["P"]),
     (
         ActionId::BoardDelete,
         ContextId::Board,
@@ -480,6 +485,13 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Board,
         &["Ctrl+c", "Ctrl+f"],
     ),
+    // The empty-board preset (UX R-4 D-5, #795): the C-c family's
+    // free p second stroke (the chord stays unambiguous).
+    (
+        ActionId::BoardDefaultPreset,
+        ContextId::Board,
+        &["Ctrl+c", "p"],
+    ),
     (
         ActionId::BoardDelete,
         ContextId::Board,
@@ -679,6 +691,13 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     // The color picker's opener (UX R-4 D-1, #791): the g-family's
     // free c (colors), beside the rename's g R.
     (ActionId::BoardColorEdit, ContextId::ViNormal, &["g", "c"]),
+    // The empty-board preset (UX R-4 D-5, #795): the g-family's free
+    // p (preset), beside the picker's g c.
+    (
+        ActionId::BoardDefaultPreset,
+        ContextId::ViNormal,
+        &["g", "p"],
+    ),
     (ActionId::BoardDelete, ContextId::ViNormal, &["g", "d"]),
     // Round 2 (D20): H/G are vim's top/bottom motions, mapped to
     // first/last item in reading order.
