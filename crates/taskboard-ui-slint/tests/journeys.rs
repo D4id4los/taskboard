@@ -18608,3 +18608,343 @@ fn the_account_session_is_keyboard_operable() {
         },
     );
 }
+
+// -- the UX R-3 remediation journeys (US-13/14/15, #788/#789) --------
+// The step-token gate rows for the amended task-editing plan (the
+// remediation-era stories carry REQUIRED gate rows, stage-1 plan
+// D-9). Each test drives one step through the real window seams and
+// asserts typed outcomes only.
+
+/// Seeds two labels on the fixture's board and assigns `green` to the
+/// subject task (US-14/US-15's vocabulary).
+fn label_journey_state() -> (
+    fixture::Fixture,
+    AppState,
+    taskboard_domain::LabelId,
+    taskboard_domain::LabelId,
+) {
+    let (fx, mut state) = fixture::golden_state();
+    let board = state
+        .stacks
+        .get(&state.tasks.get(&fx.task0).expect("task").stack)
+        .expect("stack")
+        .board;
+    let (green, red) = (
+        taskboard_domain::LabelId::from_uuid(uuid::Uuid::now_v7()),
+        taskboard_domain::LabelId::from_uuid(uuid::Uuid::now_v7()),
+    );
+    for (id, title, color) in [(green, "green", "31cc7c"), (red, "red", "3a70d6")] {
+        state.labels.insert(
+            id,
+            taskboard_domain::Label {
+                id,
+                remote: None,
+                board,
+                title: title.to_owned(),
+                color: taskboard_domain::Color::new(color),
+                deleted: false,
+                clocks: taskboard_domain::LabelClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                authors: taskboard_domain::entities::LabelAuthors::default(),
+                remote_seen: None,
+            },
+        );
+    }
+    if let Some(task) = state.tasks.get_mut(&fx.task0) {
+        task.label_memberships.insert(
+            green,
+            taskboard_domain::entities::MembershipState::Added {
+                at: taskboard_domain::BoardClocks::epoch(),
+            },
+        );
+    }
+    (fx, state, green, red)
+}
+
+/// Arms the task-detail view over the fixture's subject task.
+fn label_journey_mount(harness: &mut Harness) {
+    press_preset(
+        harness,
+        taskboard_ui_slint::keymap::Preset::Standard,
+        ActionId::NavNextItem,
+    );
+    press_preset(
+        harness,
+        taskboard_ui_slint::keymap::Preset::Standard,
+        ActionId::TaskEdit,
+    );
+    harness.driver.advance_time(0);
+}
+
+/// US-13/S1: the importance row's edit affordance opens the picker —
+/// the model's open flag rides the adapter-owned state, the sibling
+/// urgency flag stays closed (the exclusivity).
+#[test]
+fn us13_s1_the_importance_edit_affordance_opens_the_picker() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_importance_edit_asked();
+            harness.driver.advance_time(0);
+            assert!(window.get_task_model().importance_open);
+            assert!(!window.get_task_model().urgency_open);
+        },
+    );
+}
+
+/// US-13/S2: picking a level commits the exact `UpdateTask` mask
+/// (`Some(Some(level))`, every sibling mask `None`) and closes the
+/// picker.
+#[test]
+fn us13_s2_the_slot_pick_commits_the_exact_mask() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_importance_edit_asked();
+            harness.driver.advance_time(0);
+            window.invoke_priority_slot_clicked(4);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), 1);
+            assert!(matches!(
+                &drained[0],
+                taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        importance: Some(Some(taskboard_domain::Importance::High)),
+                        ..
+                    },
+                    ..
+                }
+            ));
+            assert!(!window.get_task_model().importance_open);
+        },
+    );
+}
+
+/// US-13/S3: the `unset` slot commits `Some(None)` — the CLI's `none`
+/// twin (the parity contract).
+#[test]
+fn us13_s3_the_unset_slot_commits_the_clear_twin() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_urgency_edit_asked();
+            harness.driver.advance_time(0);
+            window.invoke_priority_slot_clicked(0);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        urgency: Some(None),
+                        ..
+                    },
+                    ..
+                }]
+            ));
+        },
+    );
+}
+
+/// US-14/S1: `label.manage` opens the labels overlay over the viewed
+/// task; the roster renders the board's live labels.
+#[test]
+fn us14_s1_label_manage_opens_the_overlay_with_the_roster() {
+    let (_fx, state, _green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            assert!(window.get_task_model().labels_open);
+            assert_eq!(
+                window.get_label_overlay_rows().row_count(),
+                2,
+                "the board's live labels render as roster rows"
+            );
+        },
+    );
+}
+
+/// US-14/S2: the roster toggle dispatches the pair by the row's
+/// pushed state — the unassigned row's toggle routes `AssignLabel`
+/// with the id resolved from the pass's table.
+#[test]
+fn us14_s2_the_roster_toggle_dispatches_the_pair() {
+    let (_fx, state, _green, red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            // Row order is canonical (BTreeMap by id): row 1 is `red`
+            // (unassigned) in this fixture's id order.
+            window.invoke_labels_overlay_row_toggled(1);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::AssignLabel { label, .. }] if *label == red
+            ));
+        },
+    );
+}
+
+/// US-14/S3: the detail chip's × routes `UnassignLabel` over the
+/// view's subject (the section always names its subject).
+#[test]
+fn us14_s3_the_chip_unassign_routes_the_exact_verb() {
+    let (fx, state, green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_chip_unassign_clicked(0);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UnassignLabel { task, label }] if *task == fx.task0 && *label == green
+            ));
+        },
+    );
+}
+
+/// US-15/S1: the create form commits `CreateLabel` with the subject
+/// board's id, the typed title, and the armed swatch's exact hex.
+#[test]
+fn us15_s1_the_create_form_commits_createlabel() {
+    let (fx, state, _green, _red) = label_journey_state();
+    let board = state
+        .stacks
+        .get(&state.tasks.get(&fx.task0).expect("task").stack)
+        .expect("stack")
+        .board;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_add_requested();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_title_edited(slint::SharedString::from("urgent"));
+            window.invoke_labels_overlay_swatch_clicked(1);
+            assert!(window.invoke_labels_overlay_form_commit_requested());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::CreateLabel { board: b, title, color }]
+                    if *b == board && title == "urgent" && color.as_str() == "3a70d6"
+            ));
+        },
+    );
+}
+
+/// US-15/S2: the edit form commits the sparse `UpdateLabel` — only
+/// the changed slot set.
+#[test]
+fn us15_s2_the_edit_form_commits_the_sparse_mask() {
+    let (_fx, state, green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_edit_requested(0);
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_title_edited(slint::SharedString::from("verde"));
+            assert!(window.invoke_labels_overlay_form_commit_requested());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateLabel {
+                    id,
+                    changes: taskboard_domain::LabelChanges {
+                        title: Some(_),
+                        color: None,
+                    },
+                }] if *id == green
+            ));
+        },
+    );
+}
+
+/// US-15/S3: the armed delete — first activation arms (nothing
+/// dispatches, the strip's mirror reads the row), Confirm dispatches
+/// `DeleteLabel` verbatim (`NotUndoable(RestoreClass)` — the staging
+/// is the r2 grammar's requirement).
+#[test]
+fn us15_s3_the_armed_delete_stages_then_confirms() {
+    let (_fx, state, green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_delete_clicked(0);
+            harness.driver.advance_time(0);
+            assert!(window.get_label_overlay_armed_index() >= 0);
+            assert_eq!(harness.engine.drain().len(), 0, "arming dispatches nothing");
+            window.invoke_labels_overlay_delete_clicked(window.get_label_overlay_armed_index());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::DeleteLabel { id }] if *id == green
+            ));
+        },
+    );
+}

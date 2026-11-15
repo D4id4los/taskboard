@@ -9127,12 +9127,14 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             }
         };
         // The commit closes the picker (the choice is made — the
-        // echo re-renders on the next pass).
+        // echo re-renders on the next pass). The forced pass carries
+        // the flag flip (the armed form's rule: a view-state change
+        // outside the state Arc never rides the identity guard).
         a.priority_open = None;
         if a.commands.try_send(command).is_err() {
             tracing::warn!("priority slot commit dropped: command channel full or closed");
         }
-        a.finish_mutation(&window);
+        a.refresh_forced(&window);
 
     });
     // The labels section/overlay seams (UX R-3 D-2, #789): the add
