@@ -5365,10 +5365,6 @@ impl Adapter {
         // grammar prevents re-entry, the disarm keeps the grammar
         // honest), a vanished subject disarms (the stale-`ItemAddr`
         // dead-strip rule), and the armed flag mirrors per row.
-        // The busy lane disarms (the outcome render for that lane —
-        // the disable grammar prevents re-entry, the disarm keeps the
-        // grammar honest); a vanished subject disarms (the
-        // stale-`ItemAddr` dead-strip rule).
         if self.settings.pending.is_some()
             || self
                 .settings
@@ -7641,13 +7637,6 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     });
 }
 
-/// The habits section's seams (DR-6/6, D-P13): the +1 resolves the
-/// `IdTables.habits` index (stale index → no-op, the notification-row
-/// guard shape) and routes `habit.log`; the reorder resolves the drop
-/// slot's free interval over the same row source the section renders
-/// (what you see is what reorders) and routes `habit.move` with the
-/// floor-midpoint order — the UI computes midpoints, the planner
-/// stamps.
 /// The −1 recovery's one-shot target (UX R-2 D-3, #786): the row's
 /// current window and count from the same row source the section
 /// renders — what you click is what decrements. `None` when count 0
@@ -7675,6 +7664,14 @@ fn habit_undo_target(
     (count >= 1).then_some((habit, window, count))
 }
 
+/// The habits section's seams (DR-6/6, D-P13): the +1 resolves the
+/// `IdTables.habits` index (stale index → no-op, the notification-row
+/// guard shape) and routes `habit.log`; the −1 resolves the row's
+/// current window (the `habit_undo_target` above) and routes
+/// `habit.unlog`; the reorder resolves the drop slot's free interval
+/// over the same row source the section renders (what you see is what
+/// reorders) and routes `habit.move` with the floor-midpoint order —
+/// the UI computes midpoints, the planner stamps.
 fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_habits_plus_clicked, adapter: adapter;
     bind mut (a, window), args (index), {        let Some(habit) = a
