@@ -280,6 +280,11 @@ pub enum ActionId {
     BoardCreate,
     BoardDelete,
     BoardRename,
+    /// The board color picker's opener (UX R-4 D-1, #791): arms the
+    /// swatch strip over the selected board (a view intent; the
+    /// board-less refusal is the adapter's arm). Click ≡ key: the
+    /// board context menu's row routes the same id.
+    BoardColorEdit,
     NavFirstItem,
     NavLastItem,
     ReminderSnooze,
@@ -525,6 +530,8 @@ impl ActionId {
             Self::BoardCreate => "board.create",
             Self::BoardDelete => "board.delete",
             Self::BoardRename => "board.rename",
+            Self::BoardColorEdit => "board.color-edit",
+
             Self::NavFirstItem => "nav.first-item",
             Self::NavLastItem => "nav.last-item",
             Self::ReminderSnooze => "reminder.snooze",
@@ -967,6 +974,16 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 100,
         description: "Opens the board title editor for the current board.",
+        menu_group: Some(MenuGroup::Board),
+    },
+    ActionEntry {
+        id: ActionId::BoardColorEdit,
+        label: "Board color…",
+        contexts: &[ContextId::Board],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 105,
+        description: "Opens the board color picker: pick a swatch to set the current board's color; Escape or an outside click disarms.",
         menu_group: Some(MenuGroup::Board),
     },
     ActionEntry {
@@ -2036,6 +2053,7 @@ mod tests {
             ActionId::BoardCreate,
             ActionId::BoardDelete,
             ActionId::BoardRename,
+            ActionId::BoardColorEdit,
             ActionId::NavFirstItem,
             ActionId::NavLastItem,
             ActionId::ReminderSnooze,

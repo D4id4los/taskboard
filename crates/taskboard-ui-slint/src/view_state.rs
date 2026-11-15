@@ -365,6 +365,15 @@ pub enum Flow {
     /// (reconcile's rename-vanish pattern). One armed subject: arming
     /// a different subject re-arms.
     ConfirmDelete(DeleteTarget),
+    /// The board color picker (UX R-4 D-1, #791): armed-with-no-buffer
+    /// over the selected board — the `ConfirmDelete` shape minus the
+    /// confirm stage (the verb is self-reversing, so no armed strip
+    /// applies). The swatch strip mounts from the flow; a swatch
+    /// click dispatches the exact `SetBoardColor` and ends the flow;
+    /// Escape / outside click / a foreign settle disarm with nothing
+    /// dispatched (the settle law verbatim). Arming a different
+    /// board re-arms; the board's death ends the flow (reconcile).
+    BoardColorPick { board: BoardId },
     /// The labels overlay (UX R-3 D-2, #789): the task-detail's
     /// modal over the subject task — the entries overlay's pattern
     /// (subject-affine mount; `reconcile` drops it when the view
@@ -2953,6 +2962,11 @@ impl ViewState {
             // close shape (only a confirm or the subject's own repeat
             // stroke dispatches).
             Flow::ConfirmDelete(_) => self.cancel_confirm_delete(),
+            // The color picker (UX R-4 D-1): a foreign settle disarms
+            // without dispatching — the armed-strip's close shape (the
+            // picker's own re-openability is the recovery, so no
+            // staged discard either).
+            Flow::BoardColorPick { .. } => self.cancel_board_color(),
         }
     }
 
@@ -3053,6 +3067,55 @@ impl ViewState {
     /// placement form's close shape.
     pub fn cancel_confirm_delete(&mut self) -> Vec<FlowOutcome> {
         if matches!(self.flow(), Flow::ConfirmDelete(_)) {
+            self.write_flow(Flow::None);
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// `board.color-edit` (UX R-4 D-1, #791): arms the color picker
+    /// over the selected board — nothing dispatches, the swatch strip
+    /// mounts. Inert without a board; re-arming over the armed board
+    /// is the typed no-op (the strip is already up); a different
+    /// armed board re-arms.
+    pub fn begin_board_color(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        if matches!(*self.flow(), Flow::BoardColorPick { board: armed } if armed == board) {
+            return Vec::new();
+        }
+        self.write_flow(Flow::BoardColorPick { board });
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The picker's commit half (UX R-4 D-1): dispatches the exact
+    /// `SetBoardColor` over the armed board with the swatch's hex
+    /// (the shared palette's vocabulary — never free text) and ends
+    /// the flow. The verb is `NotUndoable(BoardCeremony)`, so the
+    /// picker's own re-openability is the mis-pick recovery — the
+    /// recorded reason no armed-confirm stage applies.
+    pub fn commit_board_color(&mut self, swatch: &'static str) -> Vec<FlowOutcome> {
+        let Flow::BoardColorPick { board } = self.flow().clone() else {
+            return Vec::new();
+        };
+        self.write_flow(Flow::None);
+        vec![
+            FlowOutcome::Command(StateCommand::SetBoardColor {
+                board,
+                color: taskboard_domain::Color::new(swatch),
+            }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// The picker's disarm (the strip's dismissal seam, Escape, a
+    /// foreign settle): ends the flow without dispatching — the
+    /// armed-delete close shape.
+    pub fn cancel_board_color(&mut self) -> Vec<FlowOutcome> {
+        if matches!(self.flow(), Flow::BoardColorPick { .. }) {
             self.write_flow(Flow::None);
             vec![FlowOutcome::RefreshNow]
         } else {
@@ -5039,6 +5102,58 @@ mod tests {
                 ),
             })][..]
         );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn board_color_picker_arms_over_the_selected_board_and_commits_the_swatch_hex() {
+        let (state, b1, _, _) = fixture();
+        let mut vs = ViewState::new();
+        // Board-less: inert (the adapter's arm refuses with nothing).
+        let empty = AppState::default();
+        assert_eq!(vs.begin_board_color(&empty), Vec::new());
+        assert_eq!(*vs.flow(), Flow::None);
+        vs.reconcile(&state);
+        vs.select_board(&state, b1);
+        // Arming writes the flow and dispatches nothing.
+        assert_eq!(vs.begin_board_color(&state), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(*vs.flow(), Flow::BoardColorPick { board: b1 });
+        // Re-arm over the armed board: the typed no-op (the strip is
+        // already up).
+        assert_eq!(vs.begin_board_color(&state), Vec::new());
+        assert_eq!(*vs.flow(), Flow::BoardColorPick { board: b1 });
+        // The commit: the exact SetBoardColor over the armed board
+        // with the swatch's hex; the flow ends.
+        assert_eq!(
+            vs.commit_board_color("31cc7c"),
+            vec![
+                FlowOutcome::Command(StateCommand::SetBoardColor {
+                    board: b1,
+                    color: taskboard_domain::Color::new("31cc7c"),
+                }),
+                FlowOutcome::RefreshNow,
+            ]
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+        // A commit without the armed flow is inert.
+        assert_eq!(vs.commit_board_color("31cc7c"), Vec::new());
+    }
+
+    #[test]
+    fn board_color_picker_disarms_on_cancel_and_foreign_settle() {
+        let (state, b1, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.select_board(&state, b1);
+        // The dismissal (the strip's seam): ends the flow, dispatches
+        // nothing.
+        vs.begin_board_color(&state);
+        assert_eq!(vs.cancel_board_color(), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(*vs.flow(), Flow::None);
+        // The foreign settle (the settle law): disarms without
+        // dispatching.
+        vs.begin_board_color(&state);
+        assert_eq!(vs.settle_foreign(&state), vec![FlowOutcome::RefreshNow]);
         assert_eq!(*vs.flow(), Flow::None);
     }
 

@@ -3239,7 +3239,8 @@ impl Adapter {
                 | UiEffect::StackMove
                 | UiEffect::BoardCreate
                 | UiEffect::BoardDelete
-                | UiEffect::BoardRename),
+                | UiEffect::BoardRename
+                | UiEffect::BoardColorEdit),
             ) => self.interpret_lifecycle(&flow, effect, &state),
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
             // menu row, `Ctrl+,`, and a second press all close an open
@@ -3750,6 +3751,7 @@ impl Adapter {
             UiEffect::BoardCreate => self.view_state.begin_create_board(),
             UiEffect::BoardDelete => self.view_state.delete_board(state),
             UiEffect::BoardRename => self.view_state.begin_rename_board(state),
+            UiEffect::BoardColorEdit => self.view_state.begin_board_color(state),
             _ => Vec::new(),
         }
     }
@@ -3780,6 +3782,10 @@ impl Adapter {
             // — its kept arms own the open/dismiss; settle is its
             // close (the overlay family's row).
             | Flow::Labels { .. }
+            // The color picker (UX R-4 D-1, #791): the armed-strip's
+            // row — settle is its disarm; the strip's seams own the
+            // commit.
+            | Flow::BoardColorPick { .. }
             // The placement form (#622): the kept planner arms own
             // its intents and settle leaves the form (its exits are
             // its close paths) — the overlay cells' shape.
@@ -4082,6 +4088,7 @@ impl Adapter {
             | UiEffect::BoardCreate
             | UiEffect::BoardDelete
             | UiEffect::BoardRename
+            | UiEffect::BoardColorEdit
             | UiEffect::FocusFirst
             | UiEffect::FocusLast
             // Chunk 10: the today/inbox jumps and capture route
@@ -7403,6 +7410,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_toolbar_seam(window, adapter);
     install_menu_dismiss_seam(window, adapter);
     install_board_bar_seam(window, adapter);
+    install_board_color_seams(window, adapter);
     install_board_bar_archived_seam(window, adapter);
     install_delete_strip_seams(window, adapter);
     install_stack_create_seams(window, adapter);
@@ -8740,6 +8748,29 @@ fn install_delete_strip_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (_column), {
         let outcomes = a.view_state.cancel_confirm_delete();
         a.apply_outcomes(&window, &outcomes);
+    });
+}
+
+/// The board color strip's seams (UX R-4 D-1, #791): a swatch click
+/// commits the armed board's exact `SetBoardColor` through the flow
+/// (the palette's hex — never free text) and closes the strip; the
+/// dismissal (the underlay's click) ends the flow with nothing
+/// dispatched. A stale index against an older palette pass is
+/// absorbed silently.
+fn install_board_color_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    install_seam!(window: window.on_board_color_picked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Ok(index) = usize::try_from(index) else {
+        return;
+    };
+    let Some(swatch) = crate::presentation::SWATCHES.get(index) else {
+        return;
+    };
+    let outcomes = a.view_state.commit_board_color(swatch);
+    a.apply_outcomes(&window, &outcomes);
+    });
+    install_seam!(window: window.on_board_color_strip_dismissed, adapter: adapter;
+    bind mut (a, window), args (), {        let outcomes = a.view_state.cancel_board_color();
+    a.apply_outcomes(&window, &outcomes);
     });
 }
 

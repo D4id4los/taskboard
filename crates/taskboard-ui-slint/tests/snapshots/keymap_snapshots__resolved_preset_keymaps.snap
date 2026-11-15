@@ -173,6 +173,9 @@ expression: rows
             - Ctrl+F2
           action: board.rename
         - sequence:
+            - Ctrl+F3
+          action: board.color-edit
+        - sequence:
             - Ctrl+Home
           action: nav.first-item
         - sequence:
@@ -536,6 +539,10 @@ expression: rows
             - Ctrl+c
             - Ctrl+d
           action: board.delete
+        - sequence:
+            - Ctrl+c
+            - Ctrl+f
+          action: board.color-edit
         - sequence:
             - Ctrl+c
             - m
@@ -1004,6 +1011,10 @@ expression: rows
             - g
             - T
           action: nav.prev-view
+        - sequence:
+            - g
+            - c
+          action: board.color-edit
         - sequence:
             - g
             - d

@@ -132,6 +132,13 @@ export global UiStatus {
 }
 
 export component AppWindow inherits Window {
+    // The board color strip (UX R-4 D-1, #791): the mount flag, the
+    // shared palette, and the current color's ring index — all
+    // pushed per pass (the models push's halves).
+    in-out property <bool> board-color-strip-open: false;
+    in-out property <[color]> board-color-swatches: [];
+    in-out property <int> board-color-strip-selected: -1;
+
     background: Theme.background;
     title: "taskboard";
     preferred-width: Theme.window-default-width;
@@ -1031,6 +1038,56 @@ export component AppWindow inherits Window {
             TooltipState.unhover();
         }
     }
+    // The board color strip (UX R-4 D-1, #791): the dismissal
+    // underlay first, the swatch panel after — the dropdown group's
+    // sibling rule (the later sibling absorbs its own clicks, the
+    // underlay receives exactly the outside clicks). The panel hangs
+    // below the bar's mirrored anchor, clamped into the window.
+    if (root.board-color-strip-open): board-color-backdrop := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => root.board-color-strip-dismissed();
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                root.board-color-strip-dismissed();
+            }
+        }
+    }
+    if (root.board-color-strip-open): Rectangle {
+        x: max(Theme.space-2,
+               min(BoardBarFacts.anchor-x,
+                   root.width - self.width - Theme.space-2));
+        y: max(Theme.space-2,
+               min(BoardBarFacts.anchor-y + BoardBarFacts.anchor-height + Theme.space-1,
+                   root.height - self.height - Theme.space-2));
+        width: 6 * Theme.space-4 + 5 * Theme.space-2 + 2 * Theme.space-2;
+        height: Theme.space-4 + 2 * Theme.space-2;
+        background: Theme.surface-raised;
+        border-radius: Theme.radius-small;
+        border-width: Theme.focus-ring-width;
+        border-color: Semantic.focus-ring;
+        drop-shadow-blur: Theme.space-2;
+        drop-shadow-color: Theme.surface-hover;
+        HorizontalLayout {
+            padding: Theme.space-2;
+            spacing: Theme.space-2;
+            for swatch[index] in root.board-color-swatches: Rectangle {
+                width: Theme.space-4;
+                height: self.width;
+                y: (parent.height - self.height) / 2;
+                border-radius: Theme.radius-small;
+                background: swatch;
+                border-width: root.board-color-strip-selected == index
+                    ? Theme.focus-ring-width : 0;
+                border-color: Semantic.focus-ring;
+                TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => root.board-color-picked(index);
+                }
+            }
+        }
+    }
     if (TimeFieldFacts.open): time-field-backdrop := TouchArea {
         width: 100%;
         height: 100%;
@@ -1495,6 +1552,11 @@ export component AppWindow inherits Window {
     // checkbox addresses an arbitrary card).
     pure callback board-task-done-toggled(int, int);
     pure callback board-segment-context-requested(int, float, float);
+    // The board color strip (UX R-4 D-1, #791): a swatch click
+    // commits the exact SetBoardColor and closes; a dismissal (the
+    // underlay click, Escape's route) closes with nothing dispatched.
+    pure callback board-color-picked(int);
+    pure callback board-color-strip-dismissed();
     // The stack-rename field (r2 D21): per-column mirror/commit.
     pure callback board-stack-rename-committed(int, string);
     pure callback board-stack-rename-edited(int, string);

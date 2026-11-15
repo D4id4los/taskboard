@@ -93,9 +93,10 @@ enum EC {
 
 fn kind_of(flow: &Flow) -> FK {
     match flow {
-        // The armed-delete strip (UX R-2 D-2): the modals' row — its
-        // kept intents own the confirm, settle is the disarm.
-        Flow::ConfirmDelete(_) | Flow::None => FK::None,
+        // The armed-delete strip (UX R-2 D-2) and the color picker
+        // (UX R-4 D-1, #791): the modals' row — their seams own the
+        // commit/confirm, settle is the disarm.
+        Flow::ConfirmDelete(_) | Flow::BoardColorPick { .. } | Flow::None => FK::None,
         // The child levels (chunk 3's ports): no kept intents of
         // their own; settle is the Cancelled end.
         Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick => FK::Child,
@@ -162,6 +163,7 @@ enum EK {
     BoardCreate,
     BoardDelete,
     BoardRename,
+    BoardColorEdit,
     FocusFirst,
     FocusLast,
     OpenSettings,
@@ -249,6 +251,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::BoardCreate => EK::BoardCreate,
         UiEffect::BoardDelete => EK::BoardDelete,
         UiEffect::BoardRename => EK::BoardRename,
+        UiEffect::BoardColorEdit => EK::BoardColorEdit,
         UiEffect::FocusFirst => EK::FocusFirst,
         UiEffect::FocusLast => EK::FocusLast,
         UiEffect::OpenSettings => EK::OpenSettings,
@@ -699,6 +702,12 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::Child, E::StackRename, exp(Z, K(KTxt)));
     row(FK::Child, E::StackMove, exp(Z, K(KMove)));
     row(FK::Child, E::BoardCreate, exp(Z, K(KTxt)));
+    // The color picker (UX R-4 D-1, #791): settle-then-run ends in
+    // the armed picker (a kind-None flow, zero commands).
+    row(FK::Child, E::BoardColorEdit, exp(Z, K(KNone)));
+    // The preset gate (UX R-4 D-5, #795): settle-then-run; the
+    // fixture board is non-empty, so the gate's typed no-op ends
+    // flow-free.
     row(FK::Child, E::BoardDelete, exp(Z, K(KNone)));
     row(FK::Child, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::Child, E::BeginTitleEdit, exp(Z, K(KTxt)));
@@ -722,6 +731,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::Text, E::StackRename, exp(NZ, K(KTxt)));
     row(FK::Text, E::BoardRename, exp(NZ, K(KTxt)));
     row(FK::Text, E::BoardCreate, exp(NZ, K(KTxt)));
+    row(FK::Text, E::BoardColorEdit, exp(NZ, K(KNone)));
     row(FK::Text, E::StackMove, exp(NZ, K(KMove)));
     for kind in [FK::Due, FK::Move, FK::Drag, FK::Palette, FK::Capture] {
         row(kind, E::StackDelete, exp(Z, K(KNone)));
@@ -729,6 +739,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::StackRename, exp(Z, K(KTxt)));
         row(kind, E::BoardRename, exp(Z, K(KTxt)));
         row(kind, E::BoardCreate, exp(Z, K(KTxt)));
+        row(kind, E::BoardColorEdit, exp(Z, K(KNone)));
         row(kind, E::StackMove, exp(Z, K(KMove)));
     }
     // -- TITLE (BeginTitleEdit, audit §6 last column): settle-then-
@@ -766,6 +777,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::FocusOverlay, E::StackRename, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::FocusOverlay, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::FocusOverlay, E::StackMove, exp(Z, K(KMove)));
     // The named-inert edits under the live overlay (the resolver's
     // Edit class is inert on the overlay's None-kind mapping).
@@ -779,6 +791,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::None, E::StackRename, exp(Z, K(KTxt)));
     row(FK::None, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::None, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::None, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::None, E::StackMove, exp(Z, K(KMove)));
     // The delete verbs arm the confirm strip (UX R-2 D-2): nothing
     // dispatches, the armed flow holds (the kind-None family).
@@ -888,6 +901,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::StackRename, exp(Z, K(KTxt)));
         row(kind, E::BoardRename, exp(Z, K(KTxt)));
         row(kind, E::BoardCreate, exp(Z, K(KTxt)));
+        row(kind, E::BoardColorEdit, exp(Z, K(KNone)));
         row(kind, E::StackMove, exp(Z, K(KMove)));
         row(kind, E::OpenPalette, exp(Z, K(KPal)));
     }
@@ -903,6 +917,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::PlanForm, E::StackRename, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::PlanForm, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::PlanForm, E::StackMove, exp(Z, K(KMove)));
     row(FK::PlanForm, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
     // The begin/rename/deletes under the recur editor (round-7 D-7.1):
@@ -917,6 +932,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::RecurEditor, E::StackRename, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::RecurEditor, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::RecurEditor, E::StackMove, exp(Z, K(KMove)));
     row(FK::RecurEditor, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
     // -- LABELS OVERLAY rows (UX R-3 D-2, #789): from None the open
@@ -968,6 +984,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::ReviewWalk, E::StackRename, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::ReviewWalk, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::ReviewWalk, E::StackMove, exp(Z, K(KMove)));
     row(FK::ReviewWalk, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
     row(FK::ReviewWalk, E::Activate, exp(Z, K(KWalk)));
@@ -1360,6 +1377,7 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::BoardCreate,
         UiEffect::BoardDelete,
         UiEffect::BoardRename,
+        UiEffect::BoardColorEdit,
         UiEffect::FocusFirst,
         UiEffect::FocusLast,
         UiEffect::OpenSettings,
@@ -2580,7 +2598,8 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::StackMove
         | UiEffect::BoardCreate
         | UiEffect::BoardDelete
-        | UiEffect::BoardRename => DismissClass::Survive,
+        | UiEffect::BoardRename
+        | UiEffect::BoardColorEdit => DismissClass::Survive,
     }
 }
 
@@ -4712,6 +4731,72 @@ fn the_label_create_commit_routes_createlabel_with_the_swatch_hex() {
         assert!(
             !rig.handle.window().get_label_overlay_form_open(),
             "the commit closes the form"
+        );
+    });
+}
+
+// -- the board color picker (UX remediation chunk 4, D-1, #791) --
+
+/// The armed triple (the r2 shape): arming mounts the strip with the
+/// current color's ring; a swatch click dispatches the exact
+/// `SetBoardColor` (the palette's hex) and closes; Escape's route
+/// (the cancel) and a foreign settle dispatch nothing.
+#[test]
+fn the_board_color_strip_dispatches_the_exact_setboardcolor_and_disarms_clean() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        // The fixture's view is the board over the fixture board (the
+        // normalization's selection), so the picker arms over it.
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::BoardColorEdit);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(rig.handle.window().get_board_color_strip_open());
+        // A swatch click: the exact command + the strip closes.
+        rig.handle.window().invoke_board_color_picked(1);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(
+            rig.drain_commands(),
+            vec![StateCommand::SetBoardColor {
+                board: fx.board,
+                color: taskboard_domain::Color::new("3a70d6"),
+            }],
+        );
+        assert!(
+            !rig.handle.window().get_board_color_strip_open(),
+            "the commit closes the strip"
+        );
+        // The dismissal (outside click's seam) without an armed flow
+        // is the typed inert.
+        rig.handle.window().invoke_board_color_strip_dismissed();
+        assert_eq!(rig.drain(), 0);
+        // The armed dismissal dispatches nothing (escape paths).
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::BoardColorEdit);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(rig.handle.window().get_board_color_strip_open());
+        rig.handle.window().invoke_board_color_strip_dismissed();
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(rig.drain(), 0);
+        assert!(!rig.handle.window().get_board_color_strip_open());
+        // The foreign settle (a begin intent lands over the armed
+        // flow): settles the picker, then re-runs — no command.
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::BoardColorEdit);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(rig.handle.window().get_board_color_strip_open());
+        adapter
+            .borrow_mut()
+            .apply_effect_for_test(rig.handle.window(), UiEffect::BeginCreateStack);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(rig.drain(), 0);
+        assert!(
+            !rig.handle.window().get_board_color_strip_open(),
+            "the foreign settle disarmed the picker"
         );
     });
 }
