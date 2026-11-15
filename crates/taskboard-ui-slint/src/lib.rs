@@ -1395,6 +1395,109 @@ mod mount_tests {
     /// The pass over a non-empty awaiting set: the window opens with
     /// the row model pushed; over an empty set it closes. Both on the
     /// testing backend (the `ProbeWindow` precedent), structural only.
+    /// T-22 (#805) US-5/S2: the keyboard route fires the SAME
+    /// callbacks the buttons invoke — the routed command is
+    /// structurally the button's (the shared
+    /// `presentation::alarm_command` constructor), and the selection
+    /// walk targets the selected row.
+    #[test]
+    fn us5_s2_the_alarm_window_keyboard_walk_selects_and_dismisses() {
+        on_slint_thread(|| {
+            let (state, signals, system, _commands, requests_tx, _requests_rx, health) = handover();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+            let handle = mount(
+                Arc::clone(&state),
+                signals,
+                system,
+                tx,
+                requests_tx,
+                UiSettings::default(),
+                health,
+                None,
+            )
+            .expect("mount succeeds on the null platform");
+            let lanes = handle.alarm.as_ref().expect("desktop lanes").clone();
+            awaiting_alarm_state(&state);
+            awaiting_alarm_state(&state);
+            run_alarm_pass(&lanes, &state, false);
+            let rows = lanes.rows.borrow().clone();
+            assert_eq!(rows.len(), 2, "two awaiting rows");
+            let window = lanes.window.borrow();
+            let window = window.as_ref().expect("the window built");
+            assert_eq!(window.get_selected_row(), 0, "the first row pre-selected");
+
+            // The walk: dismiss over the pre-selected row routes the
+            // row-0 dismiss command.
+            window.invoke_dismiss(window.get_selected_row());
+            let drained = vec![rx.try_recv().expect("the command arrived")];
+            assert_eq!(
+                drained.as_slice(),
+                [taskboard_domain::StateCommand::DismissReminder {
+                    reminder: rows[0].reminder,
+                    occurrence: rows[0].occurrence,
+                }],
+                "click ≡ key: the routed command is the button's"
+            );
+            // Walk down, dismiss the second row.
+            window.set_selected_row(1);
+            window.invoke_dismiss(window.get_selected_row());
+            let drained = vec![rx.try_recv().expect("the command arrived")];
+            assert_eq!(
+                drained.as_slice(),
+                [taskboard_domain::StateCommand::DismissReminder {
+                    reminder: rows[1].reminder,
+                    occurrence: rows[1].occurrence,
+                }],
+                "the walk targets the selected row"
+            );
+        });
+    }
+
+    /// T-22 (#805) US-6/S3: the snooze and cancel keys route the
+    /// button commands over the selected row.
+    #[test]
+    fn us6_s3_the_alarm_window_keys_snooze_and_cancel() {
+        on_slint_thread(|| {
+            let (state, signals, system, _commands, requests_tx, _requests_rx, health) = handover();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+            let handle = mount(
+                Arc::clone(&state),
+                signals,
+                system,
+                tx,
+                requests_tx,
+                UiSettings::default(),
+                health,
+                None,
+            )
+            .expect("mount succeeds on the null platform");
+            let lanes = handle.alarm.as_ref().expect("desktop lanes").clone();
+            awaiting_alarm_state(&state);
+            run_alarm_pass(&lanes, &state, false);
+            let rows = lanes.rows.borrow().clone();
+            let window = lanes.window.borrow();
+            let window = window.as_ref().expect("the window built");
+            window.invoke_snooze(window.get_selected_row());
+            let drained = vec![rx.try_recv().expect("the command arrived")];
+            assert_eq!(
+                drained.as_slice(),
+                [taskboard_domain::StateCommand::SnoozeReminder {
+                    reminder: rows[0].reminder,
+                    occurrence: rows[0].occurrence,
+                    postpone: crate::presentation::ALARM_WINDOW_SNOOZE,
+                }],
+            );
+            window.invoke_cancel(window.get_selected_row());
+            let drained = vec![rx.try_recv().expect("the command arrived")];
+            assert_eq!(
+                drained.as_slice(),
+                [taskboard_domain::StateCommand::CancelAdhocAlarm {
+                    alarm: rows[0].alarm,
+                }],
+            );
+        });
+    }
+
     #[test]
     fn the_alarm_pass_opens_and_pushes_rows_and_closes() {
         on_slint_thread(|| {

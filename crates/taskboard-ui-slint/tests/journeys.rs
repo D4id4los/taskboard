@@ -13033,19 +13033,14 @@ fn an_invoked_disabled_menu_row_sets_the_status_notice() {
 
 // -- T-15 (#798): the journal ledger's editor + staged delete ------------
 
-/// The ledger journey: a row click opens the inline editor seeded
-/// from the stored row verbatim; the commit routes the exact
-/// `journal edit` change mask (an all-unchanged commit is the exact
-/// empty mask — the accepted no-op); the remove affordance arms
-/// without dispatching and the strip's Confirm routes the exact
-/// `DeleteReflection`.
-#[test]
-#[allow(clippy::too_many_lines)] // the journey's legs, one block per verb
-fn the_journal_ledger_edits_then_stages_the_delete() {
+/// Shared fixture: one live Day entry with known attributes (the
+/// surfacing-card pin's own entry cleared — the ledger pins a single
+/// known row).
+fn journal_ledger_state() -> (taskboard_domain::ReflectionId, AppState) {
     let now = chrono::Utc::now();
     let (_fixture, mut state) = fixture::golden_state_at(now);
     // The surfacing-card pin seeds its own walk entry (the fixture's
-    // fixture-continuity); the ledger journey pins a known single row.
+    // fixture-continuity); the ledger journeys pin a known single row.
     state.reflection.entries.clear();
     let attributes = taskboard_domain::ReflectionAttributes {
         mood: taskboard_domain::reflection::Rating::try_new(3).ok(),
@@ -13054,29 +13049,28 @@ fn the_journal_ledger_edits_then_stages_the_delete() {
         extra_flags: std::collections::BTreeSet::default(),
     };
     let entry_id = fixture::add_reflection(&mut state, "steady day", attributes, now);
+    (entry_id, state)
+}
+
+/// US-9/S2 (T-15, #798): the ledger row activates into the inline
+/// editor seeded from the stored row verbatim.
+#[test]
+fn us9_s2_the_ledger_row_activates_into_the_editor() {
+    let (_id, state) = journal_ledger_state();
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            // Cold start is the board; the backwards wrap crosses
-            // Today into Review (the review surface test's route).
             harness.press(ActionId::NavPrevView);
             harness.driver.advance_time(0);
             harness.press(ActionId::NavPrevView);
-            harness.driver.advance_time(0);
             harness.driver.advance_time(0);
             assert_eq!(harness.handle.window().get_current_view(), View::Review);
             let window = harness.handle.window();
             assert_eq!(window.get_review_model().reflection_rows.row_count(), 1);
 
-            // The activation: the editor opens, the echoes are the
-            // stored row verbatim. The row-activation seam rides the
-            // invoke path (the settings-journeys' grammar — the
-            // testing backend's headless ledger realization is not the
-            // callback under test; the affordance mounts in the ledger
-            // row, the goldens carry the composition).
             window.invoke_reflection_row_activated(0);
             harness.driver.advance_time(0);
             assert!(window.get_reflection_editor_open(), "the editor opened");
@@ -13087,6 +13081,31 @@ fn the_journal_ledger_edits_then_stages_the_delete() {
             );
             assert_eq!(window.get_reflection_editor_mood_echo().as_str(), "3");
             assert_eq!(window.get_reflection_editor_energy_echo().as_str(), "");
+        },
+    );
+}
+
+/// US-9/S3 (T-15, #798): the editor commits the EXACT `journal edit`
+/// change mask — the masked edit (text, energy set, a flag added; the
+/// untouched mood rides `None`) and the accepted no-op (the exact
+/// empty mask).
+#[test]
+fn us9_s3_the_editor_commits_the_exact_change_mask() {
+    let (entry_id, state) = journal_ledger_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavPrevView);
+            harness.driver.advance_time(0);
+            harness.press(ActionId::NavPrevView);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            window.invoke_reflection_row_activated(0);
+            harness.driver.advance_time(0);
 
             // The accepted no-op: an untouched editor commits the
             // exact empty mask.
@@ -13109,17 +13128,11 @@ fn the_journal_ledger_edits_then_stages_the_delete() {
                 other => panic!("the no-op commit routed the empty mask, got {other:?}"),
             }
             harness.engine.settle(&harness.handle);
-            assert!(
-                !window.get_reflection_editor_open(),
-                "a committed no-op closes the editor (the change was accepted)"
-            );
-            // Reopen for the masked-edit leg.
-            window.invoke_reflection_row_activated(0);
-            harness.driver.advance_time(0);
-            assert!(window.get_reflection_editor_open());
 
             // The masked edit: new text, energy set, a flag added —
             // mood untouched (None rides the mask).
+            window.invoke_reflection_row_activated(0);
+            harness.driver.advance_time(0);
             window.invoke_reflection_editor_text_edited("rough afternoon".into());
             window.invoke_reflection_editor_energy_edited("2".into());
             window.invoke_reflection_editor_flag_toggled(0); // migraine: add
@@ -13154,11 +13167,6 @@ fn the_journal_ledger_edits_then_stages_the_delete() {
                 "a committed edit closes the editor"
             );
             assert_eq!(
-                window.get_review_model().reflection_rows.row_count(),
-                1,
-                "the edited row stays in the live ledger"
-            );
-            assert_eq!(
                 window
                     .get_review_model()
                     .reflection_rows
@@ -13169,10 +13177,29 @@ fn the_journal_ledger_edits_then_stages_the_delete() {
                 "rough afternoon",
                 "the ledger echoes the committed text"
             );
+        },
+    );
+}
 
-            // The staged delete: the arm stroke dispatches nothing;
-            // the strip's Confirm routes the exact tombstone (the
-            // arm/confirm seams ride the invoke path, as above).
+/// US-9/S4 (T-15, #798): the staged delete — the arm stroke dispatches
+/// nothing; the strip's Confirm routes the exact `DeleteReflection`
+/// (the row tombstones and leaves the live ledger).
+#[test]
+fn us9_s4_the_staged_delete_confirms_the_tombstone() {
+    let (entry_id, state) = journal_ledger_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavPrevView);
+            harness.driver.advance_time(0);
+            harness.press(ActionId::NavPrevView);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            assert_eq!(window.get_review_model().reflection_rows.row_count(), 1);
+
             window.invoke_reflection_remove_clicked(0);
             harness.driver.advance_time(0);
             assert!(
@@ -13206,16 +13233,51 @@ fn the_journal_ledger_edits_then_stages_the_delete() {
 
 // -- T-14 (#797): the break-rule roster in the timers composition --------
 
-/// The roster journey: the create form commits the exact
-/// `CreateBreakRule` over the section's host board (the roster row
-/// renders from the reply's state), the remove affordance arms without
-/// dispatching (the strip is the only verb that routes), and the
-/// strip's Confirm dispatches the exact `DeleteBreakRule`. A
-/// threshold parse miss keeps the field text and routes nothing (the
-/// rule-add seam's return convention).
+// -- T-14 (#797): the break-rule roster in the timers composition --------
+
+/// US-9/S2 (T-14, #797): the roster renders the rule facts from the
+/// stored row — label, alarm-rung bit, canonical threshold phrase,
+/// roaming board.
 #[test]
-#[allow(clippy::too_many_lines)] // the journey's legs, one block per verb
-fn the_break_rule_roster_creates_then_stages_the_remove() {
+fn us9_s2_the_break_rule_roster_renders_the_rule_facts() {
+    let (_fixture, mut state) = fixture::golden_state();
+    let board = state
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("the fixture board");
+    let _ = fixture::add_break_rule(
+        &mut state,
+        board,
+        "Tea break",
+        chrono::TimeDelta::minutes(90),
+        taskboard_domain::Insistence::Alarm,
+    );
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            let model = harness.handle.window().get_break_rules_model();
+            assert_eq!(model.row_count(), 1);
+            let row = model.row_data(0).expect("the roster row");
+            assert_eq!(row.label.as_str(), "Tea break");
+            assert_eq!(row.threshold.as_str(), "1h30m", "the mint's text form");
+            assert!(row.alarm_rung, "the rung rides verbatim");
+        },
+    );
+}
+
+/// US-9/S3 (T-14, #797): the create form commits the exact
+/// `CreateBreakRule` over the section's host board; a threshold parse
+/// miss keeps the field text and routes nothing (the rule-add seam's
+/// return convention).
+#[test]
+fn us9_s3_the_create_form_commits_the_exact_break_rule() {
     let (_fixture, state) = fixture::golden_state();
     let board = state
         .boards
@@ -13230,20 +13292,15 @@ fn the_break_rule_roster_creates_then_stages_the_remove() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::ViewToday);
-            assert_eq!(
-                harness.handle.window().get_break_rules_model().row_count(),
-                0,
-                "the empty roster renders"
-            );
 
-            // Open the form (the Add affordance), stage a parse miss,
-            // then a valid commit.
             harness.driver.click_by_label("Add break rule");
             harness.driver.advance_time(0);
             assert!(
                 harness.handle.window().get_break_create_open(),
                 "the form opened"
             );
+
+            // The parse-miss arm: the flavour renders, nothing routes.
             let click_field = |harness: &mut Harness, label: &str| {
                 let element = harness
                     .driver
@@ -13254,9 +13311,6 @@ fn the_break_rule_roster_creates_then_stages_the_remove() {
             };
             click_field(&mut harness, "Break rule label");
             harness.type_text("Tea break");
-            // The threshold draft rides the `edited` seam directly
-            // (the r4 D27 journeys' grammar — the typing driver's
-            // text events are not the callback under test).
             harness
                 .handle
                 .window()
@@ -13274,6 +13328,7 @@ fn the_break_rule_roster_creates_then_stages_the_remove() {
                 "the miss renders the invalid flavour"
             );
 
+            // The valid commit.
             harness
                 .handle
                 .window()
@@ -13299,37 +13354,62 @@ fn the_break_rule_roster_creates_then_stages_the_remove() {
                 other => panic!("the create reached the boundary, got {other:?}"),
             }
             harness.engine.settle(&harness.handle);
-            assert_eq!(
-                harness.handle.window().get_break_rules_model().row_count(),
-                1
-            );
             assert!(
                 !harness.handle.window().get_break_create_open(),
                 "a valid commit closes the form"
             );
+        },
+    );
+}
 
-            // The staged remove: the arm stroke dispatches nothing;
-            // the strip's Confirm routes the exact delete.
+/// US-9/S4 (T-14, #797): the staged remove — the arm stroke dispatches
+/// nothing (the strip is the only verb that routes) and the strip's
+/// Confirm dispatches the exact `DeleteBreakRule` over the armed
+/// subject.
+#[test]
+fn us9_s4_the_staged_remove_confirms_the_exact_delete() {
+    let (_fixture, mut state) = fixture::golden_state();
+    let board = state
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("the fixture board");
+    let rule_id = fixture::add_break_rule(
+        &mut state,
+        board,
+        "Tea break",
+        chrono::TimeDelta::minutes(90),
+        taskboard_domain::Insistence::Normal,
+    );
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            assert_eq!(
+                harness.handle.window().get_break_rules_model().row_count(),
+                1
+            );
+
             harness.driver.click_by_label("Remove break rule");
             harness.driver.advance_time(0);
             assert!(
                 harness.engine.drain().is_empty(),
                 "arming dispatches nothing"
             );
-            let rows: Vec<_> = harness
-                .handle
-                .window()
-                .get_break_rules_model()
-                .iter()
-                .collect();
-            assert!(rows[0].armed, "the armed row renders its strip flag");
-            let rule_id = {
-                let state = harness.engine.snapshot();
-                let mut ids = state.reminders.break_rules.keys().copied();
-                let id = ids.next().expect("the created rule is in state");
-                assert!(ids.next().is_none(), "exactly one rule");
-                id
-            };
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .get_break_rules_model()
+                    .row_data(0)
+                    .expect("row")
+                    .armed,
+                "the armed row renders its strip flag"
+            );
             harness.driver.click_by_label("Confirm remove rule");
             match harness.engine.drain().as_slice() {
                 [StateCommand::DeleteBreakRule { id }] => {

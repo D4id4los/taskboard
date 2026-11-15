@@ -354,8 +354,6 @@ re-argue them.)
 |---|---|---|---|---|---|
 | US-7/S1 | settings view knob pickers (`settings-view.slint:672-696`) | pick a knob value | the picker seam → the exact `Set*` request (`requests.rs:471-573`, 18 variants) | the knob applies; the typed outcome renders (ok / busy / failed / unavailable / rejected, `adapter.rs:4326-4353`) | a failing reply renders the typed outcome with detail; T-16 remediated (2026-11-15, #799): **an env-locked knob edit renders the typed refusal** (`Rejected` + `EnvLocked`) instead of absorbing — the sweep covers the files pick, the general-field commit, and the reminders/focus/sink choice picks; **on-restart knobs apply later** (the facts row's badge says so — SC-4's evidence) |
 | US-7/S2 | settings view general fields | edit and commit | the general fields commit (`adapter.rs:10416-10434`) | the fields' requests dispatch | the same typed-outcome posture (the T-16 env-locked refusal included) |
-| US-7/S3 (CLI, T-18 2026-11-15 #801) | `config set <key> <value>` | run the verb | the toml-layer atomic overlay write (`commands/config.rs::set`, `write_config_atomic`) | the override lands in `taskboard.toml`; authoritative at next start (the verb's output says so) | an env-overridden key refuses typed (`ConfigSetError::EnvLocked`, nothing writes); an unknown key or malformed value refuses typed (`UnknownKey`/`BadValue`, nothing writes) |
-| US-7/S4 (CLI, T-18) | `config unset <key>` | run the verb | the same overlay writer, removal arm | the override is gone; the default (or env layer) applies at next start | the same typed refusal classes |
 
 ### US-8 — Facts & env-override display
 
@@ -373,8 +371,8 @@ re-argue them.)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-10/S1 | `config set <key> <value>` (the knob vocabulary = the GUI's dotted keys) | run the verb | the toml-layer atomic overlay (`commands/config.rs::set`) | the override lands in `taskboard.toml`, authoritative at next start | env-overridden key → typed `EnvLocked`, nothing writes; unknown key/malformed value → typed `UnknownKey`/`BadValue`, nothing writes |
-| US-10/S2 | `config unset <key>` | run the verb | the same overlay, removal arm | the default (or env layer) applies at next start | the same refusal classes |
+| US-10/S1 | `config set <key> <value>` (the knob vocabulary = the GUI's dotted keys; T-18, 2026-11-15, #801) | run the verb | the toml-layer atomic overlay (`commands/config.rs::set`) | the override lands in `taskboard.toml`, authoritative at next start | env-overridden key → typed `EnvLocked`, nothing writes; unknown key/malformed value → typed `UnknownKey`/`BadValue`, nothing writes |
+| US-10/S2 | `config unset <key>` (T-18) | run the verb | the same overlay, removal arm | the default (or env layer) applies at next start | the same refusal classes |
 
 ## 5. Interaction flows
 
@@ -409,7 +407,7 @@ Commands column carries the request-lane tokens the gate checks. -->
 | W-6 | ui/views/settings-view.slint (facts 22,50-56) | facts + env-override display | — | — (display only; the snapshot push) | — | — | per-fact render | US-8/S1 | — |
 | W-7 | ui/views/settings-view.slint (rosters 92-133,1012) | connections + board rosters | — | — (display only; roster push adapter.rs:5155) | — | — | per-card render | US-9/S1 | journeys.rs::us1_s1; journeys.rs::us1_s2 |
 | W-8 | ui/app-window.slint / menu | settings opener (AppSettings GLOBAL; back closes 643) | — | on_menu_settings / the open seam (adapter.rs:8284-8309) | ActionId::AppSettings | — | — (view-level) | — (US-1..US-9's entry) | — |
-| W-CLI (T-18, 2026-11-15) | crates/taskboard-app/src/commands/config.rs | `config set`/`unset` verbs | — | the knob table `ConfigKey::from_dotted` (the GUI's dotted-key vocabulary), the atomic overlay writers | — | the toml layer (figment-respecting; env never touched) | the CLI's typed refusal classes (`EnvLocked`/`UnknownKey`/`BadValue`) | US-7/S3, US-7/S4 | `commands::config::set_tests` |
+| W-CLI (T-18, 2026-11-15) | crates/taskboard-app/src/commands/config.rs | `config set`/`unset` verbs (the knob table `ConfigKey::from_dotted` — the GUI's dotted-key vocabulary; figment-respecting, env never touched) | — | — (a pre-core command handler, not a UI seam) | — | — | the CLI's typed refusal classes (ConfigSetError::EnvLocked / UnknownKey / BadValue — the app crate's own error taxonomy); the atomic overlay write (`write_config_atomic` in `crate::config`) | US-10/S1, US-10/S2 (the journeys live in the app crate's own test module — outside this plan's default Test-root; the recorded posture, the same lib-root note the timers plan carries) | us10_s1_config_set_writes_the_toml_layer_and_rereads; us10_s2_config_unset_removes_the_key; an_env_overridden_key_refuses_typed_without_writing; unknown_keys_and_malformed_values_refuse_typed_without_writing |
 
 ## 7. Command-contract delta
 
