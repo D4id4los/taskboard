@@ -503,6 +503,12 @@ each carries evidence, never a fix.
   visible (the badge moves), which is the recognition-over-recall
   positive; the note records the absence of an explicit
   acknowledgement for the triage.
+  *(Remediated 2026-11-15 — UX remediation chunk 6 / triage T-41
+  (#824), within the acknowledgment arm's scope: the +1 now also
+  arms the transient status-line notice with the typed surplus fact
+  (the logged count delta) at dispatch time — the T-19 disabled-row
+  notice's channel; the badge re-derivation remains the recognition
+  anchor.)*
 - **W-N2 — walkthrough note (US-4, recognition)**: the make-up
   affordance's consequence (it edits the *previous* window, not the
   current one) is carried by the action description
@@ -510,6 +516,9 @@ each carries evidence, never a fix.
   while its overflow grace is open") but not by the row itself — a
   user reading only the row learns the window targeting from the
   outcome, not the control (recognition-over-recall observation).
+  *(No-op ruling 2026-11-15 — triage T-41 #824, the HB-W-N2 half:
+  the action description IS the recognition surface the plan
+  designed; the finding records the posture, no change.)*
 
 ## 11. Plan corrections
 

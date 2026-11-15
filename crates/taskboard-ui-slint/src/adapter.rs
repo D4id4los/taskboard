@@ -1047,6 +1047,11 @@ impl Adapter {
         let outcome = ActionRouter::dispatch(id, &ctx);
         match outcome {
             DispatchOutcome::Command(command) => {
+                // T-41/T-43 (#824/#826): the acknowledgement rides the
+                // status-notice lane (the apply_outcomes twin).
+                if self.arm_outcome_notice(&command) {
+                    self.push_notice(window);
+                }
                 // Non-blocking, human-input-scale (D16): a full inbox
                 // is logged and dropped — the forwarder convention.
                 if self.commands.try_send(command).is_err() {
@@ -1224,6 +1229,13 @@ impl Adapter {
         for outcome in outcomes {
             match outcome {
                 FlowOutcome::Command(command) => {
+                    // T-41/T-43 (#824/#826): the acknowledgement rides
+                    // the status-notice lane — the typed fact arms at
+                    // dispatch time (the disabled-row notice's
+                    // event-stamp shape).
+                    if self.arm_outcome_notice(command) {
+                        self.push_notice(window);
+                    }
                     if self.commands.try_send(command.clone()).is_err() {
                         tracing::warn!("command channel full or closed; dropped");
                     }
@@ -4385,6 +4397,30 @@ impl Adapter {
         }
         self.apply_close_menu(window);
         self.route(window, action);
+    }
+
+    /// The dispatch-outcome notice's arming (T-41/T-43, #824/#826):
+    /// the habit-log and created-timer commands echo their typed facts
+    /// onto the status-notice lane (the +1's surplus delta; the
+    /// created occurrence's target). `true` when a notice armed.
+    fn arm_outcome_notice(&mut self, command: &taskboard_domain::StateCommand) -> bool {
+        match command {
+            taskboard_domain::StateCommand::LogHabit { .. } => {
+                self.notice = Some(Notice {
+                    text: crate::presentation::habit_log_notice_phrase(),
+                    until: chrono::Utc::now() + crate::presentation::OUTCOME_NOTICE_HORIZON,
+                });
+                true
+            }
+            taskboard_domain::StateCommand::CreateAdhocAlarm { label, when, .. } => {
+                self.notice = Some(Notice {
+                    text: crate::presentation::adhoc_alarm_notice_phrase(label, when),
+                    until: chrono::Utc::now() + crate::presentation::OUTCOME_NOTICE_HORIZON,
+                });
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The disabled-row notice's arming (T-19, #802): the typed fact

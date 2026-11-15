@@ -499,11 +499,20 @@ each carries evidence, never a fix.
   half); no transient acknowledgement exists. The state change is
   visible; the note records the absence of an explicit
   acknowledgement.
+  *(Remediated 2026-11-15 — UX remediation chunk 6 / triage T-43
+  (#826), the TA-W-N1 half: the create now also arms the transient
+  status-line notice with the typed created-occurrence fact (the
+  label plus its target instant) at dispatch time — the T-19
+  disabled-row notice's channel; the next render's row remains the
+  recognition anchor.)*
 - **W-N2 — walkthrough note (US-7, mute reachability)**: the
   notification mute routes `ReminderMute` (the Task-detail banner's
   engine twin) — the mute posture and its `NotUndoable(ReminderSurface)`
   class are the task-editing plan's W-N1 territory; recorded here as
   the cross-surface twin so the triage sees the family whole.
+  *(No-op ruling 2026-11-15 — triage T-43 #826, the TA-W-N2 half:
+  the class is already the task-editing plan's recorded posture;
+  the finding records the posture, no change.)*
 - **W-N3 — walkthrough note (US-4, attention semantics)**: the
   window requests attention, never focus (`lib.rs:778-786`,
   request-never-focus; the types ride slint's winit re-export, a
@@ -511,6 +520,9 @@ each carries evidence, never a fix.
   only as far as the desktop environment honors
   `UserAttentionType::Critical` — a recorded environment-dependent
   posture.
+  *(No-op ruling 2026-11-15 — triage T-43 #826, the TA-W-N3 half:
+  request-never-focus IS the recorded design; environment-dependent
+  attention is the posture, no change.)*
 - **W-N4 — walkthrough note (US-1/US-3, kiosk)**: *(Remediated
   2026-11-15 — UX remediation chunk 1 / triage T-7 (#790), within the
   R3.5.3 fence: the Today timers host renders the muted absence
