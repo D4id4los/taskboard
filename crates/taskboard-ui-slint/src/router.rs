@@ -476,6 +476,15 @@ pub struct DispatchCtx {
     /// a row's +1 affordance activates; `habit.log` routes from it
     /// (`NoTarget` without one).
     pub habit_target: Option<taskboard_domain::HabitId>,
+    /// The −1 recovery's one-shot row target (UX R-2 D-3, #786):
+    /// `(habit, current window, current count)` — what you click is
+    /// what decrements. The router owns the arithmetic: the dispatch
+    /// carries `count: n − 1`; count 0 is the typed `NoTarget`.
+    pub habit_undo: Option<(
+        taskboard_domain::HabitId,
+        taskboard_domain::WindowStart,
+        u32,
+    )>,
     /// The reorder's resolved move (DR-6/6): set by the adapter when a
     /// reorder affordance activates — the habit plus the drop slot's
     /// floor-midpoint order computed from the row source; `habit.move`
@@ -685,6 +694,21 @@ impl ActionRouter {
             ActionId::HabitLog => match ctx.habit_target {
                 Some(habit) => DispatchOutcome::Command(StateCommand::LogHabit { habit }),
                 None => DispatchOutcome::NoTarget,
+            },
+            // The −1 recovery (UX R-2 D-3, #786): the audited
+            // `AdjustHabitLog` valve over the row's own current
+            // window — an exact inverse with no forged facts. The
+            // decrement is never quota-enforced (D-P14
+            // symmetrically); count 0 is the honest `NoTarget`.
+            ActionId::HabitUndoLog => match ctx.habit_undo {
+                Some((habit, window, n)) if n >= 1 => {
+                    DispatchOutcome::Command(StateCommand::AdjustHabitLog {
+                        habit,
+                        window,
+                        count: n - 1,
+                    })
+                }
+                _ => DispatchOutcome::NoTarget,
             },
             ActionId::HabitMove => match ctx.habit_move {
                 Some((habit, order)) => {
@@ -1064,6 +1088,7 @@ mod tests {
             timer_target: None,
             track_target: None,
             habit_target: None,
+            habit_undo: None,
             habit_move: None,
             habit_repair: None,
             habit_convert_target: None,
@@ -1204,6 +1229,33 @@ mod tests {
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::HabitLog, &ctx(true)),
+            DispatchOutcome::NoTarget
+        );
+        // The −1 recovery (UX R-2 D-3, #786): the router owns the
+        // arithmetic — the dispatch carries `count: n − 1`; count 0
+        // is the honest `NoTarget` (no negative log exists).
+        let window = taskboard_domain::WindowStart::of_period(
+            taskboard_domain::PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 15).unwrap(),
+        );
+        let mut undo_ctx = ctx(true);
+        undo_ctx.habit_undo = Some((habit, window, 2));
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitUndoLog, &undo_ctx),
+            DispatchOutcome::Command(StateCommand::AdjustHabitLog {
+                habit,
+                window,
+                count: 1,
+            })
+        );
+        let mut zero_ctx = ctx(true);
+        zero_ctx.habit_undo = Some((habit, window, 0));
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitUndoLog, &zero_ctx),
+            DispatchOutcome::NoTarget
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::HabitUndoLog, &ctx(true)),
             DispatchOutcome::NoTarget
         );
         let mut move_ctx = ctx(true);

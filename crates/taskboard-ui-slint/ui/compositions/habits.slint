@@ -40,6 +40,12 @@ export component HabitsSection inherits Rectangle {
     // actions, disabled (the greyed affordance posture).
     in property <bool> editing-enabled;
     callback plus-clicked(int);
+    // The row's "−1" recovery affordance (UX R-2 D-3, #786): the
+    // mis-click class recovers through the audited AdjustHabitLog
+    // valve — the row's current window, count n−1. No quota floor,
+    // never quota-enforced (D-P14 symmetrically); count 0 dispatches
+    // nothing (NoTarget). Same editing-enabled gating as the +.
+    callback undo-log-clicked(int);
     // The reorder's drop slot (row, slot): Rust computes the floor
     // midpoint of the slot's free interval and dispatches MoveHabit.
     callback reorder-asked(int, int);
@@ -232,6 +238,16 @@ export component HabitsSection inherits Rectangle {
                     // disables at/after quota (D-P14); `met` restyled
                     // the row instead.
                     clicked => root.plus-clicked(row-index);
+                }
+                // The −1 recovery (UX R-2 D-3): symmetric with the
+                // +1's risk profile — one click, no armed strip (the
+                // frequency argument); itself reversible by +.
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Take one habit log back";
+                    enabled: root.editing-enabled;
+                    clicked => root.undo-log-clicked(row-index);
                 }
                 if (row.repair): IconButton {
                     icon: IconKind.plus;

@@ -256,6 +256,15 @@ pub(crate) struct Adapter {
     /// route from it (the one-shot target pattern).
     plan_target: Option<TaskId>,
     habit_target: Option<taskboard_domain::HabitId>,
+    /// The −1 recovery's resolved `(habit, current window, current
+    /// count)` (UX R-2 D-3, #786): from the same row source the
+    /// section renders; consumed by the next `habit.unlog` dispatch,
+    /// then cleared (one-shot).
+    habit_undo: Option<(
+        taskboard_domain::HabitId,
+        taskboard_domain::WindowStart,
+        u32,
+    )>,
     /// The reorder's resolved (habit, order) (DR-6/6): consumed by the
     /// next `habit.move` dispatch, then cleared.
     habit_move: Option<(taskboard_domain::HabitId, i64)>,
@@ -949,6 +958,7 @@ impl Adapter {
         ctx.plan_target = self.plan_target.take();
         ctx.track_target = self.track_target.take();
         ctx.habit_target = self.habit_target.take();
+        ctx.habit_undo = self.habit_undo.take();
         ctx.habit_move = self.habit_move.take();
         ctx.habit_repair = self.habit_repair.take();
         ctx.habit_convert_target = self.habit_convert_target.take();
@@ -6893,6 +6903,7 @@ pub(crate) fn install(
         track_target: None,
         plan_target: None,
         habit_target: None,
+        habit_undo: None,
         habit_move: None,
         habit_repair: None,
         habit_convert_target: None,
@@ -7501,6 +7512,33 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 /// (what you see is what reorders) and routes `habit.move` with the
 /// floor-midpoint order — the UI computes midpoints, the planner
 /// stamps.
+/// The −1 recovery's one-shot target (UX R-2 D-3, #786): the row's
+/// current window and count from the same row source the section
+/// renders — what you click is what decrements. `None` when count 0
+/// (the route's typed `NoTarget`) or against stale state.
+fn habit_undo_target(
+    adapter: &Adapter,
+    habit: taskboard_domain::HabitId,
+) -> Option<(
+    taskboard_domain::HabitId,
+    taskboard_domain::WindowStart,
+    u32,
+)> {
+    let state = adapter.state.load();
+    let habit_row = state.habits.habits.get(&habit)?;
+    let now = adapter.day_ctx().now;
+    let window = taskboard_domain::WindowStart::of_period(
+        habit_row.target.kind(),
+        adapter.calendar().today(now),
+    );
+    let count = state
+        .habits
+        .log
+        .get(&taskboard_domain::HabitLogKey { habit, window })
+        .map_or(0, |e| e.count);
+    (count >= 1).then_some((habit, window, count))
+}
+
 fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_habits_plus_clicked, adapter: adapter;
     bind mut (a, window), args (index), {        let Some(habit) = a
@@ -7513,6 +7551,26 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     };
     a.habit_target = Some(habit);
     a.route(&window, ActionId::HabitLog);
+
+    });
+
+    // The −1 recovery (UX R-2 D-3, #786): the row's current window
+    // and count from the same row source the section renders — what
+    // you click is what decrements. Count 0 sets no target: the
+    // route's typed `NoTarget` (nothing dispatches, no negative log
+    // exists). Never quota-enforced (D-P14 symmetrically).
+    install_seam!(window: window.on_habits_undo_log_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(&habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+    else {
+        return; // a stale index degrades to a no-op
+    };
+    a.habit_undo = habit_undo_target(&a, habit);
+    if a.habit_undo.is_some() {
+        a.route(&window, ActionId::HabitUndoLog);
+    }
 
     });
 

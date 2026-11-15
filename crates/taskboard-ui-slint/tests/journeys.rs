@@ -9440,6 +9440,55 @@ fn the_kiosk_habit_actions_render_disabled_not_absent() {
     );
 }
 
+/// UX R-2 D-3 (D-7 T8, #786): the habit row's −1 recovery follows
+/// chunk 1's editing-enabled grammar — on kiosk it renders disabled,
+/// not absent (present in the tree; the typed `editing-enabled` fact
+/// is the gate), with desktop parity.
+#[test]
+fn the_kiosk_habit_undo_affordance_renders_disabled() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut kiosk = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state.clone(),
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            // The habit rows mount with the Today view; jump there.
+            kiosk.press(ActionId::ViewToday);
+            assert!(
+                kiosk
+                    .driver
+                    .find_by_label("Take one habit log back")
+                    .is_some(),
+                "the −1 affordance renders on kiosk (visible-gated, not absent)"
+            );
+            assert!(
+                !kiosk.handle.window().get_habits_editing_enabled(),
+                "the −1 affordance is gated disabled (the typed grammar)"
+            );
+            let mut desktop = Harness::mount(SlintDriver::default(), state);
+            desktop.press(ActionId::ViewToday);
+            assert!(
+                desktop
+                    .driver
+                    .find_by_label("Take one habit log back")
+                    .is_some(),
+                "the −1 affordance renders on desktop"
+            );
+            assert!(desktop.handle.window().get_habits_editing_enabled());
+        },
+    );
+}
+
 /// UX R-1 D-2 (D-6 T5, #790): the focus toggle's menu row greys on
 /// kiosk (the `entry_states` layer) and its activation still yields
 /// ZERO effects (the dispatch no-op arm stands — layer 3).

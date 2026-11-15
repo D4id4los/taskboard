@@ -28,6 +28,9 @@ const SEAM_INVENTORY: &[&str] = &[
     "banner_snooze_clicked",
     "board_add_task_activated",
     "board_bar_archived_activated",
+    // The habit row's −1 recovery seam (UX R-2 D-3, #786): the
+    // audited AdjustHabitLog over the row's current window.
+    "habits_undo_log_clicked",
     // The armed-delete strips' pair (UX R-2 D-2, #784): Confirm
     // routes the armed verb, Cancel disarms — one install each.
     "board_delete_strip_confirmed",

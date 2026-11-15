@@ -117,6 +117,7 @@ impl KeymapShell {
             timer_target: None,
             track_target: None,
             habit_target: None,
+            habit_undo: None,
             habit_move: None,
             habit_repair: None,
             habit_convert_target: None,

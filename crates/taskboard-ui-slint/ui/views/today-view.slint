@@ -112,6 +112,8 @@ export component TodayView inherits FocusScope {
     callback habits-create-cancelled();
     callback habits-create-quota-edited(string);
     callback habits-plus-clicked(int);
+    // The row's −1 recovery (UX R-2 D-3, #786).
+    callback habits-undo-log-clicked(int);
     callback habits-repair-clicked(int);
     callback habits-convert-armed(int);
     callback habits-convert-confirmed(int);
@@ -194,6 +196,7 @@ export component TodayView inherits FocusScope {
                     habits: root.habits;
                     editing-enabled: root.habits-editing-enabled;
                     plus-clicked(r) => root.habits-plus-clicked(r);
+                    undo-log-clicked(r) => root.habits-undo-log-clicked(r);
                     reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
                     repair-clicked(r) => root.habits-repair-clicked(r);
                     convert-armed(r) => root.habits-convert-armed(r);

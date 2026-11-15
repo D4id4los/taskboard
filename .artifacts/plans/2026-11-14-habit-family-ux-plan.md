@@ -126,6 +126,48 @@ re-argues them.)
     `router.rs:1202-1203`).
   - AC-2: Given a stale row index, When the seam fires, Then it
     degrades to a no-op (the stale-index guard, `adapter.rs:7493-7498`).
+  - AC-3 (amended 2026-11-15, UX R-2 D-3/D-5, #786 — the mis-click
+    class recovers through the new sibling story **US-6** below; the
+    recorded no-undo posture of `LogHabit`
+    (`NotUndoable(HabitSurface)`, `undo.rs:231-237` — the
+    lossy-inversion rationale) is unchanged): the "+" stays one
+    click; no confirmation gate (D-P14's frequency/risk
+    proportionality).
+
+### US-6 — Undo one habit log (amended 2026-11-15, UX R-2 D-3, #786)
+
+- **Story**: As a desktop user who mis-clicked a habit's "+", I want
+  a row decrement affordance so that the surplus log is corrected in
+  place without touching the journal class.
+- **Platforms**: desktop for the dispatch; the affordance renders on
+  kiosk disabled (the `editing-enabled` grammar, chunk 1's).
+- **Entry points**: the habit row's own affordance — the "−1" /
+  `habits-undo-log-clicked` seam routes the new
+  `ActionId::HabitUndoLog` ("Take one habit log back",
+  section-scoped — the `HabitLog` R-11 ruling's exact twin,
+  `menu_group: None`). No keyboard binding, no menu row.
+- **Priority**: P1
+- **Acceptance**:
+  - AC-1: Given a row whose current window count is n >= 1, When the
+    "−1" is invoked, Then the audited valve dispatches the exact
+    `StateCommand::AdjustHabitLog { habit, window: <the row's current
+    window>, count: n − 1 }` — an exact inverse with no forged facts
+    (the pre-row-present reasoning, `undo.rs:277-295`); zero
+    journal-class change, zero new `StateCommand` — verified by
+    `router.rs::habit_verbs_route_from_their_row_targets` (the
+    router owns the arithmetic).
+  - AC-2: Given count 0, When the "−1" is invoked, Then the typed
+    `NoTarget` holds and nothing dispatches (no negative log
+    exists) — same test.
+  - AC-3: The decrement is never quota-enforced (D-P14
+    symmetrically — the row restyles, the button never greys by
+    count); the surplus-logs design survives verbatim.
+  - AC-4: On kiosk the affordance renders disabled, not absent —
+    verified by `journeys.rs::the_kiosk_habit_undo_affordance_renders_disabled`.
+- **Scope guard**: the affordance addresses the row's own current
+  window (the same resolution the "+" uses); a mis-click *make-up*
+  valve recovers through the repair row's own window (non-goal
+  recorded — HB-W-N2's recognition debt, T-41 #824).
 
 ### US-2 — Habit state display
 
@@ -243,7 +285,7 @@ re-argues them.)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-1/S1 | habit row affordance (`habits.slint` row + plus control) | click the row's "+" | `habits-plus-clicked` (`adapter.rs:7491-7505`) → `ActionId::HabitLog` → `StateCommand::LogHabit { habit }` (`router.rs:685-688`) | the window's count increments; quota/streak re-derive on next render | **no pre-commit gate (the log is the commit)** and `LogHabit` is `NotUndoable(HabitSurface)` (`undo.rs:231-237`) — a mis-click +1 has no undo; the CLI/repair family is the only recovery surface (finding HB-1). Stale index degrades to a no-op (`adapter.rs:7493-7498`) — test `router.rs::habit_verbs_route_from_their_row_targets` |
+| US-1/S1 | habit row affordance (`habits.slint` row + plus control) | click the row's "+" | `habits-plus-clicked` (`adapter.rs:7491-7505`) → `ActionId::HabitLog` → `StateCommand::LogHabit { habit }` (`router.rs:685-688`) | the window's count increments; quota/streak re-derive on next render | **no pre-commit gate (the log is the commit)** and `LogHabit` stays `NotUndoable(HabitSurface)` (`undo.rs:231-237`) — the mis-click class recovers through US-6's row "−1" (amended 2026-11-15, UX R-2 D-3; the retired "no recovery" sentence: superseded by that dated pointer). Stale index degrades to a no-op (`adapter.rs:7493-7498`) — test `router.rs::habit_verbs_route_from_their_row_targets` |
 
 ### US-2 — Habit state display
 
@@ -313,6 +355,7 @@ columns. -->
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
 | W-1 | ui/compositions/habits.slint (pass-through via ui/views/today-view.slint) | habit row log affordance | — | install_seam! on_habits_plus_clicked (adapter.rs:7491-7505) | ActionId::HabitLog | StateCommand::LogHabit | habit id via a.tables.habits (stale → no-op) | US-1/S1 | router.rs::habit_verbs_route_from_their_row_targets |
+| W-1a (UX R-2 D-3, 2026-11-15) | ui/compositions/habits.slint (pass-through via ui/views/today-view.slint) | habit row "−1" affordance | install_seam! on_habits_undo_log_clicked (adapter.rs, `habit_undo_target`) | ActionId::HabitUndoLog | StateCommand::AdjustHabitLog { window: <current>, count: n−1 } | habit id via a.tables.habits (stale → no-op); count 0 → typed NoTarget; never quota-enforced | US-6/S1 | router.rs::habit_verbs_route_from_their_row_targets; journeys.rs::the_kiosk_habit_undo_affordance_renders_disabled |
 | W-2 | ui/compositions/habits.slint | habit row progress/streak/chip fields | — | — (display only; presentation.rs::habit_rows) | — | — | per-row render (habit_rows presentation model) | US-2/S1 | presentation.rs::habit_rows_derive_progress_from_the_domain_row |
 | W-3 | ui/compositions/habits.slint | habit row drag-reorder | — | install_seam! on_habits_reorder_asked (adapter.rs:7505-7543) | ActionId::HabitMove | StateCommand::MoveHabit | habit id via a.tables.habits; drop slot free-interval brackets | US-3/S1 | presentation.rs::habit_drop_order_takes_the_floor_midpoint_of_the_free_interval |
 | W-4 | ui/compositions/habits.slint | habit row make-up affordance | — | install_seam! on_habits_repair_clicked (adapter.rs:7131-7157) | ActionId::HabitRepair | StateCommand::AdjustHabitLog | habit id via a.tables.habits | US-4/S1 | presentation.rs::habit_repair_target |
@@ -334,7 +377,7 @@ here is new or changed.
 | StateCommand | ConvertHabitToSeries | exists (`messages.rs:451`) — the quota's default pattern | US-5 |
 | StateCommand | UpdateHabit | exists (`messages.rs:472`) — CLI-only write path (seed ruling R-2) | US-6 |
 | StateCommand | DeleteHabit | exists — CLI-only (seed ruling R-3) | US-6 |
-| ActionId | HabitLog / HabitMove / HabitRepair / HabitConvertArm / HabitConvertToSeries | exist (`actions.rs:300-323,1296-1356`) — section-scoped dispatch verbs | US-1, US-3, US-4, US-5 |
+| ActionId | HabitLog / HabitUndoLog / HabitMove / HabitRepair / HabitConvertArm / HabitConvertToSeries | exist (`actions.rs:300-323,1296-1356` + the D-3 `HabitUndoLog`, 2026-11-15) — section-scoped dispatch verbs; zero new `StateCommand`/`UiRequest` (the recovery reuses the audited `AdjustHabitLog`) | US-1, US-3, US-4, US-5, US-6 |
 
 ## 8. Verification plan
 
