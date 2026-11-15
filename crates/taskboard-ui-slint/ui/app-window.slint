@@ -591,6 +591,14 @@ export component AppWindow inherits Window {
                 task-track-stop-clicked() => root.task-track-stop-clicked();
                 task-track-entries-clicked() => root.task-track-entries-clicked();
                 task-done-toggled() => root.task-done-toggled();
+                // The priority pickers (UX R-3 D-1, #788) and the
+                // labels section's seams (D-2, #789).
+                importance-edit-asked() => root.task-importance-edit-asked();
+                urgency-edit-asked() => root.task-urgency-edit-asked();
+                priority-slot-clicked(i) => root.priority-slot-clicked(i);
+                priority-dismiss-requested() => root.priority-dismiss-requested();
+                chip-unassign-clicked(i) => root.chip-unassign-clicked(i);
+                labels-manage-asked() => root.labels-manage-asked();
             }
 
             // The board create/rename fields (r2 D21): the
@@ -1708,6 +1716,18 @@ export component AppWindow inherits Window {
     // flow; a row activation opens the seeded edit form; the panel's
     // intents resolve against the adapter's id tables.
     pure callback task-track-entries-clicked();
+    // The priority pickers' seams (UX R-3 D-1, #788): the row
+    // openers route the landed actions; the slot commits and the
+    // dismissal are the picker's own seams (§5.1).
+    pure callback task-importance-edit-asked();
+    pure callback task-urgency-edit-asked();
+    pure callback priority-slot-clicked(int);
+    pure callback priority-dismiss-requested();
+    // The labels section's seams (UX R-3 D-2, #789): the chip ×
+    // resolves against the pass's chip table; the add affordance
+    // routes the `label.manage` action (click ≡ key).
+    pure callback chip-unassign-clicked(int);
+    pure callback labels-manage-asked();
     pure callback track-entries-dismiss-requested();
     pure callback track-entry-row-activated(int);
     pure callback track-entry-delete-clicked(int);

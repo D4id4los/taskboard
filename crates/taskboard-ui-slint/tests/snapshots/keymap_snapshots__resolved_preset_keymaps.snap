@@ -234,6 +234,12 @@ expression: rows
             - F2
           action: task.title-edit
         - sequence:
+            - F3
+          action: task.importance-edit
+        - sequence:
+            - F4
+          action: task.urgency-edit
+        - sequence:
             - Ctrl+Home
           action: nav.first-item
         - sequence:
@@ -632,6 +638,12 @@ expression: rows
         - sequence:
             - Ctrl+v
           action: view.scroll-down
+        - sequence:
+            - F3
+          action: task.importance-edit
+        - sequence:
+            - F4
+          action: task.urgency-edit
     - context: settings
       bindings:
         - sequence:
@@ -822,6 +834,12 @@ expression: rows
         - sequence:
             - r
           action: series.edit
+        - sequence:
+            - F3
+          action: task.importance-edit
+        - sequence:
+            - F4
+          action: task.urgency-edit
     - context: settings
       bindings:
         - sequence:

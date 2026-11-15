@@ -634,6 +634,16 @@ pub struct RecurRowPush {
     pub confirm_open: bool,
 }
 
+/// The priority pickers' adapter-owned state (UX R-3 D-1, #788):
+/// which detail row's quick-list is open — one at a time (the editor
+/// exclusivity's shape), the adapter owns the flag across refreshes
+/// (the due buffers pattern), this push only carries.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PriorityPickerPush {
+    /// The open picker's field; `None` = both closed.
+    pub open: Option<crate::router::PriorityField>,
+}
+
 pub struct DueEditorPush<'a> {
     pub text: &'a str,
     pub echo: &'a str,
@@ -895,6 +905,7 @@ pub fn push(
     models: &mut PushModels,
     due: &DueEditorPush<'_>,
     recur: crate::models::RecurRowPush,
+    priority: crate::models::PriorityPickerPush,
 ) -> IdTables {
     let now = day.now;
     let sets = presentation::due_sets(state, now, due.horizon);
@@ -1025,6 +1036,7 @@ pub fn push(
         models,
         due,
         recur,
+        priority,
         calendar,
     );
     mutations += push_review(window, state, day, calendar, kiosk, models);
@@ -1994,6 +2006,7 @@ fn push_task_detail(
     models: &mut PushModels,
     due: &DueEditorPush<'_>,
     recur: crate::models::RecurRowPush,
+    priority: crate::models::PriorityPickerPush,
     calendar: taskboard_domain::DayCalendar,
 ) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
@@ -2317,10 +2330,18 @@ fn push_task_detail(
                 .and_then(|t| t.urgency)
                 .map_or(String::new(), |level| level.text_form().to_owned()),
         ),
-        importance_open: false,
-        urgency_open: false,
+        importance_open: priority.open == Some(crate::router::PriorityField::Importance),
+        urgency_open: priority.open == Some(crate::router::PriorityField::Urgency),
         priority_slots: ModelRc::new(slint::VecModel::from(priority_slot_rows(
-            subject.and_then(|t| t.importance.map(|level| level as usize)),
+            match priority.open {
+                Some(crate::router::PriorityField::Importance) => subject
+                    .and_then(|t| t.importance)
+                    .map(|level| level as usize + 1),
+                Some(crate::router::PriorityField::Urgency) => subject
+                    .and_then(|t| t.urgency)
+                    .map(|level| level as usize + 1),
+                None => None,
+            },
         ))),
         // The labels section's halves (UX R-3 D-2, #789): the
         // subject's live labels as chips in canonical order; the chip
@@ -4060,6 +4081,7 @@ mod tests {
                 models,
                 &due,
                 crate::models::RecurRowPush::default(),
+                crate::models::PriorityPickerPush::default(),
             )
         }
 

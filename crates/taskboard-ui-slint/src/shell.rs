@@ -253,6 +253,10 @@ impl KeymapShell {
             | UiEffect::SeriesEditorOpen
             | UiEffect::SeriesDetachArm
             | UiEffect::SeriesDetachCancel
+            // The priority pickers' openers are adapter-interpreted
+            // view intents (UX R-3 D-1, #788); the shell records
+            // nothing (the flag is the adapter's).
+            | UiEffect::PriorityPickerOpen(_)
             // The review walk's intents are adapter-interpreted view
             // intents (DR-7 chunk 3, #638); the shell records nothing
             // (the flow is the truth; `sync_view_context` mirrors it).

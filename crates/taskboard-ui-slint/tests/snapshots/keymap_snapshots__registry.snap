@@ -420,6 +420,24 @@ expression: rows
   menu_rank: 72
   description: Arms the title editor for the viewed task.
   menu_group: task
+- id: task.importance-edit
+  label: Edit importance
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 74
+  description: "Opens the importance picker for the viewed task: six levels, commit on pick."
+  menu_group: task
+- id: task.urgency-edit
+  label: Edit urgency
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 76
+  description: "Opens the urgency picker for the viewed task: six levels, commit on pick."
+  menu_group: task
 - id: task.complete
   label: Complete task
   contexts:
