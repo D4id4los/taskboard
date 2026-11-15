@@ -837,6 +837,7 @@ fn push_habits(
             chip: SharedString::from(row.chip.map_or(String::new(), |chip| chip.to_string())),
             met: row.met,
             repair: row.repair,
+            repair_undoable: row.repair_undoable,
         })
         .collect();
     window.set_habits_editing_enabled(presentation::habit_editing_enabled(kiosk));

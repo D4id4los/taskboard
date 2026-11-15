@@ -31,6 +31,12 @@ export struct HabitRowModel {
     // The make-up affordance's mount flag (issue #506): the previous
     // window is under quota and inside its overflow grace.
     repair: bool,
+    // The repair's undo side (T-23, #806): true when the target
+    // window already holds a log row (the adjustment inverts
+    // exactly); false when the make-up CREATES the window's row
+    // (the engine's lossy-inverse rationale — the repair cannot be
+    // undone). The caption splits on it.
+    repair-undoable: bool,
 }
 
 export component HabitsSection inherits Rectangle {
@@ -255,8 +261,15 @@ export component HabitsSection inherits Rectangle {
                     // The make-up valve (issue #506, plan D-7): the
                     // click dispatches the exact (window, count) the
                     // row source resolved — the previous window's
-                    // increment, no re-derivation.
-                    label: "Add make-up +1 to yesterday";
+                    // increment, no re-derivation. The caption splits
+                    // on the typed undo side (T-23, #806): the
+                    // undoable side reads as the adjustment it is;
+                    // the creating side names the consequence BEFORE
+                    // the stroke (the recognized-positive bar — the
+                    // feedback is never only after the fact).
+                    label: row.repair-undoable
+                        ? "Add make-up +1 to yesterday (adjusts the window's count; undoable)"
+                        : "Add make-up +1 to yesterday (creates the window's first log row; cannot be undone)";
                     enabled: root.editing-enabled;
                     clicked => root.repair-clicked(row-index);
                 }
