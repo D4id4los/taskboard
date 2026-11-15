@@ -509,6 +509,11 @@ each carries evidence, never a fix.
   — the typed-guard posture means the user gets no explicit
   "nothing recorded" feedback beyond the stage remaining
   (no-feedback observation, MINOR-class).
+  *(Remediated 2026-11-15 — UX remediation chunk 6 / triage T-47
+  (#830): the all-blank record now also arms the transient
+  status-line notice with the typed nothing-recorded fact on the
+  gentle end (the T-19 notice channel; the guard still dispatches
+  nothing).)*
 - **W-N4 — walkthrough note (US-7, the planner handoff)**: the
   planner's commit hands off through `FlowOutcome::PlannerHandoff`
   (`adapter.rs:2214-2216` — one scheduled/effort edit per placement,
