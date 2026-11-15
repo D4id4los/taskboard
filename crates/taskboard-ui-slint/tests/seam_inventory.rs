@@ -22,6 +22,28 @@ const ADAPTER_SOURCE: &str = include_str!("../src/adapter.rs");
 /// round, so this list changes on purpose when a new seam lands, and
 /// both test sides force the list to stay honest).
 const SEAM_INVENTORY: &[&str] = &[
+    // The priority pickers' seams (UX R-3 D-1, #788): the row
+    // openers route the landed actions; the slot commit and the
+    // dismissal are the picker's own seams.
+    "task_importance_edit_asked",
+    "task_urgency_edit_asked",
+    "priority_slot_clicked",
+    "priority_dismiss_requested",
+    // The labels section/overlay seams (UX R-3 D-2/D-5, #789): the
+    // chip x, the roster toggle, the form funnel, and the armed
+    // delete's pair (UX R-3 D-2's r2 grammar).
+    "chip_unassign_clicked",
+    "labels_manage_asked",
+    "labels_overlay_dismiss_requested",
+    "labels_overlay_row_toggled",
+    "labels_overlay_add_requested",
+    "labels_overlay_edit_requested",
+    "labels_overlay_title_edited",
+    "labels_overlay_swatch_clicked",
+    "labels_overlay_form_commit_requested",
+    "labels_overlay_form_cancelled",
+    "labels_overlay_delete_clicked",
+    "labels_overlay_delete_cancelled",
     "banner_mute_clicked",
     "banner_row_activated",
     "banner_row_open_requested",

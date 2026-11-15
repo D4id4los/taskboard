@@ -4800,3 +4800,111 @@ fn the_label_form_cancel_discards_without_dispatching() {
         );
     });
 }
+
+// -- the armed label delete (UX remediation chunk 3, D-2/D-9, #789) --
+
+/// The armed triple (D-9 — the r2
+/// `the_delete_affordance_arms_then_confirms_and_dismissal_disarms`
+/// shape verbatim): the first activation arms (the consequence strip
+/// mounts, the armed mirror reads the row), nothing dispatches; the
+/// Confirm dispatches the exact `DeleteLabel`; Cancel disarms
+/// without dispatching. `DeleteLabel` is `NotUndoable(RestoreClass)`
+/// — the staging is the r2 grammar's requirement.
+#[test]
+fn the_label_delete_arms_then_confirms_and_cancel_disarms() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let (green, _red) = seed_labels(&mut state, fx.board, a_id);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        // First activation: arms, dispatches nothing.
+        rig.handle.window().invoke_labels_overlay_delete_clicked(0);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(rig.drain(), 0, "arming dispatches nothing");
+        assert_eq!(rig.handle.window().get_label_overlay_armed_index(), 0);
+        // The cancel disarms without dispatching.
+        rig.handle.window().invoke_labels_overlay_delete_cancelled();
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(rig.drain(), 0);
+        assert_eq!(rig.handle.window().get_label_overlay_armed_index(), -1);
+        // Re-arm; the second activation confirms the exact verb.
+        rig.handle.window().invoke_labels_overlay_delete_clicked(0);
+        rig.handle.window().invoke_labels_overlay_delete_clicked(0);
+        assert_eq!(
+            rig.drain_commands(),
+            vec![StateCommand::DeleteLabel { id: green }],
+            "the confirm dispatches DeleteLabel verbatim",
+        );
+    });
+}
+
+/// The ladder's settle rungs (D-2/D-9): Escape over an armed row
+/// disarms it first (nothing dispatches, the overlay stays), and the
+/// next Escape closes the overlay; an open form and an armed row are
+/// mutually exclusive surfaces (arming one settles the other).
+#[test]
+fn the_labels_ladder_settles_the_armed_row_before_closing() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        seed_labels(&mut state, fx.board, a_id);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        // Arm the row, then arm the form: the form arm settles the
+        // armed row (the mutual exclusivity).
+        rig.handle.window().invoke_labels_overlay_delete_clicked(0);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        rig.handle.window().invoke_labels_overlay_add_requested();
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert!(rig.handle.window().get_label_overlay_form_open());
+        assert_eq!(rig.handle.window().get_label_overlay_armed_index(), -1);
+        // Escape rung 1: the form discards, the overlay stays.
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsDismiss);
+        adapter.borrow_mut().refresh_forced(rig.handle.window());
+        assert_eq!(rig.drain(), 0);
+        assert!(!rig.handle.window().get_label_overlay_form_open());
+        assert!(matches!(
+            adapter.borrow().view_state.flow(),
+            Flow::Labels { .. }
+        ));
+        // Escape rung 2: the overlay closes.
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsDismiss);
+        assert_eq!(adapter.borrow().view_state.flow(), &Flow::None);
+    });
+}
+
+/// The stale-arm absorb (D-9/R-2's law): a roster index outside the
+/// pass's table dispatches nothing and changes nothing.
+#[test]
+fn a_stale_delete_index_dispatches_nothing() {
+    on_slint_thread(|| {
+        let (mut state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        seed_labels(&mut state, fx.board, a_id);
+        let mut rig = rig(state);
+        let adapter = rig.adapter();
+        arm_task_view(&rig, &adapter, a_id, s0);
+        adapter
+            .borrow_mut()
+            .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
+        rig.handle.window().invoke_labels_overlay_delete_clicked(7);
+        assert_eq!(rig.drain(), 0);
+        assert_eq!(rig.handle.window().get_label_overlay_armed_index(), -1);
+    });
+}

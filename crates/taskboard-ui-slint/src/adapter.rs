@@ -325,6 +325,11 @@ pub(crate) struct Adapter {
     /// on every pass where the overlay flow is gone (the
     /// buffers-never-outlive rule).
     label_form: Option<LabelFormState>,
+    /// The armed delete row (UX R-3 D-2, #789): the label id the
+    /// consequence-naming strip renders for — `DeleteLabel` is
+    /// `NotUndoable(RestoreClass)`, so staging is the r2 grammar's
+    /// requirement, not a courtesy. One armed row; re-arming swaps.
+    label_delete_armed: Option<taskboard_domain::LabelId>,
     /// The priority pickers' adapter-owned flag (UX R-3 D-1, #788):
     /// which detail row's quick-list holds — one at a time; cleared
     /// on Escape/outside click, on any leaving settle, and when the
@@ -1620,6 +1625,25 @@ impl Adapter {
                 title: form.title.clone(),
                 color: form.color.clone(),
             });
+        // The armed strip's mirror (the track-entries armed-index
+        // rule): the armed row's canonical roster position, or none.
+        let subject_board = self
+            .view_state
+            .subject_task()
+            .and_then(|t| state.tasks.get(&t))
+            .and_then(|t| state.stacks.get(&t.stack))
+            .map(|stack| stack.board);
+        let label_armed_index = self
+            .label_delete_armed
+            .and_then(|id| {
+                state
+                    .labels
+                    .values()
+                    .filter(|l| !l.deleted && Some(l.board) == subject_board)
+                    .position(|l| l.id == id)
+            })
+            .and_then(|p| i32::try_from(p).ok())
+            .unwrap_or(-1);
         self.tables = crate::models::push(
             window,
             &state,
@@ -1636,6 +1660,7 @@ impl Adapter {
             recur,
             priority,
             label_form.as_ref(),
+            label_armed_index,
         );
         // Round-3 D27c: engine syncs re-grey a live menu — the pages
         // rebuild from the fresh state while the menu holds (the
@@ -3070,11 +3095,17 @@ impl Adapter {
             },
             // The labels ladder (D-2): a focused field's Insert
             // disengages first (the mode flip; the overlay stays),
-            // then the overlay closes (no child levels this chunk —
-            // the create/edit forms are in-place surfaces, not
-            // levels).
+            // then the in-place surfaces step out — an open form
+            // discards, an armed row disarms — and the last rung
+            // closes the overlay.
             (_, UiEffect::LabelsDismiss) if self.shell.mode == Mode::Insert => {
                 vec![FlowOutcome::SetMode(Mode::Normal)]
+            }
+            (_, UiEffect::LabelsDismiss)
+                if self.label_form.take().is_some() || self.label_delete_armed.take().is_some() =>
+            {
+                self.refresh_forced(window);
+                Vec::new()
             }
             (_, UiEffect::LabelsDismiss) => self.view_state.close_labels(),
             // -- the capture commit/close (the palette's modal peer);
@@ -7171,6 +7202,7 @@ pub(crate) fn install(
         recur_confirm_armed: false,
         priority_open: None,
         label_form: None,
+        label_delete_armed: None,
         walk_resume: None,
         habit_convert_armed: None,
         habit_create_open: false,
@@ -9188,6 +9220,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             title: String::new(),
             color: crate::presentation::LABEL_SWATCHES[0].to_owned(),
         });
+        a.label_delete_armed = None;
         a.refresh_forced(&window);
 
     });
@@ -9213,6 +9246,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             color: label.color.as_str().to_owned(),
         });
         drop(state);
+        a.label_delete_armed = None;
         a.refresh_forced(&window);
 
     });
@@ -9294,6 +9328,46 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     install_seam!(window: window.on_labels_overlay_form_cancelled, adapter: adapter;
     bind mut (a, window), args (), {        if a.label_form.take().is_some() {
+            a.refresh_forced(&window);
+        }
+
+    });
+    // The armed delete (UX R-3 D-2, #789): the r2 grammar on the
+    // overlay rows — the first activation arms the row (the
+    // consequence-naming strip; nothing dispatches), the Confirm
+    // dispatches the exact `DeleteLabel` (the verb is
+    // `NotUndoable(RestoreClass)` — staging is the requirement), and
+    // Cancel/Escape disarms. Arming a different row re-arms.
+    install_seam!(window: window.on_labels_overlay_delete_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(label) = a
+            .tables
+            .label_ids
+            .get(usize::try_from(index).unwrap_or(usize::MAX))
+            .copied()
+        else {
+            return; // a stale index against an older tables pass
+        };
+        // Arming swaps out an open form (the surfaces are
+        // mutually exclusive).
+        a.label_form = None;
+        if a.label_delete_armed == Some(label) {
+            // The second activation IS the confirm.
+            a.label_delete_armed = None;
+            if a
+                .commands
+                .try_send(StateCommand::DeleteLabel { id: label })
+                .is_err()
+            {
+                tracing::warn!("label delete dropped: command channel full or closed");
+            }
+        } else {
+            a.label_delete_armed = Some(label);
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_labels_overlay_delete_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.label_delete_armed.take().is_some() {
             a.refresh_forced(&window);
         }
 
