@@ -5,9 +5,13 @@
 // plan: both dispatch the same `MoveHabit` midpoint law; the drop
 // slot's free interval is computed Rust-side from the row source).
 // Renders on kiosk too (D-P13: passive progress visibility IS the
-// section's point) — only the actions are gated (D-T16: the gate
-// empties the ACTION, never the model; `habits-editing-visible` is
-// false on kiosk and the buttons never mount).
+// section's point) — the actions are gated by enablement, not mount
+// (remediated 2026-11-15 per UX R-1 D-2, the T-7 visible-gating
+// grammar, #790: `editing-enabled` is false on kiosk and the
+// +1/reorder/repair/convert/create affordances render the DISABLED
+// tone, never unmounted — a greyed control reads "exists, not for
+// this device"; the create editor flow stays unmountable from a
+// disabled trigger).
 
 import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
@@ -31,9 +35,10 @@ export struct HabitRowModel {
 
 export component HabitsSection inherits Rectangle {
     in property <[HabitRowModel]> habits;
-    // The edit affordances' mount gate (D-P13/D-T16): false on kiosk —
-    // the rows render, the actions do not.
-    in property <bool> editing-visible;
+    // The edit affordances' enablement (D-P13 remediated per UX R-1
+    // D-2, #790): false on kiosk — the rows render AND so do the
+    // actions, disabled (the greyed affordance posture).
+    in property <bool> editing-enabled;
     callback plus-clicked(int);
     // The reorder's drop slot (row, slot): Rust computes the floor
     // midpoint of the slot's free interval and dispatches MoveHabit.
@@ -105,10 +110,11 @@ export component HabitsSection inherits Rectangle {
             // The create affordance (round-7 D-7.2): editing-gated
             // exactly like the row actions (D-T16 — kiosk renders
             // rows, never actions). The label ≡ hover tip ≡ walk name.
-            if (root.editing-visible): IconButton {
+            IconButton {
                 icon: IconKind.plus;
                 tone: Tone.success;
                 label: "Add habit…";
+                enabled: root.editing-enabled;
                 clicked => { root.create-asked(); }
             }
         }
@@ -118,7 +124,7 @@ export component HabitsSection inherits Rectangle {
         // create-row precedent); an absorbed miss keeps the text (the
         // rule-add seam's return convention). Empty quota text
         // commits as the default 1 — the placeholder states it.
-        if (root.editing-visible && root.create-open): VerticalLayout {
+        if (root.editing-enabled && root.create-open): VerticalLayout {
             spacing: Theme.space-1;
             HorizontalLayout {
                 spacing: Theme.space-2;
@@ -202,23 +208,26 @@ export component HabitsSection inherits Rectangle {
                     + (row.streak > 0 ? "  🔥" + row.streak : "");
                 tone: row.met ? Tone.success : Tone.neutral;
             }
-            if (root.editing-visible): VerticalLayout {
+            VerticalLayout {
                 IconButton {
                     icon: IconKind.chevron-left;
                     tone: Tone.neutral;
                     label: "Move habit up";
+                    enabled: root.editing-enabled;
                     clicked => root.reorder-asked(row-index, row-index - 1);
                 }
                 IconButton {
                     icon: IconKind.chevron-right;
                     tone: Tone.neutral;
                     label: "Move habit down";
+                    enabled: root.editing-enabled;
                     clicked => root.reorder-asked(row-index, row-index + 1);
                 }
                 IconButton {
                     icon: IconKind.plus;
                     tone: Tone.success;
                     label: "Log habit";
+                    enabled: root.editing-enabled;
                     // Surplus logs are first-class: the button never
                     // disables at/after quota (D-P14); `met` restyled
                     // the row instead.
@@ -232,22 +241,25 @@ export component HabitsSection inherits Rectangle {
                     // row source resolved — the previous window's
                     // increment, no re-derivation.
                     label: "Add make-up +1 to yesterday";
+                    enabled: root.editing-enabled;
                     clicked => root.repair-clicked(row-index);
                 }
                 if (root.convert-armed-row != row-index): IconButton {
                     icon: IconKind.calendar;
                     tone: Tone.neutral;
                     label: "Convert to repeating task: the habit retires, its history links to the new series";
+                    enabled: root.editing-enabled;
                     clicked => root.convert-armed(row-index);
                 }
             }
             // The armed confirm strip (issue #506, plan D-8): the
             // consequence names the mapping before anything dispatches.
-            // Under the editing gate with its arm button: a kiosk flip
-            // mid-flow unmounts the strip (actions never mount in
-            // kiosk, D-P13) — the adapter keeps the armed flag, the
-            // strip remounts if editing returns.
-            if (root.editing-visible && root.convert-armed-row == row-index): HorizontalLayout {
+            // Under the editing enablement with its arm button: a
+            // kiosk flip mid-flow unmounts the strip (the arm itself
+            // is a refused verb on kiosk — the disabled trigger — and
+            // the adapter keeps the armed flag, the strip remounts if
+            // editing returns).
+            if (root.editing-enabled && root.convert-armed-row == row-index): HorizontalLayout {
                 spacing: Theme.space-2;
                 RoleText {
                     role: Typography.caption;

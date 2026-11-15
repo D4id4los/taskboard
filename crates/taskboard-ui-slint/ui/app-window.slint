@@ -234,11 +234,14 @@ export component AppWindow inherits Window {
     // the status-bar chip. Desktop-only — the kiosk gate empties the
     // model and forces the visibility flags false model-side.
     in-out property <bool> timers-visible: false;
+    // The kiosk absence hint (UX R-1 D-2, #790): the timers section's
+    // muted-caption display flag (display state only, never a command).
+    in-out property <bool> timers-absence-hint: false;
     in-out property <[TimerRowModel]> timers-model;
     // The habits section (DR-6/6): the active board's tracker rows —
     // rendering is not kiosk-gated, the affordances are.
     in-out property <[HabitRowModel]> habits-model;
-    in-out property <bool> habits-editing-visible: false;
+    in-out property <bool> habits-editing-enabled: false;
     // The create flow (round-7 D-7.2): the affordance's mount gate
     // (desktop + active board, model-side) and the armed form's
     // adapter-owned flag + quota validity — no transient UI state.
@@ -439,6 +442,7 @@ export component AppWindow inherits Window {
                 row-context(s, r, x, y) => root.today-row-context-requested(s, r, x, y);
                 row-done-toggled(s, r) => root.today-row-done-toggled(s, r);
                 timers-visible: root.timers-visible;
+                timers-absence-hint: root.timers-absence-hint;
                 timers: root.timers-model;
                 timers-awaiting: root.timers-awaiting;
                 timers-cancel-clicked(r) => root.timers-cancel-clicked(r);
@@ -450,7 +454,7 @@ export component AppWindow inherits Window {
                 timers-when-edited(t) => root.timers-when-edited(t);
                 timers-setter-opened() => root.timers-setter-opened();
                 habits: root.habits-model;
-                habits-editing-visible: root.habits-editing-visible;
+                habits-editing-enabled: root.habits-editing-enabled;
                 habits-plus-clicked(r) => root.habits-plus-clicked(r);
                 habits-reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
                 habits-repair-clicked(r) => root.habits-repair-clicked(r);

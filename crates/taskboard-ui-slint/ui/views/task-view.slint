@@ -99,11 +99,16 @@ export struct TaskDetailModel {
     // flag (the adapter owns both across refreshes).
     recur-pause-open: bool,
     recur-confirm-open: bool,
-    // The repeat affordances' mount flag (round-7 D-7.1): the add row
-    // for a rule-less task and the recur row's edit button — kiosk
-    // renders rows, never actions; a done subject hides them (the
-    // assembly precondition made visible).
+    // The repeat affordances' mount flag (round-7 D-7.1, remediated
+    // 2026-11-15 per UX R-1 D-2, #790): the add row for a rule-less
+    // task and the recur row's edit button mount for an OPEN subject
+    // on every platform; a done subject hides them (the assembly
+    // precondition made visible). Kiosk renders the row with its
+    // actions DISABLED (the greyed affordance posture).
     series-edit-visible: bool,
+    // The repeat affordances' enablement: false on kiosk — the recur
+    // row's pause/edit/convert buttons render the disabled tone.
+    series-edit-enabled: bool,
     date-time-text: string,
     // The time combobox's pushed half (r4 D26): the visible text
     // mirror, the validity flavour, the filtered quick-list rows, and
@@ -666,6 +671,7 @@ export component TaskView inherits FocusScope {
                 icon: IconKind.timer;
                 tone: Tone.neutral;
                 label: "Add repeat: the task joins a recurring series";
+                enabled: root.task.series-edit-enabled;
                 clicked => root.series-edit-asked();
             }
 
@@ -789,6 +795,7 @@ export component TaskView inherits FocusScope {
                         icon: IconKind.timer;
                         tone: Tone.neutral;
                         label: "Edit repeat: change the pattern or bound";
+                        enabled: root.task.series-edit-enabled;
                         clicked => root.series-edit-asked();
                     }
                 }
@@ -829,18 +836,21 @@ export component TaskView inherits FocusScope {
                         // covered members do not exist — no miss, no
                         // credit.
                         label: "Pause series through a date: the covered members do not exist";
+                        enabled: root.task.series-edit-enabled;
                         clicked => root.recur-pause-asked();
                     }
                     IconButton {
                         icon: IconKind.play;
                         tone: Tone.neutral;
                         label: "Resume series: clears the pause";
+                        enabled: root.task.series-edit-enabled;
                         clicked => root.recur-resume-clicked();
                     }
                     IconButton {
                         icon: IconKind.check;
                         tone: Tone.neutral;
                         label: "Convert to habit: the series stops repeating, the habit continues its history";
+                        enabled: root.task.series-edit-enabled;
                         clicked => root.recur-convert-asked();
                     }
                 }

@@ -32,6 +32,7 @@ fn run_probe(job: impl FnOnce(&WindowMaxProbe) + Send + 'static) {
                 can_done: true,
                 can_track_start: true,
                 series_edit_visible: true,
+                series_edit_enabled: true,
                 ..Default::default()
             });
             window.show().expect("show on the testing platform");

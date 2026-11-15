@@ -2839,8 +2839,12 @@ mod view_component_tests {
         let mut adapter = handle.adapter.borrow_mut();
         adapter.view_state.set_focused(Some(task));
         let _ = adapter.view_state.activate_focused(&state);
-        drop(adapter);
-        handle.refresh();
+        // The forced pass: the view state moved OUTSIDE the state Arc
+        // (activate_focused), and the guarded `refresh` early-returns
+        // on an unchanged state Arc — the models would stay stale at
+        // the mount-time push (the refresh_forced contract's exact
+        // "inputs moved outside the state Arc" clause).
+        adapter.refresh_forced(&handle.window);
     }
 
     #[test]
@@ -3023,14 +3027,18 @@ mod view_component_tests {
             .expect("mount succeeds on the null platform");
             drop(commands_rx);
             open_task_detail(&handle, task);
+            // The remediated posture (UX R-1 D-2, #790): the recur row
+            // renders on kiosk with its actions DISABLED — the mount
+            // gate is the done-subject precondition only.
+            let model = handle.window.get_task_model();
             assert!(
-                !handle.window.get_task_model().series_edit_visible,
-                "kiosk renders rows, never actions"
+                model.series_edit_visible,
+                "the recur row renders on kiosk (the display half stays)"
             );
+            assert!(!model.series_edit_enabled, "kiosk greys the actions");
             // The gate empties the ACTION, never the model: the
             // subject's done-state half stays present (the tracked
             // rows' law is the habit kiosk tests' pin, not this one).
-            let model = handle.window.get_task_model();
             assert!(!model.done, "the subject's state stays present");
         });
     }
@@ -3387,7 +3395,7 @@ mod view_component_tests {
             route_action(&handle, crate::actions::ActionId::NavFocusBoard);
             let _ = commands_rx;
             assert!(!handle.window.get_habits_create_mountable());
-            assert!(!handle.window.get_habits_editing_visible());
+            assert!(!handle.window.get_habits_editing_enabled());
             assert_eq!(
                 handle.window.get_habits_model().row_count(),
                 1,

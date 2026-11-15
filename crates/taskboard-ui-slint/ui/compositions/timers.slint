@@ -31,6 +31,15 @@ export struct TimerRowModel {
 
 export component TimersSection inherits Rectangle {
     in property <[TimerRowModel]> timers;
+    // The absence hint (UX R-1 D-2, remediated 2026-11-15, #790 — the
+    // T-7 grammar's "hint where the surface is fenced" arm): true on
+    // kiosk — the R3.5.3 fence stands (no alarm window mounts, the
+    // model stays empty, zero new commands), but the section's
+    // display host renders a muted caption signalling that alarms
+    // live on the interactive desktop surface, instead of a silent
+    // absence. Desktop controls (the setter, the creation form) stay
+    // gated off under the hint.
+    in property <bool> absence-hint: false;
     // The awaiting (fired ∧ ¬dismissed) alarms count — a non-
     // interactive pointer badge to the notification surface (D-P15).
     in property <int> timers-awaiting;
@@ -97,7 +106,7 @@ export component TimersSection inherits Rectangle {
                 text: root.timers.length;
                 vertical-alignment: center;
             }
-            if (root.timers-awaiting > 0): Badge {
+            if (root.timers-awaiting > 0 && !root.absence-hint): Badge {
                 text: "\{root.timers-awaiting} awaiting";
                 tone: Tone.info;
             }
@@ -109,8 +118,20 @@ export component TimersSection inherits Rectangle {
                 tone: Tone.info;
                 label: "Set a timer";
                 description: "Opens the mouse setter: quick presets, a label, a custom time of day.";
+                // The kiosk hint's twin gate: the setter greys (the
+                // disabled affordance) — the surface itself is fenced,
+                // the caption says where alarms live.
+                enabled: !root.absence-hint;
                 clicked => { root.setter-opened(); }
             }
+        }
+        // The fence's honest absence signal (UX R-1 D-2, #790): a
+        // static muted caption — display state only, no command.
+        if (root.absence-hint): RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: "Alarms ring on the interactive desktop surface — timers here stay display-only.";
+            wrap: word-wrap;
         }
 
         for row[row-index] in root.timers: HorizontalLayout {
@@ -162,8 +183,12 @@ export component TimersSection inherits Rectangle {
         // The inline creation form (D-I7): label + the `in`/`at`
         // timing grammar. Commit fires on the timing field's Return;
         // an absorbed miss keeps the text (the rule-add seam's return
-        // convention).
-        HorizontalLayout {
+        // convention). Desktop-only: the whole form block is gated off
+        // under the kiosk hint (the setter's greyed twin — the fenced
+        // surface offers no creation).
+        if (!root.absence-hint): VerticalLayout {
+            spacing: Theme.space-1;
+            HorizontalLayout {
             spacing: Theme.space-2;
             label-field := TextField {
                 horizontal-stretch: 1;
@@ -198,11 +223,12 @@ export component TimersSection inherits Rectangle {
                 group-label: "Insistence";
                 picked(index) => { root.insistence-index = index; }
             }
-        }
-        if (root.when-validity == FieldValidity.invalid && when-field.text != ""): RoleText {
-            role: Typography.caption;
-            text-color: Semantic.danger;
-            text: root.when-error-hint;
+            }
+            if (root.when-validity == FieldValidity.invalid && when-field.text != ""): RoleText {
+                role: Typography.caption;
+                text-color: Semantic.danger;
+                text: root.when-error-hint;
+            }
         }
     }
 }

@@ -1284,8 +1284,19 @@ pub(crate) fn assemble_recur_draft(
 /// (the assembly precondition made visible: the CLI's `TaskDone`
 /// refusal, structural at the mount).
 #[must_use]
-pub fn series_edit_visible(task: &Task, kiosk: bool) -> bool {
-    !kiosk && task.is_open()
+pub fn series_edit_visible(task: &Task) -> bool {
+    task.is_open()
+}
+
+/// The recur row's action ENABLEMENT (UX R-1 D-2, remediated 2026-11-15
+/// — the T-7 visible-gating grammar, #790): the pause/edit/convert
+/// affordances render disabled on kiosk (the display half — pattern
+/// echo + paused chip — stays), never unmounted; the pause-confirm
+/// strip stays unmountable from a disabled trigger. The old mount-gate
+/// posture (`!kiosk && is_open`) is superseded.
+#[must_use]
+pub const fn series_edit_enabled(kiosk: bool) -> bool {
+    !kiosk
 }
 
 /// One field's validity flavour for the pushed marks (plan D-D3's
@@ -7116,12 +7127,14 @@ pub fn habit_progress_phrase(row: &HabitRow) -> String {
     format!("{}/{}", row.count, row.quota)
 }
 
-/// The kiosk gate (D-P13/D-T16): the gate empties the ACTION, never
-/// the model — the rows render on the appliance (passive progress
-/// visibility IS the section's point), the +1/reorder affordances do
-/// not.
+/// The kiosk gate (D-P13, remediated 2026-11-15 per UX R-1 D-2 — the
+/// T-7 visible-gating grammar, #790): the flag is the row actions'
+/// ENABLEMENT, never a mount gate — the +1/reorder/repair/convert/
+/// create affordances render disabled on the appliance (the greyed
+/// control reads "exists, not for this device"), never unmounted. The
+/// derivation is the same `!kiosk`; the honest name is the fix.
 #[must_use]
-pub const fn habit_editing_visible(kiosk: bool) -> bool {
+pub const fn habit_editing_enabled(kiosk: bool) -> bool {
     !kiosk
 }
 
@@ -7216,10 +7229,21 @@ mod habit_section_tests {
         // The count derives from the domain row read (0 — nothing logged).
         assert_eq!(rows[0].count, 0);
         assert!(!rows[0].met);
-        // The kiosk gate empties the actions, never the rows.
-        assert!(habit_editing_visible(false));
-        assert!(!habit_editing_visible(true));
+        // The kiosk gate disables the actions, never the rows
+        // (remediated posture: disabled affordance, not absence).
+        assert!(habit_editing_enabled(false));
+        assert!(!habit_editing_enabled(true));
         assert_eq!(habit_rows(&state, board, now, day()).len(), 2);
+    }
+
+    /// D-6 T1 (UX R-1 D-2, #790): the renamed successor of the
+    /// `habit_editing_visible` pin — the typed flag reads enabled on
+    /// desktop, disabled on kiosk (the disabled affordance posture,
+    /// never the hidden one).
+    #[test]
+    fn habit_editing_flag_disables_not_hides_on_kiosk() {
+        assert!(habit_editing_enabled(false));
+        assert!(!habit_editing_enabled(true));
     }
 
     /// T-18 (continued): count/quota/streak/met derive from the domain
@@ -8429,7 +8453,8 @@ mod recur_editor_seeding_tests {
 #[cfg(test)]
 mod recur_editor_validity_tests {
     use super::{
-        DraftField, DraftInvalid, assemble_recur_draft, recur_field_validity, series_edit_visible,
+        DraftField, DraftInvalid, assemble_recur_draft, recur_field_validity, series_edit_enabled,
+        series_edit_visible,
     };
     use crate::level_state::{MonthlyMode, RecurBoundKind, RecurEditorState, RecurPatternKind};
     use chrono::{DateTime, NaiveDate, Utc};
@@ -8686,16 +8711,17 @@ mod recur_editor_validity_tests {
     }
 
     #[test]
-    fn the_affordance_mounts_for_open_subjects_only_and_never_on_kiosk() {
+    fn the_affordance_mounts_for_open_subjects_and_disables_on_kiosk() {
         let mut task = head();
-        assert!(series_edit_visible(&task, false));
-        assert!(
-            !series_edit_visible(&task, true),
-            "kiosk renders rows, never actions"
-        );
+        // The remediated posture (UX R-1 D-2, #790): the recur row
+        // renders on kiosk with its actions disabled — the mount gate
+        // is the done-subject precondition only.
+        assert!(series_edit_visible(&task));
+        assert!(!series_edit_enabled(true), "kiosk greys the actions");
+        assert!(series_edit_enabled(false));
         task.done = Some(now());
         assert!(
-            !series_edit_visible(&task, false),
+            !series_edit_visible(&task),
             "the done subject's precondition is structural"
         );
     }
