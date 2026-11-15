@@ -438,6 +438,14 @@ routing — the census Capture slice's method note).
   a disabled row is absorbed silently (`menu.rs:68-71`,
   `adapter.rs:509-510`) — the user gets no feedback beyond the grey,
   a recognition question the walkthrough flags for the triage.
+  *(Remediated 2026-11-15 — UX remediation chunk 5 / triage T-19
+  (#802): an invoked disabled row now sets the status-line notice
+  from the row's own registry description — the why-text on the
+  modality-neutral channel; the row keeps its grey (T-46's recorded
+  positive) — test
+  `journeys.rs::an_invoked_disabled_menu_row_sets_the_status_notice`.)
+  The US-6/S2 journey row's "disabled rows absorb" letter is
+  superseded accordingly.*
 - **W-N4 — walkthrough note (US-7, kiosk gating is silent)**:
   *(Remediated 2026-11-15 — UX remediation chunk 1 / triage T-7
   (#790): the menu row greys on kiosk via `entry_states` (layer 2)

@@ -206,7 +206,11 @@ pub(crate) struct Adapter {
     state: Arc<ArcSwap<AppState>>,
     commands: mpsc::Sender<StateCommand>,
     /// The app request lane (round-1 D21): the adapter is the only
-    /// sender (`try_send`, warn-and-drop — the F-3 convention).
+    /// sender (`try_send`, warn-and-drop — the F-3 convention). The
+    /// lane stays outside the undo journal BY DESIGN — ruling R-17
+    /// (2026-11-15, census Settings slice; chunk-5 plan D-4): staged
+    /// confirm for the destructive rows, re-edit at the knob for the
+    /// rest.
     requests: mpsc::Sender<crate::requests::UiRequest>,
     /// The ACTIVE menu page's entries (root page at the root level;
     /// the open group's page inside a submenu — round-1 D6). The

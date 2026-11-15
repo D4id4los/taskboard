@@ -345,15 +345,17 @@ re-argue them.)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-6/S1 | connector card Files pick | pick Files | `settings_files_picked` (`adapter.rs:6052-6110`) → `SetFilesSyncEnabled` (`requests.rs:584`) with the anchor in one request | sync enables and re-anchors | **an env-locked pick is absorbed silently** (`adapter.rs:6068-6075` — no outcome render; SC-3's evidence); otherwise the typed outcome renders |
-| US-6/S2 | connector card Files pick (off) | pick to disable | the same seam | sync disables | same posture |
+| US-6/S1 | connector card Files pick | pick Files | `settings_files_picked` (`adapter.rs:6052-6110`) → `SetFilesSyncEnabled` (`requests.rs:584`) with the anchor in one request | sync enables and re-anchors | T-16 remediated (2026-11-15, #799): **an env-locked pick now renders the typed refusal** (`SettingsOutcome::Rejected` + `EnvLocked`, `SettingsModel.last-error-env-locked`) instead of absorbing — the pick mutates nothing, the lane stays clean; journey `env_locked_files_pick_and_choice_picks_refuse_typed`. Otherwise the typed outcome renders |
+| US-6/S2 | connector card Files pick (off) | pick to disable | the same seam | sync disables | same posture (the T-16 refusal included) |
 
 ### US-7 — Edit knobs
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-7/S1 | settings view knob pickers (`settings-view.slint:672-696`) | pick a knob value | the picker seam → the exact `Set*` request (`requests.rs:471-573`, 18 variants) | the knob applies; the typed outcome renders (ok / busy / failed / unavailable / rejected, `adapter.rs:4326-4353`) | a failing reply renders the typed outcome with detail; **an env-locked knob edit absorbs silently** (the `env_locked` absorb paths — SC-3); **on-restart knobs apply later** (the facts row's badge says so — SC-4's evidence) |
-| US-7/S2 | settings view general fields | edit and commit | the general fields commit (`adapter.rs:10416-10434`) | the fields' requests dispatch | the same typed-outcome posture |
+| US-7/S1 | settings view knob pickers (`settings-view.slint:672-696`) | pick a knob value | the picker seam → the exact `Set*` request (`requests.rs:471-573`, 18 variants) | the knob applies; the typed outcome renders (ok / busy / failed / unavailable / rejected, `adapter.rs:4326-4353`) | a failing reply renders the typed outcome with detail; T-16 remediated (2026-11-15, #799): **an env-locked knob edit renders the typed refusal** (`Rejected` + `EnvLocked`) instead of absorbing — the sweep covers the files pick, the general-field commit, and the reminders/focus/sink choice picks; **on-restart knobs apply later** (the facts row's badge says so — SC-4's evidence) |
+| US-7/S2 | settings view general fields | edit and commit | the general fields commit (`adapter.rs:10416-10434`) | the fields' requests dispatch | the same typed-outcome posture (the T-16 env-locked refusal included) |
+| US-7/S3 (CLI, T-18 2026-11-15 #801) | `config set <key> <value>` | run the verb | the toml-layer atomic overlay write (`commands/config.rs::set`, `write_config_atomic`) | the override lands in `taskboard.toml`; authoritative at next start (the verb's output says so) | an env-overridden key refuses typed (`ConfigSetError::EnvLocked`, nothing writes); an unknown key or malformed value refuses typed (`UnknownKey`/`BadValue`, nothing writes) |
+| US-7/S4 (CLI, T-18) | `config unset <key>` | run the verb | the same overlay writer, removal arm | the override is gone; the default (or env layer) applies at next start | the same typed refusal classes |
 
 ### US-8 — Facts & env-override display
 
@@ -366,6 +368,13 @@ re-argue them.)
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
 | US-9/S1 | connections items / roster rows | — display only | — display only | the rosters render (the flat positional projection; the per-account roster with channel badges) | display only — no dispatch, no escape; the roster rows' actions are US-2/US-3's journeys |
+
+### US-10 — CLI config write front (T-18, 2026-11-15)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-10/S1 | `config set <key> <value>` (the knob vocabulary = the GUI's dotted keys) | run the verb | the toml-layer atomic overlay (`commands/config.rs::set`) | the override lands in `taskboard.toml`, authoritative at next start | env-overridden key → typed `EnvLocked`, nothing writes; unknown key/malformed value → typed `UnknownKey`/`BadValue`, nothing writes |
+| US-10/S2 | `config unset <key>` | run the verb | the same overlay, removal arm | the default (or env layer) applies at next start | the same refusal classes |
 
 ## 5. Interaction flows
 
@@ -400,6 +409,7 @@ Commands column carries the request-lane tokens the gate checks. -->
 | W-6 | ui/views/settings-view.slint (facts 22,50-56) | facts + env-override display | — | — (display only; the snapshot push) | — | — | per-fact render | US-8/S1 | — |
 | W-7 | ui/views/settings-view.slint (rosters 92-133,1012) | connections + board rosters | — | — (display only; roster push adapter.rs:5155) | — | — | per-card render | US-9/S1 | journeys.rs::us1_s1; journeys.rs::us1_s2 |
 | W-8 | ui/app-window.slint / menu | settings opener (AppSettings GLOBAL; back closes 643) | — | on_menu_settings / the open seam (adapter.rs:8284-8309) | ActionId::AppSettings | — | — (view-level) | — (US-1..US-9's entry) | — |
+| W-CLI (T-18, 2026-11-15) | crates/taskboard-app/src/commands/config.rs | `config set`/`unset` verbs | — | the knob table `ConfigKey::from_dotted` (the GUI's dotted-key vocabulary), the atomic overlay writers | — | the toml layer (figment-respecting; env never touched) | the CLI's typed refusal classes (`EnvLocked`/`UnknownKey`/`BadValue`) | US-7/S3, US-7/S4 | `commands::config::set_tests` |
 
 ## 7. Command-contract delta
 
@@ -475,6 +485,9 @@ classification is the triage's.
   here the *mutation* is GUI-only. Every knob edit and every sync
   toggle requires the desktop settings view; a headless/CLI-only
   workflow must hand-edit the config file. The CLI cells stay `U`.
+  **REMEDIATED** (T-18, 2026-11-15, #801): `config set`/`unset`
+  land the CLI write front over the GUI's dotted-key vocabulary —
+  the census CLI cells retire their `U (SC-1)` markers.
 - **SC-2 — the Settings displays and the settings opener have no CLI
   twins** (F-Pattern 4, vacuous CLI display absences). `app.settings`,
   `connection.roster_display`, `settings.facts_display`,
@@ -498,7 +511,12 @@ classification is the triage's.
   must find and interpret (walkthrough Q3 fails: the feedback
   doesn't follow the system-response column). Contrast within the
   same surface: the same user, same view, one click visible-refuses,
-  the other silently does nothing.
+  the other silently does nothing. **REMEDIATED** (T-16,
+  2026-11-15, #799): every env-locked commit/pick path renders the
+  typed refusal (`Rejected` + `EnvLocked`) — the doctrine "never a
+  silent absorb" holds at the whole class; the facts-row badge
+  stands as the display story (the badge-vs-knob distance note is
+  chunk 6's row T-36).
 - **SC-4 — the apply/on-restart semantics live only in the facts
   badge** (recognition-over-recall). Knob edits whose effects apply
   on restart render `SettingsOutcome::ok` at edit time
@@ -531,6 +549,23 @@ classification is the triage's.
   *pre-dispatch* and *reply-time* failures — not regret after a
   successful apply. Contrast: the Board surface's stack/board
   creates are journal PreImages (`undo.rs:155-156`).
+  **RESOLVED AS RULING R-17** (2026-11-15, T-17/#800; chunk-5 plan
+  D-4): journal arms for the `UiRequest` lane are rejected — the
+  recovery posture is **staged confirm (destructive rows: connection
+  remove, board detach, Stop-Sync — the chunk-2 armed strips) /
+  re-edit at the knob (the idempotent rest)**, journal undo
+  deliberately absent. Four independently sufficient points: (1) the
+  lane's remote halves cannot be honestly inverted — a local PreImage
+  would restore the local fact while the remote half keeps the
+  effect, an undo button that lies; (2) chunk 2's armed confirmations
+  already stage every destructive journey; (3) the non-destructive
+  rest is self-healing (idempotent, re-editable at the same seam, the
+  facts row shows the effective value); (4) journal arms would need
+  new undo classes per request family plus a reply-ordering contract
+  — an architectural program, not a remediation. The T-16 typed
+  refusal render keeps every lane outcome visible. Recorded in the
+  census Settings rulings table; the lane's own doc comment cites the
+  ruling.
 - **SC-7 — the connections form is single-pending** (visibility of
   system status). The lane carries one pending request at a time
   (`adapter.rs:4244`; the busy-lane refusal `adapter.rs:5707-5712`),

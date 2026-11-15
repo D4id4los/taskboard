@@ -254,13 +254,17 @@ chunk-2 plan D-8.)
     fires, Then the task opens (the stale-index guard absorbs a
     vanished target).
 
-### US-9 — Break rules (P2, CLI-only journeys)
+### US-9 — Break rules (P2; dual-front since the T-14 remediation)
 
 - **Story**: When a work/break cadence rule needs creating, removing,
-  or listing, the CLI verbs complete it — the GUI has no break-rule
-  affordance anywhere (finding TA-1; F-Pattern 1: CLI-only mutation
-  of user data).
-- **Platforms**: CLI.
+  or listing, the CLI verbs complete it — and since the T-14
+  remediation (#797, 2026-11-15, authority:
+  `2026-11-15-ux-r5-surface-friction-chunk-plan.md` D-1) the GUI
+  completes the same family: the timers composition renders the
+  roster, a create form, and the staged remove. The story table's
+  original CLI-only framing (finding TA-1; F-Pattern 1) is
+  remediated — the GUI cells retired in the census.
+- **Platforms**: CLI and GUI (Today/timers).
 - **Entry points**: `breaks add` (`cli.rs:971` → `CreateBreakRule`
   `messages.rs:324`); `breaks remove` (`cli.rs:995` →
   `DeleteBreakRule` `messages.rs:343`); `breaks list`
@@ -311,6 +315,7 @@ chunk-2 plan D-8.)
 |---|---|---|---|---|---|
 | US-6/S1 | alarm window row | click Snooze | `window.on_snooze` (`lib.rs:860-866`) → `StateCommand::SnoozeReminder` (ALARM_WINDOW_SNOOZE = 10 min, `presentation.rs:2228`) | the occurrence re-arms 10 minutes out | the snooze is itself the escape from the fired alarm; a further cancel is available (US-6/S2) |
 | US-6/S2 | alarm window row | click Cancel | `window.on_cancel` (`lib.rs:867-869`) → `StateCommand::CancelAdhocAlarm` | the adhoc alarm is cancelled outright | deliberate end; no undo |
+| US-5/S2, US-6/S3 (keyboard, T-22 2026-11-15 #805) | the alarm window's FocusScope | Up/Down walk the selected row; d/s/c fire Dismiss/Snooze/Cancel over it; Escape closes committing nothing | the SAME button callbacks (`presentation::alarm_command` is the one constructor — click ≡ key structural equality) | the selected row's card carries the focus-ring; a single row is pre-selected; a shrinking roster clamps | the WM-focus grab is recorded WM-dependent posture (a no-frame always-on-top window holds focus where the WM grants it; on Wayland both properties no-op); the ids carry the same grammar in every preset's total-mask `AlarmWindow` context (the keymap contract) |
 
 ### US-7 — The notification surface's action family
 
@@ -324,11 +329,14 @@ chunk-2 plan D-8.)
 |---|---|---|---|---|---|
 | US-8/S1 | notification surface row | click open | `notification-row-open-requested` (`adapter.rs:10245-10251`) → the task opens (stale-index guard `adapter.rs:9410`) | the notified task's surface becomes the subject | a vanished target is absorbed by the stale-index guard — pure navigation, no state mutation to escape |
 
-### US-9 — Break rules (P2)
+### US-9 — Break rules (P2; the T-14 GUI steps above)
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-9/S1 | CLI `breaks add` / `breaks remove` / `breaks list` (`cli.rs:971,995,990`) | run the verbs | `StateCommand::CreateBreakRule` (`messages.rs:324`) / `StateCommand::DeleteBreakRule` (`messages.rs:343`) / pure read | the rule roster changes engine-side; no GUI shows it anywhere (TA-1) | `DeleteBreakRule` removal posture is CLI-only; no GUI recovery surface exists |
+| US-9/S1 | CLI `breaks add` / `breaks remove` / `breaks list` (`cli.rs:971,995,990`) | run the verbs | `StateCommand::CreateBreakRule` (`messages.rs:324`) / `StateCommand::DeleteBreakRule` (`messages.rs:343`) / pure read | the rule roster changes engine-side; the GUI roster mirrors it (T-14 remediation — the TA-1 "no GUI anywhere" letter is retired) | `DeleteBreakRule` prunes deliveries/dismissals/snooze links; the GUI's staged confirm (US-9/S4) is the removal's escape |
+| US-9/S2 (GUI, T-14) | the timers composition's roster subsection (Today) | read the roster | none — a pure display derivation (`presentation.rs::break_rule_rows`) | label + alarm-rung bit + canonical threshold phrase + roaming board, in the CLI list's `(threshold, id)` order; kiosk: the section's absence hint names the fence (chunk-1 grammar) | a display step — no dispatch, no escape needed |
+| US-9/S3 (GUI, T-14) | the timers header's "Add break rule" affordance + the create form | open the form, type label + threshold, Return | the `WorkThreshold` mint parses at the seam (an absorbed miss keeps the text); commit routes `BreakRuleCreate` → `CreateBreakRule` over the section's host board | the roster re-derives with the new rule; the form closes and the rung re-seats | a parse miss keeps the field text (the validity flavour renders); a board-less today dispatches nothing |
+| US-9/S4 (GUI, T-14) | the roster row's remove affordance + the armed strip | arm, then Confirm (or Cancel) | arming dispatches nothing; Confirm routes `BreakRuleRemoveConfirm` → `DeleteBreakRule` | the rule and its recorded firings are pruned; the roster empties by derivation | Cancel/Escape-equivalent disarms; the strip names the consequence before the stroke (the delete is `NotUndoable` — staging is the escape) |
 
 ## 5. Interaction flows
 
@@ -374,7 +382,8 @@ finding). -->
 | W-5 | ui/alarm-window.slint (rows model presentation.rs:2253-2290) | alarm window display | — | — (display only; lib.rs:778-786 attention edge) | — | — | per-row render | US-4/S1 | — |
 | W-6 | ui/compositions/notification-surface.slint | notification row action family | — | install_seam! on_notification_dismiss_clicked (adapter.rs:10157-10169); install_seam! on_notification_done_clicked (adapter.rs:10172-10185); install_seam! on_notification_snooze_clicked (adapter.rs:10188-10200); install_seam! on_notification_mute_clicked (adapter.rs:10197-10210); install_seam! on_notification_cancel_clicked (adapter.rs:10210-10229); install_seam! on_notification_track_start_clicked (adapter.rs:10229-10244) | ActionId::ReminderSnooze | StateCommand::DismissReminder; StateCommand::SetTaskDone; StateCommand::SetTaskRemindersMuted; StateCommand::CancelAdhocAlarm; StateCommand::StartTracking | row target via the notification row's resolved index | US-7/S1 | lib.rs::the notification seam tests (invoke_notification_dismiss_clicked / invoke_notification_snooze_clicked exact-command asserts) |
 | W-7 | ui/compositions/notification-surface.slint | notification row open seam | — | install_seam! on_notification_row_open_requested (adapter.rs:10245-10251) | — | — | row target via the stale-index guard (adapter.rs:9410) | US-8/S1 | — |
-| W-8 | crates/taskboard-app/src/cli.rs | `breaks add` / `breaks remove` / `breaks list` verbs | — | — (CLI-only; no GUI seam anywhere — TA-1's sweep evidence) | — | StateCommand::CreateBreakRule; StateCommand::DeleteBreakRule | — (CLI verbs, not UI seams) | US-9/S1 | — |
+| W-8 | crates/taskboard-app/src/cli.rs | `breaks add` / `breaks remove` / `breaks list` verbs | — | — (CLI verbs) | — | StateCommand::CreateBreakRule; StateCommand::DeleteBreakRule | — (CLI verbs, not UI seams) | US-9/S1 | — |
+| W-8a (T-14, 2026-11-15) | ui/compositions/timers.slint + adapter.rs | the roster subsection, the create form, the staged remove | the timers section gates (`timers-visible`/`absence-hint`) | the roster rows (`BreakRuleRowModel`), the form's commit seam (`on_timers_break_create_accepted`), the arm/confirm pair | the mint parse at the seam; the armed strip's Cancel | `ActionId::BreakRuleCreate/Remove/RemoveConfirm` → CreateBreakRule; DeleteBreakRule | today view; the registry carries the ids (no preset bindings — pointer parity is the bar) | US-9/S2, US-9/S3, US-9/S4 | journey `the_break_rule_roster_creates_then_stages_the_remove` |
 | W-9 | ui/compositions/timers.slint (pass-through via ui/views/today-view.slint, ui/app-window.slint) | the Today timers host's muted absence caption (amendment 2026-11-15, UX R-1 D-2 / TA-W-N4) | — | — (no seam: pure display caption, framework §2.1.6 reason law — display state only, zero new commands) | — | — | — (the flag `timers-absence-hint` is a pushed display bit, not a row address) | US-3/S1 kiosk leg: pure display caption (framework §2.1.6 reason law) | journeys.rs::the_kiosk_alarm_fence_stands_with_the_absence_hint |
 
 ## 7. Command-contract delta
