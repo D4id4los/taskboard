@@ -12977,6 +12977,179 @@ fn the_timers_form_carries_the_insistence_rung() {
     );
 }
 
+// -- T-15 (#798): the journal ledger's editor + staged delete ------------
+
+/// The ledger journey: a row click opens the inline editor seeded
+/// from the stored row verbatim; the commit routes the exact
+/// `journal edit` change mask (an all-unchanged commit is the exact
+/// empty mask — the accepted no-op); the remove affordance arms
+/// without dispatching and the strip's Confirm routes the exact
+/// `DeleteReflection`.
+#[test]
+#[allow(clippy::too_many_lines)] // the journey's legs, one block per verb
+fn the_journal_ledger_edits_then_stages_the_delete() {
+    let now = chrono::Utc::now();
+    let (_fixture, mut state) = fixture::golden_state_at(now);
+    // The surfacing-card pin seeds its own walk entry (the fixture's
+    // fixture-continuity); the ledger journey pins a known single row.
+    state.reflection.entries.clear();
+    let attributes = taskboard_domain::ReflectionAttributes {
+        mood: taskboard_domain::reflection::Rating::try_new(3).ok(),
+        energy: None,
+        flags: std::collections::BTreeSet::from([taskboard_domain::HealthFlag::GoodDay]),
+        extra_flags: std::collections::BTreeSet::default(),
+    };
+    let entry_id = fixture::add_reflection(&mut state, "steady day", attributes, now);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Cold start is the board; the backwards wrap crosses
+            // Today into Review (the review surface test's route).
+            harness.press(ActionId::NavPrevView);
+            harness.driver.advance_time(0);
+            harness.press(ActionId::NavPrevView);
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            assert_eq!(harness.handle.window().get_current_view(), View::Review);
+            let window = harness.handle.window();
+            assert_eq!(window.get_review_model().reflection_rows.row_count(), 1);
+
+            // The activation: the editor opens, the echoes are the
+            // stored row verbatim. The row-activation seam rides the
+            // invoke path (the settings-journeys' grammar — the
+            // testing backend's headless ledger realization is not the
+            // callback under test; the affordance mounts in the ledger
+            // row, the goldens carry the composition).
+            window.invoke_reflection_row_activated(0);
+            harness.driver.advance_time(0);
+            assert!(window.get_reflection_editor_open(), "the editor opened");
+            assert_eq!(
+                window.get_reflection_editor_text_echo().as_str(),
+                "steady day",
+                "the text echo is the stored row verbatim"
+            );
+            assert_eq!(window.get_reflection_editor_mood_echo().as_str(), "3");
+            assert_eq!(window.get_reflection_editor_energy_echo().as_str(), "");
+
+            // The accepted no-op: an untouched editor commits the
+            // exact empty mask.
+            window.invoke_reflection_editor_committed();
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [
+                    StateCommand::UpdateReflection {
+                        id,
+                        text: None,
+                        mood: None,
+                        energy: None,
+                        flags_add,
+                        flags_remove,
+                    },
+                ] => {
+                    assert_eq!(*id, entry_id);
+                    assert!(flags_add.is_empty() && flags_remove.is_empty());
+                }
+                other => panic!("the no-op commit routed the empty mask, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert!(
+                !window.get_reflection_editor_open(),
+                "a committed no-op closes the editor (the change was accepted)"
+            );
+            // Reopen for the masked-edit leg.
+            window.invoke_reflection_row_activated(0);
+            harness.driver.advance_time(0);
+            assert!(window.get_reflection_editor_open());
+
+            // The masked edit: new text, energy set, a flag added —
+            // mood untouched (None rides the mask).
+            window.invoke_reflection_editor_text_edited("rough afternoon".into());
+            window.invoke_reflection_editor_energy_edited("2".into());
+            window.invoke_reflection_editor_flag_toggled(0); // migraine: add
+            harness.driver.advance_time(0);
+            window.invoke_reflection_editor_committed();
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [
+                    StateCommand::UpdateReflection {
+                        id,
+                        text: Some(text),
+                        mood: None,
+                        energy: Some(Some(energy)),
+                        flags_add,
+                        flags_remove,
+                    },
+                ] => {
+                    assert_eq!(*id, entry_id);
+                    assert_eq!(text.as_str(), "rough afternoon");
+                    assert_eq!(*energy, 2);
+                    assert_eq!(
+                        flags_add,
+                        &std::collections::BTreeSet::from([taskboard_domain::HealthFlag::Migraine])
+                    );
+                    assert!(flags_remove.is_empty());
+                }
+                other => panic!("the edit routed the exact mask, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert!(
+                !window.get_reflection_editor_open(),
+                "a committed edit closes the editor"
+            );
+            assert_eq!(
+                window.get_review_model().reflection_rows.row_count(),
+                1,
+                "the edited row stays in the live ledger"
+            );
+            assert_eq!(
+                window
+                    .get_review_model()
+                    .reflection_rows
+                    .row_data(0)
+                    .expect("row")
+                    .text
+                    .as_str(),
+                "rough afternoon",
+                "the ledger echoes the committed text"
+            );
+
+            // The staged delete: the arm stroke dispatches nothing;
+            // the strip's Confirm routes the exact tombstone (the
+            // arm/confirm seams ride the invoke path, as above).
+            window.invoke_reflection_remove_clicked(0);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "arming dispatches nothing"
+            );
+            assert!(
+                window
+                    .get_review_model()
+                    .reflection_rows
+                    .row_data(0)
+                    .expect("row")
+                    .armed,
+                "the armed row renders its strip flag"
+            );
+            window.invoke_reflection_remove_confirmed(0);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::DeleteReflection { id }] => assert_eq!(*id, entry_id),
+                other => panic!("the confirm reached the boundary, got {other:?}"),
+            }
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                window.get_review_model().reflection_rows.row_count(),
+                0,
+                "the tombstoned row leaves the live ledger"
+            );
+        },
+    );
+}
+
 // -- T-14 (#797): the break-rule roster in the timers composition --------
 
 /// The roster journey: the create form commits the exact

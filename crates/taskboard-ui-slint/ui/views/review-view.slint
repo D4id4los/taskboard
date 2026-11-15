@@ -16,6 +16,9 @@ import { ListView } from "../widgets/listview.slint";
 import { ScrollPageHint } from "../scroll-page.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { StatBars, StatBarModel } from "../widgets/stat-bars.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { Tone } from "../theme.slint";
+import { TextField, FieldValidity } from "../widgets/text-field.slint";
 
 export struct ReviewWindowModel {
     estimated: string,
@@ -70,6 +73,20 @@ export struct ReflectionRowModel {
     mood: string,
     energy: string,
     flags: string,
+    // T-15 (#798): this row is the inline editor's active subject /
+    // the staged delete's armed subject (the board columns'
+    // delete-armed convention). Presentation facts only; the identities
+    // live adapter-side.
+    active: bool,
+    armed: bool,
+}
+
+// One curated health flag's editor chip (T-15, #798): the label and
+// the chip's rendered membership (current set ∪ adds − removes). The
+// chip toggles the delta; the commit folds it into flags_add/−remove.
+export struct ReflectionFlagChip {
+    label: string,
+    member: bool,
 }
 
 // One tracking section's pushed values (#623 slice A): the three stat
@@ -269,6 +286,29 @@ export component ReviewView inherits FocusScope {
     // The window's logical height, pushed from the app window (the
     // today view's precedent — never a content-derived height).
     in property <length> viewport-height;
+    // -- The ledger's inline editor + staged delete (T-15, #798): the
+    //    ledger rows activate (click) into the editor under the clip;
+    //    the remove affordance arms the consequence-naming strip. The
+    //    ContextId::Review registry stays binding-free — pointer
+    //    parity with the `journal edit`/`delete` verbs is the bar.
+    in property <bool> reflection-editor-open: false;
+    in property <string> reflection-editor-text-echo: "";
+    in property <string> reflection-editor-mood-echo: "";
+    in property <string> reflection-editor-energy-echo: "";
+    in property <FieldValidity> reflection-editor-mood-validity: FieldValidity.neutral;
+    in property <FieldValidity> reflection-editor-energy-validity: FieldValidity.neutral;
+    in property <[ReflectionFlagChip]> reflection-editor-flags;
+    in property <bool> reflection-remove-armed: false;
+    callback reflection-row-activated(int);
+    callback reflection-editor-text-edited(string);
+    callback reflection-editor-mood-edited(string);
+    callback reflection-editor-energy-edited(string);
+    callback reflection-editor-flag-toggled(int);
+    callback reflection-editor-committed();
+    callback reflection-editor-cancelled();
+    callback reflection-remove-clicked(int);
+    callback reflection-remove-confirmed(int);
+    callback reflection-remove-cancelled();
     // The ledgers' viewport bound (#373): the page height less the
     // content padding. Assigned, never bound: a binding from
     // `viewport-height` into any layout constraint closes a loop
@@ -282,7 +322,15 @@ export component ReviewView inherits FocusScope {
     accessible-role: AccessibleRole.region;
     accessible-label: "Review";
     focus-on-tab-navigation: true;
-    init => self.focus();
+    init => {
+        // The bound seeds at mount too: `changed` fires only on a
+        // value *change*, and a view mounted against an already
+        // stable window height never sees one (the T-15 ledger rows
+        // realized at zero height — the journeys' activation probe
+        // found the ledger empty).
+        self.focus();
+        root.page-bound = Math.max(root.viewport-height - 2 * Theme.space-3, 0);
+    }
 
     ring := Rectangle {
         width: 100%;
@@ -343,8 +391,11 @@ export component ReviewView inherits FocusScope {
 
                     // The journal-entries ledger (#623 slice B, D-B5):
                     // every live stored entry, newest first, read
-                    // verbatim — read-only (D-B10): no activation, no
-                    // walk targets; editing rides the walk/CLI verbs.
+                    // verbatim. Read-only (D-B10) superseded by the T-15
+                    // remediation (#798, 2026-11-15): rows activate into
+                    // the inline editor and stage the delete; the walk
+                    // targets stay absent (the ledger is still not a
+                    // task list).
                     // The landed ledger-row pattern inline (family 4
                     // paging, the #373 viewport bound, the explicit
                     // row height) — not extracted: the row bodies
@@ -434,6 +485,139 @@ export component ReviewView inherits FocusScope {
                                     overflow: elide;
                                     vertical-alignment: center;
                                 }
+                                // The activation + staging affordances
+                                // (T-15, #798): the row click activates
+                                // the inline editor; the remove
+                                // affordance arms the staged delete.
+                                VerticalLayout {
+                                    IconButton {
+                                        icon: IconKind.pencil;
+                                        tone: Tone.info;
+                                        label: "Edit entry";
+                                        clicked => root.reflection-row-activated(rindex);
+                                    }
+                                }
+                                VerticalLayout {
+                                    IconButton {
+                                        icon: IconKind.trash;
+                                        tone: row.armed ? Tone.danger : Tone.info;
+                                        label: "Delete entry";
+                                        clicked => root.reflection-remove-clicked(rindex);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // The armed-delete strip (T-15, the chunk-2
+                    // grammar): mounts under the ledger naming the
+                    // consequence; nothing dispatches until Confirm.
+                    if (root.reflection-remove-armed): HorizontalLayout {
+                        spacing: Theme.space-2;
+                        RoleText {
+                            role: Typography.caption;
+                            text-color: Semantic.danger;
+                            text: "Deletes this journal entry; the row tombstones and the edit cannot be undone.";
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        IconButton {
+                            icon: IconKind.check;
+                            tone: Tone.danger;
+                            label: "Confirm delete entry";
+                            clicked => root.reflection-remove-confirmed(0);
+                        }
+                        IconButton {
+                            icon: IconKind.remove;
+                            tone: Tone.neutral;
+                            label: "Cancel delete entry";
+                            clicked => root.reflection-remove-cancelled();
+                        }
+                    }
+
+                    // The inline editor (T-15, #798): the journal
+                    // edit's change masks as fields — the text (an
+                    // empty commit is the legal clear), the mood /
+                    // energy ratings (set / clear), the curated flags
+                    // by delta. The commit routes the exact mask; an
+                    // all-unchanged commit is the accepted no-op.
+                    if (root.reflection-editor-open): VerticalLayout {
+                        spacing: Theme.space-1;
+                        HorizontalLayout {
+                            spacing: Theme.space-2;
+                            reflection-text-field := TextField {
+                                horizontal-stretch: 1;
+                                label: "Journal entry text (empty = clear)";
+                                text: root.reflection-editor-text-echo;
+                                autofocus: false;
+                                edited(text) => { root.reflection-editor-text-edited(text); }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.space-2;
+                            reflection-mood-field := TextField {
+                                horizontal-stretch: 1;
+                                placeholder: "1..=5 · empty = clear";
+                                label: "Mood (1-5, empty clears)";
+                                text: root.reflection-editor-mood-echo;
+                                validity: root.reflection-editor-mood-validity;
+                                autofocus: false;
+                                edited(text) => { root.reflection-editor-mood-edited(text); }
+                            }
+                            reflection-energy-field := TextField {
+                                horizontal-stretch: 1;
+                                placeholder: "1..=5 · empty = clear";
+                                label: "Energy (1-5, empty clears)";
+                                text: root.reflection-editor-energy-echo;
+                                validity: root.reflection-editor-energy-validity;
+                                autofocus: false;
+                                edited(text) => { root.reflection-editor-energy-edited(text); }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.space-2;
+                            for chip[cindex] in root.reflection-editor-flags: Rectangle {
+                                border-radius: Theme.radius-small;
+                                border-width: chip.member
+                                    ? Theme.focus-ring-width
+                                    : Theme.hairline-width;
+                                border-color: chip.member ? Theme.focus-ring : Theme.border;
+                                background: chip.member ? Theme.surface-hover : transparent;
+                                horizontal-stretch: 0;
+                                min-width: 60px * Theme.base-scale;
+                                height: 26px * Theme.base-scale;
+                                accessible-role: AccessibleRole.button;
+                                accessible-label: chip.label;
+                                HorizontalLayout {
+                                    padding-left: Theme.space-1;
+                                    padding-right: Theme.space-1;
+                                    alignment: center;
+                                    RoleText {
+                                        role: Typography.caption;
+                                        text: chip.label;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                touch := TouchArea {
+                                    clicked => { root.reflection-editor-flag-toggled(cindex); }
+                                }
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: Theme.space-2;
+                            Rectangle { horizontal-stretch: 1; }
+                            IconButton {
+                                icon: IconKind.check;
+                                tone: Tone.info;
+                                label: "Commit journal edit";
+                                clicked => root.reflection-editor-committed();
+                            }
+                            IconButton {
+                                icon: IconKind.remove;
+                                tone: Tone.neutral;
+                                label: "Cancel journal edit";
+                                clicked => root.reflection-editor-cancelled();
                             }
                         }
                     }
