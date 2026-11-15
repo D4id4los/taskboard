@@ -28,6 +28,19 @@
   `U (BF-2)` → `E (US-11)` (§2), and US-10/S2's lockout cells retired
   to history (§4). Command-contract delta of the amendment: **zero new
   variants** — `SetBoardArchived` exists (`messages.rs:179`).
+  **Amended 2026-11-15 (II)** (UX remediation chunk 4 — board verbs +
+  entry-point asymmetry, stage 2; authority: the accepted triage
+  report findings T-8/T-11/T-12/T-9/T-10 (#791/#794/#795/#792/#793)
+  and the chunk plan
+  `.artifacts/plans/2026-11-15-ux-r4-board-entry-points-chunk-plan.md`
+  D-1/D-2/D-3/D-4/D-5/D-6): the remediation design is recorded as
+  **changed journeys** — new story US-12 (§3/§4), wiring row W-13
+  (§6), the US-2/S4 flyout step, the US-8 keyboard twin + typed-no-op
+  gate step (§4), the `board.color`/`board.reset`/`board.reconcile`
+  matrix conversions and the R-10/R-11 rulings (§2), the §7 ActionId
+  delta (`BoardColorEdit`, `BoardDefaultPreset` — **ActionIds only**;
+  D-6's zero-new-command law), and the BF-1/BF-3/BF-4/BF-7/BF-9
+  remediation notes (§10).
 - **Surfaces touched**: `ui/compositions/board-bar.slint`,
   `ui/compositions/board-layout.slint`, `ui/views/board-view.slint`,
   `ui/views/stack-view.slint`, `ui/app-window.slint`,
@@ -69,12 +82,12 @@ avoid `|`. -->
 | board.create | C (US-1) — board-create field commit → `CreateBoard` `adapter.rs:8220-8226` (view_state.rs:1944); keyboard `BoardCreate` `actions.rs:916-925`, Ctrl+Shift+N `presets.rs:150` | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | C (pre-existing, `boards create` `cli.rs:322`) |
 | board.rename | E (US-4) — board-rename field commit → `RenameBoard` `adapter.rs:8230-8236` (view_state.rs:1962), inline field `board-bar.slint:89-93` (baseline anchor; the live field mounts in the app-window board wiring, `app-window.slint:587`); `BoardRename` `actions.rs:926-935`, Ctrl+F2 `presets.rs:151` | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, `boards rename` `cli.rs:332`) |
 | board.delete | X (US-5) — board context menu → `DeleteBoard` `view_state.rs:2933`; `BoardDelete` `actions.rs:936-945`, Ctrl+Shift+Delete `presets.rs:153-156` | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | X (pre-existing, `boards delete --confirm` `cli.rs:390`) |
-| board.select | E (US-2) — board-bar segment click `adapter.rs:8272`, compact switcher `adapter.rs:8366`; `BoardNext`/`BoardPrevious` `actions.rs:886-905`, `BoardSelect` `actions.rs:906-915` | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, `boards use` `cli.rs:358`, `boards select` bind `cli.rs:297`) |
-| board.color | U (BF-1) | U (BF-1) | U (BF-1) | U (BF-1) | U (BF-1) | U (BF-1) | E (pre-existing, `boards color` `cli.rs:365`) |
+| board.select | E (US-2) — board-bar segment click `adapter.rs`, compact switcher, the target-free flyout flow (US-2/S4: `BoardSelect` without a target opens the switcher, `router.rs` OpenBoardBarFlyout; `ActionId::BoardSelect` `actions.rs`, bound Ctrl+G / C-c g / g b `keymap/presets.rs` — remediated 2026-11-15, T-11) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, `boards use` `cli.rs:358`, `boards select` bind `cli.rs:297`) |
+| board.color | E (US-12) — the swatch picker: `ActionId::BoardColorEdit` (menu row + Ctrl+F3/C-c C-f/g c) arms the strip under the bar; a swatch click dispatches the exact `SetBoardColor` (remediated 2026-11-15, T-8, US-12); the segments echo the color through the shared swatch gate | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, `boards color` `cli.rs:365`) |
 | board.archive | E (US-11) — the archived-boards roster: a trailing indicator (mounted iff the archived set is non-empty, `board-bar.slint` roster-dd) opens the shared dropdown (site 3) of title-only rows; activating a row dispatches `SetBoardArchived with archived false` + `RefreshNow` and the restored board re-selects (`adapter.rs::install_board_bar_archived_seam`, `view_state.rs::unarchive_board`) | U (BF-2) | U (BF-2) | U (BF-2) | U (BF-2) | U (BF-2) | E (pre-existing, `boards archive` / `boards unarchive` `cli.rs:375-381`) |
-| board.reset | U (BF-3) | U (BF-3) | U (BF-3) | U (BF-3) | U (BF-3) | U (BF-3) | X (pre-existing, `boards reset --confirm` `cli.rs:403`) |
-| board.reconcile | U (BF-4) | U (BF-4) | U (BF-4) | U (BF-4) | U (BF-4) | U (BF-4) | E (pre-existing, `boards reconcile --confirm` `cli.rs:429`) |
-| board.default_preset | E (US-8) — empty-board "default kanban" CTA `adapter.rs:8297`, `board-layout.slint:242-250`, mints `CreateStack` payloads `src/board_presets.rs:5,23` | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | U (BF-8) |
+| board.reset | — (R-10) | — (R-10) | — (R-10) | — (R-10) | — (R-10) | — (R-10) | X (pre-existing, `boards reset --confirm` `cli.rs:403`) |
+| board.reconcile | — (R-11) | — (R-11) | — (R-11) | — (R-11) | — (R-11) | — (R-11) | E (pre-existing, `boards reconcile --confirm` `cli.rs:429`) |
+| board.default_preset | E (US-8) — empty-board CTA routes `ActionId::BoardDefaultPreset` (remediated 2026-11-15, T-12: click ≡ key; bound P / C-c p / g p; the dispatch-time empty-board gate), mints `CreateStack` payloads `src/board_presets.rs:5,23` | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | U (BF-8) |
 | stack.create | C (US-3) — new-stack field commit → `CreateStack` `adapter.rs:8305-8309` (view_state.rs:1865,4222-4250), "+ stack" opener `adapter.rs:8290`; `StackCreate` `actions.rs:1028-1036`, S `presets.rs:128` | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | C (pre-existing, `stacks add` `cli.rs:445`) |
 | stack.rename | E (US-4) — stack-rename field commit → `RenameStack` `adapter.rs:8208-8214` (view_state.rs:1953), inline field `board-layout.slint:451-462`; `StackRename` `actions.rs:987-996`, F2 `presets.rs:162` | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | E (pre-existing, `stacks rename` `cli.rs:456`) |
 | stack.delete | X (US-5) — stack context menu → `DeleteStack` `view_state.rs:2919`; `StackDelete` `actions.rs:1008-1017`, Ctrl+Delete `presets.rs:164` | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | X (pre-existing, `stacks delete` `cli.rs:464`) |
@@ -92,6 +105,8 @@ above cites one of these; this table is the ruling's authority,
 | R-2 | board.default_preset mounts only on the empty-board state of the Board surface | R-Pattern 2: the preset CTA mounts inside the empty-board leg (`board-layout.slint:248-251`); no other surface renders the empty-board state, so no other mount is grammatically possible (Sweep-T/Y/R/S/C evidence, census register). The CLI cell stays `U` as finding BF-8. | this plan §2; census Board slice register |
 | R-3 | stack.create / stack.rename / stack.delete / stack.move have no mounts outside the board surface (Board + StackDetail) | R-Pattern 2: stack columns render only on the Board surface (the census records StackDetail inside the Board slice); `StackCreate`/`StackRename`/`StackDelete`/`StackMove` bind `&[ContextId::Board, ContextId::StackDetail]` (`actions.rs:1025-1033,985-993,1005-1013,995-1003`); Sweep-T/Y/R/S/C shows no stack seam in any other surface. | this plan §2; census Board slice register |
 | R-4 | stack.resize mounts only on the Board surface | R-Pattern 2: the divider drag and the `StackWider`/`StackNarrower` verbs (`contexts: &[ContextId::Board]`, `actions.rs:965-981`) address column pairs, which only board columns render; Sweep-T/Y/R/S/C + Sweep-CLI evidence (no width seam, no CLI verb) in the census register. The CLI cell stays `U` as finding BF-8. | this plan §2; census Board slice register |
+| R-10 (2026-11-15, chunk-4 D-2) | `ResetBoard` keeps no GUI affordance, by justification | Reset is the local repair twin of delete (same blast radius, `NotUndoable(BoardCeremony)`, `--confirm`-gated in the CLI with a typed refusal stating what would clear); affording it would mint a new irrecoverable surface in the board bar's row set. Every GUI-reachable need is covered: clearing a board = armed `BoardDelete` + `BoardCreate`; the bound-board re-materialization scenario is CLI sync repair. Revisit note: if a GUI journey terminates in reset, the affordance enters through chunk 2's armed-confirm grammar (already landed — near-zero design cost). | chunk-4 plan D-2; census Board slice |
+| R-11 (2026-11-15, chunk-4 D-3) | `ReconcileByTitle` keeps no GUI affordance, by justification | Reconcile repairs one CLI-reachable state (same-title duplicates adopted by the bind pull — the GUI cannot produce it: create never matches by title). The CLI `--confirm` gate is informed consent (the match counts print before the merge); a GUI affordance would stage without the counts — strictly less informed — and the merge is irreversible and preview-dependent, failing both the picker bar and the armed-strip bar. Revisit note: a future GUI duplicates roster would carry the affordance with armed-confirm + counts. | chunk-4 plan D-3; census Board slice |
 | R-5 | stack.count_display renders only on board columns | R-Pattern 3 (display-scoping): the badge displays a column's task count (`board-layout.slint:470-473`); surfaces that render no columns have nothing for it to echo — the absence is presentation scoping, not a product gap. The CLI cell stays `U` as finding BF-8. | this plan §2; census Board slice register |
 
 ## 3. User stories
@@ -108,10 +123,15 @@ above cites one of these; this table is the ruling's authority,
   (pre-existing twin).
 - **Priority**: P1
 - **Acceptance**:
-  - AC-1: Given the create flow is armed with a non-empty title, When
-    the field commits, Then `StateCommand::CreateBoard` dispatches
-    with a lenient empty color — verified by
-    `view_state.rs::board_create_flow_commits_the_lenient_color_command`.
+  - AC-1 (corrected 2026-11-15, UX R-4 D-6/#791 — the lenient-color
+    wording is retired to history): Given the create flow is armed
+    with a non-empty title, When the field commits, Then
+    `StateCommand::CreateBoard` dispatches with the engine's default
+    board color — the same `DEFAULT_BOARD_COLOR` the CLI create
+    applies on `--color` omission, so both front ends mint identical
+    creates — verified by
+    `view_state.rs::board_create_flow_commits_the_default_board_color`
+    and `journeys.rs::the_lifecycle_verbs_drain_their_exact_commands`.
   - AC-2: Given an empty buffer, When the flow settles, Then nothing
     dispatches — verified by
     `view_state.rs::an_empty_board_create_buffer_commits_nothing`
@@ -129,7 +149,9 @@ above cites one of these; this table is the ruling's authority,
   (`app-window.slint:914`); segment right-click (selects, then opens
   `menu::BOARD_CONTEXT`, `adapter.rs:8230`);
   `ActionId::BoardNext`/`BoardPrevious` (b / B);
-  `ActionId::BoardSelect` (click-routed, no key — BF-7).
+  `ActionId::BoardSelect` (click-routed with a target; the bare
+  stroke's flyout flow is US-2/S4 — remediated 2026-11-15, T-11/#794:
+  bound Ctrl+G / C-c g / g b; the BF-7 absence retires to history).
 - **Priority**: P1
 - **Acceptance**:
   - AC-1: Given multiple live boards, When the user clicks a segment
@@ -268,9 +290,12 @@ above cites one of these; this table is the ruling's authority,
   one-click default kanban setup so that I do not hand-create the
   starter columns.
 - **Platforms**: desktop.
-- **Entry points**: the "Create Default Kanban Setup" CTA
-  (`board-default-preset-clicked`, `board-layout.slint:248-251`;
-  pointer-only — no ActionId, no key: BF-9).
+- **Entry points** (amended 2026-11-15, UX R-4 D-5/#795 — the BF-9
+  pointer-only absence retires to history): the "Create Default
+  Kanban Setup" CTA (`board-default-preset-clicked` now routes
+  `ActionId::BoardDefaultPreset` — click ≡ key); the same action's
+  preset keys (Standard P, emacs C-c p, vi g p; the dispatch-time
+  empty-board gate makes a non-empty board the typed no-op).
 - **Priority**: P1
 - **Acceptance**:
   - AC-1: Given an empty board, When the CTA is clicked, Then explicit
@@ -279,6 +304,12 @@ above cites one of these; this table is the ruling's authority,
     `view_state.rs::the_default_kanban_preset_dispatches_explicit_ordered_creates`.
   - AC-2: Given no board, When the CTA fires, Then the preset refuses —
     verified by `view_state.rs::the_preset_dispatch_refuses_without_a_board`.
+  - AC-3 (amendment 2026-11-15, T-12): Given a non-empty board, When
+    the preset action fires (the key — the CTA cannot render here),
+    Then it is the typed no-op (nothing drains; a sync refresh
+    mid-stroke flips the verdict safely to inert) — verified by
+    `flow_table_tests.rs::the_default_preset_action_dispatches_on_empty_and_is_the_typed_noop_on_content`
+    and `journeys.rs::us8_s2_preset_on_nonempty_board_is_the_typed_noop`.
 
 ### US-9 — Column task-count display
 
@@ -337,10 +368,13 @@ above cites one of these; this table is the ruling's authority,
   `cli.rs:403`; `boards reconcile --confirm` `cli.rs:429`.
 - **Priority**: P2
 - **Acceptance**:
-  - AC-1: Given a board, When `boards color <color>` runs, Then
-    `StateCommand::SetBoardColor` dispatches (engine-side; the domain
-    command exists at `messages.rs:170` with zero GUI dispatch sites —
-    the retrofit sweep evidence for BF-1).
+  - AC-1 (amended 2026-11-15, UX R-4 D-1/#791 — the "no GUI twin"
+    wording retires to history): Given a board, When `boards color
+    <color>` runs, Then `StateCommand::SetBoardColor` dispatches;
+    the GUI twin shipped as US-12 (the swatch picker), so the verb is
+    GUI-completable end-to-end. The `boards reset`/`reconcile` rows
+    keep their CLI-only cells under rulings R-10/R-11 (§2; the
+    journeys below name the rulings).
 
 ## 4. Journey specs
 
@@ -350,7 +384,7 @@ above cites one of these; this table is the ruling's authority,
 |---|---|---|---|---|---|
 | US-1/S1 | board bar region, create flow arm | Ctrl+Shift+N or `ActionId::BoardCreate` (menu row) | `ActionId::BoardCreate` → `UiEffect::BoardCreate` (`router.rs:904`, `adapter.rs:3594`) → `begin_create_board` (`view_state.rs:2875`) | the board-create field mounts armed (`Flow::CreateBoard`) | Escape/foreign settle with an empty buffer ends the flow, nothing dispatched (`view_state.rs:2803-2813`, the empty-buffer law `view_state.rs:1906`) — test `journeys.rs::the_lifecycle_verbs_drain_their_exact_commands` |
 | US-1/S2 | board-create field | type the title | — (flow-local buffer edit, `on_board_create_field_edited` `adapter.rs:8258`) | the buffer echoes in the field | Escape settle commits if non-empty else discards (`view_state.rs:2803-2813`); empty buffer commits nothing |
-| US-1/S3 | board-create field commit (`app-window.slint:578`) | press Return | `StateCommand::CreateBoard { title, color: Color::new("") }` (`view_state.rs:1939-1948`, `messages.rs:138`) | the new board appears in the board bar and becomes selected | typed engine refusals surface through the outcome lane; the lenient empty color is the recorded create-time debt (BF-1) |
+| US-1/S3 | board-create field commit (`app-window.slint:578`) | press Return | `StateCommand::CreateBoard { title, color: Color::new(DEFAULT_BOARD_COLOR) }` (`messages.rs:138`; the CLI's omission default — corrected 2026-11-15, UX R-4 D-6/#791, AC-1 above) | the new board appears in the board bar and becomes selected | typed engine refusals surface through the outcome lane; the lenient empty color is retired to history (the picker shipped, US-12) |
 
 ### US-2 — Select / switch boards
 
@@ -358,7 +392,8 @@ above cites one of these; this table is the ruling's authority,
 |---|---|---|---|---|---|
 | US-2/S1 | board bar segment (`board-bar.slint:194`) | click a segment | `board-bar-activated` → `board-bar-segment-activated` (`adapter.rs:8310-8326`) → `ActionId::BoardSelect` with `board_target` set | the clicked board becomes the active board; stale index resolves to None and is absorbed | pure navigation — no state mutation to escape; selection repair by reconcile on stale targets (`view_state.rs:4472` test) — test `journeys.rs::the_segment_right_click_selects_and_opens_the_board_menu` |
 | US-2/S2 | board bar dropdown row (`app-window.slint:914`) | click a row in the compact switcher | same `BoardSelect` route | same selection change | same absorb-on-stale guard (`adapter.rs:8310-8326`) — test `journeys.rs::board_switching_walks_boards_by_keyboard` |
-| US-2/S3 | keyboard walk | press b / B | `ActionId::BoardNext`/`BoardPrevious` → `UiEffect` (`router.rs:955-963`, `adapter.rs:3031-3034`) | selection steps without wrapping (`view_state.rs:1279-1289`) | no wrap; inert without boards — test `view_state.rs::the_board_walk_steps_without_wrapping` |
+| US-2/S3 | keyboard walk | press b / B | `ActionId::BoardNext`/`BoardPrevious` → `UiEffect` (`router.rs`, `adapter.rs`) | selection steps without wrapping (`view_state.rs`) | no wrap; inert without boards — test `view_state.rs::the_board_walk_steps_without_wrapping` |
+| US-2/S4 | the switcher flyout (step added 2026-11-15, UX R-4 D-4/#794) (the bar's dropdown, site 1) | press the `BoardSelect` stroke with no one-shot target (Ctrl+G / C-c g / g b) | `ActionId::BoardSelect` (no target) → `UiEffect::OpenBoardBarFlyout` → the facts arm (the bar swaps to the field in strip mode) | the flyout mounts anchored under the bar, the highlight anchored on the selection; Up/Down/C-n/C-p walk, Return routes the highlighted row's selection (the segment seam's route) | Escape closes with nothing dispatched; the outside click's underlay write closes (the walk arm's self-heal syncs the flags); inert with zero live boards — tests `journeys.rs::us2_s4_target_free_board_select_opens_flyout_and_return_selects`, `flow_table_tests.rs::the_target_free_board_select_opens_the_flyout_walks_and_disarms_clean` |
 
 ### US-3 — Create a stack
 
@@ -404,7 +439,8 @@ above cites one of these; this table is the ruling's authority,
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-8/S1 | empty-board leg CTA (`board-layout.slint:248-251`) | click "Create Default Kanban Setup" | `board-default-preset-clicked` (`adapter.rs:8335-8341`) → `apply_board_preset(&state, &board_presets::DEFAULT_KANBAN)` (`view_state.rs:1851-1869`) | explicit ordered `StateCommand::CreateStack` payloads dispatch (one per preset stack) + `RefreshNow`; the columns render | board-less refusal (`view_state.rs:4358` test); the creates are journal PreImages, so `AppUndo` reverses the preset — test `view_state.rs::the_default_kanban_preset_dispatches_explicit_ordered_creates` |
+| US-8/S1 | empty-board leg CTA (`board-layout.slint:248-251`) | click "Create Default Kanban Setup" | `board-default-preset-clicked` → `ActionId::BoardDefaultPreset` (the CTA routes the action — amended 2026-11-15, UX R-4 D-5/#795, click ≡ key) → the dispatch gate (empty) → `apply_board_preset(&state, &board_presets::DEFAULT_KANBAN)` | explicit ordered `StateCommand::CreateStack` payloads dispatch (one per preset stack) + `RefreshNow`; the columns render | board-less refusal (`view_state.rs` test); the creates are journal PreImages, so `AppUndo` reverses the preset — test `view_state.rs::the_default_kanban_preset_dispatches_explicit_ordered_creates` |
+| US-8/S2 | the preset action's keyboard twin (step added 2026-11-15, T-12/#795) (Board context) | press P / C-c p / g p on a non-empty board | `ActionId::BoardDefaultPreset` → the dispatch-time empty-board gate | the typed no-op: nothing drains (a sync refresh mid-stroke flips the verdict safely to inert; board-less stays `apply_board_preset`'s refusal) | the typed no-op IS the escape (no staging, no partial state) — tests `flow_table_tests.rs::the_default_preset_action_dispatches_on_empty_and_is_the_typed_noop_on_content`, `journeys.rs::us8_s2_preset_on_nonempty_board_is_the_typed_noop` |
 
 ### US-9 — Column task-count display
 
@@ -416,10 +452,10 @@ above cites one of these; this table is the ruling's authority,
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-10/S1 | CLI `boards color` (`cli.rs:365`) | run the verb | `StateCommand::SetBoardColor` (`messages.rs:170`) | the board color changes engine-side; the GUI board bar renders it | `--confirm`-free non-destructive verb; no GUI twin exists (BF-1) |
+| US-10/S1 | CLI `boards color` (`cli.rs:365`) | run the verb | `StateCommand::SetBoardColor` (`messages.rs:170`) | the board color changes engine-side; the GUI board bar renders it (the segment dot, US-12's echo) | `--confirm`-free non-destructive verb; **history (retired 2026-11-15)**: "no GUI twin" — the twin shipped as US-12 (the swatch picker) |
 | US-10/S2 | CLI `boards archive` / `unarchive` (`cli.rs:375-381`) | run the verb | `StateCommand::SetBoardArchived` (`messages.rs:179`) | the board leaves/joins the live set. **History (retired 2026-11-15)**: "an archived board is unreachable in the GUI" — BF-2's lockout ended with US-11 (the archived-boards roster); the archive verb itself stays CLI-only (chunk 4's board-verb family) | unarchive is now GUI-completable end-to-end via US-11/S2-S3; archive remains CLI-first until chunk 4 |
-| US-10/S3 | CLI `boards reset --confirm` (`cli.rs:403`) | run the verb | `StateCommand::ResetBoard` (`messages.rs:199`) | the board content resets | `--confirm` flag is the CLI's destructive gate; no GUI affordance (BF-3); `ResetBoard` is `NotUndoable(BoardCeremony)` (`undo.rs:134-138`) |
-| US-10/S4 | CLI `boards reconcile --confirm` (`cli.rs:429`) | run the verb | `StateCommand::ReconcileByTitle` (`messages.rs:296`) | cross-entity references reconcile | `--confirm` gate; no GUI affordance (BF-4) |
+| US-10/S3 | CLI `boards reset --confirm` (`cli.rs:403`) | run the verb | `StateCommand::ResetBoard` (`messages.rs:199`) | the board content resets | `--confirm` flag is the CLI's destructive gate; the GUI absence is the **ruling R-10** (2026-11-15, chunk-4 D-2 — by justification, not omission; revisit note in the ruling); `ResetBoard` is `NotUndoable(BoardCeremony)` (`undo.rs`) |
+| US-10/S4 | CLI `boards reconcile --confirm` (`cli.rs:429`) | run the verb | `StateCommand::ReconcileByTitle` (`messages.rs:296`) | cross-entity references reconcile | `--confirm` gate; the GUI absence is the **ruling R-11** (2026-11-15, chunk-4 D-3 — the CLI's informed consent beats a count-less GUI stage); revisit note in the ruling |
 
 ### US-11 — Unarchive a board from the GUI (amendment 2026-11-15)
 
@@ -428,6 +464,14 @@ above cites one of these; this table is the ruling's authority,
 | US-11/S1 | board bar, trailing archived-boards indicator (flyout site 3) | click the indicator | — (opens the roster dropdown; nothing dispatched) | the dropdown opens with one title-only row per archived board, canonical order; the indicator mounts only while the archive is non-empty | Escape / outside click closes the dropdown, nothing dispatched (the shared dropdown's own dismissal contract, `dropdown.slint` ladder) — test `journeys.rs::us11_s1_roster_absent_while_no_board_is_archived` |
 | US-11/S2 | roster row | click an archived board's row | `on_board_bar_archived_activated` (`adapter.rs`) → `view_state.rs::unarchive_board` → `StateCommand::SetBoardArchived { board, archived: false }` (`messages.rs:179`) + `RefreshNow` | the restored board re-selects on the first refresh where the engine's apply lands (the view-state one-shot consumed at reconcile) | typed engine refusals surface through the outcome lane; `SetBoardArchived` is journal-eligible (`undo.rs:324`), so `AppUndo` reverses — test `journeys.rs::us11_s2_roster_row_unarchives_and_selects` |
 | US-11/S3 | board bar | — (the apply's system response) | — | the board rejoins the segment set, becomes the selection, and the roster unmounts (the archive is empty again) | a refused apply never selects (`view_state.rs::unarchive_board_arms_a_pending_select_consumed_once_live`); a deleted target prunes the arm — test `journeys.rs::us11_s3_the_restored_board_rejoins_the_bar_and_the_roster_unmounts` |
+
+### US-12 — Set the board's color (amendment 2026-11-15)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-12/S1 | board context menu row ("Board color…") or the `BoardColorEdit` stroke (Ctrl+F3 / C-c C-f / g c) | open the picker | `ActionId::BoardColorEdit` → `UiEffect::BoardColorEdit` → `Flow::BoardColorPick` arms (armed-with-no-buffer) | the swatch strip mounts under the bar (the shared six-hex vocabulary; the current color's ring; a lenient value echoes no ring) | Escape / outside click / a foreign settle disarm with nothing dispatched; board-less is the inert refusal — test `journeys.rs::us12_s1_board_color_edit_arms_the_swatch_strip` |
+| US-12/S2 | the swatch strip | click a swatch | `StateCommand::SetBoardColor { board: <selected>, color: Color::new(<swatch hex>) }` + `RefreshNow` (the exact palette hex — never free text, D-6) | the strip closes; the segment dot re-renders (the echo) | typed engine refusals surface through the outcome lane; `SetBoardColor` is `NotUndoable(BoardCeremony)`, so a mis-pick reverses by picking again (the self-reversing verb is the recorded reason no armed-confirm stage applies) — test `journeys.rs::us12_s2_swatch_pick_commits_setboardcolor_and_closes` |
+| US-12/S3 | the swatch strip | Escape / outside click | — (the disarm) | the strip unmounts; nothing dispatched; re-arming works (the picker's own re-openability is the recovery) | the armed triple (dismissal seam / foreign settle / Escape) — test `journeys.rs::us12_s3_strip_dismissal_dispatches_nothing_and_rearm_works`, `flow_table_tests.rs::the_board_color_strip_dispatches_the_exact_setboardcolor_and_disarms_clean` |
 
 ## 5. Interaction flows
 
@@ -488,7 +532,8 @@ descriptive-name tests. -->
 | W-7 | ui/compositions/board-layout.slint (menu row; no direct widget) | context-menu destructive row / keyboard verb | — | on_menu_entry_invoked (adapter.rs:7035) routes the action id; UiEffect arm adapter.rs:3587/3595 | ActionId::StackDelete | StateCommand::DeleteStack; StateCommand::DeleteBoard; ActionId::BoardDelete | target resolution focused → selected → first (view_state.rs:1795, 2912-2937) | US-5/S1-US-5/S3 | view_state.rs::delete_stack_and_delete_board_dispatch_the_exact_commands |
 | W-8 | ui/views/stack-view.slint (StackDetail surface, recorded in this slice) | stack move flow (keyboard; ring highlight paint) | — | UiEffect::StackMove arm adapter.rs:3589 (keyboard flow; no widget callback) | ActionId::StackMove | StateCommand::MoveStack | slot cycle over board stacks (view_state.rs:2957-3010) | US-6/S1-US-6/S3 | journeys.rs::the_stack_move_flow_cycles_and_confirms_minimally |
 | W-9 | ui/compositions/board-layout.slint | column divider TouchArea | — | on_board_stack_width_press (adapter.rs:7615); on_board_stack_width_drag (adapter.rs:7649); on_board_stack_width_release (adapter.rs:7690) — slint callback board-stack-width-drag | ActionId::StackWider | UiRequest::StackWidthsChanged; ActionId::StackNarrower | column pair via a.tables.stack_ids, staleness re-checked per frame | US-7/S1-US-7/S3 | view_state.rs::resize_focused_stack_steps_the_pair_and_clamps |
-| W-10 | ui/compositions/board-layout.slint | "Create Default Kanban Setup" CtaButton | — | on_board_default_preset_clicked (adapter.rs:8335-8341) — slint callback board-default-preset-clicked (pointer-only CTA; no registry entry — BF-9) | — | StateCommand::CreateStack | board-scoped (preset table board_presets.rs:23) | US-8/S1 | view_state.rs::the_default_kanban_preset_dispatches_explicit_ordered_creates |
+| W-10 | ui/compositions/board-layout.slint | "Create Default Kanban Setup" CtaButton | — | on_board_default_preset_clicked (adapter.rs) — slint callback board-default-preset-clicked (routes `ActionId::BoardDefaultPreset`; amended 2026-11-15, UX R-4 D-5/#795 — click ≡ key) | ActionId::BoardDefaultPreset | StateCommand::CreateStack | board-scoped (preset table board_presets.rs:23) | US-8/S1-US-8/S2 | view_state.rs::the_default_kanban_preset_dispatches_explicit_ordered_creates; journeys.rs::us8_s2_preset_on_nonempty_board_is_the_typed_noop |
+| W-13 (UX R-4 D-1, 2026-11-15) | ui/app-window.slint (strip panel + underlay), ui/compositions/board-bar.slint (anchor mirror + segment dot), ui/widgets (none new) | swatch strip (the shared SWATCHES vocabulary) + segment color dots | — | on_board_color_picked, on_board_color_strip_dismissed (adapter.rs, install_board_color_seams) — slint callbacks board-color-picked, board-color-strip-dismissed; the opener is `ActionId::BoardColorEdit`'s route (menu row + key) | ActionId::BoardColorEdit | StateCommand::SetBoardColor | the selected board via the id-table pass (view_state board()); the picked index resolves against the shared palette (stale absorbed) | US-12/S1-US-12/S3 | journeys.rs::us12_s1_board_color_edit_arms_the_swatch_strip; journeys.rs::us12_s2_swatch_pick_commits_setboardcolor_and_closes; journeys.rs::us12_s3_strip_dismissal_dispatches_nothing_and_rearm_works |
 | W-11 | ui/compositions/board-layout.slint | per-column count Badge | — | — (display only) | — | — | per-column render | US-9/S1 | journeys.rs::the_empty_board_renders_bar_ctas_and_the_preset |
 | W-12 | ui/compositions/board-bar.slint (flyout site 3 mounted at ui/app-window.slint) | trailing archived-boards indicator (the shared Dropdown, `field-enabled` platform gate) | — | on_board_bar_archived_activated (adapter.rs) — slint callback board-bar-archived-activated | — | StateCommand::SetBoardArchived | roster row index via a.tables.archived_board_ids (stale absorbed; kiosk refused at layer 3) | US-11/S1-US-11/S3 | journeys.rs::us11_s2_roster_row_unarchives_and_selects |
 
@@ -513,6 +558,8 @@ is new or changed.
 | ActionId | BoardCreate / BoardRename / BoardDelete / BoardSelect / BoardNext / BoardPrevious | exist (`actions.rs:235-257`, registry `actions.rs:885-944`) | US-1, US-2, US-4, US-5 |
 | ActionId | StackCreate / StackRename / StackDelete / StackMove / StackWider / StackNarrower | exist (`actions.rs:238-254`, registry `actions.rs:965-1033`) | US-3, US-4, US-5, US-6, US-7 |
 | ActionId | AppUndo / AppRedo | exist (`actions.rs:217-218`) — the preset creates are undoable (journal PreImages) | US-8 |
+| ActionId | **BoardColorEdit** | **new (2026-11-15, chunk-4 D-1/D-6)** — ContextId::Board, `BOARD_CONTEXT` row, preset bindings; `ContextId`+`ActionId` variants are the delta's whole command-contract change (zero new `StateCommand`/`UiRequest`, no undo-class change) | US-12 |
+| ActionId | **BoardDefaultPreset** | **new (2026-11-15, chunk-4 D-5/D-6)** — ContextId::Board, menu_group Board, preset bindings; the CTA routes it (click ≡ key); dispatch-time empty-board gate is the adapter's arm | US-8 |
 
 No `UiRequest` beyond `StackWidthsChanged` and no new variant of any
 kind is involved in these journeys.
@@ -565,6 +612,9 @@ descriptively) and the six-heuristic pass surfaced the following; each
 carries evidence, never a fix.
 
 - **BF-1 — board.color is CLI-only; create hardcodes the color**
+  *(Remediated 2026-11-15: US-12, remediation chunk 4 / triage T-8
+  (#791) — the swatch picker + the segment echo + the create's
+  default-color parity; AC-1/US-10-S1's retirements above.)*
   (F-Pattern 1, CLI-only mutation of user data). No GUI affordance
   anywhere: zero dispatch sites for `SetBoardColor` in the UI crate
   (`messages.rs:170` engine-side; sweep evidence census register
@@ -585,15 +635,18 @@ carries evidence, never a fix.
   unarchives it. Walkthrough Q4: the recovery path exists only in the
   CLI.
 - **BF-3 — board.reset is CLI-only and destructive-without-undo**
+  *(Ruled 2026-11-15: chunk-4 D-2 / triage T-9 (#792) — ruling R-10,
+  §2: the GUI absence is by justification, with the revisit note in
+  the ruling; the census cells converted `U (BF-3)` → `— (R-10)`.)*
   (F-Pattern 1). `ResetBoard` is CLI-gated by `--confirm`
-  (`cli.rs:403`), `NotUndoable(BoardCeremony)` (`undo.rs:134-138`),
-  and has zero GUI dispatch sites. The GUI user has neither the verb
-  nor a warning surface.
-- **BF-4 — board.reconcile is CLI-only** (F-Pattern 1).
-  `ReconcileByTitle` (`messages.rs:296`, `cli.rs:429`) has no GUI
-  affordance; the GUI's reconcile happens implicitly on refresh
-  (selection repair, `view_state.rs:4472` test) but the explicit verb
-  is CLI-only.
+  (`cli.rs:403`), `NotUndoable(BoardCeremony)` (`undo.rs`), and has
+  zero GUI dispatch sites.
+- **BF-4 — board.reconcile is CLI-only** *(Ruled 2026-11-15: chunk-4
+  D-3 / triage T-10 (#793) — ruling R-11, §2: the informed-consent
+  letter; revisit note in the ruling; census cells `U (BF-4)` →
+  `— (R-11)`.)* (F-Pattern 1). `ReconcileByTitle` (`messages.rs:296`,
+  `cli.rs:429`) has no GUI affordance; the GUI's reconcile happens
+  implicitly on refresh but the explicit verb is CLI-only.
 - **BF-5 — board delete: escape-less destructive step**
   (F-Pattern 3, journey integrity). The GUI deletes the current board
   and all its content with no confirmation UI (the registry
@@ -610,11 +663,12 @@ carries evidence, never a fix.
   context-menu row. Contrast: task delete IS undoable
   (`DeleteTask` in the PreImages class, `undo.rs:104-109`) — the
   sibling verb has the escape this one lacks.
-- **BF-7 — board.select has no keyboard binding** (F-Pattern 4,
-  convenience/keyboard-mouse parity). `BoardSelect` ships click-only
-  ("empty today, the mechanism is what ships", `board-bar.slint:49-51`)
-  — no preset binds it in any keymap. The b/B walk partially covers
-  direct selection; direct jump needs pointer or the palette.
+- **BF-7 — board.select has no keyboard binding** *(Remediated
+  2026-11-15: chunk-4 D-4 / triage T-11 (#794) — the preset rows +
+  the target-free flyout flow, US-2/S4.)* (F-Pattern 4).
+  `BoardSelect` shipped click-only ("empty today, the mechanism is
+  what ships", `board-bar.slint:49-51` — the comment retires to
+  history); the b/B walk partially covered direct selection.
 - **BF-8 — CLI gaps on the board surface are convenience-class**
   (F-Pattern 4): no `boards` preset verb (the CTA's journey is
   GUI-only), no stacks width verb (widths persist per device via
@@ -622,12 +676,12 @@ carries evidence, never a fix.
   not expose), and counts are list output, not a badge capability
   (census Sweep-CLI evidence). The matrix's CLI `U` cells stay `U`
   under these findings.
-- **BF-9 — the preset CTA is pointer-only** (F-Pattern 4,
-  keyboard-mouse parity). `board-default-preset-clicked` has no
-  ActionId and no key in any preset (`adapter.rs:8335-8341` direct
-  dispatch; no registry entry) — a keyboard-only user on an empty
-  board must create stacks by hand (US-3's S key covers the need,
-  less conveniently).
+- **BF-9 — the preset CTA is pointer-only** *(Remediated 2026-11-15:
+  chunk-4 D-5 / triage T-12 (#795) — `ActionId::BoardDefaultPreset`
+  routes the CTA and binds per preset, US-8/S2's gate.)*
+  (F-Pattern 4, keyboard-mouse parity). `board-default-preset-clicked`
+  had no ActionId and no key in any preset (direct dispatch; no
+  registry entry).
 - **W-N1 — walkthrough feedback note (US-9/S1)**: the count badge
   doubles as the move-flow's aim feedback (tone flips to
   `Tone.sync-active` while `column-index == root.move-target`,
@@ -641,6 +695,20 @@ carries evidence, never a fix.
   signal the user gets before BF-5/BF-6's point of no return.
 
 ## 11. Plan corrections
+- **PC-4 (2026-11-15, remediation chunk 4)**: the UX remediation
+  chunk 4 (stage 2, `fix/ux-r4-board-entry-points`) amended this plan
+  under the dispatch plan's dress-rehearsal mandate (authority: the
+  chunk plan D-1..D-6, D-10): US-12 (story, journey table, W-13), the
+  US-2/S4 flyout step, US-8's keyboard twin + S2 gate step, US-1's
+  AC-1 default-color correction, US-10/S1's retirement, the §2
+  conversions (`board.color` Board `U (BF-1)` → `E (US-12)`; other
+  GUI columns `— (R-1)`'s letter; `board.reset`/`board.reconcile` →
+  `— (R-10)`/`— (R-11)`), the R-10/R-11 rulings rows, the §7 ActionId
+  delta (`BoardColorEdit`, `BoardDefaultPreset` — ActionIds only,
+  D-6), and the BF-1/BF-3/BF-4/BF-7/BF-9 notes. Kiosk posture
+  unchanged: every affordance mounts on the desktop board surface
+  (the board surface does not mount on kiosk — the recorded absence
+  stands, the chunk plan §6).
 - **PC-3 (2026-11-15, remediation amendment)**: the UX remediation
   chunk 1 (stage 2, `fix/ux-r1-completability`) amended this plan
   under the dispatch plan's dress-rehearsal mandate (authority: the

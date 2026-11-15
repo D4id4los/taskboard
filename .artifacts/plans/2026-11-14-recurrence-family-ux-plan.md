@@ -34,6 +34,18 @@
   pause/resume/convert buttons greyed. Command-contract delta of the
   amendment: **zero new variants** (gating is display state — the
   `series-edit-enabled` flag, `presentation.rs::series_edit_enabled`).
+  **Amended 2026-11-15 (II)** (UX remediation chunk 4, stage 2;
+  authority: the accepted triage report finding T-20 (#803) and the
+  chunk plan
+  `.artifacts/plans/2026-11-15-ux-r4-board-entry-points-chunk-plan.md`
+  D-7): the ruling **RC-1′** corrects the *reach* evidence — the card
+  context menu (`TASK_CONTEXT`) already routes the Series* verbs on
+  every surface that renders task cards, and the context seams focus
+  the addressed card first, so pointer parity exists at the card
+  level; the matrix cells convert per D-7 (`U (RC-1/RC-2)` → `E` on
+  Board/Today; `—` under R-Pattern 3 on Review/Settings/Capture) and
+  W-N1 gains the dated correction note. No code change rides this
+  amendment (the reach existed; the census cell missed it).
 - **Surfaces touched**: `ui/views/task-view.slint` (the recur row),
   `ui/widgets/task-card.slint` (the recur badge), `src/adapter.rs`
   (recur seams), `src/actions.rs`, `src/router.rs`,
@@ -82,8 +94,8 @@ chunk's named trap applied. Cells avoid `|`. -->
 |---|---|---|---|---|---|---|---|
 | task.recur_set | — (R-2) | E (desktop) (US-1, US-2) — "Add repeat"/"Edit repeat" affordances `ui/views/task-view.slint:653-659,776-782`, editor `ui/compositions/recur-editor.slint`, commit funnel `router.rs:765-776`, exact-rule test =lib.rs::recur_editor_commits_the_exact_assembled_rule= | — (R-2) | — (R-2) | — (R-2) | — (R-1) | E (pre-existing, =tasks repeat=, now minting via =recur::assemble_rule= `taskboard-domain/src/recur.rs:791`) |
 | task.recur_clear | — (R-2) | E (desktop) (US-3) — armed "Stop repeating" strip `recur-editor.slint:274+`, detach =router.rs:777-786=, exactness test =lib.rs::recur_editor_detach_clears_the_rule_and_nothing_else= | — (R-2) | — (R-2) | — (R-2) | — (R-1) | E (pre-existing, =tasks repeat --off=) |
-| task.recur_pause | U (RC-1) | E (US-1) — pause-through-date flow `adapter.rs:7166-7182` (live `adapter.rs:7203-7229`), resume `adapter.rs:7188` (live `adapter.rs:7230-7237`); (→ =PauseSeries= `messages.rs:423`); recur-row labels `task-view.slint:788-826` | E — =SeriesPause/=SeriesPauseCommit/=SeriesResume= registry `actions.rs:1366-1386`, reachable from today cards via the recur badge `task-card.slint:22-24` (the badge itself is display-only — the reach is the GLOBAL menu rows, W-N1) | U (RC-1) | U (RC-1) | U (RC-1) | E (pre-existing, =tasks repeat= pause/resume `cli.rs:1746`, flags `cli.rs:821,830`) |
-| task.recur_convert_to_habit | U (RC-2) | E (US-2) — convert flow `adapter.rs:7196-7232` (live `adapter.rs:7238-7272`); (→ =ConvertSeriesToHabit= `messages.rs:437`); recur-row convert label `task-view.slint:832` | E — =SeriesConvertArm/=SeriesConvertToHabit= registry `actions.rs:1396-1406` | U (RC-2) | U (RC-2) | U (RC-2) | U (RC-3) |
+| task.recur_pause | E — the card context menu (`TASK_CONTEXT`) routes =SeriesPause/=SeriesPauseCommit/=SeriesResume= on every card surface (the seams focus the clicked card first — ruling RC-1′, 2026-11-15, chunk-4 D-7/T-20 #803) + the promoted detail recur row (US-1) | E (US-1) — pause-through-date flow `adapter.rs` (live), resume; (→ =PauseSeries= `messages.rs:423`); recur-row labels `task-view.slint` | E — the GLOBAL menu rows + the card context menu (RC-1′ corrects the badge reach: the badge is display-only, the menus are the paths) | — (R-Pattern 3) | — (R-Pattern 3) | — (R-Pattern 3) | E (pre-existing, =tasks repeat= pause/resume `cli.rs:1746`, flags `cli.rs:821,830`) |
+| task.recur_convert_to_habit | E — the card context menu (`TASK_CONTEXT`) routes =SeriesConvertArm/=SeriesConvertToHabit= (RC-1′, 2026-11-15) + the promoted detail recur row (US-2) | E (US-2) — convert flow `adapter.rs` (live); (→ =ConvertSeriesToHabit= `messages.rs:437`); recur-row convert label `task-view.slint` | E — the GLOBAL menu rows + the card context menu (RC-1′) | — (R-Pattern 3) | — (R-Pattern 3) | — (R-Pattern 3) | U (RC-3) |
 | task.recur_preview | — (R-2) | D (desktop) (US-1, US-2 — inside the editor) — live echo `recur-editor.slint:54-57` fed by =assemble_recur_draft= | — (R-2) | — (R-2) | — (R-2) | — (R-2) | U (RC-4) |
 | task.recur_display | D (pre-existing card badge) | D (pre-existing pattern echo) | D — the same card badge on today rows `today-view.slint:20,376`, `task-card.slint:22-24` | — (R-2) | — (R-2) | — (R-2) | U (RC-4) |
 
@@ -353,7 +365,11 @@ each carries evidence, never a fix.
 
 - **RC-1 — the pause/resume affordances mount only in the detail
   view's recur row; everywhere else the path is the buried global
-  menu** (entry-point asymmetry). The census register records
+  menu** *(Ruled 2026-11-15: chunk-4 D-7 — ruling RC-1′: the evidence
+  was incomplete; the card context menu is the third, non-buried path
+  on every card surface, so pointer parity exists at the card level;
+  the detail row remains the promoted surface; no keys bind.)*
+  (entry-point asymmetry). The census register records
   "Sweep-B/R/S/C: no pause/resume seam" (Board / Review / Settings /
   Capture cells stay `U` under this finding); the `SeriesPause` /
   `SeriesResume` verbs are GLOBAL registry rows with Task-group menu
@@ -362,12 +378,12 @@ each carries evidence, never a fix.
   `task-card.slint:22-24`) with no control on it. Walkthrough Q1: the
   control is not where the series renders. The borderline
   classification is the triage's.
-- **RC-2 — the same posture for the series→habit conversion**: the
-  convert affordance mounts only in the detail recur row
-  (`task-view.slint:832`); Board/Review/Settings/Capture cells stay
-  `U`. The conversion has no CLI twin (RC-3), so the detail view is
-  the conversion's only surfaced path and the menu the only other
-  one.
+- **RC-2 — the same posture for the series→habit conversion**:
+  *(Ruled 2026-11-15: RC-1′ covers the conversion verbs identically —
+  the card context menu routes =SeriesConvertArm/=SeriesConvertToHabit=;
+  cells converted per D-7.)* the convert affordance mounts in the
+  detail recur row (`task-view.slint`); the card context menu is the
+  second path (RC-1′). The conversion has no CLI twin (RC-3).
 - **RC-3 — task.recur_convert_to_habit has no CLI verb** (F-Pattern 1
   evidence note). `tasks repeat` (`cli.rs:1746-1755`) has no convert
   verb (census Sweep-CLI evidence, register 2026-11-13). The CLI cell
@@ -386,14 +402,22 @@ each carries evidence, never a fix.
   HB-3 records for the mirror conversion. The pre-commit armed strip
   is the escape; the post-commit reversal is the sibling verb
   (habit→series). Recorded, not fixed.
-- **W-N1 — walkthrough note (US-1/S1, the badge-display claim)**: the
-  census's Today cell for `task.recur_pause` says "reachable from
-  today cards via the recur badge" — the badge itself is a
-  display-only decoration (`task-card.slint:22-24`, no click seam in
-  the widget); the reach is the GLOBAL menu rows. The cell's
-  populated evidence stands as recorded (census cells are immutable
-  input); this note records the widget-level fact for the triage's
-  classification of RC-1.
+- **W-N1 — walkthrough note (US-1/S1, the badge-display claim)**:
+  **Corrected 2026-11-15 (ruling RC-1′, chunk-4 D-7)**: the note's
+  badge-display fact stands (the badge is a display-only decoration,
+  `task-card.slint`, no click seam), but its *reach* statement is
+  corrected — the card context menu (`TASK_CONTEXT`, the right-click
+  of every board card / stack-detail card / today row via
+  `open_task_context_menu`) already carries the Series* verbs, and
+  the context seams focus the addressed card first, so the verbs
+  resolve against the clicked series. Pointer parity exists at the
+  card level on every surface that renders task cards; the detail
+  recur row remains the *promoted* surface (buttons vs menu rows —
+  prominence, not reachability); the recur badge stays display-only;
+  no new keys bind (the verbs are contextual to a focused series).
+  The census's Today cell for `task.recur_pause` ("the reach is the
+  GLOBAL menu rows") missed this third, non-buried path — the census
+  cells are updated per chunk-4 D-7.
 - **W-N2 — walkthrough note (US-4, kiosk)**: *(Remediated
   2026-11-15 — UX remediation chunk 1 / triage T-7 (#790): the recur
   row renders on kiosk with its pause/resume/convert buttons greyed
