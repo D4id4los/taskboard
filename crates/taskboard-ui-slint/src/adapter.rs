@@ -3240,7 +3240,8 @@ impl Adapter {
                 | UiEffect::BoardCreate
                 | UiEffect::BoardDelete
                 | UiEffect::BoardRename
-                | UiEffect::BoardColorEdit),
+                | UiEffect::BoardColorEdit
+                | UiEffect::BoardDefaultPreset),
             ) => self.interpret_lifecycle(&flow, effect, &state),
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
             // menu row, `Ctrl+,`, and a second press all close an open
@@ -3752,6 +3753,28 @@ impl Adapter {
             UiEffect::BoardDelete => self.view_state.delete_board(state),
             UiEffect::BoardRename => self.view_state.begin_rename_board(state),
             UiEffect::BoardColorEdit => self.view_state.begin_board_color(state),
+            UiEffect::BoardDefaultPreset => {
+                // The dispatch-time empty-board gate (UX R-4 D-5,
+                // #795): the CTA renders only on the empty-board leg,
+                // so the pointer path cannot fire on content — the
+                // key could; the typed no-op is the safe side (a sync
+                // refresh mid-stroke flips the verdict to inert, the
+                // recorded R-3 law). The board-less refusal stays
+                // apply_board_preset's.
+                let Some(board) = self.view_state.board() else {
+                    return Vec::new();
+                };
+                let empty = !state
+                    .stacks
+                    .values()
+                    .any(|stack| stack.board == board && !stack.deleted);
+                if empty {
+                    self.view_state
+                        .apply_board_preset(state, &crate::board_presets::DEFAULT_KANBAN)
+                } else {
+                    Vec::new()
+                }
+            }
             _ => Vec::new(),
         }
     }
@@ -4089,6 +4112,7 @@ impl Adapter {
             | UiEffect::BoardDelete
             | UiEffect::BoardRename
             | UiEffect::BoardColorEdit
+            | UiEffect::BoardDefaultPreset
             | UiEffect::FocusFirst
             | UiEffect::FocusLast
             // Chunk 10: the today/inbox jumps and capture route
@@ -8783,14 +8807,12 @@ fn install_stack_create_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     a.route(&window, ActionId::StackCreate);
 
     });
-    // The empty-board preset CTA (r3 D5): the direct command dispatch
-    // — no text flow, the flow machine untouched.
+    // The empty-board preset CTA (r3 D5; UX R-4 D-5, #795): click ≡
+    // key at every step — the click routes the `board.default-preset`
+    // action, whose dispatch arm owns the empty-board gate (the
+    // direct command dispatch is retired).
     install_seam!(window: window.on_board_default_preset_clicked, adapter: adapter;
-    bind mut (a, window), args (), {        let state = a.state.load_full();
-    let outcomes = a
-        .view_state
-        .apply_board_preset(&state, &crate::board_presets::DEFAULT_KANBAN);
-    a.apply_outcomes(&window, &outcomes);
+    bind mut (a, window), args (), {        a.route(&window, ActionId::BoardDefaultPreset);
 
     });
     install_seam!(window: window.on_board_stack_create_edited, adapter: adapter; [bare_mut]

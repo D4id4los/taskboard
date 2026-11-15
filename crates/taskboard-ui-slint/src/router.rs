@@ -208,6 +208,9 @@ pub enum UiEffect {
     /// Arm the board color picker over the selected board (UX R-4
     /// D-1, #791) — the strip mounts from the flow.
     BoardColorEdit,
+    /// The empty-board preset's dispatch (UX R-4 D-5, #795): the
+    /// adapter's arm owns the empty-board gate.
+    BoardDefaultPreset,
     /// Focus the first card in reading order.
     FocusFirst,
     /// Focus the last card in reading order.
@@ -379,7 +382,8 @@ impl UiEffect {
             | Self::BoardCreate
             | Self::BoardDelete
             | Self::BoardRename
-            | Self::BoardColorEdit => EffectClass::Lifecycle,
+            | Self::BoardColorEdit
+            | Self::BoardDefaultPreset => EffectClass::Lifecycle,
             Self::BeginCreate { .. } | Self::BeginCreateStack | Self::RequestMove => {
                 EffectClass::Begin
             }
@@ -979,6 +983,7 @@ impl ActionRouter {
             ActionId::BoardDelete => DispatchOutcome::UiEffect(UiEffect::BoardDelete),
             ActionId::BoardRename => DispatchOutcome::UiEffect(UiEffect::BoardRename),
             ActionId::BoardColorEdit => DispatchOutcome::UiEffect(UiEffect::BoardColorEdit),
+            ActionId::BoardDefaultPreset => DispatchOutcome::UiEffect(UiEffect::BoardDefaultPreset),
             ActionId::NavFirstItem => DispatchOutcome::UiEffect(UiEffect::FocusFirst),
             ActionId::NavLastItem => DispatchOutcome::UiEffect(UiEffect::FocusLast),
             // The today re-commit (chunk 10, D-V4 rider): a fresh

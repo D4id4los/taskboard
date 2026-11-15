@@ -285,6 +285,12 @@ pub enum ActionId {
     /// board-less refusal is the adapter's arm). Click ≡ key: the
     /// board context menu's row routes the same id.
     BoardColorEdit,
+    /// The empty-board preset CTA's action twin (UX R-4 D-5, #795):
+    /// applies the default kanban preset to the selected board —
+    /// click and key route the same id; the dispatch-time empty-board
+    /// gate is the adapter's arm (the typed no-op on a non-empty
+    /// board).
+    BoardDefaultPreset,
     NavFirstItem,
     NavLastItem,
     ReminderSnooze,
@@ -531,6 +537,7 @@ impl ActionId {
             Self::BoardDelete => "board.delete",
             Self::BoardRename => "board.rename",
             Self::BoardColorEdit => "board.color-edit",
+            Self::BoardDefaultPreset => "board.default-preset",
 
             Self::NavFirstItem => "nav.first-item",
             Self::NavLastItem => "nav.last-item",
@@ -974,6 +981,16 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 100,
         description: "Opens the board title editor for the current board.",
+        menu_group: Some(MenuGroup::Board),
+    },
+    ActionEntry {
+        id: ActionId::BoardDefaultPreset,
+        label: "Apply default kanban preset",
+        contexts: &[ContextId::Board],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 115,
+        description: "Creates the default kanban stacks on the current board; inert while the board has any stacks (the empty-board CTA's key twin).",
         menu_group: Some(MenuGroup::Board),
     },
     ActionEntry {
@@ -2054,6 +2071,7 @@ mod tests {
             ActionId::BoardDelete,
             ActionId::BoardRename,
             ActionId::BoardColorEdit,
+            ActionId::BoardDefaultPreset,
             ActionId::NavFirstItem,
             ActionId::NavLastItem,
             ActionId::ReminderSnooze,
