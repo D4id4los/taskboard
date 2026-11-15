@@ -15642,11 +15642,92 @@ fn env_locked_focus_rows_render_locked_and_refuse_the_seam() {
             assert!(!model().get_focus_break_env_locked());
 
             window.invoke_settings_general_committed(12, "45".into());
-            window.invoke_settings_focus_notify_picked(1);
             assert!(
                 harness.drain_requests().is_empty(),
                 "the locked keys never dispatch"
             );
+            // T-16 (#799): the refusal renders typed — the rejected
+            // outcome plus the `EnvLocked` detail class, structurally.
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            assert!(
+                model().get_last_error_env_locked(),
+                "the env-locked detail class renders"
+            );
+
+            window.invoke_settings_focus_notify_picked(1);
+            assert!(harness.drain_requests().is_empty());
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            assert!(model().get_last_error_env_locked());
+        },
+    );
+}
+
+/// T-16 (#799) — the env-locked absorb's second family: the Files
+/// toggle's pick refuses typed (the `EnvLocked` detail class renders)
+/// and never routes; a knob pick on a locked choice row refuses the
+/// same way (the sweep's representative).
+#[test]
+fn env_locked_files_pick_and_choice_picks_refuse_typed() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut snapshot = general_snapshot();
+    snapshot.env_overridden =
+        BTreeSet::from(["files_sync.enabled".to_owned(), "reminders.sink".to_owned()]);
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        general: snapshot,
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+            let model = || window.global::<taskboard_ui_slint::SettingsModel>();
+
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            let files_pick = items(&harness)
+                .iter()
+                .position(|item| item.kind == K::Files)
+                .expect("the Files row renders") as i32;
+            assert!(
+                items(&harness)
+                    .iter()
+                    .find(|item| item.kind == K::Files)
+                    .expect("the Files row renders")
+                    .files_locked,
+                "the env fact rides the row"
+            );
+            window.invoke_settings_files_picked(files_pick, 0);
+            assert!(
+                harness.drain_requests().is_empty(),
+                "a locked pick routes nothing"
+            );
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            assert!(model().get_last_error_env_locked());
+
+            // The choice-row representative (the sink pick — the same
+            // commit-on-pick grammar as the other toggles).
+            window.invoke_settings_sink_picked(1);
+            assert!(harness.drain_requests().is_empty());
+            assert_eq!(
+                model().get_last_outcome(),
+                taskboard_ui_slint::SettingsOutcome::Rejected
+            );
+            assert!(model().get_last_error_env_locked());
         },
     );
 }

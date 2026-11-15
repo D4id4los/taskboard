@@ -5665,6 +5665,13 @@ impl Adapter {
             SettingsOutcome::Unavailable => crate::SettingsOutcome::Unavailable,
             SettingsOutcome::Failed => crate::SettingsOutcome::Failed,
         });
+        // The T-16 typed detail fact: the refusal's EnvLocked class
+        // renders structurally (the tests' typed projection of the
+        // detail variant — the sentence text is never asserted).
+        global.set_last_error_env_locked(matches!(
+            self.settings.detail,
+            Some(SettingsError::EnvLocked { .. })
+        ));
         self.push_general_settings(&global);
     }
 
@@ -6447,7 +6454,17 @@ impl Adapter {
                 .env_overridden
                 .contains("files_sync.anchor");
         if env_locked {
-            tracing::debug!("files sync pick on an env-locked row; absorbed");
+            // T-16 (#799): the doctrine's letter — never a silent
+            // absorb. The pick mutates nothing (the lane stays clean)
+            // but the refusal renders typed at the point of action.
+            tracing::debug!("files sync pick on an env-locked row; refused typed");
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::EnvLocked {
+                    field: crate::requests::Field::FilesSyncEnabled,
+                }),
+            );
             return;
         }
         let files_on = self.settings.snapshot.files_sync_enabled
@@ -6628,9 +6645,19 @@ impl Adapter {
             return;
         }
         if self.settings.snapshot.env_overridden.contains(gf.key()) {
+            // T-16 (#799): the defence-in-depth arm renders the typed
+            // refusal instead of absorbing (the doctrine: never a
+            // silent absorb).
             tracing::debug!(
                 key = gf.key(),
-                "general commit on an env-locked row; absorbed"
+                "general commit on an env-locked row; refused typed"
+            );
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::EnvLocked {
+                    field: gf.lane_field(),
+                }),
             );
             return;
         }
@@ -6758,9 +6785,17 @@ impl Adapter {
             .contains("reminders.enabled")
         {
             // Choice commits are typed booleans — env-locked picks
-            // are absorbed at the defence arm (the segments render
-            // disabled; the row's source is named by the badge).
-            tracing::debug!("reminders pick on an env-locked row; absorbed");
+            // refuse typed at the defence arm (the segments render
+            // disabled; the row's source is named by the badge; the
+            // T-16 refusal renders at the point of action).
+            tracing::debug!("reminders pick on an env-locked row; refused typed");
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::EnvLocked {
+                    field: crate::requests::Field::RemindersEnabled,
+                }),
+            );
             return;
         }
         let (reply, reply_rx) = oneshot::channel();
@@ -6799,7 +6834,14 @@ impl Adapter {
             .env_overridden
             .contains("focus.enabled")
         {
-            tracing::debug!("focus enabled pick on an env-locked row; absorbed");
+            tracing::debug!("focus enabled pick on an env-locked row; refused typed");
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::EnvLocked {
+                    field: crate::requests::Field::FocusEnabled,
+                }),
+            );
             return;
         }
         let (reply, reply_rx) = oneshot::channel();
@@ -6837,7 +6879,14 @@ impl Adapter {
             .env_overridden
             .contains("focus.chain")
         {
-            tracing::debug!("focus chain pick on an env-locked row; absorbed");
+            tracing::debug!("focus chain pick on an env-locked row; refused typed");
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::EnvLocked {
+                    field: crate::requests::Field::FocusChain,
+                }),
+            );
             return;
         }
         let (reply, reply_rx) = oneshot::channel();
@@ -6876,7 +6925,14 @@ impl Adapter {
             .env_overridden
             .contains("focus.notify")
         {
-            tracing::debug!("focus notify pick on an env-locked row; absorbed");
+            tracing::debug!("focus notify pick on an env-locked row; refused typed");
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::EnvLocked {
+                    field: crate::requests::Field::FocusNotify,
+                }),
+            );
             return;
         }
         let (reply, reply_rx) = oneshot::channel();
@@ -6921,7 +6977,14 @@ impl Adapter {
             .env_overridden
             .contains("reminders.sink")
         {
-            tracing::debug!("sink pick on an env-locked row; absorbed");
+            tracing::debug!("sink pick on an env-locked row; refused typed");
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::EnvLocked {
+                    field: crate::requests::Field::ReminderSink,
+                }),
+            );
             return;
         }
         let (reply, reply_rx) = oneshot::channel();

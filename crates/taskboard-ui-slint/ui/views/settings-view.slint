@@ -168,6 +168,11 @@ export global SettingsModel {
     in-out property <int> preset-index: 0;
     in-out property <bool> save-enabled: false;
     in-out property <SettingsOutcome> last-outcome: SettingsOutcome.none;
+    // The last refusal's typed detail class (T-16, #799): true when
+    // the retained detail is `EnvLocked` — the structural projection
+    // the journeys assert (the sentence text is presentation, never
+    // asserted).
+    in-out property <bool> last-error-env-locked: false;
     // The mapped status sentence (r2 D28): presentation policy lives
     // in src/settings_status.rs; the push lands the string here.
     in-out property <string> status-text: "";
