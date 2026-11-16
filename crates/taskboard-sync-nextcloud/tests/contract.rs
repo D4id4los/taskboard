@@ -78,16 +78,16 @@ impl wiremock::Respond for SequenceResponder {
 #[derive(Default)]
 struct HintedSequence {
     statuses: Vec<u16>,
-    retry_after: &'static str,
+    retry_after: String,
     index: AtomicUsize,
 }
 
 impl HintedSequence {
-    fn new(statuses: Vec<u16>, retry_after: &'static str) -> Self {
+    fn new(statuses: Vec<u16>, retry_after: &str) -> Self {
         assert_ne!(statuses.len(), 0, "status sequence must not be empty");
         Self {
             statuses,
-            retry_after,
+            retry_after: retry_after.to_string(),
             index: AtomicUsize::new(0),
         }
     }
@@ -99,8 +99,8 @@ impl wiremock::Respond for HintedSequence {
             .index
             .fetch_add(1, Ordering::SeqCst)
             .min(self.statuses.len() - 1);
-        let template =
-            ResponseTemplate::new(self.statuses[i]).insert_header("Retry-After", self.retry_after);
+        let template = ResponseTemplate::new(self.statuses[i])
+            .insert_header("Retry-After", self.retry_after.as_str());
         if self.statuses[i] == 200 {
             template.set_body_string(fixture("boards_list.json"))
         } else {
@@ -115,7 +115,7 @@ impl wiremock::Respond for HintedSequence {
 async fn hinted_boards_run(
     server: &MockServer,
     statuses: Vec<u16>,
-    retry_after: &'static str,
+    retry_after: &str,
 ) -> Vec<Duration> {
     Mock::given(method("GET"))
         .and(path(BOARDS_PATH))
@@ -400,10 +400,10 @@ async fn http_date_in_the_future_caps_at_the_policy_cap() {
     let date = (chrono::Utc::now() + chrono::Duration::seconds(3600))
         .format("%a, %d %b %Y %H:%M:%S GMT")
         .to_string();
-    let retry_after: &'static str = Box::leak(date.into_boxed_str());
+
     // Any parse of now + 3600 s exceeds the 8 s cap regardless of clock
     // skew, so the sleep oracle is exact without a wall-clock window.
-    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], retry_after).await;
+    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], &date).await;
     assert_eq!(sleeps, [Duration::from_secs(8), Duration::from_secs(8)]);
 }
 
@@ -413,8 +413,8 @@ async fn http_date_in_the_past_reads_absent_and_falls_back_to_the_curve() {
     let date = (chrono::Utc::now() - chrono::Duration::seconds(60))
         .format("%a, %d %b %Y %H:%M:%S GMT")
         .to_string();
-    let retry_after: &'static str = Box::leak(date.into_boxed_str());
-    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], retry_after).await;
+
+    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], &date).await;
     assert_eq!(sleeps, [Duration::from_millis(500), Duration::from_secs(1)]);
 }
 

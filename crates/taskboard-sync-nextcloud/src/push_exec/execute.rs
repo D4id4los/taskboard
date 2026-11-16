@@ -559,7 +559,7 @@ impl<'a> PushExecutor<'a> {
                                         // travel in the Failed report or the next
                                         // cycle re-POSTs the card (no idempotency
                                         // keys — decision 3's whole point).
-                                        return GroupOutcome::Aborted { landed: outcomes, floor: err.advertised_hint().unwrap_or(std::time::Duration::ZERO) };
+                                        return GroupOutcome::Aborted { landed: outcomes, floor: err.advertised_floor() };
                                     }
                                 }
                             }
@@ -599,7 +599,7 @@ impl<'a> PushExecutor<'a> {
                 // assignLabel abort above).
                 return GroupOutcome::Aborted {
                     landed: outcomes,
-                    floor: err.advertised_hint().unwrap_or(std::time::Duration::ZERO),
+                    floor: err.advertised_floor(),
                 };
             }
         }
@@ -622,7 +622,7 @@ impl<'a> PushExecutor<'a> {
                     tracing::warn!(error = %err, "push aborted: transport failure");
                     return GroupOutcome::Aborted {
                         landed: outcomes,
-                        floor: err.advertised_hint().unwrap_or(std::time::Duration::ZERO),
+                        floor: err.advertised_floor(),
                     };
                 }
             }
@@ -1228,7 +1228,7 @@ impl<'a> PushExecutor<'a> {
             tracing::warn!(error = %err, "push aborted: transport failure");
             return GroupOutcome::Aborted {
                 landed: Vec::new(),
-                floor: err.advertised_hint().unwrap_or(std::time::Duration::ZERO),
+                floor: err.advertised_floor(),
             };
         };
         let mut outcomes = vec![PushOutcome {

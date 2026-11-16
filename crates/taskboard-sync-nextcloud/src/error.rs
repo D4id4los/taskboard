@@ -92,4 +92,11 @@ impl DeckError {
             _ => None,
         }
     }
+
+    /// [`Self::advertised_hint`] with a `ZERO` default: the floor a
+    /// failure installs on the next attempt's schedule, whether that is
+    /// the actor's poll cycle or the push abort's rescheduling.
+    pub(crate) fn advertised_floor(&self) -> std::time::Duration {
+        self.advertised_hint().unwrap_or(std::time::Duration::ZERO)
+    }
 }

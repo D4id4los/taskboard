@@ -35,7 +35,6 @@ use taskboard_domain::{
 
 use crate::anchor;
 use crate::client::{DeckClient, Fetch, Validators};
-use crate::error::DeckError;
 use crate::flush;
 use crate::mapping;
 use crate::mapping::classify_read;
@@ -618,7 +617,7 @@ async fn cycle(
                     reports,
                     system,
                     kind,
-                    advertised_floor(&err),
+                    err.advertised_floor(),
                     Some(target),
                     started,
                     pushes,
@@ -658,7 +657,7 @@ async fn cycle(
                     reports,
                     system,
                     kind,
-                    advertised_floor(&err),
+                    err.advertised_floor(),
                     Some(target),
                     started,
                     pushes,
@@ -915,22 +914,6 @@ fn consume_reservoirs(st: &mut LoopState, migrated: &taskboard_domain::AppDataSe
         consume!(tasks);
         consume!(reminder_rules);
         consume!(dismissals);
-    }
-}
-
-/// The advertised `Retry-After` delay of a hinting failure (rate
-/// limited or unavailable), `ZERO` when the failure carries no usable
-/// hint. (A hinting failure during *push* never reaches here:
-/// `GroupOutcome::Aborted` carries the floor itself since chunk F.)
-fn advertised_floor(err: &DeckError) -> Duration {
-    match err {
-        DeckError::RateLimited {
-            retry_after: Some(d),
-        }
-        | DeckError::Unavailable {
-            retry_after: Some(d),
-        } => *d,
-        _ => Duration::ZERO,
     }
 }
 
