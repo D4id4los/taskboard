@@ -3926,7 +3926,12 @@ mod view_component_tests {
                 handle.window.get_flow_hint_model().visible,
                 "the flow hint shows while moving"
             );
-            press(&handle, "\u{F701}"); // Down (nav.next-item) — retarget
+            // UX-R8 D-1: the walk is slot-shaped — three Down strokes
+            // walk from the armed own-gap slot to stack b's after-last
+            // gap (the append).
+            press(&handle, "\u{F701}"); // Down (nav.next-item) — slot walk
+            press(&handle, "\u{F701}");
+            press(&handle, "\u{F701}");
             assert_eq!(
                 handle.window.get_board_model().move_target,
                 1,

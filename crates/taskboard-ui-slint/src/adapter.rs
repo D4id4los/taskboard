@@ -3433,7 +3433,7 @@ impl Adapter {
                 | UiEffect::RequestMove
                 | UiEffect::CancelMove
                 | UiEffect::SetMode(Mode::Normal)),
-            ) => self.interpret_move(flow, effect, &state),
+            ) => self.interpret_move(flow, effect, &state, window),
             // -- the edit flows (D5/D9): SetMode(Normal) discards,
             //    Activate commits, leaving settles first (above); the
             //    round-2 lifecycle flows join them --
@@ -4188,6 +4188,34 @@ impl Adapter {
         scroll.set_nonce(scroll.get_nonce() + 1);
     }
 
+    /// The move-flow walk's scroll hint (UX-R8 D-3): the armed
+    /// `Flow::Move`'s (target, slot) as a `FocusScrollHint` edge —
+    /// `target-a` = the aimed column (this pass's stack index),
+    /// `target-b` = the gap's clamp row `min(gap, len-1)` (a gap
+    /// after the last card seeks the last card). Inert without a
+    /// live move flow (the stale-hint guard's shape).
+    fn push_move_scroll_hint(&mut self, window: &AppWindow, state: &taskboard_domain::AppState) {
+        let Flow::Move { target, slot, .. } = self.view_state.flow() else {
+            return;
+        };
+        let (target, slot) = (*target, *slot);
+        let Some(column) = self
+            .view_state
+            .stack_ids(state)
+            .iter()
+            .position(|stack| *stack == target)
+        else {
+            return;
+        };
+        let len = state.tasks_in_stack(target).len();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let to_hint_index = |value: usize| value as i32;
+        let scroll = window.global::<crate::FocusScrollHint>();
+        scroll.set_target_a(to_hint_index(column));
+        scroll.set_target_b(to_hint_index(slot.min(len.saturating_sub(1))));
+        scroll.set_nonce(scroll.get_nonce() + 1);
+    }
+
     /// The control walk's traversal re-injection (round-3 D25): the
     /// synthetic `Tab` key press drives the runtime's own tab
     /// traversal (`window.rs` key handler); the previous direction is
@@ -4320,6 +4348,7 @@ impl Adapter {
         flow: &Flow,
         effect: UiEffect,
         state: &taskboard_domain::AppState,
+        window: &AppWindow,
     ) -> Vec<FlowOutcome> {
         match (flow, effect) {
             // Focus next/prev cycle the target; Activate confirms;
@@ -4330,10 +4359,20 @@ impl Adapter {
             // without dispatching (D16/F-E2).
             (_, UiEffect::FocusNext | UiEffect::FocusPrev) => {
                 let direction = if effect == UiEffect::FocusNext { 1 } else { -1 };
-                match flow {
+                let outcomes = match flow {
                     Flow::Move { .. } => self.view_state.cycle_move_target(state, direction),
                     _ => self.view_state.cycle_move_stack_target(state, direction),
+                };
+                // The walk's scroll-into-view half (UX-R8 D-3, US-1/S2):
+                // the aimed column's viewport seeks the aim point —
+                // `target-a` = aimed column, `target-b` = the gap's
+                // clamp row (`min(gap, len-1)`), nonce re-edge. The
+                // hint filters per-ListView (both legs read it); no
+                // new hint family.
+                if !outcomes.is_empty() {
+                    self.push_move_scroll_hint(window, state);
                 }
+                outcomes
             }
             (Flow::Move { .. }, UiEffect::Activate) => self.view_state.confirm_move(state),
             (Flow::MoveStack { .. }, UiEffect::Activate) => {

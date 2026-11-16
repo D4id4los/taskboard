@@ -471,13 +471,18 @@ fn the_ten_step_keyboard_session() {
             }]);
             harness.engine.settle(&harness.handle);
 
-            // -- step 6: task.move — begin, retarget, confirm -------------
+            // -- step 6: task.move — begin, slot-walk, confirm -----------
+            // UX-R8 D-1: the walk is slot-shaped. Armed at the task's
+            // own gap+1 in stack a (3 tasks → gaps 0..3, armed at 3);
+            // two Down strokes walk to stack b's after-last gap —
+            // whose slot order IS the append (last.order + 1 = 1).
             harness.guard.begin(Verb::Move);
             harness.press(ActionId::TaskMove);
             assert!(
                 harness.handle.window().get_flow_hint_model().visible,
                 "the flow hint shows while moving"
             );
+            harness.stroke(parse("Down").expect("Down"));
             harness.stroke(parse("Down").expect("Down"));
             assert_eq!(
                 harness.handle.window().get_board_model().move_target,
@@ -12069,6 +12074,11 @@ fn the_pointer_drag_drops_the_keyboard_move_command() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.handle.window().invoke_board_task_clicked(0, 0);
             harness.press(ActionId::TaskMove);
+            // UX-R8 D-1: three slot strokes walk to stack b's
+            // after-last gap — whose slot order IS the append (the
+            // drag leg's command, unchanged).
+            harness.stroke(parse("Down").expect("Down"));
+            harness.stroke(parse("Down").expect("Down"));
             harness.stroke(parse("Down").expect("Down"));
             harness.stroke(parse("Return").expect("Return"));
             harness.assert_commands(&[expected_kb]);
@@ -21128,4 +21138,82 @@ fn the_journey_fixture_is_today_nonempty_by_construction() {
             "task1 is overdue at pass instant {pass}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// UX round 8, chunk 4 — board interaction (the origin plan §8's
+// step-token names; the board-interaction plan is the authority).
+
+/// US-1/S1–S3 — the keyboard reorder commits the exact slot move:
+/// arm (M), walk to a same-stack slot, confirm → exactly one
+/// `MoveTask { id, stack, order: slot_order }`; the flow ends.
+#[test]
+fn us1_s3_keyboard_reorder_commits_the_exact_move() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            assert_eq!(harness.emphasized_card(), Some((0, 0)), "task0 focused");
+
+            // Arm: the slot after task0's own position in stack a.
+            harness.press(ActionId::TaskMove);
+            assert_eq!(
+                harness.handle.window().get_board_model().move_target,
+                0,
+                "the flow arms on the task's own stack"
+            );
+            // Walk back one slot: (stack a, gap 0) — before the first.
+            harness.stroke(parse("Up").expect("Up"));
+            harness.stroke(parse("Return").expect("Return"));
+            harness.assert_commands(&[StateCommand::MoveTask {
+                id: fixture.task0,
+                stack: fixture.stack_a,
+                order: -1,
+            }]);
+            assert_eq!(
+                harness.handle.window().get_board_model().move_target,
+                -1,
+                "the confirm ends the flow"
+            );
+            assert!(
+                !harness.handle.window().get_flow_hint_model().visible,
+                "the flow hint clears with the flow"
+            );
+            harness.engine.settle(&harness.handle);
+        },
+    );
+}
+
+/// US-1/S2 — the flow's escape: arm, stroke, Escape → zero commands,
+/// the ring cleared (the settle law; AC-2).
+#[test]
+fn us1_s2_flow_escape_dispatches_nothing() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskMove);
+            harness.stroke(parse("Down").expect("Down"));
+            assert_ne!(
+                harness.handle.window().get_board_model().move_target,
+                -1,
+                "the walk moved the ring"
+            );
+            harness.press(ActionId::TaskMoveCancel);
+            harness.assert_commands(&[]);
+            assert_eq!(
+                harness.handle.window().get_board_model().move_target,
+                -1,
+                "the ring cleared"
+            );
+        },
+    );
 }
