@@ -66,6 +66,7 @@ struct Stored {
 }
 
 /// One journaled request (the tests' exact observable).
+#[derive(Debug)]
 struct Recorded {
     method: String,
     path: String,
@@ -81,6 +82,12 @@ struct Model {
     /// Queued one-shot forced 412s for a path's next guarded PUTs (the
     /// give-up twin's second rejection; a set cannot stage two).
     forced_412: VecDeque<String>,
+    /// One-shot interleaving directive: after the next PUT to `path`,
+    /// another writer's PUT of `body` lands through the retention rule
+    /// before any further request is answered — the real fleet's
+    /// same-second race (the sibling's request arriving between this
+    /// client's PUT and its verify GET).
+    inject_after_put: Option<(String, Vec<u8>)>,
 }
 
 impl Model {
@@ -154,6 +161,15 @@ impl Model {
         let etag = Self::etag_of(stored.rev);
         self.bump_ancestors(path);
         (204, Some(etag))
+    }
+
+    /// Fires the staged interleaving directive after a PUT to `path`.
+    fn maybe_inject(&mut self, path: &str) {
+        if let Some((inject_path, body)) = self.inject_after_put.take()
+            && inject_path == path
+        {
+            self.peer_write(&inject_path, &body);
+        }
     }
 
     /// A peer writer's unguarded PUT through the same retention rule
@@ -242,6 +258,13 @@ impl RetentionServer {
         self.lock().forced_412.push_back(path.to_owned());
     }
 
+    /// Stages the same-second interleaving: after the path's next PUT,
+    /// another writer's PUT of `body` lands before the next request is
+    /// answered (the lost-update race, S2).
+    fn inject_write_after_next_put(&self, path: &str, body: Vec<u8>) {
+        self.lock().inject_after_put = Some((path.to_owned(), body));
+    }
+
     fn count(&self, method: &str, path: &str) -> usize {
         self.lock()
             .journal
@@ -287,6 +310,7 @@ impl Respond for RetentionServer {
                     == Some("*");
                 let (status, etag) =
                     model.put(path, &request.body, if_match.as_deref(), if_none_match_star);
+                model.maybe_inject(path);
                 let mut response = ResponseTemplate::new(status);
                 if let Some(etag) = etag {
                     response = response.insert_header("ETag", etag.as_str());
@@ -361,6 +385,14 @@ impl SyncStateReader for NoBoards {
 }
 
 fn doc(text: &str) -> UserDocument {
+    doc_with_clock(text, "2026-11-05T08:00:00Z")
+}
+
+/// `doc` with the row clock spelled: the S3 scenarios give the
+/// sibling's write an *older* clock so the re-folded view (this
+/// device's newer row wins the LWW fold, no ADR-0004 tie) still
+/// differs from served — a genuine convergence attempt, not a tie.
+fn doc_with_clock(text: &str, clock: &str) -> UserDocument {
     let mut body = BTreeMap::new();
     body.insert("text".to_owned(), serde_json::json!(text));
     let mut journal = BTreeMap::new();
@@ -368,7 +400,7 @@ fn doc(text: &str) -> UserDocument {
         ROW_KEY.to_owned(),
         UserRecord::Entry {
             body,
-            clock: "2026-11-05T08:00:00Z".parse().expect("clock"),
+            clock: clock.parse().expect("clock"),
             author: None::<AuthorId>,
         },
     );
@@ -575,13 +607,15 @@ async fn s2_retention_signature_put_verifies_and_forks_on_mismatch() {
     let path = appdata_path(SELF);
     assert_eq!(harness.puts(&path), 1);
 
-    // The sibling clone's same-second same-size write: E0 retained,
-    // content now "cccc" (same fixed-width shape).
+    // The sibling clone's same-second same-size write lands *between*
+    // this clone's PUT and its verify GET (the real fleet's race; the
+    // staged directive answers the sibling's request there). Both
+    // clones hold token E0: this clone's guarded PUT is answered 204
+    // with E0 — indistinguishable from success without a GET.
     harness.server.set_second(ATTACH_SECOND);
-    harness.server.peer_write(&path, &doc_bytes(&doc("cccc")));
-
-    // This clone's view moved to "bbbb": its guarded PUT is answered
-    // 204 with E0 — indistinguishable from success without a GET.
+    harness
+        .server
+        .inject_write_after_next_put(&path, doc_bytes(&doc("cccc")));
     harness.set_local(doc("bbbb"));
     let verdict = harness.cycle().await;
     let CycleVerdict::Completed { published, .. } = verdict else {
@@ -639,9 +673,11 @@ async fn s3_stale_token_412_converges_with_one_reresolution() {
     // A sibling churns the etag (later second, different size): this
     // clone's stored token is now genuinely stale.
     harness.server.set_second(ATTACH_SECOND + 100);
-    harness
-        .server
-        .peer_write(&path, &doc_bytes(&doc("zzzzzzzz")));
+    harness.server.peer_write(
+        &path,
+        &doc_bytes(&doc_with_clock("zzzzzzzz", "2026-11-05T07:00:00Z")),
+    );
+    let puts_before = harness.puts(&path);
 
     harness.set_local(doc("bbbb"));
     let verdict = harness.cycle().await;
@@ -651,7 +687,7 @@ async fn s3_stale_token_412_converges_with_one_reresolution() {
     assert!(published);
     assert!(!forked(&harness, &path));
     assert_eq!(
-        harness.puts(&path),
+        harness.puts(&path) - puts_before,
         2,
         "the 412'd attempt plus exactly one re-PUT — the retry bound"
     );
@@ -681,11 +717,13 @@ async fn s3t_second_412_gives_up_typed_no_third_put() {
     let path = appdata_path(SELF);
 
     harness.server.set_second(ATTACH_SECOND + 100);
-    harness
-        .server
-        .peer_write(&path, &doc_bytes(&doc("zzzzzzzz")));
+    harness.server.peer_write(
+        &path,
+        &doc_bytes(&doc_with_clock("zzzzzzzz", "2026-11-05T07:00:00Z")),
+    );
     harness.server.force_412(&path);
     harness.server.force_412(&path);
+    let puts_before = harness.puts(&path);
 
     harness.set_local(doc("bbbb"));
     let verdict = harness.cycle().await;
@@ -694,7 +732,7 @@ async fn s3t_second_412_gives_up_typed_no_third_put() {
     };
     assert!(forked(&harness, &path), "the second 412 is a typed fork");
     assert_eq!(
-        harness.puts(&path),
+        harness.puts(&path) - puts_before,
         2,
         "the initial attempt and the single re-PUT — never a third"
     );

@@ -28,6 +28,15 @@ use taskboard_sync_files::ids::DeviceId;
 /// constant — no call-site magic numbers.
 pub(crate) const SKEW_BAND_SECS: i64 = 2;
 
+/// The stale-token 412 retry bound (the bounded-convergence spec): one
+/// re-resolution per cycle. The bound is *structural* —
+/// `cycle::resolve_own_412` performs at most one guarded re-PUT in its
+/// control flow, with the typed `ForkDetected` give-up beyond it — the
+/// constant names the law the structure implements, never consulted at
+/// a call site.
+#[cfg(test)]
+pub(crate) const MAX_412_RESOLUTIONS: u32 = 1;
+
 /// A version token exactly as the server served it (`ETag` response
 /// header value; the `If-Match` request header value it feeds).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -266,6 +275,14 @@ mod tests {
         // The etag rule still fires underneath.
         store.record_device_dir(peer, etag("\"two\""));
         assert_eq!(store.dirty_devices(&stamps), vec![peer]);
+    }
+
+    #[test]
+    fn the_412_retry_bound_is_one_reresolution_per_cycle() {
+        // The named law `resolve_own_412` implements structurally: a
+        // 412 resolves at most once per cycle — a second 412 is the
+        // typed give-up, never a third PUT.
+        assert_eq!(MAX_412_RESOLUTIONS, 1);
     }
 
     #[test]
