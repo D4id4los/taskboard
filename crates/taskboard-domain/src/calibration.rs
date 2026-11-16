@@ -261,6 +261,7 @@ mod tests {
             created_at: ts(100),
             updated_at: ts(100),
             kind,
+            by: None,
         }
     }
 

@@ -273,6 +273,7 @@ fn journal_entry_round_trips_through_serde_all_facts_variants() {
                 before: Some(crate::habit::HabitLogEntry {
                     count: 2,
                     clock: ts(100),
+                    by: None,
                 }),
             },
             PreImage::HabitLogRow {
@@ -304,6 +305,7 @@ fn journal_entry_round_trips_through_serde_all_facts_variants() {
                     EntityStamps::HabitLog(crate::habit::HabitLogEntry {
                         count: 5,
                         clock: ts(150),
+                        by: None,
                     }),
                 ),
             ]

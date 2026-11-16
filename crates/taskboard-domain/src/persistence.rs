@@ -1209,6 +1209,7 @@ mod tests {
             ),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         };
         let mut state = PersistedState::default();
         let actions = vec![
@@ -1378,6 +1379,7 @@ mod tests {
             created_at: ts(100),
             updated_at: ts(100),
             kind: crate::tracking::TimeEntryKind::Work,
+            by: None,
         }
     }
 
@@ -1435,6 +1437,7 @@ mod tests {
             clocks: crate::habit::HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
+            by: None,
         }
     }
 
@@ -1465,12 +1468,14 @@ mod tests {
         let first = crate::habit::HabitLogEntry {
             count: 1,
             clock: ts(1_000),
+            by: None,
         };
         apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, first)]);
         // An older clock loses: the stored row stays.
         let older = crate::habit::HabitLogEntry {
             count: 9,
             clock: ts(500),
+            by: None,
         };
         apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, older)]);
         assert_eq!(state.habits.log[&key], first, "strictly-newer clock wins");
@@ -1478,6 +1483,7 @@ mod tests {
         let equal = crate::habit::HabitLogEntry {
             count: 9,
             clock: ts(1_000),
+            by: None,
         };
         apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, equal)]);
         assert_eq!(
@@ -1488,6 +1494,7 @@ mod tests {
         let newer = crate::habit::HabitLogEntry {
             count: 2,
             clock: ts(2_000),
+            by: None,
         };
         apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, newer)]);
         assert_eq!(state.habits.log[&key], newer);
@@ -1500,6 +1507,7 @@ mod tests {
                 crate::habit::HabitLogEntry {
                     count: 5,
                     clock: ts(3_000),
+                    by: None,
                 },
             )],
         );
@@ -1516,6 +1524,7 @@ mod tests {
             ),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         }
     }
 
@@ -2738,6 +2747,7 @@ mod tests {
             clocks: crate::habit::HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
+            by: None,
         }
     }
 
@@ -2835,6 +2845,7 @@ mod tests {
                     crate::habit::HabitLogEntry {
                         count: 3,
                         clock: ts(500),
+                        by: None,
                     },
                 ),
                 PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
@@ -2932,7 +2943,7 @@ mod tests {
             );
             state.habits.log.insert(
                 crate::habit::HabitLogKey { habit: id, window },
-                crate::habit::HabitLogEntry { count, clock: ts(500) },
+                crate::habit::HabitLogEntry { count, clock: ts(500) , by: None, },
             );
             let now = Utc.timestamp_opt(now_secs, 0).unwrap();
             let defaults = crate::reminders::ReminderDefaults::default();

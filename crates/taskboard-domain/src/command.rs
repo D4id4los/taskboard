@@ -713,6 +713,7 @@ fn completion_spawn(
             kind: old.kind,
             created_at: now,
             updated_at: now,
+            by: None,
         }));
     }
     // The single document-group trigger covering the successor's `recur`
@@ -2223,6 +2224,7 @@ pub fn plan_command(
                 kind,
                 created_at: now,
                 updated_at: now,
+                by: None,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2345,6 +2347,7 @@ pub fn plan_command(
                 threshold: *threshold,
                 insistence: *insistence,
                 created_at: now,
+                by: None,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2407,6 +2410,7 @@ pub fn plan_command(
                 created_at: now,
                 updated_at: now,
                 kind: *kind,
+                by: None,
             };
             let mut actions: Vec<PersistenceAction> = closed_rows
                 .iter()
@@ -2497,6 +2501,7 @@ pub fn plan_command(
                 created_at: now,
                 updated_at: now,
                 kind: *kind,
+                by: None,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2593,6 +2598,7 @@ pub fn plan_command(
                 clocks: HabitClocks::all(now),
                 continued_from: None,
                 deleted: false,
+                by: None,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2669,7 +2675,14 @@ pub fn plan_command(
             let count = app.habits.log.get(&key).map_or(0, |entry| entry.count) + 1;
             Ok(CommandPlan {
                 actions: vec![
-                    PersistenceAction::RecordHabitLog(key, HabitLogEntry { count, clock: now }),
+                    PersistenceAction::RecordHabitLog(
+                        key,
+                        HabitLogEntry {
+                            count,
+                            clock: now,
+                            by: None,
+                        },
+                    ),
                     board_flush(habit.board, ids, now),
                 ],
                 outcome: CommandOutcome::HabitLogged {
@@ -2711,6 +2724,7 @@ pub fn plan_command(
                         HabitLogEntry {
                             count: *count,
                             clock: now,
+                            by: None,
                         },
                     ),
                     board_flush(habit.board, ids, now),
@@ -2966,6 +2980,7 @@ pub fn plan_command(
                 clocks: HabitClocks::all(now),
                 continued_from: Some(rule.series),
                 deleted: false,
+                by: None,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -3675,6 +3690,7 @@ mod tests {
             ),
             created_at: ts(T0 - 60),
             updated_at: ts(T0 - 60),
+            by: None,
         };
         app.reminders.rules.insert(rule.id, rule);
         app.reminders
@@ -6777,6 +6793,7 @@ mod tests {
             ),
             created_at: now(),
             updated_at: now(),
+            by: None,
         }
     }
 
@@ -7497,6 +7514,7 @@ mod tests {
             .unwrap(),
             insistence: Insistence::Normal,
             created_at: ts(T0),
+            by: None,
         };
         app.reminders.break_rules.insert(rule.id, rule);
         let plan = run(
@@ -7533,6 +7551,7 @@ mod tests {
             .unwrap(),
             insistence: Insistence::Normal,
             created_at: ts(T0),
+            by: None,
         };
         app.reminders.break_rules.insert(rule_id, rule);
         let plan = run(
@@ -7590,6 +7609,7 @@ mod tests {
             .unwrap(),
             insistence: Insistence::Normal,
             created_at: ts(T0),
+            by: None,
         };
         let rule_id = rule.id;
         let reminder = crate::reminders::ReminderRef::Break(rule_id);
@@ -7664,6 +7684,7 @@ mod tests {
             .unwrap(),
             insistence: Insistence::Normal,
             created_at: ts(T0),
+            by: None,
         };
         let mut app = app;
         let rule_id = rule.id;
@@ -7737,6 +7758,7 @@ mod tests {
             .unwrap(),
             insistence: Insistence::Normal,
             created_at: ts(T0),
+            by: None,
         };
         let mut app = app;
         app.reminders.break_rules.insert(rule.id, rule);
@@ -8329,6 +8351,7 @@ mod tests {
             created_at: ts(T0 - 120),
             updated_at: ts(T0 - 120),
             kind: crate::tracking::TimeEntryKind::Work,
+            by: None,
         }
     }
 
@@ -9311,6 +9334,7 @@ mod tests {
             clocks: crate::habit::HabitClocks::all(ts(T0 - 3_600)),
             continued_from: None,
             deleted: false,
+            by: None,
         }
     }
 
@@ -9325,6 +9349,7 @@ mod tests {
         HabitLogEntry {
             count,
             clock: ts(T0 - 1_800),
+            by: None,
         }
     }
 
@@ -11865,6 +11890,7 @@ mod series_tests {
             ),
             created_at: ts(50),
             updated_at: ts(50),
+            by: None,
         };
         app.reminders.rules.insert(rule.id, rule);
         app.reminders.muted.insert(head_id());

@@ -3334,6 +3334,7 @@ mod tests {
             ),
             created_at: now,
             updated_at: now,
+            by: None,
         };
         state.reminders.rules.insert(rule.id, rule);
         let mut t2 = task(ruleless, stack, 1);
@@ -3524,6 +3525,7 @@ mod tests {
                 clocks: HabitClocks::all(now),
                 continued_from: None,
                 deleted: false,
+                by: None,
             },
         );
         // The delivered key is the window's anchor reading (the same
@@ -3569,6 +3571,7 @@ mod tests {
                 kind: taskboard_domain::ReminderKind::DueOffset(ReminderOffset::at_due()),
                 created_at: now,
                 updated_at: now,
+                by: None,
             },
         );
         // No delivery yet: not active (the surface is fired ∧ not
@@ -3632,6 +3635,7 @@ mod tests {
                 .expect("positive threshold"),
             insistence: Insistence::Alarm,
             created_at: now,
+            by: None,
         };
         let reminder = ReminderRef::Break(rule.id);
         // The crossing instant: the span opened 200m ago, the first
@@ -3653,6 +3657,7 @@ mod tests {
                 created_at: now - TimeDelta::minutes(200),
                 updated_at: now - TimeDelta::minutes(20),
                 kind: taskboard_domain::TimeEntryKind::Work,
+                by: None,
             },
         );
         state.reminders.deliveries.insert(ReminderDelivery {
@@ -3735,6 +3740,7 @@ mod tests {
                 .expect("the test threshold is strictly positive"),
             insistence: taskboard_domain::Insistence::Normal,
             created_at: DateTime::<Utc>::UNIX_EPOCH + TimeDelta::hours(1),
+            by: None,
         }
     }
 
@@ -4113,6 +4119,7 @@ mod tests {
                 kind: taskboard_domain::ReminderKind::DueOffset(ReminderOffset::at_due()),
                 created_at: now,
                 updated_at: now,
+                by: None,
             },
         );
         state
@@ -4197,6 +4204,7 @@ mod tests {
             created_at: start,
             updated_at: end.unwrap_or(start),
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: None,
         }
     }
 
@@ -4690,6 +4698,7 @@ mod tests {
             ),
             created_at: now,
             updated_at: now,
+            by: None,
         };
         let texts = rule_row_texts(&at_rule, None, now, &tz);
         assert!(texts.armed, "an At row is armed regardless of due date");
@@ -5343,6 +5352,7 @@ mod tests {
                         ),
                         created_at: now,
                         updated_at: now,
+                    by: None,
                     };
                     state.reminders.rules.insert(rule.id, rule);
                 }
@@ -6951,6 +6961,7 @@ mod recur_badge_tests {
             clocks: HabitClocks::all(chrono::Utc.timestamp_opt(100, 0).unwrap()),
             continued_from: None,
             deleted: false,
+            by: None,
         };
         let mut log = std::collections::BTreeMap::new();
         // Under quota, in grace: the make-up points at yesterday's
@@ -6970,6 +6981,7 @@ mod recur_badge_tests {
             taskboard_domain::HabitLogEntry {
                 count: 2,
                 clock: now,
+                by: None,
             },
         );
         assert_eq!(habit_repair_target(&h, &log, now, day), None);
@@ -7489,6 +7501,7 @@ mod habit_section_tests {
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
+            by: None,
         }
     }
 
@@ -7581,6 +7594,7 @@ mod habit_section_tests {
             HabitLogEntry {
                 count: 1,
                 clock: ts(100),
+                by: None,
             },
         );
         let rows = habit_rows(&state, board, grace_now, day_ctx);
@@ -7619,6 +7633,7 @@ mod habit_section_tests {
             HabitLogEntry {
                 count: 3,
                 clock: ts(200),
+                by: None,
             },
         );
         let rows = habit_rows(&state, board, ts(1_700_000_000), day());
@@ -7661,6 +7676,7 @@ mod habit_section_tests {
             created_at: start,
             updated_at: start,
             kind,
+            by: None,
         }
     }
 
@@ -7742,6 +7758,7 @@ mod habit_section_tests {
                 created_at: OVERLAY_T0,
                 updated_at: OVERLAY_T0,
                 kind: *kind,
+                by: None,
             };
             entries.insert(e.id, e);
         }
@@ -7754,6 +7771,7 @@ mod habit_section_tests {
             created_at: OVERLAY_T0,
             updated_at: OVERLAY_T0,
             kind: open_kind,
+            by: None,
         };
         open.created_at = open.start;
         open.updated_at = open.start;
@@ -8001,6 +8019,7 @@ mod track_surfaces_tests {
             created_at: ts(0),
             updated_at: ts(0),
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: None,
         }
     }
 

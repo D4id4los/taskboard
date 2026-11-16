@@ -732,6 +732,7 @@ fn the_track_entries_golden_holds() {
                         created_at: start,
                         updated_at: start,
                         kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                        by: None,
                     },
                 );
             };

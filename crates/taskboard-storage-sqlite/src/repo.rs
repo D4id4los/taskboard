@@ -286,6 +286,7 @@ fn decode_break_rule(row: &BreakRuleRow, board: Uuid) -> Result<BreakRule, Repos
         threshold,
         insistence: decode::insistence(&row.insistence)?,
         created_at: row.created_at,
+        by: None,
     })
 }
 
@@ -716,6 +717,7 @@ fn decode_reminder_rule(
             // decode with the epoch, which loses every clock race
             // exactly like `BoardClocks::epoch`'s precedent.
             updated_at: row.updated_at,
+            by: None,
         },
     ))
 }
@@ -799,6 +801,7 @@ fn decode_habit(
             clocks,
             continued_from,
             deleted: *deleted,
+            by: None,
         },
     ))
 }
@@ -899,6 +902,7 @@ fn decode_time_entry(row: &TimeEntryRow) -> Result<(TimeEntryId, TimeEntry), Rep
             // 0018's `DEFAULT 'work'` backfill is what makes every
             // pre-0018 row read `Work` (the local default-off decode).
             kind: decode::time_entry_kind(&row.kind)?,
+            by: None,
         },
     ))
 }
@@ -1410,9 +1414,14 @@ impl SqliteTaskRepository {
                     };
                     let count = u32::try_from(*count).map_err(|_| RepositoryError::Corrupted)?;
                     let clock: DateTime<Utc> = decode::clock(clock)?;
-                    habits
-                        .log
-                        .insert(key, taskboard_domain::HabitLogEntry { count, clock });
+                    habits.log.insert(
+                        key,
+                        taskboard_domain::HabitLogEntry {
+                            count,
+                            clock,
+                            by: None,
+                        },
+                    );
                 }
                 habits
             },

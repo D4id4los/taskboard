@@ -1560,6 +1560,7 @@ fn the_kind_switching_start_tracking_journals_the_tracking_surface() {
             created_at: ts(999_000),
             updated_at: ts(999_000),
             kind: crate::tracking::TimeEntryKind::Work,
+            by: None,
         },
     );
     h.sync();

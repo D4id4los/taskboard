@@ -2871,6 +2871,7 @@ mod tests {
             ),
             created_at: ts(BASE),
             updated_at: ts(BASE),
+            by: None,
         };
         state.reminders.rules.insert(existing.id, existing.clone());
         let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
@@ -2973,6 +2974,7 @@ mod tests {
             ),
             created_at: ts(BASE + 100),
             updated_at: ts(BASE + 100),
+            by: None,
         };
         let rules_entry = RulesEntry {
             rules: [
@@ -3398,6 +3400,7 @@ mod tests {
             clocks: crate::habit::HabitClocks::all(ts(BASE)),
             continued_from: None,
             deleted: false,
+            by: None,
         };
         let key = crate::habit::HabitLogKey {
             habit: habit.id,
@@ -3412,6 +3415,7 @@ mod tests {
             crate::habit::HabitLogEntry {
                 count: 2,
                 clock: ts(BASE),
+                by: None,
             },
         );
 
@@ -3489,6 +3493,7 @@ mod tests {
             clocks: crate::habit::HabitClocks::all(ts(BASE)),
             continued_from: None,
             deleted: false,
+            by: None,
         };
         let key = crate::habit::HabitLogKey {
             habit: habit.id,
@@ -3503,6 +3508,7 @@ mod tests {
             crate::habit::HabitLogEntry {
                 count: 2,
                 clock: ts(BASE),
+                by: None,
             },
         );
         let expected = state.habits.clone();
@@ -3857,6 +3863,7 @@ mod tests {
             ),
             created_at: ts(BASE + 300),
             updated_at: ts(BASE + 300),
+            by: None,
         };
         rule.task = task_by_card(&state, 1).id;
         let mut state = state;

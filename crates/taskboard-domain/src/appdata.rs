@@ -2463,6 +2463,7 @@ mod tests {
             .unwrap(),
             insistence: Insistence::Alarm,
             created_at: ts(100),
+            by: None,
         }
     }
 
@@ -3572,6 +3573,7 @@ mod tests {
             ),
             created_at: task.clocks.title,
             updated_at: task.clocks.effort,
+            by: None,
         };
         let foreign = crate::reminders::ReminderRule {
             id: ReminderRuleId::from(uuid::Uuid::from_u128(11)),
@@ -3608,6 +3610,7 @@ mod tests {
             kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(100),
             updated_at: ts(120),
+            by: None,
         };
         let rule_id = rule.id;
         let entry = rules_entry_for(&BTreeMap::from([(rule_id, rule)]), task.id, None);
@@ -3636,6 +3639,7 @@ mod tests {
             ),
             created_at: ts(100),
             updated_at: ts(120),
+            by: None,
         };
         let rule_id = rule.id;
         let entry = rules_entry_for(&BTreeMap::from([(rule_id, rule.clone())]), task.id, None);
@@ -3683,6 +3687,7 @@ mod tests {
                 ),
                 created_at: ts(1),
                 updated_at: ts(2),
+                by: None,
             },
         );
         let base = RulesEntry {
@@ -3935,6 +3940,7 @@ mod tests {
             ),
             created_at: ts(1),
             updated_at: ts(2),
+            by: None,
         };
         let mut rules = BTreeMap::new();
         rules.insert(own_rule, mk_rule(own_rule, task));
@@ -4157,6 +4163,7 @@ mod tests {
             created_at: ts(90),
             updated_at: ts(110),
             kind: TimeEntryKind::Work,
+            by: None,
         };
         let entries = std::collections::BTreeMap::from([(entry.id, entry.clone())]);
         let emitted = time_entries_for(
@@ -4452,6 +4459,7 @@ mod tests {
             created_at: ts(start - 10),
             updated_at: ts(start + 10),
             kind: crate::tracking::TimeEntryKind::Work,
+            by: None,
         }
     }
 
@@ -5042,6 +5050,7 @@ mod tests {
                         kind: crate::reminders::ReminderKind::DueOffset(crate::reminders::ReminderOffset::at_due()),
                         created_at: ts(1),
                         updated_at: ts(2),
+                    by: None,
                     },
                 );
             }
@@ -5217,6 +5226,7 @@ mod tests {
                     kind: crate::reminders::ReminderKind::DueOffset(crate::reminders::ReminderOffset::at_due()),
                     created_at: ts(1),
                     updated_at: ts(2),
+                by: None,
                 },
             );
             let mut dismissals = std::collections::BTreeSet::new();
@@ -5244,6 +5254,7 @@ mod tests {
                     .unwrap(),
                     insistence: Insistence::Normal,
                     created_at: ts(1),
+                by: None,
                 },
             );
             if with_break_row {
@@ -5546,6 +5557,7 @@ mod habit_section_tests {
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             deleted,
+            by: None,
         }
     }
 
@@ -5949,7 +5961,7 @@ mod habit_section_tests {
                     .unwrap();
                 log.insert(
                     key(raw, d),
-                    HabitLogEntry { count: u32::try_from(i + 1).unwrap(), clock: ts(100) },
+                    HabitLogEntry { count: u32::try_from(i + 1).unwrap(), clock: ts(100) , by: None, },
                 );
             }
             let emitted = habit_log_for(&[(habit.id, habit.clone())].into(), &log, board, today, None);

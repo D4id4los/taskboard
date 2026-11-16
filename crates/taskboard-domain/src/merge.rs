@@ -924,6 +924,7 @@ pub fn fold_reminder_rules(
                             kind: *kind,
                             created_at: *created,
                             updated_at: *clock,
+                            by: None,
                         };
                         rules.insert(id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -1074,6 +1075,7 @@ pub fn fold_break_rules(
                             threshold: *threshold,
                             insistence: *insistence,
                             created_at: *created,
+                            by: None,
                         };
                         break_rules.insert(id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -1229,6 +1231,7 @@ pub fn fold_time_entries(
                             created_at: *created,
                             updated_at: *clock,
                             kind: *kind,
+                            by: None,
                         };
                         tracking.entries.insert(adopted.id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -1340,6 +1343,7 @@ pub fn fold_habits(
                             clocks: *clocks,
                             continued_from: *continued_from,
                             deleted: false,
+                            by: None,
                         };
                         habits.habits.insert(id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -1420,6 +1424,7 @@ pub fn fold_habit_log(
             let entry = crate::habit::HabitLogEntry {
                 count: *count,
                 clock: *clock,
+                by: None,
             };
             habits.log.insert(parsed, entry);
             changes.records.push((parsed, entry));
@@ -2838,6 +2843,7 @@ mod tests {
             ),
             created_at: ts(BASE + 60),
             updated_at: ts(BASE + 60),
+            by: None,
         };
 
         assert!(has_unsynced_work(&task, &rules_map(&[rule])));
@@ -2873,6 +2879,7 @@ mod tests {
             ),
             created_at: ts(BASE + 60),
             updated_at: ts(BASE + 60),
+            by: None,
         };
         rule.task = TaskId::from(uuid::Uuid::from_u128(999));
 
@@ -2949,6 +2956,7 @@ mod tests {
                 kind: crate::reminders::ReminderKind::DueOffset(crate::reminders::ReminderOffset::at_due()),
                 created_at: above,
                 updated_at: above,
+            by: None,
             };
             prop_assert!(has_unsynced_work(&rule_task, &rules_map(&[rule])));
         }
@@ -3944,6 +3952,7 @@ mod tests {
             ),
             created_at: ts(BASE + 100),
             updated_at: ts(updated_secs),
+            by: None,
         }
     }
 
@@ -4862,6 +4871,7 @@ mod tests {
             .unwrap(),
             insistence: crate::reminders::Insistence::Normal,
             created_at: ts(BASE),
+            by: None,
         }
     }
 
@@ -6178,6 +6188,7 @@ mod duplicate_reconcile_tests {
             created_at: crate::merge_testutil::ts(50),
             updated_at: crate::merge_testutil::ts(BASE + 300),
             kind: crate::tracking::TimeEntryKind::Work,
+            by: None,
         };
         tracking.entries.insert(local_id, adjusted.clone());
         let cards = std::collections::BTreeMap::from([(
@@ -6774,6 +6785,7 @@ mod habit_fold_tests {
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             deleted,
+            by: None,
         }
     }
 
@@ -7055,6 +7067,7 @@ mod habit_fold_tests {
                         HabitLogEntry {
                             count: 1,
                             clock: ts(100),
+                            by: None,
                         },
                     ),
                     (
@@ -7062,6 +7075,7 @@ mod habit_fold_tests {
                         HabitLogEntry {
                             count: 2,
                             clock: ts(100),
+                            by: None,
                         },
                     ),
                 ]
@@ -7217,6 +7231,7 @@ mod author_duel_tests {
                 insistence,
                 created_at: t,
                 updated_at: t,
+                by: None,
             };
             let doc_row = |insistence: crate::reminders::Insistence,
                            by: Option<AuthorId>|
@@ -7290,6 +7305,7 @@ mod author_duel_tests {
                 .unwrap(),
                 insistence: crate::reminders::Insistence::Normal,
                 created_at: t,
+                by: None,
             };
             let doc_row = |label: &str, by: Option<AuthorId>| BreakRuleEntry::Rule {
                 label: label.to_owned(),
@@ -7333,6 +7349,7 @@ mod author_duel_tests {
                 created_at: t,
                 updated_at: t,
                 kind: crate::tracking::TimeEntryKind::Work,
+                by: None,
             };
             let doc_row = |title: &str, by: Option<AuthorId>| -> crate::appdata::TimeEntryRecord {
                 crate::appdata::TimeEntryRecord::Entry {
@@ -7383,6 +7400,7 @@ mod author_duel_tests {
                 clocks: crate::habit::HabitClocks::all(t),
                 continued_from: None,
                 deleted: false,
+                by: None,
             };
             let doc_row = |title: &str, by: Option<AuthorId>| crate::appdata::HabitRecord::Live {
                 title: title.to_owned(),
@@ -7428,6 +7446,7 @@ mod author_duel_tests {
                         crate::habit::HabitLogEntry {
                             count: own,
                             clock: t,
+                            by: None,
                         },
                     )]
                     .into_iter()

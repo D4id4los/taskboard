@@ -420,6 +420,7 @@ fn r7c_colliding_rule_prefix_is_typed_ambiguous() {
         kind: ReminderKind::DueOffset(ReminderOffset::at_due()),
         created_at: epoch,
         updated_at: epoch,
+        by: None,
     };
     let one = mk(0x0000_0000_0000_0000_0000_0000_0000_0001);
     let two = mk(0x0000_0000_0000_0000_0000_0000_0000_0002);

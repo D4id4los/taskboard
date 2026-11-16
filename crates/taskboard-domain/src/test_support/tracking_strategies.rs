@@ -38,6 +38,7 @@ pub fn time_entry_strategy() -> impl Strategy<Value = TimeEntry> {
                 created_at: updated_at,
                 updated_at,
                 kind: crate::tracking::TimeEntryKind::Work,
+                by: None,
             }
         })
 }

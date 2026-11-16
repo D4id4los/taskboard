@@ -1021,6 +1021,7 @@ fn seeded_rule_state(
             kind: ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(T0),
             updated_at: ts(T0),
+            by: None,
         },
     );
     for delivery in deliveries {
@@ -1229,6 +1230,7 @@ fn seeded_tracker_state() -> PersistedState {
         clocks: HabitClocks::all(ts(T0 - 60)),
         continued_from: None,
         deleted: false,
+        by: None,
     };
     let mut habits = HabitState::default();
     habits.habits.insert(habit.id, habit);

@@ -1220,6 +1220,7 @@ fn seed_fired_rule_state() -> taskboard_domain::PersistedState {
         ),
         created_at: ts(T0 - 60),
         updated_at: ts(T0 - 60),
+        by: None,
     };
     let mut state = taskboard_domain::PersistedState {
         boards: [(board.id, board)].into_iter().collect(),
@@ -1475,6 +1476,7 @@ fn series_rule(
         ),
         created_at: ts(SERIES_T0 - 3_600),
         updated_at: ts(SERIES_T0 - 3_600),
+        by: None,
     }
 }
 

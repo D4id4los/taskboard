@@ -4673,6 +4673,7 @@ fn rule_rows_present_per_kind_and_unmute_round_trips() {
         ),
         created_at: taskboard_domain::BoardClocks::epoch(),
         updated_at: taskboard_domain::BoardClocks::epoch(),
+        by: None,
     };
     let unarmed_rule = taskboard_domain::ReminderRule {
         insistence: taskboard_domain::Insistence::Normal,
@@ -4684,6 +4685,7 @@ fn rule_rows_present_per_kind_and_unmute_round_trips() {
         ),
         created_at: taskboard_domain::BoardClocks::epoch(),
         updated_at: taskboard_domain::BoardClocks::epoch(),
+        by: None,
     };
     state.reminders.muted.insert(task1);
     state.reminders.rules.insert(at_rule.id, at_rule.clone());
@@ -4784,6 +4786,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
         kind: taskboard_domain::ReminderKind::DueOffset(taskboard_domain::ReminderOffset::at_due()),
         created_at: taskboard_domain::BoardClocks::epoch(),
         updated_at: taskboard_domain::BoardClocks::epoch(),
+        by: None,
     };
     let rule2 = taskboard_domain::ReminderRule {
         insistence: taskboard_domain::Insistence::Normal,
@@ -4795,6 +4798,7 @@ fn the_rule_list_journeys_reach_the_boundary() {
         ),
         created_at: taskboard_domain::BoardClocks::epoch(),
         updated_at: taskboard_domain::BoardClocks::epoch(),
+        by: None,
     };
     state.reminders.rules.insert(rule1.id, rule1);
     state.reminders.rules.insert(rule2.id, rule2.clone());
@@ -9419,6 +9423,7 @@ fn state_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
         clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
         continued_from: None,
         deleted: false,
+        by: None,
     };
     state.habits.habits.insert(habit.id, habit);
 }
@@ -15118,6 +15123,7 @@ fn the_entries_overlay_walks_rows_and_the_escape_ladder_steps_back() {
             created_at: start,
             updated_at: start,
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: None,
         },
     );
     support::driver::run(
@@ -15246,6 +15252,7 @@ fn the_time_entries_affordance_opens_the_overlay_through_the_real_mount() {
             created_at: start,
             updated_at: start,
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: None,
         },
     );
     support::driver::run(

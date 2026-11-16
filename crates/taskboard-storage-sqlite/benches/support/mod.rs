@@ -226,6 +226,7 @@ fn fixture_rule(k: usize, tasks: &[Task]) -> ReminderRule {
         ),
         created_at: ts(ix(k) + 4_000_000),
         updated_at: ts(ix(k) + 4_000_000),
+        by: None,
     }
 }
 

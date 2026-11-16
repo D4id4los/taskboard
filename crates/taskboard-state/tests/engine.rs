@@ -3227,6 +3227,7 @@ async fn the_roll_re_arms_reminders_by_construction() {
             ),
             created_at: day(DAY0 - 86_400),
             updated_at: day(DAY0 - 86_400),
+            by: None,
         },
     );
     let repo = Arc::new(InMemoryRepository::with_state(state));

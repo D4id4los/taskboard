@@ -359,6 +359,7 @@ async fn reminder_rule_round_trips_the_write_clock_and_epoch_decodes() {
         ),
         created_at: ts(1_000),
         updated_at: ts(2_000),
+        by: None,
     };
     repo.apply(vec![
         PersistenceAction::UpsertBoard(b),
@@ -442,6 +443,7 @@ async fn rule_offset_roundtrips_identically_through_sqlite() {
             ),
             created_at: ts(1_000),
             updated_at: ts(2_000),
+            by: None,
         };
         repo.apply(vec![
             PersistenceAction::UpsertBoard(b),
@@ -557,6 +559,7 @@ async fn a_delivery_prune_deletes_exactly_the_named_rows() {
         ),
         created_at: ts(1_000),
         updated_at: ts(1_000),
+        by: None,
     };
     let rule_ref = ReminderRef::Rule(rule.id);
     let default_ref = ReminderRef::Default(t.id);
@@ -1517,6 +1520,7 @@ async fn insistence_round_trips_through_sqlite() {
         insistence: Insistence::Alarm,
         created_at: ts(1_000),
         updated_at: ts(2_000),
+        by: None,
     };
     let alarm = AdhocAlarm {
         id: AdhocAlarmId::from(uuid::Uuid::from_u128(30)),
@@ -1563,6 +1567,7 @@ async fn unknown_insistence_text_is_a_typed_corruption() {
         insistence: taskboard_domain::Insistence::Normal,
         created_at: ts(1_000),
         updated_at: ts(2_000),
+        by: None,
     };
     repo.apply(vec![
         PersistenceAction::UpsertBoard(b),
@@ -1597,6 +1602,7 @@ fn time_entry(id: u128, task: &Task, open: bool) -> taskboard_domain::TimeEntry 
         created_at: ts(999),
         updated_at: ts(2_500),
         kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        by: None,
     }
 }
 
@@ -1733,6 +1739,7 @@ async fn habit_rows_survive_a_close_reopen_including_the_tombstone() {
             uuid::Uuid::from_u128(99),
         )),
         deleted: false,
+        by: None,
     };
     let mut gone = live.clone();
     gone.id = taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(61));
@@ -1770,6 +1777,7 @@ async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {
         taskboard_domain::HabitLogEntry {
             count: 5,
             clock: ts(500),
+            by: None,
         },
     )])
     .await
@@ -1780,6 +1788,7 @@ async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {
         taskboard_domain::HabitLogEntry {
             count: 1,
             clock: ts(400),
+            by: None,
         },
     )])
     .await
@@ -1863,6 +1872,7 @@ async fn entry_kind_and_break_rule_rows_round_trip_through_sqlite() {
             .expect("positive threshold"),
         insistence: Insistence::Alarm,
         created_at: ts(1_000),
+        by: None,
     };
     repo.apply(vec![
         PersistenceAction::UpsertBoard(b),
@@ -2047,6 +2057,7 @@ async fn open_respite_and_break_rule_rehydrate_into_a_firing() {
             .expect("positive threshold"),
         insistence: Insistence::Normal,
         created_at: ts(500),
+        by: None,
     };
     repo.apply(vec![
         PersistenceAction::UpsertBoard(b),
@@ -2177,6 +2188,7 @@ async fn at_rule_rows_roundtrip_epoch_exact_and_pre_0020_rows_decode_due_offset(
         kind: ReminderKind::At(AtInstant::whole_second(ts(at_secs)).expect("whole-second")),
         created_at: ts(1_000),
         updated_at: ts(2_000),
+        by: None,
     };
     let offset_rule = ReminderRule {
         insistence: taskboard_domain::Insistence::Normal,
@@ -2188,6 +2200,7 @@ async fn at_rule_rows_roundtrip_epoch_exact_and_pre_0020_rows_decode_due_offset(
         ),
         created_at: ts(1_000),
         updated_at: ts(2_000),
+        by: None,
     };
     repo.apply(vec![
         PersistenceAction::UpsertBoard(b),
@@ -2334,6 +2347,7 @@ async fn pre_0021_database_upgrades_and_backfills_the_board() {
             .expect("positive threshold"),
         insistence: Insistence::Normal,
         created_at: ts(1_000),
+        by: None,
     };
     repo.apply(vec![
         PersistenceAction::UpsertBoard(b.clone()),
@@ -2441,6 +2455,7 @@ async fn tracker_receipts_rehydrate_and_still_guard_the_toast() {
         clocks: HabitClocks::all(ts(1_000)),
         continued_from: None,
         deleted: false,
+        by: None,
     };
     let day = taskboard_domain::days::DayCalendar {
         day_start_time: chrono::NaiveTime::MIN,

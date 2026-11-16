@@ -209,6 +209,7 @@ fn due_rule_seed() -> Vec<taskboard_domain::PersistenceAction> {
         ),
         created_at: common::ts(T0),
         updated_at: common::ts(T0),
+        by: None,
     };
     vec![
         PersistenceAction::UpsertBoard(board),

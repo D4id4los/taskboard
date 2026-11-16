@@ -984,6 +984,7 @@ mod tests {
                 created_at: start,
                 updated_at: start,
                 kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                by: None,
             },
         )
     }
@@ -1534,6 +1535,7 @@ mod habit_gate_tests {
             clocks: HabitClocks::all(now),
             continued_from: None,
             deleted,
+            by: None,
         };
         let mut habits = HabitState::default();
         habits
@@ -1590,6 +1592,7 @@ mod habit_gate_tests {
             HabitLogEntry {
                 count: 1,
                 clock: now,
+                by: None,
             },
         );
         assert!(!has_flush_work(
@@ -1616,6 +1619,7 @@ mod habit_gate_tests {
             HabitLogEntry {
                 count: 1,
                 clock: now,
+                by: None,
             },
         );
         assert!(has_flush_work(

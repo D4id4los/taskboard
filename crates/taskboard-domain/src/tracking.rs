@@ -58,6 +58,13 @@ pub struct TimeEntry {
     /// (journal payloads, receipt JSON) decode [`TimeEntryKind::Work`].
     #[serde(default)]
     pub kind: TimeEntryKind,
+    /// The row's author (F1's `by` leg, the stored duel rank): the
+    /// document's `by` when adopted, the device identity when created
+    /// locally, `None` for rows that predate the slot (never privileged —
+    /// the `None < Some` leg keeps them honest). Documented leniency:
+    /// `None` here means "author unknown", not "authored by nobody".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<crate::ids::AuthorId>,
 }
 
 /// What a time entry counts as. `Work` is the default and the
@@ -526,6 +533,7 @@ mod tests {
             created_at: ts(100),
             updated_at: ts(100),
             kind,
+            by: None,
         }
     }
 

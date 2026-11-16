@@ -196,6 +196,7 @@ impl FakeEngine {
                             threshold,
                             insistence,
                             created_at: taskboard_domain::BoardClocks::epoch(),
+                            by: None,
                         },
                     );
                 }
