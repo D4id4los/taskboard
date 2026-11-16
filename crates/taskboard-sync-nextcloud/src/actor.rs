@@ -1058,6 +1058,19 @@ async fn sidecar_evidence(
     {
         // Metadata equal ⇒ skip the content GET; re-folding the cached
         // document is idempotent (chunk 4's guarantee).
+        //
+        // #133 audit row 5 verdict (no-change; see the chunk-E plan
+        // §3): Deck REST revisions churn on write — `last_modified`
+        // equality means the attachment was not rewritten since the
+        // cache was filled, so equal ⇒ equal content holds and the
+        // skip is correct. The #695 retention signature is a WebDAV
+        // *validator* behavior (the files-substrate's ETag family);
+        // Deck's revision stamp is not that validator, and wrapping
+        // the equal branch in a skew-band refresh would need a
+        // fetch-time seam on `CachedAppData` plus a clock in this
+        // actor — new seams for no reachable failure. Recorded as
+        // backlog debt instead (issue #868; the chunk-E plan §8's
+        // bounded fallback).
         return Ok((
             AppDataEvidence::Document(Box::new(cached.document.clone())),
             discovery,
