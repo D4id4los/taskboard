@@ -42,7 +42,7 @@ impl Keymap {
         for (action, context, spellings) in preset.rows() {
             let seq = stroke::parse_sequence(spellings.iter().copied())
                 .expect("preset spellings parse (contract-tested)");
-            keymap.insert(*action, *context, seq);
+            keymap.insert(action, context, seq);
         }
         keymap
     }
@@ -1086,7 +1086,7 @@ mod tests {
         for (action, context, spellings) in preset.rows() {
             let seq = stroke::parse_sequence(spellings.iter().copied())
                 .expect("rows parse (tested above)");
-            grouped.entry(*context).or_default().push((*action, seq));
+            grouped.entry(context).or_default().push((action, seq));
         }
         grouped
     }
