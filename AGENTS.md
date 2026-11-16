@@ -3,7 +3,8 @@
 Instructions for LLM coding agents (and humans) working in this repository.
 Read this file **before** writing any code or opening a pull request. The
 full engineering context lives in `docs/architecture.org`,
-`docs/coding_guidelines.org`, and `docs/testing_strategy.org`.
+`docs/coding_guidelines.org`, `docs/testing_strategy.org`, and
+`docs/agent_dispatch.org` (orchestrating multi-agent dispatch work).
 
 ## 1. Project Identity & Architecture
 
@@ -176,6 +177,18 @@ implementation specs into the root directory or source folders.
   `YYYY-MM-DD-<topic>-dispatch-plan.md` in `plans/`. A dispatch plan
   chunks an already-accepted design round or roadmap wave; it is
   written after acceptance, never instead of it.
+  **Sub-agent dispatch discipline (2026-11-16)**: the orchestrating
+  agent follows `docs/agent_dispatch.org`. The two non-negotiables:
+  (1) *the coverage trio never runs inside a subagent* — the ~10–14
+  minute silent run exceeds the subagent inactivity cutoff; subagents
+  gate on pre-commit hooks + flock-wrapped `cargo nextest`, and the
+  dispatcher owns full-suite runs, the CI watch, teardown, and
+  at-merge issue closures (a stage-3 agent's scope ends at PR-open);
+  (2) *the dispatcher verifies each stage's landed state in the
+  worktree before dispatching the next* — a stalled or quota-cut
+  stage is completed from its landed commits or resumed with context,
+  never re-dispatched blind. Stage prompts restate the discipline
+  verbatim.
 - **UX journey plans**: a plan or design round that adds or changes a
   user-visible capability (any new verb, badge, view, or setting a human
   can perceive or act on; pure engine/storage/sync internals exempt)
