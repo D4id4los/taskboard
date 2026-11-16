@@ -112,6 +112,35 @@ pub fn env_lock() -> EnvGuard {
 /// Holds the env mutex for the guard's lifetime.
 pub struct EnvGuard(std::sync::MutexGuard<'static, ()>);
 
+/// RAII cwd guard: chdirs now, restores the previous directory on
+/// drop — including on the unwind path, where the manual
+/// `set_current_dir(original)` it replaces was skipped (#728's leak:
+/// the process cwd stayed in a tempdir that `TempDir::drop` then
+/// deletes, contaminating every sibling test). The guard does **not**
+/// take the env mutex itself — cwd is process-global like env, so
+/// callers already holding the env mutex (via [`xdg_lock`])
+/// serialize naturally; a test that only chdirs holds nothing extra.
+#[must_use]
+pub fn cwd_lock(path: &Path) -> CwdGuard {
+    let original = std::env::current_dir().expect("capture cwd");
+    std::env::set_current_dir(path).expect("chdir");
+    CwdGuard { original }
+}
+
+/// Holds the captured pre-test directory for [`cwd_lock`]'s lifetime.
+pub struct CwdGuard {
+    original: std::path::PathBuf,
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        // Deletion-tolerant: `original` is the pre-test directory and
+        // always exists at restore time; an error here is a panic, not
+        // a silent leak.
+        std::env::set_current_dir(&self.original).expect("restore cwd");
+    }
+}
+
 /// Sets an env var (edition-2024 unsafe) for the duration of the lock.
 pub fn set_env(key: &str, value: &str) {
     // SAFETY: callers hold the process-local env lock; test binaries are
@@ -150,8 +179,8 @@ impl Drop for EnvOverride {
     }
 }
 
-/// [`env_lock`] plus a sandboxed config home: `XDG_CONFIG_HOME` points
-/// at a fresh tempdir for the guard's lifetime, so default-path
+/// [`taskboard_env_lock`] plus a sandboxed config home: `XDG_CONFIG_HOME`
+/// points at a fresh tempdir for the guard's lifetime, so default-path
 /// resolution (`AppConfig::load(None)`, `config::path(None)`) never
 /// reads the machine's live `taskboard.toml`. A test that wants a file
 /// on the XDG read path plants it under [`XdgLock::config_home`].
