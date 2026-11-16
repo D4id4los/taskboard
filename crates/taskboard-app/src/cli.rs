@@ -555,13 +555,20 @@ fn parse_color_rejects_everything_else() {
 }
 
 /// `--due` grammar: set (RFC-3339 with an explicit offset, normalized
-/// to UTC, or bare `YYYY-MM-DD` → midnight UTC) or clear (`none`).
-/// Due dates are stored and displayed in UTC only; offset-less
-/// timestamps are refused.
+/// to UTC), a bare `YYYY-MM-DD` (minted at the execution seam — see
+/// [`DueSpec::Date`]), or clear (`none`). Due dates are stored and
+/// displayed in UTC only; offset-less timestamps are refused.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DueSpec {
-    /// Set the due date.
+    /// Set the due date (an explicit-offset instant, normalized to UTC).
     Set(chrono::DateTime<chrono::Utc>),
+    /// A bare `YYYY-MM-DD` date — the date-only form of the N-4
+    /// stamping law (task-detail-editor UX plan US-1/D-5). clap's
+    /// value parser is pure (no config access), so the *mint* happens
+    /// at the `tasks edit` execution seam: `day.day_end(date)` over
+    /// `AppConfig::resolved_day_calendar()` — the identical instant
+    /// the GUI funnel's `parse_stamp` produces (one law, two fronts).
+    Date(chrono::NaiveDate),
     /// Clear the due date.
     Clear,
 }
@@ -578,13 +585,9 @@ fn parse_due(raw: &str) -> Result<DueSpec, String> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .map(|dt| DueSpec::Set(dt.with_timezone(&chrono::Utc)))
         .or_else(|_| {
-            chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").map(|date| {
-                DueSpec::Set(
-                    date.and_hms_opt(0, 0, 0)
-                        .expect("midnight is valid")
-                        .and_utc(),
-                )
-            })
+            // The bare date is minted at the execution seam
+            // (`DueSpec::Date`'s doc) — the value parser stays pure.
+            chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d").map(DueSpec::Date)
         })
         .map_err(|_| "expected RFC-3339 (2026-10-24T09:00:00Z), YYYY-MM-DD, or 'none'".to_owned())
 }
@@ -1822,17 +1825,14 @@ mod tests {
     fn parse_due_accepts_rfc3339_bare_date_and_none() {
         let set = parse_due("2026-10-24T09:00:00Z").expect("rfc3339");
         assert!(matches!(set, DueSpec::Set(_)));
+        // US-1/D-5: the bare date parses to the `Date` variant — the
+        // instant mint (day-window end over the resolved day calendar)
+        // happens at the execution seam, where the config is reachable.
         let bare = parse_due("2026-10-24").expect("bare date");
-        match bare {
-            DueSpec::Set(dt) => {
-                let midnight = chrono::NaiveDate::from_ymd_opt(2026, 10, 24)
-                    .and_then(|d| d.and_hms_opt(0, 0, 0))
-                    .expect("valid midnight")
-                    .and_utc();
-                assert_eq!(dt, midnight, "bare date is midnight UTC");
-            }
-            DueSpec::Clear => panic!("bare date must set"),
-        }
+        assert_eq!(
+            bare,
+            DueSpec::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 24).expect("valid date"))
+        );
         assert_eq!(parse_due("none"), Ok(DueSpec::Clear));
     }
 
