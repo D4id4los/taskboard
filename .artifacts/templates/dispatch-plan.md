@@ -86,6 +86,34 @@ the worktree as its final handoff task.
 
 **Shared execution model** (binding for every chunk):
 
+**Long-command discipline** *(binding for every chunk, every stage —
+added 2026-11-16 from the framework rollout; full law:
+`docs/agent_dispatch.org`)*: a subagent is killed after ~600s without
+observable activity, so long silent commands kill working agents.
+
+1. *The coverage trio never runs inside a subagent*: a stage-2/stage-3
+   agent's gate is the pre-commit hooks (automatic) plus
+   `scripts/run-quality-gates.sh cargo nextest run --workspace`
+   (flock-safe, ~4–6 min; background + poll with useful work between
+   polls if needed). The dispatcher runs the full AGENTS §10 suite in
+   its own session between stage 2's landing and stage 3's ship; CI's
+   Code Coverage check runs it authoritatively on the PR.
+2. *Stage 3's scope ends at PR-open*: the stage-3 agent rebases,
+   reviews, fixes, pushes, opens the PR, and reports — it does NOT
+   watch CI. The dispatcher owns `gh pr checks --watch`, the
+   `mergeStateStatus CLEAN` verification, teardown, and at-merge issue
+   closures.
+3. *Any command a subagent expects to exceed ~5 minutes runs
+   backgrounded* with short interleaved polls and useful work between
+   polls — and the agent commits all landed work BEFORE any wait.
+4. *Stage prompts restate this discipline verbatim* (an agent that
+   must find it in another file will not carry it).
+5. *Dispatcher stage-exit verification*: before dispatching stage N+1,
+   the dispatcher verifies stage N's landed state in the worktree
+   (commits present, tree clean, gate evidence re-runnable). A stalled
+   or quota-cut stage is completed from its landed commits or resumed
+   with a state-check message — never re-dispatched blind.
+
 0. **Every stage, every agent**: out-of-scope findings become
    `backlog:` GitHub issues (or comments on existing ones) the moment
    they are discovered, without asking (AGENTS §7 standing
@@ -105,14 +133,16 @@ the worktree as its final handoff task.
    missing — if the branch or the worktree path's PR already landed,
    create `<branch>-v2` instead per AGENTS §8; never
    `git worktree add <path> main`), executes per the approved plan — <implementation: TDD,
-   every commit standalone (rebase-merge hygiene), full AGENTS §10
-   gate suite green | research: the experiments and the deliverable
+   every commit standalone (rebase-merge hygiene), fast gate green per
+   the long-command discipline above (the dispatcher owns the full
+   suite) | research: the experiments and the deliverable
    report>. When the origin cites a UX journey plan: implement exactly
    the wiring inventory rows this chunk claims, embed journey-step
    tokens in test names, and run `scripts/ux-coverage.sh <plan> --gate`
    before reporting done (MISSING on a claimed row is not done). Does
    **not** push or open a PR. Reports deviations.
-3. **Stage 3 — review agent** *(protocol amended 2026-10-18)*:
+3. **Stage 3 — review agent** *(protocol amended 2026-10-18; scope
+   narrowed 2026-11-16 per the long-command discipline)*:
    **begins by rebasing onto `main`** — `git fetch origin --prune`,
    rebase the branch onto `origin/main` (AGENTS §8's rebase dance:
    drop already-merged duplicate commits; resolve only real
@@ -120,34 +150,27 @@ the worktree as its final handoff task.
    history — then reviews the entire branch diff versus the
    **post-rebase** base against the chunk's acceptance criteria +
    AGENTS rules **plus the mandate below**, re-runs whatever gates
-   apply, implements fixes for every finding on the branch
-   (amend/reword, never duplicate-subject fixups). Its last tasks
-   are shipping: push the branch, open the PR to `main` with `gh`,
-   watch `gh pr checks --watch` to completion — any failing check is
-   a finding; diagnose, fix, push `--force-with-lease`, repeat until
-   green — **then verify the PR's merge state**: `gh pr view --json
-   mergeStateStatus` must report `CLEAN`; `BEHIND`/`DIRTY` ⇒ rebase
-   onto `origin/main`, push `--force-with-lease`, let the checks
-   re-run, repeat; any other state ⇒ diagnose before handing off.
-   **Then teardown**: remove the now-disposable worktree — from the
-   project root, `git -C /home/viktoria/src/taskboard worktree remove
-   --force ../taskboard-WT-<branch>` (absolute anchor per AGENTS §8 —
-   never a bare relative path, which resolves against whatever cwd the
-   session happens to be in and can name a neighbour's worktree;
-   everything precious is pushed; a later round that resumes the chunk
-   recreates it on a fresh branch). Confirm via `git worktree list`
-   that the removed path was the intended one. The handoff contract is
-   "PR open + checks green + merge state `CLEAN` + worktree removed" so
-   the
-   user's merge needs no additional rebase and the chunk leaves no
-   36–55G of build output behind. When the origin cites a UX journey
-   plan, stage 3 additionally carries the **UX completeness mandate**:
-   re-run `scripts/ux-coverage.sh <plan> --gate`; then execute the
-   walkthrough protocol (docs/ux_planning.org) over every P1 story —
-   the four walkthrough questions per step with evidence, then the
-   six-heuristic pass over touched surfaces; BLOCKER/MAJOR findings
-   are fixed on the branch, MINOR findings become backlog issues.
-   Reports a verdict. Never merges;
+   apply (fast gate per the discipline above), implements fixes for
+   every finding on the branch (amend/reword, never duplicate-subject
+   fixups). **Its scope ends at PR-open**: push the branch, open the
+   PR to `main` with `gh`, and report the URL — the *dispatcher* owns
+   `gh pr checks --watch` (any failing check is a finding: the
+   dispatcher sends it back or fixes it), the `mergeStateStatus CLEAN`
+   verification (`BEHIND`/`DIRTY` ⇒ rebase, push `--force-with-lease`,
+   repeat), **the teardown** — from the project root, `git -C
+   /home/viktoria/src/taskboard worktree remove --force
+   ../taskboard-WT-<branch>` (absolute anchor per AGENTS §8; confirm
+   via `git worktree list`) — and at-merge issue closures. The handoff
+   contract remains "PR open + checks green + merge state `CLEAN` +
+   worktree removed" so the user's merge needs no additional rebase
+   and the chunk leaves no 36–55G of build output behind. When the
+   origin cites a UX journey plan, stage 3 additionally carries the
+   **UX completeness mandate**: re-run `scripts/ux-coverage.sh <plan>
+   --gate`; then execute the walkthrough protocol (docs/ux_planning.org)
+   over every P1 story — the four walkthrough questions per step with
+   evidence, then the six-heuristic pass over touched surfaces;
+   BLOCKER/MAJOR findings are fixed on the branch, MINOR findings
+   become backlog issues. Reports a verdict. Never merges;
    never touches `main`. (<`main` is
    branch-protected — merges happen on GitHub by the user, after
    the required checks pass.>)

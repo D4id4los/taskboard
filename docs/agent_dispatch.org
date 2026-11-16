@@ -1,0 +1,146 @@
+#+title: Agent Dispatch Discipline — orchestrating multi-agent chunks
+
+#+options: toc:t
+
+This is the standing law for orchestrating work through the three-stage
+dispatch protocol (planning → implementation → review; the protocol
+itself: =.artifacts/templates/dispatch-plan.md=). It was formalized
+2026-11-16 from the UX journey planning framework's rollout
+(2026-11-13 → 11-16: six phases, six remediation chunks, ~20 staged
+agent runs), where every failure mode below was observed and every rule
+earned by a recovered incident. The full narrative:
+=.artifacts/plans/2026-11-15-ux-remediation-dispatch-plan.md= §1
+(long-command discipline amendment) and the rollout's dispatch plans.
+
+* 1. The harness facts these rules answer
+
+- *Inactivity cutoff*: a dispatched subagent is killed after ~600s
+  without observable activity. Long silent commands kill agents that
+  are otherwise working correctly.
+- *Quota limits*: a subagent can stop mid-run with a quota error. Its
+  context survives; it can be resumed.
+- *Both are cheap if committed*: in every observed stall, the agent's
+  landed commits were intact — only verification and reporting were
+  lost. Work that is committed before any wait cannot be lost.
+
+* 2. The long-command discipline (non-negotiable)
+
+- *The coverage trio never runs inside a subagent.*
+  =cargo llvm-cov nextest= + quarantine + report runs 10–14 minutes of
+  silent compile+test — structurally longer than the inactivity
+  cutoff. A stage-2/stage-3 agent's gate is: the pre-commit hooks
+  (fmt + clippy + slint lint, automatic on every commit) plus
+  =scripts/run-quality-gates.sh cargo nextest run --workspace= (the
+  wrapper's flock-safe arbitrary-command mode, ~4–6 min warm).
+- *The dispatcher owns the full suite*: it runs the complete AGENTS §10
+  sequence in its own session (background + poll, which survives)
+  between stage 2's landing and stage 3's ship — and CI's Code
+  Coverage check runs it authoritatively on the PR regardless.
+- *The dispatcher owns the CI watch and teardown*: a stage-3 agent's
+  scope ENDS at PR-open. =gh pr checks --watch= is 7–16 minutes of
+  silence — even backgrounded, an agent that runs out of other duties
+  goes quiet and is killed at PR-green's worst moment. The dispatcher
+  watches checks, performs teardown, and does at-merge issue closures.
+- *Any subagent command expected over ~5 minutes runs backgrounded*,
+  with short interleaved polls and useful work between polls — and the
+  agent commits all landed work BEFORE beginning any wait.
+
+* 3. Stage-exit verification (the dispatcher never trusts reports)
+
+Before dispatching stage N+1, the dispatcher verifies stage N's landed
+state directly in the worktree: commits present (=git log
+origin/main..HEAD=), tree clean, gate evidence re-runnable. A stalled
+or quota-cut stage is *completed by the dispatcher from the worktree
+state*, never re-dispatched blind — resumption from landed commits
+cost minutes; blind re-dispatch costs hours and can duplicate or
+contradict landed work.
+
+* 4. Resume over redo
+
+A stopped agent that retains context (inactivity, quota) is resumed
+with a state-check message ("commit X is landed; continue from Y"),
+not replaced: the replacement re-reads everything and re-derives
+decisions the original already recorded. If resumption is impossible
+(quota exhausted), the fallback is a fresh agent seeded with the
+landed-state summary, not a from-scratch prompt.
+
+* 5. Prompt organisation (what a dispatch plan must carry)
+
+- *Verbatim prompts*: every stage prompt is complete and paste-ready;
+  a reader who has never seen the origin can dispatch from the
+  document alone (the house bar, dispatch-plan template).
+- *Chunk-specific traps, not generic advice*: each stage-3 prompt names
+  the invariants that could silently break, from the origin's facts
+  (the round-7 precedent: "the exact files, the tests that must not
+  have been weakened, the diff-shape rules").
+- *The discipline carried verbatim*: the long-command rules and the
+  scope split are restated in full at the top of every stage prompt —
+  an agent that must read them from another file will not.
+- *Cross-cutting constraints bind all stages and are restated per
+  prompt*: blind-authoring constraints (phase-2 pilot), retrofit
+  posture ("describe what exists, never fix"), epistemic rules
+  ("record reality, never invent rulings") — a constraint stated only
+  in the plan preamble was observed to be missed by stage agents that
+  never re-read the preamble.
+- *Coverage-gate steady states are stated per phase kind*: retrofit
+  plans expect FOUND on every row (MISSING = plan-vs-code defect);
+  remediation plans expect new rows FOUND with pre-existing debt
+  excluded — bounded by the *byte-identical-baseline* check (the
+  MISSING set must equal the pre-chunk baseline; run the gate against
+  the pre-amendment plan blobs to prove it). Never let "gate green"
+  be demanded where the honest steady state is "gate unchanged".
+- *Beware shell exit codes in evidence loops*: =cmd | tail -n= reports
+  tail's exit. Capture =cmd; echo exit=$?= without pipes (observed
+  false-green in the phase-3 verification).
+
+* 6. Worktree & environment hygiene
+
+- The house AGENTS §8 worktree rules all apply; additionally, from the
+  rollout's one environment incident: after ANY unexpected worktree
+  anomaly (a foreign stash surfacing, a checkout of an unexpected
+  commit), verify the branch's commits contain no foreign content
+  (diff the commit list against the ledger, check for unfamiliar
+  files) before proceeding, and report the incident honestly. The
+  phase-5 chunk-6 stash incident was resolved with =git reset --hard
+  HEAD= after confirming all local commits were landed.
+- Teardown anchors to the main checkout with an absolute path and is
+  confirmed via =git worktree list= (AGENTS §8) — the dispatcher does
+  this, not the stage-3 agent (see §2).
+
+* 7. Chunk sizing & compression
+
+- Default: the full three-stage protocol per chunk. *Tiny docs-only
+  chunks* (a wording flip, a status-line move — one coherent edit
+  across ≤4 files) may be run *compressed*: the dispatcher acts as
+  planner and implementer directly — a plan committed first, the
+  edits, the full gate suite, then the PR — stating the compression
+  choice in the plan. Three subagent sessions for a wording flip is
+  ceremony, not discipline. Phase 6 of the framework rollout was run
+  this way.
+- Feature chunks (any code) always get the full protocol.
+- L-sized chunks run 90–210 minutes of stage-2 work without stalling
+  under this discipline (observed: chunk 3's resume at rung 2 of 6,
+  chunk 5's single-pass completion) — size is not the stall risk;
+  silent waits are.
+
+* 8. Failure-mode playbook (observed, with resolutions)
+
+| Incident | Signal | Resolution |
+|---|---|---|
+| Stage-2 stall on coverage run | agent dead, commits landed | dispatcher verified worktree, ran the full suite itself, proceeded to stage 3 |
+| Stage-3 stall on CI watch | agent dead, PR already open | dispatcher watched checks, tore down; report reconstructed from the PR |
+| Quota cut mid-ladder | quota error, rung k of n landed | SendMessage resume with state check; agent finished all rungs |
+| Review stall before push | agent dead post-fix commits | dispatcher verified fixes, pushed, opened PR |
+| CI flake on docs-only PR | one test fails, passes on re-run | comment on the flaky-test family issue, =gh run rerun --failed=, re-watch |
+| Foreign stash in worktree | unexpected conflict during baseline check | reset --hard after verifying commits landed; incident reported; foreign content verified absent from diffs |
+
+* 9. Where each rule lives
+
+- This file: the full law (agents read it via AGENTS.md §7).
+- =AGENTS.md= §7: the pointer + the two non-negotiables inline (the
+  coverage-trio prohibition; dispatcher verification).
+- =.artifacts/templates/dispatch-plan.md=: the long-command discipline
+  block in the shared execution model — every new dispatch plan
+  inherits it and its stage prompts restate it verbatim.
+- The dispatch plans under =.artifacts/plans/=: per-rollout
+  instantiations (the phase-5 amendment is the exemplar).
