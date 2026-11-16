@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The control walk's mask facts (the focus-restoration plan US-2/W-2,
+// D-W2): while a masked site holds, the adapter owns the walk's
+// arithmetic — `armed` is adapter-derived (the site table), `extent`
+// and `cursor` are the mounted host's pushes (init seeds the ordered
+// control count; the host re-publishes `cursor` when its own focus
+// moves), and `focus-index`/`nonce` carry the clamped stop back to the
+// host (the `mask-focus` AppWindow seam's consumed half). The
+// degenerate extent (≤ 1) stays on 0 — the walk never leaks under the
+// mask, and an unarmed walk keeps today's synthetic traversal.
+
+export global MaskWalkFacts {
+    // Adapter-owned: a masked site holds (the walk clamps).
+    in property <bool> armed: false;
+    // Host-owned: the ordered focusable-control count.
+    in property <int> extent: 0;
+    // Host-owned: the control currently holding focus.
+    in-out property <int> cursor: 0;
+    // The adapter's clamped-stop push (consumed by the host).
+    in property <int> focus-index: -1;
+    in property <int> nonce: 0;
+}

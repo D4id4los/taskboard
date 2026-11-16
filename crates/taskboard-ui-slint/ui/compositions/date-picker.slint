@@ -12,6 +12,7 @@
 // the picker never shadows the view Escape (R-c).
 
 import { Theme, Typography, Semantic, RoleText, DueKind } from "../theme.slint";
+import { MaskWalkFacts } from "../mask-walk-facts.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TimeField, TimeSlotRow } from "../widgets/time-field.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
@@ -110,6 +111,20 @@ export component DatePicker inherits Rectangle {
         init => {
             if (root.focus-on-mount) {
                 self.focus();
+            }
+            // The walk clamp's host half (US-2/W-2, D-W2): the mask
+            // holds this grid — the degenerate extent keeps the walk
+            // on it.
+            MaskWalkFacts.extent = 1;
+            MaskWalkFacts.cursor = 0;
+        }
+        // The consumption edge: the adapter's clamped stop arrives
+        // through the `mask-focus` seam's nonce.
+        property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+        changed watch-mask-nonce => {
+            if (MaskWalkFacts.armed) {
+                self.focus();
+                MaskWalkFacts.cursor = 0;
             }
         }
         // The focus seam (round-3 D25): the derived property +

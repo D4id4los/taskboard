@@ -1287,6 +1287,28 @@ impl Adapter {
         None
     }
 
+    /// Whether the control walk clamps (US-2/W-2, D-W2): the masked
+    /// host set is the census's modal hosts — the palette, capture,
+    /// timer setter, focus overlay, track entries, due editor, recur
+    /// editor, and labels overlay. The action menu and the review walk
+    /// own their key grammars outright (their row walks are not the
+    /// control walk), so they stay off this list.
+    fn mask_armed(&self, window: &AppWindow) -> bool {
+        matches!(
+            self.open_focus_site(window),
+            Some(
+                FocusSeam::Palette
+                    | FocusSeam::Capture
+                    | FocusSeam::TimerSetter
+                    | FocusSeam::FocusOverlay
+                    | FocusSeam::TrackEntries
+                    | FocusSeam::DueEditor
+                    | FocusSeam::RecurEditor
+                    | FocusSeam::LabelsOverlay
+            )
+        )
+    }
+
     /// The open pass's recording half: the anchor is the invoking
     /// element's identity at record time — the logical walk focus,
     /// else the subject (subject-affine sites), else the view. The
@@ -1447,6 +1469,12 @@ impl Adapter {
         if self.applying_outcomes {
             return;
         }
+        // The walk clamp's armed push (US-2/W-2): the flag is the site
+        // table's read, published every pass so the hosts and the
+        // tests see the current mask without a walk dispatch.
+        window
+            .global::<crate::MaskWalkFacts>()
+            .set_armed(self.mask_armed(window));
         if let Some(origin) = self.focus_origin.take() {
             if self.open_focus_site(window) == Some(origin.seam) {
                 // Still open (a refresh pass mid-site): keep holding.
@@ -3918,6 +3946,23 @@ impl Adapter {
                 self.shell.apply(&UiEffect::SetMode(mode), 0);
                 Vec::new()
             }
+            // The mask's own walk (US-2/W-2, D-W2): the control walk
+            // inside a masked site is the mask's traversal — kept
+            // (no view mutation; the walk's clamp consumes it in this
+            // table's post-tail), never a settle trigger. The masked
+            // set is the clamp's host census: the palette, capture,
+            // focus overlay, entries family, recur editor, and labels
+            // overlay.
+            (
+                Flow::Palette { .. }
+                | Flow::Capture
+                | Flow::FocusMode { .. }
+                | Flow::TrackEntries { .. }
+                | Flow::TrackEntryForm { .. }
+                | Flow::EditRecur { .. }
+                | Flow::Labels { .. },
+                UiEffect::ControlNext | UiEffect::ControlPrev,
+            ) => Vec::new(),
             // Round 3 (W-SM-b): the wildcard arm is gone. Every
             // remaining pair — a foreign flow meeting an effect its
             // kept arms don't own — goes through the named resolver:
@@ -3944,11 +3989,28 @@ impl Adapter {
         }
         // The control walk (round-3 D25): the traversal re-injection
         // runs after the outcomes, outside the table — the walk never
-        // mutates view state, it moves slint focus only.
+        // mutates view state, it moves slint focus only. Under a
+        // masked site the walk clamps instead (US-2/W-2, D-W2): the
+        // cursor steps within the host's extent and wraps at the mask
+        // receive focus. The degenerate extent (≤ 1) stays on 0.
         if matches!(effect, UiEffect::ControlNext | UiEffect::ControlPrev) {
             let backwards = effect == UiEffect::ControlPrev;
-            let flag = self.walk_reentry.clone();
-            Self::dispatch_traversal(window, &flag, backwards, &self.walk_timer);
+            if self.mask_armed(window) {
+                let facts = window.global::<crate::MaskWalkFacts>();
+                let extent = facts.get_extent();
+                let cursor = facts.get_cursor();
+                let next = if extent <= 1 {
+                    0
+                } else if backwards {
+                    (cursor + extent - 1) % extent
+                } else {
+                    (cursor + 1) % extent
+                };
+                window.invoke_mask_focus(next);
+            } else {
+                let flag = self.walk_reentry.clone();
+                Self::dispatch_traversal(window, &flag, backwards, &self.walk_timer);
+            }
         }
         // The scroll actions (round-3 D26): the focused container
         // pages after the outcomes (the tables are fresh).

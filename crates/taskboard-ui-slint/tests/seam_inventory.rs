@@ -364,6 +364,8 @@ const INVOKE_INVENTORY: &[&str] = &[
     "focus_stack_header",
     "focus_board_cell",
     "focus_detail_cell",
+    // The control walk's clamped stop (US-2/W-2, D-W2).
+    "mask_focus",
 ];
 
 /// The push functions the manifest deliberately does not count: the

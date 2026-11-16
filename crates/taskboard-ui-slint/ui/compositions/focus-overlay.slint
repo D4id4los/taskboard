@@ -12,6 +12,7 @@
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { ListRow } from "../widgets/list-row.slint";
+import { MaskWalkFacts } from "../mask-walk-facts.slint";
 
 export struct FocusRowModel {
     // The candidate task's title.
@@ -21,6 +22,21 @@ export struct FocusRowModel {
 }
 
 export component FocusOverlay inherits Rectangle {
+    // The walk clamp's host half (US-2/W-2, D-W2): the mask holds
+    // this scope — the degenerate extent keeps the walk on it; the
+    // consumption edge rides the `mask-focus` seam's nonce.
+    init => {
+        MaskWalkFacts.extent = 1;
+        MaskWalkFacts.cursor = 0;
+    }
+    property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+    changed watch-mask-nonce => {
+        if (MaskWalkFacts.armed) {
+            stop-focus.focus();
+            MaskWalkFacts.cursor = 0;
+        }
+    }
+
     // The published phase word and countdown (Rust-assembled).
     in property <string> phase-text;
     in property <string> remaining-text;
