@@ -1355,11 +1355,13 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
         Flow::Move {
             task: a,
             target: s1,
+            slot: 0,
         },
         Flow::MoveStack { stack: s1, slot: 0 },
         Flow::DragMove {
             task: a,
             target: s1,
+            gap: None,
         },
         Flow::Palette { selected: 0 },
         Flow::Capture,
@@ -1765,6 +1767,7 @@ fn a_stale_column_drop_settles_the_drag_without_dispatching() {
             a.view_state.arm_flow(Flow::DragMove {
                 task: a_id,
                 target: fx.stacks[1],
+                gap: None,
             });
         }
         // The drop lands past the id tables (the stale-refresh race):
@@ -1792,6 +1795,7 @@ fn a_swallowed_completed_confirm_still_settles_the_drag() {
             a.view_state.arm_flow(Flow::DragMove {
                 task: a_id,
                 target: fx.stacks[1],
+                gap: None,
             });
         }
         // `completed == true` with the flow still armed: the drop
@@ -1819,6 +1823,7 @@ fn a_live_on_tables_drop_still_confirms_with_one_move() {
             a.view_state.arm_flow(Flow::DragMove {
                 task: a_id,
                 target: fx.stacks[1],
+                gap: None,
             });
         }
         rig.handle.window().invoke_board_card_dropped(1);

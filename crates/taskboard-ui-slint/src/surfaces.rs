@@ -529,6 +529,7 @@ mod tests {
             FlowTag::Move => Flow::Move {
                 task: TASK,
                 target: STACK,
+                slot: 0,
             },
             FlowTag::Palette => Flow::Palette { selected: 0 },
             FlowTag::Capture => Flow::Capture,
@@ -548,6 +549,7 @@ mod tests {
             FlowTag::DragMove => Flow::DragMove {
                 task: TASK,
                 target: STACK,
+                gap: None,
             },
             FlowTag::PlanPlace => Flow::PlanPlace { task: TASK },
             FlowTag::ReviewWalk => Flow::ReviewWalk {

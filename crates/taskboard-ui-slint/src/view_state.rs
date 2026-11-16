@@ -258,8 +258,17 @@ pub enum Flow {
     /// is the text flows' (commit non-empty / discard empty — no
     /// accidental clears on focus loss).
     EditDescription { task: TaskId },
-    /// The move flow: moving `task` toward `target`.
-    Move { task: TaskId, target: StackId },
+    /// The move flow: moving `task` toward `target` at insertion slot
+    /// `slot` (UX-R8 D-1, #823): the gap index into
+    /// `tasks_in_stack(target)` — `0..=len` (gap `i` = before task
+    /// `i`, gap `len` = after the last). One flow carries both aim
+    /// coordinates; the confirm computes the order presentation-side
+    /// through [`slot_order`].
+    Move {
+        task: TaskId,
+        target: StackId,
+        slot: usize,
+    },
     /// The jump-to search palette (#348, chunk 9): the palette cursor
     /// lives in the flow (subject-free — `reconcile` leaves it alone;
     /// background refreshes re-rank through the row push instead).
@@ -307,7 +316,14 @@ pub enum Flow {
     /// pointer-shaped intents (set-target-by-column) have no table
     /// precedent, and the model push derives the ghost/dim/highlight
     /// from the flow. Refresh-survival is model-push by construction.
-    DragMove { task: TaskId, target: StackId },
+    /// UX-R8 D-2 adds `gap`: the aimed insertion slot — `Some(gap)`
+    /// from a gap-zone report, `None` = column-only aim (the legacy
+    /// column seams; the drop then appends).
+    DragMove {
+        task: TaskId,
+        target: StackId,
+        gap: Option<usize>,
+    },
     /// The plan-next-day placement form (#622, D-3): subject-affine
     /// like the entries form (the third tenant of that pattern) —
     /// `reconcile` drops it when the subject dies, but a view change
@@ -492,9 +508,34 @@ pub fn append_order(state: &AppState, stack: StackId) -> i64 {
         .map_or(0, |t| t.order + 1)
 }
 
+/// The insertion slot's canonical order (UX-R8 D-1): gap `gap` in
+/// `stack`'s canonical order — `0..=len`. Gap before the first takes
+/// `first.order - 1`; after the last the [`append_order`]; between
+/// `a` and `b` the i64 midpoint (saturating arithmetic is unnecessary
+/// on non-negative engine orders — the documented leniency is the
+/// tie: an adjacent-pair midpoint can equal `a.order`, and the
+/// engine's `(order, id)` sort keeps that collision deterministic;
+/// `command.rs` no-ops the same-(stack, order) write).
+#[must_use]
+pub fn slot_order(state: &AppState, stack: StackId, gap: usize) -> i64 {
+    let tasks = state.tasks_in_stack(stack);
+    if gap == 0 {
+        return tasks.first().map_or(0, |t| t.order - 1);
+    }
+    if gap >= tasks.len() {
+        return tasks.last().map_or(0, |t| t.order + 1);
+    }
+    let a = tasks[gap - 1].order;
+    let b = tasks[gap].order;
+    a + (b - a) / 2
+}
+
 /// The one `MoveTask` construction site (r2 chunk-8 D-F): the
-/// keyboard confirm and the pointer drop both build their end-of-stack
-/// append here — command equivalence by construction.
+/// keyboard confirm and the pointer drop both build their command
+/// here — command equivalence by construction. UX-R8 D-1 adds
+/// [`slot_order`] as the second construction *input* (the keyboard
+/// flow's aimed slot); the pointer drop's end-of-stack append is the
+/// [`append_order`] input. Not a second site.
 fn append_move_command(state: &AppState, task: TaskId, target: StackId) -> FlowOutcome {
     FlowOutcome::Command(StateCommand::MoveTask {
         id: task,
@@ -2778,7 +2819,17 @@ impl ViewState {
         else {
             return Vec::new();
         };
-        self.write_flow(Flow::Move { task, target });
+        // The armed slot (UX-R8 D-1): the gap *after* the task's
+        // current position in its own stack. A vanished task leaves
+        // the flow unarmed — the `focused_task` guard above; the
+        // `position` fallback only fires on a focus/tables race that
+        // `reconcile` repairs (the gap-0 seed is the safe side).
+        let slot = state
+            .tasks_in_stack(target)
+            .iter()
+            .position(|t| t.id == task)
+            .map_or(0, |i| i + 1);
+        self.write_flow(Flow::Move { task, target, slot });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -2796,33 +2847,61 @@ impl ViewState {
             .collect()
     }
 
-    /// Focus next/prev during a move flow: cycle the target stack
-    /// (wrap — in compact this is exactly the switcher highlighting).
+    /// The flattened slot enumeration (UX-R8 D-1, US-1/AC-3): every
+    /// live stack's insertion gaps — stacks in [`Self::move_ring`]
+    /// order, positions top→bottom within a stack, N+1 slots per
+    /// stack (a single-task stack offers exactly two). Computed on
+    /// demand from the live state, never stored — refresh-survival by
+    /// re-derivation, the ring's existing law.
+    #[must_use]
+    pub fn move_slots(state: &AppState) -> Vec<(StackId, usize)> {
+        Self::move_ring(state)
+            .into_iter()
+            .flat_map(|stack| {
+                let len = state.tasks_in_stack(stack).len();
+                (0..=len).map(move |gap| (stack, gap))
+            })
+            .collect()
+    }
+
+    /// Focus next/prev during a move flow: advance one insertion slot
+    /// per stroke through the flattened [`Self::move_slots`] sequence
+    /// (wrap — UX-R8 D-1's walk; in compact this is exactly the
+    /// switcher highlighting).
     pub fn cycle_move_target(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
-        let Flow::Move { target, .. } = self.flow().clone() else {
+        let Flow::Move { target, slot, .. } = self.flow().clone() else {
             return Vec::new();
         };
-        let stacks = Self::move_ring(state);
-        if stacks.is_empty() {
+        let slots = Self::move_slots(state);
+        if slots.is_empty() {
             return Vec::new();
         }
-        let current = stacks
+        let current = slots
             .iter()
-            .position(|s| *s == target)
-            .map_or(0, |i| wrapped_index(i, direction, stacks.len()));
-        if let Some(Flow::Move { target, .. }) = self.surfaces.top_flow_mut() {
-            *target = stacks[current];
+            .position(|(stack, gap)| *stack == target && *gap == slot)
+            .map_or(0, |i| wrapped_index(i, direction, slots.len()));
+        let (stack, gap) = slots[current];
+        if let Some(Flow::Move { target, slot, .. }) = self.surfaces.top_flow_mut() {
+            *target = stack;
+            *slot = gap;
         }
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// `Activate` during a move flow: confirm — `MoveTask` append to
-    /// the target (D8).
+    /// `Activate` during a move flow: confirm — `MoveTask` at the
+    /// aimed slot's canonical order (UX-R8 D-1). The in-place confirm
+    /// (a walked-back slot mapping to the identical (stack, order))
+    /// dispatches and the engine's same-(stack, order) no-op absorbs
+    /// it — typed, no special case presentation-side.
     pub fn confirm_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        let Flow::Move { task, target } = self.flow().clone() else {
+        let Flow::Move { task, target, slot } = self.flow().clone() else {
             return Vec::new();
         };
-        let command = append_move_command(state, task, target);
+        let command = FlowOutcome::Command(StateCommand::MoveTask {
+            id: task,
+            stack: target,
+            order: slot_order(state, target, slot),
+        });
         self.write_flow(Flow::None);
         vec![command, FlowOutcome::RefreshNow]
     }
@@ -2847,7 +2926,11 @@ impl ViewState {
         else {
             return Vec::new();
         };
-        self.write_flow(Flow::DragMove { task, target });
+        self.write_flow(Flow::DragMove {
+            task,
+            target,
+            gap: None,
+        });
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -2855,25 +2938,69 @@ impl ViewState {
     /// address, resolved to its stack by the adapter. `RefreshNow` only
     /// on an actual change; inert without the drag flow.
     pub fn drag_target(&mut self, _state: &AppState, stack: StackId) -> Vec<FlowOutcome> {
-        let Some(Flow::DragMove { target, .. }) = self.surfaces.top_flow_mut() else {
+        let Some(Flow::DragMove { target, gap, .. }) = self.surfaces.top_flow_mut() else {
             return Vec::new();
         };
-        if *target == stack {
+        if *target == stack && gap.is_none() {
             return Vec::new();
         }
         *target = stack;
+        // Column-level aim: the gap resets (the gap zone's report
+        // re-arms it, UX-R8 D-2).
+        *gap = None;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The pointer's gap report (UX-R8 D-2, US-2): a gap-zone
+    /// `DropArea`'s hover address, resolved to (stack, gap) by the
+    /// adapter. Updates the drag flow's target *and* armed gap;
+    /// `RefreshNow` only on an actual change; inert without the drag
+    /// flow.
+    pub fn drag_gap(&mut self, _state: &AppState, stack: StackId, gap: usize) -> Vec<FlowOutcome> {
+        let Some(Flow::DragMove {
+            target, gap: armed, ..
+        }) = self.surfaces.top_flow_mut()
+        else {
+            return Vec::new();
+        };
+        if *target == stack && *armed == Some(gap) {
+            return Vec::new();
+        }
+        *target = stack;
+        *armed = Some(gap);
         vec![FlowOutcome::RefreshNow]
     }
 
     /// The drop (r2 D-F): the same `MoveTask` command the keyboard
     /// flow confirms — both funnel through [`append_move_command`],
     /// the one construction site (equivalence by construction; the
-    /// pin test compares the commands).
+    /// pin test compares the commands). UX-R8 D-2: an armed gap
+    /// confirms at its [`slot_order`]; the *in-place* confirm — the
+    /// confirmed gap on the dragged card's own position (gap `idx` or
+    /// `idx + 1` of its own stack) — dispatches nothing and ends the
+    /// flow (US-2/AC-2; the gesture is silent too, so a release back
+    /// on the card lands no ghosting refresh).
     pub fn confirm_drag_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
-        let Flow::DragMove { task, target } = self.flow().clone() else {
+        let Flow::DragMove { task, target, gap } = self.flow().clone() else {
             return Vec::new();
         };
-        let command = append_move_command(state, task, target);
+        let own_index = state
+            .tasks_in_stack(target)
+            .iter()
+            .position(|t| t.id == task);
+        if gap.is_some() && own_index.is_some_and(|idx| gap == Some(idx) || gap == Some(idx + 1)) {
+            self.write_flow(Flow::None);
+            return vec![FlowOutcome::RefreshNow];
+        }
+        let order = gap.map_or_else(
+            || append_order(state, target),
+            |g| slot_order(state, target, g),
+        );
+        let command = FlowOutcome::Command(StateCommand::MoveTask {
+            id: task,
+            stack: target,
+            order,
+        });
         self.write_flow(Flow::None);
         vec![command, FlowOutcome::RefreshNow]
     }
@@ -3326,7 +3453,7 @@ impl ViewState {
             // The pointer drag (r2 chunk-8): a vanished dragged task
             // *or* target stack ends the flow — the ghost/dim/highlight
             // unpush on the next model pass (the subject-repair rule).
-            Flow::DragMove { task, target } if !is_live(task) || !stacks.contains(&target) => {
+            Flow::DragMove { task, target, .. } if !is_live(task) || !stacks.contains(&target) => {
                 self.write_flow(Flow::None);
             }
             // Round 2 (D18/D21): the lifecycle flows end silently on a
@@ -3566,30 +3693,37 @@ mod tests {
 
     #[test]
     fn the_ring_wraps_across_the_board_edge() {
-        let (mut state, _, [s0, _], [a, ..]) = fixture();
+        let (mut state, _, [s0, s1], [a, ..]) = fixture();
         let (_, [t0, t1]) = second_board(&mut state);
         let mut vs = ViewState::new();
         vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.start_move(&state);
-        // Walk to the last stack of the last board and wrap forward.
-        vs.cycle_move_target(&state, 1);
-        vs.cycle_move_target(&state, 1);
-        let Flow::Move { target, .. } = vs.flow() else {
-            panic!("flow holds");
+        // Armed at (s0, 1); the forward walk crosses the board edge
+        // into the second board's (empty) stacks — one slot each.
+        let walk = |vs: &mut ViewState, state: &AppState| {
+            vs.cycle_move_target(state, 1);
+            match vs.flow().clone() {
+                Flow::Move { target, slot, .. } => Some((target, slot)),
+                _ => None,
+            }
         };
-        assert_eq!(*target, t0, "the forward walk crosses the board edge");
-        vs.cycle_move_target(&state, 1);
-        let Flow::Move { target, .. } = vs.flow() else {
-            panic!("flow holds");
-        };
-        assert_eq!(*target, t1, "the last board's last stack");
-        vs.cycle_move_target(&state, 1);
-        let Flow::Move { target, .. } = vs.flow() else {
-            panic!("flow holds");
-        };
+        assert_eq!(walk(&mut vs, &state), Some((s0, 2)));
+        assert_eq!(walk(&mut vs, &state), Some((s1, 0)));
+        assert_eq!(walk(&mut vs, &state), Some((s1, 1)));
         assert_eq!(
-            *target, s0,
+            walk(&mut vs, &state),
+            Some((t0, 0)),
+            "the forward walk crosses the board edge"
+        );
+        assert_eq!(
+            walk(&mut vs, &state),
+            Some((t1, 0)),
+            "the last board's last stack"
+        );
+        assert_eq!(
+            walk(&mut vs, &state),
+            Some((s0, 0)),
             "wrapping past the last board's last stack reaches the first"
         );
     }
@@ -3602,6 +3736,11 @@ mod tests {
         vs.reconcile(&state);
         vs.activate_card(a, s0);
         vs.start_move(&state);
+        // Walk to the second board's first (empty) stack: gap 0 on an
+        // empty stack is the canonical 0 — cross-board targets are
+        // already legal engine-side.
+        vs.cycle_move_target(&state, 1);
+        vs.cycle_move_target(&state, 1);
         vs.cycle_move_target(&state, 1);
         vs.cycle_move_target(&state, 1);
         let outcomes = vs.confirm_move(&state);
@@ -3612,7 +3751,59 @@ mod tests {
                 stack: t0,
                 order: 0,
             })],
-            "cross-board targets are already legal engine-side"
+            "an empty target stack's only slot is the canonical 0"
+        );
+    }
+
+    // -- the slot grammar (UX-R8 D-1, US-1/AC-3) --------------------------
+
+    #[test]
+    fn a_single_task_stack_enumerates_exactly_two_slots() {
+        let (state, _, [_s0, s1], _) = fixture();
+        let s1_slots: Vec<(StackId, usize)> = ViewState::move_slots(&state)
+            .into_iter()
+            .filter(|(stack, _)| *stack == s1)
+            .collect();
+        assert_eq!(
+            s1_slots,
+            vec![(s1, 0), (s1, 1)],
+            "one task, two insertion points: before and after"
+        );
+    }
+
+    #[test]
+    fn the_slot_walk_order_is_stack_canonical_top_to_bottom() {
+        let (state, _, [s0, s1], _) = fixture();
+        assert_eq!(
+            ViewState::move_slots(&state),
+            vec![(s0, 0), (s0, 1), (s0, 2), (s1, 0), (s1, 1),],
+            "stacks in ring order, gaps 0..=len within each"
+        );
+    }
+
+    #[test]
+    fn slot_order_spans_the_between_ends_and_empty_grammar() {
+        let (state, _, [s0, s1], _) = fixture();
+        // s0: a(0), b(1); s1: c(0).
+        assert_eq!(slot_order(&state, s0, 0), -1, "before the first");
+        assert_eq!(slot_order(&state, s0, 1), 0, "between a(0) and b(1)");
+        assert_eq!(slot_order(&state, s0, 2), 2, "after the last (append)");
+        assert_eq!(slot_order(&state, s1, 0), -1, "before the only task");
+        assert_eq!(slot_order(&state, s1, 1), 1, "after the only task");
+        let mut empty = state.clone();
+        let orphan = StackId::from_uuid(uuid::Uuid::now_v7());
+        empty.stacks.insert(
+            orphan,
+            stack(
+                orphan,
+                empty.boards.keys().next().copied().expect("board"),
+                9,
+            ),
+        );
+        assert_eq!(
+            slot_order(&empty, orphan, 0),
+            0,
+            "an empty stack's slot is 0"
         );
     }
 
@@ -3630,7 +3821,8 @@ mod tests {
             *vs.flow(),
             Flow::DragMove {
                 task: a,
-                target: s0
+                target: s0,
+                gap: None
             },
             "the target is the task's own stack"
         );
@@ -3680,7 +3872,8 @@ mod tests {
             *vs.flow(),
             Flow::DragMove {
                 task: a,
-                target: s1
+                target: s1,
+                gap: None
             }
         );
 
@@ -3704,7 +3897,14 @@ mod tests {
             vs.reconcile(&state);
             vs.activate_card(a, s0);
             vs.start_move(&state);
-            vs.cycle_move_target(&state, 1); // ring: s0 → s1
+            // UX-R8 D-1: the walk is slot-shaped — three strokes take
+            // (s0, own-gap+1) → (s0, 2) → (s1, 0) → (s1, 1), and gap 1
+            // of s1 IS the append (last.order + 1). The drag leg
+            // confirms the column-level append; the commands must stay
+            // identical (one construction site).
+            vs.cycle_move_target(&state, 1);
+            vs.cycle_move_target(&state, 1);
+            vs.cycle_move_target(&state, 1);
             vs.confirm_move(&state)
         };
         let drag = {
@@ -5121,8 +5321,12 @@ mod tests {
 
     // -- the move flow (D8/D9) -----------------------------------------------
 
+    // UX-R8 D-1: the walk is slot-shaped now — the stack-level cycle
+    // assertions below were retargeted to the flattened slot sequence
+    // (same walk verb, finer grain; the append confirm moved to
+    // `move_flow_confirms_the_aimed_slot_order`).
     #[test]
-    fn move_flow_cycles_the_target_and_confirms_with_append() {
+    fn move_flow_walks_slots_and_wraps() {
         let (state, _, [s0, s1], [a, ..]) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
@@ -5132,16 +5336,30 @@ mod tests {
             *vs.flow(),
             Flow::Move {
                 task: a,
-                target: s0
+                target: s0,
+                slot: 1
             },
-            "the flow starts on the focused task's own stack"
+            "the flow arms at the slot after the task's own position"
+        );
+        // Flattened slots: s0 gaps 0..=2 (tasks a, b), s1 gaps 0..=1
+        // (task c). Forward from (s0, 1) walks top→bottom, then the
+        // next stack.
+        vs.cycle_move_target(&state, 1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s0,
+                slot: 2
+            }
         );
         vs.cycle_move_target(&state, 1);
         assert_eq!(
             *vs.flow(),
             Flow::Move {
                 task: a,
-                target: s1
+                target: s1,
+                slot: 0
             }
         );
         vs.cycle_move_target(&state, -1);
@@ -5149,17 +5367,22 @@ mod tests {
             *vs.flow(),
             Flow::Move {
                 task: a,
-                target: s0
-            }
-        );
-        vs.cycle_move_target(&state, -1);
-        assert_eq!(
-            *vs.flow(),
-            Flow::Move {
-                task: a,
-                target: s1
+                target: s0,
+                slot: 2
             },
-            "cycle wraps backwards"
+            "the walk steps back one slot"
+        );
+        vs.cycle_move_target(&state, -1);
+        vs.cycle_move_target(&state, -1);
+        vs.cycle_move_target(&state, -1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s1,
+                slot: 1
+            },
+            "walking back past (s0, 0) wraps to the last slot"
         );
 
         let outcomes = vs.confirm_move(&state);
@@ -5168,7 +5391,39 @@ mod tests {
             [FlowOutcome::Command(StateCommand::MoveTask {
                 id: a,
                 stack: s1,
-                order: 1, // append after c(0)
+                order: 1, // gap after c(0): last.order + 1
+            })][..]
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn move_flow_confirms_the_aimed_slot_order() {
+        let (state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        // Walk to s1's gap 0 (before the only task c(0)): the slot
+        // order is first.order - 1 — the between/ends grammar of
+        // `slot_order`, not the append.
+        vs.cycle_move_target(&state, 1);
+        vs.cycle_move_target(&state, 1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s1,
+                slot: 0
+            }
+        );
+        let outcomes = vs.confirm_move(&state);
+        assert_eq!(
+            outcomes[..1],
+            [FlowOutcome::Command(StateCommand::MoveTask {
+                id: a,
+                stack: s1,
+                order: -1,
             })][..]
         );
         assert_eq!(*vs.flow(), Flow::None);
@@ -6035,6 +6290,7 @@ mod tests {
             Flow::Move {
                 task: a,
                 target: s0,
+                slot: 0,
             },
             Flow::Palette { selected: 0 },
             Flow::Capture,
@@ -6045,6 +6301,7 @@ mod tests {
             Flow::DragMove {
                 task: a,
                 target: s0,
+                gap: None,
             },
         ];
         for flow in flows {
