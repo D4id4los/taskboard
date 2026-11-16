@@ -6360,7 +6360,8 @@ impl Adapter {
             bound: false,
             listed: false,
             files_on: false,
-            files_locked: false,
+            files_enabled_pinned: false,
+            files_anchor_pinned: false,
             files_restart: false,
             backend_word: SharedString::new(),
             badge_text: SharedString::new(),
@@ -6429,8 +6430,12 @@ impl Adapter {
                     // D-6.8 phase 2, D-9): one BusyDot, no fake
                     // progress — the reply is the next truth.
                     busy: pending == Some(PendingKind::Move) && vm.busy_target == files_connector,
-                    files_locked: vm.snapshot.env_overridden.contains("files_sync.enabled")
-                        || vm.snapshot.env_overridden.contains("files_sync.anchor"),
+                    files_enabled_pinned: crate::presentation::files_enabled_pinned(
+                        &vm.snapshot.env_overridden,
+                    ),
+                    files_anchor_pinned: crate::presentation::files_anchor_pinned(
+                        &vm.snapshot.env_overridden,
+                    ),
                     files_restart: vm.snapshot.applies.get("files_sync.enabled").is_some_and(
                         |semantics| semantics.apply == crate::requests::SectionApply::OnRestart,
                     ),

@@ -151,6 +151,22 @@ pub fn files_sync_chip_presentation(state: FilesSyncChipState) -> ChipPresentati
     }
 }
 
+/// The Files row's per-key env-lock bits (the files-sync-status UX
+/// plan US-4, D-5): the pinned set named per key — `files_sync.enabled`
+/// and `files_sync.anchor` fold separately from the snapshot's
+/// env-override set (source of record; the r5 typed-refusal posture
+/// composes unchanged).
+#[must_use]
+pub fn files_enabled_pinned(env_overridden: &std::collections::BTreeSet<String>) -> bool {
+    env_overridden.contains("files_sync.enabled")
+}
+
+/// The anchor key's pin bit; see [`files_enabled_pinned`].
+#[must_use]
+pub fn files_anchor_pinned(env_overridden: &std::collections::BTreeSet<String>) -> bool {
+    env_overridden.contains("files_sync.anchor")
+}
+
 /// The due classification vocabulary (slint-free; `models` maps it
 /// 1:1 onto the generated enum for markup conditionals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9152,6 +9168,34 @@ mod recur_editor_validity_tests {
 #[cfg(test)]
 mod files_sync_chip_fold_tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    fn pinned(keys: &[&str]) -> BTreeSet<String> {
+        keys.iter().map(|key| (*key).to_owned()).collect()
+    }
+
+    /// US-4 AC-1 — the per-key fold names exactly the pinned key set,
+    /// typed over the four combinations (never text).
+    #[test]
+    fn us4_ac1_the_caption_names_the_pinned_key_set() {
+        assert!(!files_enabled_pinned(&pinned(&[])));
+        assert!(!files_anchor_pinned(&pinned(&[])));
+        assert!(files_enabled_pinned(&pinned(&["files_sync.enabled"])));
+        assert!(!files_anchor_pinned(&pinned(&["files_sync.enabled"])));
+        assert!(!files_enabled_pinned(&pinned(&["files_sync.anchor"])));
+        assert!(files_anchor_pinned(&pinned(&["files_sync.anchor"])));
+        assert!(files_enabled_pinned(&pinned(&[
+            "files_sync.enabled",
+            "files_sync.anchor",
+        ])));
+        assert!(files_anchor_pinned(&pinned(&[
+            "files_sync.enabled",
+            "files_sync.anchor",
+        ])));
+        // A foreign key pins nothing.
+        assert!(!files_enabled_pinned(&pinned(&["poll_interval"])));
+        assert!(!files_anchor_pinned(&pinned(&["poll_interval"])));
+    }
 
     // -- the files-sync chip's honest-costume fold (the files-sync
     // status UX plan US-1, D-1) -----------------------------------

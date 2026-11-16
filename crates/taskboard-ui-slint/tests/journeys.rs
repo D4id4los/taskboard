@@ -16459,7 +16459,7 @@ fn env_locked_files_pick_and_choice_picks_refuse_typed() {
                     .iter()
                     .find(|item| item.kind == K::Files)
                     .expect("the Files row renders")
-                    .files_locked,
+                    .files_enabled_pinned,
                 "the env fact rides the row"
             );
             window.invoke_settings_files_picked(files_pick, 0);
