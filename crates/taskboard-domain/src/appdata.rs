@@ -1839,7 +1839,9 @@ pub fn task_entry_for(task: &crate::entities::Task, native_scheduled: bool) -> T
 
 /// Builds one card's overlay `RulesEntry` from the task's local rules:
 /// each as `Rule { offset, created, clock: updated_at }` keyed by the
-/// rule UUID (D-S9). Tombstones are *derived* separately (see
+/// rule UUID (D-S9). Each row emits its stored author slot when it
+/// carries one, the flushing device's identity as the fallback (#708
+/// L4: an adopted row re-emits under its true author's rank). Tombstones are *derived* separately (see
 /// [`derive_rule_tombstones`]) — the overlay never invents them.
 #[must_use]
 pub fn rules_entry_for(
@@ -1858,7 +1860,7 @@ pub fn rules_entry_for(
                     created: rule.created_at,
                     clock: rule.updated_at,
                     insistence: rule.insistence,
-                    by: author,
+                    by: rule.by.or(author),
                 },
             )
         })
@@ -1896,12 +1898,12 @@ pub fn dismissals_entry_for(
         .iter()
         .filter_map(|d| match d.reminder {
             crate::reminders::ReminderRef::Rule(rule_id) => {
-                rules.get(&rule_id).filter(|rule| rule.task == task)?;
+                let rule = rules.get(&rule_id).filter(|rule| rule.task == task)?;
                 Some((
                     dismissal_wire_key(rule_id, d.occurrence),
                     DismissalEntry::Dismissed {
                         dismissed_at: d.dismissed_at,
-                        by: author,
+                        by: rule.by.or(author),
                     },
                 ))
             }
@@ -1949,14 +1951,14 @@ pub fn break_dismissals_entry_for(
         .iter()
         .filter_map(|d| match d.reminder {
             crate::reminders::ReminderRef::Break(rule_id) => {
-                break_rules
+                let rule = break_rules
                     .get(&rule_id)
                     .filter(|rule| rule.board == board)?;
                 Some((
                     break_dismissal_wire_key(rule_id, d.occurrence),
                     DismissalEntry::Dismissed {
                         dismissed_at: d.dismissed_at,
-                        by: author,
+                        by: rule.by.or(author),
                     },
                 ))
             }
@@ -2132,7 +2134,7 @@ fn time_entries_for_lane(
                     created: entry.created_at,
                     clock: entry.updated_at,
                     kind: entry.kind,
-                    by: author,
+                    by: entry.by.or(author),
                 },
             ))
         })
@@ -2268,12 +2270,12 @@ pub fn habits_for(
                     anchor_time: habit.anchor_time,
                     clocks: habit.clocks,
                     continued_from: habit.continued_from,
-                    by: author,
+                    by: habit.by.or(author),
                 }
             } else {
                 HabitRecord::Tombstone {
                     clock: habit.clocks.deleted,
-                    by: author,
+                    by: habit.by.or(author),
                 }
             };
             (habit.id.as_uuid().to_string(), row)
@@ -2314,7 +2316,7 @@ pub fn habit_log_for(
                 HabitLogRecord::Entry {
                     count: entry.count,
                     clock: entry.clock,
-                    by: author,
+                    by: entry.by.or(author),
                 },
             )
         })
@@ -2375,7 +2377,7 @@ pub fn break_rules_for(
                     created: rule.created_at,
                     clock: rule.created_at,
                     insistence: rule.insistence,
-                    by: author,
+                    by: rule.by.or(author),
                 },
             )
         })
