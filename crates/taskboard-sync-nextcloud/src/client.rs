@@ -362,7 +362,9 @@ fn map_status(raw: &Raw) -> Result<(), DeckError> {
         StatusCode::TOO_MANY_REQUESTS => Err(DeckError::RateLimited {
             retry_after: raw.retry_after,
         }),
-        StatusCode::SERVICE_UNAVAILABLE => Err(DeckError::Unavailable),
+        StatusCode::SERVICE_UNAVAILABLE => Err(DeckError::Unavailable {
+            retry_after: raw.retry_after,
+        }),
         s if s.is_server_error() => Err(DeckError::Server(s.as_u16())),
         _ => Ok(()),
     }
