@@ -174,6 +174,10 @@ enum EK {
     FocusLast,
     OpenSettings,
     BeginTitleEdit,
+    /// The keymap-parity D-4 editor arms: their own keys — the date
+    /// arm posts `Due`, the description arm posts `Text`.
+    BeginDateEdit,
+    BeginDescriptionEdit,
     ShowTask,
     ControlNext,
     ControlPrev,
@@ -263,6 +267,8 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::FocusLast => EK::FocusLast,
         UiEffect::OpenSettings => EK::OpenSettings,
         UiEffect::BeginTitleEdit => EK::BeginTitleEdit,
+        UiEffect::BeginDateEdit { .. } => EK::BeginDateEdit,
+        UiEffect::BeginDescriptionEdit => EK::BeginDescriptionEdit,
         UiEffect::ShowTask => EK::ShowTask,
         UiEffect::ControlNext => EK::ControlNext,
         UiEffect::ControlPrev => EK::ControlPrev,
@@ -765,6 +771,32 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     //    run under a foreign flow; under None it arms the viewed
     //    task's editor or is inert without a subject --
     row(FK::None, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    // -- EDITOR ARMS (keymap-parity US-3/D-4, audit §6 Begin cell):
+    //    settle-then-run like the begin family; the arm posts its
+    //    editor's own kind. The scheduled payload is payload-blind
+    //    (the same DateField flow).
+    row(FK::None, E::BeginDateEdit, exp(Z, K(KDue)));
+    row(FK::None, E::BeginDescriptionEdit, exp(Z, K(KTxt)));
+    for kind in [
+        FK::Text,
+        FK::Due,
+        FK::Move,
+        FK::Drag,
+        FK::Palette,
+        FK::Capture,
+        FK::FocusOverlay,
+        FK::TrackList,
+        FK::TrackForm,
+        FK::LabelOverlay,
+        FK::PlanForm,
+        FK::ReviewWalk,
+        FK::RecurEditor,
+        FK::Child,
+    ] {
+        let cmd = if kind == FK::Text { NZ } else { Z };
+        row(kind, E::BeginDateEdit, exp(cmd, K(KDue)));
+        row(kind, E::BeginDescriptionEdit, exp(cmd, K(KTxt)));
+    }
     row(FK::Text, E::BeginTitleEdit, exp(NZ, K(KTxt)));
     row(FK::Due, E::BeginTitleEdit, exp(Z, K(KTxt)));
     row(FK::Move, E::BeginTitleEdit, exp(Z, K(KTxt)));
@@ -1409,6 +1441,15 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::FocusLast,
         UiEffect::OpenSettings,
         UiEffect::BeginTitleEdit,
+        // The keymap-parity D-4 editor arms (US-3): the subject is
+        // entered by the driver, so both arms arm their flows.
+        UiEffect::BeginDateEdit {
+            field: crate::view_state::DateField::Due,
+        },
+        UiEffect::BeginDateEdit {
+            field: crate::view_state::DateField::Scheduled,
+        },
+        UiEffect::BeginDescriptionEdit,
         UiEffect::ShowTask,
         UiEffect::ControlNext,
         UiEffect::ControlPrev,
@@ -2383,11 +2424,14 @@ fn the_header_tracking_buttons_route_their_registry_commands() {
 
 /// J4's harness-level pin — the header hint projections: empty while
 /// the task view is mounted under a keymap that binds neither verb in
-/// the TaskDetail-visible chain (the standard preset binds
-/// `task.complete` at Board/Today only); non-empty once the verbs are
-/// bound — vi carries `task.complete` in `ViNormal` (chain-visible at
-/// `TaskDetail`) and the `task.track-start` override is an add-new,
-/// landing in Global. Label content is never asserted.
+/// the TaskDetail-visible chain. The keymap-parity round (US-3) gave
+/// the tracking verbs preset rows in *every* preset's detail chain
+/// (the TE-W-N2 menu-only note retires), so the empty leg mounts the
+/// empty map (the structural "binds nothing" case) rather than a
+/// shipped preset; the bound leg is unchanged — vi carries
+/// `task.complete` in `ViNormal` (chain-visible at `TaskDetail`) and
+/// the `task.track-start` override is an add-new, landing in Global.
+/// Label content is never asserted.
 #[test]
 fn the_header_hint_projections_follow_the_mounted_verb() {
     on_slint_thread(|| {
@@ -2396,12 +2440,52 @@ fn the_header_hint_projections_follow_the_mounted_verb() {
         let [s0, _s1] = fx.stacks;
 
         // Mounted, unbound verbs: both projections empty (the
-        // established empty-hint rendering).
+        // established empty-hint rendering). The done verb is still
+        // unbound in the standard preset's detail chain (Board/Today
+        // only); the tracking verbs gained preset rows everywhere
+        // (keymap-parity US-3), so their empty leg mounts the empty
+        // map — the structural binds-nothing case.
         let rig = rig(state);
         let adapter = rig.adapter();
         mount_task_detail(&rig, &adapter, a_id, s0);
         assert_eq!(rig.handle.window().get_task_done_hint().row_count(), 0);
-        assert_eq!(rig.handle.window().get_task_track_hint().row_count(), 0);
+
+        // The track hint's empty leg: the empty map binds nothing.
+        let empty = crate::keymap::Keymap::default();
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+        let (commands_tx, commands_rx) = mpsc::channel(64);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        let handle = mount(
+            state,
+            dummy_receiver(),
+            dummy_receiver(),
+            commands_tx,
+            requests_tx,
+            UiSettings {
+                keymap: empty,
+                keymap_preset: crate::keymap::Preset::Standard,
+                ..UiSettings::default()
+            },
+            health,
+            None,
+        )
+        .expect("mount succeeds on the null platform");
+        let rig = Rig {
+            handle,
+            commands_rx,
+        };
+        let adapter = rig.adapter();
+        mount_task_detail(&rig, &adapter, a_id, s0);
+        assert_eq!(
+            rig.handle.window().get_task_track_hint().row_count(),
+            0,
+            "nothing bound: the projection is empty"
+        );
     });
 
     on_slint_thread(|| {
@@ -2607,6 +2691,10 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::RequestMove
         | UiEffect::CancelMove
         | UiEffect::BeginTitleEdit
+        // The keymap-parity D-4 editor arms: the flow arms inside the
+        // mounted detail — no anchor moves.
+        | UiEffect::BeginDateEdit { .. }
+        | UiEffect::BeginDescriptionEdit
         | UiEffect::PickerKey(_)
         // The plan-next-day row verbs (#622): they mutate the model
         // in place, no anchor moves.

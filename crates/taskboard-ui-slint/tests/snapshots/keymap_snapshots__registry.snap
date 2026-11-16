@@ -456,6 +456,33 @@ expression: rows
   menu_rank: 76
   description: "Opens the urgency picker for the viewed task: six levels, commit on pick."
   menu_group: task
+- id: task.due-edit
+  label: Edit due date
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 73
+  description: "Arms the due-date editor for the viewed task: type or pick, commit on Return."
+  menu_group: task
+- id: task.scheduled-edit
+  label: Edit scheduled date
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 75
+  description: "Arms the scheduled-date editor for the viewed task: type or pick, commit on Return."
+  menu_group: task
+- id: task.description-edit
+  label: Edit description
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 77
+  description: "Arms the description editor for the viewed task: Return commits, Escape discards."
+  menu_group: task
 - id: label.manage
   label: Manage labels
   contexts:

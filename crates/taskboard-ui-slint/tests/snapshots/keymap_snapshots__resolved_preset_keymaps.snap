@@ -96,6 +96,12 @@ expression: rows
             - Down
           action: nav.next-item
         - sequence:
+            - F9
+          action: task.track-start
+        - sequence:
+            - F10
+          action: task.track-stop
+        - sequence:
             - Ctrl+Home
           action: nav.first-item
         - sequence:
@@ -257,6 +263,24 @@ expression: rows
         - sequence:
             - F4
           action: task.urgency-edit
+        - sequence:
+            - F5
+          action: task.due-edit
+        - sequence:
+            - F6
+          action: task.scheduled-edit
+        - sequence:
+            - F7
+          action: task.description-edit
+        - sequence:
+            - F8
+          action: reminder.rule-add
+        - sequence:
+            - F9
+          action: task.track-start
+        - sequence:
+            - F10
+          action: task.track-stop
         - sequence:
             - Ctrl+Home
           action: nav.first-item
@@ -515,6 +539,14 @@ expression: rows
           action: nav.prev-control
         - sequence:
             - Ctrl+c
+            - Ctrl+i
+          action: task.track-start
+        - sequence:
+            - Ctrl+c
+            - Ctrl+o
+          action: task.track-stop
+        - sequence:
+            - Ctrl+c
             - t
           action: task.due-today
         - sequence:
@@ -693,17 +725,41 @@ expression: rows
           action: nav.prev-control
         - sequence:
             - Ctrl+c
+            - "'"
+          action: task.description-edit
+        - sequence:
+            - Ctrl+c
+            - Ctrl+d
+          action: task.due-edit
+        - sequence:
+            - Ctrl+c
+            - Ctrl+i
+          action: task.track-start
+        - sequence:
+            - Ctrl+c
+            - Ctrl+o
+          action: task.track-stop
+        - sequence:
+            - Ctrl+c
             - r
           action: series.edit
+        - sequence:
+            - Ctrl+c
+            - Ctrl+s
+          action: task.scheduled-edit
+        - sequence:
+            - Ctrl+c
+            - Ctrl+u
+          action: reminder.rule-add
         - sequence:
             - Ctrl+f
           action: nav.next-control
         - sequence:
             - Ctrl+n
-          action: nav.next-control
+          action: nav.next-item
         - sequence:
             - Ctrl+p
-          action: nav.prev-control
+          action: nav.prev-item
         - sequence:
             - Alt+v
           action: view.scroll-up
@@ -911,6 +967,12 @@ expression: rows
             - Ctrl+Shift+H
           action: habit.create
         - sequence:
+            - I
+          action: task.track-start
+        - sequence:
+            - O
+          action: task.track-stop
+        - sequence:
             - t
           action: task.due-today
     - context: board
@@ -938,11 +1000,29 @@ expression: rows
             - Shift+Tab
           action: nav.prev-control
         - sequence:
+            - I
+          action: task.track-start
+        - sequence:
             - Ctrl+L
           action: label.manage
         - sequence:
+            - O
+          action: task.track-stop
+        - sequence:
+            - a
+          action: reminder.rule-add
+        - sequence:
+            - d
+          action: task.due-edit
+        - sequence:
+            - e
+          action: task.description-edit
+        - sequence:
             - r
           action: series.edit
+        - sequence:
+            - s
+          action: task.scheduled-edit
         - sequence:
             - F3
           action: task.importance-edit

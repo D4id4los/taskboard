@@ -705,12 +705,14 @@ mod tests {
         );
     }
 
-    /// Round 3 (D25) extended by r4 chunk 6 (D19): all four isearch
-    /// chords walk controls on the detail chain; the board keeps its
-    /// live task/stack walk on C-n/C-p and its isearch chords on
-    /// C-f/C-b; Today/StackDetail keep the item walk (excluded — not
-    /// conflict-clean); Settings resolves the walk on both chord
-    /// pairs.
+    /// Round 3 (D25) extended by r4 chunk 6 (D19) and the keymap-parity
+    /// move (plan US-1/D-1): C-f/C-b walk controls on the detail chain
+    /// (the isearch pair, untouched) while C-n/C-p carry the now-live
+    /// item walk there (the D-2 route fix made the detail's item table
+    /// real); the board keeps its live task/stack walk on C-n/C-p and
+    /// its isearch chords on C-f/C-b; Today/StackDetail keep the item
+    /// walk (excluded — not conflict-clean); Settings resolves the
+    /// control walk on both chord pairs.
     #[test]
     fn emacs_four_chords_walk_controls_on_the_detail_chain() {
         let keymap = Keymap::from_preset(Preset::Emacs);
@@ -730,9 +732,27 @@ mod tests {
         let chords = [
             ("Ctrl+f", ActionId::NavNextControl),
             ("Ctrl+b", ActionId::NavPrevControl),
-            ("Ctrl+n", ActionId::NavNextControl),
-            ("Ctrl+p", ActionId::NavPrevControl),
         ];
+        let detail_item_rows = [
+            ("Ctrl+n", ActionId::NavNextItem),
+            ("Ctrl+p", ActionId::NavPrevItem),
+        ];
+        for (spelling, walk) in chords {
+            let stroke = stroke::parse(spelling).expect("the chord parses");
+            assert_eq!(
+                keymap.resolve(&detail_chain, &[stroke]),
+                Some(walk),
+                "{spelling} walks controls on the detail chain"
+            );
+        }
+        for (spelling, walk) in detail_item_rows {
+            let stroke = stroke::parse(spelling).expect("the chord parses");
+            assert_eq!(
+                keymap.resolve(&detail_chain, &[stroke]),
+                Some(walk),
+                "{spelling} steps the detail's item walk (the D-1 move)"
+            );
+        }
         for (spelling, walk) in chords {
             let stroke = stroke::parse(spelling).expect("the chord parses");
             assert_eq!(
@@ -775,8 +795,17 @@ mod tests {
                 "{spelling} keeps the stack list walk"
             );
         }
-        // Settings resolves the walk on both chord pairs.
-        for (spelling, walk) in chords {
+        // Settings resolves the control walk on all four chords
+        // (C-n/C-p kept their r4 D19 Settings rows — the move is
+        // TaskDetail-scoped; the US-1 AC-2 Settings evidence rides
+        // these rows).
+        let settings_rows = [
+            ("Ctrl+f", ActionId::NavNextControl),
+            ("Ctrl+b", ActionId::NavPrevControl),
+            ("Ctrl+n", ActionId::NavNextControl),
+            ("Ctrl+p", ActionId::NavPrevControl),
+        ];
+        for (spelling, walk) in settings_rows {
             let stroke = stroke::parse(spelling).expect("the chord parses");
             assert_eq!(
                 keymap.resolve(&settings_chain, &[stroke]),
@@ -935,12 +964,14 @@ mod tests {
         // An unmatched glyph falls through unchanged.
         let unmatched = Stroke::from_event('%', false, true, true, false).expect("converts");
         assert_eq!(keymap.resolve(&chain, &[unmatched]), None);
-        // Shift-distinct chords stay distinct: no partner on letters.
+        // Shift-distinct chords stay distinct: no partner on letters
+        // (the undo/redo pair is the standard preset's Global rows).
+        let standard = Keymap::from_preset(Preset::Standard);
         let global = [ContextId::Global];
         let undo = stroke::parse("Ctrl+Z").expect("undo");
         let redo = stroke::parse("Ctrl+Shift+Z").expect("redo");
-        assert_eq!(keymap.resolve(&global, &[undo]), Some(ActionId::AppUndo));
-        assert_eq!(keymap.resolve(&global, &[redo]), Some(ActionId::AppRedo));
+        assert_eq!(standard.resolve(&global, &[undo]), Some(ActionId::AppUndo));
+        assert_eq!(standard.resolve(&global, &[redo]), Some(ActionId::AppRedo));
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let before = Keymap::from_preset(preset);
             let built = build(&RawKeymap {
@@ -949,6 +980,78 @@ mod tests {
             });
             assert_eq!(before, built.keymap, "{preset:?}: the map is untouched");
             assert_eq!(built.findings, [] as [Finding; 0]);
+        }
+    }
+
+    /// The C-5 resolution pin (keymap-parity plan US-3 AC-1, D-5):
+    /// both rows exist verbatim — the emacs scheduled-editor chord in
+    /// the `TaskDetail` context and `ReminderSnooze`'s Global chord — and
+    /// chain-order first-match decides: the detail chain resolves the
+    /// scheduled editor (the view context precedes Global), every
+    /// other chain resolves the snooze exactly as before.
+    #[test]
+    fn scheduled_edit_chord_wins_in_the_detail_chain_snooze_everywhere_else() {
+        let keymap = Keymap::from_preset(Preset::Emacs);
+        let chord = [
+            stroke::parse("Ctrl+c").expect("c-c"),
+            stroke::parse("Ctrl+s").expect("c-s"),
+        ];
+        let detail_chain = [
+            ContextId::TaskDetail,
+            ContextId::ViNormal,
+            ContextId::Global,
+        ];
+        let board_chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        let today_chain = [ContextId::Today, ContextId::ViNormal, ContextId::Global];
+        let settings_chain = [ContextId::Settings, ContextId::ViNormal, ContextId::Global];
+        // Both rows verbatim (totality per context).
+        assert_eq!(
+            keymap.resolve(&detail_chain, &chord),
+            Some(ActionId::TaskScheduledEdit)
+        );
+        for chain in [&board_chain, &today_chain, &settings_chain] {
+            assert_eq!(
+                keymap.resolve(chain, &chord),
+                Some(ActionId::ReminderSnooze),
+                "the snooze chord survives outside the detail chain"
+            );
+        }
+    }
+
+    /// US-3 AC-4 (keymap-parity plan, D-4): every preset binds the
+    /// three new detail-editor ids in the `TaskDetail` context and the
+    /// tracking pair in `TaskDetail` *and* `Today` — the generated hints
+    /// resolve over the session chains (the no-second-class gate over
+    /// the new ids).
+    #[test]
+    fn every_preset_binds_the_detail_shortcut_ids() {
+        let detail_chain = [
+            ContextId::TaskDetail,
+            ContextId::ViNormal,
+            ContextId::Global,
+        ];
+        let today_chain = [ContextId::Today, ContextId::ViNormal, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for verb in [
+                ActionId::TaskDueEdit,
+                ActionId::TaskScheduledEdit,
+                ActionId::TaskDescriptionEdit,
+                ActionId::ReminderRuleAdd,
+                ActionId::TaskTrackStart,
+                ActionId::TaskTrackStop,
+            ] {
+                assert!(
+                    keymap.first_binding_display(verb, &detail_chain).is_some(),
+                    "{preset:?} does not bind {verb} in the detail chain"
+                );
+            }
+            for verb in [ActionId::TaskTrackStart, ActionId::TaskTrackStop] {
+                assert!(
+                    keymap.first_binding_display(verb, &today_chain).is_some(),
+                    "{preset:?} does not bind {verb} in the today chain"
+                );
+            }
         }
     }
 
