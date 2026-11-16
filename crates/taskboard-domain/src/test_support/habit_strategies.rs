@@ -66,9 +66,13 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
         proptest::option::of(super::series_id_strategy()),
         timestamp_strategy(),
         any::<bool>(),
+        proptest::option::of(
+            (any::<u128>())
+                .prop_map(|raw| crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(raw))),
+        ),
     )
         .prop_map(
-            |(id, board, title, target, order, anchor_time, continued_from, stamp, deleted)| {
+            |(id, board, title, target, order, anchor_time, continued_from, stamp, deleted, by)| {
                 Habit {
                     id,
                     board,
@@ -79,7 +83,7 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
                     clocks: HabitClocks::all(stamp),
                     continued_from,
                     deleted,
-                    by: None,
+                    by,
                 }
             },
         )
@@ -182,7 +186,9 @@ pub fn habit_fixture_strategy() -> impl Strategy<Value = HabitFixture> {
                         clock: now
                             - chrono::TimeDelta::try_hours(i64::try_from(i).unwrap() * 24 + 48)
                                 .expect("bounded offsets"),
-                        by: None,
+                        by: Some(crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(
+                            u128::from(count) * 7 + 1,
+                        ))),
                     },
                 );
                 cursor = crate::habit::period_before(habit.target.kind(), cursor);

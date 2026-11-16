@@ -2813,3 +2813,503 @@ async fn pre_widening_board_rows_decode_as_the_deck_leg() {
     );
     repo.close().await;
 }
+
+// ---- The stored sidecar author slot (#708 Axis A, migration 0026) ----
+
+mod sidecar_author_slot {
+    use super::*;
+    use taskboard_domain::habit::{Habit, HabitClocks, HabitLogEntry, HabitLogKey};
+    use taskboard_domain::ids::AuthorId;
+
+    fn author(raw: u64) -> AuthorId {
+        AuthorId::from_uuid(uuid::Uuid::from_u128(u128::from(raw)))
+    }
+
+    fn break_rule(
+        id: u128,
+        board: &Board,
+        label: &str,
+        stamp: i64,
+        by: Option<AuthorId>,
+    ) -> taskboard_domain::reminders::BreakRule {
+        taskboard_domain::reminders::BreakRule {
+            id: taskboard_domain::ids::BreakRuleId::from(uuid::Uuid::from_u128(id)),
+            board: board.id,
+            label: label.to_owned(),
+            threshold: taskboard_domain::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(1_500).unwrap(),
+            )
+            .unwrap(),
+            insistence: taskboard_domain::reminders::Insistence::Normal,
+            created_at: ts(stamp),
+            by,
+        }
+    }
+
+    fn habit(id: u128, board: &Board, title: &str, stamp: i64, by: Option<AuthorId>) -> Habit {
+        Habit {
+            id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(id)),
+            board: board.id,
+            title: title.to_owned(),
+            target: taskboard_domain::habit::HabitTarget::PerDay(
+                taskboard_domain::habit::NonZeroCount::new(3).unwrap(),
+            ),
+            order: 0,
+            anchor_time: None,
+            clocks: HabitClocks::all(ts(stamp)),
+            continued_from: None,
+            deleted: false,
+            by,
+        }
+    }
+
+    fn log_key(habit_id: u128) -> HabitLogKey {
+        HabitLogKey::parse_wire_form(&format!(
+            "{uuid}|2026-01-01",
+            uuid = taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(habit_id)).as_uuid()
+        ))
+        .unwrap()
+    }
+
+    /// T-STORE-1: the stored slot survives the SQLite roundtrip in
+    /// both directions — `Some` re-reads as the same author on every
+    /// sidecar family, `None` stays `None`.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // five families, one assert each
+    async fn sidecar_author_slots_roundtrip_both_directions() {
+        let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("open");
+        let b = board(41);
+        let s = stack(4, &b);
+        let t = task(9, &s, BTreeMap::new());
+
+        let rule = taskboard_domain::reminders::ReminderRule {
+            insistence: taskboard_domain::reminders::Insistence::Normal,
+            id: taskboard_domain::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xA01)),
+            task: t.id,
+            kind: taskboard_domain::reminders::ReminderKind::DueOffset(
+                taskboard_domain::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_seconds(-300).unwrap(),
+                )
+                .unwrap(),
+            ),
+            created_at: ts(500),
+            updated_at: ts(500),
+            by: Some(author(7)),
+        };
+        let authored_break = break_rule(0xB01, &b, "authored", 500, Some(author(8)));
+        let plain_break = break_rule(0xB02, &b, "plain", 501, None);
+        let authored_habit = habit(0xC01, &b, "authored", 500, Some(author(9)));
+        let plain_habit = habit(0xC02, &b, "plain", 501, None);
+        let authored_entry = taskboard_domain::tracking::TimeEntry {
+            id: taskboard_domain::ids::TimeEntryId::from(uuid::Uuid::from_u128(0xD01)),
+            task: t.id,
+            task_title: "authored".into(),
+            start: ts(500),
+            end: None,
+            created_at: ts(500),
+            updated_at: ts(500),
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: Some(author(10)),
+        };
+        let authored_log = (
+            log_key(0xC01),
+            HabitLogEntry {
+                count: 2,
+                clock: ts(500),
+                by: Some(author(11)),
+            },
+        );
+        let plain_log = (
+            log_key(0xC02),
+            HabitLogEntry {
+                count: 3,
+                clock: ts(501),
+                by: None,
+            },
+        );
+
+        repo.apply(vec![
+            PersistenceAction::UpsertBoard(b.clone()),
+            PersistenceAction::UpsertStack(s.clone()),
+            PersistenceAction::UpsertTask(t.clone()),
+            PersistenceAction::UpsertReminderRule(rule.clone()),
+            PersistenceAction::UpsertBreakRule(authored_break.clone()),
+            PersistenceAction::UpsertBreakRule(plain_break.clone()),
+            PersistenceAction::UpsertHabit(authored_habit.clone()),
+            PersistenceAction::UpsertHabit(plain_habit.clone()),
+            PersistenceAction::UpsertTimeEntry(authored_entry.clone()),
+            PersistenceAction::RecordHabitLog(authored_log.0, authored_log.1),
+            PersistenceAction::RecordHabitLog(plain_log.0, plain_log.1),
+        ])
+        .await
+        .expect("apply");
+        let loaded = repo.load().await.expect("load");
+
+        assert_eq!(
+            loaded.reminders.rules.get(&rule.id),
+            Some(&rule),
+            "the reminder rule's slot roundtrips"
+        );
+        assert_eq!(
+            loaded.reminders.break_rules.get(&authored_break.id),
+            Some(&authored_break),
+            "the authored break rule's slot roundtrips"
+        );
+        assert_eq!(
+            loaded.reminders.break_rules.get(&plain_break.id),
+            Some(&plain_break),
+            "the authorless break rule stays None"
+        );
+        assert_eq!(
+            loaded.habits.habits.get(&authored_habit.id),
+            Some(&authored_habit),
+            "the authored habit's slot roundtrips"
+        );
+        assert_eq!(
+            loaded.habits.habits.get(&plain_habit.id),
+            Some(&plain_habit),
+            "the authorless habit stays None"
+        );
+        assert_eq!(
+            loaded.tracking.entries.get(&authored_entry.id),
+            Some(&authored_entry),
+            "the time entry's slot roundtrips"
+        );
+        assert_eq!(
+            loaded.habits.log.get(&authored_log.0),
+            Some(&authored_log.1)
+        );
+        assert_eq!(loaded.habits.log.get(&plain_log.0), Some(&plain_log.1));
+        repo.close().await;
+    }
+
+    /// T-STORE-2 (the safe default): `NULL` decodes `None`, and the
+    /// authorless persisted row — the whole pre-0026 corpus — loses
+    /// every equal-clock duel against an authored row (the `None <
+    /// Some` rank leg) while keeping its clock.
+    #[tokio::test]
+    async fn an_authorless_persisted_row_loses_every_equal_clock_duel() {
+        let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+            .await
+            .expect("open");
+        let b = board(41);
+        let s = stack(4, &b);
+        let t = task(9, &s, BTreeMap::new());
+        // An authorless row: what every pre-0026 row loads as.
+        let stored = break_rule(0xB01, &b, "stored", 500, None);
+        repo.apply(vec![
+            PersistenceAction::UpsertBoard(b.clone()),
+            PersistenceAction::UpsertStack(s.clone()),
+            PersistenceAction::UpsertTask(t.clone()),
+            PersistenceAction::UpsertBreakRule(stored),
+        ])
+        .await
+        .expect("apply");
+        let loaded = repo.load().await.expect("load");
+        assert_eq!(
+            loaded.reminders.break_rules.values().next().unwrap().by,
+            None,
+            "the column-free row decodes authorless"
+        );
+
+        // The equal-clock duel: a doc row authored by *anyone* outranks
+        // the authorless local row; an authorless doc row ties and the
+        // strict duel keeps local.
+        let mut locals = loaded.reminders.break_rules.clone();
+        let doc =
+            |label: &str, by: Option<AuthorId>| taskboard_domain::appdata::BreakRuleEntry::Rule {
+                label: label.to_owned(),
+                threshold: taskboard_domain::tracking::WorkThreshold::try_new(
+                    chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                )
+                .unwrap(),
+                created: ts(500),
+                clock: ts(500),
+                insistence: taskboard_domain::reminders::Insistence::Normal,
+                by,
+            };
+        let authored_rows = BTreeMap::from([(
+            taskboard_domain::ids::BreakRuleId::from(uuid::Uuid::from_u128(0xB01))
+                .as_uuid()
+                .to_string(),
+            doc("authored", Some(author(12))),
+        )]);
+        taskboard_domain::merge::fold_break_rules(&mut locals, &authored_rows, b.id);
+        assert_eq!(
+            locals.values().next().unwrap().label,
+            "authored",
+            "the authored equal-clock row outranks the authorless stored row"
+        );
+        let authorless_rows = BTreeMap::from([(
+            taskboard_domain::ids::BreakRuleId::from(uuid::Uuid::from_u128(0xB01))
+                .as_uuid()
+                .to_string(),
+            doc("tie", None),
+        )]);
+        taskboard_domain::merge::fold_break_rules(&mut locals, &authorless_rows, b.id);
+        assert_eq!(
+            locals.values().next().unwrap().label,
+            "authored",
+            "the authorless tie keeps the local (already-authored) row"
+        );
+        repo.close().await;
+    }
+
+    /// T-MIG-1: a pre-0026 database — built by dropping the `au_by`
+    /// columns and rewinding the migration ledger below 0026 —
+    /// migrates on reopen, every row decodes authorless, and no clock
+    /// text changes.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // the rewind + both-sides asserts are the point
+    async fn pre_0026_database_migrates_and_loads_authorless() {
+        const DROPS: &[&str] = &[
+            "ALTER TABLE reminder_rules DROP COLUMN au_by",
+            "ALTER TABLE break_rules DROP COLUMN au_by",
+            "ALTER TABLE time_entries DROP COLUMN au_by",
+            "ALTER TABLE habits DROP COLUMN au_by",
+            "ALTER TABLE habit_log DROP COLUMN au_by",
+        ];
+
+        let mut db = common::FileDb::new().await;
+        let repo = db.repo();
+        let b = board(41);
+        let s = stack(4, &b);
+        let t = task(9, &s, BTreeMap::new());
+        let rule = taskboard_domain::reminders::ReminderRule {
+            insistence: taskboard_domain::reminders::Insistence::Normal,
+            id: taskboard_domain::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0xA01)),
+            task: t.id,
+            kind: taskboard_domain::reminders::ReminderKind::DueOffset(
+                taskboard_domain::reminders::ReminderOffset::before(
+                    chrono::TimeDelta::try_seconds(-300).unwrap(),
+                )
+                .unwrap(),
+            ),
+            created_at: ts(500),
+            updated_at: ts(500),
+            by: Some(author(7)),
+        };
+        let authored_break = break_rule(0xB01, &b, "authored", 500, Some(author(8)));
+        let authored_habit = habit(0xC01, &b, "authored", 500, Some(author(9)));
+        let log_row = (
+            log_key(0xC01),
+            HabitLogEntry {
+                count: 2,
+                clock: ts(500),
+                by: Some(author(11)),
+            },
+        );
+        repo.apply(vec![
+            PersistenceAction::UpsertBoard(b.clone()),
+            PersistenceAction::UpsertStack(s.clone()),
+            PersistenceAction::UpsertTask(t.clone()),
+            PersistenceAction::UpsertReminderRule(rule.clone()),
+            PersistenceAction::UpsertBreakRule(authored_break.clone()),
+            PersistenceAction::UpsertHabit(authored_habit.clone()),
+            PersistenceAction::RecordHabitLog(log_row.0, log_row.1),
+        ])
+        .await
+        .expect("apply");
+        let before = repo.load().await.expect("load");
+        db.close().await;
+
+        // Rewind to the pre-0026 world: drop the author columns and
+        // forget every migration above 0025. The stored clocks survive
+        // verbatim; the stored authors cease to exist (NULL backfill).
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+            .await
+            .expect("raw connect");
+        for statement in DROPS {
+            // Audited: every entry above is a constant, migration-owned
+            // `ALTER TABLE … DROP COLUMN` — no user data in reach.
+            sqlx::query(sqlx::AssertSqlSafe(*statement))
+                .execute(&pool)
+                .await
+                .expect("drop column");
+        }
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 25")
+            .execute(&pool)
+            .await
+            .expect("rewind ledger");
+        pool.close().await;
+
+        db.reopen().await;
+        let after = db.repo().load().await.expect("load");
+        let authorless =
+            |by: &Option<AuthorId>| assert_eq!(*by, None, "the backfill decodes the slot absent");
+        after
+            .reminders
+            .rules
+            .values()
+            .for_each(|r| authorless(&r.by));
+        after
+            .reminders
+            .break_rules
+            .values()
+            .for_each(|r| authorless(&r.by));
+        after.habits.habits.values().for_each(|h| authorless(&h.by));
+        after.habits.log.values().for_each(|l| authorless(&l.by));
+        after
+            .tracking
+            .entries
+            .values()
+            .for_each(|e| authorless(&e.by));
+        // The clocks are byte-stable across the migration.
+        assert_eq!(
+            after
+                .reminders
+                .rules
+                .get(&rule.id)
+                .map(|r| (r.created_at, r.updated_at)),
+            Some((ts(500), ts(500)))
+        );
+        assert_eq!(
+            after
+                .reminders
+                .break_rules
+                .get(&authored_break.id)
+                .map(|r| r.created_at),
+            before
+                .reminders
+                .break_rules
+                .get(&authored_break.id)
+                .map(|r| r.created_at),
+            "no clock text changes"
+        );
+        assert_eq!(
+            after.habits.log.get(&log_row.0).map(|l| l.clock),
+            before.habits.log.get(&log_row.0).map(|l| l.clock)
+        );
+    }
+
+    /// Heap's algorithm over `0..k` — every permutation exactly once.
+    fn heap_permute(k: usize, prefix: &[usize], out: &mut Vec<Vec<usize>>) {
+        if k == 0 {
+            out.push(prefix.to_vec());
+            return;
+        }
+        for i in 0..k {
+            heap_permute(k - 1, &append(prefix, i), out);
+        }
+        if k > 1 {
+            heap_permute(k - 1, prefix, out);
+        }
+    }
+
+    fn append(prefix: &[usize], v: usize) -> Vec<usize> {
+        let mut p = prefix.to_vec();
+        p.push(v);
+        p
+    }
+
+    /// T-PROP-2's restart leg, at the storage layer (the lowest layer
+    /// that can express it — the domain crate must not depend on
+    /// storage): a multiset of sidecar facts applied in any order,
+    /// one real SQLite restart (apply → load) per cycle, converges on
+    /// the same survivor `(content, by, clock)` — the max tuple.
+    #[test]
+    #[allow(clippy::too_many_lines)] // the engine-shaped cycle body is the point
+    fn restart_permutations_converge_through_the_real_storage() {
+        let cases: Vec<Vec<(i64, Option<AuthorId>, u32)>> = vec![
+            vec![(500, Some(author(1)), 1), (500, Some(author(2)), 2)],
+            vec![(500, None, 1), (560, Some(author(2)), 2)],
+            vec![(500, Some(author(1)), 1), (500, None, 2)],
+            // Equal-clock authorless pairs are deliberately absent:
+            // two distinct contents under one full tuple have no
+            // deterministic winner (the tie means "the same write",
+            // the corpus never contains it).
+            vec![(500, None, 1), (560, None, 2)],
+            vec![
+                (500, Some(author(1)), 1),
+                (560, Some(author(2)), 2),
+                (620, Some(author(3)), 3),
+            ],
+        ];
+        for facts in cases {
+            // Every arrival permutation of the fact multiset.
+            let n = facts.len();
+            let mut permutations: Vec<Vec<usize>> = Vec::new();
+            heap_permute(n, &[], &mut permutations);
+            for order in permutations {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                runtime.block_on(async {
+                    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+                        .await
+                        .expect("open");
+                    let b = board(41);
+                    let s = stack(4, &b);
+                    let t = task(9, &s, BTreeMap::new());
+                    repo.apply(vec![
+                        PersistenceAction::UpsertBoard(b.clone()),
+                        PersistenceAction::UpsertStack(s.clone()),
+                        PersistenceAction::UpsertTask(t.clone()),
+                    ])
+                    .await
+                    .expect("seed");
+                    // One cycle per restart, the engine's shape: load,
+                    // fold the arriving document row into the loaded
+                    // state (the fold is the LWW gate; persistence
+                    // stores the fold's verdict), apply the deltas,
+                    // close — the next cycle reopens from disk.
+                    for &fact_index in &order {
+                        let &(clock, by, content) = &facts[fact_index];
+                        let mut state = repo.load().await.expect("load");
+                        let rows = BTreeMap::from([(
+                            taskboard_domain::ids::BreakRuleId::from(uuid::Uuid::from_u128(0xB01))
+                                .as_uuid()
+                                .to_string(),
+                            taskboard_domain::appdata::BreakRuleEntry::Rule {
+                                label: format!("break-{content}"),
+                                threshold: taskboard_domain::tracking::WorkThreshold::try_new(
+                                    chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                                )
+                                .unwrap(),
+                                created: ts(clock),
+                                clock: ts(clock),
+                                insistence: taskboard_domain::reminders::Insistence::Normal,
+                                by,
+                            },
+                        )]);
+                        let changes = taskboard_domain::merge::fold_break_rules(
+                            &mut state.reminders.break_rules,
+                            &rows,
+                            b.id,
+                        );
+                        repo.apply(
+                            changes
+                                .upserts
+                                .into_iter()
+                                .map(PersistenceAction::UpsertBreakRule)
+                                .collect(),
+                        )
+                        .await
+                        .expect("apply");
+                    }
+                    let loaded = repo.load().await.expect("load");
+                    let survivor = loaded.reminders.break_rules
+                        [&taskboard_domain::ids::BreakRuleId::from(uuid::Uuid::from_u128(0xB01))]
+                        .clone();
+                    repo.close().await;
+                    // The law: the survivor is the arrived multiset's
+                    // max tuple (orders may revisit a fact).
+                    let want = order
+                        .iter()
+                        .map(|&i| facts[i])
+                        .max_by_key(|&(clock, by, _)| (ts(clock), by))
+                        .unwrap();
+                    assert_eq!(
+                        (survivor.created_at, survivor.by),
+                        (ts(want.0), want.1),
+                        "the max tuple's fact survives every permutation"
+                    );
+                    assert_eq!(survivor.label, format!("break-{}", want.2));
+                });
+            }
+        }
+    }
+}

@@ -172,6 +172,8 @@ pub struct ReminderRow {
     pub rescheduled_to: DateTime<Utc>,
     /// Alarm label (alarm rows).
     pub label: String,
+    /// The rule row's stored author slot (None = a pre-slot row).
+    pub by: Option<crate::ids::AuthorId>,
 }
 
 /// Raw reminder rows: `0..=5` kinds × a handful of rows each.
@@ -194,6 +196,10 @@ pub fn reminder_rows_strategy() -> impl Strategy<Value = Vec<ReminderRow>> {
             timestamp_strategy(),
             timestamp_strategy(),
             proptest::string::string_regex("[a-z0-9]{0,10}").expect("valid regex"),
+            proptest::option::of(
+                (any::<u128>())
+                    .prop_map(|raw| crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(raw))),
+            ),
         ),
         0..12,
     )
@@ -212,6 +218,7 @@ pub fn reminder_rows_strategy() -> impl Strategy<Value = Vec<ReminderRow>> {
                     delivered_at,
                     rescheduled_to,
                     label,
+                    by,
                 )| {
                     ReminderRow {
                         kind,
@@ -225,6 +232,7 @@ pub fn reminder_rows_strategy() -> impl Strategy<Value = Vec<ReminderRow>> {
                         delivered_at,
                         rescheduled_to,
                         label,
+                        by,
                     }
                 },
             )
@@ -259,7 +267,7 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
                         kind: crate::reminders::ReminderKind::DueOffset(row.offset),
                         updated_at: row.created_at,
                         created_at: row.created_at,
-                        by: None,
+                        by: row.by,
                     };
                     rule_ids.push(rule.id);
                     state.rules.insert(rule.id, rule);
