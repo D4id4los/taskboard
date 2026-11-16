@@ -7468,5 +7468,235 @@ mod author_duel_tests {
             assert_eq!(fold(1, a, 2, b), 2);
             assert_eq!(fold(2, b, 1, a), 2);
         }
+
+        // T-TIE-1 (the unified direction, design §4.2): a full-tuple
+        // tie — the same `(clock, by)` on both legs — keeps local in
+        // every fold. The stored slot makes a full tie mean "the same
+        // author wrote the same clock twice", and the local row already
+        // holds that exact write; the strict direction matches
+        // `authored_tombstone_wins` and the inline legs. Red for the
+        // three helper-duel folds until `authored_doc_wins` flips
+        // strict; the habits/habit-log pair is the canary that the
+        // unification does not regress the already-strict legs.
+
+        /// T-TIE-1, reminder rules: full-tuple tie keeps local insistence.
+        #[test]
+        fn reminder_rules_full_tuple_tie_keeps_local() {
+            let (a, _b, t) = writers();
+            let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
+            let rule_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0x701));
+            let rule = |insistence: crate::reminders::Insistence| crate::reminders::ReminderRule {
+                id: rule_id,
+                task,
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_seconds(-300).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                insistence,
+                created_at: t,
+                updated_at: t,
+                by: Some(a),
+            };
+            let mut rules = std::collections::BTreeMap::from([(
+                rule_id,
+                rule(crate::reminders::Insistence::Normal),
+            )]);
+            let entry = crate::appdata::RulesEntry {
+                rules: [(
+                    rule_id.as_uuid().to_string(),
+                    crate::appdata::RuleEntry::Rule {
+                        kind: crate::reminders::ReminderKind::DueOffset(
+                            crate::reminders::ReminderOffset::before(
+                                chrono::TimeDelta::try_seconds(-300).unwrap(),
+                            )
+                            .unwrap(),
+                        ),
+                        created: t,
+                        clock: t,
+                        insistence: crate::reminders::Insistence::Alarm,
+                        by: Some(a),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                unknown: std::collections::BTreeMap::new(),
+            };
+            fold_reminder_rules(&mut rules, task, &entry, false, Some(a));
+            assert_eq!(
+                rules[&rule_id].insistence,
+                crate::reminders::Insistence::Normal,
+                "full-tuple tie keeps local"
+            );
+        }
+
+        /// T-TIE-1, break rules: full-tuple tie keeps local label.
+        #[test]
+        fn break_rules_full_tuple_tie_keeps_local() {
+            use crate::appdata::BreakRuleEntry;
+            let (a, _b, t) = writers();
+            let break_id = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0x702));
+            let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
+            let rule = |label: &str| crate::reminders::BreakRule {
+                id: break_id,
+                board,
+                label: label.to_owned(),
+                threshold: crate::tracking::WorkThreshold::try_new(
+                    chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                )
+                .unwrap(),
+                insistence: crate::reminders::Insistence::Normal,
+                created_at: t,
+                by: Some(a),
+            };
+            let mut rules = std::collections::BTreeMap::from([(break_id, rule("a-break"))]);
+            let rows = [(
+                break_id.as_uuid().to_string(),
+                BreakRuleEntry::Rule {
+                    label: "b-break".to_owned(),
+                    threshold: crate::tracking::WorkThreshold::try_new(
+                        chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                    )
+                    .unwrap(),
+                    created: t,
+                    clock: t,
+                    insistence: crate::reminders::Insistence::Normal,
+                    by: Some(a),
+                },
+            )]
+            .into_iter()
+            .collect();
+            fold_break_rules(&mut rules, &rows, board, Some(a));
+            assert_eq!(
+                rules[&break_id].label, "a-break",
+                "full-tuple tie keeps local"
+            );
+        }
+
+        /// T-TIE-1, time entries: full-tuple tie keeps local title.
+        #[test]
+        fn time_entries_full_tuple_tie_keeps_local() {
+            let (a, _b, t) = writers();
+            let entry_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(0x704));
+            let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
+            let entry = |title: &str| crate::tracking::TimeEntry {
+                id: entry_id,
+                task,
+                task_title: title.to_owned(),
+                start: t,
+                end: None,
+                created_at: t,
+                updated_at: t,
+                kind: crate::tracking::TimeEntryKind::Work,
+                by: Some(a),
+            };
+            let mut tracking = crate::tracking::TrackingState {
+                entries: [(entry_id, entry("a-title"))].into_iter().collect(),
+            };
+            let rows = [(
+                entry_id.as_uuid().to_string(),
+                crate::appdata::TimeEntryRecord::Entry {
+                    task: Some("1281".to_owned()),
+                    title: "b-title".to_owned(),
+                    start: t,
+                    end: None,
+                    created: t,
+                    clock: t,
+                    kind: crate::tracking::TimeEntryKind::Work,
+                    by: Some(a),
+                },
+            )]
+            .into_iter()
+            .collect();
+            let cards = [("1281".to_owned(), task)].into_iter().collect();
+            fold_time_entries(&mut tracking, &rows, &cards, Some(a));
+            assert_eq!(
+                tracking.entries[&entry_id].task_title, "a-title",
+                "full-tuple tie keeps local"
+            );
+        }
+
+        /// T-TIE-1, habits (already strict — the canary): a full-tuple
+        /// tie on the effective clock keeps local title.
+        #[test]
+        fn habits_full_tuple_tie_keeps_local() {
+            let (a, _b, t) = writers();
+            let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x705));
+            let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
+            let target =
+                crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap());
+            let habit = |title: &str| crate::habit::Habit {
+                id: habit_id,
+                board,
+                title: title.to_owned(),
+                target,
+                order: 0,
+                anchor_time: None,
+                clocks: crate::habit::HabitClocks::all(t),
+                continued_from: None,
+                deleted: false,
+                by: Some(a),
+            };
+            let mut state = crate::habit::HabitState {
+                habits: [(habit_id, habit("a-habit"))].into_iter().collect(),
+                log: std::collections::BTreeMap::new(),
+            };
+            let rows = [(
+                habit_id.as_uuid().to_string(),
+                crate::appdata::HabitRecord::Live {
+                    title: "b-habit".to_owned(),
+                    target,
+                    order: 0,
+                    anchor_time: None,
+                    clocks: crate::habit::HabitClocks::all(t),
+                    continued_from: None,
+                    by: Some(a),
+                },
+            )]
+            .into_iter()
+            .collect();
+            fold_habits(&mut state, &rows, board, Some(a));
+            assert_eq!(
+                state.habits[&habit_id].title, "a-habit",
+                "full-tuple tie keeps local"
+            );
+        }
+
+        /// T-TIE-1, habit log (already strict — the canary): a
+        /// full-tuple tie keeps local count.
+        #[test]
+        fn habit_log_full_tuple_tie_keeps_local() {
+            let (a, _b, t) = writers();
+            let log_key = crate::habit::HabitLogKey::parse_wire_form(
+                "00000000-0000-0000-0000-000000000706|2026-01-01",
+            )
+            .unwrap();
+            let mut state = crate::habit::HabitState {
+                habits: std::collections::BTreeMap::new(),
+                log: [(
+                    log_key,
+                    crate::habit::HabitLogEntry {
+                        count: 1,
+                        clock: t,
+                        by: Some(a),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            };
+            let rows = [(
+                log_key.wire_form(),
+                crate::appdata::HabitLogRecord::Entry {
+                    count: 2,
+                    clock: t,
+                    by: Some(a),
+                },
+            )]
+            .into_iter()
+            .collect();
+            fold_habit_log(&mut state, &rows, Some(a));
+            assert_eq!(state.log[&log_key].count, 1, "full-tuple tie keeps local");
+        }
     }
 }
