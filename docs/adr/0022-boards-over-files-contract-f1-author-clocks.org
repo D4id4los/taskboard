@@ -79,6 +79,13 @@ Chunk 1's realizations:
   reflection/habit *storage* families stay device-local (ADR 0021) —
   their sidecar rows still gain the `by` duel leg because the rows
   roam in documents.
+  *Amended 2026-11-16 (#708 design round)*: the five roaming sidecar
+  families (`reminder_rules`, `break_rules`, `time_entries`, `habits`,
+  `habit_log`) persist one nullable author column (`au_by`) —
+  device-locality under ADR 0021 continues to govern the
+  reflection-entry families that do not roam in documents; the roam
+  requirement (the fence's own rationale) now carries the author with
+  the row.
 
 * Consequences
 
