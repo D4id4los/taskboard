@@ -23,6 +23,10 @@ fn tempdir() -> tempfile::TempDir {
 /// C1: with no file at the default path (only the two required fields
 /// supplied via env), every other default parses — and the db path
 /// default resolves under the platform data dir.
+#[cfg(not(target_os = "windows"))]
+// platform gap: dirs::config_dir()
+// on Windows reads the Roaming AppData known folder and honors no env
+// seam — no deterministic sandbox exists in-process (#730).
 #[test]
 fn c1_defaults_parse_with_no_file() {
     let _env = xdg_lock(); // cwd is process-global, like the env
@@ -434,6 +438,10 @@ fn c14_reminders_engine_config_mapping() {
 
 /// C15: the `[ui]` table through the real chain — env override works
 /// (`TASKBOARD_UI__SCALE`), defaults round-trip at 1.0.
+#[cfg(not(target_os = "windows"))]
+// platform gap: dirs::config_dir()
+// on Windows reads the Roaming AppData known folder and honors no env
+// seam — no deterministic sandbox exists in-process (#730).
 #[test]
 fn c15_ui_scale_env_override() {
     let _env = xdg_lock();
@@ -477,6 +485,10 @@ fn c16_env_override_names_both_answers() {
 /// C16: the fresh-machine divergence the verb exists to show — reads
 /// resolve to nothing, but `connect`/`login` would write the XDG
 /// candidate (whose directory the writer creates).
+#[cfg(not(target_os = "windows"))]
+// platform gap: dirs::config_dir()
+// on Windows reads the Roaming AppData known folder and honors no env
+// seam — no deterministic sandbox exists in-process (#730).
 #[test]
 fn c16_fresh_machine_diverges_read_none_write_xdg() {
     let xdg = xdg_lock();
@@ -493,6 +505,10 @@ fn c16_fresh_machine_diverges_read_none_write_xdg() {
 /// C16: an existing CWD install keeps its file as the write target —
 /// the write fallback's row (`config_path` stays `None`: the CWD file
 /// is not a read resolution).
+#[cfg(not(target_os = "windows"))]
+// platform gap: dirs::config_dir()
+// on Windows reads the Roaming AppData known folder and honors no env
+// seam — no deterministic sandbox exists in-process (#730).
 #[test]
 fn c16_existing_cwd_install_is_the_write_target() {
     let _env = xdg_lock();
@@ -514,6 +530,10 @@ fn c16_existing_cwd_install_is_the_write_target() {
 /// `[nextcloud]` identity beside that file's `[[sync.connectors]]` is
 /// the typed mixed-shape refusal — the env lane overlays the file's
 /// tree, it does not replace it.
+#[cfg(not(target_os = "windows"))]
+// platform gap: dirs::config_dir()
+// on Windows reads the Roaming AppData known folder and honors no env
+// seam — no deterministic sandbox exists in-process (#730).
 #[test]
 fn the_xdg_read_path_refuses_env_identity_beside_connectors() {
     let xdg = xdg_lock();
