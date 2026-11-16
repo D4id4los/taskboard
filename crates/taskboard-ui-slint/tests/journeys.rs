@@ -20950,3 +20950,62 @@ fn us6_s3_notification_escape_closes_without_dispatch() {
         },
     );
 }
+
+// === The armed fields' focus flags (round-8 chunk 2, the focus-
+// === restoration plan US-5/W-5) =================================
+
+/// The task model's (title-armed, description-armed) pair — the
+/// US-5 flag oracle.
+fn detail_flags(harness: &Harness) -> (bool, bool) {
+    let model = harness.handle.window().get_task_model();
+    (model.title_armed, model.description_armed)
+}
+
+/// US-5/S1: the arm paths carry the per-field focus flag on the task
+/// model — the title editor's arm sets `title-armed`, the description
+/// editor's arm sets `description-armed`, and the discards clear
+/// them; the closed cells' rings read the flags beside their own
+/// has-focus (typed model reads, per field).
+#[test]
+fn us5_s1_the_title_and_description_fields_carry_the_focus_flag() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            assert_eq!(
+                detail_flags(&harness),
+                (false, false),
+                "the closed cells start unarmed"
+            );
+            // The title arm (F2's route).
+            harness.handle.dispatch_action(ActionId::TaskTitleEdit);
+            assert!(detail_flags(&harness).0, "the title arm sets the flag");
+            // Discard (Escape's letter), then the description arm.
+            harness.stroke(parse("Escape").expect("escape"));
+            assert_eq!(
+                detail_flags(&harness),
+                (false, false),
+                "the discard clears the flag"
+            );
+            harness
+                .handle
+                .window()
+                .invoke_task_description_edit_opened();
+            assert!(
+                detail_flags(&harness).1,
+                "the description arm sets the flag"
+            );
+            harness.stroke(parse("Escape").expect("escape"));
+            assert_eq!(
+                detail_flags(&harness),
+                (false, false),
+                "the discard clears the flag"
+            );
+        },
+    );
+}
