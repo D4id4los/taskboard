@@ -611,23 +611,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::RecurEditor,
         FK::Child,
     ] {
-        let keep = match kind {
-            FK::Text => K(KTxt),
-            FK::Due => K(KDue),
-            FK::Move => K(KMove),
-            FK::Drag => K(KDrag),
-            FK::Palette => K(KPal),
-            FK::Capture => K(KCap),
-            FK::FocusOverlay => K(KFoc),
-            FK::TrackList => K(KTrackList),
-            FK::TrackForm => K(KTrackForm),
-            FK::LabelOverlay => K(KLabel),
-            FK::ReviewWalk => K(KWalk),
-            FK::RecurEditor => K(KRecur),
-            FK::Child => K(KChild),
-            FK::PlanForm | FK::None => unreachable!("the loop never names them"),
-        };
-        row(kind, C::PlanSurface, exp(Z, keep));
+        row(kind, C::PlanSurface, exp(Z, held_flow_keep(kind)));
     }
     row(FK::None, C::PlanSurface, exp(Z, N));
     // Every foreign kind under the overlay class: the settle is the
@@ -674,6 +658,30 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
 /// The per-pair overrides: the kept explicit arms and the
 /// effect-shaped rows a class cell cannot express (each names its
 /// audit §6 cell).
+/// A held foreign flow's keep (the modal discipline's per-kind cell
+/// — the flow's own named inert): shared by the plan-surface,
+/// series-detach, and planner-verb loops (the matrix's kept
+/// foreign-flow letter; every `FK` arm is total).
+fn held_flow_keep(kind: FK) -> Post {
+    match kind {
+        FK::Text => K(KTxt),
+        FK::Due => K(KDue),
+        FK::Move => K(KMove),
+        FK::Drag => K(KDrag),
+        FK::Palette => K(KPal),
+        FK::Capture => K(KCap),
+        FK::FocusOverlay => K(KFoc),
+        FK::TrackList => K(KTrackList),
+        FK::TrackForm => K(KTrackForm),
+        FK::LabelOverlay => K(KLabel),
+        FK::PlanForm => K(KPlanForm),
+        FK::ReviewWalk => K(KWalk),
+        FK::RecurEditor => K(KRecur),
+        FK::Child => K(KChild),
+        FK::None => unreachable!("no flow held"),
+    }
+}
+
 fn pair_table() -> Vec<(FK, EK, Exp)> {
     use EK as E;
     let mut t = Vec::new();
@@ -1151,23 +1159,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::ReviewWalk,
         FK::Child,
     ] {
-        let keep = match kind {
-            FK::Text => K(KTxt),
-            FK::Due => K(KDue),
-            FK::Move => K(KMove),
-            FK::Drag => K(KDrag),
-            FK::Palette => K(KPal),
-            FK::Capture => K(KCap),
-            FK::FocusOverlay => K(KFoc),
-            FK::TrackList => K(KTrackList),
-            FK::TrackForm => K(KTrackForm),
-            FK::LabelOverlay => K(KLabel),
-            FK::PlanForm => K(KPlanForm),
-            FK::ReviewWalk => K(KWalk),
-            FK::Child => K(KChild),
-            FK::RecurEditor | FK::None => unreachable!("the loop never names them"),
-        };
-        row(kind, E::SeriesDetach, exp(Z, keep));
+        row(kind, E::SeriesDetach, exp(Z, held_flow_keep(kind)));
     }
     row(FK::RecurEditor, E::SeriesDetach, exp(Z, K(KRecur)));
     // -- PLAN SURFACE rows (#622, D-3/D-4): from None the open
@@ -1203,22 +1195,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::RecurEditor,
         FK::Child,
     ] {
-        let keep = match kind {
-            FK::Text => K(KTxt),
-            FK::Due => K(KDue),
-            FK::Move => K(KMove),
-            FK::Drag => K(KDrag),
-            FK::Palette => K(KPal),
-            FK::Capture => K(KCap),
-            FK::FocusOverlay => K(KFoc),
-            FK::TrackList => K(KTrackList),
-            FK::TrackForm => K(KTrackForm),
-            FK::LabelOverlay => K(KLabel),
-            FK::ReviewWalk => K(KWalk),
-            FK::RecurEditor => K(KRecur),
-            FK::Child => K(KChild),
-            FK::PlanForm | FK::None => unreachable!("the loop never names them"),
-        };
+        let keep = held_flow_keep(kind);
         for key in [
             E::PlanOpen,
             E::PlanBegin,
@@ -2329,7 +2306,9 @@ fn the_seconds_gate_stays_false_on_kiosk() {
 // -- the task view's header seams (r4 D16b/D16c) ------------------------
 
 /// Enters the task detail on `task` through the production path
-/// (activate + focused + the forced derive; the #463 rule).
+/// (activate + focused + the forced derive; the #463 rule) — the
+/// matrix driver's seeding, factored for the header-seam and
+/// tracking journeys.
 fn mount_task_detail(
     rig: &Rig,
     adapter: &std::rc::Rc<std::cell::RefCell<crate::adapter::Adapter>>,
@@ -3477,22 +3456,6 @@ fn closed_entry_on(state: &mut AppState, task: TaskId, hour: u32) -> taskboard_d
     closed_entry_on_date(state, task, hour, chrono::Local::now().date_naive())
 }
 
-/// Arms the task-detail view over `task` on the rig (the matrix
-/// driver's seeding, factored for the tracking journeys).
-fn arm_task_view(
-    rig: &Rig,
-    adapter: &std::rc::Rc<std::cell::RefCell<crate::adapter::Adapter>>,
-    task: TaskId,
-    stack: StackId,
-) {
-    let mut a = adapter.borrow_mut();
-    a.refresh_forced(rig.handle.window());
-    a.view_state.activate_card(task, stack);
-    a.view_state
-        .activate_focused(&rig.handle.test_state().load_full());
-    a.refresh_forced(rig.handle.window());
-}
-
 /// The add journey (D-TS4): open → add form → typed fields → commit
 /// routes exactly one `LogTime` with the exact local→UTC instants,
 /// and the surface steps back to the list.
@@ -3512,7 +3475,7 @@ fn the_track_form_add_commit_routes_logtime_with_the_exact_instants() {
         let [s0, _s1] = fx.stacks;
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         {
             let mut a = adapter.borrow_mut();
             a.interpret_for_test(
@@ -3598,7 +3561,7 @@ fn the_track_form_edit_commit_routes_the_exact_adjust_mask() {
         let entry = closed_entry_on_date(&mut state, a_id, 10, today);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         {
             let mut a = adapter.borrow_mut();
             a.interpret_for_test(
@@ -3681,7 +3644,7 @@ fn the_running_rows_edit_seeds_an_empty_end_and_the_mask_keeps_it_open() {
         );
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         {
             let mut a = adapter.borrow_mut();
             a.interpret_for_test(
@@ -3747,7 +3710,7 @@ fn an_inverted_span_refuses_the_commit_and_lands_on_the_end_field() {
         let [s0, _s1] = fx.stacks;
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         {
             let mut a = adapter.borrow_mut();
             a.interpret_for_test(
@@ -3791,7 +3754,7 @@ fn the_delete_affordance_arms_then_confirms_and_dismissal_disarms() {
         let entry = closed_entry_on(&mut state, a_id, 8);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         {
             let mut a = adapter.borrow_mut();
             a.interpret_for_test(
@@ -3849,7 +3812,7 @@ fn the_tracked_today_section_opens_its_task_and_an_empty_day_collapses() {
         );
         let journey = rig(state);
         let adapter = journey.adapter();
-        arm_task_view(&journey, &adapter, a_id, s0);
+        mount_task_detail(&journey, &adapter, a_id, s0);
         // Navigate to today (the section lives there).
         adapter
             .borrow_mut()
@@ -3914,7 +3877,7 @@ fn the_add_commit_routes_over_the_form_subject_not_the_focus() {
         let [s0, _s1] = fx.stacks;
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         // The stack-first entry path: the subject without a focused
         // card.
         adapter.borrow_mut().view_state.set_focused(None);
@@ -3973,7 +3936,7 @@ fn the_overlay_cannot_outlive_its_subject_or_view() {
         let [s0, _s1] = fx.stacks;
         let strand_rig = rig(state);
         let adapter = strand_rig.adapter();
-        arm_task_view(&strand_rig, &adapter, a_id, s0);
+        mount_task_detail(&strand_rig, &adapter, a_id, s0);
         {
             let mut a = adapter.borrow_mut();
             a.interpret_for_test(
@@ -4021,7 +3984,7 @@ fn the_overlay_cannot_outlive_its_subject_or_view() {
         let [s0, _s1] = fx.stacks;
         let flip_rig = rig(state);
         let adapter = flip_rig.adapter();
-        arm_task_view(&flip_rig, &adapter, a_id, s0);
+        mount_task_detail(&flip_rig, &adapter, a_id, s0);
         {
             let mut a = adapter.borrow_mut();
             a.interpret_for_test(
@@ -4471,7 +4434,7 @@ fn the_importance_picker_slots_dispatch_exact_masks() {
         let [s0, _s1] = fx.stacks;
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         // Open the picker (the routed action's view intent).
         adapter.borrow_mut().interpret_for_test(
             rig.handle.window(),
@@ -4537,7 +4500,7 @@ fn the_urgency_picker_slots_dispatch_the_symmetric_mask() {
         let [s0, _s1] = fx.stacks;
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter.borrow_mut().interpret_for_test(
             rig.handle.window(),
             UiEffect::PriorityPickerOpen(crate::router::PriorityField::Urgency),
@@ -4568,7 +4531,7 @@ fn escape_and_dismissal_close_the_picker_without_dispatching() {
         let [s0, _s1] = fx.stacks;
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter.borrow_mut().interpret_for_test(
             rig.handle.window(),
             UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
@@ -4604,7 +4567,7 @@ fn opening_one_picker_settles_the_other() {
         let [s0, _s1] = fx.stacks;
         let rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter.borrow_mut().interpret_for_test(
             rig.handle.window(),
             UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
@@ -4638,7 +4601,7 @@ fn a_stale_slot_index_dispatches_nothing() {
         let [s0, _s1] = fx.stacks;
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter.borrow_mut().interpret_for_test(
             rig.handle.window(),
             UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
@@ -4708,7 +4671,7 @@ fn the_overlay_toggle_dispatches_the_assignment_pair() {
         let (green, red) = seed_labels(&mut state, fx.board, a_id);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter
             .borrow_mut()
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
@@ -4756,7 +4719,7 @@ fn the_chip_unassign_dispatches_the_exact_verb() {
         let (green, _red) = seed_labels(&mut state, fx.board, a_id);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         rig.handle.window().invoke_chip_unassign_clicked(0);
         assert_eq!(
             rig.drain_commands(),
@@ -4782,7 +4745,7 @@ fn the_labels_overlay_opens_and_the_dismissal_closes() {
         let [s0, _s1] = fx.stacks;
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter
             .borrow_mut()
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
@@ -4841,7 +4804,7 @@ fn the_label_create_commit_routes_createlabel_with_the_swatch_hex() {
         seed_labels(&mut state, board, a_id);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter
             .borrow_mut()
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
@@ -5180,7 +5143,7 @@ fn the_label_edit_commit_routes_the_sparse_update() {
         let (green, _red) = seed_labels(&mut state, fx.board, a_id);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter
             .borrow_mut()
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
@@ -5235,7 +5198,7 @@ fn the_label_form_cancel_discards_without_dispatching() {
         seed_labels(&mut state, fx.board, a_id);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter
             .borrow_mut()
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
@@ -5270,7 +5233,7 @@ fn the_label_delete_arms_then_confirms_and_cancel_disarms() {
         let (green, _red) = seed_labels(&mut state, fx.board, a_id);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter
             .borrow_mut()
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
@@ -5308,7 +5271,7 @@ fn the_labels_ladder_settles_the_armed_row_before_closing() {
         seed_labels(&mut state, fx.board, a_id);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter
             .borrow_mut()
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
@@ -5350,7 +5313,7 @@ fn a_stale_delete_index_dispatches_nothing() {
         seed_labels(&mut state, fx.board, a_id);
         let mut rig = rig(state);
         let adapter = rig.adapter();
-        arm_task_view(&rig, &adapter, a_id, s0);
+        mount_task_detail(&rig, &adapter, a_id, s0);
         adapter
             .borrow_mut()
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
