@@ -1585,12 +1585,16 @@ impl DeckClient {
             match outcome {
                 Ok(value) => return Ok(value),
                 Err(retryable) if retryable.is_transport() => {
-                    let Some(delay) = self.backoff.delay(retry_index) else {
+                    let Some(deferred) =
+                        self.backoff.defer(retry_index, retryable.advertised_hint())
+                    else {
                         return Err(retryable);
                     };
+                    let delay = deferred.delay();
                     tracing::warn!(
                         retry_index,
                         ?delay,
+                        ?deferred,
                         resource = call.resource,
                         "retryable failure"
                     );

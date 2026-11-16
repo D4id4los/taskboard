@@ -32,7 +32,7 @@ pub mod push_exec;
 mod verify;
 
 pub use actor::{SyncActorConfig, spawn_sync_actor};
-pub use backoff::BackoffPolicy;
+pub use backoff::{BackoffPolicy, DeferredBy};
 pub use client::{
     AttachmentUpload, BoardChanges, CloneOptions, DeckCapabilities, DeckClient, Fetch,
     LabelChanges, NewCard, RetrySleep, StackChanges, TokioSleep, Validators,

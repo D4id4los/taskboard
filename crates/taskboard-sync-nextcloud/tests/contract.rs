@@ -72,6 +72,67 @@ impl wiremock::Respond for SequenceResponder {
     }
 }
 
+/// A scripted status sequence where every response carries the same
+/// `Retry-After` header value (verbatim — seconds or an RFC 2822 date),
+/// repeating the last status like [`SequenceResponder`].
+#[derive(Default)]
+struct HintedSequence {
+    statuses: Vec<u16>,
+    retry_after: &'static str,
+    index: AtomicUsize,
+}
+
+impl HintedSequence {
+    fn new(statuses: Vec<u16>, retry_after: &'static str) -> Self {
+        assert_ne!(statuses.len(), 0, "status sequence must not be empty");
+        Self {
+            statuses,
+            retry_after,
+            index: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl wiremock::Respond for HintedSequence {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        let i = self
+            .index
+            .fetch_add(1, Ordering::SeqCst)
+            .min(self.statuses.len() - 1);
+        let template =
+            ResponseTemplate::new(self.statuses[i]).insert_header("Retry-After", self.retry_after);
+        if self.statuses[i] == 200 {
+            template.set_body_string(fixture("boards_list.json"))
+        } else {
+            template
+        }
+    }
+}
+
+/// A successful `boards()` run against `statuses` (last repeats) with the
+/// given verbatim `Retry-After` header on every response, returning the
+/// recorded retry sleeps.
+async fn hinted_boards_run(
+    server: &MockServer,
+    statuses: Vec<u16>,
+    retry_after: &'static str,
+) -> Vec<Duration> {
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .respond_with(HintedSequence::new(statuses, retry_after))
+        .mount(server)
+        .await;
+    let sleeper = RecordingSleeper::default();
+    let boards = DeckClient::new(&server.uri(), "it-user", "it-token")
+        .unwrap()
+        .with_sleeper(std::sync::Arc::new(sleeper.clone()))
+        .boards()
+        .await
+        .expect("sequence ends in a 200");
+    assert_eq!(boards.len(), 2);
+    sleeper.0.lock().unwrap().clone()
+}
+
 /// Records the delays the client asks to sleep; returns immediately so the
 /// timing assertions are exact and independent of real sockets.
 #[derive(Clone, Debug, Default)]
@@ -287,10 +348,13 @@ async fn rate_limiting_exhausts_policy_and_reports_rate_limited() {
             retry_after: Some(d)
         } if d == Duration::from_secs(30)
     ));
-    // The internal retry policy is untouched by the advertisement.
+    // The advertised hint dominates the curve at both indices and clamps
+    // at the 8 s policy cap (`ServerHint(8 s)` per the `defer` invariant).
+    // The exhausted error still carries the *unclamped* hint for the
+    // actor's poll floor.
     assert_eq!(
         sleeper.0.lock().unwrap().as_slice(),
-        [Duration::from_millis(500), Duration::from_secs(1)]
+        [Duration::from_secs(8), Duration::from_secs(8)]
     );
 }
 
@@ -307,6 +371,91 @@ async fn rate_limiting_without_the_header_reports_an_absent_hint() {
     let err = client_for(&server).boards().await.unwrap_err();
     server.verify().await;
     assert!(matches!(err, DeckError::RateLimited { retry_after: None }));
+}
+
+#[tokio::test]
+async fn delta_seconds_hint_dominates_the_policy_curve() {
+    let server = MockServer::start().await;
+    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], "2").await;
+    // The hint (2 s) exceeds the curve at both indices (500 ms, 1 s) and
+    // sits under the 8 s cap: per the `defer` invariant — honored == curve
+    // iff `DeferredBy::Policy` — these exact durations *are* the typed
+    // `ServerHint(2 s)` outcomes.
+    assert_eq!(sleeps, [Duration::from_secs(2), Duration::from_secs(2)]);
+}
+
+#[tokio::test]
+async fn present_but_tiny_hint_never_lowers_the_curve() {
+    let server = MockServer::start().await;
+    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], "0").await;
+    // "Retry-After: 0" is present-but-tiny: the curve wins at both
+    // indices — `DeferredBy::Policy(500 ms)` and `Policy(1 s)` per the
+    // same invariant.
+    assert_eq!(sleeps, [Duration::from_millis(500), Duration::from_secs(1)]);
+}
+
+#[tokio::test]
+async fn http_date_in_the_future_caps_at_the_policy_cap() {
+    let server = MockServer::start().await;
+    let date = (chrono::Utc::now() + chrono::Duration::seconds(3600))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string();
+    let retry_after: &'static str = Box::leak(date.into_boxed_str());
+    // Any parse of now + 3600 s exceeds the 8 s cap regardless of clock
+    // skew, so the sleep oracle is exact without a wall-clock window.
+    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], retry_after).await;
+    assert_eq!(sleeps, [Duration::from_secs(8), Duration::from_secs(8)]);
+}
+
+#[tokio::test]
+async fn http_date_in_the_past_reads_absent_and_falls_back_to_the_curve() {
+    let server = MockServer::start().await;
+    let date = (chrono::Utc::now() - chrono::Duration::seconds(60))
+        .format("%a, %d %b %Y %H:%M:%S GMT")
+        .to_string();
+    let retry_after: &'static str = Box::leak(date.into_boxed_str());
+    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], retry_after).await;
+    assert_eq!(sleeps, [Duration::from_millis(500), Duration::from_secs(1)]);
+}
+
+#[tokio::test]
+async fn unparseable_hint_falls_back_to_the_curve() {
+    let server = MockServer::start().await;
+    let sleeps = hinted_boards_run(&server, vec![429, 429, 200], "soon").await;
+    assert_eq!(sleeps, [Duration::from_millis(500), Duration::from_secs(1)]);
+}
+
+#[tokio::test]
+async fn unavailable_503_with_a_hint_honors_and_reports_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BOARDS_PATH))
+        .respond_with(HintedSequence::new(vec![503, 503, 503], "2"))
+        .mount(&server)
+        .await;
+
+    let sleeper = RecordingSleeper::default();
+    let err = DeckClient::new(&server.uri(), "it-user", "it-token")
+        .unwrap()
+        .with_sleeper(std::sync::Arc::new(sleeper.clone()))
+        .boards()
+        .await
+        .unwrap_err();
+    server.verify().await;
+    assert_eq!(
+        sleeper.0.lock().unwrap().as_slice(),
+        [Duration::from_secs(2), Duration::from_secs(2)],
+        "ServerHint(2 s) dominates the curve at both indices"
+    );
+    assert!(
+        matches!(
+            err,
+            DeckError::Unavailable {
+                retry_after: Some(d)
+            } if d == Duration::from_secs(2)
+        ),
+        "the exhausted error carries the hint unclamped: {err:?}"
+    );
 }
 
 #[tokio::test]
