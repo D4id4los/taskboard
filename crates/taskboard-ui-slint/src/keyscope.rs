@@ -692,6 +692,92 @@ mod tests {
         }
     }
 
+    /// The fallback grammar's hard-coded keys must equal the preset
+    /// rows (US-6/W-6, D-N1): the resolver-side fallback arm
+    /// (`notification_grammar_stroke`) duplicates the letters the
+    /// presets bind over `NotificationSurface` — a preset retune
+    /// without this pin would leave the fallback claiming a key the
+    /// keymap no longer names (the C-5 drift law).
+    #[test]
+    fn the_fallback_grammar_keys_equal_the_preset_rows() {
+        let action_of = |gram: &NotificationGrammar| match *gram {
+            NotificationGrammar::Walk(1) => crate::actions::ActionId::MenuNext,
+            NotificationGrammar::Walk(-1) => crate::actions::ActionId::MenuPrevious,
+            NotificationGrammar::Verb(v) => match v {
+                crate::router::NotificationVerb::Dismiss => {
+                    crate::actions::ActionId::NotificationDismiss
+                }
+                crate::router::NotificationVerb::Done => crate::actions::ActionId::NotificationDone,
+                crate::router::NotificationVerb::Snooze => {
+                    crate::actions::ActionId::NotificationSnooze
+                }
+                crate::router::NotificationVerb::Mute => crate::actions::ActionId::NotificationMute,
+                crate::router::NotificationVerb::Cancel => {
+                    crate::actions::ActionId::NotificationCancel
+                }
+                crate::router::NotificationVerb::TrackStart => {
+                    crate::actions::ActionId::NotificationTrackStart
+                }
+                crate::router::NotificationVerb::Open => crate::actions::ActionId::NotificationOpen,
+            },
+            NotificationGrammar::Walk(_) => unreachable!("only ±1 are grammar steps"),
+        };
+        for preset in [
+            crate::keymap::Preset::Standard,
+            crate::keymap::Preset::Emacs,
+            crate::keymap::Preset::Vi,
+        ] {
+            let keymap = crate::keymap::Keymap::from_preset(preset);
+            let bindings = keymap
+                .bindings_in(ContextId::NotificationSurface)
+                .expect("the notification surface context is bound");
+            for (spelling, expected) in [
+                ("Up", NotificationGrammar::Walk(-1)),
+                ("Down", NotificationGrammar::Walk(1)),
+                (
+                    "d",
+                    NotificationGrammar::Verb(crate::router::NotificationVerb::Dismiss),
+                ),
+                (
+                    "e",
+                    NotificationGrammar::Verb(crate::router::NotificationVerb::Done),
+                ),
+                (
+                    "s",
+                    NotificationGrammar::Verb(crate::router::NotificationVerb::Snooze),
+                ),
+                (
+                    "m",
+                    NotificationGrammar::Verb(crate::router::NotificationVerb::Mute),
+                ),
+                (
+                    "c",
+                    NotificationGrammar::Verb(crate::router::NotificationVerb::Cancel),
+                ),
+                (
+                    "t",
+                    NotificationGrammar::Verb(crate::router::NotificationVerb::TrackStart),
+                ),
+                (
+                    "o",
+                    NotificationGrammar::Verb(crate::router::NotificationVerb::Open),
+                ),
+            ] {
+                let stroke = crate::keymap::stroke::parse(spelling).expect("parses");
+                assert_eq!(
+                    bindings.get(std::slice::from_ref(&stroke)),
+                    Some(&action_of(&expected)),
+                    "{preset:?} binds {spelling} differently than the fallback grammar"
+                );
+                assert_eq!(
+                    notification_grammar_stroke(&stroke),
+                    Some(expected),
+                    "the fallback grammar reads {spelling} differently than the preset row"
+                );
+            }
+        }
+    }
+
     fn doorway<'a>(
         shell: &'a KeymapShell,
         flow: &'a Flow,

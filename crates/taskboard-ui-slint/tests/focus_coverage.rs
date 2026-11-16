@@ -56,14 +56,19 @@ const EXEMPT: &[(&str, &str)] = &[
         "chrome chip under the same D-T16 deviation; the tracking stop has \
          its routed action binding",
     ),
-    // D-6.1 (round 6): the notification row's double-click open. The
-    // row's verbs (dismiss/done/snooze/mute) are all key-reachable;
-    // the open's keyboard parity (focus → Enter) is the round-6
-    // declared non-goal, tracked as #724.
+    // D-6.1 (round 6) + the focus-restoration plan US-6 (D-N1): the
+    // notification row's double-click open. The keyboard parity debt
+    // is CLOSED by the surface's engagement grammar — the walk pair
+    // selects the row, the seven verb keys dispatch the seams, and
+    // NotificationOpen is the open's key path — so this entry no
+    // longer records a missing parity: the surface's rows are
+    // walk-selected (MenuNext/MenuPrevious over the engaged context),
+    // not tab stops, which is what the coverage invariant checks.
     (
         "TouchArea:NotificationSurface::row-touch",
-        "the notification row's double-click open; keyboard activation \
-         parity on notification rows is #724 (round-6 non-goal)",
+        "the notification row's double-click open; the rows are \
+         walk-selected via the engagement grammar, not tab stops \
+         (the keyboard parity debt of #724 is closed)",
     ),
     // The modal dismissal backdrops (#665): a full-window outside-click
     // layer under each modal. Dismissal is a pointer convenience; the
