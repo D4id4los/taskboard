@@ -19867,3 +19867,526 @@ fn us6_s2_today_row_menu_and_preset_key_recommit() {
         },
     );
 }
+
+// ---- keymap parity (ux-r8 chunk 1; keymap-parity plan §4) --------------
+
+/// The open detail's mounted subject title (the fixture titles are the
+/// journeys' element addresses — identity, never label matching).
+fn detail_title(harness: &Harness) -> String {
+    harness.handle.window().get_task_model().title.to_string()
+}
+
+/// Whether the description editor flow is armed on the mounted detail.
+fn description_open(harness: &Harness) -> bool {
+    harness
+        .handle
+        .window()
+        .get_task_model()
+        .description_edit_open
+}
+
+/// A detail open over the fixture's first board card, through the
+/// preset's own rows (the journeys' shared prelude): focus the first
+/// card, activate it into the detail.
+fn open_detail_first_card(harness: &mut Harness, preset: taskboard_ui_slint::keymap::Preset) {
+    press_preset(harness, preset, ActionId::NavNextItem);
+    press_preset(harness, preset, ActionId::TaskEdit);
+    harness.driver.advance_time(0);
+    assert_eq!(
+        harness.handle.window().get_current_view(),
+        View::TaskDetail,
+        "the detail is open"
+    );
+}
+
+/// US-1/S1 (keymap-parity plan W-1) — the emacs motion rows step the
+/// walks: at the open `TaskDetail` C-n/C-p carry the *item* walk (the
+/// D-2 route fix made the detail's item table live; the subject and
+/// the selection move together, the ends clamp), C-f/C-b still step
+/// the control walk, and the Today rows keep their item walk with
+/// zero commands (navigation is view-internal). Board/Today bounds
+/// are the walk mechanics' own layer (`view_state` unit tests); the
+/// journey pins the rows' resolution and the visible subject.
+#[test]
+fn us1_s1_emacs_motion_rows_step_the_walks() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+            assert_eq!(
+                detail_title(&harness),
+                "task-0",
+                "the detail opens on the first card"
+            );
+
+            // C-n steps the item walk: the visible subject follows.
+            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                detail_title(&harness),
+                "task-1",
+                "C-n steps the detail's subject"
+            );
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::TaskDetail,
+                "the view never moves"
+            );
+
+            // C-p retreats; past the first the end clamps (no wrap).
+            press_preset(&mut harness, preset, ActionId::NavPrevItem);
+            harness.driver.advance_time(0);
+            assert_eq!(detail_title(&harness), "task-0", "C-p returns to the first");
+            press_preset(&mut harness, preset, ActionId::NavPrevItem);
+            harness.driver.advance_time(0);
+            assert_eq!(detail_title(&harness), "task-0", "the end holds");
+
+            // The jump pair rides the same route (M-< / M->).
+            press_preset(&mut harness, preset, ActionId::NavLastItem);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                detail_title(&harness),
+                "task-1",
+                "M-> lands on the stack's last"
+            );
+            press_preset(&mut harness, preset, ActionId::NavFirstItem);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                detail_title(&harness),
+                "task-0",
+                "M-< lands on the stack's first"
+            );
+
+            // C-f still steps the control walk (the isearch pair kept
+            // its rows): the walk reaches an activation stop (the
+            // first steps may ride the header buttons — the walk
+            // lands on a reported stop within a few presses).
+            let mut guard = 0;
+            while walk_stop(&harness) == 0 && guard < 10 {
+                press_preset(&mut harness, preset, ActionId::NavNextControl);
+                harness.driver.advance_time(0);
+                guard += 1;
+            }
+            assert_ne!(
+                walk_stop(&harness),
+                0,
+                "C-f steps the detail's control walk onto a stop"
+            );
+
+            // The Today rows keep their item walk, navigation dispatches
+            // nothing (the dumb-client pin at the window boundary).
+            press_preset(&mut harness, preset, ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            harness.driver.advance_time(0);
+            press_preset(&mut harness, preset, ActionId::NavPrevItem);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Today,
+                "the today walk stays in the view"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-1/AC-2 (keymap-parity plan W-1) — the Settings field walk: all
+/// four emacs chords resolve over the settings chain and step the
+/// control walk with zero commands (the walk is view-internal; the
+/// traversal mechanics' own layer is the walk unit tests and the
+/// focus-coverage suite — one behaviour, one test, lowest layer).
+#[test]
+fn us1_ac2_settings_control_walk_rows_step() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, preset, ActionId::AppSettings);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Settings,
+                "the settings surface is open"
+            );
+            for action in [
+                ActionId::NavNextControl,
+                ActionId::NavNextControl,
+                ActionId::NavPrevControl,
+                ActionId::NavPrevControl,
+            ] {
+                press_preset(&mut harness, preset, action);
+                harness.driver.advance_time(0);
+            }
+            press_preset(&mut harness, preset, ActionId::NavNextControl);
+            harness.driver.advance_time(0);
+            press_preset(&mut harness, preset, ActionId::NavPrevControl);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Settings,
+                "the walk stays on the settings surface"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-2/S1 (keymap-parity plan W-2) — the menu invocation matches the
+/// key route: the first/last jump resolves the *same* subject from
+/// both fronts (the D-2 fix is route-level, so the menu row and the
+/// `Ctrl+Home`/`Ctrl+End` key land on the same item-table resolution —
+/// click ≡ key). The empty item set is the typed `NoTarget` surfaced
+/// by the existing outcome path (the `view_state` inert).
+#[test]
+fn us2_s1_menu_first_last_matches_the_key_route() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Standard;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+
+            // The key front.
+            press_preset(&mut harness, preset, ActionId::NavLastItem);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                detail_title(&harness),
+                "task-1",
+                "the key jump lands on the stack's last"
+            );
+            press_preset(&mut harness, preset, ActionId::NavFirstItem);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                detail_title(&harness),
+                "task-0",
+                "the key jump lands on the stack's first"
+            );
+
+            // The menu front: open the menu, walk to the ViewNav parent
+            // (the fourth of the root page's parents, the D27a
+            // precedent), and invoke the `nav.last-item` row through
+            // the two-tier seam — the adapter closes and re-dispatches
+            // the same action id.
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            let mut parent_ordinal = 0;
+            for _ in 0..20 {
+                let k = keyboard(&harness);
+                let entries = k.get_menu_entries();
+                #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel
+                let index = k.get_menu_selected_index().max(0) as usize;
+                let row = entries.row_data(index).expect("row");
+                if row.submenu {
+                    parent_ordinal += 1;
+                    if parent_ordinal == 4 {
+                        break;
+                    }
+                }
+                harness.stroke(parse("Down").expect("Down"));
+                harness.driver.advance_time(0);
+            }
+            assert_eq!(parent_ordinal, 4, "the ViewNav parent is the fourth");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.driver.advance_time(0);
+            let submenu = keyboard(&harness).get_menu_submenu_entries();
+            let index = (0..submenu.row_count())
+                .map(|i| submenu.row_data(i).expect("row"))
+                .position(|row| row.action == "nav.last-item")
+                .unwrap_or_else(|| panic!("the nav.last-item row rides the page"));
+            harness
+                .handle
+                .window()
+                .invoke_menu_submenu_entry_invoked(i32::try_from(index).expect("small index"));
+            harness.driver.advance_time(0);
+
+            // The parity law's letter: the menu invocation resolves the
+            // same subject the key route resolved.
+            assert_eq!(
+                detail_title(&harness),
+                "task-1",
+                "the menu jump lands where the key jump landed"
+            );
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::TaskDetail,
+                "the jump stays in the open detail"
+            );
+        },
+    );
+}
+
+/// US-3/S1 (keymap-parity plan W-3) — the due/scheduled shortcuts arm
+/// the editor exactly like the row affordance: the same funnel state
+/// (armed window, seeded buffer — empty for the fixture's dateless
+/// task, the §8 invariant's honest arm) from both fronts, and Escape
+/// settles per the existing ladder.
+#[test]
+fn us3_s1_due_shortcut_arms_the_editor_like_the_row() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Standard;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+
+            // The key front: F5 arms the due editor; the buffer is
+            // seeded with the field's current value (empty — the task
+            // is dateless).
+            press_preset(&mut harness, preset, ActionId::TaskDueEdit);
+            harness.driver.advance_time(0);
+            let model = harness.handle.window().get_task_model();
+            assert!(model.due_open, "F5 arms the due editor");
+            let seeded = model.due_text.to_string();
+            // The default-open picker phase (round-3 D10): Escape steps
+            // back to the armed field first, the second Escape is the
+            // clean close (the r4 D25 ladder).
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().due_open,
+                "Escape settles the editor"
+            );
+
+            // The pointer front: the row affordance's funnel state is
+            // byte-identical (one Adapter method, both fronts).
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            let model = harness.handle.window().get_task_model();
+            assert!(model.due_open, "the row affordance arms the editor");
+            assert_eq!(
+                model.due_text.to_string(),
+                seeded,
+                "the seeded buffer is the funnel's, identical from both fronts"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+
+            // The scheduled twin: F6 arms the start-date editor, the
+            // same funnel over the other field.
+            press_preset(&mut harness, preset, ActionId::TaskScheduledEdit);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_task_model().scheduled_open,
+                "F6 arms the scheduled editor"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_task_model().scheduled_open,
+                "Escape settles the scheduled editor"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-3/S2 (keymap-parity plan W-3) — the description shortcut arms
+/// the editor like the field's affordance: the `EditDescription` flow
+/// state from both fronts, the TEXT settle rule unchanged (Escape
+/// discards).
+#[test]
+fn us3_s2_description_shortcut_arms_the_editor() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Standard;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+
+            // The key front: F7 arms the description editor.
+            press_preset(&mut harness, preset, ActionId::TaskDescriptionEdit);
+            harness.driver.advance_time(0);
+            assert!(description_open(&harness), "F7 arms the description editor");
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                !description_open(&harness),
+                "Escape discards (the TEXT settle rule)"
+            );
+
+            // The pointer front: the field's own affordance arms the
+            // identical flow.
+            harness.driver.click_by_label("Edit description");
+            harness.driver.advance_time(0);
+            assert!(
+                description_open(&harness),
+                "the affordance arms the same editor"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-3/S3 (keymap-parity plan W-3) — the clock shortcuts route the
+/// exact commands the chip routes: F9 dispatches `StartTracking` over
+/// the viewed subject, F10 dispatches the payload-free `StopTracking`;
+/// from the Today context the rows resolve (the tracking pair's
+/// second context) and a focusless dispatch is the typed `NoTarget`
+/// (nothing reaches the boundary).
+#[test]
+fn us3_s3_clock_shortcuts_route_the_exact_commands() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = fixture.task0;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Standard;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+            press_preset(&mut harness, preset, ActionId::TaskTrackStart);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::StartTracking {
+                task: task0,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            }]);
+            press_preset(&mut harness, preset, ActionId::TaskTrackStop);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::StopTracking]);
+
+            // The Today rows resolve (the tracking pair's Today
+            // context) and route the same commands over the carried
+            // focus (the two honest sources: the focus survives the
+            // view jump).
+            press_preset(&mut harness, preset, ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            press_preset(&mut harness, preset, ActionId::TaskTrackStart);
+            harness.driver.advance_time(0);
+            press_preset(&mut harness, preset, ActionId::TaskTrackStop);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[
+                StateCommand::StartTracking {
+                    task: task0,
+                    kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                },
+                StateCommand::StopTracking,
+            ]);
+        },
+    );
+}
+
+/// US-3/S4 (keymap-parity plan W-3) — the rule-add shortcut routes the
+/// preset buttons' exact funnel: the button's click and the emacs
+/// `C-c C-u` both dispatch `AddReminderRule` over the armed one-shot
+/// `when` (click ≡ key at the route); the consumed one-shot is the
+/// typed inert (the second key press dispatches nothing).
+#[test]
+fn us3_s4_rule_add_shortcut_arms_the_funnel() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = fixture.task0;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+
+            // The pointer front arms the one-shot `when` and routes:
+            // the exact command over the subject.
+            harness.handle.window().invoke_rule_add_preset_clicked(0);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::AddReminderRule {
+                task: task0,
+                offset: taskboard_domain::ReminderOffset::before(
+                    TimeDelta::try_minutes(-5).expect("-5m"),
+                )
+                .expect("legal offset"),
+                at: None,
+                insistence: taskboard_domain::Insistence::Normal,
+            }]);
+
+            // The key front routes the same action: with the one-shot
+            // consumed it is the typed inert — the dispatch gate is
+            // surfaced, not silent (the drain stays empty).
+            press_preset(&mut harness, preset, ActionId::ReminderRuleAdd);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+        },
+    );
+}
