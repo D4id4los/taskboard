@@ -1858,14 +1858,6 @@ mod arithmetic_tests {
                 .anchor
                 .checked_add_signed(chrono::TimeDelta::try_days(400).expect("day delta"))
                 .expect("in range");
-            let members = schedule(&boundless, rule.anchor, horizon);
-            // The window-partition premise needs at least one live
-            // member in the horizon: a pause reaching past the last
-            // pre-horizon member empties the list *by design* (paused
-            // members do not exist) and there is no partition to
-            // assert — the enumeration laws own that case
-            // (`pausing_removes_exactly_the_covered_members`).
-            prop_assume!(!members.is_empty());
             let ws = |d: NaiveDate| crate::days::window_start(d, start, offset);
             let ws_anchor = ws(rule.anchor);
             let now = ws_anchor + chrono::TimeDelta::try_seconds(now_offset).expect("delta");
@@ -1873,62 +1865,97 @@ mod arithmetic_tests {
                 .iter()
                 .map(|s| ws_anchor + chrono::TimeDelta::try_seconds(*s * 3600).expect("delta"))
                 .collect();
-            // Consecutive windows are consecutive: strictly increasing
-            // starts, each window ending exactly at the next start.
-            for pair in members.windows(2) {
-                let (a, b) = (ws(pair[0]), ws(pair[1]));
-                prop_assert!(a < b, "window starts strictly increase");
-                let outcome_a = occurrence_outcome(&rule, pair[0], now, start, offset, &completions);
-                if let OccurrenceOutcome::Done { at } = outcome_a {
-                    prop_assert!(at >= a && at < b, "Done stamps sit inside the window");
-                }
-            }
-            // Every generated stamp attributes to exactly one member:
-            // the member whose window contains it, cross-checked through
-            // occurrence_outcome.
-            for t in &completions {
-                // Stamps before the first member attribute to nothing
-                // (§4.4: stamps from before the series existed are not
-                // produced; the partition runs over real members).
-                if *t < ws(members[0]) {
-                    continue;
-                }
-                let mut attributed = 0;
-                for (index, m) in members.iter().enumerate() {
-                    let is_last = index + 1 == members.len();
-                    let end = if is_last {
-                        ws(*m) + chrono::TimeDelta::try_days(400).expect("day delta")
-                    } else {
-                        ws(members[index + 1])
-                    };
-                    if ws(*m) <= *t && *t < end {
-                        attributed += 1;
+            // The partition premise is asserted per (rule, members) pair:
+            // attribution's member domain and the partition's member list
+            // must be the *same* series. #713: partitioning the boundless
+            // enumeration while attributing the bounded rule compares the
+            // function's answer about its own domain against a window of
+            // a different series (an Until-closed final member's window
+            // is deliberately open-ended, so the boundless next member's
+            // window start does not close it). Both passes below are
+            // domain-matched; the assertion set is identical and
+            // unweakened.
+            let check_partition =
+                |rule_under_test: &RecurRule,
+                 members: &[NaiveDate]|
+                 -> Result<(), proptest::test_runner::TestCaseError> {
+                    // The window-partition premise needs at least one live
+                    // member in the horizon: a pause reaching past the last
+                    // pre-horizon member empties the list *by design* (paused
+                    // members do not exist) and there is no partition to
+                    // assert — the enumeration laws own that case
+                    // (`pausing_removes_exactly_the_covered_members`).
+                    prop_assume!(!members.is_empty());
+                    // Consecutive windows are consecutive: strictly increasing
+                    // starts, each window ending exactly at the next start.
+                    for pair in members.windows(2) {
+                        let (a, b) = (ws(pair[0]), ws(pair[1]));
+                        prop_assert!(a < b, "window starts strictly increase");
+                        let outcome_a =
+                            occurrence_outcome(rule_under_test, pair[0], now, start, offset, &completions);
+                        if let OccurrenceOutcome::Done { at } = outcome_a {
+                            prop_assert!(at >= a && at < b, "Done stamps sit inside the window");
+                        }
+                    }
+                    // Every generated stamp attributes to exactly one member:
+                    // the member whose window contains it, cross-checked through
+                    // occurrence_outcome.
+                    for t in &completions {
+                        // Stamps before the first member attribute to nothing
+                        // (§4.4: stamps from before the series existed are not
+                        // produced; the partition runs over real members).
+                        if *t < ws(members[0]) {
+                            continue;
+                        }
+                        let mut attributed = 0;
+                        for (index, m) in members.iter().enumerate() {
+                            let is_last = index + 1 == members.len();
+                            let end = if is_last {
+                                ws(*m) + chrono::TimeDelta::try_days(400).expect("day delta")
+                            } else {
+                                ws(members[index + 1])
+                            };
+                            if ws(*m) <= *t && *t < end {
+                                attributed += 1;
+                                let outcome =
+                                    occurrence_outcome(rule_under_test, *m, now, start, offset, &[*t]);
+                                prop_assert!(
+                                    matches!(outcome, OccurrenceOutcome::Done { .. }),
+                                    "the containing member's outcome is Done for its stamp"
+                                );
+                            } else {
+                                let outcome =
+                                    occurrence_outcome(rule_under_test, *m, now, start, offset, &[*t]);
+                                prop_assert!(
+                                    !matches!(outcome, OccurrenceOutcome::Done { .. }),
+                                    "a stamp outside the window never attributes"
+                                );
+                            }
+                        }
+                        prop_assert_eq!(attributed, 1, "windows partition the timeline");
+                    }
+                    // The final member's window never closes: never Missed (D8).
+                    let last = *members.last().expect("non-empty");
+                    if !completions.is_empty() {
                         let outcome =
-                            occurrence_outcome(&rule, *m, now, start, offset, &[*t]);
+                            occurrence_outcome(rule_under_test, last, now, start, offset, &completions);
                         prop_assert!(
-                            matches!(outcome, OccurrenceOutcome::Done { .. }),
-                            "the containing member's outcome is Done for its stamp"
-                        );
-                    } else {
-                        let outcome =
-                            occurrence_outcome(&rule, *m, now, start, offset, &[*t]);
-                        prop_assert!(
-                            !matches!(outcome, OccurrenceOutcome::Done { .. }),
-                            "a stamp outside the window never attributes"
+                            !matches!(outcome, OccurrenceOutcome::Missed),
+                            "the open final head is never Missed"
                         );
                     }
-                }
-                prop_assert_eq!(attributed, 1, "windows partition the timeline");
-            }
-            // The final member's window never closes: never Missed (D8).
-            let last = *members.last().expect("non-empty");
-            if !completions.is_empty() {
-                let outcome = occurrence_outcome(&rule, last, now, start, offset, &completions);
-                prop_assert!(
-                    !matches!(outcome, OccurrenceOutcome::Missed),
-                    "the open final head is never Missed"
-                );
-            }
+                    Ok(())
+                };
+            // Pass A — the rule as generated: partition over the rule's
+            // own live members (Until-filtered), attributed by the same
+            // rule. Attribution domain and partition domain coincide.
+            let bounded_members = schedule(&rule, rule.anchor, horizon);
+            check_partition(&rule, &bounded_members)?;
+            // Pass B — the boundless projection, attributed by the
+            // boundless rule (domain-matched; the pre-#713 enumeration,
+            // kept whole).
+            let boundless_members = schedule(&boundless, rule.anchor, horizon);
+            check_partition(&boundless, &boundless_members)?;
         }
     }
 
