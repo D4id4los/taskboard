@@ -132,19 +132,21 @@ pub(crate) fn authored_remote_wins(
 }
 
 /// The sidecar fold's duel: the document row wins iff its `(clock, by)`
-/// tuple outranks-or-ties the local row's (the fold's input is a read
-/// result — ties to the document, the pinned direction preserved when
-/// the whole tuple ties). `local_author` is the folding device's own
-/// identity: the local row's honest author for the locally-written data
-/// (and `None` for an identity-less context — the `None < Some` leg
-/// keeps such rows honest, never privileged).
+/// tuple strictly outranks the local row's. The local leg is the local
+/// row's *stored* author slot (`local.by`), never the folding device's
+/// identity — a full-tuple tie means "the same author wrote the same
+/// clock twice", and the local row already holds that exact write, so
+/// keeping local is identity-neutral and matches
+/// [`authored_tombstone_wins`] and the inline legs. The rank law
+/// `Some(_) > None` keeps pre-slot (authorless) rows honest: they lose
+/// every equal-clock duel against an authored row and never win one.
 pub(crate) fn authored_doc_wins(
     doc_clock: DateTime<Utc>,
     doc_by: Option<crate::ids::AuthorId>,
     local_clock: DateTime<Utc>,
-    local_author: Option<crate::ids::AuthorId>,
+    local_by: Option<crate::ids::AuthorId>,
 ) -> bool {
-    (doc_clock, doc_by) >= (local_clock, local_author)
+    (doc_clock, doc_by) > (local_clock, local_by)
 }
 
 /// The tombstone-side duel: strict on the whole tuple (a tie never
@@ -153,9 +155,9 @@ pub(crate) fn authored_tombstone_wins(
     tomb_clock: DateTime<Utc>,
     tomb_by: Option<crate::ids::AuthorId>,
     local_clock: DateTime<Utc>,
-    local_author: Option<crate::ids::AuthorId>,
+    local_by: Option<crate::ids::AuthorId>,
 ) -> bool {
-    (tomb_clock, tomb_by) > (local_clock, local_author)
+    (tomb_clock, tomb_by) > (local_clock, local_by)
 }
 
 /// One bool per baseline-covered field: the incoming remote snapshot
@@ -855,9 +857,10 @@ pub struct RuleFoldChanges {
 /// rules counterpart, chunk 4's D2). Keyed by the rule UUID — the
 /// document *is* the rule's remote identity (D-S9):
 ///
-/// - A live document rule with clock `>=` the local rule's
-///   `updated_at` updates the local rule (and reports an `Upsert`);
-///   an unknown UUID adopts the document's id verbatim.
+/// - A live document rule whose `(clock, by)` tuple strictly outranks
+///   the local rule's `(updated_at, by)` updates the local rule (and
+///   reports an `Upsert`); a full-tuple tie keeps local (D-3's unified
+///   direction); an unknown UUID adopts the document's id verbatim.
 /// - A tombstone removes the local rule iff strictly newer (a rule
 ///   re-created after a delete carries a newer clock and stands).
 /// - [`crate::appdata::RuleEntry::Verbatim`] content never folds.
@@ -876,7 +879,6 @@ pub fn fold_reminder_rules(
     task: TaskId,
     entry: &crate::appdata::RulesEntry,
     protected: bool,
-    local_author: Option<crate::ids::AuthorId>,
 ) -> RuleFoldChanges {
     let mut changes = RuleFoldChanges::default();
     if protected {
@@ -895,15 +897,13 @@ pub fn fold_reminder_rules(
                     continue; // an unparseable key is not a rule identity
                 };
                 let id = crate::ids::ReminderRuleId::from(uuid);
-                // The tuple duel (D-BF2): the row's `(clock, by)`
-                // outranks-or-ties the local row's `(clock, own-author)`.
-                // The sidecar entities carry no author slots (F1's
-                // fence), so the local leg is the folding device's own
-                // identity, passed in.
+                // The tuple duel (D-BF2): the document row's
+                // `(clock, by)` strictly outranks the local row's
+                // `(clock, local.by)` — the stored slot is the rank
+                // (the folding device's identity never enters the
+                // duel), and a full-tuple tie keeps local.
                 match rules.get_mut(&id) {
-                    Some(local)
-                        if authored_doc_wins(*clock, *by, local.updated_at, local_author) =>
-                    {
+                    Some(local) if authored_doc_wins(*clock, *by, local.updated_at, local.by) => {
                         local.kind = *kind;
                         local.created_at = *created;
                         local.insistence = *insistence;
@@ -912,6 +912,7 @@ pub fn fold_reminder_rules(
                         // rule follows the folding card's task — a rule
                         // left on a moved-away task would never fire.
                         local.task = task;
+                        local.by = *by;
                         local.updated_at = std::cmp::max(local.updated_at, *clock);
                         changes.upserts.push(local.clone());
                     }
@@ -924,7 +925,7 @@ pub fn fold_reminder_rules(
                             kind: *kind,
                             created_at: *created,
                             updated_at: *clock,
-                            by: None,
+                            by: *by,
                         };
                         rules.insert(id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -937,7 +938,7 @@ pub fn fold_reminder_rules(
                 };
                 let id = crate::ids::ReminderRuleId::from(uuid);
                 if rules.get(&id).is_some_and(|local| {
-                    authored_tombstone_wins(*clock, *by, local.updated_at, local_author)
+                    authored_tombstone_wins(*clock, *by, local.updated_at, local.by)
                 }) {
                     rules.remove(&id);
                     changes.deletes.push(id);
@@ -1010,9 +1011,10 @@ pub struct BreakRuleFoldChanges {
 /// per-row LWW against the local row's write clock — v1's only writer
 /// stamps creation, so the comparison clock is `created_at` (D-5):
 ///
-/// - A live `Rule` row with `clock >=` the local `created_at`
-///   overwrites label/threshold/insistence and `created_at` (doc wins
-///   pull-side ties — the mirror of the flush's tie-to-overlay); an
+/// - A live `Rule` row whose `(clock, by)` tuple strictly outranks the
+///   local `(created_at, by)` overwrites label/threshold/insistence
+///   and `created_at` (a full-tuple tie keeps local — D-3's unified
+///   direction); an
 ///   unknown UUID adopts the row verbatim with `board` = the folding
 ///   document's locally-bound board (the fold stamps it — **no board
 ///   rides the wire**, D-H11's device). An older row leaves local
@@ -1038,7 +1040,6 @@ pub fn fold_break_rules(
     >,
     rows: &std::collections::BTreeMap<String, crate::appdata::BreakRuleEntry>,
     board: crate::ids::BoardId,
-    local_author: Option<crate::ids::AuthorId>,
 ) -> BreakRuleFoldChanges {
     let mut changes = BreakRuleFoldChanges::default();
     for (key, row) in rows {
@@ -1057,13 +1058,12 @@ pub fn fold_break_rules(
                 let id = crate::ids::BreakRuleId::from(uuid);
                 match break_rules.get_mut(&id) {
                     // Tuple duel (D-BF2), same shape as the rules fold.
-                    Some(local)
-                        if authored_doc_wins(*clock, *by, local.created_at, local_author) =>
-                    {
+                    Some(local) if authored_doc_wins(*clock, *by, local.created_at, local.by) => {
                         local.label.clone_from(label);
                         local.threshold = *threshold;
                         local.insistence = *insistence;
                         local.created_at = *created;
+                        local.by = *by;
                         changes.upserts.push(local.clone());
                     }
                     Some(_) => {} // local stands
@@ -1075,7 +1075,7 @@ pub fn fold_break_rules(
                             threshold: *threshold,
                             insistence: *insistence,
                             created_at: *created,
-                            by: None,
+                            by: *by,
                         };
                         break_rules.insert(id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -1088,7 +1088,7 @@ pub fn fold_break_rules(
                 };
                 let id = crate::ids::BreakRuleId::from(uuid);
                 if break_rules.get(&id).is_some_and(|local| {
-                    authored_tombstone_wins(*clock, *by, local.created_at, local_author)
+                    authored_tombstone_wins(*clock, *by, local.created_at, local.by)
                 }) {
                     break_rules.remove(&id);
                     changes.deletes.push(id);
@@ -1160,11 +1160,11 @@ pub struct TrackingFoldChanges {
 /// [`fold_reminder_dismissals`]). Keyed by the entry UUID; per-key LWW
 /// against the local `updated_at`:
 ///
-/// - A live `Entry` row whose `clock >=` the local row's `updated_at`
-///   overwrites `task`/`task_title`/`start`/`end` with
-///   `updated_at = max(local, clock)` (doc wins pull-side ties — the
-///   [`fold_reminder_rules`] comparison, the mirror of the flush's
-///   tie-to-overlay); an unknown UUID adopts the row verbatim with
+/// - A live `Entry` row whose `(clock, by)` tuple strictly outranks the
+///   local `(updated_at, by)` overwrites `task`/`task_title`/`start`/
+///   `end` with `updated_at = max(local, clock)` (a full-tuple tie
+///   keeps local — D-3's unified direction, the [`fold_reminder_rules`]
+///   comparison); an unknown UUID adopts the row verbatim with
 ///   `updated_at = clock`; an older row leaves local standing.
 /// - A tombstone removes the local row iff strictly newer (a delete
 ///   after an adjust wins; a re-created row carries a newer clock and
@@ -1183,7 +1183,6 @@ pub fn fold_time_entries(
     tracking: &mut crate::tracking::TrackingState,
     rows: &std::collections::BTreeMap<String, crate::appdata::TimeEntryRecord>,
     cards: &std::collections::BTreeMap<String, TaskId>,
-    local_author: Option<crate::ids::AuthorId>,
 ) -> TrackingFoldChanges {
     let mut changes = TrackingFoldChanges::default();
     for (key, row) in rows {
@@ -1209,14 +1208,13 @@ pub fn fold_time_entries(
                     .get_mut(&crate::ids::TimeEntryId::from(uuid))
                 {
                     // Tuple duel (D-BF2), same shape as the rules fold.
-                    Some(local)
-                        if authored_doc_wins(*clock, *by, local.updated_at, local_author) =>
-                    {
+                    Some(local) if authored_doc_wins(*clock, *by, local.updated_at, local.by) => {
                         local.task = task_id;
                         local.task_title.clone_from(title);
                         local.start = *start;
                         local.end = *end;
                         local.kind = *kind;
+                        local.by = *by;
                         local.updated_at = std::cmp::max(local.updated_at, *clock);
                         changes.upserts.push(local.clone());
                     }
@@ -1231,7 +1229,7 @@ pub fn fold_time_entries(
                             created_at: *created,
                             updated_at: *clock,
                             kind: *kind,
-                            by: None,
+                            by: *by,
                         };
                         tracking.entries.insert(adopted.id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -1244,7 +1242,7 @@ pub fn fold_time_entries(
                 };
                 let id = crate::ids::TimeEntryId::from(uuid);
                 if tracking.entries.get(&id).is_some_and(|local| {
-                    authored_tombstone_wins(*clock, *by, local.updated_at, local_author)
+                    authored_tombstone_wins(*clock, *by, local.updated_at, local.by)
                 }) {
                     tracking.entries.remove(&id);
                     changes.deletes.push(id);
@@ -1288,7 +1286,6 @@ pub fn fold_habits(
     habits: &mut crate::habit::HabitState,
     rows: &std::collections::BTreeMap<String, crate::appdata::HabitRecord>,
     board: crate::ids::BoardId,
-    local_author: Option<crate::ids::AuthorId>,
 ) -> HabitFoldChanges {
     let mut changes = HabitFoldChanges::default();
     for (key, row) in rows {
@@ -1315,14 +1312,15 @@ pub fn fold_habits(
                 let row_clock = effective_clock_of(row_clocks);
                 match habits.habits.get_mut(&id) {
                     // Tuple duel on the effective clock (D-BF2); the
-                    // strict direction is preserved at a full-tuple tie
-                    // (equal clocks, equal authors → local stands).
-                    Some(local) if (row_clock, *by) > (effective_clock(local), local_author) => {
+                    // local leg is the stored slot, and the strict
+                    // direction keeps local at a full-tuple tie.
+                    Some(local) if (row_clock, *by) > (effective_clock(local), local.by) => {
                         local.title.clone_from(title);
                         local.target = *target;
                         local.order = *order;
                         local.anchor_time = *anchor_time;
                         local.clocks = *clocks;
+                        local.by = *by;
                         // Wholesale adoption resurrects: the wire emits a
                         // `Live` row only for a live habit, so the row IS
                         // the sender's liveness claim (the union's
@@ -1343,7 +1341,7 @@ pub fn fold_habits(
                             clocks: *clocks,
                             continued_from: *continued_from,
                             deleted: false,
-                            by: None,
+                            by: *by,
                         };
                         habits.habits.insert(id, adopted.clone());
                         changes.upserts.push(adopted);
@@ -1353,10 +1351,11 @@ pub fn fold_habits(
             crate::appdata::HabitRecord::Tombstone { clock, by } => {
                 if let Some(local) = habits.habits.get_mut(&id)
                     && local.is_live()
-                    && (*clock, *by) > (local.clocks.deleted, local_author)
+                    && (*clock, *by) > (local.clocks.deleted, local.by)
                 {
                     local.deleted = true;
                     local.clocks.deleted = *clock;
+                    local.by = *by;
                     changes.upserts.push(local.clone());
                 }
             }
@@ -1405,7 +1404,6 @@ pub struct HabitLogFoldChanges {
 pub fn fold_habit_log(
     habits: &mut crate::habit::HabitState,
     rows: &std::collections::BTreeMap<String, crate::appdata::HabitLogRecord>,
-    local_author: Option<crate::ids::AuthorId>,
 ) -> HabitLogFoldChanges {
     let mut changes = HabitLogFoldChanges::default();
     for (key, row) in rows {
@@ -1415,16 +1413,17 @@ pub fn fold_habit_log(
         let Some(parsed) = crate::habit::HabitLogKey::parse_wire_form(key) else {
             continue;
         };
-        // Tuple duel (D-BF2); the strict direction stands at a full tie.
+        // Tuple duel (D-BF2) on the stored slot; the strict direction
+        // stands at a full tie.
         let adopt = match habits.log.get(&parsed) {
             None => true,
-            Some(local) => (*clock, *by) > (local.clock, local_author),
+            Some(local) => (*clock, *by) > (local.clock, local.by),
         };
         if adopt {
             let entry = crate::habit::HabitLogEntry {
                 count: *count,
                 clock: *clock,
-                by: None,
+                by: *by,
             };
             habits.log.insert(parsed, entry);
             changes.records.push((parsed, entry));
@@ -4235,7 +4234,7 @@ mod tests {
             ),
         ]);
         let task = TaskId::from(uuid::Uuid::from_u128(1));
-        let changes = fold_reminder_rules(&mut rules, task, &entry, false, None);
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
         assert_eq!(changes.upserts.len(), 2);
         assert_eq!(changes.deletes, Vec::new());
         // Update: the offset and the clock landed.
@@ -4273,7 +4272,7 @@ mod tests {
             },
         )]);
         let task = TaskId::from(uuid::Uuid::from_u128(1));
-        let changes = fold_reminder_rules(&mut rules, task, &entry, false, None);
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             rules[&adopted_id].kind,
@@ -4295,7 +4294,7 @@ mod tests {
                 by: None,
             },
         )]);
-        let changes = fold_reminder_rules(&mut rules, new_task, &repoint, false, None);
+        let changes = fold_reminder_rules(&mut rules, new_task, &repoint, false);
         assert_eq!(changes.upserts.len(), 1, "the newer clock updates");
         assert_eq!(
             rules[&adopted_id].task, new_task,
@@ -4328,7 +4327,7 @@ mod tests {
             },
         )]);
         let task = TaskId::from(uuid::Uuid::from_u128(1));
-        let changes = fold_reminder_rules(&mut rules, task, &entry, false, None);
+        let changes = fold_reminder_rules(&mut rules, task, &entry, false);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(rules[&adopted_id].insistence, Insistence::Alarm);
         // Clock-gated update: a newer document entry overwrites the
@@ -4350,7 +4349,7 @@ mod tests {
                 by: None,
             },
         )]);
-        let changes = fold_reminder_rules(&mut rules, task, &newer, false, None);
+        let changes = fold_reminder_rules(&mut rules, task, &newer, false);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(rules[&local_id].insistence, Insistence::Alarm);
         // Clock-older: the local level stands.
@@ -4371,7 +4370,7 @@ mod tests {
                 by: None,
             },
         )]);
-        let changes = fold_reminder_rules(&mut rules, task, &older, false, None);
+        let changes = fold_reminder_rules(&mut rules, task, &older, false);
         assert_eq!(changes.upserts, Vec::new());
         assert_eq!(rules[&local_id].insistence, Insistence::Alarm);
     }
@@ -4398,7 +4397,6 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &entry,
             false,
-            None,
         );
         assert_eq!(changes.upserts, Vec::new());
         assert_eq!(rules[&existing.id].updated_at, ts(BASE + 600));
@@ -4432,7 +4430,7 @@ mod tests {
                 by: None,
             },
         )]);
-        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false, None);
+        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false);
         assert_eq!(changes.upserts.len(), 1);
         let repointed = &rules[&local.id];
         assert_eq!(
@@ -4456,7 +4454,7 @@ mod tests {
         stands.task = old_task;
         let mut rules = std::collections::BTreeMap::new();
         rules.insert(stands.id, stands.clone());
-        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false, None);
+        let changes = fold_reminder_rules(&mut rules, new_task, &entry, false);
         assert_eq!(changes.upserts, Vec::new());
         assert_eq!(rules[&stands.id].task, old_task);
     }
@@ -4479,7 +4477,6 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &entry,
             false,
-            None,
         );
         assert_eq!(changes.deletes, Vec::new());
         assert!(rules.contains_key(&existing.id));
@@ -4496,7 +4493,6 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &newer,
             false,
-            None,
         );
         assert_eq!(changes.deletes, vec![existing.id]);
         assert!(!rules.contains_key(&existing.id));
@@ -4513,7 +4509,6 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &stranger,
             false,
-            None,
         );
         assert_eq!(changes.deletes, Vec::new());
         assert_eq!(rules.len(), 0);
@@ -4552,7 +4547,6 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &entry,
             false,
-            None,
         );
         assert_eq!(changes, crate::merge::RuleFoldChanges::default());
     }
@@ -4603,7 +4597,6 @@ mod tests {
             TaskId::from(uuid::Uuid::from_u128(1)),
             &entry,
             true,
-            None,
         );
         assert_eq!(changes, crate::merge::RuleFoldChanges::default());
         assert_eq!(skipped, rules, "skip == nothing happened");
@@ -4921,7 +4914,7 @@ mod tests {
                 break_rule_entry("old", ts(BASE + 1), ts(BASE - 1)),
             ),
         ]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
         assert_eq!(changes.upserts.len(), 2, "the older row folds nothing");
         assert_eq!(changes.deletes, Vec::new());
         let updated = &break_rules[&local.id];
@@ -4938,7 +4931,8 @@ mod tests {
             ts(BASE + 5),
             "the row's created stamps the adopt"
         );
-        // Pull-side tie: doc wins.
+        // Pull-side full-tuple tie: local keeps (D-3's unified strict
+        // duel — both legs authorless at the same clock keeps local).
         let tie_row = BTreeMap::from([(
             crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(4))
                 .as_uuid()
@@ -4949,11 +4943,11 @@ mod tests {
             crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(4)),
             break_rule_row(4, 700),
         )]);
-        let changes = fold_break_rules(&mut locals, &tie_row, board, None);
-        assert_eq!(changes.upserts.len(), 1);
+        let changes = fold_break_rules(&mut locals, &tie_row, board);
+        assert_eq!(changes.upserts.len(), 0);
         assert_eq!(
             locals[&crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(4))].label,
-            "tie"
+            "time for a break"
         );
     }
 
@@ -4970,7 +4964,7 @@ mod tests {
                 by: None,
             },
         )]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
         assert_eq!(changes.deletes, Vec::new());
         assert!(break_rules.contains_key(&local.id));
         // Strictly newer removes.
@@ -4981,7 +4975,7 @@ mod tests {
                 by: None,
             },
         )]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
         assert_eq!(changes.deletes, vec![local.id]);
         // A tombstone for an unknown id leaves no trace.
         let rows = BTreeMap::from([(
@@ -4993,7 +4987,7 @@ mod tests {
                 by: None,
             },
         )]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
         assert_eq!(changes.deletes, Vec::new());
     }
 
@@ -5011,7 +5005,7 @@ mod tests {
                 break_rule_entry("ghost", ts(BASE), ts(BASE)),
             ),
         ]);
-        let changes = fold_break_rules(&mut break_rules, &rows, board, None);
+        let changes = fold_break_rules(&mut break_rules, &rows, board);
         assert_eq!(changes.upserts, Vec::new());
         assert!(break_rules.is_empty());
     }
@@ -6108,7 +6102,7 @@ mod duplicate_reconcile_tests {
                 crate::tracking::TimeEntryKind::Respite,
             ),
         )]);
-        let changes = fold_time_entries(&mut tracking, &rows, &cards, None);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             changes.upserts[0].kind,
@@ -6126,7 +6120,7 @@ mod duplicate_reconcile_tests {
         );
         let rows =
             std::collections::BTreeMap::from([(uuid::Uuid::from_u128(21).to_string(), newer)]);
-        let changes = fold_time_entries(&mut tracking, &rows, &cards, None);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             changes.upserts[0].kind,
@@ -6153,7 +6147,7 @@ mod duplicate_reconcile_tests {
                 crate::tracking::TimeEntryKind::Respite,
             ),
         )]);
-        let _ = fold_time_entries(&mut tracking, &rows, &cards, None);
+        let _ = fold_time_entries(&mut tracking, &rows, &cards);
         let local_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(31));
         tracking.entries.get_mut(&local_id).unwrap().updated_at =
             crate::merge_testutil::ts(crate::merge_testutil::BASE + 900);
@@ -6166,7 +6160,7 @@ mod duplicate_reconcile_tests {
         );
         let rows =
             std::collections::BTreeMap::from([(uuid::Uuid::from_u128(31).to_string(), older)]);
-        let changes = fold_time_entries(&mut tracking, &rows, &cards, None);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards);
         assert!(changes.upserts.is_empty(), "local stands");
         assert_eq!(
             tracking.entries[&local_id].kind,
@@ -6204,7 +6198,8 @@ mod duplicate_reconcile_tests {
                 uuid::Uuid::from_u128(2).to_string(),
                 entry_row("1", BASE + 500),
             ),
-            // Tie on the clock: the document wins (pull side).
+            // Tie on the clock: the full tuple ties (both authorless),
+            // so the unified strict duel keeps local (D-3).
             (local_id.as_uuid().to_string(), entry_row("1", BASE + 300)),
         ]);
         let rows = std::collections::BTreeMap::from([
@@ -6255,15 +6250,17 @@ mod duplicate_reconcile_tests {
                 entry_row("999", BASE + 900),
             ),
         ]);
-        let adopted = fold_time_entries(&mut tracking, &adopt_rows, &cards, None);
+        let adopted = fold_time_entries(&mut tracking, &adopt_rows, &cards);
         assert_eq!(tracking.entries.len(), 2, "the unknown UUID adopted");
-        assert_eq!(adopted.upserts.len(), 2);
-        let changes = fold_time_entries(&mut tracking, &rows, &cards, None);
+        // One upsert: the unknown UUID only — the full-tuple tie keeps
+        // local and reports nothing (D-3's unified strict duel).
+        assert_eq!(adopted.upserts.len(), 1);
+        let changes = fold_time_entries(&mut tracking, &rows, &cards);
         assert_eq!(tracking.entries.len(), 1);
         let local = &tracking.entries[&local_id];
         assert_eq!(
-            local.task_title, "wire title",
-            "the tie went to the document"
+            local.task_title, "local title",
+            "the full-tuple tie keeps local (D-3's unified strict duel)"
         );
         assert_eq!(local.updated_at, crate::merge_testutil::ts(BASE + 300));
         // Deletes: only the adopted row, only by its strictly newer stone.
@@ -6272,8 +6269,8 @@ mod duplicate_reconcile_tests {
             vec![crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(2))]
         );
         assert!(
-            adopted.upserts.iter().any(|upsert| upsert.id == local_id),
-            "the tie updated the local row"
+            !adopted.upserts.iter().any(|upsert| upsert.id == local_id),
+            "the full-tuple tie reports nothing (local keeps, D-3)"
         );
         assert!(
             changes.upserts.iter().all(|upsert| upsert.id == local_id),
@@ -6827,7 +6824,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert!(changes.upserts.is_empty(), "local stands");
         assert_eq!(state.habits[&local.id].title, local.title);
         // Strictly newer: the row wins wholesale (order included).
@@ -6837,7 +6834,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert_eq!(changes.upserts.len(), 1);
         let adopted = &state.habits[&local.id];
         assert_eq!(adopted.title, "renamed remotely");
@@ -6856,7 +6853,7 @@ mod habit_fold_tests {
         .into_iter()
         .collect();
         let board = BoardId::from(uuid::Uuid::from_u128(800));
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert_eq!(changes.upserts.len(), 1);
         assert_eq!(
             state.habits[&remote_habit.id].board, board,
@@ -6883,7 +6880,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert_eq!(changes.upserts.len(), 1);
         assert!(state.habits[&local.id].deleted);
         assert_eq!(state.habits[&local.id].clocks.deleted, ts(300));
@@ -6903,7 +6900,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert!(changes.upserts.is_empty(), "local stands");
         assert!(!state.habits[&local.id].deleted);
         // An already-deleted local never re-stamps.
@@ -6920,12 +6917,12 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert!(changes.upserts.is_empty(), "local stands");
         assert_eq!(state.habits[&local.id].clocks.deleted, ts(100));
         // An unknown habit's tombstone materializes no shell.
         let mut state = HabitState::default();
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert!(changes.upserts.is_empty(), "local stands");
         assert!(state.habits.is_empty());
     }
@@ -6946,7 +6943,7 @@ mod habit_fold_tests {
         let rows = [(id.as_uuid().to_string(), live_row(300, "back"))]
             .into_iter()
             .collect();
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert_eq!(changes.upserts.len(), 1);
         let adopted = &state.habits[&id];
         assert!(!adopted.deleted, "wholesale adoption resurrects");
@@ -6966,7 +6963,7 @@ mod habit_fold_tests {
         let rows = [(id.as_uuid().to_string(), live_row(300, "older"))]
             .into_iter()
             .collect();
-        let changes = fold_habits(&mut state, &rows, board, None);
+        let changes = fold_habits(&mut state, &rows, board);
         assert!(changes.upserts.is_empty(), "local stands");
         assert!(state.habits[&id].deleted);
     }
@@ -6985,7 +6982,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows, None);
+        let changes = fold_habit_log(&mut state, &rows);
         assert_eq!(changes.records.len(), 1);
         assert_eq!(state.log[&k].count, 4);
         // Orphan facts import — the log outlives the tracker (D-H6).
@@ -7000,7 +6997,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows, None);
+        let changes = fold_habit_log(&mut state, &rows);
         assert_eq!(changes.records.len(), 1);
         assert_eq!(state.log[&orphan].count, 1);
         // A lower count with a newer clock is an audited correction: it roams.
@@ -7014,7 +7011,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows, None);
+        let changes = fold_habit_log(&mut state, &rows);
         assert_eq!(changes.records.len(), 1);
         assert_eq!(state.log[&k].count, 0);
         // Equal/older: local stands.
@@ -7028,7 +7025,7 @@ mod habit_fold_tests {
         )]
         .into_iter()
         .collect();
-        let changes = fold_habit_log(&mut state, &rows, None);
+        let changes = fold_habit_log(&mut state, &rows);
         assert!(changes.records.is_empty(), "local stands");
         assert_eq!(state.log[&k].count, 0);
     }
@@ -7082,13 +7079,8 @@ mod habit_fold_tests {
                 .into_iter()
                 .collect(),
             };
-            fold_habits(
-                &mut state,
-                &rows.into_iter().cloned().collect(),
-                board,
-                None,
-            );
-            fold_habit_log(&mut state, &logs.into_iter().cloned().collect(), None);
+            fold_habits(&mut state, &rows.into_iter().cloned().collect(), board);
+            fold_habit_log(&mut state, &logs.into_iter().cloned().collect());
             state
         };
         let one = fold(vec![&row_a, &row_b], vec![&log_a, &log_b]);
@@ -7149,7 +7141,10 @@ mod author_duel_tests {
     #[test]
     fn none_vs_none_ties_keep_the_pinned_directions() {
         let t = ts(BASE);
-        assert!(authored_doc_wins(t, None, t, None));
+        // D-3's unified strict direction: a full-tuple tie keeps local
+        // in BOTH lanes (the pre-slot doc-wins-tie cell flipped with
+        // the stored-slot duel).
+        assert!(!authored_doc_wins(t, None, t, None));
         assert!(!authored_tombstone_wins(t, None, t, None));
     }
 
@@ -7237,19 +7232,21 @@ mod author_duel_tests {
             let (a, b, t) = writers();
             let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
             let rule_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0x601));
-            let rule = |insistence: crate::reminders::Insistence| crate::reminders::ReminderRule {
-                id: rule_id,
-                task,
-                kind: crate::reminders::ReminderKind::DueOffset(
-                    crate::reminders::ReminderOffset::before(
-                        chrono::TimeDelta::try_seconds(-300).unwrap(),
-                    )
-                    .unwrap(),
-                ),
-                insistence,
-                created_at: t,
-                updated_at: t,
-                by: None,
+            let rule = |insistence: crate::reminders::Insistence, by: Option<AuthorId>| {
+                crate::reminders::ReminderRule {
+                    id: rule_id,
+                    task,
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::before(
+                            chrono::TimeDelta::try_seconds(-300).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                    insistence,
+                    created_at: t,
+                    updated_at: t,
+                    by,
+                }
             };
             let doc_row = |insistence: crate::reminders::Insistence,
                            by: Option<AuthorId>|
@@ -7271,7 +7268,8 @@ mod author_duel_tests {
                         own_author: AuthorId,
                         foreign: crate::reminders::Insistence,
                         foreign_author: AuthorId| {
-                let mut rules = std::collections::BTreeMap::from([(rule_id, rule(own))]);
+                let mut rules =
+                    std::collections::BTreeMap::from([(rule_id, rule(own, Some(own_author)))]);
                 let entry = crate::appdata::RulesEntry {
                     rules: [(
                         rule_id.as_uuid().to_string(),
@@ -7281,8 +7279,8 @@ mod author_duel_tests {
                     .collect(),
                     unknown: std::collections::BTreeMap::new(),
                 };
-                fold_reminder_rules(&mut rules, task, &entry, false, Some(own_author));
-                rules[&rule_id].insistence
+                fold_reminder_rules(&mut rules, task, &entry, false);
+                (rules[&rule_id].insistence, rules[&rule_id].by)
             };
             assert_eq!(
                 fold(
@@ -7291,8 +7289,8 @@ mod author_duel_tests {
                     crate::reminders::Insistence::Alarm,
                     b
                 ),
-                crate::reminders::Insistence::Alarm,
-                "A folds B's equal-clock row: the higher author's content wins"
+                (crate::reminders::Insistence::Alarm, Some(b)),
+                "A folds B's equal-clock row: the higher author's content and slot win"
             );
             assert_eq!(
                 fold(
@@ -7301,7 +7299,7 @@ mod author_duel_tests {
                     crate::reminders::Insistence::Normal,
                     a
                 ),
-                crate::reminders::Insistence::Alarm,
+                (crate::reminders::Insistence::Alarm, Some(b)),
                 "B folds A's equal-clock row: its own higher-author row stands"
             );
         }
@@ -7313,7 +7311,7 @@ mod author_duel_tests {
             let (a, b, t) = writers();
             let break_id = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0x602));
             let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
-            let rule = |label: &str| crate::reminders::BreakRule {
+            let rule = |label: &str, by: Option<AuthorId>| crate::reminders::BreakRule {
                 id: break_id,
                 board,
                 label: label.to_owned(),
@@ -7323,7 +7321,7 @@ mod author_duel_tests {
                 .unwrap(),
                 insistence: crate::reminders::Insistence::Normal,
                 created_at: t,
-                by: None,
+                by,
             };
             let doc_row = |label: &str, by: Option<AuthorId>| BreakRuleEntry::Rule {
                 label: label.to_owned(),
@@ -7338,18 +7336,27 @@ mod author_duel_tests {
             };
             let fold =
                 |own: &str, own_author: AuthorId, foreign: &str, foreign_author: AuthorId| {
-                    let mut rules = std::collections::BTreeMap::from([(break_id, rule(own))]);
+                    let mut rules =
+                        std::collections::BTreeMap::from([(break_id, rule(own, Some(own_author)))]);
                     let rows = [(
                         break_id.as_uuid().to_string(),
                         doc_row(foreign, Some(foreign_author)),
                     )]
                     .into_iter()
                     .collect();
-                    fold_break_rules(&mut rules, &rows, board, Some(own_author));
-                    rules[&break_id].label.clone()
+                    fold_break_rules(&mut rules, &rows, board);
+                    (rules[&break_id].label.clone(), rules[&break_id].by)
                 };
-            assert_eq!(fold("a-break", a, "b-break", b), "b-break");
-            assert_eq!(fold("b-break", b, "a-break", a), "b-break");
+            assert_eq!(
+                fold("a-break", a, "b-break", b),
+                ("b-break".to_owned(), Some(b)),
+                "the higher author's content and slot win"
+            );
+            assert_eq!(
+                fold("b-break", b, "a-break", a),
+                ("b-break".to_owned(), Some(b)),
+                "B's own higher-author row stands"
+            );
         }
 
         /// Time entries: content leg = task title.
@@ -7358,7 +7365,7 @@ mod author_duel_tests {
             let (a, b, t) = writers();
             let entry_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(0x604));
             let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
-            let entry = |title: &str| crate::tracking::TimeEntry {
+            let entry = |title: &str, by: Option<AuthorId>| crate::tracking::TimeEntry {
                 id: entry_id,
                 task,
                 task_title: title.to_owned(),
@@ -7367,7 +7374,7 @@ mod author_duel_tests {
                 created_at: t,
                 updated_at: t,
                 kind: crate::tracking::TimeEntryKind::Work,
-                by: None,
+                by,
             };
             let doc_row = |title: &str, by: Option<AuthorId>| -> crate::appdata::TimeEntryRecord {
                 crate::appdata::TimeEntryRecord::Entry {
@@ -7384,7 +7391,9 @@ mod author_duel_tests {
             let fold =
                 |own: &str, own_author: AuthorId, foreign: &str, foreign_author: AuthorId| {
                     let mut tracking = crate::tracking::TrackingState {
-                        entries: [(entry_id, entry(own))].into_iter().collect(),
+                        entries: [(entry_id, entry(own, Some(own_author)))]
+                            .into_iter()
+                            .collect(),
                     };
                     let rows = [(
                         entry_id.as_uuid().to_string(),
@@ -7393,11 +7402,22 @@ mod author_duel_tests {
                     .into_iter()
                     .collect();
                     let cards = [("1281".to_owned(), task)].into_iter().collect();
-                    fold_time_entries(&mut tracking, &rows, &cards, Some(own_author));
-                    tracking.entries[&entry_id].task_title.clone()
+                    fold_time_entries(&mut tracking, &rows, &cards);
+                    (
+                        tracking.entries[&entry_id].task_title.clone(),
+                        tracking.entries[&entry_id].by,
+                    )
                 };
-            assert_eq!(fold("a-title", a, "b-title", b), "b-title");
-            assert_eq!(fold("b-title", b, "a-title", a), "b-title");
+            assert_eq!(
+                fold("a-title", a, "b-title", b),
+                ("b-title".to_owned(), Some(b)),
+                "the higher author's content and slot win"
+            );
+            assert_eq!(
+                fold("b-title", b, "a-title", a),
+                ("b-title".to_owned(), Some(b)),
+                "B's own higher-author row stands"
+            );
         }
 
         /// Habits: content leg = title (the duel runs on the effective clock).
@@ -7408,7 +7428,7 @@ mod author_duel_tests {
             let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
             let target =
                 crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap());
-            let habit = |title: &str| crate::habit::Habit {
+            let habit = |title: &str, by: Option<AuthorId>| crate::habit::Habit {
                 id: habit_id,
                 board,
                 title: title.to_owned(),
@@ -7418,7 +7438,7 @@ mod author_duel_tests {
                 clocks: crate::habit::HabitClocks::all(t),
                 continued_from: None,
                 deleted: false,
-                by: None,
+                by,
             };
             let doc_row = |title: &str, by: Option<AuthorId>| crate::appdata::HabitRecord::Live {
                 title: title.to_owned(),
@@ -7432,7 +7452,9 @@ mod author_duel_tests {
             let fold =
                 |own: &str, own_author: AuthorId, foreign: &str, foreign_author: AuthorId| {
                     let mut state = crate::habit::HabitState {
-                        habits: [(habit_id, habit(own))].into_iter().collect(),
+                        habits: [(habit_id, habit(own, Some(own_author)))]
+                            .into_iter()
+                            .collect(),
                         log: std::collections::BTreeMap::new(),
                     };
                     let rows = [(
@@ -7441,11 +7463,22 @@ mod author_duel_tests {
                     )]
                     .into_iter()
                     .collect();
-                    fold_habits(&mut state, &rows, board, Some(own_author));
-                    state.habits[&habit_id].title.clone()
+                    fold_habits(&mut state, &rows, board);
+                    (
+                        state.habits[&habit_id].title.clone(),
+                        state.habits[&habit_id].by,
+                    )
                 };
-            assert_eq!(fold("a-habit", a, "b-habit", b), "b-habit");
-            assert_eq!(fold("b-habit", b, "a-habit", a), "b-habit");
+            assert_eq!(
+                fold("a-habit", a, "b-habit", b),
+                ("b-habit".to_owned(), Some(b)),
+                "the higher author's content and slot win"
+            );
+            assert_eq!(
+                fold("b-habit", b, "a-habit", a),
+                ("b-habit".to_owned(), Some(b)),
+                "B's own higher-author row stands"
+            );
         }
 
         /// Habit log: content leg = count.
@@ -7464,7 +7497,7 @@ mod author_duel_tests {
                         crate::habit::HabitLogEntry {
                             count: own,
                             clock: t,
-                            by: None,
+                            by: Some(own_author),
                         },
                     )]
                     .into_iter()
@@ -7480,11 +7513,11 @@ mod author_duel_tests {
                 )]
                 .into_iter()
                 .collect();
-                fold_habit_log(&mut state, &rows, Some(own_author));
-                state.log[&log_key].count
+                fold_habit_log(&mut state, &rows);
+                (state.log[&log_key].count, state.log[&log_key].by)
             };
-            assert_eq!(fold(1, a, 2, b), 2);
-            assert_eq!(fold(2, b, 1, a), 2);
+            assert_eq!(fold(1, a, 2, b), (2, Some(b)));
+            assert_eq!(fold(2, b, 1, a), (2, Some(b)));
         }
 
         // T-TIE-1 (the unified direction, design §4.2): a full-tuple
@@ -7541,7 +7574,7 @@ mod author_duel_tests {
                 .collect(),
                 unknown: std::collections::BTreeMap::new(),
             };
-            fold_reminder_rules(&mut rules, task, &entry, false, Some(a));
+            fold_reminder_rules(&mut rules, task, &entry, false);
             assert_eq!(
                 rules[&rule_id].insistence,
                 crate::reminders::Insistence::Normal,
@@ -7585,7 +7618,7 @@ mod author_duel_tests {
             )]
             .into_iter()
             .collect();
-            fold_break_rules(&mut rules, &rows, board, Some(a));
+            fold_break_rules(&mut rules, &rows, board);
             assert_eq!(
                 rules[&break_id].label, "a-break",
                 "full-tuple tie keeps local"
@@ -7628,7 +7661,7 @@ mod author_duel_tests {
             .into_iter()
             .collect();
             let cards = [("1281".to_owned(), task)].into_iter().collect();
-            fold_time_entries(&mut tracking, &rows, &cards, Some(a));
+            fold_time_entries(&mut tracking, &rows, &cards);
             assert_eq!(
                 tracking.entries[&entry_id].task_title, "a-title",
                 "full-tuple tie keeps local"
@@ -7674,7 +7707,7 @@ mod author_duel_tests {
             )]
             .into_iter()
             .collect();
-            fold_habits(&mut state, &rows, board, Some(a));
+            fold_habits(&mut state, &rows, board);
             assert_eq!(
                 state.habits[&habit_id].title, "a-habit",
                 "full-tuple tie keeps local"
@@ -7713,7 +7746,7 @@ mod author_duel_tests {
             )]
             .into_iter()
             .collect();
-            fold_habit_log(&mut state, &rows, Some(a));
+            fold_habit_log(&mut state, &rows);
             assert_eq!(state.log[&log_key].count, 1, "full-tuple tie keeps local");
         }
 
@@ -7730,7 +7763,7 @@ mod author_duel_tests {
         /// T-ADOPT-1, reminder rules.
         #[test]
         fn reminder_rules_adoption_stamps_the_document_author() {
-            let (b, d, c, t1, t2) = band();
+            let (b, d, _c, t1, t2) = band();
             let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
             let rule_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0x801));
             let local = crate::reminders::ReminderRule {
@@ -7766,8 +7799,8 @@ mod author_duel_tests {
                 unknown: std::collections::BTreeMap::new(),
             };
             let mut rules = std::collections::BTreeMap::from([(rule_id, local)]);
-            fold_reminder_rules(&mut rules, task, &entry, false, Some(c));
-            fold_reminder_rules(&mut rules, task, &entry, false, Some(c));
+            fold_reminder_rules(&mut rules, task, &entry, false);
+            fold_reminder_rules(&mut rules, task, &entry, false);
             let survivor = &rules[&rule_id];
             assert_eq!(
                 (survivor.insistence, survivor.by),
@@ -7780,7 +7813,7 @@ mod author_duel_tests {
         #[test]
         fn break_rules_adoption_stamps_the_document_author() {
             use crate::appdata::BreakRuleEntry;
-            let (b, d, c, t1, t2) = band();
+            let (b, d, _c, t1, t2) = band();
             let break_id = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0x802));
             let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
             let local = crate::reminders::BreakRule {
@@ -7812,8 +7845,8 @@ mod author_duel_tests {
             .into_iter()
             .collect();
             let mut rules = std::collections::BTreeMap::from([(break_id, local)]);
-            fold_break_rules(&mut rules, &rows, board, Some(c));
-            fold_break_rules(&mut rules, &rows, board, Some(c));
+            fold_break_rules(&mut rules, &rows, board);
+            fold_break_rules(&mut rules, &rows, board);
             let survivor = &rules[&break_id];
             assert_eq!(
                 (survivor.label.as_str(), survivor.by),
@@ -7825,7 +7858,7 @@ mod author_duel_tests {
         /// T-ADOPT-1, time entries.
         #[test]
         fn time_entries_adoption_stamps_the_document_author() {
-            let (b, d, c, t1, t2) = band();
+            let (b, d, _c, t1, t2) = band();
             let entry_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(0x804));
             let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
             let local = crate::tracking::TimeEntry {
@@ -7858,8 +7891,8 @@ mod author_duel_tests {
             let mut tracking = crate::tracking::TrackingState {
                 entries: [(entry_id, local)].into_iter().collect(),
             };
-            fold_time_entries(&mut tracking, &rows, &cards, Some(c));
-            fold_time_entries(&mut tracking, &rows, &cards, Some(c));
+            fold_time_entries(&mut tracking, &rows, &cards);
+            fold_time_entries(&mut tracking, &rows, &cards);
             let survivor = &tracking.entries[&entry_id];
             assert_eq!(
                 (survivor.task_title.as_str(), survivor.by),
@@ -7871,7 +7904,7 @@ mod author_duel_tests {
         /// T-ADOPT-1, habits.
         #[test]
         fn habits_adoption_stamps_the_document_author() {
-            let (b, d, c, t1, t2) = band();
+            let (b, d, _c, t1, t2) = band();
             let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x805));
             let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
             let target =
@@ -7906,8 +7939,8 @@ mod author_duel_tests {
                 habits: [(habit_id, local)].into_iter().collect(),
                 log: std::collections::BTreeMap::new(),
             };
-            fold_habits(&mut state, &rows, board, Some(c));
-            fold_habits(&mut state, &rows, board, Some(c));
+            fold_habits(&mut state, &rows, board);
+            fold_habits(&mut state, &rows, board);
             let survivor = &state.habits[&habit_id];
             assert_eq!(
                 (survivor.title.as_str(), survivor.order, survivor.by),
@@ -7919,7 +7952,7 @@ mod author_duel_tests {
         /// T-ADOPT-1, habit log.
         #[test]
         fn habit_log_adoption_stamps_the_document_author() {
-            let (b, d, c, t1, t2) = band();
+            let (b, d, _c, t1, t2) = band();
             let log_key = crate::habit::HabitLogKey::parse_wire_form(
                 "00000000-0000-0000-0000-000000000806|2026-01-01",
             )
@@ -7947,8 +7980,8 @@ mod author_duel_tests {
                 .into_iter()
                 .collect(),
             };
-            fold_habit_log(&mut state, &rows, Some(c));
-            fold_habit_log(&mut state, &rows, Some(c));
+            fold_habit_log(&mut state, &rows);
+            fold_habit_log(&mut state, &rows);
             let survivor = &state.log[&log_key];
             assert_eq!(
                 (survivor.count, survivor.by),

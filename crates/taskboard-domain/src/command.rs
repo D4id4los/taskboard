@@ -713,7 +713,7 @@ fn completion_spawn(
             kind: old.kind,
             created_at: now,
             updated_at: now,
-            by: None,
+            by: author,
         }));
     }
     // The single document-group trigger covering the successor's `recur`
@@ -2224,7 +2224,7 @@ pub fn plan_command(
                 kind,
                 created_at: now,
                 updated_at: now,
-                by: None,
+                by: author,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2347,7 +2347,7 @@ pub fn plan_command(
                 threshold: *threshold,
                 insistence: *insistence,
                 created_at: now,
-                by: None,
+                by: author,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2410,7 +2410,7 @@ pub fn plan_command(
                 created_at: now,
                 updated_at: now,
                 kind: *kind,
-                by: None,
+                by: author,
             };
             let mut actions: Vec<PersistenceAction> = closed_rows
                 .iter()
@@ -2501,7 +2501,7 @@ pub fn plan_command(
                 created_at: now,
                 updated_at: now,
                 kind: *kind,
-                by: None,
+                by: author,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2598,7 +2598,7 @@ pub fn plan_command(
                 clocks: HabitClocks::all(now),
                 continued_from: None,
                 deleted: false,
-                by: None,
+                by: author,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2680,7 +2680,7 @@ pub fn plan_command(
                         HabitLogEntry {
                             count,
                             clock: now,
-                            by: None,
+                            by: author,
                         },
                     ),
                     board_flush(habit.board, ids, now),
@@ -2724,7 +2724,7 @@ pub fn plan_command(
                         HabitLogEntry {
                             count: *count,
                             clock: now,
-                            by: None,
+                            by: author,
                         },
                     ),
                     board_flush(habit.board, ids, now),
@@ -2980,7 +2980,7 @@ pub fn plan_command(
                 clocks: HabitClocks::all(now),
                 continued_from: Some(rule.series),
                 deleted: false,
-                by: None,
+                by: author,
             };
             Ok(CommandPlan {
                 actions: vec![
