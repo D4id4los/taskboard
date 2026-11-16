@@ -307,10 +307,11 @@ with the dispatcher.
 
 ## 7. Backlog
 
-- **base keysym seam** (D-3's limitation): "backlog: adapter key seam
-  exposes only the composed glyph — layout-independent chord matching
-  needs the physical/base keysym" — to be filed before hand-off
-  (AGENTS §7 standing authorization), linked from the D-3 comment.
+- **base keysym seam** (D-3's limitation): already filed as issue
+  #855 ("backlog: adapter key seam exposes only the composed glyph —
+  layout-independent chord matching needs the physical/base keysym");
+  commented with the landed D-3 pair-map and the remaining third-glyph
+  gap (2026-11-17); linked from the D-3 comment in \`stroke.rs`.
 - (none found otherwise; the round-8 deferrals C-6 stand untouched.)
 
 ## 8. Definition of done (stage-2 hand-off)

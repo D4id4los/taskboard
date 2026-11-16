@@ -121,6 +121,10 @@ pub struct Stroke {
 /// delivers the pair's *other* member (`Alt+Shift+,`). The table is
 /// deliberately small — exactly the pairs a preset actually binds —
 /// and static: per-layout tables are unbounded and forbidden (R-2).
+/// The seam's deeper limitation (the adapter delivers only the
+/// composed glyph; a layout that composes a third glyph, or any pair
+/// outside this table, stays unreachable) is filed as issue #855 —
+/// the physical/base keysym seam supersedes this map.
 const PUNCT_SHIFT_PAIRS: &[(char, char)] = &[(',', '<'), ('.', '>'), ('/', '?'), (';', ':')];
 
 impl Stroke {
