@@ -447,6 +447,38 @@ expression: rows
         - sequence:
             - Down
           action: menu.next
+    - context: notification-surface
+      bindings:
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - c
+          action: notification.cancel
+        - sequence:
+            - d
+          action: notification.dismiss
+        - sequence:
+            - e
+          action: notification.done
+        - sequence:
+            - m
+          action: notification.mute
+        - sequence:
+            - o
+          action: notification.open
+        - sequence:
+            - s
+          action: notification.snooze
+        - sequence:
+            - t
+          action: notification.track-start
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
 - preset: emacs
   contexts:
     - context: global
@@ -948,6 +980,38 @@ expression: rows
         - sequence:
             - Down
           action: menu.next
+    - context: notification-surface
+      bindings:
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - c
+          action: notification.cancel
+        - sequence:
+            - d
+          action: notification.dismiss
+        - sequence:
+            - e
+          action: notification.done
+        - sequence:
+            - m
+          action: notification.mute
+        - sequence:
+            - o
+          action: notification.open
+        - sequence:
+            - s
+          action: notification.snooze
+        - sequence:
+            - t
+          action: notification.track-start
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
 - preset: vi
   contexts:
     - context: global
@@ -1331,6 +1395,38 @@ expression: rows
         - sequence:
             - s
           action: alarm.snooze
+        - sequence:
+            - Up
+          action: menu.previous
+        - sequence:
+            - Down
+          action: menu.next
+    - context: notification-surface
+      bindings:
+        - sequence:
+            - Escape
+          action: menu.dismiss
+        - sequence:
+            - c
+          action: notification.cancel
+        - sequence:
+            - d
+          action: notification.dismiss
+        - sequence:
+            - e
+          action: notification.done
+        - sequence:
+            - m
+          action: notification.mute
+        - sequence:
+            - o
+          action: notification.open
+        - sequence:
+            - s
+          action: notification.snooze
+        - sequence:
+            - t
+          action: notification.track-start
         - sequence:
             - Up
           action: menu.previous

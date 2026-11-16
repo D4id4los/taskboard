@@ -150,7 +150,6 @@ pub(crate) enum FocusSeam {
     ReviewWalk,
     TitleEditor,
     DescriptionEditor,
-    CreateFlow,
     MoveFlow,
     ConfirmDelete,
     BoardColorPick,
@@ -176,11 +175,10 @@ impl FocusSeam {
             Self::ReviewWalk => 11,
             Self::TitleEditor => 12,
             Self::DescriptionEditor => 13,
-            Self::CreateFlow => 14,
-            Self::MoveFlow => 15,
-            Self::ConfirmDelete => 16,
-            Self::BoardColorPick => 17,
-            Self::PlanPlace => 18,
+            Self::MoveFlow => 14,
+            Self::ConfirmDelete => 15,
+            Self::BoardColorPick => 16,
+            Self::PlanPlace => 17,
         }
     }
 
@@ -330,6 +328,12 @@ pub(crate) struct Adapter {
     /// The banner row target set by row activation (D4); consumed by
     /// the next snooze/mute dispatch, then cleared (one-shot).
     reminder_target: Option<ReminderTarget>,
+    /// The notification surface's engaged cursor (US-6/W-6, D-N1):
+    /// `None` = disengaged; `Some(i)` = armed by the surface's first
+    /// walk or verb stroke with row `i` selected (clamped to the row
+    /// count at every pass; the last row's exit or rows emptying
+    /// disarms).
+    notification_cursor: Option<usize>,
     /// The board-bar segment's board (design §3.8); consumed by the
     /// next `board.select` dispatch, then cleared (one-shot, the
     /// `reminder_target` precedent).
@@ -1025,6 +1029,27 @@ impl Adapter {
         if let Some(consumed) = self.switcher_flyout_key(window, stroke) {
             return Some(consumed);
         }
+        // The notification surface's engagement arm (US-6/W-6, D-N1):
+        // while rows are visible and the surface is not yet engaged,
+        // the grammar's strokes arm it and apply directly — the
+        // context rides the chain head only from the next stroke on
+        // (the posture deviation's mechanics: an unengaged surface is
+        // ambient, so the pre-engagement keys must be consumed ahead
+        // of the ambient resolution).
+        if !self.shell.notification_surface
+            && !self.tables.notifications.is_empty()
+            && let Some(gram) = crate::keyscope::notification_grammar_stroke(&stroke)
+        {
+            match gram {
+                crate::keyscope::NotificationGrammar::Walk(direction) => {
+                    self.notification_walk(window, direction);
+                }
+                crate::keyscope::NotificationGrammar::Verb(verb) => {
+                    self.apply_notification_verb(window, verb);
+                }
+            }
+            return Some(true);
+        }
         // The dropdown ladders (special case D, r4 D39/D40, round-5
         // D6): while a flyout is open, its keys decline the single
         // key path — the focused field's modal arm owns them.
@@ -1243,18 +1268,14 @@ impl Adapter {
         if chained(&|f| matches!(f, Flow::FocusMode { .. })) {
             return Some(FocusSeam::FocusOverlay);
         }
-        if chained(&|f| {
-            matches!(
-                f,
-                Flow::Create { .. }
-                    | Flow::CreateStack
-                    | Flow::CreateBoard
-                    | Flow::RenameStack { .. }
-                    | Flow::RenameBoard { .. }
-            )
-        }) {
-            return Some(FocusSeam::CreateFlow);
-        }
+        // The create/rename flows are deliberately NOT census sites
+        // (the recorded deviation from the chunk plan's §2 row 16):
+        // the inline create row's commit is the braindump grammar —
+        // its exit re-seeds the walk through reconcile, and a restore
+        // armed beside it fights that re-seed (the ten-step journey's
+        // walk state). The rename cells' exits keep today's letter for
+        // the same reason: the cell itself is the re-entry point the
+        // flow arms in place.
         if chained(&|f| {
             matches!(
                 f,
@@ -1580,6 +1601,15 @@ impl Adapter {
         self.shell.review_walk = self
             .view_state
             .chain_has_flow(|flow| matches!(flow, crate::view_state::Flow::ReviewWalk { .. }));
+        // The notification surface's engagement mirror (US-6/W-6,
+        // D-N1): armed while the cursor holds AND rows exist; rows
+        // emptying disarms (the posture's letter).
+        if self.tables.notifications.is_empty() {
+            self.notification_cursor = None;
+        } else if let Some(cursor) = self.notification_cursor {
+            self.notification_cursor = Some(cursor.min(self.tables.notifications.len() - 1));
+        }
+        self.shell.notification_surface = self.notification_cursor.is_some();
         // Round 2 (D19): the reopen gate's done stamp, from the same
         // focused task — the router stays pure.
         self.shell.focused_task_done = self
@@ -4453,7 +4483,8 @@ impl Adapter {
             Resolve::CancelOnly => {
                 // Settle only — the effect is consumed by the settle
                 // (the K cells: the due editor's C-g clean close, the
-                // modals' cancel).
+                // modals' cancel). The cancel IS the site's own exit
+                // arm — the origin survives it and the restore fires.
                 self.settle_flow(window, state);
             }
             Resolve::Replace => {
@@ -4475,6 +4506,13 @@ impl Adapter {
                 }
             }
             Resolve::SettleThenRun => {
+                // The foreign settle hands the focus to the re-run
+                // effect (the walk carries its own target) — the
+                // census restore arms (US-1/W-1) belong to the site's
+                // own exits, so the origin is dropped when the settle
+                // clears the recorded site (the walk's continuation
+                // keeps today's letter).
+                let settled_site = self.open_focus_site(window);
                 // Settle per the flow's kind rule, then re-run the
                 // effect once against the settled state — bounded
                 // one-level re-dispatch (the `InvokeSelected`
@@ -4491,6 +4529,13 @@ impl Adapter {
                     self.arm_overlay_replacement_notice(window);
                 }
                 self.settle_flow(window, state);
+                if self
+                    .focus_origin
+                    .as_ref()
+                    .is_some_and(|origin| Some(origin.seam) == settled_site)
+                {
+                    self.focus_origin = None;
+                }
                 self.interpret(window, effect);
             }
         }
@@ -4620,10 +4665,6 @@ impl Adapter {
                 self.menu_entries = self.root_entries.clone();
                 self.shell.apply(&effect, self.menu_entries.len());
                 self.sync_menu_models(window);
-                // The focused-open push (US-3/W-3, D-M3): the walk
-                // starts inside the menu — the rows' scope grabs slint
-                // focus on the panel's mount and every page swap.
-                window.invoke_menu_rows_focus();
             }
             UiEffect::InvokeSelected => {
                 // Palette first (defensively — `Palette` masks `Global`,
@@ -4650,7 +4691,18 @@ impl Adapter {
                 }
             }
             UiEffect::MenuBack => {
-                if self.shell.palette {
+                if self.shell.notification_surface {
+                    // The surface's Escape (US-6/W-6, D-N1): closes
+                    // with nothing dispatched (rows keep their
+                    // delivery state) and restores per the focus
+                    // contract (the census row 12).
+                    self.notification_cursor = None;
+                    window.set_notification_selected(-1);
+                    self.sync_view_context(window);
+                    if !self.exit_focus_handoff(window) {
+                        window.invoke_refocus_view();
+                    }
+                } else if self.shell.palette {
                     // Esc / dismiss / mouse-out all mean
                     // close-without-effect (the discard_edit shape).
                     let outcomes = self.view_state.close_palette();
@@ -4668,8 +4720,26 @@ impl Adapter {
                     }
                 }
             }
+            UiEffect::NotificationVerb(verb) => {
+                // The notification verbs (US-6/W-6, D-N1): each routes
+                // exactly the seam body the row's button callback
+                // runs — the click ≡ key law (us6_s2 pins the
+                // structural equality). A verb stroke arms the walk
+                // at row 0 (the AC-1 pre-selection).
+                self.apply_notification_verb(window, verb);
+            }
             UiEffect::MenuNext | UiEffect::MenuPrevious => {
-                if self.shell.palette {
+                if self.shell.notification_surface {
+                    // The notification walk (US-6/W-6, D-N1): the r5
+                    // grammar — armed, the step clamps at both ends
+                    // (no wrap).
+                    let direction: i32 = if matches!(effect, UiEffect::MenuNext) {
+                        1
+                    } else {
+                        -1
+                    };
+                    self.notification_walk(window, direction);
+                } else if self.shell.palette {
                     let visible = self.tables.palette.len();
                     let direction = matches!(effect, UiEffect::MenuNext);
                     let outcomes = self
@@ -8131,6 +8201,7 @@ pub(crate) fn install(
         menu_anchor: MenuAnchor::Hamburger,
         create_target: None,
         reminder_target: None,
+        notification_cursor: None,
         focus_handover: FocusHandover::None,
         focus_origin: None,
         applying_outcomes: false,
@@ -9241,10 +9312,6 @@ impl Adapter {
         };
         self.sync_menu_models(window);
         self.sync(window);
-        // The focused-open push (US-3/W-3, D-M3): the same letter as
-        // the AppMenu arm — the context menu's rows hold slint focus
-        // from mount.
-        window.invoke_menu_rows_focus();
     }
 
     /// The task card's menu list (round-2 D21 spelling of round-1
@@ -11199,6 +11266,136 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
 /// The notification row at `index` (D2: the index resolves against the
 /// refresh pass's row table).
+impl Adapter {
+    /// The notification walk's step (US-6/W-6, D-N1): the first
+    /// stroke arms at row 0; a step clamps at both ends (no wrap).
+    /// The selection is the surface's pushed highlight (the walk's
+    /// render).
+    fn notification_walk(&mut self, window: &AppWindow, direction: i32) {
+        let len = self.tables.notifications.len();
+        if len == 0 {
+            return;
+        }
+        let cursor = match self.notification_cursor {
+            Some(cursor) => {
+                let next =
+                    i64::from(u32::try_from(cursor).unwrap_or(u32::MAX)) + i64::from(direction);
+                let max = i64::from(u32::try_from(len - 1).unwrap_or(u32::MAX));
+                usize::try_from(next.clamp(0, max)).unwrap_or(0)
+            }
+            None => 0,
+        };
+        self.notification_cursor = Some(cursor);
+        self.sync_view_context(window);
+        window.set_notification_selected(i32::try_from(cursor).unwrap_or(0));
+        self.finish_mutation(window);
+    }
+
+    /// The verb dispatch's shared body (US-6/W-6, D-N1): arms at row
+    /// 0 when disengaged, resolves the selected row, and runs exactly
+    /// the seam body the row's button callback runs.
+    fn apply_notification_verb(
+        &mut self,
+        window: &AppWindow,
+        verb: crate::router::NotificationVerb,
+    ) {
+        use crate::router::NotificationVerb as V;
+        let cursor = *self.notification_cursor.get_or_insert(0);
+        let cursor = i32::try_from(cursor).unwrap_or(i32::MAX);
+        let Some(row) = notification_row(self, cursor) else {
+            return;
+        };
+        match verb {
+            V::Dismiss => self.notification_dismiss(&row),
+            V::Done => self.notification_done(&row),
+            V::Snooze => self.notification_snooze(window, &row),
+            V::Mute => self.notification_mute(window, &row),
+            V::Cancel => self.notification_cancel(window, &row),
+            V::TrackStart => self.notification_track_start(window, &row),
+            V::Open => self.notification_open(window, &row),
+        }
+        self.finish_mutation(window);
+    }
+
+    /// The dismiss seam's body (the row's button callback's dispatch).
+    /// `&self` — the `bare_ref` seam install borrows non-mut.
+    fn notification_dismiss(&self, row: &crate::presentation::NotificationRow) {
+        self.send(taskboard_domain::StateCommand::DismissReminder {
+            reminder: row.reminder,
+            occurrence: row.occurrence,
+        });
+    }
+
+    /// The done seam's body: the row's task completes; an alarm row
+    /// has no task (the button's absence is the presentation's job —
+    /// the stray degrades to a no-op).
+    fn notification_done(&self, row: &crate::presentation::NotificationRow) {
+        let Some(task) = row.task else { return };
+        self.send(taskboard_domain::StateCommand::SetTaskDone {
+            id: task,
+            done: true,
+        });
+    }
+
+    /// The snooze seam's body: the routed verb over the one-shot
+    /// target (the row's anchor mirrors the ref).
+    fn notification_snooze(
+        &mut self,
+        window: &AppWindow,
+        row: &crate::presentation::NotificationRow,
+    ) {
+        self.reminder_target = Some(notification_target(row));
+        self.route(window, ActionId::ReminderSnooze);
+    }
+
+    /// The mute seam's body (the snooze twin's routed verb).
+    fn notification_mute(
+        &mut self,
+        window: &AppWindow,
+        row: &crate::presentation::NotificationRow,
+    ) {
+        self.reminder_target = Some(notification_target(row));
+        self.route(window, ActionId::ReminderMute);
+    }
+
+    /// The cancel seam's body: the alarm row's off-switch; a task row
+    /// degrades to a no-op (the done-seam's guard shape).
+    fn notification_cancel(
+        &mut self,
+        window: &AppWindow,
+        row: &crate::presentation::NotificationRow,
+    ) {
+        let taskboard_domain::ReminderRef::Adhoc(alarm) = row.reminder else {
+            return;
+        };
+        self.timer_target = Some(alarm);
+        self.route(window, ActionId::TimerCancel);
+    }
+
+    /// The track-start seam's body: exactly one command leaves the UI
+    /// (the implicit dismissal lives planner-side).
+    fn notification_track_start(
+        &mut self,
+        window: &AppWindow,
+        row: &crate::presentation::NotificationRow,
+    ) {
+        let Some(task) = row.task else { return };
+        self.track_target = Some(task);
+        self.route(window, ActionId::TaskTrackStart);
+    }
+
+    /// The row-open seam's body: focus, then the `TaskEdit` route.
+    fn notification_open(
+        &mut self,
+        window: &AppWindow,
+        row: &crate::presentation::NotificationRow,
+    ) {
+        let Some(task) = row.task else { return };
+        self.view_state.set_focused(Some(task));
+        self.route(window, ActionId::TaskEdit);
+    }
+}
+
 fn notification_row(adapter: &Adapter, index: i32) -> Option<crate::presentation::NotificationRow> {
     adapter
         .tables
@@ -12389,10 +12586,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(row) = notification_row(&a, index) else {
             return;
         };
-        a.send(taskboard_domain::StateCommand::DismissReminder {
-            reminder: row.reminder,
-            occurrence: row.occurrence,
-        });
+        a.notification_dismiss(&row);
     });
 
     // Mark Done: the existing done command — the planner emits the
@@ -12404,11 +12598,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(row) = notification_row(&a, index) else {
             return;
         };
-        let Some(task) = row.task else { return };
-        a.send(taskboard_domain::StateCommand::SetTaskDone {
-            id: task,
-            done: true,
-        });
+        a.notification_done(&row);
     });
 
     // Snooze / Mute: the banner's routed verbs over the one-shot
@@ -12420,8 +12610,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(row) = notification_row(&a, index) else {
             return;
         };
-        a.reminder_target = Some(notification_target(&row));
-        a.route(&window, ActionId::ReminderSnooze);
+        a.notification_snooze(&window, &row);
     });
 
     install_seam!(window: window.on_notification_mute_clicked, adapter: adapter;
@@ -12429,8 +12618,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(row) = notification_row(&a, index) else {
             return;
         };
-        a.reminder_target = Some(notification_target(&row));
-        a.route(&window, ActionId::ReminderMute);
+        a.notification_mute(&window, &row);
     });
 
     // Cancel (DR-3/3, D-I7): the alarm row's off-switch — the routed
@@ -12442,11 +12630,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(row) = notification_row(&a, index) else {
             return;
         };
-        let taskboard_domain::ReminderRef::Adhoc(alarm) = row.reminder else {
-            return;
-        };
-        a.timer_target = Some(alarm);
-        a.route(&window, ActionId::TimerCancel);
+        a.notification_cancel(&window, &row);
     });
 
     // Start Task (DR-5/4, D-TU7): the routed TaskTrackStart over the
@@ -12461,9 +12645,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(row) = notification_row(&a, index) else {
             return;
         };
-        let Some(task) = row.task else { return };
-        a.track_target = Some(task);
-        a.route(&window, ActionId::TaskTrackStart);
+        a.notification_track_start(&window, &row);
     });
     // D-6.1 (round 6): the row's double-click open — focus, then the
     // TaskEdit route (the today-row activation's shape; Activate's
@@ -12477,9 +12659,7 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         let Some(row) = notification_row(&a, index) else {
             return;
         };
-        let Some(task) = row.task else { return };
-        a.view_state.set_focused(Some(task));
-        a.route(&window, ActionId::TaskEdit);
+        a.notification_open(&window, &row);
     });
 }
 
@@ -12794,6 +12974,7 @@ impl crate::UiHandle {
                 | ContextId::ReviewWalk
                 | ContextId::RecurEditor
                 | ContextId::AlarmWindow
+                | ContextId::NotificationSurface
                 | ContextId::ViNormal
                 | ContextId::ViInsert
                 | ContextId::Editor,

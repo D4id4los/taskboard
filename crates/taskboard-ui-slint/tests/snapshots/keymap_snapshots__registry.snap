@@ -680,6 +680,69 @@ expression: rows
   menu_rank: 760
   description: Cancels the selected alarm outright; its row leaves the window.
   menu_group: ~
+- id: notification.dismiss
+  label: Dismiss notification
+  contexts:
+    - notification-surface
+  category: task
+  enabled: true
+  menu_rank: 770
+  description: "Marks the selected notification's occurrence dismissed."
+  menu_group: ~
+- id: notification.done
+  label: Mark notification task done
+  contexts:
+    - notification-surface
+  category: task
+  enabled: true
+  menu_rank: 780
+  description: "Completes the selected notification's task."
+  menu_group: ~
+- id: notification.snooze
+  label: Snooze notification
+  contexts:
+    - notification-surface
+  category: task
+  enabled: true
+  menu_rank: 790
+  description: "Postpones the selected notification's reminder."
+  menu_group: ~
+- id: notification.mute
+  label: Mute notification reminders
+  contexts:
+    - notification-surface
+  category: task
+  enabled: true
+  menu_rank: 800
+  description: "Mutes the selected notification's task reminders."
+  menu_group: ~
+- id: notification.cancel
+  label: Cancel notification timer
+  contexts:
+    - notification-surface
+  category: task
+  enabled: true
+  menu_rank: 810
+  description: "Cancels the selected notification's timer."
+  menu_group: ~
+- id: notification.track-start
+  label: Start notification task
+  contexts:
+    - notification-surface
+  category: task
+  enabled: true
+  menu_rank: 820
+  description: "Starts tracking the selected notification's task."
+  menu_group: ~
+- id: notification.open
+  label: Open notification task
+  contexts:
+    - notification-surface
+  category: task
+  enabled: true
+  menu_rank: 830
+  description: "Opens the selected notification's task in the detail view."
+  menu_group: ~
 - id: task.track-start
   label: Start tracking
   contexts:

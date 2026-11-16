@@ -81,6 +81,17 @@ pub enum ContextId {
     /// window's three verbs and the cursor walk live here, bound in
     /// every preset.
     AlarmWindow,
+    /// The in-app notification surface (the focus-restoration plan
+    /// US-6/W-6, D-N1): the r5 alarm grammar's twin over the surface's
+    /// rows. **Engagement-armed** (the recorded posture deviation):
+    /// the surface is ambient — its rows persist while the user keeps
+    /// working — so a mask armed on visibility would paralyze every
+    /// other journey; the context rides the chain head exactly while
+    /// the surface is engaged (armed by its first walk/verb stroke,
+    /// disarmed by the Escape close, the last row's exit, or rows
+    /// emptying). AC-4's totality is the keymap contract (ids bound in
+    /// every preset), which is posture-independent.
+    NotificationSurface,
     /// The multi-line editor's element scope (round-5 chunk 7, D-δ2):
     /// armed exactly while `EditingFacts.editor-focus-count > 0`.
     /// Non-masking and keymap-unbound in every preset — the scope's
@@ -102,6 +113,7 @@ impl ContextId {
             Self::TaskDetail => "task-detail",
             Self::Review => "review",
             Self::AlarmWindow => "alarm-window",
+            Self::NotificationSurface => "notification-surface",
             Self::Settings => "settings",
             Self::PlanNextDay => "plan-next-day",
             Self::Menu => "menu",
@@ -325,6 +337,17 @@ pub enum ActionId {
     AlarmDismiss,
     AlarmSnooze,
     AlarmCancel,
+    /// The notification surface's per-verb ids (US-6/W-6, D-N1): the
+    /// r5 alarm grammar's twins — routed over the walk's selected row,
+    /// each dispatching exactly the command the row's button seam
+    /// sends (the click ≡ key law; `us6_s2` pins the equality).
+    NotificationDismiss,
+    NotificationDone,
+    NotificationSnooze,
+    NotificationMute,
+    NotificationCancel,
+    NotificationTrackStart,
+    NotificationOpen,
     TaskTrackStart,
     TaskTrackStop,
     TaskToggleTracker,
@@ -593,6 +616,13 @@ impl ActionId {
             Self::AlarmDismiss => "alarm.dismiss",
             Self::AlarmSnooze => "alarm.snooze",
             Self::AlarmCancel => "alarm.cancel",
+            Self::NotificationDismiss => "notification.dismiss",
+            Self::NotificationDone => "notification.done",
+            Self::NotificationSnooze => "notification.snooze",
+            Self::NotificationMute => "notification.mute",
+            Self::NotificationCancel => "notification.cancel",
+            Self::NotificationTrackStart => "notification.track-start",
+            Self::NotificationOpen => "notification.open",
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
             Self::TaskToggleTracker => "task.toggle-tracker",
@@ -1458,6 +1488,80 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Cancels the selected alarm outright; its row leaves the window.",
         menu_group: None,
     },
+    // The notification surface's verbs (US-6/W-6, D-N1): window-local
+    // like the alarm twins, bound in every preset over the
+    // engagement-armed `NotificationSurface` context; never menu rows
+    // (the surface is its own surface; the alarm block's letter).
+    ActionEntry {
+        id: ActionId::NotificationDismiss,
+        label: "Dismiss notification",
+        contexts: &[ContextId::NotificationSurface],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 770,
+        description: "Marks the selected notification's occurrence dismissed.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::NotificationDone,
+        label: "Mark notification task done",
+        contexts: &[ContextId::NotificationSurface],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 780,
+        description: "Completes the selected notification's task.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::NotificationSnooze,
+        label: "Snooze notification",
+        contexts: &[ContextId::NotificationSurface],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 790,
+        description: "Postpones the selected notification's reminder.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::NotificationMute,
+        label: "Mute notification reminders",
+        contexts: &[ContextId::NotificationSurface],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 800,
+        description: "Mutes the selected notification's task reminders.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::NotificationCancel,
+        label: "Cancel notification timer",
+        contexts: &[ContextId::NotificationSurface],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 810,
+        description: "Cancels the selected notification's timer.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::NotificationTrackStart,
+        label: "Start notification task",
+        contexts: &[ContextId::NotificationSurface],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 820,
+        description: "Starts tracking the selected notification's task.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::NotificationOpen,
+        label: "Open notification task",
+        contexts: &[ContextId::NotificationSurface],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 830,
+        description: "Opens the selected notification's task in the detail view.",
+        menu_group: None,
+    },
     // The tracking verbs (DR-5/4, D-T16): the timers family's
     // pointer-driven precedent — menu-reachable, no preset bindings;
     // dispatch-time gating only (the planner's idempotent NoOps own
@@ -2240,6 +2344,13 @@ mod tests {
             ActionId::AlarmDismiss,
             ActionId::AlarmSnooze,
             ActionId::AlarmCancel,
+            ActionId::NotificationDismiss,
+            ActionId::NotificationDone,
+            ActionId::NotificationSnooze,
+            ActionId::NotificationMute,
+            ActionId::NotificationCancel,
+            ActionId::NotificationTrackStart,
+            ActionId::NotificationOpen,
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
             ActionId::TaskToggleTracker,

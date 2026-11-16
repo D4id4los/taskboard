@@ -34,6 +34,10 @@ export struct NotificationRowModel {
 export component NotificationSurface inherits Rectangle {
     in property <[NotificationRowModel]> notifications;
     in property <int> notification-overflow;
+    // The walk's selected row (US-6/W-6, D-N1): the highlight is the
+    // row's focused look (the board card's emphasis twin); -1 = no
+    // selection (disengaged).
+    in property <int> selected-index: -1;
     callback dismiss-clicked(int);
     callback done-clicked(int);
     callback snooze-clicked(int);
@@ -68,6 +72,13 @@ export component NotificationSurface inherits Rectangle {
                 background: row-touch.has-hover && row.can-open
                     ? Theme.surface-hover
                     : transparent;
+                // The walk highlight (US-6/W-6): the selected row's
+                // ring — the house focus token, the card's emphasis
+                // twin (no theme work).
+                border-width: root.selected-index == row-index
+                    ? Theme.focus-ring-width : 0;
+                border-color: Semantic.focus-ring;
+                border-radius: Theme.radius-small;
                 row-info := ListRow {
                     text: row.title;
                     meta: row.fired-phrase;

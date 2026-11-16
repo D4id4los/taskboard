@@ -131,6 +131,12 @@ pub fn scope_stack(inputs: &ScopeInputs) -> Vec<ContextId> {
         // #638).
         return crate::surfaces::FlowTag::ReviewWalk.scope_head().to_vec();
     }
+    if shell.notification_surface {
+        // The notification surface's ENGAGED mask (US-6/W-6, D-N1):
+        // the r5 alarm letter at engagement — the grammar owns the
+        // keyboard exactly while the surface is engaged.
+        return vec![ContextId::NotificationSurface];
+    }
     let mut chain = Vec::with_capacity(5);
     // D-δ2: the editor element scope rides the head (non-masking,
     // keymap-unbound — its verbs are the command tables, not rows).
@@ -155,6 +161,39 @@ pub fn scope_stack(inputs: &ScopeInputs) -> Vec<ContextId> {
     chain.push(ContextId::ViNormal);
     chain.push(ContextId::Global);
     chain
+}
+
+/// The notification surface's pre-engagement grammar (US-6/W-6,
+/// D-N1): the strokes the surface claims while rows are visible —
+/// the walk pair and the seven per-verb keys, plain (unmodified)
+/// only. Escape is deliberately absent: it never arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationGrammar {
+    /// `direction`: 1 = `MenuNext` (Down), −1 = `MenuPrevious` (Up).
+    Walk(i32),
+    Verb(crate::router::NotificationVerb),
+}
+
+/// The stroke's grammar reading, `None` when the stroke is not the
+/// surface's (any modifier disqualifies — the plain-key law).
+#[must_use]
+pub fn notification_grammar_stroke(stroke: &crate::keymap::Stroke) -> Option<NotificationGrammar> {
+    use crate::router::NotificationVerb as V;
+    if stroke.ctrl || stroke.alt || stroke.meta {
+        return None;
+    }
+    match (stroke.key, stroke.shift) {
+        ('\u{F701}', false) => Some(NotificationGrammar::Walk(1)),
+        ('\u{F700}', false) => Some(NotificationGrammar::Walk(-1)),
+        ('d', false) => Some(NotificationGrammar::Verb(V::Dismiss)),
+        ('e', false) => Some(NotificationGrammar::Verb(V::Done)),
+        ('s', false) => Some(NotificationGrammar::Verb(V::Snooze)),
+        ('m', false) => Some(NotificationGrammar::Verb(V::Mute)),
+        ('c', false) => Some(NotificationGrammar::Verb(V::Cancel)),
+        ('t', false) => Some(NotificationGrammar::Verb(V::TrackStart)),
+        ('o', false) => Some(NotificationGrammar::Verb(V::Open)),
+        _ => None,
+    }
 }
 
 /// The printable monopoly (D-KS2): while a text field holds slint
