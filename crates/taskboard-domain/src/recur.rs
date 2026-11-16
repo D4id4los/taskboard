@@ -1834,6 +1834,161 @@ mod arithmetic_tests {
         );
     }
 
+    fn weekly_until(anchor: NaiveDate, on: &[Weekday], until: NaiveDate) -> RecurRule {
+        RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(1)),
+            anchor,
+            pattern: RecurPattern::Weekly {
+                interval: EveryWeeks::new(1).unwrap(),
+                on: set(on),
+            },
+            bound: RecurBound::Until(until),
+            continued_from: None,
+            paused_until: None,
+        }
+    }
+
+    #[test]
+    fn until_final_member_window_is_open() {
+        // Issue #713's exact shape: the anchor is a member and the Until
+        // bound closes the member list right after it, so the final
+        // member's window is open-ended (D8) — a completion the boundless
+        // projection would call "the next member's day" still attributes
+        // to the final member.
+        let anchor = date(2053, 10, 16);
+        assert_eq!(anchor.weekday(), Weekday::Thu);
+        let rule = weekly_until(anchor, &[Weekday::Thu, Weekday::Fri], anchor);
+        let start = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let offset = offset_hours(0);
+        let horizon = anchor
+            .checked_add_signed(chrono::TimeDelta::try_days(400).unwrap())
+            .unwrap();
+        // The bounded member list ends at the anchor itself.
+        assert_eq!(schedule(&rule, anchor, horizon), vec![anchor]);
+        let ws = window_start(anchor, start, offset);
+        let stamp = ws + chrono::TimeDelta::try_hours(24).unwrap();
+        let late = utc(2_800_000_000);
+        let outcome = occurrence_outcome(&rule, anchor, late, start, offset, &[stamp]);
+        assert_eq!(outcome, OccurrenceOutcome::Done { at: stamp });
+        // With no completion, far past everything: open head, never
+        // Missed.
+        assert_eq!(
+            occurrence_outcome(&rule, anchor, late, start, offset, &[]),
+            OccurrenceOutcome::NotYetReachable
+        );
+    }
+
+    #[test]
+    fn until_anchor_on_first_weekday_open_final_window() {
+        // The neighboring shape with the anchor on the pattern's first
+        // weekday: the open-final behavior is not a multi-weekday
+        // artifact.
+        let anchor = date(2053, 10, 16);
+        assert_eq!(anchor.weekday(), Weekday::Thu);
+        let rule = weekly_until(anchor, &[Weekday::Thu], anchor);
+        let start = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let offset = offset_hours(0);
+        let horizon = anchor
+            .checked_add_signed(chrono::TimeDelta::try_days(400).unwrap())
+            .unwrap();
+        assert_eq!(schedule(&rule, anchor, horizon), vec![anchor]);
+        let ws = window_start(anchor, start, offset);
+        let stamp = ws + chrono::TimeDelta::try_hours(24).unwrap();
+        let late = utc(2_800_000_000);
+        let outcome = occurrence_outcome(&rule, anchor, late, start, offset, &[stamp]);
+        assert_eq!(outcome, OccurrenceOutcome::Done { at: stamp });
+        assert_eq!(
+            occurrence_outcome(&rule, anchor, late, start, offset, &[]),
+            OccurrenceOutcome::NotYetReachable
+        );
+    }
+
+    #[test]
+    fn anchor_on_non_member_weekday_member_bounded_later() {
+        // The anchor is a Sunday, the pattern is Monday-only, and the
+        // Until bound is the following Monday: no member on the anchor
+        // itself, and a stamp inside [ws(anchor), ws(Monday)) predates
+        // the series' first member — it attributes to nothing.
+        let anchor = date(2053, 10, 19);
+        assert_eq!(anchor.weekday(), Weekday::Sun);
+        let first_monday = date(2053, 10, 20);
+        assert_eq!(first_monday.weekday(), Weekday::Mon);
+        let rule = weekly_until(anchor, &[Weekday::Mon], first_monday);
+        let start = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let offset = offset_hours(0);
+        let horizon = anchor
+            .checked_add_signed(chrono::TimeDelta::try_days(400).unwrap())
+            .unwrap();
+        assert_eq!(schedule(&rule, anchor, horizon), vec![first_monday]);
+        let ws_anchor = window_start(anchor, start, offset);
+        let ws_monday = window_start(first_monday, start, offset);
+        let pre_series = ws_anchor + chrono::TimeDelta::try_hours(12).unwrap();
+        assert!(pre_series >= ws_anchor && pre_series < ws_monday);
+        let late = utc(2_800_000_000);
+        // Before the first member: §4.4 — pre-series stamps attribute
+        // nowhere.
+        assert_eq!(
+            occurrence_outcome(&rule, first_monday, late, start, offset, &[pre_series]),
+            OccurrenceOutcome::NotYetReachable
+        );
+        // A stamp inside Monday's window is Done on Monday.
+        let in_window = ws_monday + chrono::TimeDelta::try_hours(12).unwrap();
+        assert_eq!(
+            occurrence_outcome(&rule, first_monday, late, start, offset, &[in_window]),
+            OccurrenceOutcome::Done { at: in_window }
+        );
+    }
+
+    #[test]
+    fn until_on_member_day_mid_series_window_closes_at_next_member() {
+        // The Until bound on a member day, *not* at the series start:
+        // ordinary (closed) windows still apply up to the bound; only
+        // the final member's window is open-ended.
+        let anchor_wed = date(2053, 10, 15);
+        assert_eq!(anchor_wed.weekday(), Weekday::Wed);
+        let next_wed = date(2053, 10, 22);
+        assert_eq!(next_wed.weekday(), Weekday::Wed);
+        let rule = weekly_until(anchor_wed, &[Weekday::Wed, Weekday::Thu], next_wed);
+        let start = chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+        let offset = offset_hours(0);
+        let horizon = anchor_wed
+            .checked_add_signed(chrono::TimeDelta::try_days(400).unwrap())
+            .unwrap();
+        // Until admits the bound day and every member before it, so the
+        // anchor Wednesday's own Thursday is a member too.
+        let anchor_thu = date(2053, 10, 16);
+        assert_eq!(anchor_thu.weekday(), Weekday::Thu);
+        assert_eq!(
+            schedule(&rule, anchor_wed, horizon),
+            vec![anchor_wed, anchor_thu, next_wed]
+        );
+        let ws_thu = window_start(anchor_thu, start, offset);
+        let ws_next = window_start(next_wed, start, offset);
+        // The Thursday stamp sits in the Thursday member's ordinary
+        // closed window [ws(Thu), ws(next Wed)) — the contrast case for
+        // `until_final_member_window_is_open`.
+        let thursday_stamp = ws_thu + chrono::TimeDelta::try_hours(12).unwrap();
+        let outcome =
+            occurrence_outcome(&rule, anchor_thu, ws_next, start, offset, &[thursday_stamp]);
+        assert_eq!(outcome, OccurrenceOutcome::Done { at: thursday_stamp });
+        assert!(thursday_stamp >= ws_thu && thursday_stamp < ws_next);
+        // Past the closed window with no completion, both non-final
+        // members are Missed; next_wed (final, open) never is.
+        let late = ws_next + chrono::TimeDelta::try_seconds(1).unwrap();
+        assert_eq!(
+            occurrence_outcome(&rule, anchor_wed, late, start, offset, &[]),
+            OccurrenceOutcome::Missed
+        );
+        assert_eq!(
+            occurrence_outcome(&rule, anchor_thu, late, start, offset, &[]),
+            OccurrenceOutcome::Missed
+        );
+        assert_eq!(
+            occurrence_outcome(&rule, next_wed, late, start, offset, &[]),
+            OccurrenceOutcome::NotYetReachable
+        );
+    }
+
     // P5 — attribution: windows partition the timeline; every stamp
     // attributes to exactly one member; Done stamps sit inside their
     // member's window; the final member is never Missed.
