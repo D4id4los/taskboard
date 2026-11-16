@@ -73,6 +73,13 @@ export component DatePicker inherits Rectangle {
     callback time-edited(string);
     callback time-picked(int);
     callback time-accepted(string);
+    // The intra-picker click arm (task-detail-editor UX plan US-2/D-6,
+    // N-5): the TimeField's field click — the consumer's seam arms the
+    // one-shot focus-steal latch before the focus move, so the host
+    // editor's focus-lost settle funnel never fires for an
+    // intra-picker focus move (the editor stays open).
+    // slint: task-date-time-field-armed
+    callback time-field-armed();
     // The quick-times chevron's notification half (round-5 F8): the
     // consumer's seam sets the steal latch and disarms the digit
     // filter. The date-only track-form mount (show-time: false)
@@ -169,6 +176,7 @@ export component DatePicker inherits Rectangle {
             // the parse, the seed-on-step, and the filter.
             if (root.show-time): TimeField {
                 flyout-site: 0;
+                click-arms-focus: true;
                 time-text: root.time-text;
                 validity: root.time-validity;
                 error-hint: root.time-error-hint;
@@ -181,6 +189,7 @@ export component DatePicker inherits Rectangle {
                 picked(minutes) => { root.time-picked(minutes); }
                 accepted(text) => { root.time-accepted(text); }
                 quick-toggled() => { root.quick-toggled(); }
+                focus-armed() => { root.time-field-armed(); }
             }
 
             // The weekday initials row (Monday-first, the grid's

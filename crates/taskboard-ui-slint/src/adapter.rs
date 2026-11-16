@@ -2138,11 +2138,18 @@ impl Adapter {
         } else {
             Vec::new()
         };
+        // The quick options' focused slot (task-detail-editor UX plan
+        // US-2/D-7, N-6): a picker-held time still wins (re-opening
+        // after a typed entry stays on the entry); when the picker
+        // holds no time, the seed is the device now's local
+        // time-of-day (truncated to the slot grid) — the list opens
+        // scrolled to the current time, never the list head.
         let time_nearest_row = crate::due_edit::nearest_slot(
             &time_slots,
             editor
                 .and_then(|e| e.picker.as_ref())
-                .and_then(super::due_edit::DuePickerState::time),
+                .and_then(super::due_edit::DuePickerState::time)
+                .or_else(|| Some(chrono::Local::now().time())),
         );
         let now2 = chrono::Utc::now();
         let due = crate::models::DueEditorPush {
@@ -11085,6 +11092,21 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     install_seam!(window: window.on_date_editor_focus_lost, adapter: adapter;
     bind mut (a, window), args (), {        settle_date_editor(&mut a, &window);
+
+    });
+
+    // The intra-picker click arm (task-detail-editor UX plan US-2/D-6,
+    // N-5): the TimeField's field click arms the same one-shot
+    // focus-steal latch the programmatic field→grid hand-over uses —
+    // the settle funnel consumes it once, so the focus move into the
+    // picker's time field never settles the editor (the reproduction
+    // journey us2_s1's oracle).
+    // slint: task-date-time-field-armed
+    install_seam!(window: window.on_task_date_time_field_armed, adapter: adapter;
+    bind mut (a, window), args (), {        if let Some(editor) = a.view_state.date_editor_mut() {
+        editor.focus_steal = true;
+    }
+    a.refresh_forced(&window);
 
     });
 

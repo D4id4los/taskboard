@@ -807,6 +807,7 @@ export component AppWindow inherits Window {
                 time-picked(m) => root.task-date-time-picked(m);
                 time-accepted(t) => root.task-date-time-accepted(t);
                 quick-toggled() => root.task-date-quick-toggled();
+                time-field-armed() => root.task-date-time-field-armed();
             }
 
         // The timers setter popover (r4 D33): the date-picker overlay
@@ -1780,6 +1781,11 @@ export component AppWindow inherits Window {
     // The quick-times chevrons' seams (round-5 F8): the latch/disarm
     // half of the chevron toggle, per surface.
     pure callback task-date-quick-toggled();
+    // The intra-picker click arm (US-2/D-6): the TimeField's field
+    // click arms the one-shot focus-steal latch (the editor's
+    // focus-lost settle skips once — an intra-picker focus move never
+    // settles the flow). slint: task-date-time-field-armed
+    pure callback task-date-time-field-armed();
     pure callback timer-setter-quick-toggled();
     pure callback track-form-start-quick-toggled();
     pure callback track-form-end-quick-toggled();

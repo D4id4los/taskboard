@@ -138,9 +138,41 @@ export component TimeField inherits Rectangle {
     // widget-local (D-3.3); the callback lets the consumer's seam set
     // the steal latch and disarm the digit filter for this open.
     callback quick-toggled();
+    // The intra-picker click arm (task-detail-editor UX plan US-2/D-6,
+    // #N-5): fired when the field is clicked while
+    // `click-arms-focus` is set — the consumer's seam arms the one-shot
+    // focus-steal latch BEFORE focus moves, so the host editor's
+    // focus-lost settle funnel skips once (an intra-editor focus move
+    // never settles the flow). The overlay below then moves focus
+    // itself (the recorded Slint negative: a TouchArea click never
+    // moves focus natively).
+    callback focus-armed();
+    // The mount opt-in (surface-neutral by contract): only the
+    // date-picker's due/scheduled mount sets it; the timer setter and
+    // the tracking form keep their native field behaviour.
+    in property <bool> click-arms-focus: false;
 
     height: field.natural-height;
     border-radius: Theme.radius-small;
+
+    // The intra-picker click arm (US-2/D-6): when opted in, this
+    // overlay covers the field element only (the steppers and the
+    // chevron stay click-armed beneath their own grammar). The click
+    // reports `focus-armed` first — the consumer's latch is set before
+    // focus moves — then moves focus into the input itself (a
+    // TouchArea click never moves focus natively, the recorded Slint
+    // negative, so the grab is the overlay's job).
+    if (root.click-arms-focus): arm-touch := TouchArea {
+        x: 0;
+        y: 0;
+        width: field.width;
+        height: field.height;
+        mouse-cursor: MouseCursor.text;
+        clicked => {
+            root.focus-armed();
+            field.grab-focus();
+        }
+    }
 
     if (root.validity == FieldValidity.invalid && field.text != "" && field.text != "--:--"): RoleText {
         role: Typography.caption;
