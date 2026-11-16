@@ -2678,6 +2678,23 @@ mod author_columns {
                 .await
                 .expect("drop column");
         }
+        // 0026 rides the same rewind: its `au_by` ALTERs the sidecar
+        // tables that survive this fixture's strip, so their au_by
+        // columns go by hand and the ledger forgets 0026 with the rest
+        // (the replayed migration would otherwise collide).
+        for statement in [
+            "ALTER TABLE reminder_rules DROP COLUMN au_by",
+            "ALTER TABLE break_rules DROP COLUMN au_by",
+            "ALTER TABLE time_entries DROP COLUMN au_by",
+            "ALTER TABLE habits DROP COLUMN au_by",
+            "ALTER TABLE habit_log DROP COLUMN au_by",
+        ] {
+            // Audited: constant, migration-owned column strips.
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&pool)
+                .await
+                .expect("drop 0026 column");
+        }
         sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 22")
             .execute(&pool)
             .await
