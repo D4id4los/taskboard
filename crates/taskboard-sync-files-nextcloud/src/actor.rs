@@ -815,11 +815,15 @@ mod tests {
         );
     }
 
-    /// 9 — unexpected 412 on own rewrite + GET 200 ⇒ `ForkDetected`:
-    /// the path joins the stop-write set, zero further PUTs to it
-    /// across advanced cycles, reads continue, the watch carries it.
+    /// 9 — the 412 give-up twin: both the guarded attempt and its
+    /// single re-resolution answer 412 with content ⇒ the typed
+    /// `ForkDetected` give-up (`MAX_412_RESOLUTIONS` spent): the path
+    /// joins the stop-write set, zero further PUTs to it across
+    /// advanced cycles, reads continue, the watch carries it. (The
+    /// convergence half — a single 412 converging with exactly one
+    /// re-PUT — is `matrix_16`.)
     #[tokio::test(start_paused = true)]
-    async fn matrix_9_own_path_412_with_content_forks_and_stops_writes() {
+    async fn matrix_9_own_path_second_412_forks_and_stops_writes() {
         let fake = FakeFilesTransport::new();
         seed_peer(&fake, "v1");
         let harness = spawn_actor(fake);
@@ -827,6 +831,19 @@ mod tests {
         let appdata = appdata_path(SELF);
         let puts_before = puts(&harness.fake, &appdata);
         harness.fake.answer_412_once(&appdata);
+        // The re-resolution's retry must 412 too: stage it behind the
+        // cycle's fixed request order (devices listing, the dirty
+        // peer's appdata + info GETs, then the own-path requests).
+        for effect in [
+            Effect::Pass,
+            Effect::Pass,
+            Effect::Pass,
+            Effect::Status(412),
+            Effect::Pass,
+            Effect::Status(412),
+        ] {
+            harness.fake.stage(effect);
+        }
         harness
             .fake
             .seed_file(&appdata_path(PEER), doc_bytes(&doc("v2")));
@@ -835,19 +852,62 @@ mod tests {
             status.forked_paths.contains(&appdata),
             "the fork alarm must land in the watch: {status:?}"
         );
+        assert_eq!(
+            puts(&harness.fake, &appdata) - puts_before,
+            2,
+            "the 412'd attempt plus exactly one re-PUT — never a third"
+        );
         // Across two further advanced cycles: zero further PUTs to the
-        // forked path (the fork cycle's 412'd attempt is the trigger
-        // itself and already in the log); the listing keeps running
-        // (reads continue).
+        // forked path; the listing keeps running (reads continue).
         let puts_after_fork = puts(&harness.fake, &appdata);
         let propfinds = harness.fake.count("PROPFIND", None);
         let _ = next_cycle(&harness).await;
         let _ = next_cycle(&harness).await;
         assert_eq!(puts(&harness.fake, &appdata), puts_after_fork);
-        let _ = puts_before;
         assert!(
             harness.fake.count("PROPFIND", None) >= propfinds + 2,
             "reads continue after the fork"
+        );
+    }
+
+    /// 16 — the 412 convergence half (the bounded-resolution spec): a
+    /// single 412 with differing content ⇒ one GET, one re-PUT with
+    /// the refreshed token — published, no fork, no loop.
+    #[tokio::test(start_paused = true)]
+    async fn matrix_16_single_412_converges_with_one_reresolution() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        let harness = spawn_actor(fake);
+        next_status(&harness).await;
+        let appdata = appdata_path(SELF);
+        let puts_before = puts(&harness.fake, &appdata);
+        let gets_before = gets(&harness.fake);
+        harness.fake.answer_412_once(&appdata);
+        harness
+            .fake
+            .seed_file(&appdata_path(PEER), doc_bytes(&doc("v2")));
+        let status = next_cycle(&harness).await;
+        assert!(
+            !status.forked_paths.contains(&appdata),
+            "one bounded re-resolution is not a fork: {status:?}"
+        );
+        assert_eq!(
+            puts(&harness.fake, &appdata) - puts_before,
+            2,
+            "the 412'd attempt plus exactly one re-PUT"
+        );
+        assert_eq!(
+            gets(&harness.fake) - gets_before,
+            3,
+            "the dirty peer's appdata + info reads plus the one
+             disambiguation GET"
+        );
+        let status = next_cycle(&harness).await;
+        assert!(ok(&status), "the converged view hash-skips: {status:?}");
+        assert_eq!(
+            puts(&harness.fake, &appdata) - puts_before,
+            2,
+            "no further PUTs after the convergence"
         );
     }
 

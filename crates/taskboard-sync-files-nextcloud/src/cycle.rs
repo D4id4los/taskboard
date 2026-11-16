@@ -966,6 +966,15 @@ async fn publish_appdata<T: FilesTransport>(
     };
     let bytes = serde_json::to_vec(merged)?;
     match transport.put_if_match(&path, &bytes, &token).await {
+        Ok(outcome) if put_etag(&outcome) == Some(&token) => {
+            // The retention signature (row 7, §2a): the response etag
+            // equals the pre-write token, so "my write landed" and "a
+            // sibling's same-second write also landed" are
+            // indistinguishable. One bounded verify GET adjudicates;
+            // the non-pathological churn path below adds zero
+            // requests (§5.4).
+            verify_retained_write(transport, ctx, st, &path, merged, &bytes).await
+        }
         Ok(outcome) => {
             record_put(st, &path, &outcome);
             st.published_hash = Some(StateHash::of(merged));
@@ -973,9 +982,7 @@ async fn publish_appdata<T: FilesTransport>(
             Ok(())
         }
         Err(TransportError::NotFound) => create_own_appdata(transport, st, &path, merged).await,
-        Err(TransportError::PreconditionFailed) => {
-            disambiguate_own_412(transport, ctx, st, &path).await
-        }
+        Err(TransportError::PreconditionFailed) => resolve_own_412(transport, ctx, st, &path).await,
         Err(other) => Err(other),
     }
 }
@@ -991,6 +998,11 @@ async fn rewrite_own_appdata<T: FilesTransport>(
     let token = st.etags.file_etag(&path).cloned();
     match token {
         Some(token) => match transport.put_if_match(&path, &bytes, &token).await {
+            Ok(outcome) if put_etag(&outcome) == Some(&token) => {
+                // The retention signature (row 7, §2a) — see
+                // `publish_appdata`.
+                verify_retained_write(transport, ctx, st, &path, merged, &bytes).await
+            }
             Ok(outcome) => {
                 record_put(st, &path, &outcome);
                 st.published_hash = Some(StateHash::of(merged));
@@ -998,11 +1010,56 @@ async fn rewrite_own_appdata<T: FilesTransport>(
                 Ok(())
             }
             Err(TransportError::PreconditionFailed) => {
-                disambiguate_own_412(transport, ctx, st, &path).await
+                resolve_own_412(transport, ctx, st, &path).await
             }
             Err(other) => Err(other),
         },
         None => create_own_appdata(transport, st, &path, merged).await,
+    }
+}
+
+/// The response etag of a PUT outcome (the retention-signature
+/// compare's read half).
+fn put_etag(outcome: &PutOutcome) -> Option<&crate::etag::Etag> {
+    match outcome {
+        PutOutcome::Created { etag } | PutOutcome::Updated { etag } => etag.as_ref(),
+    }
+}
+
+/// The retention-signature verify (row 7, §2a): one GET of the own
+/// path decides — served bytes equal to the sent bytes ⇒ converged
+/// (an honest token refresh from the GET, the publish bookkeeping as
+/// today); served bytes differ ⇒ the same-second lost update
+/// happened: the typed `ForkDetected` path runs (no silent overwrite
+/// survives both sides running this client — the sibling clone's own
+/// verification detects the mirror case, so the pair converges to
+/// full-subtree stop). A raced delete is the vanished arm.
+async fn verify_retained_write<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    path: &str,
+    merged: &UserDocument,
+    sent: &[u8],
+) -> Result<(), TransportError> {
+    match transport.get(path).await {
+        Ok(content) if content.bytes == sent => {
+            record_get(st, path, &content);
+            st.published_hash = Some(StateHash::of(merged));
+            st.pending_heartbeat = true;
+            Ok(())
+        }
+        Ok(content) => {
+            mark_fork(st, ctx, path, &content);
+            Ok(())
+        }
+        Err(TransportError::NotFound) => {
+            finding("OwnFileVanished", path);
+            st.etags.forget_file(path);
+            st.published_hash = None;
+            Ok(())
+        }
+        Err(other) => Err(other),
     }
 }
 
@@ -1029,12 +1086,36 @@ async fn create_own_appdata<T: FilesTransport>(
     }
 }
 
-/// The fork disambiguation (D-FT6): one GET of the own path decides —
-/// 404 ⇒ `OwnFileVanished` (drop the token; the next cycle recreates
-/// via create-once), 200 ⇒ `ForkDetected` (stop-write that path,
-/// reads continue, loud). Failing closed here is deliberate: a false
-/// fork alarm over a user delete would cry wolf; a missed fork would
-/// silently split a device's history.
+/// The typed give-up: `ForkDetected` — stop-write that path, reads
+/// continue, loud, the served document enters `st.docs` (our own
+/// subtree is read as peer data after the fork: the sibling path (the
+/// clone's write) keeps participating in PROPFIND/GET/fold, and forks
+/// on its own 412 if the clone writes it — the set converges to
+/// full-subtree stop).
+fn mark_fork(
+    st: &mut LoopState,
+    ctx: &SyncContext,
+    path: &str,
+    content: &crate::transport::FileContent,
+) {
+    fork_alarm(path);
+    st.forked_paths.insert(path.to_owned());
+    st.publish_seed = None;
+    if path.ends_with(APPDATA_FILE_NAME)
+        && let Ok(document) = serde_json::from_slice::<UserDocument>(&content.bytes)
+        && document.format <= DOCUMENT_FORMAT
+    {
+        st.docs.insert(ctx.identity.device_id, document);
+    }
+}
+
+/// The heartbeat path's fork disambiguation (D-FT6): one GET of the
+/// own path decides — 404 ⇒ `OwnFileVanished` (drop the token; the
+/// next cycle recreates via create-once), 200 ⇒ `ForkDetected`
+/// (stop-write that path, reads continue, loud). The appdata path's
+/// 412s resolve through [`resolve_own_412`] instead (§5.1): a
+/// heartbeat is derived state, so there is no convergence attempt to
+/// make — failing closed here is deliberate.
 async fn disambiguate_own_412<T: FilesTransport>(
     transport: &T,
     ctx: &SyncContext,
@@ -1053,20 +1134,82 @@ async fn disambiguate_own_412<T: FilesTransport>(
             Ok(())
         }
         Ok(content) => {
-            fork_alarm(path);
-            st.forked_paths.insert(path.to_owned());
-            st.publish_seed = None;
-            // Our own subtree is read as peer data after the fork: the
-            // sibling path (the clone's write) keeps participating in
-            // PROPFIND/GET/fold, and forks on its own 412 if the clone
-            // writes it — the set converges to full-subtree stop.
-            if path.ends_with(APPDATA_FILE_NAME)
-                && let Ok(document) = serde_json::from_slice::<UserDocument>(&content.bytes)
-                && document.format <= DOCUMENT_FORMAT
-            {
-                st.docs.insert(ctx.identity.device_id, document);
-            }
+            mark_fork(st, ctx, path, &content);
             Ok(())
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// The stale-token 412 resolution for the own appdata path (the
+/// bounded-convergence spec §5.1): one GET disambiguates — 404 ⇒ the
+/// vanished arm (drop the token, clear the skip-hash); 200 ⇒ fold the
+/// served document and, when the re-folded view still differs from
+/// served, re-attempt the guarded write **exactly once** with the
+/// refreshed token (`MAX_412_RESOLUTIONS` — a genuine convergence
+/// attempt, not a spin). A second 412 on that retry is the typed
+/// give-up: [`mark_fork`], no third PUT. Retention never rescues a
+/// genuinely stale token — this path is the *client* half of the
+/// convergence, and it is what bounds every 412 to one retry.
+async fn resolve_own_412<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    path: &str,
+) -> Result<(), TransportError> {
+    match transport.get(path).await {
+        Err(TransportError::NotFound) => {
+            finding("OwnFileVanished", path);
+            st.etags.forget_file(path);
+            // The local view is no longer published anywhere: clear
+            // the skip-hash so the next cycle recreates via
+            // create-once (the seed's rows ride along — nothing is
+            // dropped by a transient delete).
+            st.published_hash = None;
+            Ok(())
+        }
+        Ok(content) => {
+            let served = serde_json::from_slice::<UserDocument>(&content.bytes)
+                .ok()
+                .filter(|document| document.format <= DOCUMENT_FORMAT);
+            let Some(served) = served else {
+                // Undecodable or newer-format content is not ours to
+                // re-write over: fail closed (today's posture).
+                mark_fork(st, ctx, path, &content);
+                return Ok(());
+            };
+            // Fold the served document (as the fork arm does), then
+            // re-fold the full merged view.
+            st.docs.insert(ctx.identity.device_id, served.clone());
+            let refolded = merged_view(ctx, st);
+            if refolded == served {
+                // Converged: the server already holds this device's
+                // view — refresh the token and adopt the hash; no
+                // rewrite, no fork.
+                record_get(st, path, &content);
+                st.published_hash = Some(StateHash::of(&refolded));
+                return Ok(());
+            }
+            let Some(refreshed) = content.etag.clone() else {
+                // No token to guard the re-write with: fail closed.
+                mark_fork(st, ctx, path, &content);
+                return Ok(());
+            };
+            let bytes = serde_json::to_vec(&refolded)?;
+            match transport.put_if_match(path, &bytes, &refreshed).await {
+                Ok(outcome) => {
+                    record_put(st, path, &outcome);
+                    st.published_hash = Some(StateHash::of(&refolded));
+                    st.pending_heartbeat = true;
+                    Ok(())
+                }
+                Err(TransportError::PreconditionFailed) => {
+                    // Typed give-up: the retry bound is spent.
+                    mark_fork(st, ctx, path, &content);
+                    Ok(())
+                }
+                Err(other) => Err(other),
+            }
         }
         Err(other) => Err(other),
     }
