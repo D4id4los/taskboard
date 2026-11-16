@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The focus-origin restore fact (the focus-restoration plan US-1/W-1,
+// D-F1): after an overlay site closes, the adapter resolves the
+// recorded origin and writes this global — the typed tuple (seam,
+// anchor kind, target pair, nonce) every restore consumer and journey
+// test reads. `anchor-kind`: 1 task row (the FocusScrollHint target
+// convention: board column / today section in target-a, the row in
+// target-b; stack detail reads target-b alone), 2 stack header
+// (target-a = column), 3 board-bar cell (target-a = segment), 4 the
+// task detail's title cell, 5 its description cell. One view tree is
+// instantiated at a time (Q4), so the surfaces cannot disagree about
+// who consumes a fact. The nonce makes identical restores edge-
+// triggered (the FocusScrollHint discipline).
+
+export global FocusFacts {
+    in property <int> seam-id: -1;
+    in property <int> anchor-kind: 0;
+    in property <int> target-a: -1;
+    in property <int> target-b: -1;
+    in property <int> nonce: 0;
+}

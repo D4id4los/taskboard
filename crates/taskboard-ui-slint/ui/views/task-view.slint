@@ -21,6 +21,7 @@ import { ActivationStop } from "../widgets/activation-stop.slint";
 import { EditingFacts } from "../editing-facts.slint";
 import { TaskViewWalkFacts } from "../walk-facts.slint";
 import { TrackPanelFacts } from "../track-panel-facts.slint";
+import { FocusFacts } from "../focus-facts.slint";
 import { TrackEntryRowModel } from "../compositions/track-entries.slint";
 
 // One priority-picker slot row (UX R-3 D-1, #788): the level's
@@ -499,6 +500,21 @@ export component TaskView inherits FocusScope {
                         stop-description: "Arms the title editor for the viewed task.";
                         stop-id: 3;
                         activated => { root.title-edit-opened(); }
+                        // The focus-origin restore (US-1/W-1): an
+                        // overlay opened from the detail restores into
+                        // the title cell — kind 4 in `FocusFacts`. The
+                        // init leg covers the mount-after-push order
+                        // (the editor unmounts and the display
+                        // remounts in the same pass). The wrapper
+                        // property is the `changed`-on-global idiom
+                        // (the walk probe's recorded watch shape).
+                        property <int> watch-restore-nonce: FocusFacts.nonce;
+                        init => {
+                            if (FocusFacts.anchor-kind == 4) { self.focus(); }
+                        }
+                        changed watch-restore-nonce => {
+                            if (FocusFacts.anchor-kind == 4) { self.focus(); }
+                        }
                     }
                     // The hover surface (z-over the stop, z-under the
                     // text): the due-cell grammar's hover affordance.
@@ -1135,6 +1151,16 @@ export component TaskView inherits FocusScope {
                         stop-description: "Opens the description editor.";
                         stop-id: 11;
                         activated => { root.description-edit-opened(); }
+                        // The focus-origin restore's description twin
+                        // (US-1/W-1, kind 5): same grammar as the
+                        // title cell.
+                        property <int> watch-restore-nonce: FocusFacts.nonce;
+                        init => {
+                            if (FocusFacts.anchor-kind == 5) { self.focus(); }
+                        }
+                        changed watch-restore-nonce => {
+                            if (FocusFacts.anchor-kind == 5) { self.focus(); }
+                        }
                     }
                     if (description-touch.has-hover): Rectangle {
                         background: Theme.surface-raised;
