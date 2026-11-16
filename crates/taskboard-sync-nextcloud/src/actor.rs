@@ -918,13 +918,16 @@ fn consume_reservoirs(st: &mut LoopState, migrated: &taskboard_domain::AppDataSe
     }
 }
 
-/// The advertised `Retry-After` delay of a rate-limited failure, `ZERO`
-/// when the failure carries no usable hint. (A 429 during *push* never
-/// reaches here: `GroupOutcome::Aborted` swallows the `DeckError` — the
-/// next cycle's pull meets the same limiter and installs the floor then.)
+/// The advertised `Retry-After` delay of a hinting failure (rate
+/// limited or unavailable), `ZERO` when the failure carries no usable
+/// hint. (A hinting failure during *push* never reaches here:
+/// `GroupOutcome::Aborted` carries the floor itself since chunk F.)
 fn advertised_floor(err: &DeckError) -> Duration {
     match err {
         DeckError::RateLimited {
+            retry_after: Some(d),
+        }
+        | DeckError::Unavailable {
             retry_after: Some(d),
         } => *d,
         _ => Duration::ZERO,
