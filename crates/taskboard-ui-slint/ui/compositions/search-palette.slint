@@ -50,7 +50,7 @@ export component SearchPalette inherits Rectangle {
     property <int> watch-mask-nonce: MaskWalkFacts.nonce;
     changed watch-mask-nonce => {
         if (MaskWalkFacts.armed) {
-            query-field.grab-focus();;
+            query-field.grab-focus();
             MaskWalkFacts.cursor = 0;
         }
     }

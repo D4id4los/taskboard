@@ -33,7 +33,7 @@ export component CaptureOverlay inherits Rectangle {
     property <int> watch-mask-nonce: MaskWalkFacts.nonce;
     changed watch-mask-nonce => {
         if (MaskWalkFacts.armed) {
-            capture-field.grab-focus();;
+            capture-field.grab-focus();
             MaskWalkFacts.cursor = 0;
         }
     }
