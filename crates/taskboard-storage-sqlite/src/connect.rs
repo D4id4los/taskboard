@@ -199,7 +199,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 25, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 26, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -361,7 +361,23 @@ mod tests {
             .execute(&raw)
             .await
             .expect("strip habits");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 17")
+        // 0026 rides the strip too: its `au_by` ALTERs the re-created
+        // bare habit tables (the 0018/0021 shape). reminder_rules,
+        // break_rules and time_entries survive the strip, so their
+        // au_by columns go by hand — the replayed ALTER would
+        // otherwise collide.
+        for statement in [
+            "ALTER TABLE reminder_rules DROP COLUMN au_by",
+            "ALTER TABLE break_rules DROP COLUMN au_by",
+            "ALTER TABLE time_entries DROP COLUMN au_by",
+        ] {
+            // Audited: constant, migration-owned column strips.
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&raw)
+                .await
+                .expect("strip au_by col");
+        }
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (17, 26)")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");
