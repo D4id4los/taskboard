@@ -2927,6 +2927,14 @@ fn task_card_model(
         can_done: !presentation::tracker_badge_visible(task),
         emphasis: vs.focused_task().is_some_and(|f| f == task.id),
         dragging_source: matches!(vs.flow(), Flow::DragMove { task: dragged, .. } if *dragged == task.id),
+        // The selection's render fact (UX-R8 D-4): member + anchor,
+        // derived over this pass (the reconcile prune precedes the
+        // push, so dead members never render selected).
+        selected: vs.selection().contains(&task.id),
+        anchor: vs
+            .selection()
+            .anchor()
+            .is_some_and(|anchor| anchor == task.id),
         decorations,
     }
 }

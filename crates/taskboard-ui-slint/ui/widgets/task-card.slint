@@ -53,6 +53,12 @@ export struct TaskCardModel {
     // models pass on the card being dragged; the ghost copy carries
     // `false`. Model-driven, so it survives refreshes.
     dragging-source: bool,
+    // The board selection's render fact (UX-R8 D-4): the card is a
+    // selection member, and whether it is the range anchor (the ring
+    // uses the focus tokens without holding focus — the header note).
+    // Derivation lives in the models pass; no slint-side logic.
+    selected: bool,
+    anchor: bool,
     decorations: [TaskDecoration],
 }
 
@@ -66,6 +72,14 @@ export component TaskCard inherits Rectangle {
     out property <length> title-preferred-width: title-text.preferred-width;
     callback activated();
     callback clicked();
+    // The modifier-click grammar (UX-R8 D-5, US-4/S1): shift/ctrl
+    // releases emit the modifier pair (shift, control) instead of
+    // the plain click — exactly one of the two callbacks fires per
+    // release (the branch in the pointer-event handler is
+    // exhaustive). The keymap is untouched: Slint's PointerEvent
+    // carries the modifiers.
+    // slint: clicked-modifiers
+    callback clicked-modifiers(bool, bool);
     // The done checkbox's toggle (r3 D6): state-less — the wiring
     // chain supplies the address; the adapter flips the model's bit.
     callback done-toggled();
@@ -85,7 +99,11 @@ export component TaskCard inherits Rectangle {
         : root.model.done ? Theme.background
         : Theme.surface-raised;
     border-radius: Theme.radius-medium;
-    border-width: root.model.emphasis ? Theme.focus-ring-width : 0;
+    // The selection ring (UX-R8 D-4): the focus tokens without
+    // holding focus — members ring at the focus width, the anchor
+    // doubles it (the anchor is the range origin, visibly distinct).
+    border-width: root.model.anchor ? Theme.focus-ring-width * 2
+        : root.model.selected || root.model.emphasis ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;
     // The drag-source dim (r2 D-D): the literal is Tier-4-tunable, no
     // token (the plan §3.3 records why).
@@ -109,11 +127,21 @@ export component TaskCard inherits Rectangle {
             }
         }
         double-clicked => root.activated();
-        clicked => root.clicked();
         // P3: pointer-event fires on right presses; the design's
         // `button == right` seam (its identity is a real-backend
-        // property — the Tier-4 probe checks it).
+        // property — the Tier-4 probe checks it). UX-R8 D-5: the
+        // left-button release emits from here — the modifier pair
+        // when shift/ctrl held, the plain click otherwise (exactly
+        // one callback per release).
         pointer-event(event) => {
+            if (event.kind == PointerEventKind.up
+                    && event.button == PointerEventButton.left) {
+                if (event.modifiers.shift || event.modifiers.control) {
+                    root.clicked-modifiers(event.modifiers.shift, event.modifiers.control);
+                } else {
+                    root.clicked();
+                }
+            }
             if (event.kind == PointerEventKind.down
                     && event.button == PointerEventButton.right) {
                 root.context-requested(self.absolute-position.x / 1px + self.mouse-x / 1px,

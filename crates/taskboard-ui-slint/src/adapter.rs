@@ -806,6 +806,7 @@ impl Adapter {
     /// the grid; flipping Normal there would hand Escape to vi's
     /// move-cancel instead of the clean close). The engage pull's
     /// idempotence against the flow outcomes is the convergence.
+    #[allow(clippy::too_many_lines)] // the resolver's dispatch arm + the scope arms, kept flat
     fn intercept(
         &mut self,
         window: &AppWindow,
@@ -891,6 +892,24 @@ impl Adapter {
                     return false;
                 }
                 Self::set_feedback(window, KeyFeedback::None);
+                // UX-R8 D-4's shift-walk extension: the named-key walk
+                // rows with shift held extend the selection instead of
+                // the plain focus step (the board surface; other
+                // surfaces keep the plain step — R-1's scoping). The
+                // printable-bound rows fold shift away (the recorded
+                // leniency: arrows only).
+                if stroke.shift
+                    && matches!(id, ActionId::NavNextItem | ActionId::NavPrevItem)
+                    && self.view_state.view() == crate::view_state::ViewId::Board
+                {
+                    let before = self.view_state.focused_task();
+                    let state = self.state.load_full();
+                    let direction = if id == ActionId::NavNextItem { 1 } else { -1 };
+                    let outcomes = self.view_state.extend_selection_walk(&state, direction);
+                    self.apply_outcomes(window, &outcomes);
+                    self.push_focus_scroll_hint(window, before);
+                    return true;
+                }
                 self.route(window, id);
                 true
             }
@@ -2688,6 +2707,14 @@ impl Adapter {
         // settling pass with no flow armed still retires them.
         self.width_drag = None;
         self.scale_drag = None;
+        // UX-R8 D-4's settle arm: every foreign settle clears the
+        // selection alongside the flow settle — even with no flow
+        // level live (the empty-selection early return below must
+        // not skip it).
+        if !self.view_state.selection().is_empty() {
+            let outcomes = self.view_state.clear_selection();
+            self.apply_outcomes(window, &outcomes);
+        }
         let flow = self.view_state.flow().clone();
         if matches!(flow, Flow::None) {
             return;
@@ -9506,7 +9533,7 @@ fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (column, row, x, y), {        let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
         return;
     };
-    settle_pointer_conflict(&mut a, &window);
+    settle_pointer_conflict_keeping_selection(&mut a, &window, true);
     let Some((stack, task)) = a.tables.board_task(column, row) else {
         return;
     };
@@ -10135,6 +10162,30 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind mut (a, window), args (column, row), {        focus_board_card(&mut a, &window, column, row);
 
     });
+    // The modifier-click grammar (UX-R8 D-5, US-4/S1): the card's
+    // modifier release — shift builds the range span, ctrl toggles;
+    // the card resolves via the id tables (a stale index absorbed).
+    // Nothing dispatches: selection is presentation state (R-2).
+    // slint: task-clicked-modifiers
+    install_seam!(window: window.on_board_task_clicked_modifiers, adapter: adapter;
+    bind mut (a, window), args (column, row, shift, control), {        settle_pointer_conflict(&mut a, &window);
+    let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+        return;
+    };
+    let Some((_, task)) = a.tables.board_task(column, row) else {
+        return;
+    };
+    let state = a.state.load_full();
+    let outcomes = if shift {
+        a.view_state.selection_range(&state, task)
+    } else if control {
+        a.view_state.selection_toggle(task)
+    } else {
+        Vec::new()
+    };
+    a.apply_outcomes(&window, &outcomes);
+
+    });
     install_seam!(window: window.on_board_task_activated, adapter: adapter;
     bind mut (a, window), args (column, row), {        if focus_board_card(&mut a, &window, column, row).is_some() {
         a.route(&window, ActionId::TaskEdit);
@@ -10208,6 +10259,19 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// per-kind rule before its own semantics; idempotent on
 /// `Flow::None` (the double-settle guard).
 fn settle_pointer_conflict(adapter: &mut Adapter, window: &AppWindow) {
+    settle_pointer_conflict_keeping_selection(adapter, window, false);
+}
+
+/// The context-menu variant (UX-R8 D-11): opening a task's context
+/// menu settles a live flow per the pointer rule but *keeps* the
+/// selection — the multi-selection menu (US-4/S3) reads it, and the
+/// exit restores the invoking card with the selection still driving
+/// the menu's grammar on reopen.
+fn settle_pointer_conflict_keeping_selection(
+    adapter: &mut Adapter,
+    window: &AppWindow,
+    keep_selection: bool,
+) {
     // The r4 D24 rule governs the date editor's own exits — a foreign
     // begin (the description field taking focus, journey 13's steal)
     // is one: settle per the commit/discard rule, not the
@@ -10216,7 +10280,11 @@ fn settle_pointer_conflict(adapter: &mut Adapter, window: &AppWindow) {
         settle_date_editor(adapter, window);
     }
     let state = adapter.state.load_full();
+    let selection = adapter.view_state.take_selection();
     adapter.settle_flow(window, &state);
+    if keep_selection {
+        adapter.view_state.restore_selection(selection);
+    }
 }
 
 /// A board card at (column, row): resolves the id tables (D2) and
@@ -10234,6 +10302,11 @@ fn focus_board_card(
         return None;
     };
     let (stack, task) = adapter.tables.board_task(column, row)?;
+    // UX-R8 D-4's plain-click cell: the left click resets the
+    // selection (the focus still moves — the open posture rides the
+    // action layer). The right-click context funnel calls
+    // `activate_card` directly and keeps the selection (D-11).
+    adapter.view_state.reset_selection();
     let outcomes = adapter.view_state.activate_card(task, stack);
     adapter.apply_outcomes(window, &outcomes);
     Some((stack, task))

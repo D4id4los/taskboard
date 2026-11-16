@@ -120,6 +120,11 @@ export component BoardLayout inherits Rectangle {
     in property <int> move-target;
     callback task-activated(int, int);
     callback task-clicked(int, int);
+    // The modifier-click grammar (UX-R8 D-5, US-4/S1): the card's
+    // modifier release, addressed (column, task-index) — the adapter
+    // resolves the id tables and routes the selection VM.
+    // slint: task-clicked-modifiers
+    callback task-clicked-modifiers(int, int, bool, bool);
     // The right-click context request (round-1 D13).
     callback task-context(int, int, float, float);
     callback header-activated(int);
@@ -631,6 +636,7 @@ export component BoardLayout inherits Rectangle {
                                         hint-keys: root.task-card-hint;
                                         activated => root.task-activated(column-index, task-index);
                                         clicked => root.task-clicked(column-index, task-index);
+                                        clicked-modifiers(shift, control) => root.task-clicked-modifiers(column-index, task-index, shift, control);
                                         context-requested(x, y) => root.task-context(column-index, task-index, x, y);
                                         done-toggled => root.task-done-toggled(column-index, task-index);
                                     }
@@ -1035,6 +1041,7 @@ export component BoardLayout inherits Rectangle {
                         hint-keys: root.task-card-hint;
                         activated => root.task-activated(root.effective-selected(), task-index);
                         clicked => root.task-clicked(root.effective-selected(), task-index);
+                        clicked-modifiers(shift, control) => root.task-clicked-modifiers(root.effective-selected(), task-index, shift, control);
                         context-requested(x, y) => root.task-context(root.effective-selected(), task-index, x, y);
                         done-toggled => root.task-done-toggled(root.effective-selected(), task-index);
                     }
