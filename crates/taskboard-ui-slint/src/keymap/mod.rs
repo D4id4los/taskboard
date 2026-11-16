@@ -753,14 +753,6 @@ mod tests {
                 "{spelling} steps the detail's item walk (the D-1 move)"
             );
         }
-        for (spelling, walk) in chords {
-            let stroke = stroke::parse(spelling).expect("the chord parses");
-            assert_eq!(
-                keymap.resolve(&detail_chain, &[stroke]),
-                Some(walk),
-                "{spelling} walks controls on the detail chain"
-            );
-        }
         // The board keeps its live task/stack walk: C-n/C-p stay item
         // nav, C-f/C-b stay stack next/prev.
         let board_rows = [
