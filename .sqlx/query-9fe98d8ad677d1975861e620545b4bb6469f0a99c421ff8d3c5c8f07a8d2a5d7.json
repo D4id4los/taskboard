@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT rule_id, board_id, label, threshold_seconds, insistence,\n                      created_at as \"created_at: DateTime<Utc>\"\n               FROM break_rules ORDER BY rule_id",
+  "query": "SELECT rule_id, board_id, label, threshold_seconds, insistence,\n                      created_at as \"created_at: DateTime<Utc>\",\n                      au_by\n               FROM break_rules ORDER BY rule_id",
   "describe": {
     "columns": [
       {
@@ -68,6 +68,17 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "name": "au_by",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "break_rules",
+            "name": "au_by"
+          }
+        }
       }
     ],
     "parameters": {
@@ -79,8 +90,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "1f423dc1b1122412cfda2ea64c62bdc7e6036c97730e5179672df3c59ae2ee83"
+  "hash": "9fe98d8ad677d1975861e620545b4bb6469f0a99c421ff8d3c5c8f07a8d2a5d7"
 }

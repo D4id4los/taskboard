@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence,\n                      created_at as \"created_at: DateTime<Utc>\",\n                      updated_at as \"updated_at: DateTime<Utc>\"\n               FROM reminder_rules ORDER BY rule_id",
+  "query": "SELECT rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence,\n                      created_at as \"created_at: DateTime<Utc>\",\n                      updated_at as \"updated_at: DateTime<Utc>\",\n                      au_by\n               FROM reminder_rules ORDER BY rule_id",
   "describe": {
     "columns": [
       {
@@ -90,6 +90,17 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "name": "au_by",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reminder_rules",
+            "name": "au_by"
+          }
+        }
       }
     ],
     "parameters": {
@@ -103,8 +114,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "bf0a5de031926f0173c52717c967adbd805e4a0c04c854ac2e8d869bb8fafeb8"
+  "hash": "f33466ba9a2246978196f58c193d2e14ebfc49047063330ce9f77579ab2f8632"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT entry_id, task_id, task_title,\n                      start as \"start: DateTime<Utc>\",\n                      end as \"end: DateTime<Utc>\",\n                      created_at as \"created_at: DateTime<Utc>\",\n                      updated_at as \"updated_at: DateTime<Utc>\",\n                      kind\n               FROM time_entries ORDER BY entry_id",
+  "query": "SELECT entry_id, task_id, task_title,\n                      start as \"start: DateTime<Utc>\",\n                      end as \"end: DateTime<Utc>\",\n                      created_at as \"created_at: DateTime<Utc>\",\n                      updated_at as \"updated_at: DateTime<Utc>\",\n                      kind,\n                      au_by\n               FROM time_entries ORDER BY entry_id",
   "describe": {
     "columns": [
       {
@@ -90,6 +90,17 @@
             "name": "kind"
           }
         }
+      },
+      {
+        "name": "au_by",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "time_entries",
+            "name": "au_by"
+          }
+        }
       }
     ],
     "parameters": {
@@ -103,8 +114,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "b74c14eaad62e74d84407deef8913b4d293e146c5cfe33eb619d4be7c3444a24"
+  "hash": "e04b61c95eda82e5a7f69a0778617bc5752d8013d94df1337f8cccf86cc3c48c"
 }

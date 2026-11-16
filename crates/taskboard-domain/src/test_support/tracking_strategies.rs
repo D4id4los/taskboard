@@ -25,22 +25,29 @@ pub fn time_entry_strategy() -> impl Strategy<Value = TimeEntry> {
         1_i64..=86_400,
         prop::option::of(Just(())),
         super::timestamp_strategy(),
+        prop::option::of(
+            any::<u128>()
+                .prop_map(|raw| crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(raw))),
+        ),
     )
-        .prop_map(|(raw, task, title, start, span_secs, open, updated_at)| {
-            let end = open
-                .map(|()| start + chrono::TimeDelta::try_seconds(span_secs).expect("bounded span"));
-            TimeEntry {
-                id: crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(raw)),
-                task,
-                task_title: title,
-                start,
-                end,
-                created_at: updated_at,
-                updated_at,
-                kind: crate::tracking::TimeEntryKind::Work,
-                by: None,
-            }
-        })
+        .prop_map(
+            |(raw, task, title, start, span_secs, open, updated_at, by)| {
+                let end = open.map(|()| {
+                    start + chrono::TimeDelta::try_seconds(span_secs).expect("bounded span")
+                });
+                TimeEntry {
+                    id: crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(raw)),
+                    task,
+                    task_title: title,
+                    start,
+                    end,
+                    created_at: updated_at,
+                    updated_at,
+                    kind: crate::tracking::TimeEntryKind::Work,
+                    by,
+                }
+            },
+        )
 }
 
 /// An arbitrary [`crate::tracking::TrackingState`]: 0..=4 entries with

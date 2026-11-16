@@ -191,6 +191,7 @@ struct ReminderRuleRow {
     insistence: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    au_by: Option<String>,
 }
 
 /// Raw `adhoc_alarms` row.
@@ -226,6 +227,7 @@ struct TimeEntryRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     kind: String,
+    au_by: Option<String>,
 }
 
 /// Raw `break_rules` row (0018/0021; board-scoped roaming reminder
@@ -237,6 +239,7 @@ struct BreakRuleRow {
     threshold_seconds: i64,
     insistence: String,
     created_at: DateTime<Utc>,
+    au_by: Option<String>,
 }
 
 /// Raw `reminder_dismissals` row.
@@ -286,7 +289,7 @@ fn decode_break_rule(row: &BreakRuleRow, board: Uuid) -> Result<BreakRule, Repos
         threshold,
         insistence: decode::insistence(&row.insistence)?,
         created_at: row.created_at,
-        by: None,
+        by: decode::author(row.au_by.as_deref())?,
     })
 }
 
@@ -717,7 +720,7 @@ fn decode_reminder_rule(
             // decode with the epoch, which loses every clock race
             // exactly like `BoardClocks::epoch`'s precedent.
             updated_at: row.updated_at,
-            by: None,
+            by: decode::author(row.au_by.as_deref())?,
         },
     ))
 }
@@ -740,6 +743,7 @@ type HabitRow = (
     String,         // ck_deleted
     bool,           // deleted
     Option<String>, // continued_from
+    Option<String>, // au_by
 );
 
 fn decode_habit(
@@ -759,6 +763,7 @@ fn decode_habit(
         ck_deleted,
         deleted,
         continued_from,
+        au_by,
     ) = row;
     let id = taskboard_domain::ids::HabitId::from(
         codec::uuid_from_text(habit_id).map_err(|_| RepositoryError::Corrupted)?,
@@ -789,6 +794,7 @@ fn decode_habit(
         .transpose()
         .map_err(|_| RepositoryError::Corrupted)?
         .map(taskboard_domain::ids::SeriesId::from);
+    let by = decode::author(au_by.as_deref())?;
     Ok((
         id,
         taskboard_domain::Habit {
@@ -801,7 +807,7 @@ fn decode_habit(
             clocks,
             continued_from,
             deleted: *deleted,
-            by: None,
+            by,
         },
     ))
 }
@@ -902,7 +908,7 @@ fn decode_time_entry(row: &TimeEntryRow) -> Result<(TimeEntryId, TimeEntry), Rep
             // 0018's `DEFAULT 'work'` backfill is what makes every
             // pre-0018 row read `Work` (the local default-off decode).
             kind: decode::time_entry_kind(&row.kind)?,
-            by: None,
+            by: decode::author(row.au_by.as_deref())?,
         },
     ))
 }
@@ -1074,7 +1080,8 @@ impl SqliteTaskRepository {
             ReminderRuleRow,
             r#"SELECT rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence,
                       created_at as "created_at: DateTime<Utc>",
-                      updated_at as "updated_at: DateTime<Utc>"
+                      updated_at as "updated_at: DateTime<Utc>",
+                      au_by
                FROM reminder_rules ORDER BY rule_id"#
         )
         .fetch_all(&mut *tx)
@@ -1084,7 +1091,8 @@ impl SqliteTaskRepository {
         let break_rule_rows = sqlx::query_as!(
             BreakRuleRow,
             r#"SELECT rule_id, board_id, label, threshold_seconds, insistence,
-                      created_at as "created_at: DateTime<Utc>"
+                      created_at as "created_at: DateTime<Utc>",
+                      au_by
                FROM break_rules ORDER BY rule_id"#
         )
         .fetch_all(&mut *tx)
@@ -1174,7 +1182,8 @@ impl SqliteTaskRepository {
                       end as "end: DateTime<Utc>",
                       created_at as "created_at: DateTime<Utc>",
                       updated_at as "updated_at: DateTime<Utc>",
-                      kind
+                      kind,
+                      au_by
                FROM time_entries ORDER BY entry_id"#
         )
         .fetch_all(&mut *tx)
@@ -1184,16 +1193,16 @@ impl SqliteTaskRepository {
         let habit_rows: Vec<HabitRow> = sqlx::query_as(
             r"SELECT habit_id, board_id, title, target, sort_order, anchor_time,
                       ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted,
-                      continued_from
+                      continued_from, au_by
                FROM habits ORDER BY habit_id",
         )
         .fetch_all(&mut *tx)
         .await
         .map_err(|e| stmt_error(&e))?;
 
-        type HabitLogRow = (String, String, i64, String);
+        type HabitLogRow = (String, String, i64, String, Option<String>);
         let habit_log_rows: Vec<HabitLogRow> = sqlx::query_as(
-            r"SELECT habit_id, window_start, count, clock FROM habit_log
+            r"SELECT habit_id, window_start, count, clock, au_by FROM habit_log
                ORDER BY habit_id, window_start",
         )
         .fetch_all(&mut *tx)
@@ -1400,7 +1409,7 @@ impl SqliteTaskRepository {
                     let (id, habit) = decode_habit(row)?;
                     habits.habits.insert(id, habit);
                 }
-                for (habit_id, window_start, count, clock) in &habit_log_rows {
+                for (habit_id, window_start, count, clock, au_by) in &habit_log_rows {
                     let habit = taskboard_domain::ids::HabitId::from(
                         codec::uuid_from_text(habit_id).map_err(|_| RepositoryError::Corrupted)?,
                     );
@@ -1414,14 +1423,10 @@ impl SqliteTaskRepository {
                     };
                     let count = u32::try_from(*count).map_err(|_| RepositoryError::Corrupted)?;
                     let clock: DateTime<Utc> = decode::clock(clock)?;
-                    habits.log.insert(
-                        key,
-                        taskboard_domain::HabitLogEntry {
-                            count,
-                            clock,
-                            by: None,
-                        },
-                    );
+                    let by = decode::author(au_by.as_deref())?;
+                    habits
+                        .log
+                        .insert(key, taskboard_domain::HabitLogEntry { count, clock, by });
                 }
                 habits
             },
@@ -2110,8 +2115,8 @@ async fn execute_batch(
     // mirrors `apply_actions`' sequential last-write-wins semantics.
     for entry in entry_upserts {
         sqlx::query!(
-            r#"INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at, kind)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO time_entries (entry_id, task_id, task_title, start, end, created_at, updated_at, kind, au_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(entry_id) DO UPDATE SET
                        task_id = excluded.task_id,
                        task_title = excluded.task_title,
@@ -2119,7 +2124,8 @@ async fn execute_batch(
                        end = excluded.end,
                        created_at = excluded.created_at,
                        updated_at = excluded.updated_at,
-                       kind = excluded.kind"#,
+                       kind = excluded.kind,
+                       au_by = excluded.au_by"#,
             codec::uuid_to_text(entry.id.as_uuid()),
             codec::uuid_to_text(entry.task.as_uuid()),
             entry.task_title,
@@ -2128,6 +2134,7 @@ async fn execute_batch(
             entry.created_at.to_rfc3339(),
             entry.updated_at.to_rfc3339(),
             codec::time_entry_kind_to_text(entry.kind),
+            entry.by.map(|a| a.to_string()),
         )
         .execute(&mut *tx)
         .await
@@ -2151,20 +2158,22 @@ async fn execute_batch(
     // last-write-wins semantics.
     for rule in break_rule_upserts {
         sqlx::query!(
-            r#"INSERT INTO break_rules (rule_id, board_id, label, threshold_seconds, insistence, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO break_rules (rule_id, board_id, label, threshold_seconds, insistence, created_at, au_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(rule_id) DO UPDATE SET
                        board_id = excluded.board_id,
                        label = excluded.label,
                        threshold_seconds = excluded.threshold_seconds,
                        insistence = excluded.insistence,
-                       created_at = excluded.created_at"#,
+                       created_at = excluded.created_at,
+                       au_by = excluded.au_by"#,
             codec::uuid_to_text(rule.id.as_uuid()),
             codec::uuid_to_text(rule.board.as_uuid()),
             rule.label,
             rule.threshold.as_duration().num_seconds(),
             codec::insistence_to_text(rule.insistence),
             rule.created_at.to_rfc3339(),
+            rule.by.map(|a| a.to_string()),
         )
         .execute(&mut *tx)
         .await
@@ -2186,8 +2195,8 @@ async fn execute_batch(
         sqlx::query!(
             r#"INSERT INTO habits (habit_id, board_id, title, target, sort_order, anchor_time,
                          ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted,
-                         continued_from)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         continued_from, au_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(habit_id) DO UPDATE SET
                        board_id = excluded.board_id,
                        title = excluded.title,
@@ -2200,7 +2209,8 @@ async fn execute_batch(
                        ck_anchor_time = excluded.ck_anchor_time,
                        ck_deleted = excluded.ck_deleted,
                        deleted = excluded.deleted,
-                       continued_from = excluded.continued_from"#,
+                       continued_from = excluded.continued_from,
+                       au_by = excluded.au_by"#,
             codec::uuid_to_text(habit.id.as_uuid()),
             codec::uuid_to_text(habit.board.as_uuid()),
             habit.title,
@@ -2216,6 +2226,7 @@ async fn execute_batch(
             habit
                 .continued_from
                 .map(|s| codec::uuid_to_text(s.as_uuid())),
+            habit.by.map(|a| a.to_string()),
         )
         .execute(&mut *tx)
         .await
@@ -2287,16 +2298,18 @@ async fn execute_batch(
         // never overwrites; equal/older keeps local (belt to the fold's
         // braces).
         sqlx::query!(
-            r#"INSERT INTO habit_log (habit_id, window_start, count, clock)
-                   VALUES (?, ?, ?, ?)
+            r#"INSERT INTO habit_log (habit_id, window_start, count, clock, au_by)
+                   VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(habit_id, window_start) DO UPDATE SET
                        count = excluded.count,
-                       clock = excluded.clock
+                       clock = excluded.clock,
+                       au_by = excluded.au_by
                    WHERE excluded.clock > habit_log.clock"#,
             codec::uuid_to_text(key.habit.as_uuid()),
             key.window.as_date().to_string(),
             i64::from(entry.count),
             entry.clock.to_rfc3339(),
+            entry.by.map(|a| a.to_string()),
         )
         .execute(&mut *tx)
         .await
@@ -2431,8 +2444,8 @@ async fn execute_batch(
             ReminderKind::At(at) => (0, Some(at.as_datetime().timestamp())),
         };
         sqlx::query!(
-            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, kind, at_epoch_seconds, insistence, created_at, updated_at, au_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(rule_id) DO UPDATE SET
                        task_id = excluded.task_id,
                        offset_seconds = excluded.offset_seconds,
@@ -2440,7 +2453,8 @@ async fn execute_batch(
                        at_epoch_seconds = excluded.at_epoch_seconds,
                        insistence = excluded.insistence,
                        created_at = excluded.created_at,
-                       updated_at = excluded.updated_at"#,
+                       updated_at = excluded.updated_at,
+                       au_by = excluded.au_by"#,
             codec::uuid_to_text(rule.id.as_uuid()),
             codec::uuid_to_text(rule.task.as_uuid()),
             offset_seconds_column,
@@ -2449,6 +2463,7 @@ async fn execute_batch(
             codec::insistence_to_text(rule.insistence),
             rule.created_at.to_rfc3339(),
             rule.updated_at.to_rfc3339(),
+            rule.by.map(|a| a.to_string()),
         )
         .execute(&mut *tx)
         .await
