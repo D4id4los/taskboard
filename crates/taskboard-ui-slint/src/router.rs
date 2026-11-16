@@ -167,6 +167,17 @@ pub enum UiEffect {
     /// Arm the viewed task's title editor (round-3 W-SM-d): the
     /// registry action behind `F2`/`Return`/the closed title's click.
     BeginTitleEdit,
+    /// Arm the viewed task's date editor over `field` (keymap-parity
+    /// plan US-3, D-4): the registry action behind the detail
+    /// shortcuts — the adapter routes the round-3 D11
+    /// `begin_date_edit` funnel (the row affordance's exact seam).
+    BeginDateEdit {
+        field: crate::view_state::DateField,
+    },
+    /// Arm the viewed task's description editor (keymap-parity plan
+    /// US-3, D-4): the adapter routes the round-3 D15 arm exactly as
+    /// the field's pointer affordance does.
+    BeginDescriptionEdit,
     // --- chunk-7 board dimension (design §3.8): pure view state; the
     // adapter resolves them against the view-state model. Never a
     // `DispatchOutcome::Command`.
@@ -408,7 +419,12 @@ impl UiEffect {
             Self::OpenReviewWalk | Self::ReviewWalk(_) => EffectClass::ReviewWalk,
             Self::BeginCapture => EffectClass::BeginCapture,
             Self::Activate | Self::SetMode(_) => EffectClass::Edit,
-            Self::BeginTitleEdit => EffectClass::Title,
+            // The detail editors' arm verbs (keymap-parity plan D-4)
+            // share the Begin cell: settle-then-run — the funnel
+            // settles a live flow first, then arms (dead buttons
+            // cannot exist).
+            Self::BeginDateEdit { .. } | Self::BeginDescriptionEdit
+            | Self::BeginTitleEdit => EffectClass::Begin,
             Self::PickerKey(_) => EffectClass::Picker,
             Self::CancelMove => EffectClass::Cancel,
             Self::OpenMenu
@@ -1058,6 +1074,19 @@ impl ActionRouter {
             ActionId::StackCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreateStack),
             ActionId::TaskEdit => DispatchOutcome::UiEffect(UiEffect::Activate),
             ActionId::TaskTitleEdit => DispatchOutcome::UiEffect(UiEffect::BeginTitleEdit),
+            // The detail editors' keyboard openers (keymap-parity plan
+            // US-3, D-4): view intents over the subject task — the
+            // funnel-level refusals live in the adapter's arms (the
+            // subjectless detail is each arm's typed inert).
+            ActionId::TaskDueEdit => DispatchOutcome::UiEffect(UiEffect::BeginDateEdit {
+                field: crate::view_state::DateField::Due,
+            }),
+            ActionId::TaskScheduledEdit => DispatchOutcome::UiEffect(UiEffect::BeginDateEdit {
+                field: crate::view_state::DateField::Scheduled,
+            }),
+            ActionId::TaskDescriptionEdit => {
+                DispatchOutcome::UiEffect(UiEffect::BeginDescriptionEdit)
+            }
             ActionId::TaskMove => DispatchOutcome::UiEffect(UiEffect::RequestMove),
             // Round 2 (D16–D21): the round-up verbs — pure view
             // intents; reopen routes from the focused task's done stamp.

@@ -238,8 +238,12 @@ impl KeymapShell {
             | UiEffect::FocusToday
             | UiEffect::OpenInbox
             // Round 3 (W-SM-d): the title arm lives in `view_state`;
-            // the shell records nothing for it.
+            // the shell records nothing for it. The keymap-parity D-4
+            // editor arms are the same shape (funnel-level, adapter
+            // side).
             | UiEffect::BeginTitleEdit
+            | UiEffect::BeginDateEdit { .. }
+            | UiEffect::BeginDescriptionEdit
             | UiEffect::BeginCapture
             // The overlay toggle moves no shell state (the flow is the
             // truth; `sync_view_context` mirrors it).

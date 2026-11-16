@@ -233,6 +233,24 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // labels mnemonic, verified free in all three presets'
     // TaskDetail at this HEAD (stage-1 D-4's recorded check).
     (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    // The detail editors' shortcuts (keymap-parity plan US-3, D-1/D-4):
+    // the CUA function sequence continues after F4's pickers — F5/F6
+    // the date editors, F7 the description editor, F8 the rule add
+    // (F1-F4 and F12 were bound; F5-F11 free in this preset).
+    (ActionId::TaskDueEdit, ContextId::TaskDetail, &["F5"]),
+    (ActionId::TaskScheduledEdit, ContextId::TaskDetail, &["F6"]),
+    (
+        ActionId::TaskDescriptionEdit,
+        ContextId::TaskDetail,
+        &["F7"],
+    ),
+    (ActionId::ReminderRuleAdd, ContextId::TaskDetail, &["F8"]),
+    // The clock pair (keymap-parity plan US-3 AC-3, D-1) at TaskDetail
+    // and Today (the today-context rows for the tracking ids).
+    (ActionId::TaskTrackStart, ContextId::TaskDetail, &["F9"]),
+    (ActionId::TaskTrackStop, ContextId::TaskDetail, &["F10"]),
+    (ActionId::TaskTrackStart, ContextId::Today, &["F9"]),
+    (ActionId::TaskTrackStop, ContextId::Today, &["F10"]),
     // The overlay's own context (D-2): the Escape ladder + the tab
     // walk (the entries-overlay's per-view row pattern).
     (
@@ -490,6 +508,65 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     // but this preset's TaskDetail never binds it — the recorded
     // no-drift share, the StackWider pair's rule).
     (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    // The detail editors' shortcuts (keymap-parity plan US-3, D-1/D-4):
+    // the org C-c user-namespace carries the domain verbs. C-c C-d is
+    // the due editor (free at TaskDetail — BoardDelete's C-c Ctrl+d is
+    // the Board context only); C-c ' the description editor (chorded
+    // printable, shift kept by the chord rule).
+    (
+        ActionId::TaskDueEdit,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+d"],
+    ),
+    (
+        ActionId::TaskDescriptionEdit,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "'"],
+    ),
+    // The scheduled twin (keymap-parity plan US-3 AC-1, D-1/D-5): the
+    // Global ReminderSnooze chord (C-c C-s) is *shadowed* inside the
+    // detail chain by context precedence — the view context resolves
+    // first (chain-order first-match); the snooze stays key-reachable
+    // in every other chain and menu-reachable everywhere (the D-5
+    // pin holds both rows verbatim, no retune).
+    (
+        ActionId::TaskScheduledEdit,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+s"],
+    ),
+    // The rule-add mnemonic (keymap-parity plan US-3/S4, D-1): free
+    // at TaskDetail (C-c C-u is unbound anywhere in this preset).
+    (
+        ActionId::ReminderRuleAdd,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+u"],
+    ),
+    // The clock pair (keymap-parity plan US-3 AC-3, D-1): the
+    // two-stroke approximation of org's C-c C-x C-i/o (the house
+    // chord grammar is two-stroke — the three-stroke original is
+    // recorded, never reshaped). Free at TaskDetail and Today (bare
+    // Ctrl+o is TaskCreate at Board/StackDetail — different
+    // spellings, different contexts).
+    (
+        ActionId::TaskTrackStart,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+i"],
+    ),
+    (
+        ActionId::TaskTrackStop,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+o"],
+    ),
+    (
+        ActionId::TaskTrackStart,
+        ContextId::Today,
+        &["Ctrl+c", "Ctrl+i"],
+    ),
+    (
+        ActionId::TaskTrackStop,
+        ContextId::Today,
+        &["Ctrl+c", "Ctrl+o"],
+    ),
     (
         ActionId::LabelOverlayDismiss,
         ContextId::Labels,
@@ -561,12 +638,17 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavFirstItem, ContextId::StackDetail, &["Alt+<"]),
     (ActionId::NavLastItem, ContextId::StackDetail, &["Alt+>"]),
     (ActionId::TaskCreate, ContextId::StackDetail, &["Ctrl+o"]),
-    // TaskDetail (r4 D19): C-n/C-p join the walk — the item walk is
-    // semantically dead here (`step_focus` has no TaskDetail arm; the
-    // rows walked the hidden board under the open view), and the
-    // intra-context contract makes this a move, not an add.
-    (ActionId::NavNextControl, ContextId::TaskDetail, &["Ctrl+n"]),
-    (ActionId::NavPrevControl, ContextId::TaskDetail, &["Ctrl+p"]),
+    // TaskDetail (keymap-parity plan US-1, D-1): C-n/C-p carry the
+    // *item* walk — the r4 D19 control-walk rows were recorded as a
+    // move-in-waiting ("the item walk is semantically dead here") and
+    // the D-2 route fix made the detail's item table live; the
+    // intra-context contract makes this a move, not an add. The
+    // control walk keeps its isearch pair (C-f/C-b, the r3 D25 rows
+    // below) — freeing C-n/C-p contacts the control walk nowhere else
+    // (the Board keeps its live task/stack walk; Today/StackDetail
+    // are the recorded exclusions).
+    (ActionId::NavNextItem, ContextId::TaskDetail, &["Ctrl+n"]),
+    (ActionId::NavPrevItem, ContextId::TaskDetail, &["Ctrl+p"]),
     (ActionId::NavFirstItem, ContextId::TaskDetail, &["Alt+<"]),
     (ActionId::NavLastItem, ContextId::TaskDetail, &["Alt+>"]),
     // Menu
@@ -845,6 +927,27 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     // no-second-class gate; the insert path never sees them).
     (ActionId::TaskImportanceEdit, ContextId::TaskDetail, &["F3"]),
     (ActionId::TaskUrgencyEdit, ContextId::TaskDetail, &["F4"]),
+    // The detail editors' shortcuts (keymap-parity plan US-3, D-1/D-4):
+    // single-mnemonic detail verbs at the TaskDetail context (the
+    // SeriesEdit `r` precedent) — d the due editor (vim
+    // delete-into-register: the date change as the detail's "delete";
+    // vi's own `d d` rows live in the Board contexts), s the
+    // scheduled twin, e the description editor, a the rule add (vim
+    // append — the mnemonic add). Within the detail chain these
+    // shadow their ViNormal spellings by context precedence (the D-5
+    // rule; the shadow is the recorded cost).
+    (ActionId::TaskDueEdit, ContextId::TaskDetail, &["d"]),
+    (ActionId::TaskScheduledEdit, ContextId::TaskDetail, &["s"]),
+    (ActionId::TaskDescriptionEdit, ContextId::TaskDetail, &["e"]),
+    (ActionId::ReminderRuleAdd, ContextId::TaskDetail, &["a"]),
+    // The clock pair (keymap-parity plan US-3 AC-3, D-1): I/O (vim's
+    // insert-at-begin / open-below mnemonics) at TaskDetail and Today
+    // (free in both contexts — the suite's totality pass is the
+    // oracle; the Today rows are the tracking ids' second context).
+    (ActionId::TaskTrackStart, ContextId::TaskDetail, &["I"]),
+    (ActionId::TaskTrackStop, ContextId::TaskDetail, &["O"]),
+    (ActionId::TaskTrackStart, ContextId::Today, &["I"]),
+    (ActionId::TaskTrackStop, ContextId::Today, &["O"]),
     (ActionId::NavNextControl, ContextId::Settings, &["Tab"]),
     (
         ActionId::NavPrevControl,

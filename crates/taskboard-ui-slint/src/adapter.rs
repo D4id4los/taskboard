@@ -3225,6 +3225,19 @@ impl Adapter {
                 Some(task) => self.view_state.begin_edit_title(&state, task),
                 None => Vec::new(),
             },
+            // The detail editors' keyboard openers (keymap-parity plan
+            // US-3, D-4): the same funnels the row affordances call —
+            // the round-3 D11 `begin_date_edit` body and the round-3
+            // D15 description arm (click ≡ key at the funnel). The
+            // subjectless detail is each funnel's typed inert.
+            (Flow::None, UiEffect::BeginDateEdit { field }) => {
+                self.begin_date_edit(window, field);
+                Vec::new()
+            }
+            (Flow::None, UiEffect::BeginDescriptionEdit) => {
+                self.begin_description_edit(window);
+                Vec::new()
+            }
             (
                 Flow::None,
                 effect @ (UiEffect::Activate
@@ -4036,7 +4049,8 @@ impl Adapter {
             (K::Text, C::Cancel) => R::Inert,
             (_, C::Cancel) => R::CancelOnly,
             // BEGIN/TITLE: R4 — dead buttons cannot exist; the
-            // auto-settle-then-run is the visible feedback.
+            // auto-settle-then-run is the visible feedback (the
+            // keymap-parity D-4 editor arms share the cell).
             (_, C::Begin | C::Title) => R::SettleThenRun,
             // NAV / LIFECYCLE / overlay-open (palette, the focus
             // overlay, the entries overlay): R3 settle-then-run.
@@ -4227,6 +4241,11 @@ impl Adapter {
             | UiEffect::BeginCreate { .. }
             | UiEffect::BeginCreateStack
             | UiEffect::BeginTitleEdit
+            // The detail editors' arm verbs (keymap-parity plan D-4)
+            // interpret like every begin intent — the funnel refusals
+            // live in the arms.
+            | UiEffect::BeginDateEdit { .. }
+            | UiEffect::BeginDescriptionEdit
             | UiEffect::Activate
             | UiEffect::RequestMove
             | UiEffect::StackWider
@@ -9973,14 +9992,8 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // `commit_description` — the accepted text is the field's own
     // buffer read (the funnel re-reads the view-state buffer, kept
     // current by the edited seam).
-    install_seam!(window: window.on_task_description_edit_opened, adapter: adapter;
-    bind mut (a, window), args (), {        settle_pointer_conflict(&mut a, &window);
-    let state = a.state.load_full();
-    let Some(task) = a.view_state.subject_task() else {
-        return;
-    };
-    let outcomes = a.view_state.begin_edit_description(&state, task);
-    a.apply_outcomes(&window, &outcomes);
+    install_seam!(window: window.on_task_description_edit_opened, adapter: adapter; // slint: task-description-edit-opened
+    bind mut (a, window), args (), {        a.begin_description_edit(&window);
 
     });
     install_seam!(window: window.on_task_description_edited, adapter: adapter; [bare_mut]
@@ -10078,8 +10091,8 @@ fn install_picker_grid_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) 
 
 #[allow(clippy::too_many_lines)] // the r2 D25 seam family, kept flat
 fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    install_seam!(window: window.on_task_due_edit_opened, adapter: adapter;
-    bind mut (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    install_seam!(window: window.on_task_due_edit_opened, adapter: adapter; // slint: task-due-edit-opened
+    bind mut (a, window), args (), {        a.begin_date_edit(&window, crate::view_state::DateField::Due);
 
     });
 
@@ -10087,8 +10100,8 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // due-date repair opens the SAME due editor — the callback is the
     // metadata row's due-edit seam under a second name, no new focus
     // plumbing (chunk 6's machinery arms from there).
-    install_seam!(window: window.on_task_rule_jump_to_due_clicked, adapter: adapter;
-    bind mut (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Due);
+    install_seam!(window: window.on_task_rule_jump_to_due_clicked, adapter: adapter; // slint: task-rule-jump-to-due-clicked
+    bind mut (a, window), args (), {        a.begin_date_edit(&window, crate::view_state::DateField::Due);
 
     });
 
@@ -10100,8 +10113,8 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
-    install_seam!(window: window.on_task_scheduled_edit_opened, adapter: adapter;
-    bind mut (a, window), args (), {        begin_date_edit(&mut a, &window, crate::view_state::DateField::Scheduled);
+    install_seam!(window: window.on_task_scheduled_edit_opened, adapter: adapter; // slint: task-scheduled-edit-opened
+    bind mut (a, window), args (), {        a.begin_date_edit(&window, crate::view_state::DateField::Scheduled);
 
     });
 
@@ -10328,36 +10341,54 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 }
 
-/// The one begin seam (round-3 D11): settle any live flow, arm
-/// `field`'s editor, then seed the buffer with the field's *current
-/// value* — inside the armed window, before the outcomes' refresh, so
-/// the §8 invariant (non-empty ⇔ armed) holds and an immediate Return
-/// re-commits the value instead of clearing it.
-fn begin_date_edit(a: &mut Adapter, window: &AppWindow, field: crate::view_state::DateField) {
-    settle_pointer_conflict(a, window);
-    let state = a.state.load_full();
-    let outcomes = a.view_state.begin_edit_date(&state, field);
-    let value = a
-        .view_state
-        .subject_task()
-        .and_then(|id| state.tasks.get(&id))
-        .and_then(|t| match field {
-            crate::view_state::DateField::Due => t.duedate,
-            crate::view_state::DateField::Scheduled => t.scheduled,
-        });
-    if let Some(editor) = a.view_state.date_editor_mut() {
-        editor.buffer = crate::due_edit::format_entry(value, &chrono::Local);
-        editor.echo = crate::due_edit::echo(&editor.buffer, chrono::Utc::now(), &chrono::Local);
-    }
-    a.apply_outcomes(window, &outcomes);
-    // The picker is default-open on edit entry (round-3 D10) —
-    // visible, click-armed, and idle: the text field keeps focus
-    // (typing-first preserved). Inert when the begin refused (the
-    // flow never armed).
-    a.open_due_picker(window, false);
-}
-
 impl Adapter {
+    /// The one date-begin funnel (round-3 D11; keymap-parity plan
+    /// D-4): settle any live flow, arm `field`'s editor, seed the
+    /// buffer with the field's *current value*, refresh, then open
+    /// the picker default-open. Both fronts land here — the row
+    /// affordance's callbacks (the `// slint:` seams) and the
+    /// `task.due-edit`/`task.scheduled-edit` keyboard route — click
+    /// ≡ key at the funnel; the subjectless detail is the typed inert
+    /// (the flow never arms).
+    fn begin_date_edit(&mut self, window: &AppWindow, field: crate::view_state::DateField) {
+        settle_pointer_conflict(self, window);
+        let state = self.state.load_full();
+        let outcomes = self.view_state.begin_edit_date(&state, field);
+        let value = self
+            .view_state
+            .subject_task()
+            .and_then(|id| state.tasks.get(&id))
+            .and_then(|t| match field {
+                crate::view_state::DateField::Due => t.duedate,
+                crate::view_state::DateField::Scheduled => t.scheduled,
+            });
+        if let Some(editor) = self.view_state.date_editor_mut() {
+            editor.buffer = crate::due_edit::format_entry(value, &chrono::Local);
+            editor.echo = crate::due_edit::echo(&editor.buffer, chrono::Utc::now(), &chrono::Local);
+        }
+        self.apply_outcomes(window, &outcomes);
+        // The picker is default-open on edit entry (round-3 D10) —
+        // visible, click-armed, and idle: the text field keeps focus
+        // (typing-first preserved). Inert when the begin refused (the
+        // flow never armed).
+        self.open_due_picker(window, false);
+    }
+
+    /// The description editor's begin funnel (round-3 D15; keymap-parity
+    /// plan D-4): settle any live flow, then arm the subject's editor
+    /// (the buffer seeds view-state side, the `EditDescription` flow's
+    /// own rule). Both fronts land here — the closed body's click seam
+    /// and the `task.description-edit` keyboard route.
+    fn begin_description_edit(&mut self, window: &AppWindow) {
+        settle_pointer_conflict(self, window);
+        let state = self.state.load_full();
+        let Some(task) = self.view_state.subject_task() else {
+            return; // the subjectless detail: the typed inert
+        };
+        let outcomes = self.view_state.begin_edit_description(&state, task);
+        self.apply_outcomes(window, &outcomes);
+    }
+
     /// The picker's one key body (round-3 D25): the keyboard's
     /// `picker.*` actions and the widget's click seams both land
     /// here — the same `due_picker` mutations, the commit through the

@@ -506,6 +506,20 @@ pub enum ActionId {
     PickerMonthStart,
     PickerMonthEnd,
     PickerCommit,
+    /// The due-date editor's keyboard opener (keymap-parity plan
+    /// US-3, D-4): routes the round-3 D11 `begin_date_edit` funnel —
+    /// the exact seam the due row's edit affordance calls (click ≡
+    /// key at the funnel). The subjectless/kiosk refusals are the
+    /// adapter's arms.
+    TaskDueEdit,
+    /// The scheduled-date twin of [`ActionId::TaskDueEdit`] (the same
+    /// plan row): one funnel, the `DateField` decides the mask.
+    TaskScheduledEdit,
+    /// The description editor's keyboard opener (keymap-parity plan
+    /// US-3, D-4): routes the round-3 D15 description-editor arm
+    /// exactly as the field's pointer affordance does; the
+    /// `Editor`-scope TEXT settle rule applies unchanged.
+    TaskDescriptionEdit,
 }
 
 impl ActionId {
@@ -643,6 +657,9 @@ impl ActionId {
             Self::PickerMonthStart => "picker.month-start",
             Self::PickerMonthEnd => "picker.month-end",
             Self::PickerCommit => "picker.commit",
+            Self::TaskDueEdit => "task.due-edit",
+            Self::TaskScheduledEdit => "task.scheduled-edit",
+            Self::TaskDescriptionEdit => "task.description-edit",
         }
     }
 
@@ -1175,6 +1192,40 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 76,
         description: "Opens the urgency picker for the viewed task: six levels, commit on pick.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    // The detail editors' keyboard openers (keymap-parity plan US-3,
+    // D-4): the metadata rows' editing twins — menu-reachable over the
+    // viewed task, preset-bound per plan D-1 (the ranks ride the
+    // TaskTitleEdit tail's spacing).
+    ActionEntry {
+        id: ActionId::TaskDueEdit,
+        label: "Edit due date",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 73,
+        description: "Arms the due-date editor for the viewed task: type or pick, commit on Return.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::TaskScheduledEdit,
+        label: "Edit scheduled date",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 75,
+        description: "Arms the scheduled-date editor for the viewed task: type or pick, commit on Return.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::TaskDescriptionEdit,
+        label: "Edit description",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 77,
+        description: "Arms the description editor for the viewed task: Return commits, Escape discards.",
         menu_group: Some(MenuGroup::Task),
     },
     // The labels overlay (UX R-3 D-2, #789): the menu-reachable row
@@ -2253,6 +2304,10 @@ mod tests {
             ActionId::PickerMonthStart,
             ActionId::PickerMonthEnd,
             ActionId::PickerCommit,
+            // The keymap-parity plan US-3/D-4 additions.
+            ActionId::TaskDueEdit,
+            ActionId::TaskScheduledEdit,
+            ActionId::TaskDescriptionEdit,
         ];
         for id in ALL {
             assert_eq!(REGISTRY.iter().filter(|e| e.id == *id).count(), 1);
