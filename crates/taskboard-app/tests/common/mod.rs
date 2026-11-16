@@ -118,7 +118,7 @@ pub struct EnvGuard(std::sync::MutexGuard<'static, ()>);
 /// the process cwd stayed in a tempdir that `TempDir::drop` then
 /// deletes, contaminating every sibling test). The guard does **not**
 /// take the env mutex itself — cwd is process-global like env, so
-/// callers already holding the env mutex (via [`xdg_lock`])
+/// callers already holding [`taskboard_env_lock`]/[`xdg_lock`]
 /// serialize naturally; a test that only chdirs holds nothing extra.
 #[must_use]
 pub fn cwd_lock(path: &Path) -> CwdGuard {
@@ -179,13 +179,49 @@ impl Drop for EnvOverride {
     }
 }
 
+/// Saves every `TASKBOARD_*` variable (`OsString`-exact: non-UTF-8
+/// values round-trip), removes them all, and restores the full
+/// snapshot on drop — including variables it did not know about
+/// beforehand (save-then-clear-all, never clear-a-fixed-list). Correct
+/// under a merged harness: the whole mutation happens while the
+/// process env mutex is held ([`env_lock`]'s guard, stored as the
+/// last field so it drops after the restore).
+pub fn taskboard_env_lock() -> TaskboardEnvLock {
+    let env = env_lock();
+    let saved: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
+        .filter(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
+        .collect();
+    for (key, _) in &saved {
+        // SAFETY: the env mutex is held (as `remove_env`).
+        unsafe { std::env::remove_var(key) };
+    }
+    TaskboardEnvLock { saved, _env: env }
+}
+
+/// Holds the saved `TASKBOARD_*` snapshot and the env mutex for
+/// [`taskboard_env_lock`]'s lifetime.
+pub struct TaskboardEnvLock {
+    saved: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    _env: EnvGuard,
+}
+
+impl Drop for TaskboardEnvLock {
+    fn drop(&mut self) {
+        for (key, value) in &self.saved {
+            // SAFETY: the env mutex is still held (as `set_env`); the
+            // guard field drops after this impl runs.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+}
+
 /// [`taskboard_env_lock`] plus a sandboxed config home: `XDG_CONFIG_HOME`
 /// points at a fresh tempdir for the guard's lifetime, so default-path
 /// resolution (`AppConfig::load(None)`, `config::path(None)`) never
 /// reads the machine's live `taskboard.toml`. A test that wants a file
 /// on the XDG read path plants it under [`XdgLock::config_home`].
 pub fn xdg_lock() -> XdgLock {
-    let env = env_lock();
+    let env = taskboard_env_lock();
     let home = tempdir();
     let xdg = EnvOverride::set(
         "XDG_CONFIG_HOME",
@@ -204,7 +240,7 @@ pub fn xdg_lock() -> XdgLock {
 pub struct XdgLock {
     _xdg: EnvOverride,
     home: tempfile::TempDir,
-    _env: EnvGuard,
+    _env: TaskboardEnvLock,
 }
 
 impl XdgLock {

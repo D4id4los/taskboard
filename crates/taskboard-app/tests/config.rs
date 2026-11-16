@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use common::{EnvOverride, cwd_lock, env_lock, remove_env, set_env, xdg_lock};
+use common::{EnvOverride, cwd_lock, env_lock, remove_env, set_env, taskboard_env_lock, xdg_lock};
 use taskboard_app::commands::config;
 use taskboard_app::config::{
     AppConfig, ConfigError, CredentialStoreKind, DEFAULT_BACKOFF_INITIAL_SECS,
@@ -48,7 +48,7 @@ fn c1_defaults_parse_with_no_file() {
 /// `--config` picks the file.
 #[test]
 fn c2_toml_then_env_precedence() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("custom.toml");
     std::fs::write(
@@ -110,7 +110,7 @@ fn c4_secret_in_toml_is_a_decode_error() {
 /// not break extraction — the root table tolerates unknown keys.
 #[test]
 fn c5_foreign_env_profile_is_ignored() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("taskboard.toml");
     std::fs::write(
@@ -130,7 +130,7 @@ fn c5_foreign_env_profile_is_ignored() {
 /// interval).
 #[test]
 fn c6_invalid_values_are_typed() {
-    let _env = env_lock(); // figment reads process env during load
+    let _env = taskboard_env_lock(); // figment reads process env during load
     let dir = tempdir();
     for (body, expected) in [
         (
@@ -209,7 +209,7 @@ fn c9_backoff_ordering_enforced() {
 /// both the file and the env provider.
 #[test]
 fn c10_backend_auto_resolves_on_server_url() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let mut config = AppConfig::default();
     config.storage.db_path = Some(PathBuf::from("/tmp/x.db"));
     config.validate().expect("stand-alone default validates");
@@ -293,7 +293,7 @@ fn c13_typoed_backend_value_is_a_decode_error() {
 fn c10_config_print_reports_validity_in_the_payload() {
     // The env is process-global and other C-series tests override
     // `TASKBOARD_*`: hold the lock so the payload reflects the file.
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     std::fs::write(
         dir.path().join("valid.toml"),
@@ -335,7 +335,7 @@ fn c10_config_print_reports_validity_in_the_payload() {
 fn c11_config_print_includes_the_env_overlay() {
     let dir = tempdir();
     std::fs::write(dir.path().join("empty.toml"), "").expect("write empty");
-    let _guard = env_lock();
+    let _guard = taskboard_env_lock();
     let _server = EnvOverride::set("TASKBOARD_NEXTCLOUD__SERVER_URL", "https://env.example.com");
     let _user = EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "alice");
     let view = config::print(Some(dir.path().join("empty.toml"))).expect("print");
@@ -351,7 +351,7 @@ fn c11_config_print_includes_the_env_overlay() {
 /// provider overrides all three keys (bool/int/string coercion).
 #[test]
 fn c12_reminders_table_defaults_merge_and_env_override() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("reminders.toml");
 
@@ -390,7 +390,7 @@ fn c12_reminders_table_defaults_merge_and_env_override() {
 /// `load`.
 #[test]
 fn c13_reminders_strict_table_and_typed_durations() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("reminders.toml");
 
@@ -443,7 +443,6 @@ fn c15_ui_scale_env_override() {
         (config.ui.scale - 1.5).abs() < f64::EPSILON,
         "env override reaches ui.scale"
     );
-    remove_env("TASKBOARD_UI__SCALE");
     let defaults = AppConfig::default();
     assert!((defaults.ui.scale - taskboard_app::config::DEFAULT_UI_SCALE).abs() < f64::EPSILON);
 }
@@ -454,8 +453,7 @@ fn c15_ui_scale_env_override() {
 /// verb's).
 #[test]
 fn c16_explicit_path_is_reported_for_reads_and_writes() {
-    let _env = env_lock();
-    remove_env("TASKBOARD_CONFIG");
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("does-not-exist.toml");
     let view = config::path(Some(file.clone()));
@@ -467,12 +465,11 @@ fn c16_explicit_path_is_reported_for_reads_and_writes() {
 /// and the write target follow the same env binding.
 #[test]
 fn c16_env_override_names_both_answers() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("env-named.toml");
     set_env("TASKBOARD_CONFIG", file.to_str().expect("utf-8 path"));
     let view = config::path(None);
-    remove_env("TASKBOARD_CONFIG");
     assert_eq!(view.config_path.map(PathBuf::from), Some(file.clone()));
     assert_eq!(PathBuf::from(&view.write_path), file);
 }
@@ -483,7 +480,6 @@ fn c16_env_override_names_both_answers() {
 #[test]
 fn c16_fresh_machine_diverges_read_none_write_xdg() {
     let xdg = xdg_lock();
-    remove_env("TASKBOARD_CONFIG");
     let cwd = tempdir();
     let _cwd = cwd_lock(cwd.path());
     let view = config::path(None);
@@ -500,7 +496,6 @@ fn c16_fresh_machine_diverges_read_none_write_xdg() {
 #[test]
 fn c16_existing_cwd_install_is_the_write_target() {
     let _env = xdg_lock();
-    remove_env("TASKBOARD_CONFIG");
     let cwd = tempdir();
     std::fs::write(cwd.path().join("taskboard.toml"), "").expect("cwd install");
     let _cwd = cwd_lock(cwd.path());
@@ -546,7 +541,7 @@ fn the_xdg_read_path_refuses_env_identity_beside_connectors() {
 /// (`TASKBOARD_IPC__CLIENT_READ_TIMEOUT_SECS`, figment for free).
 #[test]
 fn the_ipc_section_decodes_and_the_env_lane_overrides() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("ipc.toml");
     std::fs::write(&file, "[ipc]\nclient_read_timeout_secs = 7\n").expect("write toml");
@@ -575,7 +570,7 @@ fn the_ipc_section_decodes_and_the_env_lane_overrides() {
 /// figment for free).
 #[test]
 fn the_focus_section_rejects_typed_and_the_env_lane_overrides() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("focus.toml");
     std::fs::write(&file, "[focus]\nenabled = true\nwork_mins = 0\n").expect("write toml");
@@ -607,7 +602,7 @@ fn the_focus_section_rejects_typed_and_the_env_lane_overrides() {
 /// the env lane wins over the file for the behavior knobs too.
 #[test]
 fn the_focus_chain_knobs_reject_typed_and_the_env_lane_overrides() {
-    let _env = env_lock();
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("focus-chain.toml");
     std::fs::write(&file, "[focus]\nenabled = true\nlong_break_every = 0\n").expect("write toml");
@@ -644,7 +639,7 @@ fn files_sync_anchor_is_env_overridable_under_its_dotted_key() {
          [files_sync]\nenabled = true\n",
     )
     .expect("write toml");
-    let _env = env_lock(); // figment reads process env during load
+    let _env = taskboard_env_lock(); // figment reads process env during load
     let _anchor = EnvOverride::set("TASKBOARD_FILES_SYNC__ANCHOR", "work");
     let overridden = AppConfig::env_overridden_keys(Some(&file)).expect("diffs");
     assert!(
@@ -680,4 +675,51 @@ fn cwd_guard_restores_on_unwind() {
         original,
         "the guard restored the pre-test directory on the unwind path"
     );
+}
+
+/// #729's in-test restore proof: the lock clears ambient hostile
+/// `TASKBOARD_*` values it did not plant, and restores them exactly on
+/// drop — save-then-clear-all semantics, deterministic regardless of
+/// the operator's shell.
+#[test]
+fn taskboard_env_lock_restores_ambient_values() {
+    // Plant the hostile ambient values under one lock acquisition —
+    // the env mutex is not reentrant, so the helper's own acquisition
+    // must not nest inside it.
+    {
+        let _outer = taskboard_env_lock();
+        set_env("TASKBOARD_CONFIG", "/nonexistent/taskboard.toml");
+        set_env("TASKBOARD_SYNC__POLL_INTERVAL_SECS", "5");
+    }
+
+    let lock = taskboard_env_lock();
+    assert_eq!(
+        std::env::var("TASKBOARD_CONFIG"),
+        Err(std::env::VarError::NotPresent),
+        "the lock cleared the ambient value"
+    );
+    assert_eq!(
+        std::env::var("TASKBOARD_SYNC__POLL_INTERVAL_SECS"),
+        Err(std::env::VarError::NotPresent),
+        "the lock cleared the ambient value"
+    );
+    drop(lock);
+
+    assert_eq!(
+        std::env::var("TASKBOARD_CONFIG").as_deref(),
+        Ok("/nonexistent/taskboard.toml"),
+        "the drop restored the ambient value"
+    );
+    assert_eq!(
+        std::env::var("TASKBOARD_SYNC__POLL_INTERVAL_SECS").as_deref(),
+        Ok("5"),
+        "the drop restored the ambient value"
+    );
+    // Leave the process env as we found it — no planted-value leak
+    // into sibling tests under a merged harness.
+    {
+        let _cleanup = env_lock();
+        remove_env("TASKBOARD_CONFIG");
+        remove_env("TASKBOARD_SYNC__POLL_INTERVAL_SECS");
+    }
 }
