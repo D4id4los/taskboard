@@ -35,13 +35,47 @@ impl Preset {
 
     /// The binding table: `(action, binding context, stroke
     /// spellings)`. Two rows may share `(action, context)` — that is
-    /// the alternates shape (D7, e.g. emacs `menu.dismiss`).
+    /// the alternates shape (D7, e.g. emacs `menu.dismiss`). Row
+    /// order is the resolver's chain-order contract — the shared
+    /// window-local blocks chain at each preset's textual position
+    /// (the C-5 precedence pin depends on the order).
     #[must_use]
-    pub const fn rows(self) -> &'static [(ActionId, ContextId, &'static [&'static str])] {
+    pub fn rows(self) -> Vec<(ActionId, ContextId, &'static [&'static str])> {
         match self {
-            Self::Standard => STANDARD,
-            Self::Emacs => EMACS,
-            Self::Vi => VI,
+            Self::Standard => chained(&[
+                STANDARD_S0,
+                LABELS_CONTROL_WALK_ROWS,
+                STANDARD_S1,
+                CONTROL_WALK_ROWS,
+                CONTROL_WALK_SETTINGS_ROWS,
+                STANDARD_S2,
+                TRACK_ENTRIES_ROWS,
+                REVIEW_WALK_ROWS,
+                STANDARD_S4,
+                ALARM_WINDOW_ROWS,
+                NOTIFICATION_ROWS,
+            ]),
+            Self::Emacs => chained(&[
+                EMACS_S0,
+                LABELS_CONTROL_WALK_ROWS,
+                EMACS_S1,
+                ALARM_WINDOW_ROWS,
+                NOTIFICATION_ROWS,
+            ]),
+            Self::Vi => chained(&[
+                VI_S0,
+                CONTROL_WALK_ROWS,
+                VI_S1,
+                CONTROL_WALK_SETTINGS_ROWS,
+                VI_S2,
+                TRACK_ENTRIES_ROWS,
+                REVIEW_WALK_ROWS,
+                VI_S4,
+                ALARM_WINDOW_ROWS,
+                NOTIFICATION_ROWS,
+                VI_S6,
+                LABELS_CONTROL_WALK_ROWS,
+            ]),
         }
     }
 
@@ -71,9 +105,144 @@ impl Preset {
     }
 }
 
+/// The labels overlay's Tab/Shift+Tab walk pair (all presets).
+const LABELS_CONTROL_WALK_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
+];
+
+/// The control walk's Tab/Shift+Tab pairs over the four view contexts (the standard/vi letter) — the Settings pair chains separately where each preset's textual position puts it.
+const CONTROL_WALK_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::NavNextControl, ContextId::Today, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Today, &["Shift+Tab"]),
+    (ActionId::NavNextControl, ContextId::Board, &["Tab"]),
+    (ActionId::NavPrevControl, ContextId::Board, &["Shift+Tab"]),
+    (ActionId::NavNextControl, ContextId::StackDetail, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::StackDetail,
+        &["Shift+Tab"],
+    ),
+    (ActionId::NavNextControl, ContextId::TaskDetail, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::TaskDetail,
+        &["Shift+Tab"],
+    ),
+];
+
+/// The Settings control-walk pair (vi's textual position differs from standard's).
+const CONTROL_WALK_SETTINGS_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::NavNextControl, ContextId::Settings, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::Settings,
+        &["Shift+Tab"],
+    ),
+];
+
+/// The time-entries overlay's ladder + walk (the standard/vi letter).
+const TRACK_ENTRIES_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (
+        ActionId::TaskTrackEntryDismiss,
+        ContextId::TrackEntries,
+        &["Escape"],
+    ),
+    (ActionId::NavNextControl, ContextId::TrackEntries, &["Tab"]),
+    (
+        ActionId::NavPrevControl,
+        ContextId::TrackEntries,
+        &["Shift+Tab"],
+    ),
+];
+
+/// The review walk's cursor/back rows (the standard/vi letter).
+const REVIEW_WALK_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::ReviewWalkCursorUp, ContextId::ReviewWalk, &["Up"]),
+    (
+        ActionId::ReviewWalkCursorDown,
+        ContextId::ReviewWalk,
+        &["Down"],
+    ),
+    (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+];
+
+/// The alarm window's local grammar (all presets, the r5 letter).
+const ALARM_WINDOW_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::MenuPrevious, ContextId::AlarmWindow, &["Up"]),
+    (ActionId::MenuNext, ContextId::AlarmWindow, &["Down"]),
+    (ActionId::AlarmDismiss, ContextId::AlarmWindow, &["d"]),
+    (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
+    (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
+    (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
+];
+
+/// The notification surface's grammar (all presets; the focus-restoration plan US-6/W-6, D-N1).
+const NOTIFICATION_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (
+        ActionId::MenuPrevious,
+        ContextId::NotificationSurface,
+        &["Up"],
+    ),
+    (
+        ActionId::MenuNext,
+        ContextId::NotificationSurface,
+        &["Down"],
+    ),
+    (
+        ActionId::MenuDismiss,
+        ContextId::NotificationSurface,
+        &["Escape"],
+    ),
+    (
+        ActionId::NotificationDismiss,
+        ContextId::NotificationSurface,
+        &["d"],
+    ),
+    (
+        ActionId::NotificationDone,
+        ContextId::NotificationSurface,
+        &["e"],
+    ),
+    (
+        ActionId::NotificationSnooze,
+        ContextId::NotificationSurface,
+        &["s"],
+    ),
+    (
+        ActionId::NotificationMute,
+        ContextId::NotificationSurface,
+        &["m"],
+    ),
+    (
+        ActionId::NotificationCancel,
+        ContextId::NotificationSurface,
+        &["c"],
+    ),
+    (
+        ActionId::NotificationTrackStart,
+        ContextId::NotificationSurface,
+        &["t"],
+    ),
+    (
+        ActionId::NotificationOpen,
+        ContextId::NotificationSurface,
+        &["o"],
+    ),
+];
+
+/// The preset chain (the parts in the resolver's row order — the
+/// chain-order contract; the shared window-local blocks sit at each
+/// preset's textual position).
+fn chained(
+    parts: &[&'static [(ActionId, ContextId, &'static [&'static str])]],
+) -> Vec<(ActionId, ContextId, &'static [&'static str])> {
+    parts.iter().flat_map(|part| part.iter().copied()).collect()
+}
+
 /// `standard` — CUA conventions: arrows *are* this preset's
 /// convention, Ctrl-chords for the global verbs.
-static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
+static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Global
     (ActionId::AppUndo, ContextId::Global, &["Ctrl+Z"]),
     (ActionId::AppRedo, ContextId::Global, &["Ctrl+Shift+Z"]),
@@ -258,8 +427,9 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Labels,
         &["Escape"],
     ),
-    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
-    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
+];
+
+static STANDARD_S1: &[(ActionId, ContextId, &[&str])] = &[
     // Menu
     (ActionId::MenuNext, ContextId::Menu, &["Down"]),
     (ActionId::MenuPrevious, ContextId::Menu, &["Up"]),
@@ -290,28 +460,9 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // convention and were unbound in every context; the five view
     // contexts only (under insert the chain masks them and Tab stays
     // the fields' native traversal).
-    (ActionId::NavNextControl, ContextId::Today, &["Tab"]),
-    (ActionId::NavPrevControl, ContextId::Today, &["Shift+Tab"]),
-    (ActionId::NavNextControl, ContextId::Board, &["Tab"]),
-    (ActionId::NavPrevControl, ContextId::Board, &["Shift+Tab"]),
-    (ActionId::NavNextControl, ContextId::StackDetail, &["Tab"]),
-    (
-        ActionId::NavPrevControl,
-        ContextId::StackDetail,
-        &["Shift+Tab"],
-    ),
-    (ActionId::NavNextControl, ContextId::TaskDetail, &["Tab"]),
-    (
-        ActionId::NavPrevControl,
-        ContextId::TaskDetail,
-        &["Shift+Tab"],
-    ),
-    (ActionId::NavNextControl, ContextId::Settings, &["Tab"]),
-    (
-        ActionId::NavPrevControl,
-        ContextId::Settings,
-        &["Shift+Tab"],
-    ),
+];
+
+static STANDARD_S2: &[(ActionId, ContextId, &[&str])] = &[
     // Round 3 (D26): the scroll actions — PageDown/PageUp, the CUA
     // paging convention, in the five view contexts (never Global:
     // Global is chain-visible under insert and the page keys are
@@ -356,98 +507,20 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     // three rows — the Escape ladder + the panel walk (the per-view
     // row pattern; pointer-driven otherwise, no preset binding for
     // the panel verbs).
-    (
-        ActionId::TaskTrackEntryDismiss,
-        ContextId::TrackEntries,
-        &["Escape"],
-    ),
-    (ActionId::NavNextControl, ContextId::TrackEntries, &["Tab"]),
-    (
-        ActionId::NavPrevControl,
-        ContextId::TrackEntries,
-        &["Shift+Tab"],
-    ),
-    // The review walk (DR-7 chunk 3, #638): the cursor/back rows only
-    // — the row verbs are reached by focus + Enter on the mounted
-    // buttons (mount-driven focus) and the pointer.
-    (ActionId::ReviewWalkCursorUp, ContextId::ReviewWalk, &["Up"]),
-    (
-        ActionId::ReviewWalkCursorDown,
-        ContextId::ReviewWalk,
-        &["Down"],
-    ),
-    (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+];
+
+static STANDARD_S4: &[(ActionId, ContextId, &[&str])] = &[
     // The alarm window (T-22, #805): the walk + the three verbs, the
     // window-local grammar's registry mirror (the window's
     // FocusScope handles the same keys; the ids carry them in the
     // keymap contract).
-    (ActionId::MenuPrevious, ContextId::AlarmWindow, &["Up"]),
-    (ActionId::MenuNext, ContextId::AlarmWindow, &["Down"]),
-    (ActionId::AlarmDismiss, ContextId::AlarmWindow, &["d"]),
-    (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
-    (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
-    (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
-    // The notification surface's grammar (the focus-restoration plan
-    // US-6/W-6, D-N1): the r5 alarm letter verbatim — the walk pair,
-    // the Escape close, and the per-verb keys over the selected row
-    // (the C-5 totality oracle binds every id in every preset).
-    (
-        ActionId::MenuPrevious,
-        ContextId::NotificationSurface,
-        &["Up"],
-    ),
-    (
-        ActionId::MenuNext,
-        ContextId::NotificationSurface,
-        &["Down"],
-    ),
-    (
-        ActionId::MenuDismiss,
-        ContextId::NotificationSurface,
-        &["Escape"],
-    ),
-    (
-        ActionId::NotificationDismiss,
-        ContextId::NotificationSurface,
-        &["d"],
-    ),
-    (
-        ActionId::NotificationDone,
-        ContextId::NotificationSurface,
-        &["e"],
-    ),
-    (
-        ActionId::NotificationSnooze,
-        ContextId::NotificationSurface,
-        &["s"],
-    ),
-    (
-        ActionId::NotificationMute,
-        ContextId::NotificationSurface,
-        &["m"],
-    ),
-    (
-        ActionId::NotificationCancel,
-        ContextId::NotificationSurface,
-        &["c"],
-    ),
-    (
-        ActionId::NotificationTrackStart,
-        ContextId::NotificationSurface,
-        &["t"],
-    ),
-    (
-        ActionId::NotificationOpen,
-        ContextId::NotificationSurface,
-        &["o"],
-    ),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
 /// `C-x C-c` exits, `C-h` is the help prefix, `M-x` is the command
 /// surface, org-mode owns the `C-c` prefix for our domain verbs, and
 /// navigation rides `C-n`/`C-p`.
-static EMACS: &[(ActionId, ContextId, &[&str])] = &[
+static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Global
     (ActionId::AppExit, ContextId::Global, &["Ctrl+x", "Ctrl+c"]),
     (ActionId::AppUndo, ContextId::Global, &["Ctrl+x", "u"]),
@@ -626,8 +699,9 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Labels,
         &["Escape"],
     ),
-    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
-    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
+];
+
+static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     // Round 2 (D16): the board-view C-g alternate for move-cancel.
     (ActionId::TaskMoveCancel, ContextId::Board, &["Ctrl+g"]),
     // Round 2 (D17): emacs' isearch/read-args chords — Ctrl+f/Ctrl+b
@@ -832,66 +906,6 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     // The alarm window (T-22, #805): the same window-local grammar
     // (the context scopes the single keys away from the emacs
     // chords; nothing collides).
-    (ActionId::MenuPrevious, ContextId::AlarmWindow, &["Up"]),
-    (ActionId::MenuNext, ContextId::AlarmWindow, &["Down"]),
-    (ActionId::AlarmDismiss, ContextId::AlarmWindow, &["d"]),
-    (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
-    (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
-    (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
-    // The notification surface's grammar (the focus-restoration plan
-    // US-6/W-6, D-N1): the r5 alarm letter verbatim — the walk pair,
-    // the Escape close, and the per-verb keys over the selected row
-    // (the C-5 totality oracle binds every id in every preset).
-    (
-        ActionId::MenuPrevious,
-        ContextId::NotificationSurface,
-        &["Up"],
-    ),
-    (
-        ActionId::MenuNext,
-        ContextId::NotificationSurface,
-        &["Down"],
-    ),
-    (
-        ActionId::MenuDismiss,
-        ContextId::NotificationSurface,
-        &["Escape"],
-    ),
-    (
-        ActionId::NotificationDismiss,
-        ContextId::NotificationSurface,
-        &["d"],
-    ),
-    (
-        ActionId::NotificationDone,
-        ContextId::NotificationSurface,
-        &["e"],
-    ),
-    (
-        ActionId::NotificationSnooze,
-        ContextId::NotificationSurface,
-        &["s"],
-    ),
-    (
-        ActionId::NotificationMute,
-        ContextId::NotificationSurface,
-        &["m"],
-    ),
-    (
-        ActionId::NotificationCancel,
-        ContextId::NotificationSurface,
-        &["c"],
-    ),
-    (
-        ActionId::NotificationTrackStart,
-        ContextId::NotificationSurface,
-        &["t"],
-    ),
-    (
-        ActionId::NotificationOpen,
-        ContextId::NotificationSurface,
-        &["o"],
-    ),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest
@@ -899,7 +913,7 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
 /// /`Z` are real prefix families (the resolver's accumulation
 /// reproduces vim's operator-waits-for-motion behaviour), `ViInsert`
 /// binds only Escape.
-static VI: &[(ActionId, ContextId, &[&str])] = &[
+static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     // ViNormal carries everything; Global is empty.
     (ActionId::NavNextItem, ContextId::ViNormal, &["j"]),
     (ActionId::NavPrevItem, ContextId::ViNormal, &["k"]),
@@ -1010,22 +1024,9 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     // Round 3 (D25): the control walk — Tab/Shift+Tab in the five
     // view contexts (unbound today; under ViInsert the chain masks
     // them and Tab stays the fields' native traversal).
-    (ActionId::NavNextControl, ContextId::Today, &["Tab"]),
-    (ActionId::NavPrevControl, ContextId::Today, &["Shift+Tab"]),
-    (ActionId::NavNextControl, ContextId::Board, &["Tab"]),
-    (ActionId::NavPrevControl, ContextId::Board, &["Shift+Tab"]),
-    (ActionId::NavNextControl, ContextId::StackDetail, &["Tab"]),
-    (
-        ActionId::NavPrevControl,
-        ContextId::StackDetail,
-        &["Shift+Tab"],
-    ),
-    (ActionId::NavNextControl, ContextId::TaskDetail, &["Tab"]),
-    (
-        ActionId::NavPrevControl,
-        ContextId::TaskDetail,
-        &["Shift+Tab"],
-    ),
+];
+
+static VI_S1: &[(ActionId, ContextId, &[&str])] = &[
     // The recurrence editor's opener (round-7 D-7.1): bare r at the
     // task detail — vi-normal's repeat mnemonic (`g r` is the stack
     // rename's prefix family; bare r is free).
@@ -1056,12 +1057,9 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskTrackStop, ContextId::TaskDetail, &["O"]),
     (ActionId::TaskTrackStart, ContextId::Today, &["I"]),
     (ActionId::TaskTrackStop, ContextId::Today, &["O"]),
-    (ActionId::NavNextControl, ContextId::Settings, &["Tab"]),
-    (
-        ActionId::NavPrevControl,
-        ContextId::Settings,
-        &["Shift+Tab"],
-    ),
+];
+
+static VI_S2: &[(ActionId, ContextId, &[&str])] = &[
     // Round 3 (D26): the scroll actions ride ViNormal once — motions
     // are modal (the vi model); ViNormal is absent from insert chains,
     // so text is safe.
@@ -1091,91 +1089,16 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::PickerCommit, ContextId::DatePicker, &["Return"]),
     // The entries overlay (r4 chunk 10, D-TS2): the ladder row plus
     // the tab walk (the vi preset's per-view row pattern).
-    (
-        ActionId::TaskTrackEntryDismiss,
-        ContextId::TrackEntries,
-        &["Escape"],
-    ),
-    (ActionId::NavNextControl, ContextId::TrackEntries, &["Tab"]),
-    (
-        ActionId::NavPrevControl,
-        ContextId::TrackEntries,
-        &["Shift+Tab"],
-    ),
-    // The review walk (DR-7 chunk 3, #638): the honest vim model has
-    // no modal of its own — the arrows are this overlay's cursors
-    // (the menu-cursor vocabulary) and Escape is the ladder.
-    (ActionId::ReviewWalkCursorUp, ContextId::ReviewWalk, &["Up"]),
-    (
-        ActionId::ReviewWalkCursorDown,
-        ContextId::ReviewWalk,
-        &["Down"],
-    ),
-    (ActionId::ReviewWalkBack, ContextId::ReviewWalk, &["Escape"]),
+];
+
+static VI_S4: &[(ActionId, ContextId, &[&str])] = &[
     // The alarm window (T-22, #805): the same window-local grammar —
     // the arrows are the cursors (the menu-cursor vocabulary) and the
     // single keys fire the verbs (the context scopes them; nothing
     // collides in normal mode).
-    (ActionId::MenuPrevious, ContextId::AlarmWindow, &["Up"]),
-    (ActionId::MenuNext, ContextId::AlarmWindow, &["Down"]),
-    (ActionId::AlarmDismiss, ContextId::AlarmWindow, &["d"]),
-    (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
-    (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
-    (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
-    // The notification surface's grammar (the focus-restoration plan
-    // US-6/W-6, D-N1): the r5 alarm letter verbatim — the walk pair,
-    // the Escape close, and the per-verb keys over the selected row
-    // (the C-5 totality oracle binds every id in every preset).
-    (
-        ActionId::MenuPrevious,
-        ContextId::NotificationSurface,
-        &["Up"],
-    ),
-    (
-        ActionId::MenuNext,
-        ContextId::NotificationSurface,
-        &["Down"],
-    ),
-    (
-        ActionId::MenuDismiss,
-        ContextId::NotificationSurface,
-        &["Escape"],
-    ),
-    (
-        ActionId::NotificationDismiss,
-        ContextId::NotificationSurface,
-        &["d"],
-    ),
-    (
-        ActionId::NotificationDone,
-        ContextId::NotificationSurface,
-        &["e"],
-    ),
-    (
-        ActionId::NotificationSnooze,
-        ContextId::NotificationSurface,
-        &["s"],
-    ),
-    (
-        ActionId::NotificationMute,
-        ContextId::NotificationSurface,
-        &["m"],
-    ),
-    (
-        ActionId::NotificationCancel,
-        ContextId::NotificationSurface,
-        &["c"],
-    ),
-    (
-        ActionId::NotificationTrackStart,
-        ContextId::NotificationSurface,
-        &["t"],
-    ),
-    (
-        ActionId::NotificationOpen,
-        ContextId::NotificationSurface,
-        &["o"],
-    ),
+];
+
+static VI_S6: &[(ActionId, ContextId, &[&str])] = &[
     // The labels overlay (UX R-3 D-2, #789): Ctrl+L is unbound in
     // normal mode here; the overlay's own context carries the
     // ladder + tab rows (the entries-overlay's vi pattern).
@@ -1185,6 +1108,4 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Labels,
         &["Escape"],
     ),
-    (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
-    (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
 ];
