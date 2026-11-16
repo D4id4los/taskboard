@@ -38,12 +38,10 @@ review time judges quality.
   =.artifacts/templates/ux-journey-plan.md= **before a dispatch plan
   may chunk the work**. Pure engine/storage/sync internals with no
   surface delta are exempt.
-- *Advisory during rollout*: while the framework's integration phases
-  (phases 3–5 of §3: surface census, retrofit analysis, remediation)
-  are in flight, the rule binds a chunk only when that chunk's origin
-  cites a UX journey plan. It becomes mandatory for all new
-  user-visible work once those phases complete; see the activation
-  state machine (§3).
+- *Mandatory (activated 2026-11-16, phase 6)*: every new user-visible
+  capability includes — or cites — an accepted UX journey plan before
+  a dispatch plan may chunk it; the rollout-era conditionality is
+  retired (see the activation state machine, §3).
 - *What a UX journey plan is*: a first-class =.artifacts/plans/=
   artefact (=YYYY-MM-DD-<topic>-ux-plan.md=) accepted by the user like
   a design round; the dispatch plan's Origin field cites it, dispatch
@@ -301,27 +299,26 @@ against any of them is a review finding, not a style difference:
 * 3. Activation state machine
 
 The rule's strength ramps through six phases. *Current state:
-**advisory**; phase 5 completed 2026-11-15 — phase 6 (mandate
-activation) is next.* The trigger rule binds a chunk only when
-that chunk's origin cites a UX journey plan; it becomes **mandatory
-for all new user-visible work** at phase 6.
+**mandatory** — phase 6 activated 2026-11-16 (the user's instruction
+after phase-5 completion).* Every new user-visible capability includes
+— or cites — an accepted UX journey plan before a dispatch plan may
+chunk it; the conditionality of the rollout era is retired.
 
 | Phase | Contents | Exit criteria | State |
 |---|---|---|---|
-| 1 — install (docs/process chunk, =docs/ux-journey-planning-framework=) | template into =.artifacts/templates/ux-journey-plan.md=; dispatch-plan template amendment (all mechanics conditional on the origin citing a UX plan — that conditionality *is* the advisory mode); this file; =AGENTS.md= §7 rule worded advisory-with-activation-condition; =scripts/ux-coverage.sh= + fixture self-test | chunk merged; gate green on the fixture's PASS and MISSING paths | in flight — this chunk (PR pending); DONE when merged |
-| 2 — pilot on round-7 scope | three UX journey plans authored blind from the round-7 design; comparison against the chunk-1/2 implementations; round-7 plan adjustments; chunk 3 + re-works dispatched under the framework; census seeded with only the slices the pilot needs (Today/habits, Task detail/recurrence, Settings/files) | blind-plan discipline steps 1–4 complete; gate proven on real PASS and MISSING rows | pending |
-| 3 — full census stock-take | dedicated agent pass over every surface (Board, Task detail, Today, Review, Settings, Capture, alarm window, CLI) completing =docs/ux-surface-census.org= with evidence anchors; standing rulings recorded with dates and authorities | census complete; stock-take report under =.artifacts/reports/= | pending |
-| 4 — retrofit analysis & triage | per existing UX feature: its own =…-ux-plan.md= from census + code evidence; consolidated triage report classifying journeys that cannot complete, unruled absences, escape-path holes (BLOCKER/MAJOR/MINOR), each finding homed | every existing UX feature has a ux-plan; triage report accepted | pending |
-| 5 — remediation dispatch | dispatch plan(s) chunking the triage findings: fix the identified flaws and holes — the framework's full dress rehearsal at scale (advisory mode, used end-to-end) | remediation chunks merged; findings resolved or explicitly homed as P2/P3 | complete 2026-11-15 — the remediation chunks merged; findings resolved (fix/ruling) or explicitly deferred with homes |
-| 6 — mandate activation | tiny docs chunk flips the =AGENTS.md= §7 wording from advisory to mandatory; this section records the activation and its date | new user-visible work requires an accepted UX journey plan before dispatch; GUI review rounds shrink to quality polish | pending |
+| 1 — install (docs/process chunk, =docs/ux-journey-planning-framework=) | template into =.artifacts/templates/ux-journey-plan.md=; dispatch-plan template amendment (all mechanics conditional on the origin citing a UX plan — that conditionality *is* the advisory mode); this file; =AGENTS.md= §7 rule worded advisory-with-activation-condition; =scripts/ux-coverage.sh= + fixture self-test | chunk merged; gate green on the fixture's PASS and MISSING paths | complete 2026-11-13 — PR #761 merged (this row previously read "in flight": record drift fixed at activation) |
+| 2 — pilot on round-7 scope | three UX journey plans authored blind from the round-7 design; comparison against the chunk-1/2 implementations; round-7 plan adjustments; chunk 3 + re-works dispatched under the framework; census seeded with only the slices the pilot needs (Today/habits, Task detail/recurrence, Settings/files) | blind-plan discipline steps 1–4 complete; gate proven on real PASS and MISSING rows | complete 2026-11-13/14 — the three blind plans, the zero-deviation comparison, and the amended round-7 dispatch merged |
+| 3 — full census stock-take | dedicated agent pass over every surface (Board, Task detail, Today, Review, Settings, Capture, alarm window, CLI) completing =docs/ux-surface-census.org= with evidence anchors; standing rulings recorded with dates and authorities | census complete; stock-take report under =.artifacts/reports/= | complete 2026-11-14 — the seven-slice census and the stock-take report merged |
+| 4 — retrofit analysis & triage | per existing UX feature: its own =…-ux-plan.md= from census + code evidence; consolidated triage report classifying journeys that cannot complete, unruled absences, escape-path holes (BLOCKER/MAJOR/MINOR), each finding homed | every existing UX feature has a ux-plan; triage report accepted | complete 2026-11-14 — nine retrofit plans; the 47-finding triage report accepted by the user 2026-11-15 |
+| 5 — remediation dispatch | dispatch plan(s) chunking the triage findings: fix the identified flaws and holes — the framework's full dress rehearsal at scale (advisory mode, used end-to-end) | remediation chunks merged; findings resolved or explicitly homed as P2/P3 | complete 2026-11-15 — the remediation chunks merged (PRs #835/#837/#841/#844/#847/#848); findings resolved (fix/ruling) or explicitly deferred with homes; 39 home issues closed with PR references, 8 deferrals open without milestones |
+| 6 — mandate activation | tiny docs chunk flips the =AGENTS.md= §7 wording from advisory to mandatory; this section records the activation and its date | new user-visible work requires an accepted UX journey plan before dispatch; GUI review rounds shrink to quality polish | complete 2026-11-16 — this chunk |
 
-Advisory→mandatory transition law: the activation condition is
+Advisory→mandatory transition law: the activation condition was
 **phases 3–5 complete** (full census + retrofit of existing UX to the
-new standard *including fixing the identified flaws and holes*). A
-dedicated phase-6 docs chunk rewords =AGENTS.md= §7 and records the
-activation date here. Until then, no agent may treat the UX-journey
-requirement as unconditional — the conditionality is the decided
-semantics (=AGENTS.md= §7 carries the same wording).
+new standard *including fixing the identified flaws and holes*) — met
+2026-11-15, activated 2026-11-16. From activation onward the
+UX-journey requirement is unconditional for all new user-visible work
+(=AGENTS.md= §7 carries the same wording).
 
 Pilot discipline (phase 2, live round-7 state): the pilot plans
 **blind first** (authored from the round-7 stage-1 design reading

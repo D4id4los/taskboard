@@ -181,15 +181,13 @@ implementation specs into the root directory or source folders.
   can perceive or act on; pure engine/storage/sync internals exempt)
   includes — or cites — an accepted UX journey plan written from
   `.artifacts/templates/ux-journey-plan.md` **before a dispatch plan may
-  chunk the work**. *Advisory during rollout (decided 2026-11-13):*
-  while the framework's phases 3–5 (surface census, retrofit analysis,
-  remediation) are in flight, the rule binds a chunk only when that
-  chunk's origin cites a UX journey plan; it becomes **mandatory for all
-  new user-visible work** once those phases complete — a dedicated
-  phase-6 docs chunk flips this wording (see `docs/ux_planning.org` for
-  the activation state). Stage 2 runs `scripts/ux-coverage.sh <plan>
-  --gate` as a self-check and stage 3 re-runs it plus the walkthrough
-  protocol whenever the origin cites a UX plan; the gate is never CI.
+  chunk the work**. **Mandatory for all new user-visible work
+  (activated 2026-11-16, phase 6 of the framework rollout; the
+  integration phases completed 2026-11-15)** — see `docs/ux_planning.org`
+  for the activation state and the framework law. Stage 2 runs
+  `scripts/ux-coverage.sh <plan> --gate` as a self-check and stage 3
+  re-runs it plus the walkthrough protocol for every UX journey plan;
+  the gate is never CI.
 - Improvement ideas that are out-of-scope are recorded as **GitHub
   Issues** in this repository (the markdown backlog file was migrated
   to issues #109–#290 on 2026-10-17; the entry ↔ issue mapping lives in

@@ -9,10 +9,12 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
-- *Status*: =phase 5 complete (remediation); the framework §6 phase-5
-  exit is recorded; phase 6 (mandate activation) is next — a tiny
-  docs chunk flips AGENTS.md §7's advisory wording to mandatory=
-  (2026-11-15) — the remediation chunks 1–6 landed; every triage
+- *Status*: =the framework is mandatory (phase 6 complete, activated
+  2026-11-16)= — every new user-visible capability requires an
+  accepted UX journey plan before dispatch (=AGENTS.md= §7;
+  =docs/ux_planning.org= §3). Previously: =phase 5 complete
+  (remediation); phase 6 next= (2026-11-15) — the remediation chunks
+  1–6 landed (PRs #835/#837/#841/#844/#847/#848); every triage
   finding T-1..T-47 resolved (fix/ruling) or explicitly deferred with
   a home (the chunk-6 ledger:
   =.artifacts/plans/2026-11-15-ux-r6-p3-posture-chunk-plan.md= §3).
