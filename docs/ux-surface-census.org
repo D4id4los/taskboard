@@ -799,15 +799,21 @@ description armed-field indicators, and the notification surface's
 keyboard grammar (#668/#669/#670/#724).
 
 *Named finding (the engagement-armed posture, D-N1's recorded
-deviation)*: the notification surface is *ambient* — its rows persist
-while the user keeps working — so the accepted plan's total-mask letter
-is read narrowly: =ContextId::NotificationSurface= rides the chain head
-exactly while the surface is *engaged* (armed by the surface's first
-walk or verb stroke through the key-path engagement arm
-=`keyscope::notification_grammar_stroke`, disarmed by the Escape close,
-the last row's exit, or rows emptying). The keymap contract's totality
-(AC-4) is posture-independent. The operator may order the literal total
-mask at review.
+deviation, revised at implementation by the regression bar)*: the
+notification surface is *ambient* — its rows persist while the user
+keeps working — so the accepted plan's total-mask letter is read
+narrowly: =ContextId::NotificationSurface= rides the chain head
+exactly while the surface is *engaged* — armed by a grammar stroke
+that is DEAD in the visible chain (the fallback arm
+=`keyscope::notification_grammar_stroke` consulted at the resolver's
+=Unhandled=; the bound keys keep their ambient claims — the focus
+overlay's item walk pinned the regression the first-cut
+consume-ahead-of-resolution arm caused), disarmed by the Escape
+close, the last row's exit, or rows emptying. On views where Down/Up
+are bound (Today/Board/StackDetail/TaskDetail) the surface arms via
+the verb keys; the engaged context's head then owns the walk pair.
+The keymap contract's totality (AC-4) is posture-independent. The
+operator may order the literal total mask at review.
 
 *Named finding (the create/rename rows' withdrawal)*: the chunk plan's
 census row 16 (the create/rename flows) is withdrawn from the origin
