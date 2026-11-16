@@ -5700,3 +5700,91 @@ async fn a41_rate_limited_push_abort_floors_the_next_cycle() {
     );
     let () = server.verify().await;
 }
+
+/// A42 (chunk F, #221): a hinting 503 on the *read* path floors the
+/// autonomous backoff exactly like a 429 — `Unavailable` now carries the
+/// typed hint and `advertised_floor` honors it. Mechanics mirror A14
+/// (paused clock, server-side hit counts, 10 ms window walk).
+#[tokio::test(start_paused = true)]
+async fn a42_unavailable_503_hint_floors_the_poll() {
+    let settings_rate = taskboard_domain::SettingsSnapshot {
+        backoff_max_secs: taskboard_domain::TickSecs::new(30).expect("nonzero"),
+        ..settings()
+    };
+    let server = start_server().await;
+    let limited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let limited_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let responder_limited = limited.clone();
+    let responder_hits = limited_hits.clone();
+    let responder = move |req: &wiremock::Request| {
+        if responder_limited.load(std::sync::atomic::Ordering::SeqCst) {
+            responder_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return ResponseTemplate::new(503).insert_header("Retry-After", "2");
+        }
+        let p = req.url.path().to_string();
+        let body = if p.ends_with("/stacks") {
+            stacks_json(&serde_json::json!([]))
+        } else if p.ends_with("/stacks/archived") {
+            "[]".to_string()
+        } else if p.ends_with(&format!("/boards/{BOARD}")) {
+            board_json(false, &serde_json::json!([]))
+        } else {
+            boards_json(false, &serde_json::json!([]))
+        };
+        ResponseTemplate::new(200)
+            .insert_header("ETag", "\"gen-1\"")
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .respond_with(responder)
+        .mount(&server)
+        .await;
+
+    let mut actor =
+        spawn_with_settings(&server, repo_with(&[(2, STACK)], &[]), cfg(), settings_rate);
+    let first = nudge_and_report(&mut actor).await;
+    assert!(matches!(first, SyncReport::Completed { .. }));
+
+    limited.store(true, std::sync::atomic::Ordering::SeqCst);
+    actor.commands.send(SyncCommand::SyncNow).await.unwrap();
+    let failed = next_report(&mut actor).await;
+    assert!(matches!(
+        failed,
+        SyncReport::Failed {
+            kind: SyncErrorKind::Network,
+            ..
+        }
+    ));
+    let first_failure_at = tokio::time::Instant::now();
+    let retries_exhausted = limited_hits.load(std::sync::atomic::Ordering::SeqCst);
+
+    let window_end = first_failure_at + Duration::from_millis(1_900);
+    while tokio::time::Instant::now() < window_end {
+        tokio::time::advance(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        limited_hits.load(std::sync::atomic::Ordering::SeqCst),
+        retries_exhausted,
+        "no still-limited cycle before the advertised Retry-After elapsed"
+    );
+
+    // Still limited: the backoff cycle fires at/after the advertised
+    // deadline and exhausts the retry budget again.
+    let retried = next_report(&mut actor).await;
+    assert!(matches!(
+        retried,
+        SyncReport::Failed {
+            kind: SyncErrorKind::Network,
+            ..
+        }
+    ));
+    assert!(
+        limited_hits.load(std::sync::atomic::Ordering::SeqCst) > retries_exhausted,
+        "the still-limited cycle did hit the server"
+    );
+
+    // Healthy again: the next backoff cycle succeeds.
+    limited.store(false, std::sync::atomic::Ordering::SeqCst);
+    let ok = next_report(&mut actor).await;
+    assert!(matches!(ok, SyncReport::Completed { .. }));
+}
