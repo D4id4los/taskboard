@@ -105,6 +105,52 @@ pub fn files_sync_chip_caption(state: FilesSyncChipState) -> &'static str {
     }
 }
 
+/// The chip's tone vocabulary (the files-sync-status UX plan US-1,
+/// D-1): the existing neutral/warning/danger semantics, no new
+/// `Tone` variants (the origin plan's non-goals).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipTone {
+    /// A healthy status: the info colour, no alarm semantics.
+    Neutral,
+    /// A warning the operator should look at.
+    Warning,
+    /// Data flow halted: the alarm styling.
+    Danger,
+}
+
+/// The chip's costume fold output: the tone plus whether the `!`
+/// badge mounts. Pure over the state; consumed by the model mapping
+/// and the presentation tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChipPresentation {
+    pub tone: ChipTone,
+    pub flagged: bool,
+}
+
+/// The chip's honest-costume fold (US-1, D-1): the healthy `Ok` state
+/// renders neutral without the badge — a warning badge means
+/// something again; the warning states keep the warning costume;
+/// `Forked` keeps danger.
+#[must_use]
+pub fn files_sync_chip_presentation(state: FilesSyncChipState) -> ChipPresentation {
+    match state {
+        FilesSyncChipState::Ok => ChipPresentation {
+            tone: ChipTone::Neutral,
+            flagged: false,
+        },
+        FilesSyncChipState::CycleFailed
+        | FilesSyncChipState::Parked
+        | FilesSyncChipState::Diverged => ChipPresentation {
+            tone: ChipTone::Warning,
+            flagged: true,
+        },
+        FilesSyncChipState::Forked => ChipPresentation {
+            tone: ChipTone::Danger,
+            flagged: true,
+        },
+    }
+}
+
 /// The due classification vocabulary (slint-free; `models` maps it
 /// 1:1 onto the generated enum for markup conditionals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9100,5 +9146,40 @@ mod recur_editor_validity_tests {
             !series_edit_visible(&task),
             "the done subject's precondition is structural"
         );
+    }
+}
+
+#[cfg(test)]
+mod files_sync_chip_fold_tests {
+    use super::*;
+
+    // -- the files-sync chip's honest-costume fold (the files-sync
+    // status UX plan US-1, D-1) -----------------------------------
+
+    /// US-1 AC-1 — the healthy state renders neutral without the
+    /// badge: no warning semantics, no `!` flag (typed fold).
+    #[test]
+    fn us1_ac1_ok_state_renders_neutral_without_the_badge() {
+        let folded = files_sync_chip_presentation(FilesSyncChipState::Ok);
+        assert_eq!(folded.tone, ChipTone::Neutral);
+        assert!(!folded.flagged);
+    }
+
+    /// US-1 AC-2 — the warning states hold the warning costume and
+    /// the badge; `Forked` holds danger (the five-state fold).
+    #[test]
+    fn us1_ac2_warning_states_hold_the_costume() {
+        for state in [
+            FilesSyncChipState::CycleFailed,
+            FilesSyncChipState::Parked,
+            FilesSyncChipState::Diverged,
+        ] {
+            let folded = files_sync_chip_presentation(state);
+            assert_eq!(folded.tone, ChipTone::Warning);
+            assert!(folded.flagged);
+        }
+        let forked = files_sync_chip_presentation(FilesSyncChipState::Forked);
+        assert_eq!(forked.tone, ChipTone::Danger);
+        assert!(forked.flagged);
     }
 }

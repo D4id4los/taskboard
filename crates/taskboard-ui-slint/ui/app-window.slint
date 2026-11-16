@@ -17,7 +17,7 @@ import { RecurEditor, RecurEditorModel } from "compositions/recur-editor.slint";
 import { ReviewWalkOverlay, ReviewWalkModel } from "views/review-walk-overlay.slint";
 import { FocusOverlay, FocusRowModel } from "compositions/focus-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
-import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel, FilesSyncChipState } from "compositions/status-bar.slint";
+import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel, FilesSyncChipState, FilesSyncChipTone } from "compositions/status-bar.slint";
 import { NotificationSurface, NotificationRowModel } from "compositions/notification-surface.slint";
 import { TimerRowModel, BreakRuleRowModel } from "compositions/timers.slint";
 import { TimerSetter } from "compositions/timer-setter.slint";
@@ -326,6 +326,9 @@ export component AppWindow inherits Window {
     in-out property <bool> files-sync-visible: false;
     in-out property <string> files-sync-text;
     in-out property <FilesSyncChipState> files-sync-state;
+    // slint: files-sync-tone / files-sync-flagged (US-1 D-1, #782)
+    in-out property <FilesSyncChipTone> files-sync-tone;
+    in-out property <bool> files-sync-flagged;
     // The jump-to search palette (#348): the model rows arrive ranked,
     // anchor-filtered, and capped from the Rust pass.
     in-out property <bool> palette-open: false;
@@ -749,6 +752,8 @@ export component AppWindow inherits Window {
                 files-sync-visible: root.files-sync-visible;
                 files-sync-text: root.files-sync-text;
                 files-sync-state: root.files-sync-state;
+                files-sync-tone: root.files-sync-tone;
+                files-sync-flagged: root.files-sync-flagged;
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
                 mute-clicked(i) => root.banner-mute-clicked(i);
                 row-activated(i) => root.banner-row-activated(i);

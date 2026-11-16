@@ -13577,6 +13577,9 @@ impl crate::UiHandle {
 pub(crate) fn paint_files_sync_chip(window: &AppWindow, chip: &crate::presentation::FilesSyncChip) {
     window.set_files_sync_visible(true);
     window.set_files_sync_state(crate::models::files_sync_chip_state(chip.state));
+    let costume = crate::presentation::files_sync_chip_presentation(chip.state);
+    window.set_files_sync_tone(crate::models::files_sync_chip_tone(costume.tone));
+    window.set_files_sync_flagged(costume.flagged);
     window.set_files_sync_text(SharedString::from(
         crate::presentation::files_sync_chip_caption(chip.state),
     ));
