@@ -4575,6 +4575,17 @@ impl Adapter {
         // the structural walk test pins the partition.
         let before = self.view_state.view_identity();
         let palette_before = self.shell.palette;
+        // The focus walk's single handoff (US-4/W-4, D-H4): a walk
+        // step that lands on a row carries its own focus target — the
+        // identity-diff tail's view-scope re-anchor is suppressed for
+        // it (the double-handoff that parks the key root over the
+        // walked row is the #670 fix). `Some → Some` only: a retreat
+        // to the switcher (Some → None) and every other identity
+        // change keep the tail call.
+        let focus_walk = matches!(
+            effect,
+            UiEffect::FocusNext | UiEffect::FocusPrev | UiEffect::FocusFirst | UiEffect::FocusLast
+        );
         match effect {
             UiEffect::Exit => {
                 self.quit_requests += 1;
@@ -4818,7 +4829,14 @@ impl Adapter {
             // before the r4 chunk-6 gating. The focus-origin restore
             // runs first (US-1/W-1, D-F1's ordering law): the
             // view-scope call only when nothing element-level resolved.
-            if !self.exit_focus_handoff(window) {
+            // The single handoff (US-4/W-4, D-H4): a walk step that
+            // landed on a row carries its own focus target — the
+            // view-scope re-anchor is suppressed for it (the
+            // double-handoff that parks the key root over the walked
+            // row is the #670 fix). A retreat to the switcher
+            // (Some → None) and every other identity change keep it.
+            let walk_carried = focus_walk && self.view_state.focused_task().is_some();
+            if !self.exit_focus_handoff(window) && !walk_carried {
                 window.invoke_refocus_view();
             }
         }

@@ -20447,6 +20447,25 @@ fn focused_carries(harness: &Harness, element_id: &str) -> bool {
     chain.iter().any(|id| id == element_id)
 }
 
+/// Whether the focused element ITSELF carries the element id (no
+/// ancestor walk — the exact-holder probe; `key-root` is every
+/// element's ancestor, so the ancestor walk cannot name it).
+fn focused_self_carries(harness: &Harness, element_id: &str) -> bool {
+    use i_slint_core::window::WindowInner;
+    let Some(item) = WindowInner::from_pub(harness.handle.window().window())
+        .focus_item
+        .borrow()
+        .upgrade()
+    else {
+        return false;
+    };
+    let count = item.element_count().unwrap_or(0);
+    (0..count)
+        .filter_map(|index| item.element_type_names_and_ids(index))
+        .flatten()
+        .any(|(_, id)| !id.is_empty() && id.rsplit("::").next() == Some(element_id))
+}
+
 /// US-1/S1+S2 (the census's picker family, rows 5/14): the priority
 /// picker opened from the detail records the origin at open and
 /// restores into the title cell at Escape — the typed fact lands and
@@ -20789,6 +20808,52 @@ fn us3_s1_menu_open_lands_focus_on_the_menu() {
             assert!(
                 !keyboard(&harness).get_menu_open(),
                 "the invocation closed the menu"
+            );
+        },
+    );
+}
+
+// === The Today walk's single handoff (round-8 chunk 2, the focus-
+// === restoration plan US-4/W-4) =================================
+
+/// US-4/S1: a walk step that switches the focused board parks the
+/// slint focus where the walk left it (inside the walked surface) —
+/// the identity-diff tail's view-scope re-anchor is suppressed for
+/// the walk (the double handoff that re-anchored the key root over
+/// the walked row is the #670 fix); the walked row is the emphasized
+/// one on the crossed board.
+#[test]
+fn us4_s1_cross_board_walk_parks_focus_on_the_row() {
+    // SAFETY: single-threaded journey startup; the driver thread reads
+    // it only inside `run` below.
+    unsafe { std::env::set_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY", "1") };
+    let (_fixture, state, [_board_one_task, _board_two_task]) = fixture::today_overdue_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The stay-on-today mount leaves the Today surface holding
+            // slint focus (its init grab; the mount dispatch no tail
+            // rides it) — the guard's letter is "the walk's focus
+            // survives it", so the probe can read the holder directly.
+            let emphasized_row = |harness: &Harness| {
+                let sections = harness.handle.window().get_today_model().sections;
+                let rows = sections.row_data(0).expect("overdue section").rows;
+                (0..rows.row_count()).find(|r| rows.row_data(*r).expect("row").card.emphasis)
+            };
+            harness.press(ActionId::NavNextItem);
+            let before = emphasized_row(&harness).expect("the walk seeded a row");
+            // The cross-board step: the walk switches boards, the
+            // identity diff fires — and the walked row survives it.
+            harness.press(ActionId::NavNextItem);
+            harness.driver.advance_time(0);
+            let after = emphasized_row(&harness).expect("the walk crossed boards");
+            assert_ne!(before, after, "the step crossed to the other board");
+            assert!(
+                !focused_self_carries(&harness, "key-root"),
+                "the walked row kept the focus off the key root"
             );
         },
     );
