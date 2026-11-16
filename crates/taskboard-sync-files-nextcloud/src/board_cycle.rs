@@ -1749,6 +1749,241 @@ mod tests {
         );
     }
 
+    // -- the N-19 investigation (the files-sync-status UX plan US-2,
+    // D-2): the hermetic five-shape fixture and the reproduction test.
+    // The operator's posture: a files-bound board, the per-board
+    // pending count only rising, and only `identity.json` in the
+    // remote subtree. The fixture seeds one op of every shape the
+    // planner can attribute to the board and asserts the cycle's
+    // contract: every op settles `Applied` on the report lane and an
+    // ops/ chunk lands beside identity.json.
+
+    const STACK2_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x57AD);
+    const LABEL_UUID: uuid::Uuid = uuid::Uuid::from_u128(0x1A81E);
+
+    fn label_row() -> taskboard_domain::Label {
+        taskboard_domain::Label {
+            id: taskboard_domain::ids::LabelId::from_uuid(LABEL_UUID),
+            board: board(),
+            remote: None,
+            title: "urgent".into(),
+            color: taskboard_domain::Color::new("e76f51"),
+            deleted: false,
+            clocks: taskboard_domain::LabelClocks {
+                title: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                color: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                deleted: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            },
+            authors: taskboard_domain::entities::LabelAuthors::default(),
+            remote_seen: None,
+        }
+    }
+
+    fn stack2() -> Stack {
+        Stack {
+            id: StackId::from_uuid(STACK2_UUID),
+            board: board(),
+            remote: None,
+            title: "second column".into(),
+            order: 2,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                order: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                deleted: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            },
+            authors: taskboard_domain::entities::StackAuthors::default(),
+            remote_seen: None,
+        }
+    }
+
+    /// One op of every attributed shape (the engine queues these
+    /// optimistically, so the entity rows already exist locally):
+    /// task edit, stack add, label op, board rename, sections touch.
+    fn five_shape_outbox() -> Vec<PendingOp> {
+        let task = TaskId::from_uuid(TASK_UUID);
+        let stack = StackId::from_uuid(STACK2_UUID);
+        let label = taskboard_domain::ids::LabelId::from_uuid(LABEL_UUID);
+        let op = |n: u128, op: LocalOp| PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(n)),
+            op,
+            queued_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        };
+        vec![
+            op(0xE10, LocalOp::UpdateTask(task)),
+            op(0xE11, LocalOp::CreateStack(stack)),
+            op(0xE12, LocalOp::CreateLabel(label)),
+            op(0xE13, LocalOp::UpdateBoard(board())),
+            op(0xE14, LocalOp::UpdateAppData(task)),
+        ]
+    }
+
+    fn five_shape_state() -> PersistedState {
+        let mut state = state_with(five_shape_outbox());
+        state
+            .stacks
+            .insert(StackId::from_uuid(STACK2_UUID), stack2());
+        state.labels.insert(
+            taskboard_domain::ids::LabelId::from_uuid(LABEL_UUID),
+            label_row(),
+        );
+        state
+    }
+
+    /// US-2 AC-1 — the reproduction: after a cycle runs without a
+    /// transport error, every attributed op settles `Applied` on the
+    /// report lane (the pending count's outbox source drains to zero)
+    /// and an `ops/NNNN.json` chunk exists beside `identity.json`.
+    #[tokio::test]
+    async fn n19_ac1_pending_falls_after_a_cycle() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let state = Arc::new(FixedState(five_shape_state()));
+        let (board_tx, mut board_rx) = mpsc::channel(16);
+        let context = ctx(Arc::clone(&state), board_tx);
+        let mut lanes = Lanes::default();
+        let ran = run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(ran, 1, "the owned board's lane ran to completion");
+
+        // (c) The transport listing shows the ops/ chunk beside
+        // identity.json (structural fact, not a log match).
+        let identity =
+            crate::cycle::rooted(&taskboard_sync_files::layout::board_identity_path(board()));
+        assert!(fake.file(&identity).is_some(), "identity.json lands");
+        let ops_prefix = crate::cycle::rooted(&format!(
+            "boards/{BOARD_UUID}/devices/{}/ops/",
+            device_dir_name(device())
+        ));
+        assert!(
+            fake.count("PUT", Some(&ops_prefix)) >= 1,
+            "an ops chunk published beside identity.json"
+        );
+
+        // (a)+(b) Every op in the outbox settled Applied — the typed
+        // pending-falls proof (the engine's outbox is the single
+        // source of the pending count).
+        let mut settled: Vec<taskboard_domain::OpId> = Vec::new();
+        while let Ok(report) = board_rx.try_recv() {
+            let SyncReport::Completed { pushes, .. } = report else {
+                continue;
+            };
+            for outcome in pushes {
+                let taskboard_domain::PushResult::Applied { .. } = outcome.result else {
+                    continue;
+                };
+                settled.push(outcome.op);
+            }
+        }
+        let outbox = five_shape_outbox();
+        assert_eq!(
+            settled.len(),
+            outbox.len(),
+            "every attributed op settled Applied"
+        );
+        for entry in &outbox {
+            assert!(
+                settled.contains(&entry.op_id),
+                "op {} settled",
+                entry.op_id.0
+            );
+        }
+    }
+
+    /// The stranding reproduction (the investigation's ac2, US-2):
+    /// a ref-delete op — the #150 Deck-collapse artifact — attributes
+    /// to a files-bound board (the pending count counts it), but the
+    /// drain publishes nothing for it and no Deck actor ever serves a
+    /// files-bound board: pending rises forever. Committed `#[ignore]`d
+    /// as the reproduction's opening evidence; the drain repair
+    /// un-ignores it (plan D-2's amended-delta note).
+    #[tokio::test]
+    #[ignore = "the N-19 reproduction: ref-deletes strand on a files-bound board (un-ignored by the drain repair)"]
+    async fn n19_ac2_a_ref_delete_no_longer_strands_on_a_files_board() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let op = PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(0xE3)),
+            op: taskboard_domain::LocalOp::DeleteRemoteCard {
+                board: board(),
+                card: taskboard_domain::ids::RemoteCardRef {
+                    board: RemoteBoardId::files(BOARD_UUID),
+                    stack: taskboard_domain::ids::RemoteStackId::files(STACK_UUID),
+                    card: taskboard_domain::ids::RemoteCardId::files(TASK_UUID),
+                },
+            },
+            queued_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        };
+        let state = Arc::new(FixedState(state_with(vec![op])));
+        let (board_tx, mut board_rx) = mpsc::channel(16);
+        let context = ctx(Arc::clone(&state), board_tx);
+        let mut lanes = Lanes::default();
+        let ran = run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(ran, 1, "the owned board's lane ran");
+        let ops_prefix = crate::cycle::rooted(&format!(
+            "boards/{BOARD_UUID}/devices/{}/ops/",
+            device_dir_name(device())
+        ));
+        assert!(
+            fake.count("PUT", Some(&ops_prefix)) >= 1,
+            "the ref-delete's tombstone chunk published"
+        );
+        let mut settled = 0usize;
+        while let Ok(SyncReport::Completed { pushes, .. }) = board_rx.try_recv() {
+            settled += pushes
+                .iter()
+                .filter(|outcome| {
+                    matches!(outcome.result, taskboard_domain::PushResult::Applied { .. })
+                })
+                .count();
+        }
+        assert_eq!(settled, 1, "the ref-delete settled Applied");
+    }
+
+    /// The pull-loop instrument (H3, D-2): a transport failure in the
+    /// pull stage holds the lane's publish back for that tick only —
+    /// the next tick recovers, drains, and settles the op. No
+    /// permanent silent stall lives in the lane runner.
+    #[tokio::test]
+    async fn n19_h3_a_failed_pull_recovers_on_the_next_tick() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        // The attach ladder (4 MKCOL + 1 create-once identity) passes;
+        // the pull's first listing answers 503 — nothing publishes
+        // this tick (publish-after-import).
+        for _ in 0..5 {
+            fake.stage(crate::test_support::Effect::Pass);
+        }
+        fake.stage(crate::test_support::Effect::Status(503));
+        let state = Arc::new(FixedState(state_with(vec![queued_update(
+            0xE5,
+            TaskId::from_uuid(TASK_UUID),
+        )])));
+        let (board_tx, mut board_rx) = mpsc::channel(16);
+        let context = ctx(Arc::clone(&state), board_tx);
+        let mut lanes = Lanes::default();
+        let ran = run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(ran, 0, "the pull failure holds the lane open");
+        assert!(
+            board_rx.try_recv().is_err(),
+            "no report flies for a failed pull"
+        );
+
+        // The next tick: the same lane recovers, folds, drains.
+        let ran = run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(ran, 1, "the lane recovered");
+        let mut settled = 0usize;
+        while let Ok(SyncReport::Completed { pushes, .. }) = board_rx.try_recv() {
+            settled += pushes
+                .iter()
+                .filter(|outcome| {
+                    matches!(outcome.result, taskboard_domain::PushResult::Applied { .. })
+                })
+                .count();
+        }
+        assert_eq!(settled, 1, "the op settled on the recovering tick");
+    }
+
     /// A moved subtree on the server, with `this_device`'s Deck copy.
     fn moved_world(record: Option<Vec<u8>>) -> (FakeFilesTransport, PersistedState, uuid::Uuid) {
         let target = uuid::Uuid::from_u128(0x7777);
