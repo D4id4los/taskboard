@@ -5603,3 +5603,100 @@ async fn l4_a_settings_change_mid_streak_keeps_the_backoff() {
         "the retry honoured the 20 s backoff, not the 1 s poll: {waited:?}"
     );
 }
+
+/// A41 (chunk F, #222): a push aborted by a *rate-limited* create (429 +
+/// `Retry-After: 2`) floors the next cycle's schedule with the
+/// advertised hint. The observable is the server-side hit count over
+/// paused time: within the window before the advertised deadline the
+/// only limited requests are the first cycle's exhausted retries (3);
+/// a floor-ignoring implementation would fire the next cycle after the
+/// 1 s curve and add more. Flipping the endpoint healthy lets the retry
+/// cycle succeed (the floor dies with the streak).
+#[tokio::test(start_paused = true)]
+async fn a41_rate_limited_push_abort_floors_the_next_cycle() {
+    let server = start_server().await;
+    for (stack, card, title) in [(STACK, 55_u64, "created first"), (8, 56, "created second")] {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{stack}/cards"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(card_json(card, title)))
+            .mount(&server)
+            .await;
+    }
+    let limited = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let limited_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let responder_limited = limited.clone();
+    let responder_hits = limited_hits.clone();
+    let limited_responder = move |_req: &wiremock::Request| {
+        responder_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if responder_limited.load(std::sync::atomic::Ordering::SeqCst) {
+            ResponseTemplate::new(429).insert_header("Retry-After", "2")
+        } else {
+            ResponseTemplate::new(200).set_body_json(card_json(57, "created third"))
+        }
+    };
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/9/cards"
+        )))
+        .respond_with(limited_responder)
+        .mount(&server)
+        .await;
+    mount_standard_pull(&server, serde_json::json!([])).await;
+
+    let mut actor = spawn(
+        &server,
+        repo_with(
+            &[(2, STACK), (3, 8), (4, 9)],
+            &[(100, 2, STACK), (110, 3, 8), (120, 4, 9)],
+        ),
+    );
+    let first = nudge_and_report(&mut actor).await;
+    let SyncReport::Failed { kind, pushes, .. } = first else {
+        panic!("expected a Failed report from the aborted push");
+    };
+    assert_eq!(kind, SyncErrorKind::Network);
+    assert_eq!(
+        pushes.len(),
+        2,
+        "the two completed creates are the evidence"
+    );
+    let first_failure_at = tokio::time::Instant::now();
+    let retries_exhausted = limited_hits.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(retries_exhausted, 3, "the client exhausted its budget");
+
+    // Walk the window before the advertised deadline in explicit 10 ms
+    // steps (each step keeps the runtime's earliest timer bounded). A
+    // floor-ignoring implementation fires the next cycle at the 1 s curve
+    // and adds limited requests inside this window.
+    let window_end = first_failure_at + Duration::from_millis(1_900);
+    while tokio::time::Instant::now() < window_end {
+        tokio::time::advance(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        limited_hits.load(std::sync::atomic::Ordering::SeqCst),
+        retries_exhausted,
+        "no still-limited cycle before the advertised Retry-After elapsed"
+    );
+
+    // Still limited: the backoff cycle fires at/after the advertised
+    // deadline and exhausts the retry budget again.
+    let retried = next_report(&mut actor).await;
+    assert!(matches!(
+        retried,
+        SyncReport::Failed {
+            kind: SyncErrorKind::Network,
+            ..
+        }
+    ));
+
+    // Healthy again: the next backoff cycle succeeds.
+    limited.store(false, std::sync::atomic::Ordering::SeqCst);
+    let ok = next_report(&mut actor).await;
+    assert!(
+        matches!(ok, SyncReport::Completed { .. }),
+        "the healthy retry cycle must complete: {ok:?}"
+    );
+    let () = server.verify().await;
+}
