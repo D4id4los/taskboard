@@ -113,7 +113,53 @@ pub struct Stroke {
     pub meta: bool,
 }
 
+/// The US-ANSI shift pairs whose shifted glyph is a bound token shape
+/// (keymap-parity plan D-3, the N-17 layout fix): the adapter's seam
+/// delivers only the composed glyph (`to_stroke` sees `text` +
+/// modifiers, no base keysym), so a token spelled with a shifted
+/// punctuation glyph (`Alt+<`) cannot match an event whose layout
+/// delivers the pair's *other* member (`Alt+Shift+,`). The table is
+/// deliberately small — exactly the pairs a preset actually binds —
+/// and static: per-layout tables are unbounded and forbidden (R-2).
+const PUNCT_SHIFT_PAIRS: &[(char, char)] = &[(',', '<'), ('.', '>'), ('/', '?'), (';', ':')];
+
 impl Stroke {
+    /// The chord-shift partner (keymap-parity plan D-3): for a
+    /// *chorded* stroke whose key is a member of [`PUNCT_SHIFT_PAIRS`],
+    /// the pair's other member with shift folded away (the shifted
+    /// glyph carries shift in the character — the same fold rule as
+    /// `parse`). Both directions resolve, so a token spelled with the
+    /// base glyph matches a shifted-glyph event and vice versa; the
+    /// exact-match-first resolver ordering keeps every pre-existing
+    /// token's resolution byte-identical (the normalization is
+    /// additive by construction — `Keymap::resolve` consults it only
+    /// after the exact lookup missed, and `has_prefix` stays exact).
+    /// Non-chorded strokes, named keys, and glyphs outside the table
+    /// yield `None`.
+    #[must_use]
+    pub fn chord_shift_partner(self) -> Option<Self> {
+        if !(self.ctrl || self.alt || self.meta) {
+            return None;
+        }
+        if self.named_name().is_some() {
+            return None;
+        }
+        let partner = PUNCT_SHIFT_PAIRS.iter().find_map(|&(base, shifted)| {
+            if self.key == base {
+                Some(shifted)
+            } else if self.key == shifted {
+                Some(base)
+            } else {
+                None
+            }
+        })?;
+        Some(Self {
+            key: partner,
+            shift: false,
+            ..self
+        })
+    }
+
     /// The canonical modifier list in display order.
     fn mods(self) -> Vec<Mod> {
         let mut mods = Vec::with_capacity(4);
@@ -426,6 +472,42 @@ mod tests {
             Stroke::from_event('X', false, false, true, false),
             Some(ok("X"))
         );
+    }
+
+    /// The chord-shift partner (keymap-parity plan D-3, N-17): the
+    /// Dvorak-International shape — a layout that delivers the base
+    /// glyph under Alt+Shift still resolves the shifted-glyph token —
+    /// and the mirror direction; non-chorded, named, and out-of-table
+    /// strokes have no partner.
+    #[test]
+    fn alt_shifted_punct_tokens_match_base_glyph_events() {
+        // The N-17 shape: the event arrives as `,` with Alt+Shift
+        // (from_event keys on the delivered glyph); the token spells
+        // `Alt+<`. The resolve-level rule must match them.
+        let token = parse("Alt+<").expect("the token parses");
+        let delivered =
+            Stroke::from_event(',', false, true, true, false).expect("the event converts");
+        assert_ne!(token, delivered, "the raw strokes differ (the bug)");
+        assert_eq!(
+            delivered.chord_shift_partner(),
+            Some(token),
+            "the partner equals the token stroke"
+        );
+        // The mirror direction: an event delivering the shifted glyph
+        // (`?` under Ctrl+Shift) matches the base-glyph token `Ctrl+/`.
+        let shifted_event =
+            Stroke::from_event('?', true, false, true, false).expect("the event converts");
+        assert_eq!(
+            shifted_event.chord_shift_partner(),
+            Some(parse("Ctrl+/").expect("the token parses"))
+        );
+        // Out of reach: bare strokes, named keys, and unbound glyphs.
+        let bare = parse(",").expect("bare comma");
+        assert_eq!(bare.chord_shift_partner(), None);
+        let named = parse("Ctrl+Return").expect("named chord");
+        assert_eq!(named.chord_shift_partner(), None);
+        let letter = parse("Ctrl+z").expect("letter chord");
+        assert_eq!(letter.chord_shift_partner(), None);
     }
 
     #[test]

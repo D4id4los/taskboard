@@ -82,11 +82,37 @@ impl Keymap {
 
     /// First-match resolution over a chain (D11): the highest visible
     /// context carrying exactly `seq` wins.
+    ///
+    /// The chord-shift normalization (keymap-parity plan D-3, N-17)
+    /// rides additive behind the exact pass: when no context carries
+    /// `seq` exactly and the sequence's last stroke has a
+    /// [`Stroke::chord_shift_partner`], the lookup retries once with
+    /// the partner substituted (the Dvorak-International shape: the
+    /// token spells `Alt+<`, the layout delivers the base glyph under
+    /// Alt+Shift). `has_prefix` stays exact — the chord grammar
+    /// (pending prefixes) cannot be altered by the map.
     #[must_use]
     pub fn resolve(&self, chain: &[ContextId], seq: &[Stroke]) -> Option<ActionId> {
         for context in self.visible_chain(chain) {
             if let Some(action) = self.bindings.get(&context).and_then(|b| b.get(seq)) {
                 return Some(*action);
+            }
+        }
+        let normalized: Option<Vec<Stroke>> = seq
+            .last()
+            .copied()
+            .and_then(Stroke::chord_shift_partner)
+            .map(|partner| {
+                let mut seq = seq.to_vec();
+                let last = seq.len() - 1;
+                seq[last] = partner;
+                seq
+            });
+        if let Some(seq) = normalized {
+            for context in self.visible_chain(chain) {
+                if let Some(action) = self.bindings.get(&context).and_then(|b| b.get(&seq)) {
+                    return Some(*action);
+                }
             }
         }
         None
@@ -878,6 +904,52 @@ mod tests {
         }
         let vi = Keymap::from_preset(Preset::Vi);
         assert_eq!(vi.bindings_in(ContextId::Global).expect("one row").len(), 1);
+    }
+
+    /// The chord-shift normalization (keymap-parity plan D-3, N-17)
+    /// is additive and exact-match wins: every pre-existing binding
+    /// resolves identically (the emacs `Alt+<` row resolves its exact
+    /// event ahead of any partner substitution), an unmatched glyph
+    /// falls through unchanged, and the shift-distinct chord pairs
+    /// (`Ctrl+Shift+Z` ≠ `Ctrl+Z`) stay distinct — letters have no
+    /// partner.
+    #[test]
+    fn normalization_is_additive_and_exact_match_wins() {
+        let keymap = Keymap::from_preset(Preset::Emacs);
+        let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
+        // The exact event for the bound token resolves as before.
+        let exact =
+            Stroke::from_event('<', false, true, false, false).expect("the exact event converts");
+        assert_eq!(
+            keymap.resolve(&chain, &[exact]),
+            Some(ActionId::NavFirstItem)
+        );
+        // The Dvorak-shaped event (base glyph under Alt+Shift) now
+        // resolves the same row through the partner pass.
+        let dvorak =
+            Stroke::from_event(',', false, true, true, false).expect("the shifted event converts");
+        assert_eq!(
+            keymap.resolve(&chain, &[dvorak]),
+            Some(ActionId::NavFirstItem)
+        );
+        // An unmatched glyph falls through unchanged.
+        let unmatched = Stroke::from_event('%', false, true, true, false).expect("converts");
+        assert_eq!(keymap.resolve(&chain, &[unmatched]), None);
+        // Shift-distinct chords stay distinct: no partner on letters.
+        let global = [ContextId::Global];
+        let undo = stroke::parse("Ctrl+Z").expect("undo");
+        let redo = stroke::parse("Ctrl+Shift+Z").expect("redo");
+        assert_eq!(keymap.resolve(&global, &[undo]), Some(ActionId::AppUndo));
+        assert_eq!(keymap.resolve(&global, &[redo]), Some(ActionId::AppRedo));
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let before = Keymap::from_preset(preset);
+            let built = build(&RawKeymap {
+                preset,
+                overrides: BTreeMap::new(),
+            });
+            assert_eq!(before, built.keymap, "{preset:?}: the map is untouched");
+            assert_eq!(built.findings, [] as [Finding; 0]);
+        }
     }
 
     /// Grouped rows per context for the conflict/shadow contracts.
