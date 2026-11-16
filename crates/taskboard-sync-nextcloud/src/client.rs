@@ -289,8 +289,10 @@ fn multipart_form(upload: &AttachmentUpload) -> Result<multipart::Form, DeckErro
 struct Raw {
     status: StatusCode,
     validators: Validators,
-    /// `Retry-After` response header, parsed when in the delay-seconds
-    /// form (status-agnostic extraction; only the 429 arm consumes it).
+    /// `Retry-After` response header, parsed in the delay-seconds and
+    /// HTTP-date forms (the HTTP-date resolved against *now* at attempt
+    /// time); status-agnostic extraction (only the 429/503 arms consume
+    /// it).
     retry_after: Option<Duration>,
     body: Vec<u8>,
 }
@@ -320,17 +322,31 @@ pub struct Fetch<T> {
     pub validators: Validators,
 }
 
-/// Parses a `Retry-After` header in the delay-seconds form: strict ASCII
-/// digits only. `None` for anything else — whitespace, signs, decimals,
-/// and the RFC 9110 HTTP-date form (which would need "now" and is not
-/// emitted by Nextcloud's rate limiter in practice). A digit string that
-/// overflows `u64` also reads as absent. Huge in-range values stay
-/// representable; consumption clamps them.
-fn parse_retry_after(header: &str) -> Option<Duration> {
-    if header.is_empty() || !header.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
+/// Parses a `Retry-After` header in either RFC 9110 form:
+///
+/// - *delay-seconds*: strict ASCII digits only; a digit string that
+///   overflows `u64` reads as absent. Huge in-range values stay
+///   representable; consumption clamps them.
+/// - *HTTP-date* (IMF-fixdate, RFC 2822-compatible): resolved against
+///   `now`. A date at/below `now` means "retry now" — `Some(ZERO)`,
+///   present, not absent; a future date yields the saturated delta.
+///
+/// Anything else (empty, signed, decimal, garbage, a malformed date)
+/// is `None` — *absent, never an error*; the caller falls back to the
+/// policy backoff. The only impure call site is [`DeckClient::attempt`],
+/// which supplies `chrono::Utc::now()`, keeping this parser pure.
+fn parse_retry_after(header: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    if !header.is_empty() && header.bytes().all(|b| b.is_ascii_digit()) {
+        return header.parse::<u64>().ok().map(Duration::from_secs);
     }
-    header.parse::<u64>().ok().map(Duration::from_secs)
+    // IMF-fixdate parses as RFC 2822 (the `GMT` zone name is
+    // RFC 2822-compatible with chrono).
+    let date = chrono::DateTime::parse_from_rfc2822(header).ok()?;
+    let delta = date.with_timezone(&chrono::Utc) - now;
+    if delta <= chrono::Duration::zero() {
+        return Some(Duration::ZERO);
+    }
+    delta.to_std().ok().or(Some(Duration::MAX))
 }
 
 /// Maps an HTTP status to a typed [`DeckError`]; `Ok(())` means "not an
@@ -1632,7 +1648,7 @@ impl DeckClient {
         let retry_after = headers
             .get(header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
-            .and_then(parse_retry_after);
+            .and_then(|v| parse_retry_after(v, chrono::Utc::now()));
         Ok(Raw {
             status,
             validators,
@@ -1716,29 +1732,71 @@ mod tests {
 
     #[test]
     fn parse_retry_after_reads_strict_delay_seconds() {
-        assert_eq!(parse_retry_after("30"), Some(Duration::from_secs(30)));
+        let now = chrono::Utc::now();
+        assert_eq!(parse_retry_after("30", now), Some(Duration::from_secs(30)));
         // "immediate": a no-op floor by construction.
-        assert_eq!(parse_retry_after("0"), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after("0", now), Some(Duration::ZERO));
         // Huge values stay representable; consumption clamps at the cap.
         assert_eq!(
-            parse_retry_after("999999999999"),
+            parse_retry_after("999999999999", now),
             Some(Duration::from_secs(999_999_999_999))
         );
     }
 
     #[test]
     fn parse_retry_after_treats_everything_else_as_absent() {
+        for absent in ["", " 30", "30 ", "+30", "-1", "abc", "3.5"] {
+            assert_eq!(
+                parse_retry_after(absent, chrono::Utc::now()),
+                None,
+                "{absent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_retry_after_reads_the_http_date_form() {
+        use chrono::TimeZone;
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 16, 12, 0, 0)
+            .unwrap();
+        // One hour ahead: the full delta, second-exact.
+        let future = (now + chrono::Duration::seconds(3600))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        assert_eq!(
+            parse_retry_after(&future, now),
+            Some(Duration::from_secs(3600))
+        );
+        // In the past: present but already elapsed — "retry now".
+        let past = (now - chrono::Duration::seconds(60))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        assert_eq!(parse_retry_after(&past, now), Some(Duration::ZERO));
+        // Exactly now: "retry now".
+        let same = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        assert_eq!(parse_retry_after(&same, now), Some(Duration::ZERO));
+        // Far future (RFC 2822 caps years at 4 digits): still present,
+        // with the exact delta — huge in-range values stay representable
+        // and consumption clamps at the policy cap.
+        let far = (now + chrono::Duration::seconds(250_000 * 24 * 3600))
+            .format("%a, %d %b %Y %H:%M:%S GMT")
+            .to_string();
+        assert_eq!(
+            parse_retry_after(&far, now),
+            Some(Duration::from_hours(6_000_000))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_treats_malformed_dates_as_absent() {
+        let now = chrono::Utc::now();
         for absent in [
-            "",
-            " 30",
-            "30 ",
-            "+30",
-            "-1",
-            "abc",
-            "3.5",
-            "Wed, 21 Oct 2015 07:28:00 GMT",
+            "soon",
+            "Wed, 99 Foo 2015 07:28:00 GMT",
+            "2026-11-16T12:00:00Z",
         ] {
-            assert_eq!(parse_retry_after(absent), None, "{absent:?}");
+            assert_eq!(parse_retry_after(absent, now), None, "{absent:?}");
         }
     }
 
