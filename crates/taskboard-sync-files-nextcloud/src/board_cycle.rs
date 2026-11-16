@@ -32,7 +32,7 @@ use std::time::Instant;
 
 use taskboard_domain::OpId;
 use taskboard_domain::board_move::AdoptionRefusal;
-use taskboard_domain::ids::{AuthorId, BoardId};
+use taskboard_domain::ids::{AuthorId, BoardId, StackId, TaskId};
 use taskboard_domain::messages::SyncReport;
 use taskboard_domain::ownership::BoardOwnershipMap;
 use taskboard_domain::persistence::PersistedState;
@@ -758,6 +758,108 @@ fn record_etag(lane: &mut Lane, relative: &str, content: &crate::transport::File
     }
 }
 
+/// The ref-delete family's tombstone (the N-19 repair): a files-bound
+/// board has no later Deck actor to serve its #150 collapse artifacts,
+/// so the drain relays the deletion itself. The local row resolves
+/// first (the ref's remote binding), else a tombstone mints from the
+/// ref's own files UUID; `deleted` flips with a fresh clock so every
+/// peer's field duel folds it. `None`: a Deck-tagged ref with no
+/// local row — genuinely not this tier's data.
+fn task_tombstone(
+    card_ref: &taskboard_domain::ids::RemoteCardRef,
+    tasks: &BTreeMap<TaskId, taskboard_domain::entities::Task>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<taskboard_domain::entities::Task> {
+    if let Some(local) = tasks.values().find(|task| {
+        task.remote
+            .as_ref()
+            .is_some_and(|r| r.card == card_ref.card)
+    }) {
+        let mut tombstone = local.clone();
+        tombstone.deleted = true;
+        tombstone.clocks.deleted = now;
+        return Some(tombstone);
+    }
+    let uuid = card_ref.card.as_files()?;
+    Some(taskboard_domain::entities::Task {
+        id: TaskId::from_uuid(uuid),
+        stack: card_ref.stack.as_files().map_or(
+            taskboard_domain::ids::StackId::from_uuid(uuid),
+            taskboard_domain::ids::StackId::from_uuid,
+        ),
+        remote: None,
+        title: String::new(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        order: 0,
+        label_memberships: BTreeMap::new(),
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
+        archived: false,
+        deleted: true,
+        clocks: taskboard_domain::TaskClocks {
+            title: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            description: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            duedate: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            scheduled: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            done: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            position: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            effort: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            importance: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            urgency: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            recur: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            kind: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            archived: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            deleted: now,
+        },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
+        remote_seen: None,
+        remote_baseline: None,
+    })
+}
+
+/// The stack twin of [`task_tombstone`].
+fn stack_tombstone(
+    stack_ref: &taskboard_domain::ids::RemoteStackRef,
+    stacks: &BTreeMap<StackId, taskboard_domain::entities::Stack>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<taskboard_domain::entities::Stack> {
+    if let Some(local) = stacks.values().find(|stack| {
+        stack
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.stack == stack_ref.stack)
+    }) {
+        let mut tombstone = local.clone();
+        tombstone.deleted = true;
+        tombstone.clocks.deleted = now;
+        return Some(tombstone);
+    }
+    let uuid = stack_ref.stack.as_files()?;
+    let board_uuid = stack_ref.board.as_files()?;
+    Some(taskboard_domain::entities::Stack {
+        id: StackId::from_uuid(uuid),
+        board: BoardId::from_uuid(board_uuid),
+        remote: None,
+        title: String::new(),
+        order: 0,
+        archived: false,
+        deleted: true,
+        clocks: taskboard_domain::StackClocks {
+            title: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            order: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            deleted: now,
+        },
+        authors: taskboard_domain::entities::StackAuthors::default(),
+        remote_seen: None,
+    })
+}
+
 /// The drain (D-BF8): the board's dirty entities materialize into one
 /// immutable chunk; every op in it reports `Applied` only after the
 /// create-once PUT succeeded.
@@ -793,6 +895,8 @@ async fn drain_board<T: FilesTransport>(
     let mut dirty_stacks = BTreeSet::new();
     let mut dirty_labels = BTreeSet::new();
     let mut dirty_board = false;
+    let mut ref_tombstone_tasks: Vec<taskboard_domain::entities::Task> = Vec::new();
+    let mut ref_tombstone_stacks: Vec<taskboard_domain::entities::Stack> = Vec::new();
     let mut chunk_ops: Vec<OpId> = Vec::new();
     for group in &groups {
         match group.target {
@@ -806,10 +910,50 @@ async fn drain_board<T: FilesTransport>(
                 dirty_labels.insert(label);
             }
             PushTarget::Board(_) => dirty_board = true,
-            PushTarget::Document(_) | PushTarget::RemoteCard(_) | PushTarget::RemoteStack(_) => {
+            PushTarget::RemoteCard(card_ref) => {
+                // The ref-delete family drains here too (the N-19
+                // repair): no Deck actor ever serves a files-bound
+                // board again, so the collapse artifact's deletion
+                // relays as this tier's tombstone.
+                match task_tombstone(&card_ref, &persisted.tasks, ctx.clock.now()) {
+                    Some(tombstone) => {
+                        ref_tombstone_tasks.push(tombstone);
+                        chunk_ops.push(group.primary);
+                        chunk_ops.extend(group.subsumed.iter().copied());
+                        continue;
+                    }
+                    None => {
+                        tracing::warn!(
+                            board = ?board,
+                            "a deck-tagged ref-delete with no local row stays queued"
+                        );
+                    }
+                }
+            }
+            PushTarget::RemoteStack(stack_ref) => {
+                match stack_tombstone(&stack_ref, &persisted.stacks, ctx.clock.now()) {
+                    Some(tombstone) => {
+                        ref_tombstone_stacks.push(tombstone);
+                        chunk_ops.push(group.primary);
+                        chunk_ops.extend(group.subsumed.iter().copied());
+                        continue;
+                    }
+                    None => {
+                        tracing::warn!(
+                            board = ?board,
+                            "a deck-tagged ref-delete with no local row stays queued"
+                        );
+                    }
+                }
+            }
+            PushTarget::Document(_) => {
+                // The planner cannot produce a Document group for a
+                // files-owned board (the plan-shape pin); reaching
+                // here means the ownership map and the binding
+                // disagree — the op stays queued, loudly.
                 tracing::warn!(
                     board = ?board,
-                    "plan produced a non-entity target on a files board; op stays queued"
+                    "plan produced a sidecar target on a files board; op stays queued"
                 );
                 continue;
             }
@@ -835,6 +979,18 @@ async fn drain_board<T: FilesTransport>(
         if let Some(row) = persisted.tasks.get(task) {
             entries.push(EntityEntry::Modeled(MaterializedEntity::from_task(row)));
         }
+    }
+    // The ref-delete family's tombstones (the N-19 repair): already
+    // materialized against the ref during the group walk.
+    for tombstone in &ref_tombstone_stacks {
+        entries.push(EntityEntry::Modeled(MaterializedEntity::from_stack(
+            tombstone,
+        )));
+    }
+    for tombstone in &ref_tombstone_tasks {
+        entries.push(EntityEntry::Modeled(MaterializedEntity::from_task(
+            tombstone,
+        )));
     }
     // Every op must have found an entity to materialize, or it is not
     // publishable — honesty over accounting pressure (an unpublished
@@ -1531,13 +1687,14 @@ mod tests {
         assert!(fake.file(&ops_path).is_none(), "nothing published");
     }
 
-    /// The §9.5 plan-shape impossibility's drain-side pin: a ref-delete
-    /// op (a Deck-collapse artifact) attributing to a files board forms
-    /// a non-entity plan target — the drain publishes nothing for it
-    /// and reports no `Applied` (the op stays queued; a Deck actor
-    /// drains it, never this lane).
+    /// The ref-delete pin, re-authored to the N-19 repair's contract
+    /// (the investigation's amended delta): a files-tagged ref-delete
+    /// materializes as a tombstone chunk and settles `Applied` — no
+    /// Deck actor ever serves a files-bound board again — while a
+    /// deck-tagged ref with no local row stays queued (not this
+    /// tier's data).
     #[tokio::test]
-    async fn a_ref_delete_op_on_a_files_board_stays_queued() {
+    async fn a_files_tagged_ref_delete_materializes_its_tombstone() {
         let fake = FakeFilesTransport::new();
         fake.seed_dirs(&["taskboard"]);
         let op = PendingOp {
@@ -1558,9 +1715,63 @@ mod tests {
         let mut lanes = Lanes::default();
         let _ = run_board_lanes(&fake, &context, &mut lanes).await;
         let _ = board_rx.try_recv().expect("the pull report still flies");
+        let report = board_rx.try_recv().expect("the drain report");
+        let SyncReport::Completed { pushes, .. } = report else {
+            panic!("completed");
+        };
+        assert_eq!(pushes.len(), 1, "the ref-delete settled");
+        assert!(matches!(
+            pushes[0].result,
+            taskboard_domain::PushResult::Applied { .. }
+        ));
+        let ops_path = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            device(),
+            1,
+        ));
+        let bytes = fake.file(&ops_path).expect("the tombstone chunk published");
+        let chunk: BoardChunk = serde_json::from_slice(&bytes).expect("a valid chunk");
+        let tombstone = chunk
+            .entities
+            .iter()
+            .filter_map(|entry| match entry {
+                EntityEntry::Modeled(entity) => Some(entity),
+                EntityEntry::Verbatim(_) => None,
+            })
+            .find(|entity| entity.kind == EntityKind::Task && entity.id == TASK_UUID)
+            .expect("the deleted task relays");
+        let row = tombstone.to_task().expect("a decodable tombstone");
+        assert!(row.deleted, "the tombstone carries the deletion");
+    }
+
+    /// The pinned refusal's surviving arm: a deck-tagged ref-delete
+    /// with no local row stays queued (the files tier cannot address
+    /// a Deck namespace id).
+    #[tokio::test]
+    async fn a_deck_tagged_ref_delete_with_no_local_row_stays_queued() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let op = PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(0xE3)),
+            op: taskboard_domain::LocalOp::DeleteRemoteCard {
+                board: board(),
+                card: taskboard_domain::ids::RemoteCardRef {
+                    board: RemoteBoardId::deck(42),
+                    stack: taskboard_domain::ids::RemoteStackId::deck(7),
+                    card: taskboard_domain::ids::RemoteCardId::deck(9),
+                },
+            },
+            queued_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        };
+        let state = Arc::new(FixedState(state_with(vec![op])));
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(Arc::clone(&state), board_tx);
+        let mut lanes = Lanes::default();
+        let _ = run_board_lanes(&fake, &context, &mut lanes).await;
+        let _ = board_rx.try_recv().expect("the pull report still flies");
         assert!(
             board_rx.try_recv().is_err(),
-            "no drain report: the ref-delete never publishes"
+            "no drain report: the deck-tagged ref never publishes"
         );
         let ops_path = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
             board(),
@@ -1890,15 +2101,11 @@ mod tests {
         }
     }
 
-    /// The stranding reproduction (the investigation's ac2, US-2):
-    /// a ref-delete op — the #150 Deck-collapse artifact — attributes
-    /// to a files-bound board (the pending count counts it), but the
-    /// drain publishes nothing for it and no Deck actor ever serves a
-    /// files-bound board: pending rises forever. Committed `#[ignore]`d
-    /// as the reproduction's opening evidence; the drain repair
-    /// un-ignores it (plan D-2's amended-delta note).
+    /// The stranding reproduction (the investigation's ac2, US-2),
+    /// green since the drain repair: a ref-delete op — the #150
+    /// Deck-collapse artifact — attributes to a files-bound board and
+    /// now settles as a tombstone chunk; the pending count falls.
     #[tokio::test]
-    #[ignore = "the N-19 reproduction: ref-deletes strand on a files-bound board (un-ignored by the drain repair)"]
     async fn n19_ac2_a_ref_delete_no_longer_strands_on_a_files_board() {
         let fake = FakeFilesTransport::new();
         fake.seed_dirs(&["taskboard"]);
