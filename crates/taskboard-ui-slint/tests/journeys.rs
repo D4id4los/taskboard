@@ -20649,3 +20649,100 @@ fn us1_s3_commit_exit_restores_the_row_anchor() {
         },
     );
 }
+
+// === The control walk's mask clamp (round-8 chunk 2, the focus-
+// === restoration plan US-2/W-2) =================================
+
+/// The `MaskWalkFacts` triple (armed, extent, cursor) — the clamp's
+/// typed oracle.
+fn mask_facts(harness: &Harness) -> (bool, i32, i32) {
+    let mask = harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::MaskWalkFacts>();
+    (mask.get_armed(), mask.get_extent(), mask.get_cursor())
+}
+
+/// US-2/S1: inside the labels overlay (the armed `Labels` context's
+/// host) Tab walks the panel's own controls in order and wraps at the
+/// mask boundary — nothing under the mask ever receives focus; the
+/// physical focus reads (the probe tier's oracle) ride the panel's
+/// named controls.
+#[test]
+fn us2_s1_tab_wraps_inside_the_masked_context() {
+    let (_fx, state, _green, _red) = label_journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            harness.handle.window().invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            // The host pushed the mask facts; the walk starts from the
+            // host's stop 0 (the panel scope's own grab is its mount
+            // hand-off — the clamp consumes the cursor, not the mount).
+            assert_eq!(mask_facts(&harness), (true, 3, 0), "the host facts");
+            // Tab: panel → add (1).
+            harness.stroke(parse("Tab").expect("tab"));
+            harness.driver.advance_time(0);
+            assert!(
+                focused_carries(&harness, "new-btn"),
+                "stop 1 is the add button"
+            );
+            assert_eq!(mask_facts(&harness).2, 1, "the cursor followed");
+            // Tab: add → close (2).
+            harness.stroke(parse("Tab").expect("tab"));
+            harness.driver.advance_time(0);
+            assert!(
+                focused_carries(&harness, "close-btn"),
+                "stop 2 is the close button"
+            );
+            // Tab: close → wraps to the panel scope (3 % 3 = 0).
+            harness.stroke(parse("Tab").expect("tab"));
+            harness.driver.advance_time(0);
+            assert!(focused_carries(&harness, "panel-scope"), "the walk wrapped");
+            // Shift+Tab: panel → wraps backwards to close (2).
+            harness.stroke(parse("Shift+Tab").expect("shift+tab"));
+            harness.driver.advance_time(0);
+            assert!(
+                focused_carries(&harness, "close-btn"),
+                "the backwards walk wrapped"
+            );
+        },
+    );
+}
+
+/// US-2/AC-2 (the degenerate wrap): the timer setter's host holds a
+/// single walk stop — Tab stays on it (the walk never leaks to the
+/// view beneath the setter panel).
+#[test]
+fn us2_s2_single_control_context_degenerates_to_stay() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.window().invoke_timers_setter_opened();
+            harness.driver.advance_time(0);
+            assert!(
+                focused_carries(&harness, "setter-scope"),
+                "the setter opened on its scope"
+            );
+            harness.stroke(parse("Tab").expect("tab"));
+            harness.driver.advance_time(0);
+            let (armed, extent, _) = mask_facts(&harness);
+            assert!(
+                armed && extent == 1,
+                "the armed host pushed the degenerate extent"
+            );
+            assert!(
+                focused_carries(&harness, "setter-scope"),
+                "the walk stayed on the single stop"
+            );
+        },
+    );
+}

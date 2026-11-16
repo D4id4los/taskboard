@@ -57,6 +57,7 @@ import { TaskCard } from "widgets/task-card.slint";
 import { DragState } from "drag-state.slint";
 import { FocusScrollHint } from "focus-scroll.slint";
 import { FocusFacts } from "focus-facts.slint";
+import { MaskWalkFacts } from "mask-walk-facts.slint";
 import { TodayAnchorFacts } from "today-anchor.slint";
 import { ScrollPageHint } from "scroll-page.slint";
 import { TextField, FieldValidity } from "widgets/text-field.slint";
@@ -75,7 +76,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts }
 export { ReviewWalkModel }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
@@ -1582,6 +1583,18 @@ export component AppWindow inherits Window {
         FocusFacts.target-b = -1;
         FocusFacts.nonce += 1;
     }
+
+    // The control walk's clamped stop (US-2/W-2, D-W2): under a
+    // masked site the walk's cursor steps within the host's extent;
+    // this seam publishes the stop — the mounted host consumes it and
+    // focuses its control at that index. Nothing synthetic enters the
+    // traversal, so nothing under the mask is reachable.
+    // slint: mask-focus
+    public function mask-focus(index: int) {
+        MaskWalkFacts.focus-index = index;
+        MaskWalkFacts.nonce += 1;
+    }
+
 
     // The Responsive width push (D17): every width change lands in
     // Rust's breakpoint mapping, which sets the `Responsive` global.

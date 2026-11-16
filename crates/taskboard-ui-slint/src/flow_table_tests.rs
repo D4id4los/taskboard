@@ -709,6 +709,29 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         };
         row(kind, E::RecurIntent, exp(Z, keep));
     }
+    // -- THE MASK'S OWN WALK (the focus-restoration plan US-2/W-2,
+    //    D-W2): the control walk inside a masked site is kept — the
+    //    clamp consumes it in the post-table tail; the flow holds and
+    //    nothing dispatches (the recorded matrix change: the walk was
+    //    settle-then-run, which was the Tab leak the clamp closes).
+    for kind in [
+        FK::Palette,
+        FK::Capture,
+        FK::TrackList,
+        FK::TrackForm,
+        FK::RecurEditor,
+    ] {
+        let keep = match kind {
+            FK::Palette => K(KPal),
+            FK::Capture => K(KCap),
+            FK::TrackList => K(KTrackList),
+            FK::TrackForm => K(KTrackForm),
+            FK::RecurEditor => K(KRecur),
+            _ => unreachable!("the loop names the mask kinds only"),
+        };
+        row(kind, E::ControlNext, exp(Z, keep));
+        row(kind, E::ControlPrev, exp(Z, keep));
+    }
     // -- CHILD LEVELS (chunk 3's ports): the settle-then-run cells —
     //    the child's Cancelled end dispatches nothing, then the re-run
     //    opens/acts exactly as it would from no flow (the begin

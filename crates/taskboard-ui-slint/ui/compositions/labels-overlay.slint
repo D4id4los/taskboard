@@ -13,6 +13,7 @@ import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
 import { TextField } from "../widgets/text-field.slint";
+import { MaskWalkFacts } from "../mask-walk-facts.slint";
 
 // One roster row: display parts plus the subject's assignment state
 // (D-2 — ids stay in the adapter's tables; the toggle routes the
@@ -72,6 +73,47 @@ export component LabelsPanel inherits Rectangle {
     // root grabs on the panel's own post-mount height transition.
     changed height => { panel-scope.focus(); }
 
+    // The walk clamp's host half (US-2/W-2, D-W2): the panel is the
+    // mask — its ordered control list is the walk's extent. Order:
+    // the panel scope, the form field + commit/discard pair (form
+    // open) or the add button (form closed), then close. The
+    // conditional mounts consume their own indices from inside their
+    // scopes; the root consumes the ever-mounted set and publishes
+    // the extent/cursor the walk arithmetic reads.
+    property <int> watch-extent: root.form-open ? 5 : 3;
+    init => {
+        MaskWalkFacts.extent = self.watch-extent;
+        MaskWalkFacts.cursor = 0;
+    }
+    changed watch-extent => {
+        MaskWalkFacts.extent = self.watch-extent;
+    }
+    property <bool> watch-close-focused: close-btn.focused;
+    changed watch-close-focused => {
+        if (root.watch-close-focused) {
+            MaskWalkFacts.cursor = self.watch-extent - 1;
+        }
+    }
+    property <bool> watch-panel-focused: panel-scope.has-focus;
+    changed watch-panel-focused => {
+        if (root.watch-panel-focused) { MaskWalkFacts.cursor = 0; }
+    }
+    function grab-mask-control(index: int) {
+        if (index == 0) {
+            panel-scope.focus();
+        } else {
+            close-btn.grab();
+        }
+    }
+    // The consumption edge: the adapter's clamped stop arrives
+    // through the `mask-focus` seam (the nonce-edge discipline).
+    property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+    changed watch-mask-nonce => {
+        if (MaskWalkFacts.armed) {
+            root.grab-mask-control(MaskWalkFacts.focus-index);
+        }
+    }
+
     panel-scope := FocusScope {
         focus-on-tab-navigation: true;
         width: 100%;
@@ -91,17 +133,30 @@ export component LabelsPanel inherits Rectangle {
                     vertical-alignment: center;
                     horizontal-stretch: 1;
                 }
-                if (!root.form-open): IconButton {
+                if (!root.form-open): new-btn := IconButton {
                     icon: IconKind.plus;
                     tone: Tone.neutral;
                     label: "New label";
                     description: "Opens the create form: a title and a swatch.";
+                    // The walk clamp's add-stop consumption (US-2/W-2):
+                    // the mount owns its index (1 while the form is
+                    // closed) and its cursor push.
+                    property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+                    changed watch-mask-nonce => {
+                        if (MaskWalkFacts.armed && MaskWalkFacts.focus-index == 1 && !root.form-open) {
+                            new-btn.grab();
+                            MaskWalkFacts.cursor = 1;
+                        }
+                    }
+                    changed focused => {
+                        if (self.focused) { MaskWalkFacts.cursor = 1; }
+                    }
                     clicked => {
                         TooltipState.unhover();
                         root.add-requested();
                     }
                 }
-                IconButton {
+                close-btn := IconButton {
                     icon: IconKind.remove;
                     tone: Tone.neutral;
                     label: "Close labels";
@@ -119,7 +174,18 @@ export component LabelsPanel inherits Rectangle {
             // commit on the field's Return or the check button.
             if (root.form-open): VerticalLayout {
                 spacing: Theme.space-2;
-                TextField {
+                // The form's mask indices (US-2/W-2): the field, then
+                // the commit/discard pair — consumed inside the mount
+                // (the conditional's ids are scope-local).
+                property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+                changed watch-mask-nonce => {
+                    if (MaskWalkFacts.armed) {
+                        if (MaskWalkFacts.focus-index == 1) { title-field.grab-focus(); }
+                        else if (MaskWalkFacts.focus-index == 2) { commit-btn.grab(); }
+                        else if (MaskWalkFacts.focus-index == 3) { discard-btn.grab(); }
+                    }
+                }
+                title-field := TextField {
                     placeholder: "Label title";
                     label: "Label title";
                     description: "The label's name as it renders on chips.";
@@ -147,7 +213,7 @@ export component LabelsPanel inherits Rectangle {
                         }
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    IconButton {
+                    commit-btn := IconButton {
                         icon: IconKind.check;
                         tone: Tone.success;
                         label: "Save label";
@@ -157,7 +223,7 @@ export component LabelsPanel inherits Rectangle {
                             root.form-commit-requested();
                         }
                     }
-                    IconButton {
+                    discard-btn := IconButton {
                         icon: IconKind.remove;
                         tone: Tone.neutral;
                         label: "Discard label form";

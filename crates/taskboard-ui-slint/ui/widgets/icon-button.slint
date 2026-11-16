@@ -31,6 +31,17 @@ export component IconButton inherits Rectangle {
     in property <string> description;
     in property <[string]> hint-keys;
     callback clicked();
+    // The scope's focus read (the US-2 walk clamp's cursor pushes:
+    // a mask host publishes which of its controls holds focus — the
+    // MaskWalkFacts discipline).
+    out property <bool> focused: focus-surface.has-focus;
+
+    // The host's grab seam (the walk clamp's consumption): a mask
+    // host focuses this control by index — the FocusScope overlay is
+    // widget-internal, so the grab must ride a named function.
+    public function grab() {
+        focus-surface.focus();
+    }
 
     background: touch.enabled && (touch.pressed || touch.has-hover)
         ? Theme.surface-hover

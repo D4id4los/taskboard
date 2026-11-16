@@ -17,6 +17,7 @@
 
 import { Theme, Typography, Semantic, RoleText } from "../theme.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
+import { MaskWalkFacts } from "../mask-walk-facts.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { TimeField, TimeSlotRow } from "../widgets/time-field.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
@@ -163,6 +164,21 @@ export component TimerSetter inherits Rectangle {
     min-height: setter-layout.preferred-height + 2 * Theme.space-3;
     min-width: 300px * Theme.base-scale;
 
+    // The walk clamp's host half (US-2/W-2, D-W2): the mask holds
+    // the setter scope — the degenerate extent keeps the walk on it;
+    // the consumption edge rides the `mask-focus` seam's nonce.
+    init => {
+        MaskWalkFacts.extent = 1;
+        MaskWalkFacts.cursor = 0;
+    }
+    property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+    changed watch-mask-nonce => {
+        if (MaskWalkFacts.armed) {
+            setter-scope.focus();
+            MaskWalkFacts.cursor = 0;
+        }
+    }
+
     // The walk order (blanket rule b): presets → label → time row →
     // day → insistence → commit. The TimeField's flyout stays
     // non-tab-reached per its own contract; Escape closes through
@@ -172,6 +188,7 @@ export component TimerSetter inherits Rectangle {
         height: 100%;
         focus-on-tab-navigation: true;
         init => { self.focus(); }
+
         VerticalLayout {
             setter-layout := VerticalLayout {
                 padding: Theme.space-3;
