@@ -28,12 +28,13 @@ use crate::view_state::{DateField, DeleteTarget, Flow, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel, BreakRuleRowModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
-    FilesSyncChipState as SlintFilesSyncChipState, FlowHintModel, HabitRowModel,
-    NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel, ReflectionRowModel,
-    ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel, RuleRowModel,
-    StackColumnModel, StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel,
-    TaskDecoration, TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel,
-    TodaySectionModel, Tone, TrackEntryRowModel, TrackedTodayRowModel, TrackingSectionModel, View,
+    FilesSyncChipState as SlintFilesSyncChipState, FilesSyncChipTone as SlintFilesSyncChipTone,
+    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
+    ReflectionRowModel, ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel,
+    RuleRowModel, StackColumnModel, StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi,
+    TaskCardModel, TaskDecoration, TaskDetailModel, Theme, TimerRowModel, TodayModel,
+    TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel, TrackedTodayRowModel,
+    TrackingSectionModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -3551,6 +3552,17 @@ fn recency_caption(last_success: Option<DateTime<Utc>>, now: DateTime<Utc>) -> S
         format!("synced {}m ago", age.num_minutes())
     } else {
         String::new()
+    }
+}
+
+/// The chip tone's 1:1 generated-enum ferry (the files-sync-status UX
+/// plan US-1, D-1).
+#[must_use]
+pub fn files_sync_chip_tone(state: presentation::ChipTone) -> SlintFilesSyncChipTone {
+    match state {
+        presentation::ChipTone::Neutral => SlintFilesSyncChipTone::Neutral,
+        presentation::ChipTone::Warning => SlintFilesSyncChipTone::Warning,
+        presentation::ChipTone::Danger => SlintFilesSyncChipTone::Danger,
     }
 }
 

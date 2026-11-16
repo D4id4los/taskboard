@@ -23,6 +23,17 @@ export enum FilesSyncChipState {
     forked,
 }
 
+// The chip's costume fold (the files-sync-status UX plan US-1, D-1):
+// the model carries the tone + badge fact, never per-state
+// conditionals here (the UI stays dumb).
+// slint: files-sync-tone / files-sync-flagged (pre-framework seam,
+// #782)
+export enum FilesSyncChipTone {
+    neutral,
+    warning,
+    danger,
+}
+
 // The sync badge model (D11): the phase enum plus the pending depth;
 // the recency caption rides along as display text.
 export struct SyncBadgeModel {
@@ -94,6 +105,8 @@ export component StatusBar inherits Rectangle {
     in property <bool> files-sync-visible;
     in property <string> files-sync-text;
     in property <FilesSyncChipState> files-sync-state;
+    in property <FilesSyncChipTone> files-sync-tone;
+    in property <bool> files-sync-flagged;
     callback tracking-stop-clicked();
     callback snooze-clicked(int);
     callback mute-clicked(int);
@@ -352,23 +365,28 @@ export component StatusBar inherits Rectangle {
             // caption + badge, the sidecar-warning shape. No click
             // target — the record lives in the log and the in-app
             // notification rows.
-            // The files-sync chip (DR-8 chunk 4, D-FH5): the same
-            // passive badge posture as the delivery chip; the fork
-            // state takes the danger tone (alarm styling), the rest
-            // warning.
+            // The files-sync chip (DR-8 chunk 4, D-FH5; the
+            // files-sync-status plan US-1 D-1): the same passive badge
+            // posture as the delivery chip — the model's tone/flag
+            // fold decides the costume (Ok neutral, no badge; the
+            // warnings warning; fork danger).
+            // slint: files-sync-tone (pre-framework seam, #782)
             if (root.files-sync-visible): HorizontalLayout {
                 spacing: Theme.space-2;
                 RoleText {
                     role: Typography.caption;
-                    text-color: root.files-sync-state == FilesSyncChipState.forked
+                    text-color: root.files-sync-tone == FilesSyncChipTone.danger
                         ? Semantic.danger
-                        : Semantic.warning;
+                        : root.files-sync-tone == FilesSyncChipTone.warning
+                            ? Semantic.warning
+                            : Theme.text-secondary;
                     text: root.files-sync-text;
                     vertical-alignment: center;
                 }
-                Badge {
+                // slint: files-sync-flagged (pre-framework seam, #782)
+                if (root.files-sync-flagged): Badge {
                     text: "!";
-                    tone: root.files-sync-state == FilesSyncChipState.forked
+                    tone: root.files-sync-tone == FilesSyncChipTone.danger
                         ? Tone.danger
                         : Tone.warning;
                 }
