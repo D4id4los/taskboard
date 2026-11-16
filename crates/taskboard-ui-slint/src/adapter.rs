@@ -903,6 +903,31 @@ impl Adapter {
                 true
             }
             Resolution::Unhandled => {
+                // The notification surface's engagement arm (US-6/W-6,
+                // D-N1, the regression-bar revision): the grammar arms
+                // the surface only as a FALLBACK — the stroke found no
+                // binding in the visible chain (a dead key), so the
+                // ambient claim wins everywhere the chain binds the
+                // key first (the focus overlay's walk regression is
+                // the recorded bar). Down/Up engage on the unbound
+                // chains; the verb keys engage everywhere they are
+                // dead.
+                if !self.shell.notification_surface
+                    && !self.tables.notifications.is_empty()
+                    && let Some(gram) = crate::keyscope::notification_grammar_stroke(&stroke)
+                {
+                    match gram {
+                        crate::keyscope::NotificationGrammar::Walk(direction) => {
+                            Self::set_feedback(window, KeyFeedback::None);
+                            self.notification_walk(window, direction);
+                        }
+                        crate::keyscope::NotificationGrammar::Verb(verb) => {
+                            Self::set_feedback(window, KeyFeedback::None);
+                            self.apply_notification_verb(window, verb);
+                        }
+                    }
+                    return true;
+                }
                 Self::set_feedback(window, KeyFeedback::None);
                 false
             }
@@ -1028,27 +1053,6 @@ impl Adapter {
         // decline would dead-end the keys without a focused field).
         if let Some(consumed) = self.switcher_flyout_key(window, stroke) {
             return Some(consumed);
-        }
-        // The notification surface's engagement arm (US-6/W-6, D-N1):
-        // while rows are visible and the surface is not yet engaged,
-        // the grammar's strokes arm it and apply directly — the
-        // context rides the chain head only from the next stroke on
-        // (the posture deviation's mechanics: an unengaged surface is
-        // ambient, so the pre-engagement keys must be consumed ahead
-        // of the ambient resolution).
-        if !self.shell.notification_surface
-            && !self.tables.notifications.is_empty()
-            && let Some(gram) = crate::keyscope::notification_grammar_stroke(&stroke)
-        {
-            match gram {
-                crate::keyscope::NotificationGrammar::Walk(direction) => {
-                    self.notification_walk(window, direction);
-                }
-                crate::keyscope::NotificationGrammar::Verb(verb) => {
-                    self.apply_notification_verb(window, verb);
-                }
-            }
-            return Some(true);
         }
         // The dropdown ladders (special case D, r4 D39/D40, round-5
         // D6): while a flyout is open, its keys decline the single

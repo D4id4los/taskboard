@@ -20851,7 +20851,12 @@ fn us6_s1_notification_walk_selects_and_clamps() {
             headless_renderer: true,
         },
         move |_driver| {
-            let harness = Harness::mount(SlintDriver::default(), state);
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Onto Settings: the fallback-arming stage (the recorded
+            // posture revision — a dead key arms; the bound keys keep
+            // their ambient claims, the focus overlay's walk being
+            // the recorded bar). Settings binds no plain Down/Up.
+            harness.press(ActionId::AppSettings);
             let window = harness.handle.window();
             assert_eq!(window.get_notification_model().row_count(), 1);
             assert_eq!(window.get_notification_selected(), -1, "disengaged");
@@ -20922,13 +20927,16 @@ fn us6_s3_notification_escape_closes_without_dispatch() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Onto Settings (the fallback-arming stage: a dead Down
+            // arms — see us6_s1's recorded posture revision).
+            harness.press(ActionId::AppSettings);
             press_raw(&harness.handle, "\u{F701}");
             assert_eq!(
                 harness.handle.window().get_notification_selected(),
                 0,
                 "engaged"
             );
-            press_raw(&harness.handle, "Escape");
+            press_raw(&harness.handle, "\u{1b}");
             assert!(
                 harness.engine.drain().is_empty(),
                 "the Escape close dispatches nothing"
