@@ -22057,3 +22057,83 @@ fn us7_s1_the_roster_indicator_carries_the_glyph_flag() {
         },
     );
 }
+
+// -- task-detail-editor UX plan US-2 (dispatch chunk 3): the picker's
+// -- pointer repairs — the HH:MM click keeps the editor open (N-5)
+// -- and the quick options open on the current slot (N-6).
+
+/// US-2/S1 (N-5, D-6): the reproduction journey — the flow state is
+/// the oracle. With the intra-picker click arm, the focus move into
+/// the picker's time field arms the one-shot focus-steal latch before
+/// the due field's focus-lost settle fires: the editor stays open and
+/// nothing dispatches. The un-armed focus loss still settles (the
+/// ladder's second rung — the arm is consumed exactly once).
+#[test]
+fn us2_s1_time_field_click_focuses_and_stays_open() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_due_edit_opened();
+            harness.driver.advance_time(0);
+            assert!(window.get_task_model().due_open, "the editor arms");
+            // The click arm: the latch is set before focus moves —
+            // the settle funnel consumes it once and skips.
+            window.invoke_task_date_time_field_armed();
+            window.invoke_date_editor_focus_lost();
+            harness.driver.advance_time(0);
+            assert!(
+                window.get_task_model().due_open,
+                "an intra-picker focus move never settles the flow"
+            );
+            assert_eq!(harness.engine.drain().len(), 0, "nothing dispatches");
+            // The un-armed focus loss settles per the rule (the arm
+            // is one-shot; the empty buffer discards).
+            window.invoke_date_editor_focus_lost();
+            harness.driver.advance_time(0);
+            assert!(
+                !window.get_task_model().due_open,
+                "the un-armed focus loss settles the editor"
+            );
+        },
+    );
+}
+
+/// US-2/S2 (N-6, D-7): the quick options list opens focused on the
+/// current-time slot — when the picker holds no time, the nearest-row
+/// seed is the device now's local time-of-day (never the list head).
+#[test]
+fn us2_s2_quick_options_open_on_the_current_slot() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_due_edit_opened();
+            harness.driver.advance_time(0);
+            // Single-read capture of the seed: the adapter derives the
+            // focused slot from the device now's local time-of-day
+            // over the unfiltered quarter-hour grid (the picker holds
+            // no time on a fresh open).
+            let expected = taskboard_ui_slint::due_edit::nearest_slot(
+                &taskboard_ui_slint::due_edit::quarter_slots(),
+                Some(chrono::Local::now().time()),
+            );
+            let pushed = i32::try_from(expected).unwrap_or(0);
+            assert_eq!(
+                window.get_task_model().date_time_nearest_row,
+                pushed,
+                "the quick options open scrolled to the current-time slot"
+            );
+        },
+    );
+}
