@@ -469,7 +469,7 @@ async fn attach<T: FilesTransport>(
     // First read: the full dirty set (the store is cold, so every
     // listed peer re-reads — the honest full-read cycle).
     let listing = transport.propfind_devices().await?;
-    ingest_listing(&listing, ctx, st);
+    let _ = ingest_listing(&listing, ctx, st);
     read_dirty_peers(transport, ctx, st).await?;
 
     // Own appdata: first publish (create-once, content = the merged
@@ -566,7 +566,8 @@ async fn steady_cycle<T: FilesTransport>(
 ) -> Result<(bool, usize, usize), TransportError> {
     // 1. PROPFIND devices/ → dirty / vanished sets.
     let listing = transport.propfind_devices().await?;
-    for device in ingest_listing(&listing, ctx, st) {
+    let (listed, vanished) = ingest_listing(&listing, ctx, st);
+    for device in vanished {
         // The tree is the truth: a vanished device's rows leave the
         // merged view (its subtree was removed in the Files UI; the
         // trashbin is the user's recovery). Nothing on the server is
@@ -577,7 +578,11 @@ async fn steady_cycle<T: FilesTransport>(
     // 2. changed-set re-read. Self is never dirty in steady state:
     // own files are output-only, and every self-read happens at
     // attach/adoption, feeding the seed (D-FT4).
-    read_dirty_peers(transport, ctx, st).await?;
+    let already_read = read_dirty_peers(transport, ctx, st).await?;
+    // 2½. the retained-etag sweep (the #695 revision-field fix): for
+    // peers whose validators were all retained, the heartbeat is the
+    // revision — poll it cheaply and re-pull on an advanced stamp.
+    sweep_clean_peer_heartbeats(transport, ctx, st, &listed, &already_read).await?;
 
     // 3. fold over local + seed + peers.
     let merged = merged_view(ctx, st);
@@ -604,13 +609,14 @@ async fn steady_cycle<T: FilesTransport>(
     Ok((published, st.docs.len(), import_rejected))
 }
 
-/// Updates the store from a listing; returns the devices that vanished
-/// (stored in the docs map, absent from the listing).
+/// Updates the store from a listing; returns the listed devices plus
+/// those that vanished (stored in the docs map, absent from the
+/// listing).
 fn ingest_listing(
     listing: &PropfindListing,
     ctx: &SyncContext,
     st: &mut LoopState,
-) -> Vec<DeviceId> {
+) -> (BTreeSet<DeviceId>, Vec<DeviceId>) {
     let mut listed = BTreeSet::new();
     for member in &listing.members {
         // Raw href matching against the encoded forms we can compute:
@@ -637,7 +643,7 @@ fn ingest_listing(
     if !listed.contains(&ctx.identity.device_id) {
         st.publish_seed = None;
     }
-    vanished
+    (listed, vanished)
 }
 
 /// The raw-href → device mapping: the last path segment must parse as
@@ -647,36 +653,93 @@ fn href_device(href: &str) -> Option<DeviceId> {
     DeviceId::parse(last)
 }
 
-/// Re-reads every dirty peer (dir etag differs from the store, or the
-/// device was never seen), 404-tolerant, decode tolerant (D-SF15).
+/// Re-reads every dirty peer (dir etag differs from the store, the
+/// device was never seen, or its heartbeat revision advanced past its
+/// read mark — the #695 rule), 404-tolerant, decode tolerant (D-SF15).
 async fn read_dirty_peers<T: FilesTransport>(
     transport: &T,
     ctx: &SyncContext,
     st: &mut LoopState,
-) -> Result<(), TransportError> {
-    let dirty: Vec<DeviceId> = st
+) -> Result<BTreeSet<DeviceId>, TransportError> {
+    let dirty: BTreeSet<DeviceId> = st
         .etags
-        .dirty_devices()
+        .dirty_devices(&heartbeat_marks(st))
         .into_iter()
         .filter(|device| *device != ctx.identity.device_id)
         .collect();
-    for device in dirty {
-        let appdata_path = rooted(&layout::device_appdata_path(device));
+    for device in &dirty {
+        read_peer(transport, st, *device).await?;
+    }
+    Ok(dirty)
+}
+
+/// One peer's full read: appdata then heartbeat, 404-tolerant, decode
+/// tolerant, closed by the read mark (etag + heartbeat revision).
+async fn read_peer<T: FilesTransport>(
+    transport: &T,
+    st: &mut LoopState,
+    device: DeviceId,
+) -> Result<(), TransportError> {
+    let appdata_path = rooted(&layout::device_appdata_path(device));
+    let info_path = rooted(&layout::device_info_path(device));
+    let appdata = match transport.get(&appdata_path).await {
+        Ok(content) => Some(content),
+        Err(TransportError::NotFound) => None,
+        Err(other) => return Err(other),
+    };
+    if let Some(content) = &appdata {
+        record_get(st, &appdata_path, content);
+    }
+    ingest_peer_document(
+        st,
+        &appdata_path,
+        appdata.as_ref().map(|c| &c.bytes),
+        device,
+    );
+    let info = match transport.get(&info_path).await {
+        Ok(content) => Some(content),
+        Err(TransportError::NotFound) => None,
+        Err(other) => return Err(other),
+    };
+    if let Some(content) = &info {
+        record_get(st, &info_path, content);
+    }
+    ingest_peer_heartbeat(st, &info_path, info.as_ref().map(|c| &c.bytes), device);
+    let stamp = st.heartbeats.get(&device).map(|info| info.written_at);
+    st.etags.mark_device_read(device, stamp);
+    Ok(())
+}
+
+/// The device → heartbeat-stamp map the dirty compare measures
+/// against (the #695 revision field).
+fn heartbeat_marks(st: &LoopState) -> BTreeMap<DeviceId, chrono::DateTime<Utc>> {
+    st.heartbeats
+        .iter()
+        .map(|(device, info)| (*device, info.written_at))
+        .collect()
+}
+
+/// The retained-etag sweep (the #695 fix's poll half): for every
+/// listed peer the etag rule calls clean, one cheap heartbeat GET
+/// decides — a stamp advanced past the read mark by more than
+/// [`SKEW_BAND_SECS`] re-dirties the peer for a full read. A peer
+/// that never serves a decodable heartbeat falls back to pure etag
+/// cleanliness (documented leniency at the type).
+async fn sweep_clean_peer_heartbeats<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    st: &mut LoopState,
+    listed: &BTreeSet<DeviceId>,
+    already_read: &BTreeSet<DeviceId>,
+) -> Result<(), TransportError> {
+    let clean: Vec<DeviceId> = listed
+        .iter()
+        .copied()
+        .filter(|device| *device != ctx.identity.device_id)
+        .filter(|device| !already_read.contains(device))
+        .collect();
+    for device in clean {
         let info_path = rooted(&layout::device_info_path(device));
-        let appdata = match transport.get(&appdata_path).await {
-            Ok(content) => Some(content),
-            Err(TransportError::NotFound) => None,
-            Err(other) => return Err(other),
-        };
-        if let Some(content) = &appdata {
-            record_get(st, &appdata_path, content);
-        }
-        ingest_peer_document(
-            st,
-            &appdata_path,
-            appdata.as_ref().map(|c| &c.bytes),
-            device,
-        );
         let info = match transport.get(&info_path).await {
             Ok(content) => Some(content),
             Err(TransportError::NotFound) => None,
@@ -686,7 +749,15 @@ async fn read_dirty_peers<T: FilesTransport>(
             record_get(st, &info_path, content);
         }
         ingest_peer_heartbeat(st, &info_path, info.as_ref().map(|c| &c.bytes), device);
-        st.etags.mark_device_read(device);
+        // Recompute through the same rule: the freshly decoded stamp
+        // may now trip the revision compare.
+        if st
+            .etags
+            .dirty_devices(&heartbeat_marks(st))
+            .contains(&device)
+        {
+            read_peer(transport, st, device).await?;
+        }
     }
     Ok(())
 }
