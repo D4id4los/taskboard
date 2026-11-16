@@ -98,8 +98,29 @@ to `crates/taskboard-app/tests/common/mod.rs`, `crates/taskboard-app/tests/confi
   env TASKBOARD_CONFIG=/nonexistent/taskboard.toml \
       TASKBOARD_SYNC__POLL_INTERVAL_SECS=5 \
       TASKBOARD_NEXTCLOUD__SERVER_URL=https://hostile.invalid \
-      scripts/run-quality-gates.sh cargo nextest run -p taskboard-app --config-suite
+      scripts/run-quality-gates.sh cargo nextest run -p taskboard-app --test config
   ```
+
+  **Scope decision (recorded 2026-11-16, after the dispatcher's
+  full-workspace hostile run failed in three taskboard-app unit tests)
+  — acceptance scope is (b): the config *integration* suite
+  (`tests/config.rs`), not a full-workspace hostile run.** Evidence:
+  the three failures (`commands::config::set_tests::us10_s1_…`,
+  `commands::connect::tests::the_overlay_rewrites_entry_0_of_an_array_file_and_round_trips`,
+  `…of_an_inline_table_array`) are inline unit tests that call
+  `AppConfig::load(Some(path))` and assert env-composable fields
+  (`nextcloud.server_url` / load success) — ambient `TASKBOARD_*`
+  leaks in through figment's env provider. Chunk D cannot extend the
+  env lock to that layer: `crates/taskboard-app/src/lib.rs:30` is
+  `#![forbid(unsafe_code)]` and env mutation is `unsafe` in edition
+  2024, and the house pattern is already recorded — unit tests avoid
+  env mutation by design, "the real env scan is pinned in the
+  integration suite" (`ui_requests.rs:3133`). The exposure predates
+  this chunk (`git diff origin/main -- crates/taskboard-app/src/` is
+  empty; the tests landed with earlier rounds). Option (a) would also
+  have to cover ~10 ambient-sensitive `AppConfig::load` round-trips in
+  `commands/connect.rs`/`connections.rs` — a separate, pre-existing
+  gap, filed as a backlog issue rather than ridden here.
 
   (exact nextest filter at implementation time) — the whole config suite
   must pass with ambient hostile values; command + output recorded in
