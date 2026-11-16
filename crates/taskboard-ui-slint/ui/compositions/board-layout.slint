@@ -191,6 +191,14 @@ export component BoardLayout inherits Rectangle {
     callback board-gap-hovered(int, int);
     // slint: board-gap-dropped
     callback board-gap-dropped(int, int);
+    // The compact segment drop grammar (UX-R8 D-3, US-3; the `// slint:`
+    // seam comments, the #782 fold): the switcher segments are drop
+    // targets — hover highlights (the move-target paint), release
+    // moves the dragged card append (R-3).
+    // slint: switcher-drop-hovered
+    callback switcher-drop-hovered(int);
+    // slint: switcher-card-dropped
+    callback switcher-card-dropped(int);
     // The bool is the negotiated outcome (`drag-finished`): true = a
     // completed drop (the dropped seam already confirmed), false = a
     // cancelled drag.
@@ -861,7 +869,26 @@ export component BoardLayout inherits Rectangle {
             spacing: Theme.space-1;
             accessible-role: AccessibleRole.tab-list;
             accessible-label: "Stacks";
-            for column[column-index] in root.stacks: segment := FocusScope {
+            for column[column-index] in root.stacks: segment-drop := DropArea {
+                // The segment as drop target (UX-R8 D-3, US-3/S1): the
+                // DropArea wraps the segment's FocusScope — the segment
+                // stays both a click target and a tab stop (can-drop
+                // only accepts while a drag is live, so clicks are
+                // untouched). Index-only: the adapter resolves the
+                // segment's stack through the id tables.
+                can-drop(event) => {
+                    DragState.pointer-x = self.absolute-position.x + event.position.x;
+                    DragState.pointer-y = self.absolute-position.y + event.position.y;
+                    root.switcher-drop-hovered(column-index);
+                    DragAction.move
+                }
+                dropped(event) => {
+                    root.switcher-card-dropped(column-index);
+                    return event.proposed-action;
+                }
+                segment := FocusScope {
+                width: 100%;
+                height: 100%;
                 // A real tab stop (D15); the keyboard path for switching
                 // is the action layer's selection-follows-focus (D8).
                 focus-on-tab-navigation: true;
@@ -908,6 +935,7 @@ export component BoardLayout inherits Rectangle {
                                 self.absolute-position.y / 1px + self.mouse-y / 1px);
                         }
                     }
+                }
                 }
             }
             // The compact New-stack affordance (r2 D7): inline at the
@@ -976,14 +1004,40 @@ export component BoardLayout inherits Rectangle {
                     ? ScrollPageHint.nonce
                     : -1;
                 total-rows: column.tasks.length;
-                for task[task-index] in column.tasks: compact-task := TaskCard {
-                    model: task;
-                    compact: true;
-                    hint-keys: root.task-card-hint;
-                    activated => root.task-activated(root.effective-selected(), task-index);
-                    clicked => root.task-clicked(root.effective-selected(), task-index);
-                    context-requested(x, y) => root.task-context(root.effective-selected(), task-index, x, y);
-                    done-toggled => root.task-done-toggled(root.effective-selected(), task-index);
+                // The compact drag source (UX-R8 D-3, US-3/S1): the
+                // regular leg's DragArea wrapper verbatim (the ghost
+                // size capture included) — today's compact viewport
+                // has no drag handling at all and US-3's story needs
+                // the card to lift. The arm seam is the same
+                // board-card-drag-armed, addressed through
+                // effective-selected() (the compact convention).
+                for task[task-index] in column.tasks: compact-drag := DragArea {
+                    width: 100%;
+                    height: compact-task.preferred-height;
+                    allow-move: !root.flow-open;
+                    data: DragState.payload;
+                    changed dragging => {
+                        if (self.dragging) {
+                            DragState.ghost-width = compact-task.width;
+                            DragState.ghost-height = compact-task.height;
+                            root.board-card-drag-armed(root.effective-selected(), task-index);
+                        }
+                    }
+                    drag-finished(action) => {
+                        root.board-card-drag-finished(root.effective-selected(), task-index,
+                            action != DragAction.none);
+                    }
+                    compact-task := TaskCard {
+                        width: 100%;
+                        height: 100%;
+                        model: task;
+                        compact: true;
+                        hint-keys: root.task-card-hint;
+                        activated => root.task-activated(root.effective-selected(), task-index);
+                        clicked => root.task-clicked(root.effective-selected(), task-index);
+                        context-requested(x, y) => root.task-context(root.effective-selected(), task-index, x, y);
+                        done-toggled => root.task-done-toggled(root.effective-selected(), task-index);
+                    }
                 }
             }
 
