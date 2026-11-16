@@ -1323,8 +1323,10 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         Command::Tasks {
             cmd: TasksCmd::Edit { task, flags },
         } => {
-            let changes = task_changes(&flags);
             run_mutation(&mut ctx.io, ctx.config_path.clone(), move |config, store| async move {
+                // The mint rides the execution seam: the config's day
+                // calendar is reachable exactly here (US-1/D-5).
+                let changes = task_changes(&flags, &config.resolved_day_calendar());
                 tasks::edit(config, store, &task, changes).await
             })
             .await
@@ -1696,7 +1698,16 @@ async fn sync_command(
 /// `DueSpec::Clear` becomes `Some(None)` (the clear-vs-untouched
 /// distinction), the wrapper flag types (`Option<Option<_>>`) map by
 /// identity, `--archive`/`--unarchive` are mutually exclusive (clap).
-fn task_changes(flags: &crate::cli::TaskEditFlags) -> taskboard_domain::TaskChanges {
+///
+/// `DueSpec::Date` mints here — the execution seam, where
+/// `resolved_day_calendar()` is reachable (the `habits`/`reflection`
+/// precedent): the bare date's instant is `day.day_end(date)`, the N-4
+/// stamping law's CLI face (task-detail-editor UX plan US-1/D-5) — the
+/// identical instant the GUI funnel's `parse_stamp` produces.
+fn task_changes(
+    flags: &crate::cli::TaskEditFlags,
+    day: &taskboard_domain::days::DayCalendar,
+) -> taskboard_domain::TaskChanges {
     let crate::cli::TaskEditFlags {
         title,
         description,
@@ -1714,10 +1725,12 @@ fn task_changes(flags: &crate::cli::TaskEditFlags) -> taskboard_domain::TaskChan
         description: description.clone(),
         duedate: due.clone().map(|spec| match spec {
             crate::cli::DueSpec::Set(dt) => Some(dt),
+            crate::cli::DueSpec::Date(date) => Some(day.day_end(date)),
             crate::cli::DueSpec::Clear => None,
         }),
         scheduled: scheduled.clone().map(|spec| match spec {
             crate::cli::DueSpec::Set(dt) => Some(dt),
+            crate::cli::DueSpec::Date(date) => Some(day.day_end(date)),
             crate::cli::DueSpec::Clear => None,
         }),
         // The spec enums share `DueSpec`'s shape: `Clear` becomes
@@ -2221,7 +2234,9 @@ async fn tasks_line(
             tasks::render_text_receipt,
         ),
         TasksCmd::Edit { task, flags } => {
-            let changes = task_changes(&flags);
+            // The mint rides the execution seam: the session's day
+            // calendar (US-1/D-5).
+            let changes = task_changes(&flags, &app.config.resolved_day_calendar());
             emit_result(
                 io,
                 tasks::edit_on(app, &task, changes).await,
@@ -2870,14 +2885,21 @@ mod task_field_mapping_tests {
     #[test]
     fn the_field_flags_map_onto_their_changeset_slots() {
         let due = chrono::Utc::now();
-        let changes = task_changes(&TaskEditFlags {
-            due: Some(DueSpec::Set(due)),
-            scheduled: Some(DueSpec::Clear),
-            effort: Some(EffortSpec::Set(Effort::new(5400))),
-            importance: Some(ImportanceSpec::Clear),
-            urgency: Some(UrgencySpec::Set(Urgency::High)),
-            ..TaskEditFlags::default()
-        });
+        let day = taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero"),
+        };
+        let changes = task_changes(
+            &TaskEditFlags {
+                due: Some(DueSpec::Set(due)),
+                scheduled: Some(DueSpec::Clear),
+                effort: Some(EffortSpec::Set(Effort::new(5400))),
+                importance: Some(ImportanceSpec::Clear),
+                urgency: Some(UrgencySpec::Set(Urgency::High)),
+                ..TaskEditFlags::default()
+            },
+            &day,
+        );
         assert_eq!(changes.duedate, Some(Some(due)));
         assert_eq!(changes.scheduled, Some(None), "--scheduled none clears");
         assert_eq!(changes.effort, Some(Some(Effort::new(5400))));
@@ -2890,19 +2912,56 @@ mod task_field_mapping_tests {
         assert_eq!(changes.archived, None);
     }
 
+    /// US-1/S3 (task-detail-editor UX plan D-5, W-2): the CLI's bare
+    /// date mints the same instant the GUI funnel's `parse_stamp`
+    /// produces — both fronts compose the one domain law
+    /// (`days::day_window_end` over the same day facts), so the parity
+    /// triangle closes: GUI asserted == law (`due_edit` tests), CLI
+    /// asserted == law (here) ⇒ GUI == CLI.
+    #[test]
+    fn us1_s3_cli_bare_date_matches_the_gui_instant() {
+        let day = taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::from_hms_opt(3, 0, 0).expect("3:00"),
+            offset: chrono::FixedOffset::east_opt(2 * 3600).expect("valid offset"),
+        };
+        let date = chrono::NaiveDate::from_ymd_opt(2030, 2, 28).expect("valid date");
+        let changes = task_changes(
+            &TaskEditFlags {
+                due: Some(DueSpec::Date(date)),
+                scheduled: Some(DueSpec::Date(date)),
+                ..TaskEditFlags::default()
+            },
+            &day,
+        );
+        let mint = taskboard_domain::days::day_window_end(date, day.day_start_time, day.offset);
+        assert_eq!(changes.duedate, Some(Some(mint)));
+        assert_eq!(changes.scheduled, Some(Some(mint)));
+    }
+
     #[test]
     fn absent_flags_are_untouched_slots() {
-        let changes = task_changes(&TaskEditFlags::default());
+        let day = taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero"),
+        };
+        let changes = task_changes(&TaskEditFlags::default(), &day);
         assert_eq!(changes, taskboard_domain::TaskChanges::default());
     }
 
     #[test]
     fn importance_maps_the_distinct_type() {
-        let changes = task_changes(&TaskEditFlags {
-            importance: Some(ImportanceSpec::Set(Importance::VeryLow)),
-            archive: true,
-            ..TaskEditFlags::default()
-        });
+        let day = taskboard_domain::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).expect("zero"),
+        };
+        let changes = task_changes(
+            &TaskEditFlags {
+                importance: Some(ImportanceSpec::Set(Importance::VeryLow)),
+                archive: true,
+                ..TaskEditFlags::default()
+            },
+            &day,
+        );
         assert_eq!(changes.importance, Some(Some(Importance::VeryLow)));
         assert_eq!(changes.urgency, None, "urgency is a distinct slot");
         assert_eq!(changes.archived, Some(true));
