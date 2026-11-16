@@ -9958,26 +9958,144 @@ fn mounting_the_settings_view_auto_lists_each_unlisted_connector_once() {
             );
             item_at(&harness, K::Remote, "r");
 
-            // The next mount re-fires exactly the failed connector.
+            // The next mount: the failed connector is inside the
+            // backoff window (the files-sync-status plan US-3 AC-1) —
+            // the backed-off connector's remount re-fires nothing.
             window.invoke_settings_view_mounted();
-            let mut requests = harness.drain_requests();
-            assert_eq!(requests.len(), 1, "only the unlisted connector re-fires");
-            let UiRequest::ListRemoteBoards { connector, .. } = requests.remove(0) else {
-                panic!("the remount routes a listing");
-            };
-            assert_eq!(connector, "home");
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the backed-off connector's remount re-fires nothing"
+            );
 
-            // While that re-fire is in flight, a manual refresh takes
-            // the pending machine — the mount suppresses work's auto
-            // too (the manual-lane guard), and home's slot still
-            // guards.
-            window.invoke_settings_refresh_clicked(item_at(&harness, K::Deck, "work"));
+            // The manual refresh overrides the backoff (US-3 AC-2):
+            // explicit intent routes the listing.
+            window.invoke_settings_refresh_clicked(item_at(&harness, K::Deck, "home"));
             assert_eq!(harness.drain_requests().len(), 1, "the refresh routed");
+            // (the refresh's reply is left in flight here on purpose;
+            // the in-flight guard legs below ride it)
+
+            // While that refresh is in flight, the mount suppresses
+            // work's auto too (the manual-lane guard), and home's
+            // pending machine still guards.
             window.invoke_settings_view_mounted();
             assert!(
                 harness.drain_requests().is_empty(),
                 "the manual-refresh connector and the in-flight slot both guard"
             );
+        },
+    );
+}
+
+/// US-3 AC-1 (the files-sync-status plan, D-4) — the backoff
+/// suppresses the mount auto-list: after a failed auto listing, a
+/// remount inside the window routes no new request and the connector
+/// card renders the failed truth with the retry posture (unlisted —
+/// the refresh affordance stays).
+#[test]
+fn us3_ac1_backoff_suppresses_the_auto_list() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::requests::UiRequest;
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1);
+            let UiRequest::ListRemoteBoards { reply, .. } = requests.into_iter().next().unwrap()
+            else {
+                panic!("the mount routes a listing");
+            };
+            reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::VerifyUnreachable,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_auto_listings();
+
+            // The remount inside the window: no new request fires.
+            window.invoke_settings_view_mounted();
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the backoff suppresses the mount auto-list"
+            );
+            // The card renders the failed truth with the retry
+            // posture: the Deck row is unlisted (the refresh
+            // affordance's own seam guards the retry path).
+            let deck = item_at(&harness, K::Deck, "work");
+            assert!(
+                !model(&harness)
+                    .get_connection_items()
+                    .row_data(deck.try_into().expect("fits"))
+                    .expect("row")
+                    .listed,
+                "the failed truth renders with the retry posture"
+            );
+        },
+    );
+}
+
+/// US-3 AC-2 — the manual refresh overrides the backoff, and the
+/// failure re-arms it (typed over the request lane).
+#[test]
+fn us3_ac2_refresh_overrides_the_backoff() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::requests::UiRequest;
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), AppState::default(), settings);
+            harness.press(ActionId::AppSettings);
+            let window = harness.handle.window();
+            for request in harness.drain_requests() {
+                let UiRequest::ListRemoteBoards { reply, .. } = request else {
+                    panic!("the mount routes a listing");
+                };
+                reply
+                    .send(Err(
+                        taskboard_ui_slint::requests::SettingsError::VerifyUnreachable,
+                    ))
+                    .expect("the reply lane is alive");
+            }
+            harness.handle.drain_auto_listings();
+            window.invoke_settings_view_mounted();
+            assert!(harness.drain_requests().is_empty(), "backed off");
+
+            // Explicit intent: the refresh routes over the backoff.
+            window.invoke_settings_refresh_clicked(item_at(&harness, K::Deck, "work"));
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "the refresh routed");
+            let UiRequest::ListRemoteBoards { reply, .. } = requests.into_iter().next().unwrap()
+            else {
+                panic!("the refresh routes a listing");
+            };
+            reply
+                .send(Err(
+                    taskboard_ui_slint::requests::SettingsError::VerifyUnreachable,
+                ))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+            harness.handle.drain_auto_listings();
+
+            // The failure re-armed the backoff: the remount re-fires
+            // nothing.
+            window.invoke_settings_view_mounted();
+            assert!(harness.drain_requests().is_empty(), "re-armed");
         },
     );
 }

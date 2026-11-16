@@ -5404,6 +5404,51 @@ pub enum SettingsOutcome {
 /// renders from. The draft is the `settings_form` mirror (the buffer
 /// precedent); the password clears on send — write-only by
 /// construction (D26b).
+/// The auto-list backoff's typed state (US-3, D-4): consecutive
+/// failures and the last failure's instant. The window doubles per
+/// consecutive failure (`min(30s * 2^(n-1), 10min)`); the clock is
+/// tokio's (pause/advance-testable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AutoListBackoff {
+    consecutive_failures: u32,
+    last_failure: tokio::time::Instant,
+}
+
+impl AutoListBackoff {
+    /// Records one more failure (the re-arm, AC-2).
+    fn record_failure(&mut self, now: tokio::time::Instant) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.last_failure = now;
+    }
+
+    /// The suppression window: `min(30s * 2^(n-1), 10min)` — the
+    /// shift caps at 5 so the doubling saturates at the 10-minute
+    /// ceiling instead of overflowing.
+    fn window(&self) -> std::time::Duration {
+        let doubling = 1u32 << self.consecutive_failures.saturating_sub(1).min(5);
+        std::time::Duration::from_secs(30)
+            .saturating_mul(doubling)
+            .min(std::time::Duration::from_secs(600))
+    }
+
+    /// Whether the mount auto-list stays suppressed right now.
+    fn active(&self, now: tokio::time::Instant) -> bool {
+        now.saturating_duration_since(self.last_failure) < self.window()
+    }
+}
+
+/// The suppression predicate over the backoff map (the mount
+/// auto-list's one gate; the seam the request-count tests resolve).
+fn auto_list_suppressed(
+    backoff: &BTreeMap<String, AutoListBackoff>,
+    connector: &str,
+    now: tokio::time::Instant,
+) -> bool {
+    backoff
+        .get(connector)
+        .is_some_and(|entry| entry.active(now))
+}
+
 #[derive(Debug, Default)]
 struct SettingsVm {
     draft: ConnectionDraft,
@@ -5426,6 +5471,12 @@ struct SettingsVm {
     /// until its reply lands.
     auto_listings:
         BTreeMap<String, oneshot::Receiver<Result<Vec<requests::RemoteBoardRow>, SettingsError>>>,
+    /// The mount auto-list's typed backoff (the files-sync-status UX
+    /// plan US-3, D-4): per-connector consecutive-failure record — a
+    /// display posture, not a sync decision. The mount auto-list
+    /// checks it before building the request; the manual refresh
+    /// clears the entry (explicit intent) and failure re-arms.
+    auto_list_backoff: BTreeMap<String, AutoListBackoff>,
     /// The rendered connections items' addresses, index-aligned with
     /// the pushed `connection-items` (the callbacks' resolution table).
     items: Vec<ItemAddr>,
@@ -5860,6 +5911,16 @@ impl Adapter {
     fn fire_auto_listings(&mut self) {
         for row in &self.settings.rows {
             let connector = row.name.clone();
+            // The backoff gate (US-3 AC-1, D-4): inside the window no
+            // request fires and the card renders the failed truth
+            // with the retry posture.
+            if auto_list_suppressed(
+                &self.settings.auto_list_backoff,
+                &connector,
+                tokio::time::Instant::now(),
+            ) {
+                continue;
+            }
             if self.settings.remotes.contains_key(&connector)
                 || self.settings.auto_listings.contains_key(&connector)
                 || (self.settings.pending == Some(PendingKind::ListRemote)
@@ -5910,9 +5971,23 @@ impl Adapter {
             self.settings.auto_listings.remove(&connector);
             match outcome {
                 Ok(rows) => {
+                    // A successful listing clears the backoff (AC-3).
+                    self.settings.auto_list_backoff.remove(&connector);
                     self.settings.remotes.insert(connector, rows);
                 }
                 Err(err) => {
+                    // The failure re-arms the backoff, one more
+                    // consecutive failure than before (AC-2).
+                    let now = tokio::time::Instant::now();
+                    let entry = self
+                        .settings
+                        .auto_list_backoff
+                        .entry(connector.clone())
+                        .or_insert(AutoListBackoff {
+                            consecutive_failures: 0,
+                            last_failure: now,
+                        });
+                    entry.record_failure(now);
                     tracing::info!(variant = ?err, "the settings auto-list failed");
                 }
             }
@@ -5937,11 +6012,28 @@ impl Adapter {
             let settled = match &mut self.settings.replies[i] {
                 PendingReply::Remotes(connector, rx) => match rx.try_recv() {
                     Ok(Ok(rows)) => {
+                        // A successful manual listing clears the
+                        // backoff too (US-3 AC-3 — the same posture
+                        // as the auto lane's success).
+                        self.settings.auto_list_backoff.remove(connector.as_str());
                         self.settings.remotes.insert(connector.clone(), rows);
                         landed = Some((SettingsOutcome::Ok, None));
                         true
                     }
                     Ok(Err(err)) => {
+                        // The manual refresh's failure re-arms the
+                        // backoff (US-3 AC-2 — the override cleared
+                        // the entry before the send).
+                        let now = tokio::time::Instant::now();
+                        let entry = self
+                            .settings
+                            .auto_list_backoff
+                            .entry(connector.clone())
+                            .or_insert(AutoListBackoff {
+                                consecutive_failures: 0,
+                                last_failure: now,
+                            });
+                        entry.record_failure(now);
                         landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
                         true
                     }
@@ -7259,6 +7351,9 @@ impl Adapter {
         if self.settings.pending.is_some() {
             return;
         }
+        // Explicit intent overrides the backoff (US-3 AC-2): the
+        // entry clears before the send; failure re-arms it.
+        self.settings.auto_list_backoff.remove(&connector);
         let (reply, reply_rx) = oneshot::channel();
         let request = UiRequest::ListRemoteBoards {
             connector: connector.clone(),
@@ -13619,5 +13714,75 @@ mod effort_parity_tests {
                 "{text}: one predicate, two fronts"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod auto_list_backoff_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// US-3 AC-1 — inside the window the mount auto-list is
+    /// suppressed; past it the request fires again (typed fold over
+    /// the backoff map, the request-count seam's gate).
+    #[test]
+    fn us3_ac1_backoff_suppresses_the_auto_list() {
+        let now = tokio::time::Instant::now();
+        let mut backoff = BTreeMap::new();
+        backoff.insert(
+            "deck".to_owned(),
+            AutoListBackoff {
+                consecutive_failures: 1,
+                last_failure: now,
+            },
+        );
+        assert!(auto_list_suppressed(
+            &backoff,
+            "deck",
+            now + Duration::from_secs(10)
+        ));
+        assert!(
+            !auto_list_suppressed(&backoff, "deck", now + Duration::from_secs(31)),
+            "past the first-failure window the listing fires again"
+        );
+        assert!(
+            !auto_list_suppressed(&backoff, "other", now),
+            "an unbacked connector never suppresses"
+        );
+    }
+
+    /// The window doubling: n failures widen the window up to the
+    /// 10-minute ceiling (deterministic, no wall clock).
+    #[test]
+    fn the_window_doubles_and_caps() {
+        let entry = |n: u32| AutoListBackoff {
+            consecutive_failures: n,
+            last_failure: tokio::time::Instant::now(),
+        };
+        assert_eq!(entry(1).window(), Duration::from_secs(30));
+        assert_eq!(entry(2).window(), Duration::from_secs(60));
+        assert_eq!(entry(3).window(), Duration::from_secs(120));
+        assert_eq!(entry(6).window(), Duration::from_secs(600));
+        assert_eq!(entry(50).window(), Duration::from_secs(600), "caps");
+    }
+
+    /// US-3 AC-2/AC-3 — the re-arm and the clear: a failure adds one
+    /// consecutive failure; the map's remove (the refresh override
+    /// and the success settle) resets the posture.
+    #[test]
+    fn us3_ac3_failure_re_arms_and_success_clears() {
+        let now = tokio::time::Instant::now();
+        let mut entry = AutoListBackoff {
+            consecutive_failures: 0,
+            last_failure: now,
+        };
+        entry.record_failure(now);
+        assert_eq!(entry.consecutive_failures, 1);
+        entry.record_failure(now);
+        assert_eq!(entry.consecutive_failures, 2, "re-arms on each failure");
+        let mut map = BTreeMap::new();
+        map.insert("deck".to_owned(), entry);
+        map.remove("deck");
+        assert!(!auto_list_suppressed(&map, "deck", now), "clear resets");
     }
 }
