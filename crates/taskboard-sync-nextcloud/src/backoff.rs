@@ -33,6 +33,13 @@ impl BackoffPolicy {
         self.max_attempts
     }
 
+    /// The per-retry wait cap: policy curve and server hints alike are
+    /// clamped to this.
+    #[must_use]
+    pub const fn max_delay(&self) -> Duration {
+        self.max_delay
+    }
+
     /// Delay before the retry with the given zero-based index.
     ///
     /// Returns `None` once the attempt budget is exhausted. Delays double
@@ -44,6 +51,39 @@ impl BackoffPolicy {
         }
         Some(delay_at(self.initial_delay, self.max_delay, retry_index))
     }
+
+    /// What a retry with the given zero-based index waits, and why: the
+    /// policy's own curve ([`DeferredBy::Policy`]) or the server's
+    /// cap-bounded hint dominating it ([`DeferredBy::ServerHint`]).
+    ///
+    /// `None` under the same exhaustion rule as [`Self::delay`]. With a
+    /// hint present the honored wait is
+    /// `max(policy_delay, min(hint, max_delay))` — a hint never *lowers*
+    /// the curve, and never exceeds [`Self::max_delay`].
+    #[must_use]
+    pub fn defer(&self, retry_index: u32, hint: Option<Duration>) -> Option<DeferredBy> {
+        let policy = self.delay(retry_index)?;
+        let Some(hint) = hint else {
+            return Some(DeferredBy::Policy(policy));
+        };
+        let capped = hint.min(self.max_delay);
+        if capped > policy {
+            Some(DeferredBy::ServerHint(capped))
+        } else {
+            Some(DeferredBy::Policy(policy))
+        }
+    }
+}
+
+/// Why a retry waits what it waits: the policy's own curve, or the
+/// server's (cap-bounded) hint dominating it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredBy {
+    /// Exactly `BackoffPolicy::delay(retry_index)` (no hint, or a hint
+    /// at/below the curve).
+    Policy(Duration),
+    /// `min(hint, max_delay)`, which exceeded the policy curve.
+    ServerHint(Duration),
 }
 
 impl Default for BackoffPolicy {
@@ -104,6 +144,48 @@ mod tests {
         assert_eq!(p.delay(9), Some(Duration::from_secs(8)));
     }
 
+    #[test]
+    fn defer_without_a_hint_matches_the_curve() {
+        let p = BackoffPolicy::new();
+        assert_eq!(
+            p.defer(0, None),
+            Some(DeferredBy::Policy(Duration::from_millis(500)))
+        );
+        assert_eq!(
+            p.defer(1, None),
+            Some(DeferredBy::Policy(Duration::from_secs(1)))
+        );
+        assert_eq!(p.defer(2, None), None, "same exhaustion rule as delay");
+    }
+
+    #[test]
+    fn defer_hints_table() {
+        let p = BackoffPolicy::new();
+        // Hint dominating the curve stays under the cap.
+        assert_eq!(
+            p.defer(0, Some(Duration::from_secs(2))),
+            Some(DeferredBy::ServerHint(Duration::from_secs(2)))
+        );
+        // Big hint clamps at the cap.
+        assert_eq!(
+            p.defer(1, Some(Duration::from_secs(30))),
+            Some(DeferredBy::ServerHint(Duration::from_secs(8)))
+        );
+        // Present-but-tiny hint must not lower the curve.
+        assert_eq!(
+            p.defer(0, Some(Duration::ZERO)),
+            Some(DeferredBy::Policy(Duration::from_millis(500)))
+        );
+        // Hint equal to the curve stays Policy.
+        assert_eq!(
+            p.defer(1, Some(Duration::from_secs(1))),
+            Some(DeferredBy::Policy(Duration::from_secs(1)))
+        );
+        // Exhaustion with a hint: still None — the error travels with its
+        // typed hint untouched.
+        assert_eq!(p.defer(2, Some(Duration::from_secs(30))), None);
+    }
+
     proptest! {
         #![proptest_config(proptest::test_runner::Config::with_cases(256))]
 
@@ -120,6 +202,38 @@ mod tests {
                 }
             } else {
                 prop_assert!(retry_index + 1 >= p.max_attempts());
+            }
+        }
+
+        #[test]
+        fn prop_defer_floor_and_cap(
+            retry_index in 0u32..64,
+            hint_secs in proptest::option::of(0u64..1_000_000_000),
+        ) {
+            let p = BackoffPolicy::new();
+            let hint = hint_secs.map(Duration::from_secs);
+            match p.defer(retry_index, hint) {
+                Some(outcome) => {
+                    let policy = p.delay(retry_index).expect("defer implies delay");
+                    let honored = match outcome {
+                        DeferredBy::Policy(d) | DeferredBy::ServerHint(d) => d,
+                    };
+                    prop_assert!(policy <= honored, "floor: {honored:?} vs curve {policy:?}");
+                    prop_assert!(honored <= p.max_delay(), "cap: {honored:?}");
+                    prop_assert_eq!(
+                        honored == policy,
+                        matches!(outcome, DeferredBy::Policy(_)),
+                        "honored == curve iff Policy"
+                    );
+                    if let Some(h) = hint {
+                        prop_assert!(
+                            matches!(outcome, DeferredBy::ServerHint(d) if d == h.min(p.max_delay()))
+                                || matches!(outcome, DeferredBy::Policy(d) if d == policy),
+                            "ServerHint is exactly min(hint, cap); Policy is exactly the curve"
+                        );
+                    }
+                }
+                None => prop_assert!(retry_index + 1 >= p.max_attempts()),
             }
         }
     }
