@@ -5976,8 +5976,23 @@ mod duplicate_reconcile_tests {
             b1 in 1_u64..1_000_000,
             b2 in 1_u64..1_000_000,
         ) {
+            // Premise (#682): a collapse group's members are distinct
+            // cards. Drawing `b1`/`b2` independently let `b1 == b2`
+            // produce a degenerate group whose candidate ref *is* the
+            // bound ref — `doomed` is legitimately empty there, so the
+            // shape expectation failed without any production
+            // nondeterminism (the DEC-5 `(stamp, !is_bound)` tie-break
+            // is deterministic; the degenerate shape is pinned by
+            // `the_degenerate_same_ref_group_characterizes_collapse`
+            // below). The shift maps `b2` onto `1..=1_000_000 \ {b1}`
+            // distribution-preservingly, so the collision shape can no
+            // longer be drawn; the original failing seed stays in
+            // `proptest-regressions/merge.txt` as the record of the
+            // discovery (green here — the shift makes its drawn ref
+            // distinct).
+            let cand_ref = if b2 >= b1 { b2 + 1 } else { b2 };
             let bound = (card_ref(1, b1), s1);
-            let cand = (card_ref(1, b2), s2);
+            let cand = (card_ref(1, cand_ref), s2);
             let collapse = collapse_for_task(
                 TaskId::from(Uuid::from_u128(1)),
                 Some(bound),
@@ -5989,6 +6004,57 @@ mod duplicate_reconcile_tests {
             prop_assert_eq!(collapse.rebind, expected_survivor == cand.0);
             prop_assert_eq!(collapse.doomed.len(), 1);
         }
+    }
+
+    /// The degenerate same-ref shape (#682's diagnosis, backlog #856):
+    /// a collapse candidate whose ref equals the bound member's ref.
+    /// Characterized as production behaves today — `doomed` is empty
+    /// (nothing to delete), the survivor is chosen by stamp alone, and
+    /// on an exact stamp tie the bound member sorts first (DEC-5). The
+    /// proptest above excludes the shape at the premise level; this
+    /// unit test keeps it characterized instead of left to generator
+    /// luck. The open production question (an older same-ref candidate
+    /// rewinds the binding via the rebind path) is backlog #856, not
+    /// pinned as desired here.
+    #[test]
+    fn the_degenerate_same_ref_group_characterizes_collapse() {
+        let bound = (card_ref(1, 42), crate::merge_testutil::ts(1_000));
+        let same_ref = card_ref(1, 42);
+
+        // Older same-ref candidate: survives by stamp, rebind fires
+        // (the #856 rewind shape), doomed stays empty.
+        let older = collapse_for_task(
+            TaskId::from(Uuid::from_u128(1)),
+            Some(bound),
+            vec![(same_ref, crate::merge_testutil::ts(500))],
+            None,
+        );
+        assert_eq!(older.survivor, same_ref);
+        assert!(older.rebind);
+        assert_eq!(older.doomed, []);
+
+        // Exact stamp tie: the bound member sorts first (DEC-5) — no
+        // rebind churn, doomed stays empty.
+        let tied = collapse_for_task(
+            TaskId::from(Uuid::from_u128(1)),
+            Some(bound),
+            vec![(same_ref, crate::merge_testutil::ts(1_000))],
+            None,
+        );
+        assert_eq!(tied.survivor, bound.0);
+        assert!(!tied.rebind);
+        assert_eq!(tied.doomed, []);
+
+        // Newer same-ref candidate: bound survives, doomed stays empty.
+        let newer = collapse_for_task(
+            TaskId::from(Uuid::from_u128(1)),
+            Some(bound),
+            vec![(same_ref, crate::merge_testutil::ts(2_000))],
+            None,
+        );
+        assert_eq!(newer.survivor, bound.0);
+        assert!(!newer.rebind);
+        assert_eq!(newer.doomed, []);
     }
 
     // ---- DR-5/2: the time-entries fold (D-T12/D-13) -----------------
