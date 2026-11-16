@@ -161,6 +161,41 @@ fn parse_relative(text: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     now.checked_add_signed(delta)
 }
 
+/// The due/scheduled **stamp** parse (the N-4 law, task-detail-editor
+/// UX plan US-1/D-3): [`parse`]'s grammar with the date-only branch
+/// stamped at the named date's day-window end
+/// ([`taskboard_domain::days::day_window_end`]) — a date-only entry
+/// means "that whole day counts". Explicit-time and relative forms
+/// pass through unchanged (the law is date-only; the `+Nd` relative
+/// form names an offset from `now`, not a date — the plan D-4 ruling
+/// keeps its duration semantics). The recur Until bound does NOT ride
+/// this — a bound is a calendar date, not a stamp (the grammar's
+/// `parse` stays the bound's source).
+///
+/// The day facts arrive as data (`day` — the injected
+/// [`taskboard_domain::days::DayCalendar`]): no environment read, the
+/// D-F6 consumers contract.
+///
+/// # Errors
+///
+/// [`DueParseError`] when the entry matches neither grammar form —
+/// the caller keeps the buffer and dispatches nothing.
+pub fn parse_stamp(
+    text: &str,
+    now: DateTime<Utc>,
+    day: &taskboard_domain::days::DayCalendar,
+) -> Result<Option<DateTime<Utc>>, DueParseError> {
+    let instant = parse(text, now, &day.offset)?;
+    // The law's exact scope: a bare `YYYY-MM-DD` — the only form that
+    // names a day without naming a time (chrono's strptime leniency
+    // `2030-01-3` included — it is the same bare-date form).
+    let bare = text.trim().parse::<chrono::NaiveDate>().ok(); // ISO %Y-%m-%d via FromStr: exactly the bare form
+    Ok(match (instant, bare) {
+        (Some(_), Some(date)) => Some(day.day_end(date)),
+        (other, _) => other,
+    })
+}
+
 /// The live echo under the field (r2 D25): the due phrase of the
 /// parsed entry, or empty when the entry is empty or refused — the
 /// phrase reuses the presentation bucketing; no second grammar.
@@ -707,6 +742,64 @@ mod tests {
             parsed,
             Some(Utc.with_ymd_and_hms(2030, 2, 28, 0, 0, 0).unwrap())
         );
+    }
+
+    // ---- parse_stamp (the N-4 stamping law, task-detail-editor UX
+    // ---- plan US-1/D-3) ---------------------------------------------
+
+    fn calendar(offset_hours: i32) -> taskboard_domain::days::DayCalendar {
+        taskboard_domain::days::DayCalendar {
+            day_start_time: NaiveTime::from_hms_opt(3, 0, 0).unwrap(),
+            offset: chrono::FixedOffset::east_opt(offset_hours * 3600).unwrap(),
+        }
+    }
+
+    #[test]
+    fn parse_stamp_bare_date_hits_the_day_window_end() {
+        let day = calendar(2);
+        let date = NaiveDate::from_ymd_opt(2030, 2, 28).unwrap();
+        let expected = taskboard_domain::days::day_window_end(date, day.day_start_time, day.offset);
+        assert_eq!(
+            parse_stamp("2030-02-28", now(), &day).expect("valid bare date"),
+            Some(expected)
+        );
+        // Not the grammar's midnight: the whole day counts.
+        assert_ne!(
+            parse_stamp("2030-02-28", now(), &day).expect("valid bare date"),
+            Some(Utc.with_ymd_and_hms(2030, 2, 28, 0, 0, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_stamp_explicit_time_commits_the_typed_time() {
+        let day = calendar(2);
+        assert_eq!(
+            parse_stamp("2030-02-28 14:30", now(), &day).expect("valid time form"),
+            Some(day.instant(
+                NaiveDate::from_ymd_opt(2030, 2, 28).unwrap(),
+                NaiveTime::from_hms_opt(14, 30, 0).unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_stamp_relative_keeps_duration_semantics() {
+        // Plan D-4: `+Nd` names an offset from `now`, not a date — the
+        // law does not re-base it onto day ends.
+        let day = calendar(0);
+        assert_eq!(
+            parse_stamp("+2d", now(), &day).expect("valid relative"),
+            Some(now() + ChronoDuration::try_days(2).unwrap())
+        );
+    }
+
+    #[test]
+    fn parse_stamp_clear_and_refusal_match_the_grammar() {
+        let day = calendar(0);
+        assert_eq!(parse_stamp("", now(), &day), Ok(None));
+        assert_eq!(parse_stamp("   ", now(), &day), Ok(None));
+        assert_eq!(parse_stamp("soon", now(), &day), Err(DueParseError));
+        assert_eq!(parse_stamp("2030-13-01", now(), &day), Err(DueParseError));
     }
 
     #[test]

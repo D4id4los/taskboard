@@ -21112,6 +21112,7 @@ fn us5_s1_the_title_and_description_fields_carry_the_focus_flag() {
     );
 }
 
+
 /// The journey fixture's Today-nonempty-by-construction contract
 /// (#843, clock-discipline §6.1): given `journey_state_at(now)`, the
 /// domain oracle `today_sections` classifies `task1` into the overdue
@@ -21144,6 +21145,173 @@ fn the_journey_fixture_is_today_nonempty_by_construction() {
             "task1 is overdue at pass instant {pass}"
         );
     }
+
+
+// -- task-detail-editor UX plan US-1 (dispatch chunk 3): the N-4
+// -- stamping law — date-only due entries commit the day-window end.
+
+/// US-1/S1: a bare `YYYY-MM-DD` typed into the due field and committed
+/// dispatches the day-window-end instant (the whole configured day
+/// counts) — the fixture's default boundary (`00:00`, boot offset UTC)
+/// makes the law's mint the named date's next local midnight, never
+/// 00:00 of the named date.
+#[test]
+fn us1_s1_bare_date_commits_the_window_end() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_due_edit_opened();
+            harness.driver.advance_time(0);
+            window.invoke_task_date_accepted(slint::SharedString::from("2030-02-28"));
+            harness.driver.advance_time(0);
+            let expected = taskboard_domain::days::day_window_end(
+                chrono::NaiveDate::from_ymd_opt(2030, 2, 28).expect("fixture date"),
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).expect("zero"),
+            );
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        duedate: Some(Some(instant)),
+                        scheduled: None,
+                        ..
+                    },
+                    ..
+                }] if *instant == expected
+            ));
+        },
+    );
+}
+
+/// US-1/S2: the explicit-time form commits the typed time — the law is
+/// date-only (AC-4; the grammar's contrast arm).
+#[test]
+fn us1_s2_explicit_time_commits_the_typed_time() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_due_edit_opened();
+            harness.driver.advance_time(0);
+            window.invoke_task_date_accepted(slint::SharedString::from("2030-02-28 14:30"));
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        duedate: Some(Some(instant)),
+                        ..
+                    },
+                    ..
+                }] if *instant == chrono::Utc
+                    .with_ymd_and_hms(2030, 2, 28, 14, 30, 0)
+                    .single()
+                    .expect("fixture instant")
+            ));
+        },
+    );
+}
+
+/// US-1/S5 (AC-5's quick-set forms, the chunk plan D-3 mapping): the
+/// picker's day click — the date-only commit path — stamps the law
+/// (window end), while the same picker holding a time (a quick-list
+/// pick) commits the picked time verbatim: the law applies exactly
+/// when no time component exists anywhere in the entry path.
+#[test]
+fn us1_s5_quick_set_forms_follow_the_law() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            let date = chrono::NaiveDate::from_ymd_opt(2030, 2, 28).expect("fixture date");
+            // February 2030: Feb 1 is a Friday — Monday-first index 4,
+            // so day 28 sits at grid cell 4 + 27 = 31.
+            let cell = 31_i32;
+            let expected_end = taskboard_domain::days::day_window_end(
+                date,
+                chrono::NaiveTime::MIN,
+                chrono::FixedOffset::east_opt(0).expect("zero"),
+            );
+            // Arm the editor and type the date: the Buffer-source sync
+            // seeds the picker's cursor onto the typed date (date-only).
+            window.invoke_task_due_edit_opened();
+            harness.driver.advance_time(0);
+            window.invoke_task_date_edited(slint::SharedString::from("2030-02-28"));
+            harness.driver.advance_time(0);
+            window.invoke_task_date_day_clicked(cell);
+            harness.driver.advance_time(0);
+            // The date-only commit carried the law's mint.
+            let first = harness.engine.drain();
+            assert!(matches!(
+                &first[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        duedate: Some(Some(instant)),
+                        ..
+                    },
+                    ..
+                }] if *instant == expected_end
+            ));
+            // Re-open: the stored window-end stamp is local midnight
+            // under the default boundary, so the picker re-seeds
+            // date-only. Typing the date again re-aims the cursor
+            // (the Buffer-source sync), keeping the contrast arm's
+            // grid address the same cell.
+            window.invoke_task_due_edit_opened();
+            harness.driver.advance_time(0);
+            window.invoke_task_date_edited(slint::SharedString::from("2030-02-28"));
+            harness.driver.advance_time(0);
+            // The quick list's pick arms the picker with a time; the
+            // day click now commits the picked time verbatim (the
+            // contrast arm — a time component exists). The timed
+            // commit resolves in the device zone (the r4 D28
+            // convention — the adapter passes `chrono::Local`), so the
+            // oracle mirrors that zone; the date-only arm above is the
+            // boot-offset law's mint.
+            window.invoke_task_date_time_picked(570); // 09:30
+            harness.driver.advance_time(0);
+            window.invoke_task_date_day_clicked(cell);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        duedate: Some(Some(instant)),
+                        ..
+                    },
+                    ..
+                }] if *instant == chrono::Local
+                    .from_local_datetime(&chrono::NaiveDateTime::new(
+                        date,
+                        chrono::NaiveTime::from_hms_opt(9, 30, 0).expect("09:30"),
+                    ))
+                    .single()
+                    .expect("resolvable local wall-clock")
+                    .with_timezone(&chrono::Utc)
+            ));
+        },
+    );
+
 }
 
 // ---------------------------------------------------------------------------
