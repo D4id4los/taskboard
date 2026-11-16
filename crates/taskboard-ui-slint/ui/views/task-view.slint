@@ -7,6 +7,7 @@
 
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { TextField } from "../widgets/text-field.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
 import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
 import { InfoTip } from "../widgets/info-tip.slint";
@@ -156,6 +157,14 @@ export struct TaskDetailModel {
     importance-open: bool,
     urgency-open: bool,
     priority-slots: [PrioritySlotRow],
+    // The effort row's pushed halves (task-detail-editor UX plan
+    // US-3/D-8, #838): the chip echo (the domain text form — the
+    // walk placement's twin), the inline editor's open flag (the
+    // adapter-owned one-editor-at-a-time state), and the editor's
+    // buffer mirror.
+    effort-echo: string,
+    effort-open: bool,
+    effort-text: string,
     // The labels section's pushed halves (UX R-3 D-2, #789): the
     // mount flag (desktop + subject present — the detail view's own
     // platform posture), the subject's live chips in canonical
@@ -209,6 +218,23 @@ export component TaskView inherits FocusScope {
     // viewed task (click ≡ key, §7.1).
     callback importance-edit-asked();
     callback urgency-edit-asked();
+    // The effort row's seams (task-detail-editor UX plan US-3/D-8,
+    // #838), forwarded to the window: the edit affordance opens the
+    // inline editor (the date-editor buffer pattern), the buffer
+    // mirrors, the commit parses and dispatches the sparse
+    // UpdateTask effort mask, the clear affordance commits the clear
+    // twin, the cancel discards.
+    // slint: task-effort-edit-opened
+    callback effort-edit-opened();
+    // slint: task-effort-edited
+    callback effort-edited(string);
+    // slint: task-effort-committed
+    callback effort-committed();
+    // slint: task-effort-cleared
+    callback effort-cleared();
+    // slint: task-effort-cancelled
+    callback effort-cancelled();
+    callback effort-focus-lost();
     // The labels section's seams (UX R-3 D-2, #789): the chip ×
     // unassigns over the VIEW'S SUBJECT (the section always names
     // its subject), the add affordance routes the `label.manage`
@@ -855,6 +881,54 @@ export component TaskView inherits FocusScope {
                             clicked => root.urgency-edit-asked();
                         }
                     }
+                }
+            }
+
+            // The effort row (task-detail-editor UX plan US-3/D-8,
+            // #838): the chip beside the priority rows (the r3 D-1
+            // metadata-block grammar; the detail view is the owning
+            // surface, R-2), the edit affordance opening the inline
+            // editor, and the x-clear mirroring the date fields'
+            // clear (empty commit = Some(None) — the walk placement's
+            // posture).
+            VerticalLayout {
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Effort";
+                }
+                if (!root.task.effort-open): HorizontalLayout {
+                    spacing: Theme.space-1;
+                    RoleText {
+                        role: Typography.mono;
+                        text-color: Theme.text-secondary;
+                        text: root.task.effort-echo == "" ? "—" : root.task.effort-echo;
+                        vertical-alignment: center;
+                    }
+                    IconButton {
+                        icon: IconKind.pencil;
+                        tone: Tone.neutral;
+                        label: "Edit effort";
+                        description: "Opens the effort editor: minutes, or s/m/h components.";
+                        clicked => root.effort-edit-opened();
+                    }
+                    if (root.task.effort-echo != ""): IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Clear effort";
+                        description: "Clears the task's effort estimate.";
+                        clicked => root.effort-cleared();
+                    }
+                }
+                if (root.task.effort-open): TextField {
+                    label: "Effort";
+                    placeholder: "30 or 1h30m";
+                    description: "The effort estimate: bare digits are minutes, s/m/h components compose.";
+                    initial-text: root.task.effort-text;
+                    autofocus: true;
+                    edited(t) => root.effort-edited(t);
+                    accepted(t) => root.effort-committed();
+                    focus-lost() => root.effort-focus-lost();
                 }
             }
 

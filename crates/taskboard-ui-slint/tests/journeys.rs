@@ -22137,3 +22137,101 @@ fn us2_s2_quick_options_open_on_the_current_slot() {
         },
     );
 }
+
+// -- task-detail-editor UX plan US-3 (dispatch chunk 3): the effort
+// -- detail row (#838) — the inline editor commits the sparse UpdateTask
+// -- effort mask; the parse predicate is the walk placement's own.
+
+/// US-3/S1 (AC-1): the editor commits the exact sparse mask — a valid
+/// non-empty buffer dispatches `UpdateTask { effort: Some(Some(e)) }`
+/// and closes; the empty buffer commits the clear twin `Some(None)`.
+#[test]
+fn us3_s1_effort_commit_routes_the_sparse_mask() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_effort_edit_opened();
+            harness.driver.advance_time(0);
+            assert!(window.get_task_model().effort_open);
+            window.invoke_task_effort_edited(slint::SharedString::from("1h30m"));
+            window.invoke_task_effort_committed();
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        effort: Some(Some(effort)),
+                        ..
+                    },
+                    ..
+                }] if *effort == taskboard_domain::Effort::new(5400)
+            ));
+            assert!(
+                !window.get_task_model().effort_open,
+                "the commit's consume is the editor's close"
+            );
+            // The clear twin: a re-opened empty buffer commits Some(None).
+            window.invoke_task_effort_edit_opened();
+            harness.driver.advance_time(0);
+            window.invoke_task_effort_edited(slint::SharedString::from(""));
+            window.invoke_task_effort_committed();
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        effort: Some(None),
+                        ..
+                    },
+                    ..
+                }]
+            ));
+        },
+    );
+}
+
+/// US-3/S2 (AC-2): an invalid value keeps the buffer and dispatches
+/// nothing (the date-editor refusal posture); the focus-loss settle
+/// discards it afterwards (the shared rule — the prior value
+/// survives).
+#[test]
+fn us3_s2_invalid_effort_keeps_the_buffer() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_effort_edit_opened();
+            harness.driver.advance_time(0);
+            window.invoke_task_effort_edited(slint::SharedString::from("junk"));
+            window.invoke_task_effort_committed();
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.engine.drain().len(),
+                0,
+                "the refusal dispatches nothing"
+            );
+            assert!(
+                window.get_task_model().effort_open,
+                "the buffer is kept (the editor stays open)"
+            );
+            assert_eq!(
+                window.get_task_model().effort_text.as_str(),
+                "junk",
+                "the buffer mirror survives the refusal"
+            );
+        },
+    );
+}

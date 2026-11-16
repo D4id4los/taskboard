@@ -665,6 +665,15 @@ pub struct LabelFormPush {
     pub color: String,
 }
 
+/// The effort row's editor push (task-detail-editor UX plan US-3/D-8,
+/// #838): the inline editor's open flag and buffer mirror (`open` is
+/// the editor armed; the chip echo derives from the task's stored
+/// effort, never the buffer).
+pub struct EffortEditorPush<'a> {
+    pub open: bool,
+    pub buffer: &'a str,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PriorityPickerPush {
     /// The open picker's field; `None` = both closed.
@@ -964,6 +973,7 @@ pub fn push(
     recur: crate::models::RecurRowPush,
     priority: crate::models::PriorityPickerPush,
     label_form: Option<&crate::models::LabelFormPush>,
+    effort: Option<&crate::models::EffortEditorPush<'_>>,
     label_armed_index: i32,
     break_rule_armed_index: i32,
     reflection_focus: (
@@ -1107,6 +1117,7 @@ pub fn push(
         recur,
         priority,
         label_form,
+        effort,
         label_armed_index,
         calendar,
     );
@@ -2179,6 +2190,7 @@ fn push_task_detail(
     recur: crate::models::RecurRowPush,
     priority: crate::models::PriorityPickerPush,
     label_form: Option<&crate::models::LabelFormPush>,
+    effort: Option<&crate::models::EffortEditorPush<'_>>,
     label_armed_index: i32,
     calendar: taskboard_domain::DayCalendar,
 ) -> usize {
@@ -2498,11 +2510,26 @@ fn push_task_detail(
         // the domain text forms (the card chips' own labels); the open
         // flags ride the picker flow (the seams commit wires the
         // Flow::EditPriority read — the display half pushes closed).
+        // The priority rows' halves (UX R-3 D-1, #788): the echoes are
+        // the domain text forms (the card chips' own labels); the open
+        // flags ride the picker flow (the seams commit wires the
+        // Flow::EditPriority read — the display half pushes closed).
         importance_echo: SharedString::from(
             subject
                 .and_then(|t| t.importance)
                 .map_or(String::new(), |level| level.text_form().to_owned()),
         ),
+        // The effort row's halves (task-detail-editor UX plan US-3/D-8,
+        // #838): the chip echo is the domain text form (the walk
+        // placement's twin), the open flag and buffer mirror ride the
+        // adapter's editor state.
+        effort_echo: SharedString::from(
+            subject
+                .and_then(|t| t.effort)
+                .map_or(String::new(), |effort| effort.text_form().clone()),
+        ),
+        effort_open: effort.is_some(),
+        effort_text: SharedString::from(effort.map_or(String::new(), |e| e.buffer.to_string())),
         urgency_echo: SharedString::from(
             subject
                 .and_then(|t| t.urgency)
@@ -4383,6 +4410,7 @@ mod tests {
                 &due,
                 crate::models::RecurRowPush::default(),
                 crate::models::PriorityPickerPush::default(),
+                None,
                 None,
                 -1,
                 -1,

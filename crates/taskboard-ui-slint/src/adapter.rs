@@ -89,6 +89,30 @@ enum Resolve {
     Inert,
 }
 
+/// The effort row's inline-editor draft (task-detail-editor UX plan
+/// US-3/D-8, #838): the addressed task and the buffer mirror (seeded
+/// from the effort's domain text form; an empty buffer is the clear
+/// seed). The date-editor buffer pattern over adapter state — one
+/// editor at a time (the detail exclusivity posture).
+#[derive(Debug, Clone)]
+pub(crate) struct EffortEditorState {
+    pub(crate) task: TaskId,
+    pub(crate) buffer: String,
+}
+
+/// The effort row's parse predicate (US-3/D-8): the domain
+/// [`taskboard_domain::Effort::parse_text_form`] verbatim — the walk's
+/// placement parse (`commit_plan_place`) calls the same function, one
+/// predicate, two fronts, no second grammar (AC-3). `None` is the
+/// refusal (the buffer kept, nothing dispatches).
+pub(crate) fn parse_effort_row(text: &str) -> Option<taskboard_domain::Effort> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    taskboard_domain::Effort::parse_text_form(trimmed)
+}
+
 /// The labels overlay's in-place form draft (UX R-3 D-2/D-5, #789):
 /// the addressed label (`None` = create), the typed title, and the
 /// swatch's exact hex (the palette's vocabulary — never free text).
@@ -464,6 +488,9 @@ pub(crate) struct Adapter {
     /// `NotUndoable(RestoreClass)`, so staging is the r2 grammar's
     /// requirement, not a courtesy. One armed row; re-arming swaps.
     label_delete_armed: Option<taskboard_domain::LabelId>,
+    /// The effort row's inline editor (US-3/D-8, #838): `Some` while
+    /// armed — one editor at a time (the detail exclusivity posture).
+    pub(crate) effort_editor: Option<EffortEditorState>,
     /// The priority pickers' adapter-owned flag (UX R-3 D-1, #788):
     /// which detail row's quick-list holds — one at a time; cleared
     /// on Escape/outside click, on any leaving settle, and when the
@@ -2227,6 +2254,13 @@ impl Adapter {
                 title: form.title.clone(),
                 color: form.color.clone(),
             });
+        let effort_editor =
+            self.effort_editor
+                .as_ref()
+                .map(|editor| crate::models::EffortEditorPush {
+                    open: true,
+                    buffer: editor.buffer.as_str(),
+                });
         // The armed strip's mirror (the track-entries armed-index
         // rule): the armed row's canonical roster position, or none.
         let subject_board = self
@@ -2275,6 +2309,7 @@ impl Adapter {
             recur,
             priority,
             label_form.as_ref(),
+            effort_editor.as_ref(),
             label_armed_index,
             break_rule_armed_index,
             (self.reflection_active, self.reflection_armed),
@@ -8384,6 +8419,7 @@ pub(crate) fn install(
         priority_open: None,
         label_form: None,
         label_delete_armed: None,
+        effort_editor: None,
         walk_resume: None,
         habit_convert_armed: None,
         habit_create_open: false,
@@ -10849,6 +10885,104 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         }
 
     });
+    // The effort row's seams (task-detail-editor UX plan US-3/D-8,
+    // #838). The open funnel: settle any armed date editor (the
+    // exclusivity posture — one editor at a time), seed the buffer
+    // from the effort's domain text form (empty = the clear seed),
+    // refresh. Both fronts land here — the row affordance's seam and
+    // nothing else (pointer-grade row verb, the rule-row posture).
+    // slint: task-effort-edit-opened
+    install_seam!(window: window.on_task_effort_edit_opened, adapter: adapter;
+    bind mut (a, window), args (), {        settle_date_editor(&mut a, &window);
+    let Some(task) = a.view_state.subject_task() else {
+        return; // the subjectless detail: the typed inert
+    };
+    let state = a.state.load_full();
+    let buffer = state
+        .tasks
+        .get(&task)
+        .and_then(|t| t.effort)
+        .map(taskboard_domain::Effort::text_form)
+        .unwrap_or_default();
+    a.effort_editor = Some(EffortEditorState { task, buffer });
+    a.refresh_forced(&window);
+
+    });
+
+    // The buffer mirror (the date-editor buffer pattern verbatim).
+    // slint: task-effort-edited
+    install_seam!(window: window.on_task_effort_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(editor) = a.effort_editor.as_mut() {
+        editor.buffer = text.to_string();
+    }
+    a.refresh_forced(&window);
+
+    });
+
+    // The commit funnel: a valid non-empty buffer dispatches the
+    // sparse `UpdateTask { effort: Some(Some(e)) }`; the empty buffer
+    // commits the clear twin `Some(None)` (the walk placement's
+    // empty-clear posture); an invalid non-empty value keeps the
+    // buffer and dispatches nothing (the date-editor refusal
+    // posture). The commit's consume is the editor's close (D-H2).
+    // slint: task-effort-committed
+    install_seam!(window: window.on_task_effort_committed, adapter: adapter;
+    bind mut (a, window), args (), {        commit_effort_editor(&mut a, &window);
+
+    });
+
+    // The x-clear (the date fields' clear affordance): commits the
+    // clear twin over the subject directly.
+    // slint: task-effort-cleared
+    install_seam!(window: window.on_task_effort_cleared, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
+        return;
+    };
+    if a
+        .commands
+        .try_send(StateCommand::UpdateTask {
+            id: task,
+            changes: taskboard_domain::TaskChanges {
+                effort: Some(None),
+                ..taskboard_domain::TaskChanges::default()
+            },
+        })
+        .is_err()
+    {
+        tracing::warn!("effort clear dropped: command channel full or closed");
+        return;
+    }
+    a.effort_editor = None;
+    a.finish_mutation(&window);
+    a.refresh_forced(&window);
+
+    });
+
+    // The cancel: the draft dies, nothing dispatches.
+    // slint: task-effort-cancelled
+    install_seam!(window: window.on_task_effort_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.effort_editor.take().is_some() {
+        a.refresh_forced(&window);
+    }
+
+    });
+
+    // The focus-loss settle (the shared rule: parseable commits,
+    // empty/junk discards — the prior value survives, the editor
+    // collapses).
+    install_seam!(window: window.on_task_effort_focus_lost, adapter: adapter;
+    bind mut (a, window), args (), {        let parses = a
+        .effort_editor
+        .as_ref()
+        .is_some_and(|editor| parse_effort_row(&editor.buffer).is_some());
+    if parses {
+        commit_effort_editor(&mut a, &window);
+    } else if a.effort_editor.take().is_some() {
+        a.refresh_forced(&window);
+    }
+
+    });
+
     install_seam!(window: window.on_priority_dismiss_requested, adapter: adapter;
     bind mut (a, window), args (), {        if a.priority_open.take().is_some() {
             a.refresh_forced(&window);
@@ -11260,6 +11394,9 @@ impl Adapter {
     /// (the flow never arms).
     fn begin_date_edit(&mut self, window: &AppWindow, field: crate::view_state::DateField) {
         settle_pointer_conflict(self, window);
+        // The detail exclusivity posture (US-3/D-8): opening a date
+        // editor closes the effort editor (one editor at a time).
+        self.effort_editor = None;
         let state = self.state.load_full();
         let outcomes = self.view_state.begin_edit_date(&state, field);
         let value = self
@@ -11537,6 +11674,43 @@ fn commit_date(
     // its buffers (D-H2), so the next pass renders the empty editor.
     let outcomes = a.view_state.end_edit_date();
     a.apply_outcomes(window, &outcomes);
+}
+
+/// The effort editor's one commit funnel (US-3/D-8): parse through
+/// the shared predicate (`parse_effort_row` — the walk placement's
+/// parse), dispatch the exact sparse mask, close the editor.
+fn commit_effort_editor(a: &mut Adapter, window: &AppWindow) {
+    let Some(editor) = a.effort_editor.as_ref() else {
+        return;
+    };
+    let trimmed = editor.buffer.trim().to_owned();
+    let effort_change = if trimmed.is_empty() {
+        Some(None)
+    } else if let Some(effort) = parse_effort_row(&trimmed) {
+        Some(Some(effort))
+    } else {
+        // The refusal: the buffer kept, nothing dispatches
+        // (the date-editor refusal posture, AC-2).
+        a.refresh_forced(window);
+        return;
+    };
+    let id = editor.task;
+    if a.commands
+        .try_send(StateCommand::UpdateTask {
+            id,
+            changes: taskboard_domain::TaskChanges {
+                effort: effort_change,
+                ..taskboard_domain::TaskChanges::default()
+            },
+        })
+        .is_err()
+    {
+        tracing::warn!("effort commit dropped: command channel full or closed");
+        return;
+    }
+    a.effort_editor = None;
+    a.finish_mutation(window);
+    a.refresh_forced(window);
 }
 
 /// The banner row at `index` (D2: the index resolves against the
@@ -13356,4 +13530,41 @@ pub(crate) fn paint_files_sync_chip(window: &AppWindow, chip: &crate::presentati
     window.set_files_sync_text(SharedString::from(
         crate::presentation::files_sync_chip_caption(chip.state),
     ));
+}
+
+#[cfg(test)]
+mod effort_parity_tests {
+    // AC-3 (task-detail-editor UX plan US-3/D-8): the detail row and
+    // the walk's placement parse (`commit_plan_place`) share ONE
+    // predicate — the domain `Effort::parse_text_form`. The corpus
+    // pins the agreement: both fronts accept/reject identically
+    // because both call sites route the same function; the journeys
+    // us3_s1/us3_s2 carry the funnel's behavioral proof.
+    use super::parse_effort_row;
+
+    #[test]
+    fn us3_s3_the_effort_row_parse_agrees_with_the_walk_parse() {
+        for (text, accepted) in [
+            ("45", true),
+            ("1h30m", true),
+            ("2h", true),
+            ("90s", true),
+            ("0", true),
+            ("junk", false),
+            ("1x", false),
+            ("-5", false),
+            ("h", false),
+        ] {
+            assert_eq!(
+                parse_effort_row(text).is_some(),
+                accepted,
+                "{text}: the row's parse must be the walk's parse"
+            );
+            assert_eq!(
+                parse_effort_row(text).is_some(),
+                taskboard_domain::Effort::parse_text_form(text).is_some(),
+                "{text}: one predicate, two fronts"
+            );
+        }
+    }
 }
