@@ -20390,3 +20390,262 @@ fn us3_s4_rule_add_shortcut_arms_the_funnel() {
         },
     );
 }
+
+// === The focus-origin restore (round-8 chunk 2, the focus-restoration
+// === plan US-1/W-1; the chunk plan §2 census table is the site list).
+
+/// The `FocusFacts` tuple (seam, anchor kind, target a, target b,
+/// nonce) — the restore's typed oracle.
+fn focus_facts(harness: &Harness) -> (i32, i32, i32, i32, i32) {
+    let facts = harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::FocusFacts>();
+    (
+        facts.get_seam_id(),
+        facts.get_anchor_kind(),
+        facts.get_target_a(),
+        facts.get_target_b(),
+        facts.get_nonce(),
+    )
+}
+
+/// The focused item's element ids (the `focus_coverage` probe tier's
+/// structural address — no label text).
+fn focused_carries(harness: &Harness, element_id: &str) -> bool {
+    use i_slint_core::item_tree::{ItemRc, ParentItemTraversalMode};
+    use i_slint_core::window::WindowInner;
+    let focused = WindowInner::from_pub(harness.handle.window().window())
+        .focus_item
+        .borrow()
+        .upgrade();
+    let Some(item) = focused else {
+        return false;
+    };
+    let ids = |item: &ItemRc| {
+        let count = item.element_count().unwrap_or(0);
+        (0..count)
+            .filter_map(|index| item.element_type_names_and_ids(index))
+            .flatten()
+            .filter_map(|(_, id)| {
+                if id.is_empty() {
+                    None
+                } else {
+                    Some(id.clone())
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    // The runtime qualifies ids with their component ("AppWindow::
+    // key-root"); the probe's structural address is the bare id.
+    let chain = std::iter::successors(Some(item), |parent| {
+        parent.parent_item(ParentItemTraversalMode::StopAtPopups)
+    })
+    .flat_map(|item| ids(&item))
+    .map(|id| id.rsplit("::").next().unwrap_or(&id).to_owned())
+    .collect::<Vec<_>>();
+    chain.iter().any(|id| id == element_id)
+}
+
+/// US-1/S1+S2 (the census's picker family, rows 5/14): the priority
+/// picker opened from the detail records the origin at open and
+/// restores into the title cell at Escape — the typed fact lands and
+/// the closed cell physically holds slint focus.
+#[test]
+fn us1_s1_picker_close_restores_the_invoking_field() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            let facts_before = focus_facts(&harness);
+            harness.press(ActionId::TaskImportanceEdit);
+            assert!(
+                harness.handle.window().get_task_model().importance_open,
+                "the picker opened"
+            );
+            // Escape's routing (the CancelMove arm) closes the picker.
+            harness.press(ActionId::TaskMoveCancel);
+            harness.engine.settle(&harness.handle);
+            assert!(
+                !harness.handle.window().get_task_model().importance_open,
+                "the picker closed"
+            );
+            // The restore fact: seam PriorityDue (3), anchor kind 4
+            // (the detail's title cell), a fresh nonce.
+            let (seam, kind, a, b, nonce) = focus_facts(&harness);
+            assert_eq!((seam, kind, a, b), (3, 4, -1, -1), "the origin fact");
+            assert_eq!(nonce, facts_before.4 + 1, "one-shot edge");
+            assert!(
+                focused_carries(&harness, "title-stop"),
+                "the title cell holds slint focus"
+            );
+        },
+    );
+}
+
+/// US-1/S2 (the census's menu row 7): a menu opened over a walked row
+/// restores the row anchor at the Escape close — the typed fact names
+/// the row the walk emphasized.
+#[test]
+fn us1_s1_menu_close_restores_the_origin() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            let emphasized = harness
+                .emphasized_card()
+                .expect("the walk emphasized task0");
+            harness.press(ActionId::AppMenu);
+            assert!(keyboard(&harness).get_menu_open(), "the menu opened");
+            harness.press(ActionId::MenuDismiss);
+            let (seam, kind, a, b, _) = focus_facts(&harness);
+            assert_eq!((seam, kind), (6, 1), "the menu origin fact");
+            assert_eq!(
+                (a, b),
+                (
+                    i32::try_from(emphasized.0).expect("column index"),
+                    i32::try_from(emphasized.1).expect("row index")
+                ),
+                "the restoring row is the emphasized origin"
+            );
+            assert_eq!(
+                harness.emphasized_card(),
+                Some(emphasized),
+                "the walked look landed back on the origin"
+            );
+        },
+    );
+}
+
+/// US-1/S2 (the overlay-escape family, census rows 8/9): the palette
+/// with no row origin falls to the view scope (today's letter, now
+/// pinned — first regression net); the capture overlay opened from a
+/// walked row restores the row.
+#[test]
+fn us1_s1_overlay_escape_restores_the_origin() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The palette leg: no row focused → the view scope. The
+            // restore fires with no element fact (the nonce and kind
+            // stay where they were) and the key root re-anchors.
+            harness.press(ActionId::PaletteSearch);
+            assert!(
+                harness.handle.window().get_palette_open(),
+                "the palette opened"
+            );
+            harness.stroke(parse("Escape").expect("escape"));
+            assert!(
+                !harness.handle.window().get_palette_open(),
+                "the palette closed"
+            );
+            let (_, kind, _, _, _) = focus_facts(&harness);
+            assert_eq!(kind, 0, "the view-scope letter for a View origin");
+            assert!(
+                focused_carries(&harness, "key-root"),
+                "the view scope re-anchored"
+            );
+            // The capture leg: opened from a walked row.
+            harness.press(ActionId::NavNextItem);
+            let emphasized = harness
+                .emphasized_card()
+                .expect("the walk emphasized task0");
+            harness.press(ActionId::CaptureQuick);
+            harness.stroke(parse("Escape").expect("escape"));
+            let (seam, kind, a, b, _) = focus_facts(&harness);
+            assert_eq!((seam, kind), (8, 1), "the capture origin fact");
+            assert_eq!(
+                (
+                    a,
+                    b,
+                    harness.emphasized_card().map(|card| (
+                        i32::try_from(card.0).expect("column"),
+                        i32::try_from(card.1).expect("row")
+                    ))
+                ),
+                (
+                    i32::try_from(emphasized.0).expect("column"),
+                    i32::try_from(emphasized.1).expect("row"),
+                    Some((
+                        i32::try_from(emphasized.0).expect("column"),
+                        i32::try_from(emphasized.1).expect("row")
+                    ))
+                ),
+                "the capture's origin row restored"
+            );
+        },
+    );
+}
+
+/// US-1/AC-2 (the vanished-origin fallback): the move flow's anchor
+/// task dies while the flow holds; the reconcile drops the flow (the
+/// site closes) and the restore falls to the recorded container —
+/// the stack header — never to no-control.
+#[test]
+fn us1_s2_vanished_origin_falls_to_the_container_anchor() {
+    let (fixture, state) = fixture::journey_state();
+    // The tombstone the engine applies mid-flow: the anchor removed
+    // (the clone rides into the closure; the mount keeps the live one).
+    let mut tomb = state.clone();
+    tomb.tasks.remove(&fixture.task0);
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskMove);
+            // The anchor dies: the reconcile drops the flow, the site
+            // closes, the restore falls to the container anchor.
+            harness.engine.replace_state(tomb, &harness.handle);
+            harness.engine.settle(&harness.handle);
+            harness.handle.refresh();
+            let (seam, kind, a, _, _) = focus_facts(&harness);
+            assert_eq!(seam, 15, "the move flow's origin seam");
+            assert_eq!(kind, 2, "the container anchor (the stack header)");
+            assert_eq!(a, 0, "stack a's column");
+        },
+    );
+}
+
+/// US-1/AC-3 + the census's editor family (rows 14/15): the title
+/// editor's *commit* exit restores into the subject's host cell —
+/// the field is gone post-commit; the title cell is the anchor.
+#[test]
+fn us1_s3_commit_exit_restores_the_row_anchor() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskEdit);
+            harness.handle.dispatch_action(ActionId::TaskTitleEdit);
+            harness.type_text("z");
+            harness.stroke(parse("Return").expect("return"));
+            harness.engine.settle(&harness.handle);
+            let (seam, kind, _, _, _) = focus_facts(&harness);
+            assert_eq!((seam, kind), (12, 4), "the title editor's origin fact");
+            assert!(
+                focused_carries(&harness, "title-stop"),
+                "the title cell holds slint focus after the commit"
+            );
+        },
+    );
+}

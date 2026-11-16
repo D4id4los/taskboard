@@ -129,6 +129,104 @@ pub(crate) enum FocusHandover {
     Field,
 }
 
+/// The census site a recorded focus origin belongs to (the
+/// focus-restoration plan US-1/W-1, decision D-F1; the chunk plan's
+/// §2 census table is the enumeration). One seam per site family; the
+/// ids ride the `FocusFacts.seam-id` push (the journey tests' typed
+/// oracle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FocusSeam {
+    DueEditor,
+    RecurEditor,
+    LabelsOverlay,
+    PriorityDue,
+    PriorityScheduled,
+    TrackEntries,
+    ActionMenu,
+    Palette,
+    Capture,
+    TimerSetter,
+    FocusOverlay,
+    ReviewWalk,
+    TitleEditor,
+    DescriptionEditor,
+    CreateFlow,
+    MoveFlow,
+    ConfirmDelete,
+    BoardColorPick,
+    PlanPlace,
+}
+
+impl FocusSeam {
+    /// The stable fact id (the `FocusFacts.seam-id` half).
+    #[must_use]
+    pub(crate) const fn id(self) -> i32 {
+        match self {
+            Self::DueEditor => 0,
+            Self::RecurEditor => 1,
+            Self::LabelsOverlay => 2,
+            Self::PriorityDue => 3,
+            Self::PriorityScheduled => 4,
+            Self::TrackEntries => 5,
+            Self::ActionMenu => 6,
+            Self::Palette => 7,
+            Self::Capture => 8,
+            Self::TimerSetter => 9,
+            Self::FocusOverlay => 10,
+            Self::ReviewWalk => 11,
+            Self::TitleEditor => 12,
+            Self::DescriptionEditor => 13,
+            Self::CreateFlow => 14,
+            Self::MoveFlow => 15,
+            Self::ConfirmDelete => 16,
+            Self::BoardColorPick => 17,
+            Self::PlanPlace => 18,
+        }
+    }
+
+    /// Whether the site is subject-affine (its census anchor names the
+    /// subject task even when no row is logically focused — the due
+    /// editor opened from a detail whose walk focus is empty).
+    #[must_use]
+    pub(crate) const fn subject_affine(self) -> bool {
+        matches!(
+            self,
+            Self::DueEditor
+                | Self::RecurEditor
+                | Self::LabelsOverlay
+                | Self::TrackEntries
+                | Self::TitleEditor
+                | Self::DescriptionEditor
+                | Self::PlanPlace
+        )
+    }
+}
+
+/// The restore target's anchor (US-1/AC-2): the invoking element's
+/// identity class. A `Task` anchor resolves live-or-dead at restore
+/// time; the vanished branch falls to the recorded container
+/// (`FocusOrigin::fallback`), never to no-control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OriginAnchor {
+    /// The flat-flow letter (today's D-H7 view-scope refocus).
+    View,
+    Task(TaskId),
+    Stack(StackId),
+}
+
+/// The one-shot focus-origin fact (D-F1): recorded by the census
+/// site's open pass (last-open-wins — a second open overwrites),
+/// consumed by the next restore after the site closes. `fallback` is
+/// the anchor row's container captured at record time (the only
+/// moment the row tables can name a vanished row's parent — the
+/// restore-time tables only list live rows).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FocusOrigin {
+    seam: FocusSeam,
+    anchor: OriginAnchor,
+    fallback: OriginAnchor,
+}
+
 use crate::level_state::TrackFormState;
 
 /// The walk's planner-handoff return hint (see the field docs on
@@ -390,6 +488,17 @@ pub(crate) struct Adapter {
     /// back to the armed field (the grid's Enter). Mutually
     /// exclusive by construction — one hand-over per pass.
     focus_handover: FocusHandover,
+    /// The one-shot focus-origin fact (the focus-restoration plan
+    /// US-1/W-1, D-F1): `Some` from the census site's open pass until
+    /// the site closes and the restore fires — one shot, last-open-
+    /// wins. `None` = every exit keeps today's view-scope letter.
+    focus_origin: Option<FocusOrigin>,
+    /// The outcomes-application guard (US-1/W-1): while `true`, the
+    /// sync funnel neither records nor restores — the pass's
+    /// `flow_ended` tail owns the restore so the fact push lands
+    /// *after* the outcomes' model push (a mid-loop push would race
+    /// the remounted cell's init/changed edges).
+    applying_outcomes: bool,
     /// The quick-list digit filters' armed flags (round-5 F10,
     /// D-3.5): armed by the field's own `edited` keystroke; disarmed
     /// at every open (the quick toggles), every picker-source mirror
@@ -752,7 +861,7 @@ impl Adapter {
         // write (D6: shell view/focus derive from view_state). The
         // key doorway arms the scope deltas (D-δ1 with its
         // Return/Escape exemption; D-δ2 comes with the editor scope).
-        self.sync_view_context();
+        self.sync_view_context(window);
         let chain = self.chain_with(window, Some(stroke), true);
         // The activation reservation (special case C, r4 §2 D18):
         // while a task-view activation stop holds focus, bare
@@ -1073,14 +1182,302 @@ impl Adapter {
         window.global::<crate::TooltipState>().invoke_unhover();
     }
 
+    // === The focus-origin fact (the focus-restoration plan US-1/W-1,
+    // === D-F1; the chunk plan §2 census table is the site list) ====
+
     /// The shared post-mutation sync (r2 D12): the view-context seam
     /// realignment plus the shell → window global push. `route`'s
     /// trailing pair, factored out so the mouse menu paths
     /// (`activate_parent`, `apply_close_menu`, the `MenuBack` arm)
     /// update the same globals the keyboard path updates — the parent
     /// rows' `menu-active-group` used to stay stale (F7).
+    /// The currently open census site, if any (the funnel-side read:
+    /// recording and restoring both key on this, so no exit arm can
+    /// be forgotten — the `apply_outcomes` pass-tail logic). The chain
+    /// checks keep a nested child level (the due editor's picker
+    /// phase, the walk's pickers) recognized as its parent site: the
+    /// child's exit arms restore *into* the parent (the census's
+    /// "the picker exits inward" letter).
+    fn open_focus_site(&self, window: &AppWindow) -> Option<FocusSeam> {
+        use crate::view_state::Flow;
+        let chained = |pred: &dyn Fn(&Flow) -> bool| self.view_state.chain_has_flow(pred);
+        // Child-bearing sites first (deeper levels own the keyboard).
+        if chained(&|f| {
+            matches!(
+                f,
+                Flow::ReviewWalk { .. }
+                    | Flow::WalkFilePick { .. }
+                    | Flow::WalkDatePick
+                    | Flow::EntryDatePicker
+            )
+        }) {
+            return Some(FocusSeam::ReviewWalk);
+        }
+        if chained(&|f| matches!(f, Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. })) {
+            return Some(FocusSeam::TrackEntries);
+        }
+        if chained(&|f| matches!(f, Flow::Labels { .. })) {
+            return Some(FocusSeam::LabelsOverlay);
+        }
+        if chained(&|f| matches!(f, Flow::EditRecur { .. })) {
+            return Some(FocusSeam::RecurEditor);
+        }
+        if chained(&|f| matches!(f, Flow::EditDate { .. })) {
+            return Some(FocusSeam::DueEditor);
+        }
+        if chained(&|f| matches!(f, Flow::EditTitle { .. })) {
+            return Some(FocusSeam::TitleEditor);
+        }
+        if chained(&|f| matches!(f, Flow::EditDescription { .. })) {
+            return Some(FocusSeam::DescriptionEditor);
+        }
+        if chained(&|f| matches!(f, Flow::PlanPlace { .. })) {
+            return Some(FocusSeam::PlanPlace);
+        }
+        if chained(&|f| matches!(f, Flow::Palette { .. })) {
+            return Some(FocusSeam::Palette);
+        }
+        if chained(&|f| matches!(f, Flow::Capture)) {
+            return Some(FocusSeam::Capture);
+        }
+        if chained(&|f| matches!(f, Flow::FocusMode { .. })) {
+            return Some(FocusSeam::FocusOverlay);
+        }
+        if chained(&|f| {
+            matches!(
+                f,
+                Flow::Create { .. }
+                    | Flow::CreateStack
+                    | Flow::CreateBoard
+                    | Flow::RenameStack { .. }
+                    | Flow::RenameBoard { .. }
+            )
+        }) {
+            return Some(FocusSeam::CreateFlow);
+        }
+        if chained(&|f| {
+            matches!(
+                f,
+                Flow::Move { .. } | Flow::MoveStack { .. } | Flow::DragMove { .. }
+            )
+        }) {
+            return Some(FocusSeam::MoveFlow);
+        }
+        if chained(&|f| matches!(f, Flow::ConfirmDelete(_))) {
+            return Some(FocusSeam::ConfirmDelete);
+        }
+        if chained(&|f| matches!(f, Flow::BoardColorPick { .. })) {
+            return Some(FocusSeam::BoardColorPick);
+        }
+        match self.priority_open {
+            Some(crate::router::PriorityField::Importance) => {
+                return Some(FocusSeam::PriorityDue);
+            }
+            Some(crate::router::PriorityField::Urgency) => {
+                return Some(FocusSeam::PriorityScheduled);
+            }
+            None => {}
+        }
+        if window.get_timer_setter_open() {
+            return Some(FocusSeam::TimerSetter);
+        }
+        if self.shell.menu.open {
+            return Some(FocusSeam::ActionMenu);
+        }
+        None
+    }
+
+    /// The open pass's recording half: the anchor is the invoking
+    /// element's identity at record time — the logical walk focus,
+    /// else the subject (subject-affine sites), else the view. The
+    /// stack/board variants are the *restore* vocabulary (the census's
+    /// header anchors resolve against them); the generic ladder never
+    /// mints them — a plain view context with a seeded selection must
+    /// restore to the view, not silently jump to a column.
+    fn mint_focus_origin(&self, seam: FocusSeam) -> FocusOrigin {
+        let state = self.state.load_full();
+        let anchor = if let Some(task) = self.view_state.focused_task() {
+            OriginAnchor::Task(task)
+        } else if seam.subject_affine() && self.view_state.subject_task().is_some() {
+            OriginAnchor::Task(self.view_state.subject_task().expect("checked above"))
+        } else {
+            OriginAnchor::View
+        };
+        // The container snapshot: a board row falls to its stack
+        // header; every other anchor's container is the view scope
+        // (the plan AC-2's letter — "the row's stack header / the
+        // view root").
+        let fallback = match anchor {
+            OriginAnchor::Task(task) => {
+                if self.view_state.view() == crate::view_state::ViewId::Board {
+                    let stack_ids = self.view_state.stack_ids(&state);
+                    self.tables
+                        .board_position(task)
+                        .and_then(|(column, _)| stack_ids.get(column).copied())
+                        .map_or(OriginAnchor::View, OriginAnchor::Stack)
+                } else {
+                    OriginAnchor::View
+                }
+            }
+            OriginAnchor::Stack(_) | OriginAnchor::View => OriginAnchor::View,
+        };
+        FocusOrigin {
+            seam,
+            anchor,
+            fallback,
+        }
+    }
+
+    /// One restore resolution: `Some` names the anchor family function
+    /// to invoke (and the logical-focus writes the row anchor needs —
+    /// rows carry no slint focus stop; the walk's emphasis look is the
+    /// row focus, so a `Task` anchor re-arms the walk state and the
+    /// scroll hint beside the fact push). `None` = the anchor is gone
+    /// at every level; the caller falls to the view-scope refocus.
+    #[allow(clippy::type_complexity)] // one resolution shape, local to the restore
+    fn resolve_anchor(
+        &self,
+        state: &taskboard_domain::AppState,
+        anchor: &OriginAnchor,
+    ) -> Option<(i32, i32, i32)> {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let to_index = |value: usize| value as i32;
+        match *anchor {
+            OriginAnchor::View => None,
+            OriginAnchor::Task(task) => {
+                if !state.tasks.contains_key(&task) {
+                    return None;
+                }
+                match self.view_state.view() {
+                    crate::view_state::ViewId::Board => {
+                        let (column, row) = self.tables.board_position(task)?;
+                        Some((1, to_index(column), to_index(row)))
+                    }
+                    crate::view_state::ViewId::Today => {
+                        let (section, row) = self.tables.today_position(task)?;
+                        Some((1, to_index(section), to_index(row)))
+                    }
+                    crate::view_state::ViewId::StackDetail => {
+                        let row = self.tables.stack_position(task)?;
+                        Some((1, -1, to_index(row)))
+                    }
+                    // The detail's own cell is the row anchor's host
+                    // (census rows 14/15's "the title/description cell").
+                    crate::view_state::ViewId::TaskDetail => Some((4, -1, -1)),
+                    _ => None,
+                }
+            }
+            OriginAnchor::Stack(stack) => {
+                let column = self
+                    .view_state
+                    .stack_ids(state)
+                    .iter()
+                    .position(|s| *s == stack)?;
+                Some((2, to_index(column), -1))
+            }
+        }
+    }
+
+    /// The restore's fact half: resolve the origin (anchor, then the
+    /// recorded container), publish the `FocusFacts` tuple through the
+    /// anchor family's seam, and land the logical half of a row
+    /// restore. Returns whether an element-level restore happened —
+    /// `false` means the caller's view-scope refocus fires (D-F1's
+    /// ordering law: the view-scope call only runs when the origin
+    /// resolved to the view).
+    fn push_focus_restore(&mut self, window: &AppWindow, origin: &FocusOrigin) -> bool {
+        let state = self.state.load_full();
+        let fallback = origin.fallback;
+        let Some((mut kind, a, b)) = self
+            .resolve_anchor(&state, &origin.anchor)
+            .or_else(|| self.resolve_anchor(&state, &fallback))
+        else {
+            return false;
+        };
+        // The detail's description editor restores into its own cell
+        // (census row 15), not the title's.
+        if kind == 4 && origin.seam == FocusSeam::DescriptionEditor {
+            kind = 5;
+        }
+        let facts = window.global::<crate::FocusFacts>();
+        facts.set_seam_id(origin.seam.id());
+        match kind {
+            1 => {
+                // The logical half: the walked look lands on the row
+                // (the emphasis is the row's focus render) and the
+                // scroll hint brings it into view — the walk-stop
+                // sibling the census names.
+                let task = match (origin.anchor, fallback) {
+                    (OriginAnchor::Task(task), _) | (_, OriginAnchor::Task(task)) => Some(task),
+                    _ => None,
+                };
+                if let Some(task) = task.filter(|t| state.tasks.contains_key(t)) {
+                    self.view_state.set_focused(Some(task));
+                }
+                window.invoke_focus_task_row(a, b);
+            }
+            2 => {
+                // The stack header's selection look (the segment ring's
+                // selected branch) — the header's own anchor.
+                if let OriginAnchor::Stack(stack) = origin.anchor {
+                    self.view_state.select_stack(&state, stack);
+                }
+                window.invoke_focus_stack_header(a);
+            }
+            3 => window.invoke_focus_board_cell(a),
+            4 | 5 => window.invoke_focus_detail_cell(kind),
+            _ => return false,
+        }
+        // The row restore's scroll-into-view half (the FocusScrollHint
+        // consumer pairs with the fact push).
+        if kind == 1 {
+            let before = None;
+            self.push_focus_scroll_hint(window, before);
+        }
+        true
+    }
+
+    /// The sync-time funnel (`sync_view_context` runs at the end of
+    /// every mutation pass): record on open, restore on close. The
+    /// restore's `false` here needs no view-scope call — the closes
+    /// that only ride this funnel (the flag/property sites) had no
+    /// flow to end and no identity to swap; today's behavior for them
+    /// was "nothing", and the element restore is the whole delta.
+    fn sync_focus_origin(&mut self, window: &AppWindow) {
+        if self.applying_outcomes {
+            return;
+        }
+        if let Some(origin) = self.focus_origin.take() {
+            if self.open_focus_site(window) == Some(origin.seam) {
+                // Still open (a refresh pass mid-site): keep holding.
+                self.focus_origin = Some(origin);
+            } else {
+                self.push_focus_restore(window, &origin);
+            }
+        }
+        if let Some(seam) = self
+            .open_focus_site(window)
+            .filter(|open| self.focus_origin.as_ref().is_none_or(|o| o.seam != *open))
+        {
+            // Last-open-wins: a second site's open overwrites.
+            self.focus_origin = Some(self.mint_focus_origin(seam));
+        }
+    }
+
+    /// The exit funnels' focus half (the D-F1 ordering law): consume
+    /// the origin when its site is gone; `true` = an element-level
+    /// restore fired and the caller's view-scope refocus is suppressed.
+    fn exit_focus_handoff(&mut self, window: &AppWindow) -> bool {
+        if self.open_focus_site(window).is_none()
+            && let Some(origin) = self.focus_origin.take()
+        {
+            return self.push_focus_restore(window, &origin);
+        }
+        false
+    }
+
     fn finish_mutation(&mut self, window: &AppWindow) {
-        self.sync_view_context();
+        self.sync_view_context(window);
         self.sync(window);
     }
 
@@ -1125,7 +1522,12 @@ impl Adapter {
 
     /// Keeps the shell's view seam aligned with the view-state
     /// machine (the D16/D17 seam, now driven for real).
-    fn sync_view_context(&mut self) {
+    fn sync_view_context(&mut self, window: &AppWindow) {
+        // The focus-origin funnel (US-1/W-1): record on open, restore
+        // on close — before the shell mirror, so the restore's logical
+        // writes (the walked look, the stack selection) land in the
+        // same push the pass derives.
+        self.sync_focus_origin(window);
         let state = self.state.load();
         self.shell.view = Some(self.view_state.context());
         self.shell.focused_task = self.view_state.focused_task();
@@ -1224,6 +1626,7 @@ impl Adapter {
 
     fn apply_outcomes(&mut self, window: &AppWindow, outcomes: &[FlowOutcome]) {
         let mut mode_changed = false;
+        self.applying_outcomes = true;
         let flow_ended =
             self.flow_open == FlowLiveness::Open && matches!(self.view_state.flow(), Flow::None);
         for outcome in outcomes {
@@ -1294,8 +1697,15 @@ impl Adapter {
             // runtime never fires its loss event, so the counts would
             // stick and mask the shell forever.
             Self::reset_editing_facts(window);
-            window.invoke_refocus_view();
+            // The focus-origin restore first (US-1/W-1, D-F1's
+            // ordering law): the view-scope refocus only fires when
+            // the origin resolved to the view — an element-level
+            // restore lands on the origin, not the window top.
+            if !self.exit_focus_handoff(window) {
+                window.invoke_refocus_view();
+            }
         }
+        self.applying_outcomes = false;
     }
 
     /// The D20 reset seams (see the flow-end call): both counts to 0
@@ -1547,7 +1957,7 @@ impl Adapter {
     /// calls this directly (the plan §5 audit's forced set).
     #[allow(clippy::too_many_lines)] // the pass is one linear pipeline
     pub(crate) fn refresh_forced(&mut self, window: &AppWindow) {
-        self.sync_view_context();
+        self.sync_view_context(window);
         let state = self.state.load_full();
         self.sync_settings(&state.settings);
         self.view_state.reconcile(&state);
@@ -1772,6 +2182,12 @@ impl Adapter {
         // re-entrant pass before this line would see the stale cache
         // and derive again, never skip a needed pass.
         self.last_derived = Some(state);
+        // The focus-origin tail funnel (US-1/W-1): a reconcile that
+        // dropped an overlay's flow (the vanished-subject rule) closed
+        // the site *after* this pass's entry funnel ran — the restore
+        // fires here, over the freshly pushed models, so the origin's
+        // row is on the page the fact names.
+        self.sync_focus_origin(window);
     }
 
     /// Recomposes the setter's grammar text + fire instant from the
@@ -4333,8 +4749,12 @@ impl Adapter {
             // The swap unmounts whatever held slint focus (and any
             // stale focus must not survive into the new surface) — the
             // D15 hand-off rides the swap as it rode every dispatch
-            // before the r4 chunk-6 gating.
-            window.invoke_refocus_view();
+            // before the r4 chunk-6 gating. The focus-origin restore
+            // runs first (US-1/W-1, D-F1's ordering law): the
+            // view-scope call only when nothing element-level resolved.
+            if !self.exit_focus_handoff(window) {
+                window.invoke_refocus_view();
+            }
         }
         if self.shell.palette && !palette_before {
             // The D20 reset seam 3's palette leg: the modal surface
@@ -7628,6 +8048,8 @@ pub(crate) fn install(
         create_target: None,
         reminder_target: None,
         focus_handover: FocusHandover::None,
+        focus_origin: None,
+        applying_outcomes: false,
         preset,
         editor_clipboard: None,
         editor_mark: None,
@@ -9137,7 +9559,7 @@ fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (), {        Adapter::dismiss_tooltip(&window);
     let outcomes = a.view_state.close_settings();
     a.apply_outcomes(&window, &outcomes);
-    a.sync_view_context();
+    a.sync_view_context(&window);
     a.sync(&window);
 
     });

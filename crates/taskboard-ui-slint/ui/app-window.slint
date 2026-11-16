@@ -56,6 +56,7 @@ import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { TaskCard } from "widgets/task-card.slint";
 import { DragState } from "drag-state.slint";
 import { FocusScrollHint } from "focus-scroll.slint";
+import { FocusFacts } from "focus-facts.slint";
 import { TodayAnchorFacts } from "today-anchor.slint";
 import { ScrollPageHint } from "scroll-page.slint";
 import { TextField, FieldValidity } from "widgets/text-field.slint";
@@ -74,7 +75,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts }
 export { ReviewWalkModel }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
@@ -1544,6 +1545,42 @@ export component AppWindow inherits Window {
     // dead-ends. Driven by the adapter when a flow ends.
     public function refocus-view() {
         key-root.focus();
+    }
+
+    // The focus-origin restore calls (the focus-restoration plan
+    // US-1/W-1, D-F1): after an overlay site closes, the adapter
+    // resolves the recorded origin and invokes the anchor family's
+    // function, which publishes the FocusFacts tuple. Row anchors are
+    // *logical* (the walk's emphasis look — rows carry no slint focus
+    // stop); the detail cells consume the fact physically (their
+    // ActivationStop grabs slint focus).
+    // slint: focus-task-row
+    public function focus-task-row(target-a: int, target-b: int) {
+        FocusFacts.anchor-kind = 1;
+        FocusFacts.target-a = target-a;
+        FocusFacts.target-b = target-b;
+        FocusFacts.nonce += 1;
+    }
+    // slint: focus-stack-header
+    public function focus-stack-header(column: int) {
+        FocusFacts.anchor-kind = 2;
+        FocusFacts.target-a = column;
+        FocusFacts.target-b = -1;
+        FocusFacts.nonce += 1;
+    }
+    // slint: focus-board-cell
+    public function focus-board-cell(segment: int) {
+        FocusFacts.anchor-kind = 3;
+        FocusFacts.target-a = segment;
+        FocusFacts.target-b = -1;
+        FocusFacts.nonce += 1;
+    }
+    // slint: focus-detail-cell
+    public function focus-detail-cell(cell: int) {
+        FocusFacts.anchor-kind = cell;
+        FocusFacts.target-a = -1;
+        FocusFacts.target-b = -1;
+        FocusFacts.nonce += 1;
     }
 
     // The Responsive width push (D17): every width change lands in

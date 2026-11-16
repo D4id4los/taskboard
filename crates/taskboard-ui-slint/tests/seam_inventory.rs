@@ -353,3 +353,68 @@ fn no_unlisted_installs_exist() {
         SEAM_INVENTORY.len()
     );
 }
+
+/// The adapter→UI push functions (the focus-restoration chunk's
+/// restore/mask seams): the `invoke_` twins of the install manifest.
+/// Same two-sided law — exactly-once, and no unlisted push function.
+const INVOKE_INVENTORY: &[&str] = &[
+    // The focus-origin restore's anchor-family pushes (US-1/W-1,
+    // D-F1; the `// slint:` comments in app-window.slint name them).
+    "focus_task_row",
+    "focus_stack_header",
+    "focus_board_cell",
+    "focus_detail_cell",
+];
+
+/// The push functions the manifest deliberately does not count: the
+/// pre-framework window functions the adapter already drove (the
+/// D15 hand-off's view refocus lives in the chunk plan's census
+/// note, not this manifest).
+const INVOKE_EXEMPT: &[&str] = &["invoke_refocus_view"];
+
+fn invoke_counts() -> Vec<(String, usize)> {
+    INVOKE_INVENTORY
+        .iter()
+        .map(|name| {
+            let needle = format!("invoke_{name}");
+            let count = ADAPTER_SOURCE
+                .match_indices(&needle)
+                .filter(|(at, _)| {
+                    ADAPTER_SOURCE[at + needle.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|next| !matches!(next, 'a'..='z' | '0'..='9' | '_'))
+                })
+                .count();
+            ((*name).to_owned(), count)
+        })
+        .collect()
+}
+
+#[test]
+fn every_listed_push_function_is_invoked_exactly_once() {
+    let deviations: Vec<String> = invoke_counts()
+        .into_iter()
+        .filter_map(|(name, count)| (count != 1).then(|| format!("{name}: {count} invokes")))
+        .collect();
+    assert!(
+        deviations.is_empty(),
+        "push-function invocations deviate from exactly-once:\n{}",
+        deviations.join("\n")
+    );
+}
+
+#[test]
+fn no_unlisted_push_functions_exist() {
+    let exempt = INVOKE_EXEMPT
+        .iter()
+        .map(|name| ADAPTER_SOURCE.matches(name).count())
+        .sum::<usize>();
+    let total = ADAPTER_SOURCE.matches("window.invoke_").count() - exempt;
+    assert_eq!(
+        total,
+        INVOKE_INVENTORY.len(),
+        "adapter.rs invokes {total} push functions but the inventory lists {} — an added push must be listed; a dropped one already failed the totality side",
+        INVOKE_INVENTORY.len()
+    );
+}
