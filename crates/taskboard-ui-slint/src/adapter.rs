@@ -11018,7 +11018,10 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     install_seam!(window: window.on_task_date_accepted, adapter: adapter;
-    bind mut (a, window), args (text), {        match crate::due_edit::parse(&text, chrono::Utc::now(), &chrono::Local) {
+    bind mut (a, window), args (text), {        // The N-4 stamping law (task-detail-editor UX plan US-1/D-3):
+        // the commit mint is `parse_stamp` — a bare date stamps the
+        // named date's day-window end over the injected day facts.
+        match crate::due_edit::parse_stamp(&text, chrono::Utc::now(), &a.calendar()) {
         // A refusal keeps the buffer and dispatches nothing.
         Err(crate::due_edit::DueParseError) => {}
         parsed => commit_date(&mut a, &window, parsed.expect("non-error parse")),
@@ -11196,14 +11199,26 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         .as_mut()
         .expect("checked above")
         .set_cursor(date);
-    // The click carries the picker's time (round-3 D9): cursor
-    // date + time-of-day through the one funnel.
-    let Some(instant) = editor
+    let picker_time = editor
         .picker
         .as_ref()
         .expect("checked above")
-        .commit_instant(&chrono::Local)
-    else {
+        .time();
+    // The commit mint: a timed picker carries the picked/stepped time
+    // (round-3 D9 — the typed time is data); a date-only picker stamps
+    // the law (task-detail-editor UX plan US-1/D-3): the clicked day's
+    // day-window end over the injected day facts. The law applies
+    // exactly when no time component exists anywhere in the entry path.
+    let instant = if picker_time.is_none() {
+        Some(a.calendar().day_end(date))
+    } else {
+        editor
+            .picker
+            .as_ref()
+            .expect("checked above")
+            .commit_instant(&chrono::Local)
+    };
+    let Some(instant) = instant else {
         a.refresh_forced(&window);
         return;
     };
@@ -11452,8 +11467,11 @@ fn settle_date_editor(a: &mut Adapter, window: &AppWindow) -> bool {
         .date_editor()
         .map_or(String::new(), |editor| editor.buffer.clone());
     let now = chrono::Utc::now();
-    // Non-empty and parseable: click-away ≡ Return.
-    if let Ok(Some(instant)) = crate::due_edit::parse(&text, now, &chrono::Local) {
+    // Non-empty and parseable: click-away ≡ Return — the same
+    // `parse_stamp` mint the typed Return path uses (the N-4 law, UX
+    // plan US-1/D-3: one funnel, one mint; the date-only buffer stamps
+    // the window end here too).
+    if let Ok(Some(instant)) = crate::due_edit::parse_stamp(&text, now, &a.calendar()) {
         commit_date(a, window, Some(instant));
         return true;
     }
