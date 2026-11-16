@@ -62,6 +62,12 @@ pub struct KeymapShell {
     /// makes it total. Mirrored from the view-state flow by the
     /// adapter's `sync_view_context` (the `palette` precedent).
     pub review_walk: bool,
+    /// The notification surface is ENGAGED (US-6/W-6, D-N1's recorded
+    /// posture): rows visible ∧ armed by the surface's first walk or
+    /// verb stroke — the context rides the chain head exactly while
+    /// this holds; disarmed by the Escape close, the last row's exit,
+    /// or rows emptying. Synced by the adapter.
+    pub notification_surface: bool,
     pub view: Option<ContextId>,
     /// The [`crate::router::DispatchCtx`] carried to the router.
     pub focused_task: Option<taskboard_domain::TaskId>,
@@ -141,6 +147,7 @@ impl KeymapShell {
     /// job; it reports `false` for that case. Menu-opening needs the
     /// precomputed entry count (the entries themselves are a menu
     /// projection, D19).
+    #[allow(clippy::too_many_lines)] // the effect match is one arm per effect
     pub fn apply(&mut self, effect: &UiEffect, menu_len: usize) -> bool {
         match *effect {
             UiEffect::Exit => return false,
@@ -276,7 +283,10 @@ impl KeymapShell {
             // intents (DR-7 chunk 3, #638); the shell records nothing
             // (the flow is the truth; `sync_view_context` mirrors it).
             | UiEffect::OpenReviewWalk
-            | UiEffect::ReviewWalk(_) => {}
+            | UiEffect::ReviewWalk(_)
+            // The notification verbs live adapter-side (the routed
+            // seam bodies; the shell state is untouched).
+            | UiEffect::NotificationVerb(_) => {}
         }
         true
     }

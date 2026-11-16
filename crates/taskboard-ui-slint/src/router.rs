@@ -36,6 +36,19 @@ pub enum PriorityField {
 /// UI-internal effects (design §5: "ui-internal actions → focus
 /// moves, view switches, mode flips"). The adapter applies them to
 /// the shell/window; `Exit` maps to the slint event-loop quit.
+/// The notification surface's verbs (US-6/W-6, D-N1): the r5 alarm
+/// grammar's per-row twins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationVerb {
+    Dismiss,
+    Done,
+    Snooze,
+    Mute,
+    Cancel,
+    TrackStart,
+    Open,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiEffect {
     Exit,
@@ -50,6 +63,11 @@ pub enum UiEffect {
     MenuBack,
     MenuNext,
     MenuPrevious,
+    /// The notification surface's per-verb dispatch (US-6/W-6, D-N1):
+    /// routed over the walk's selected row — the adapter applies the
+    /// exact seam body the row's button callback runs (the click ≡
+    /// key law).
+    NotificationVerb(NotificationVerb),
     /// Enter the Today view (chunk 10, D-V2): subjectless, no engine
     /// command.
     FocusToday,
@@ -432,7 +450,12 @@ impl UiEffect {
             | Self::MenuBack
             | Self::MenuNext
             | Self::MenuPrevious
-            | Self::InvokeSelected => EffectClass::Menu,
+            | Self::InvokeSelected
+            // The notification verbs ride the menu family's letter:
+            // applied in `apply_effect` before the table (the
+            // engaged context masks the chain; the walk arms live
+            // beside it).
+            | Self::NotificationVerb(_) => EffectClass::Menu,
             Self::Exit => EffectClass::System,
         }
     }
@@ -1029,6 +1052,27 @@ impl ActionRouter {
             // only — no session verb rides it (the fence: the session
             // drives only the landed tracking verbs).
             ActionId::FocusModeToggle => DispatchOutcome::UiEffect(UiEffect::ToggleFocusMode),
+            ActionId::NotificationDismiss => {
+                DispatchOutcome::UiEffect(UiEffect::NotificationVerb(NotificationVerb::Dismiss))
+            }
+            ActionId::NotificationDone => {
+                DispatchOutcome::UiEffect(UiEffect::NotificationVerb(NotificationVerb::Done))
+            }
+            ActionId::NotificationSnooze => {
+                DispatchOutcome::UiEffect(UiEffect::NotificationVerb(NotificationVerb::Snooze))
+            }
+            ActionId::NotificationMute => {
+                DispatchOutcome::UiEffect(UiEffect::NotificationVerb(NotificationVerb::Mute))
+            }
+            ActionId::NotificationCancel => {
+                DispatchOutcome::UiEffect(UiEffect::NotificationVerb(NotificationVerb::Cancel))
+            }
+            ActionId::NotificationTrackStart => {
+                DispatchOutcome::UiEffect(UiEffect::NotificationVerb(NotificationVerb::TrackStart))
+            }
+            ActionId::NotificationOpen => {
+                DispatchOutcome::UiEffect(UiEffect::NotificationVerb(NotificationVerb::Open))
+            }
             // The chunk-3 view intents (D6): the adapter resolves the
             // effects against the view-state model.
             ActionId::NavNextView => DispatchOutcome::UiEffect(UiEffect::NextView),

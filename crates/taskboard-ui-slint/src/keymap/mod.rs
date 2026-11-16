@@ -574,6 +574,39 @@ mod tests {
         }
     }
 
+    /// US-6/AC-4 (the focus-restoration plan, D-N1): every preset
+    /// binds the notification surface's engagement grammar — the walk
+    /// pair, the Escape close, and the seven per-verb ids — over the
+    /// `NotificationSurface` context (the r5 alarm contract's twin;
+    /// the totality oracle; posture-independent).
+    #[test]
+    fn every_preset_binds_the_notification_surface_grammar() {
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            let bindings = keymap
+                .bindings_in(ContextId::NotificationSurface)
+                .expect("the notification surface context is bound");
+            let verbs: std::collections::BTreeSet<&ActionId> = bindings.values().collect();
+            for verb in [
+                ActionId::MenuNext,
+                ActionId::MenuPrevious,
+                ActionId::MenuDismiss,
+                ActionId::NotificationDismiss,
+                ActionId::NotificationDone,
+                ActionId::NotificationSnooze,
+                ActionId::NotificationMute,
+                ActionId::NotificationCancel,
+                ActionId::NotificationTrackStart,
+                ActionId::NotificationOpen,
+            ] {
+                assert!(
+                    verbs.contains(&verb),
+                    "{preset:?} does not bind {verb} in the notification surface"
+                );
+            }
+        }
+    }
+
     /// Round-1 chunk 2 (D18): every preset resolves both stack-width
     /// verbs in the `[Board, ViNormal, Global]` chain — standard/emacs
     /// bind them in `Board`, vi in `ViNormal`.

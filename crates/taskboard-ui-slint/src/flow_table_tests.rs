@@ -132,6 +132,9 @@ enum EK {
     CloseMenu,
     MenuBack,
     MenuNext,
+    /// The notification verbs' placement (the menu family's letter;
+    /// the matrix never sees them — `apply_effect` applies first).
+    NotificationVerb,
     MenuPrevious,
     FocusToday,
     OpenInbox,
@@ -230,6 +233,10 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::CloseMenu => EK::CloseMenu,
         UiEffect::MenuBack => EK::MenuBack,
         UiEffect::MenuNext => EK::MenuNext,
+        // The notification verbs ride the menu family's placement:
+        // applied in `apply_effect` before the table — the matrix
+        // never sees them (the menu-family keys' pattern).
+        UiEffect::NotificationVerb(_) => EK::NotificationVerb,
         UiEffect::MenuPrevious => EK::MenuPrevious,
         UiEffect::FocusToday => EK::FocusToday,
         UiEffect::OpenInbox => EK::OpenInbox,
@@ -2659,7 +2666,11 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         // surface like the settings opener.
         | UiEffect::OpenPlanNextDay
         | UiEffect::ShowTask
-        | UiEffect::InvokeSelected => DismissClass::IdentitySwap,
+        | UiEffect::InvokeSelected
+        // The notification verbs: the menu-family placement — the
+        // walk/verb arm mutates no mounted surface beyond the
+        // surface's own highlight (identity-preserving).
+        | UiEffect::NotificationVerb(_) => DismissClass::IdentitySwap,
         UiEffect::OpenMenu
         | UiEffect::CloseMenu
         | UiEffect::BeginCreate { .. }

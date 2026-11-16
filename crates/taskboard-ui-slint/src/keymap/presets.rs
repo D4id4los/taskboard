@@ -387,6 +387,60 @@ static STANDARD: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
     (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
     (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
+    // The notification surface's grammar (the focus-restoration plan
+    // US-6/W-6, D-N1): the r5 alarm letter verbatim — the walk pair,
+    // the Escape close, and the per-verb keys over the selected row
+    // (the C-5 totality oracle binds every id in every preset).
+    (
+        ActionId::MenuPrevious,
+        ContextId::NotificationSurface,
+        &["Up"],
+    ),
+    (
+        ActionId::MenuNext,
+        ContextId::NotificationSurface,
+        &["Down"],
+    ),
+    (
+        ActionId::MenuDismiss,
+        ContextId::NotificationSurface,
+        &["Escape"],
+    ),
+    (
+        ActionId::NotificationDismiss,
+        ContextId::NotificationSurface,
+        &["d"],
+    ),
+    (
+        ActionId::NotificationDone,
+        ContextId::NotificationSurface,
+        &["e"],
+    ),
+    (
+        ActionId::NotificationSnooze,
+        ContextId::NotificationSurface,
+        &["s"],
+    ),
+    (
+        ActionId::NotificationMute,
+        ContextId::NotificationSurface,
+        &["m"],
+    ),
+    (
+        ActionId::NotificationCancel,
+        ContextId::NotificationSurface,
+        &["c"],
+    ),
+    (
+        ActionId::NotificationTrackStart,
+        ContextId::NotificationSurface,
+        &["t"],
+    ),
+    (
+        ActionId::NotificationOpen,
+        ContextId::NotificationSurface,
+        &["o"],
+    ),
 ];
 
 /// `emacs` — default-emacs-authentic (the review's tmux standard):
@@ -784,6 +838,60 @@ static EMACS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
     (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
     (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
+    // The notification surface's grammar (the focus-restoration plan
+    // US-6/W-6, D-N1): the r5 alarm letter verbatim — the walk pair,
+    // the Escape close, and the per-verb keys over the selected row
+    // (the C-5 totality oracle binds every id in every preset).
+    (
+        ActionId::MenuPrevious,
+        ContextId::NotificationSurface,
+        &["Up"],
+    ),
+    (
+        ActionId::MenuNext,
+        ContextId::NotificationSurface,
+        &["Down"],
+    ),
+    (
+        ActionId::MenuDismiss,
+        ContextId::NotificationSurface,
+        &["Escape"],
+    ),
+    (
+        ActionId::NotificationDismiss,
+        ContextId::NotificationSurface,
+        &["d"],
+    ),
+    (
+        ActionId::NotificationDone,
+        ContextId::NotificationSurface,
+        &["e"],
+    ),
+    (
+        ActionId::NotificationSnooze,
+        ContextId::NotificationSurface,
+        &["s"],
+    ),
+    (
+        ActionId::NotificationMute,
+        ContextId::NotificationSurface,
+        &["m"],
+    ),
+    (
+        ActionId::NotificationCancel,
+        ContextId::NotificationSurface,
+        &["c"],
+    ),
+    (
+        ActionId::NotificationTrackStart,
+        ContextId::NotificationSurface,
+        &["t"],
+    ),
+    (
+        ActionId::NotificationOpen,
+        ContextId::NotificationSurface,
+        &["o"],
+    ),
 ];
 
 /// `vi` — vim-authentic: everything lives in `ViNormal` (the honest
@@ -1014,6 +1122,60 @@ static VI: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AlarmSnooze, ContextId::AlarmWindow, &["s"]),
     (ActionId::AlarmCancel, ContextId::AlarmWindow, &["c"]),
     (ActionId::MenuDismiss, ContextId::AlarmWindow, &["Escape"]),
+    // The notification surface's grammar (the focus-restoration plan
+    // US-6/W-6, D-N1): the r5 alarm letter verbatim — the walk pair,
+    // the Escape close, and the per-verb keys over the selected row
+    // (the C-5 totality oracle binds every id in every preset).
+    (
+        ActionId::MenuPrevious,
+        ContextId::NotificationSurface,
+        &["Up"],
+    ),
+    (
+        ActionId::MenuNext,
+        ContextId::NotificationSurface,
+        &["Down"],
+    ),
+    (
+        ActionId::MenuDismiss,
+        ContextId::NotificationSurface,
+        &["Escape"],
+    ),
+    (
+        ActionId::NotificationDismiss,
+        ContextId::NotificationSurface,
+        &["d"],
+    ),
+    (
+        ActionId::NotificationDone,
+        ContextId::NotificationSurface,
+        &["e"],
+    ),
+    (
+        ActionId::NotificationSnooze,
+        ContextId::NotificationSurface,
+        &["s"],
+    ),
+    (
+        ActionId::NotificationMute,
+        ContextId::NotificationSurface,
+        &["m"],
+    ),
+    (
+        ActionId::NotificationCancel,
+        ContextId::NotificationSurface,
+        &["c"],
+    ),
+    (
+        ActionId::NotificationTrackStart,
+        ContextId::NotificationSurface,
+        &["t"],
+    ),
+    (
+        ActionId::NotificationOpen,
+        ContextId::NotificationSurface,
+        &["o"],
+    ),
     // The labels overlay (UX R-3 D-2, #789): Ctrl+L is unbound in
     // normal mode here; the overlay's own context carries the
     // ladder + tab rows (the entries-overlay's vi pattern).

@@ -267,6 +267,10 @@ export component AppWindow inherits Window {
     // The in-app notification surface (R3 chunk C): desktop-only —
     // the kiosk's model-side gate (R3.5.3) keeps these empty.
     in-out property <[NotificationRowModel]> notification-model;
+    // The notification walk's pushed selection (US-6/W-6, D-N1):
+    // the adapter writes the clamped cursor; the surface renders the
+    // highlight (the walk's row look).
+    in-out property <int> notification-selected: -1;
     in-out property <int> notification-overflow;
     // The timers surface (DR-3/3, D-I6): the today view's section +
     // the status-bar chip. Desktop-only — the kiosk gate empties the
@@ -705,6 +709,7 @@ export component AppWindow inherits Window {
             // silent chrome in an empty state.
             if (root.notification-model.length > 0): NotificationSurface {
                 notifications: root.notification-model;
+                selected-index: root.notification-selected;
                 notification-overflow: root.notification-overflow;
                 dismiss-clicked(i) => root.notification-dismiss-clicked(i);
                 done-clicked(i) => root.notification-done-clicked(i);
@@ -1595,13 +1600,6 @@ export component AppWindow inherits Window {
         MaskWalkFacts.nonce += 1;
     }
 
-    // The menu's focused-open push (US-3/W-3, D-M3): the mounted
-    // menu's rows scope consumes the nonce and grabs slint focus —
-    // the walk starts inside the menu.
-    // slint: menu-rows-focus
-    public function menu-rows-focus() {
-        MenuPanelFacts.rows-focus-nonce += 1;
-    }
 
 
     // The Responsive width push (D17): every width change lands in

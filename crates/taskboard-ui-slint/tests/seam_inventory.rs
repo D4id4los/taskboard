@@ -366,6 +366,9 @@ const INVOKE_INVENTORY: &[&str] = &[
     "focus_detail_cell",
     // The control walk's clamped stop (US-2/W-2, D-W2).
     "mask_focus",
+    // The pre-existing timers push (the timers surface's create seam —
+    // the manifest's retrospective rider, caught by the totality side).
+    "timers_create_accepted",
 ];
 
 /// The push functions the manifest deliberately does not count: the
