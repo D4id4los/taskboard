@@ -2332,6 +2332,11 @@ fn push_task_detail(
             String::new()
         }),
         edit_open: editing,
+        // The arm-path focus flags (US-5/W-5, D-F5): the editor flow's
+        // arm names the field on the viewed subject (the walk's own
+        // stop fact rides the slint side).
+        title_armed: matches!(vs.flow(), Flow::EditTitle { task } if Some(*task) == vs.subject_task()),
+        description_armed: matches!(vs.flow(), Flow::EditDescription { task } if Some(*task) == vs.subject_task()),
         initial_text: SharedString::from(if editing {
             vs.buffer().to_owned()
         } else {
