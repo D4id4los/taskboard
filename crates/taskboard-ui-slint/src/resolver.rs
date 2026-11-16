@@ -70,6 +70,29 @@ impl KeymapResolver {
             self.pending.clear();
             return Resolution::Action(action);
         }
+        // UX-R8 D-4's shift-walk fold (the selection extension): a
+        // shift-bearing named-key stroke whose shift-stripped form
+        // resolves to a walk row (NavNextItem/NavPrevItem) resolves
+        // to that row — shift is the extension's real modifier, the
+        // adapter reads `stroke.shift` and routes the extension. The
+        // printable rows fold shift into the glyph (`stroke.rs`), so
+        // the fallback is the arrows' alone; an exact shift-bearing
+        // binding wins above (checked first).
+        if !had_pending
+            && stroke.shift
+            && let Some(action @ (ActionId::NavNextItem | ActionId::NavPrevItem)) = ({
+                let stripped = Stroke {
+                    shift: false,
+                    ..stroke
+                };
+                (stripped != stroke)
+                    .then(|| keymap.resolve(chain, std::slice::from_ref(&stripped)))
+                    .flatten()
+            })
+        {
+            self.pending.clear();
+            return Resolution::Action(action);
+        }
         if keymap.has_prefix(chain, &self.pending) {
             return Resolution::Pending;
         }

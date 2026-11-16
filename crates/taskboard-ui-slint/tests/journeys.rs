@@ -9146,6 +9146,11 @@ fn the_inbox_triage_moves_across_the_board_edge() {
             harness
                 .handle
                 .dispatch_action(taskboard_ui_slint::actions::ActionId::TaskMove);
+            // UX-R8 D-1: the walk is slot-shaped — the armed slot is
+            // the task's own gap+1 in the Inbox stack, so two backward
+            // strokes walk past the stack's gap 0 onto board two
+            // (the cross-board edge, the deliberate behavior change).
+            harness.press(taskboard_ui_slint::actions::ActionId::NavPrevItem);
             harness.press(taskboard_ui_slint::actions::ActionId::NavPrevItem);
             let hint = harness.handle.window().get_flow_hint_model().text;
             assert!(
@@ -12378,14 +12383,8 @@ fn the_slop_boundary_separates_clicks_from_drags() {
         },
     );
 
-    // Past the slop: a drag that drops back on the source column.
-    let (fixture, state) = fixture::golden_state();
-    let task0 = state
-        .tasks
-        .values()
-        .find(|task| task.title == "task-0")
-        .map(|task| task.id)
-        .expect("the fixture's first task");
+    // Past the slop: a drag that drops back on the source card.
+    let (_fixture, state) = fixture::golden_state();
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
@@ -12406,11 +12405,18 @@ fn the_slop_boundary_separates_clicks_from_drags() {
             assert!(open, "the drag armed past the slop");
             harness.driver.release_at(cx + 20.0, cy);
             harness.driver.advance_time(0);
-            harness.assert_commands(&[StateCommand::MoveTask {
-                id: task0,
-                stack: fixture.stack_a,
-                order: 2,
-            }]);
+            // UX-R8 D-2 (US-2/AC-2): the release lands in the card's
+            // own gap zone — the in-place no-op dispatches nothing and
+            // ends the drag silently (the old grammar appended here;
+            // the release back on the card is the no-op by design
+            // now). The append path stays pinned by
+            // the_pointer_drag_drops_the_keyboard_move_command's
+            // column-header release.
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the in-place release ends the drag"
+            );
             assert!(
                 harness.emphasized_card().is_none(),
                 "the dragged release never clicked"
@@ -21396,6 +21402,127 @@ fn us3_s2_compact_segment_drop_moves_the_card() {
             assert!(
                 !harness.handle.window().get_board_drag_open(),
                 "the stale segment settles the drag"
+            );
+        },
+    );
+}
+
+/// US-4/S1 — the modifier clicks build the selection: Ctrl+Click
+/// toggles (the first becomes the anchor), Shift+Click spans the
+/// reading-order range, plain click resets, Shift+walk extends.
+/// Typed model reads: the cards' `selected` / `anchor` bits.
+#[test]
+fn us4_s1_modifier_clicks_build_the_selection() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let sel = |harness: &Harness, column: usize, row: usize| {
+                let board = harness.handle.window().get_board_model();
+                let column = board.stacks.row_data(column).expect("column");
+                let card = column.tasks.row_data(row).expect("card");
+                (card.selected, card.anchor)
+            };
+
+            // Shift+Click card (0,0): the anchor singleton.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            assert_eq!(sel(&harness, 0, 0), (true, true), "the anchor is marked");
+            harness.assert_commands(&[]);
+
+            // Shift+Click card (0,1): the reading-order span.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 1, true, false);
+            assert_eq!(sel(&harness, 0, 0), (true, true));
+            assert_eq!(sel(&harness, 0, 1), (true, false), "the span member");
+            harness.assert_commands(&[]);
+
+            // Ctrl+Click card (1,0): toggles it into the set.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(1, 0, false, true);
+            assert_eq!(sel(&harness, 1, 0), (true, false), "the ctrl member");
+            harness.assert_commands(&[]);
+
+            // Shift+walk (the named-key rows with shift): extends to
+            // the next card in reading order.
+            harness.stroke(parse("Shift+Down").expect("Shift+Down"));
+            assert_eq!(
+                sel(&harness, 1, 1),
+                (true, false),
+                "the walk extended to the next card"
+            );
+            harness.assert_commands(&[]);
+
+            // Plain click resets.
+            harness.handle.window().invoke_board_task_clicked(0, 0);
+            assert_eq!(sel(&harness, 0, 0), (false, false), "the reset");
+            assert_eq!(sel(&harness, 0, 1), (false, false));
+            assert_eq!(sel(&harness, 1, 0), (false, false));
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-4/S4 + AC-4 — Escape clears the selection without dispatch,
+/// and a foreign settle clears the same.
+#[test]
+fn us4_s4_escape_clears_the_selection_without_dispatch() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let selected = |harness: &Harness| {
+                let board = harness.handle.window().get_board_model();
+                let mut any = false;
+                for column in 0..board.stacks.row_count() {
+                    let column = board.stacks.row_data(column).expect("column");
+                    for row in 0..column.tasks.row_count() {
+                        any = any || column.tasks.row_data(row).expect("card").selected;
+                    }
+                }
+                any
+            };
+
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 1, true, false);
+            assert!(selected(&harness), "the selection built");
+
+            // Escape: the move-cancel stroke with no flow — the
+            // settle arm clears the selection, nothing dispatches.
+            harness.press(ActionId::TaskMoveCancel);
+            harness.assert_commands(&[]);
+            assert!(!selected(&harness), "Escape cleared the selection");
+
+            // Rebuild, then a foreign settle (the app menu's open
+            // settles a foreign flow/selection by the modal rule).
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            assert!(selected(&harness));
+            harness.press(ActionId::AppMenu);
+            harness.assert_commands(&[]);
+            assert!(
+                !selected(&harness),
+                "the foreign settle cleared the selection"
             );
         },
     );

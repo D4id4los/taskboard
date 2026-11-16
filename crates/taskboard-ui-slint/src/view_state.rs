@@ -11,7 +11,7 @@
 //! view scope/field focuses itself when it is created); this module
 //! owns *selection* — which task/stack the actions address.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use taskboard_domain::{
@@ -408,6 +408,51 @@ pub enum DeleteTarget {
     Board(BoardId),
 }
 
+/// The board selection (UX-R8 D-4, US-4/S1, W-4): adapter-owned
+/// presentation state — never synced, never journaled (R-2); it is
+/// presentation state like `focused_task`. Empty = `anchor.is_none()`
+/// (the `BTreeSet` follows the anchor — the anchor is the invariant
+/// carrier); display order is derived over board reading order at use
+/// time, never stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BoardSelection {
+    anchor: Option<TaskId>,
+    members: BTreeSet<TaskId>,
+}
+
+impl BoardSelection {
+    /// Empty selection: no anchor (and by the carrier invariant, no
+    /// members).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.anchor.is_none()
+    }
+
+    /// The range origin.
+    #[must_use]
+    pub const fn anchor(&self) -> Option<TaskId> {
+        self.anchor
+    }
+
+    /// Membership (the render fact's input).
+    #[must_use]
+    pub fn contains(&self, task: &TaskId) -> bool {
+        self.members.contains(task)
+    }
+
+    /// The members in id order (storage order; the dispatch order is
+    /// the anchor-order derivation at sequence-build time).
+    pub fn members(&self) -> impl Iterator<Item = TaskId> + '_ {
+        self.members.iter().copied()
+    }
+
+    fn reset(&mut self, task: TaskId) {
+        self.anchor = Some(task);
+        self.members.clear();
+        self.members.insert(task);
+    }
+}
+
 /// What a view-state transition asks the adapter to do (D9):
 /// dispatch a command, flip the vi mode, or repaint now. The adapter
 /// applies outcomes; focus is mount-driven (module docs).
@@ -486,6 +531,13 @@ pub struct ViewState {
     /// them (the exit side-effects ride the drain, never a per-flow
     /// wipe rule).
     retired: Vec<crate::surfaces::Level>,
+    /// The board selection (UX-R8 D-4, US-4/S1): the card-grid's
+    /// multi-select — pure presentation, cleared by the D-4 paths
+    /// (plain click, Escape/foreign settle, reconcile's prune,
+    /// surface change). Lives beside `focused_task`: plain walk keeps
+    /// the selection but moves focus (the chosen reading of the
+    /// origin's US-4/S1 table).
+    selection: BoardSelection,
     /// The archived-boards roster's one-shot select target (UX R-1
     /// D-1, issue #785): armed when a roster row dispatches
     /// `SetBoardArchived { archived: false }` — the engine applies the
@@ -589,6 +641,7 @@ impl ViewState {
             selected_stack: None,
             stack_widths: BTreeMap::new(),
             retired: Vec::new(),
+            selection: BoardSelection::default(),
             pending_board_select: None,
         }
     }
@@ -675,6 +728,11 @@ impl ViewState {
     fn replace_root(&mut self, view: ViewId) {
         let dropped = self.surfaces.replace_root(view);
         self.retired.extend(dropped);
+        // UX-R8 D-4's surface-change cell: the selection never
+        // survives into another surface. Same-root swaps are the
+        // reconciliation's repair hops (a dead subject pops back to
+        // Board) — the clear there is the same law, benignly.
+        self.selection = BoardSelection::default();
     }
 
     /// The retire drain (D3): every level dropped since the last
@@ -1737,6 +1795,161 @@ impl ViewState {
     pub fn activate_card(&mut self, task: TaskId, stack: StackId) -> Vec<FlowOutcome> {
         self.focused_task = Some(task);
         self.selected_stack = Some(stack);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    // -- the board selection (UX-R8 D-4, US-4/S1) -------------------------
+
+    /// The selection read (the models pass and the menu branch's
+    /// input).
+    #[must_use]
+    pub const fn selection(&self) -> &BoardSelection {
+        &self.selection
+    }
+
+    /// The dispatch order (D-4): board reading order — columns in
+    /// `stack_ids` order, tasks in canonical order within a column —
+    /// with the anchor first, then the remaining members in reading
+    /// order. Dead members are pruned against the same pass (the
+    /// sequence-build's per-task absorb input).
+    #[must_use]
+    pub fn selection_anchor_order(&self, state: &AppState) -> Vec<TaskId> {
+        let reading: Vec<TaskId> = self.reading_order(state);
+        let Some(anchor) = self.selection.anchor else {
+            return Vec::new();
+        };
+        let mut ordered = Vec::new();
+        if reading.contains(&anchor) {
+            ordered.push(anchor);
+        }
+        ordered.extend(
+            reading
+                .into_iter()
+                .filter(|id| *id != anchor && self.selection.members.contains(id)),
+        );
+        // A dead-anchor repair: the anchor's card is gone but members
+        // survive — promote the first member (the reconcile pass
+        // normally prunes first; this is the sequence-build's belt).
+        if ordered.is_empty()
+            && let Some(first) = self.selection.members.iter().next().copied()
+        {
+            ordered.push(first);
+        }
+        ordered
+    }
+
+    /// Ctrl+Click (D-4): toggle the clicked card; on an empty
+    /// selection it becomes the anchor. Toggling off the anchor
+    /// promotes the first remaining member (the carrier invariant:
+    /// non-empty members always carry an anchor — a documented
+    /// leniency; the range then spans from the promoted anchor).
+    pub fn selection_toggle(&mut self, task: TaskId) -> Vec<FlowOutcome> {
+        if self.selection.anchor.is_some() {
+            if !self.selection.members.remove(&task) {
+                self.selection.members.insert(task);
+            } else if self.selection.members.is_empty() {
+                self.selection.anchor = None;
+            } else if self.selection.anchor == Some(task) {
+                self.selection.anchor = self.selection.members.iter().next().copied();
+            }
+        } else {
+            self.selection.reset(task);
+        }
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Shift+Click (D-4): the range span — members become the
+    /// reading-order span `[min(anchor_idx, clicked_idx),
+    /// max(...)]` over the resolved board; the anchor stays. An
+    /// unresolvable clicked card (stale/foreign surface) is absorbed
+    /// silently; an empty selection (or a dead anchor) takes the
+    /// clicked card as the new anchor's singleton.
+    pub fn selection_range(&mut self, state: &AppState, clicked: TaskId) -> Vec<FlowOutcome> {
+        let reading = self.reading_order(state);
+        let Some(clicked_idx) = reading.iter().position(|id| *id == clicked) else {
+            return Vec::new();
+        };
+        let anchor_idx = self
+            .selection
+            .anchor
+            .and_then(|anchor| reading.iter().position(|id| *id == anchor));
+        let Some(anchor_idx) = anchor_idx else {
+            self.selection.reset(clicked);
+            return vec![FlowOutcome::RefreshNow];
+        };
+        let (lo, hi) = if anchor_idx <= clicked_idx {
+            (anchor_idx, clicked_idx)
+        } else {
+            (clicked_idx, anchor_idx)
+        };
+        self.selection.members = reading[lo..=hi].iter().copied().collect();
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Shift+walk (D-4): the named-key walk with shift extends the
+    /// selection over the board walk's domain. An empty selection
+    /// anchors at the focused card (the singleton); each newly
+    /// focused card joins. The walk itself is the flat reading-order
+    /// step (no wrap; the ends hold) — plain walk keeps moving focus
+    /// without touching the selection (the chosen reading).
+    pub fn extend_selection_walk(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
+        let domain = self.reading_order(state);
+        let Some(current) = self.focused_task else {
+            // No focus yet: entering the walk lands on the first card
+            // and anchors the singleton (the step_focus entry rule).
+            return match domain.first() {
+                Some(first) => {
+                    self.focused_task = Some(*first);
+                    self.selection.reset(*first);
+                    vec![FlowOutcome::RefreshNow]
+                }
+                None => Vec::new(),
+            };
+        };
+        if self.selection.is_empty() {
+            self.selection.reset(current);
+        }
+        let Some(cur_idx) = domain.iter().position(|id| *id == current) else {
+            return Vec::new(); // a dead focus: reconcile repairs first
+        };
+        let next_idx = i64::from(direction) + i64::try_from(cur_idx).unwrap_or(0);
+        let Some(next) = usize::try_from(next_idx)
+            .ok()
+            .and_then(|idx| domain.get(idx).copied())
+        else {
+            return Vec::new(); // the ends hold (no wrap)
+        };
+        self.focused_task = Some(next);
+        self.selection.members.insert(next);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The plain-click reset (D-4): the click seam's selection half —
+    /// focus still moves (the open posture rides the action layer).
+    pub fn reset_selection(&mut self) {
+        self.selection = BoardSelection::default();
+    }
+
+    /// The menu-open settle's belt (UX-R8 D-11): the selection handed
+    /// across a settle that must keep it (the context-menu funnel —
+    /// the exit restores the invoking card with the selection still
+    /// driving the menu's grammar on reopen).
+    pub(crate) fn take_selection(&mut self) -> BoardSelection {
+        std::mem::take(&mut self.selection)
+    }
+
+    /// The take's twin (see [`Self::take_selection`]).
+    pub(crate) fn restore_selection(&mut self, selection: BoardSelection) {
+        self.selection = selection;
+    }
+
+    /// The clear (Escape / a foreign settle / the reconcile prune's
+    /// empty arm): nothing dispatches.
+    pub fn clear_selection(&mut self) -> Vec<FlowOutcome> {
+        if self.selection.is_empty() {
+            return Vec::new();
+        }
+        self.selection = BoardSelection::default();
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -3407,6 +3620,16 @@ impl ViewState {
         };
         if self.focused_task.is_some_and(|t| !is_live(t)) {
             self.focused_task = None;
+        }
+        // UX-R8 D-4's reconcile arm: the selection repairs like the
+        // focus — dead members prune against this pass; a dead anchor
+        // or an emptied member set clears (nothing dispatches).
+        if !self.selection.is_empty() {
+            self.selection.members.retain(|id| is_live(*id));
+            let anchor_live = self.selection.anchor.is_some_and(is_live);
+            if !anchor_live || self.selection.members.is_empty() {
+                self.selection = BoardSelection::default();
+            }
         }
         let stacks = self.stack_ids(state);
         if self.selected_stack.is_some_and(|s| !stacks.contains(&s)) {

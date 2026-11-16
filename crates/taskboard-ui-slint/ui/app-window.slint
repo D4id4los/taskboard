@@ -469,6 +469,7 @@ export component AppWindow inherits Window {
                 segment-context(i, x, y) => root.board-segment-context-requested(i, x, y);
                 task-activated(c, r) => root.board-task-activated(c, r);
                 task-clicked(c, r) => root.board-task-clicked(c, r);
+                task-clicked-modifiers(c, r, sh, ct) => root.board-task-clicked-modifiers(c, r, sh, ct);
                 task-context(c, r, x, y) => root.board-task-context-requested(c, r, x, y);
                 header-activated(c) => root.board-header-activated(c);
                 switcher-activated(c) => root.board-switcher-activated(c);
@@ -1707,6 +1708,9 @@ export component AppWindow inherits Window {
     // The compact segment drop grammar (UX-R8 D-3, US-3): the
     // switcher segments' hover and drop reports.
     pure callback board-switcher-drop-hovered(int);
+    // The modifier-click grammar (UX-R8 D-5, US-4/S1): the card's
+    // modifier release, addressed (column, row).
+    pure callback board-task-clicked-modifiers(int, int, bool, bool);
     pure callback board-switcher-card-dropped(int);
     pure callback board-card-drag-finished(int, int, bool);
     // The stack-create flow (usability D7): the on-board button

@@ -101,6 +101,9 @@ export component BoardView inherits FocusScope {
     // threaded to the window's seams (the drag family's pattern).
     callback gap-hovered(int, int);
     callback gap-dropped(int, int);
+    // The modifier-click grammar (UX-R8 D-5): threaded to the
+    // window's seam (the click family's pattern).
+    callback task-clicked-modifiers(int, int, bool, bool);
     // The compact segment drop grammar (UX-R8 D-3, US-3): threaded
     // to the window's seams (the drag family's pattern).
     callback switcher-drop-hovered(int);
@@ -185,6 +188,7 @@ export component BoardView inherits FocusScope {
                 segment-context(i, x, y) => root.segment-context(i, x, y);
                 task-activated(c, r) => root.task-activated(c, r);
                 task-clicked(c, r) => root.task-clicked(c, r);
+                task-clicked-modifiers(c, r, sh, ct) => root.task-clicked-modifiers(c, r, sh, ct);
                 task-context(c, r, x, y) => root.task-context(c, r, x, y);
                 header-activated(c) => root.header-activated(c);
                 switcher-activated(c) => root.switcher-activated(c);
