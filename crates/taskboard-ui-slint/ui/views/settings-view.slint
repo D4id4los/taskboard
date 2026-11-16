@@ -111,9 +111,13 @@ export struct ConnectionItem {
     // "Deck" for Nextcloud connectors, "" for standalone — the row
     // composes its label from it and stays a dumb client.
     backend-word: string,
-    // files: the toggle's value and its app-stated facts.
+    // files: the toggle's value and its app-stated facts. The env
+    // lock is per-key (the files-sync-status plan US-4, D-5): one bit
+    // per pinned config key, the caption naming exactly the pinned
+    // set.
     files-on: bool,
-    files-locked: bool,
+    files-enabled-pinned: bool,
+    files-anchor-pinned: bool,
     files-restart: bool,
     // files-board (round-7 D-7.3, W-3/D2): the roster row's badge and
     // action, composed Rust-side — the UI stays a dumb client. Empty
@@ -1038,8 +1042,10 @@ export component SettingsView inherits FocusScope {
                     SegmentedControl {
                         options: ["On", "Off"];
                         segment-enabled: [
-                            !item.files-locked && !SettingsModel.busy,
-                            !item.files-locked && !SettingsModel.busy,
+                            !(item.files-enabled-pinned || item.files-anchor-pinned)
+                                && !SettingsModel.busy,
+                            !(item.files-enabled-pinned || item.files-anchor-pinned)
+                                && !SettingsModel.busy,
                         ];
                         selected-index: item.files-on ? 0 : 1;
                         group-label: "Files sync";
@@ -1047,13 +1053,24 @@ export component SettingsView inherits FocusScope {
                             root.files-picked(index, i);
                         }
                     }
-                    if item.files-locked: RoleText {
+                    // One caption per pinned key (US-4 AC-1): the
+                    // pinned set named, not one merged lock.
+                    // slint: files-enabled-pinned (pre-framework seam, #782)
+                    if item.files-enabled-pinned: RoleText {
                         role: Typography.caption;
-                        text: "Overridden by an environment variable; edit the file or the env.";
+                        text: "files_sync.enabled is overridden by an environment variable; edit the file or the env.";
                         text-color: Semantic.warning;
                         vertical-alignment: center;
                     }
-                    if item.files-restart && !item.files-locked: RoleText {
+                    // slint: files-anchor-pinned (pre-framework seam, #782)
+                    if item.files-anchor-pinned: RoleText {
+                        role: Typography.caption;
+                        text: "files_sync.anchor is overridden by an environment variable; edit the file or the env.";
+                        text-color: Semantic.warning;
+                        vertical-alignment: center;
+                    }
+                    if item.files-restart
+                        && !(item.files-enabled-pinned || item.files-anchor-pinned): RoleText {
                         role: Typography.caption;
                         text: "Files sync mirrors this account's Files — takes effect at the next restart.";
                         text-color: Theme.text-secondary;
