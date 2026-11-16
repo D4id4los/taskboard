@@ -349,7 +349,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   ladder rung), and prunes its receipts on `DeleteHabit` (the log
   outlives the tracker). Zero new CLI verbs: `habits add/update --at`
   was already the edit surface.
-||||||| parent of bc6b2e6b (test(ui-slint): the plan-next-day journeys and the #622 changelog entry)
 - The Nextcloud files transport, `taskboard-sync-files-nextcloud`
   (#630): a WebDAV client over the workspace reqwest stack (closed
   verb set — MKCOL, PROPFIND, GET, conditional PUT; no DELETE/MOVE by
@@ -368,7 +367,6 @@ The workspace carries a single global version (see `docs/architecture.org`);
   characterization facts F3–F6 plus the fork/MKCOL server facts.
   Status findings emit on a `tokio::sync::watch`; surfacing is
   chunk 4's.
-||||||| parent of 12bff3cd (test(ui-slint): the plan-next-day journeys and the #622 changelog entry)
 - The files-sync substrate's pure core crate, `taskboard-sync-files`
   (#629, ADR 0020): the substrate tree's layout types and file-kind
   classifier (reserved `ops/`/`snapshot-` kinds unparseable by
