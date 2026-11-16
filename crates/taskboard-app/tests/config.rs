@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use common::{EnvOverride, env_lock, remove_env, set_env, xdg_lock};
+use common::{EnvOverride, cwd_lock, env_lock, remove_env, set_env, xdg_lock};
 use taskboard_app::commands::config;
 use taskboard_app::config::{
     AppConfig, ConfigError, CredentialStoreKind, DEFAULT_BACKOFF_INITIAL_SECS,
@@ -27,15 +27,13 @@ fn tempdir() -> tempfile::TempDir {
 fn c1_defaults_parse_with_no_file() {
     let _env = xdg_lock(); // cwd is process-global, like the env
     let dir = tempdir();
-    let original = std::env::current_dir().expect("cwd");
-    std::env::set_current_dir(dir.path()).expect("chdir");
+    let _cwd = cwd_lock(dir.path());
     let _server = EnvOverride::set(
         "TASKBOARD_NEXTCLOUD__SERVER_URL",
         "https://cloud.example.com",
     );
     let _user = EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "alice");
     let config = AppConfig::load(None).expect("defaults load");
-    std::env::set_current_dir(original).expect("restore cwd");
     let db = config.db_path();
     assert!(db.ends_with("taskboard/taskboard.db"), "db default: {db:?}");
     assert_eq!(config.sync.poll_interval_secs, DEFAULT_POLL_INTERVAL_SECS);
@@ -487,10 +485,8 @@ fn c16_fresh_machine_diverges_read_none_write_xdg() {
     let xdg = xdg_lock();
     remove_env("TASKBOARD_CONFIG");
     let cwd = tempdir();
-    let original = std::env::current_dir().expect("cwd");
-    std::env::set_current_dir(cwd.path()).expect("chdir");
+    let _cwd = cwd_lock(cwd.path());
     let view = config::path(None);
-    std::env::set_current_dir(original).expect("restore cwd");
     assert_eq!(view.config_path, None);
     assert_eq!(
         PathBuf::from(&view.write_path),
@@ -507,10 +503,8 @@ fn c16_existing_cwd_install_is_the_write_target() {
     remove_env("TASKBOARD_CONFIG");
     let cwd = tempdir();
     std::fs::write(cwd.path().join("taskboard.toml"), "").expect("cwd install");
-    let original = std::env::current_dir().expect("cwd");
-    std::env::set_current_dir(cwd.path()).expect("chdir");
+    let _cwd = cwd_lock(cwd.path());
     let view = config::path(None);
-    std::env::set_current_dir(original).expect("restore cwd");
     assert_eq!(view.config_path, None);
     // The CWD default's own spelling: an existing install keeps its
     // file (`DEFAULT_CONFIG_PATH`, resolved against the process CWD).
@@ -662,5 +656,28 @@ fn files_sync_anchor_is_env_overridable_under_its_dotted_key() {
         config.files_sync.anchor.as_deref(),
         Some("work"),
         "env beats absence"
+    );
+}
+
+/// #728's panic-safety demonstration: a panic mid-test must not leave
+/// the process cwd inside the (soon-deleted) fixture tempdir — the
+/// guard's `Drop` runs on the unwind path and restores the pre-test
+/// directory. `catch_unwind` (with `AssertUnwindSafe` for the
+/// process-global fixtures) keeps the panic deterministic without
+/// `#[should_panic]`'s sibling-ordering assumptions; the assertions
+/// are structural (the unwind was caught, the cwd is back).
+#[test]
+fn cwd_guard_restores_on_unwind() {
+    let dir = tempdir();
+    let original = std::env::current_dir().expect("cwd");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = cwd_lock(dir.path());
+        panic!("deliberate: the cwd guard must restore on unwind");
+    }));
+    assert!(outcome.is_err(), "the deliberate panic propagated");
+    assert_eq!(
+        std::env::current_dir().expect("cwd"),
+        original,
+        "the guard restored the pre-test directory on the unwind path"
     );
 }
