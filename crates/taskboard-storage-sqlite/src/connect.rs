@@ -1002,6 +1002,7 @@ mod tests {
     /// returns the intact entities with a default-shaped `reminders`
     /// section (an empty reminder dataset is exactly the hydrated shape).
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // the strip list IS the fixture
     async fn migration_0004_upgrades_a_pre_0004_database() {
         let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
         let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
@@ -1037,7 +1038,24 @@ mod tests {
         // order and lands with the column in place). 0013 is the same
         // shape: its insistence ALTER targets the re-created table, so it
         // replays with the strip too.
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (4, 7, 13, 20)")
+        // 0026 rides the strip too: its `au_by` ALTERs the re-created
+        // bare tables, so the simulated pre-0004 upgrade replays it in
+        // order (the 0018/0021 shape). The tables the fixture does NOT
+        // drop lose their au_by columns by hand — the replayed ALTER
+        // would otherwise collide with the surviving column.
+        for statement in [
+            "ALTER TABLE habits DROP COLUMN au_by",
+            "ALTER TABLE habit_log DROP COLUMN au_by",
+            "ALTER TABLE time_entries DROP COLUMN au_by",
+            "ALTER TABLE break_rules DROP COLUMN au_by",
+        ] {
+            // Audited: constant, migration-owned column strips.
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&raw)
+                .await
+                .expect("strip au_by col");
+        }
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (4, 7, 13, 20, 26)")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");
@@ -1470,7 +1488,22 @@ mod tests {
             .execute(&raw)
             .await
             .expect("strip break_rules");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (15, 18, 21)")
+        // 0026 rides the strip too: its `au_by` ALTERs the re-created
+        // bare tables (the 0018/0021 shape). reminder_rules, habits and
+        // habit_log survive the strip, so their au_by columns go by
+        // hand — the replayed ALTER would otherwise collide.
+        for statement in [
+            "ALTER TABLE reminder_rules DROP COLUMN au_by",
+            "ALTER TABLE habits DROP COLUMN au_by",
+            "ALTER TABLE habit_log DROP COLUMN au_by",
+        ] {
+            // Audited: constant, migration-owned column strips.
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&raw)
+                .await
+                .expect("strip au_by col");
+        }
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (15, 18, 21, 26)")
             .execute(&raw)
             .await
             .expect("strip bookkeeping");
@@ -1499,8 +1532,9 @@ mod tests {
                 ("created_at".to_owned(), "TEXT".to_owned(), 0),
                 ("updated_at".to_owned(), "TEXT".to_owned(), 0),
                 ("kind".to_owned(), "TEXT".to_owned(), 0),
+                ("au_by".to_owned(), "TEXT".to_owned(), 0),
             ],
-            "D-T9's seven columns plus the 0018 kind tail, entry_id the primary key"
+            "D-T9's seven columns plus the 0018 kind tail and 0026's au_by, entry_id the primary key"
         );
         let state = repo.load().await.expect("load");
         assert_eq!(
