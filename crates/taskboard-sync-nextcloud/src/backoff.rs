@@ -86,6 +86,16 @@ pub enum DeferredBy {
     ServerHint(Duration),
 }
 
+impl DeferredBy {
+    /// The honored wait, regardless of why it was chosen.
+    #[must_use]
+    pub const fn delay(&self) -> Duration {
+        match self {
+            Self::Policy(d) | Self::ServerHint(d) => *d,
+        }
+    }
+}
+
 impl Default for BackoffPolicy {
     fn default() -> Self {
         Self::new()

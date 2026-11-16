@@ -80,4 +80,16 @@ impl DeckError {
             Self::Transport(_) | Self::RateLimited { .. } | Self::Unavailable { .. }
         )
     }
+
+    /// The advertised `Retry-After` delay of a hinting failure
+    /// (`RateLimited` / `Unavailable`), `None` for everything else. The
+    /// retry loop honors this (cap-bounded) ahead of its own curve; on
+    /// budget exhaustion the original error still travels with the hint
+    /// *unclamped* for the actor's poll floor.
+    pub(crate) fn advertised_hint(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::RateLimited { retry_after } | Self::Unavailable { retry_after } => *retry_after,
+            _ => None,
+        }
+    }
 }
