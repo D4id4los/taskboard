@@ -20746,3 +20746,50 @@ fn us2_s2_single_control_context_degenerates_to_stay() {
         },
     );
 }
+
+// === The menu's focused-open (round-8 chunk 2, the focus-restoration
+// === plan US-3/W-3) =============================================
+
+/// US-3/S1+S2: the menu opens focused on its rows — the selected
+/// row's scope holds slint focus from mount, the arrow walk stays
+/// inside the panel, and Return invokes the walked row (the
+/// invocation's own dispatch lands).
+#[test]
+fn us3_s1_menu_open_lands_focus_on_the_menu() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            assert!(
+                focused_carries(&harness, "row-focus"),
+                "the menu opened focused on its rows"
+            );
+            // The walk: Down moves the shell's cursor, the focus
+            // stays inside the panel (no leak, no close).
+            harness.press(ActionId::MenuNext);
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_menu_open(),
+                "the walk stayed in the menu"
+            );
+            assert!(
+                focused_carries(&harness, "row-focus"),
+                "the rows' scope still holds the focus"
+            );
+            // Return invokes the walked row: the menu closes, the
+            // invocation's own dispatch routes (the walk starts
+            // inside the menu — one keypress from invocation).
+            harness.press(ActionId::MenuInvoke);
+            harness.driver.advance_time(0);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the invocation closed the menu"
+            );
+        },
+    );
+}

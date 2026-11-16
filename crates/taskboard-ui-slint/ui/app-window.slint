@@ -1595,6 +1595,14 @@ export component AppWindow inherits Window {
         MaskWalkFacts.nonce += 1;
     }
 
+    // The menu's focused-open push (US-3/W-3, D-M3): the mounted
+    // menu's rows scope consumes the nonce and grabs slint focus —
+    // the walk starts inside the menu.
+    // slint: menu-rows-focus
+    public function menu-rows-focus() {
+        MenuPanelFacts.rows-focus-nonce += 1;
+    }
+
 
     // The Responsive width push (D17): every width change lands in
     // Rust's breakpoint mapping, which sets the `Responsive` global.

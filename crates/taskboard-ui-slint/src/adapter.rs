@@ -4609,6 +4609,10 @@ impl Adapter {
                 self.menu_entries = self.root_entries.clone();
                 self.shell.apply(&effect, self.menu_entries.len());
                 self.sync_menu_models(window);
+                // The focused-open push (US-3/W-3, D-M3): the walk
+                // starts inside the menu — the rows' scope grabs slint
+                // focus on the panel's mount and every page swap.
+                window.invoke_menu_rows_focus();
             }
             UiEffect::InvokeSelected => {
                 // Palette first (defensively — `Palette` masks `Global`,
@@ -9219,6 +9223,10 @@ impl Adapter {
         };
         self.sync_menu_models(window);
         self.sync(window);
+        // The focused-open push (US-3/W-3, D-M3): the same letter as
+        // the AppMenu arm — the context menu's rows hold slint focus
+        // from mount.
+        window.invoke_menu_rows_focus();
     }
 
     /// The task card's menu list (round-2 D21 spelling of round-1

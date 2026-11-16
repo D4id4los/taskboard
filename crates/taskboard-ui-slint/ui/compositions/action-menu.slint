@@ -158,6 +158,19 @@ export component ActionMenu inherits Rectangle {
                 row-focus := FocusScope {
                     width: 100%;
                     height: 100%;
+                    // The focused-open consumption (US-3/W-3, D-M3):
+                    // the mount grabs the selected row's scope (the
+                    // other rows stay out of the grab), and the
+                    // adapter's `menu-rows-focus` nonce re-grabs on
+                    // every page swap — the walk starts inside the
+                    // menu, first (or remembered) row.
+                    init => {
+                        if (entry-index == root.page-cursor) { self.focus(); }
+                    }
+                    property <int> watch-rows-focus: MenuPanelFacts.rows-focus-nonce;
+                    changed watch-rows-focus => {
+                        if (entry-index == root.page-cursor) { self.focus(); }
+                    }
                     accessible-role: AccessibleRole.button;
                     accessible-label: entry.label;
                     // The D7 description: the AT text and the row

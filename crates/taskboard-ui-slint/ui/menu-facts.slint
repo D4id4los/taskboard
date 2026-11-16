@@ -16,6 +16,11 @@ export global MenuPanelFacts {
     in-out property <length> flyout-y;
     in-out property <length> flyout-width;
     in-out property <length> flyout-height;
+    // The focused-open seam (US-3/W-3, D-M3): the adapter's
+    // `menu-rows-focus` push bumps this nonce; the mounted menu
+    // consumes it by grabbing the selected row's focus scope (the
+    // palette mount-focus precedent).
+    in property <int> rows-focus-nonce: 0;
 }
 
 // The date-picker overlay's facts (round-3 D10): the same seam as the
