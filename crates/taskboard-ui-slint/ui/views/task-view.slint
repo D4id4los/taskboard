@@ -76,6 +76,13 @@ export struct TaskDetailModel {
     can-track-stop: bool,
     description: string,
     edit-open: bool,
+    // The focus flags (US-5/W-5, D-F5): the arm path's pushed half —
+    // the title/description editor flows open over the subject — the
+    // closed cell's ring reads them beside the stop's own has-focus
+    // and the walk-stop fact (the armed field carries the house
+    // indicator with the same Theme tokens; no theme work, R-3).
+    title-armed: bool,
+    description-armed: bool,
     initial-text: string,
     // The subject task's reminder rules (chunk 6, D12): display rows
     // plus the derived-fact hint; ids stay in the adapter's tables.
@@ -488,7 +495,11 @@ export component TaskView inherits FocusScope {
                     // indicates the active element (the ring width 0
                     // keeps the hover surface the rest-state
                     // differentiator).
-                    border-width: title-stop.has-focus ? Theme.focus-ring-width : 0;
+                    border-width: title-stop.has-focus
+                        || TaskViewWalkFacts.stop-id == 3
+                        || root.task.title-armed
+                        ? Theme.focus-ring-width
+                        : 0;
                     border-color: Semantic.focus-ring;
                     // The activation stop first (z-under the text):
                     // the closed-cell grammar's walk stop; the a11y
@@ -1142,7 +1153,11 @@ export component TaskView inherits FocusScope {
                     border-radius: Theme.radius-small;
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
-                    border-width: description-stop.has-focus ? Theme.focus-ring-width : 0;
+                    border-width: description-stop.has-focus
+                        || TaskViewWalkFacts.stop-id == 11
+                        || root.task.description-armed
+                        ? Theme.focus-ring-width
+                        : 0;
                     border-color: Semantic.focus-ring;
                     description-stop := ActivationStop {
                         width: 100%;
