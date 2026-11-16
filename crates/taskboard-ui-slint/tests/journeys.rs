@@ -21217,3 +21217,106 @@ fn us1_s2_flow_escape_dispatches_nothing() {
         },
     );
 }
+
+/// US-2/S1–S2 — the gap drop commits the insertion order: drag armed,
+/// gap hover, gap drop → one `MoveTask` with the between-A-and-B
+/// order (here: the before-first slot, `first.order - 1`); the
+/// in-place release dispatches nothing (AC-2); a stale (column, gap)
+/// drop settles (the F8 twin).
+#[test]
+fn us2_s2_gap_drop_commits_the_insertion_order() {
+    let (fixture, state) = fixture::golden_state();
+    let task1 = state
+        .tasks
+        .values()
+        .find(|task| task.title == "task-1")
+        .map(|task| task.id)
+        .expect("the fixture's second task");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // The commit leg: arm the drag on task1 (column 0, row 1),
+            // aim the gap before task0 (column 0, gap 0), release.
+            harness.handle.window().invoke_board_card_drag_armed(0, 1);
+            harness.handle.window().invoke_board_gap_hovered(0, 0);
+            harness.handle.window().invoke_board_gap_dropped(0, 0);
+            harness.assert_commands(&[StateCommand::MoveTask {
+                id: task1,
+                stack: fixture.stack_a,
+                order: -1,
+            }]);
+            harness.engine.settle(&harness.handle);
+
+            // The in-place release (AC-2): re-arm task1, release back
+            // on its own gap (its occupied position) — dispatches
+            // nothing, the flow ends.
+            harness.handle.window().invoke_board_card_drag_armed(0, 1);
+            harness.handle.window().invoke_board_gap_hovered(0, 1);
+            harness.handle.window().invoke_board_gap_dropped(0, 1);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the in-place release ends the drag"
+            );
+
+            // The stale drop (the F8 twin): a column past the tables
+            // settles the flow — nothing dispatched, no ghost.
+            harness.handle.window().invoke_board_card_drag_armed(0, 0);
+            harness
+                .handle
+                .window()
+                .invoke_board_gap_dropped(i32::try_from(usize::MAX).unwrap_or(i32::MAX), 0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the stale drop settles the drag"
+            );
+        },
+    );
+}
+
+/// US-2/AC-3's seam half — the indicator's data path: a gap hover
+/// arms the aimed column's `aim-gap` (the delegate paints at that
+/// index); the column-level hover carries no gap (−1 on every
+/// column); the flow's end clears it.
+#[test]
+fn us2_s1_gap_hover_arms_the_indicator_state() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let aim_gap = |harness: &Harness, column: usize| {
+                harness
+                    .handle
+                    .window()
+                    .get_board_model()
+                    .stacks
+                    .row_data(column)
+                    .expect("column")
+                    .aim_gap
+            };
+            harness.handle.window().invoke_board_card_drag_armed(0, 0);
+            assert_eq!(aim_gap(&harness, 0), -1, "the column-level arm aims no gap");
+            harness.handle.window().invoke_board_gap_hovered(0, 1);
+            assert_eq!(
+                aim_gap(&harness, 0),
+                1,
+                "the hovered gap lands on the aimed column"
+            );
+            assert_eq!(aim_gap(&harness, 1), -1, "the unaimed column stays clear");
+            harness
+                .handle
+                .window()
+                .invoke_board_card_drag_finished(0, 0, false);
+            harness.driver.advance_time(0);
+            assert_eq!(aim_gap(&harness, 0), -1, "the flow's end clears the aim");
+        },
+    );
+}

@@ -1806,6 +1806,23 @@ fn armed_stack_index(flow: &Flow, stack_ids: &[StackId]) -> i32 {
     }
 }
 
+/// The aimed insertion slot (UX-R8 D-2/D-7): the armed move/drag
+/// flow's (stack, gap) — `None` when no aim gesture holds. One
+/// derivation for the per-column `aim-gap` model field (the
+/// indicator's data path) and the `move-aim` bit (US-5); the
+/// keyboard slots and the drag gaps converge here by construction.
+pub(crate) fn move_aim(flow: &Flow) -> Option<(StackId, usize)> {
+    match flow {
+        Flow::Move { target, slot, .. } => Some((*target, *slot)),
+        Flow::DragMove {
+            target,
+            gap: Some(gap),
+            ..
+        } => Some((*target, *gap)),
+        _ => None,
+    }
+}
+
 /// The board model: one column per live stack, the flow's create row
 /// and move target marked by index (D8/D22). The board title renders
 /// in the toolbar (`push_chrome`), so the model carries only the
@@ -1824,6 +1841,10 @@ fn push_board(
     models: &mut PushModels,
 ) -> usize {
     let flow = vs.flow().clone();
+    // The insertion indicator's aim (UX-R8 D-2): resolved once per
+    // pass, applied to the aimed column only (US-5/AC-2's guard —
+    // no aim, no column carries the bit).
+    let aim = move_aim(&flow);
 
     let tracked_task = presentation::tracking_open_task(state);
     // The resolved explicit-width row (r4 D5): one assembly, pushed
@@ -1867,6 +1888,12 @@ fn push_board(
             // The armed-delete strip's per-column flag (UX R-2 D-2):
             // this column's stack is the armed subject.
             delete_armed: stack_delete_armed(&flow, stack_id),
+            // The insertion indicator's aimed gap (UX-R8 D-2): the
+            // aim's gap index on the aimed column, −1 elsewhere (the
+            // move-target convention).
+            aim_gap: aim
+                .filter(|(aimed, _)| aimed == stack_id)
+                .map_or(-1, |(_, gap)| i32::try_from(gap).unwrap_or(i32::MAX)),
             title: SharedString::from(stack.title.clone()),
             // The column's own persistent handle: the outer row fires
             // only when scalars or the inner handle actually differ
@@ -3490,6 +3517,43 @@ mod tests {
 
     use taskboard_domain::{Importance, TaskClocks, Urgency};
 
+    /// The insertion indicator's aim derivation (UX-R8 D-2, US-2/AC-3):
+    /// the armed move/drag flows converge on one (stack, gap) pair;
+    /// no aim gesture — the column-level drag hover included — derives
+    /// nothing (the US-5/AC-2 guard's data side).
+    #[test]
+    fn move_aim_derives_the_armed_slot_from_both_flows() {
+        let stack = StackId::from_uuid(uuid::Uuid::now_v7());
+        assert_eq!(move_aim(&Flow::None), None, "no aim without a flow");
+        assert_eq!(
+            move_aim(&Flow::DragMove {
+                task: TaskId::from_uuid(uuid::Uuid::now_v7()),
+                target: stack,
+                gap: None,
+            }),
+            None,
+            "the column-level aim carries no gap yet"
+        );
+        assert_eq!(
+            move_aim(&Flow::DragMove {
+                task: TaskId::from_uuid(uuid::Uuid::now_v7()),
+                target: stack,
+                gap: Some(2),
+            }),
+            Some((stack, 2)),
+            "the gap hover arms the aim"
+        );
+        assert_eq!(
+            move_aim(&Flow::Move {
+                task: TaskId::from_uuid(uuid::Uuid::now_v7()),
+                target: stack,
+                slot: 1,
+            }),
+            Some((stack, 1)),
+            "the keyboard slots ride the same data path"
+        );
+    }
+
     /// The swatch echo's gate (UX R-4 D-1/R-4, #791): a six-hex body
     /// mints the typed color; a lenient (non-hex, wrong-length, or
     /// empty) value renders transparent — the echo is honest, the GUI
@@ -3916,6 +3980,7 @@ mod tests {
             initial_title: "a".into(),
             width_px: 0.0,
             delete_armed: false,
+            aim_gap: -1,
         };
         let mut mirror = vec![column.clone()];
         let model = VecModel::from(vec![column.clone()]);

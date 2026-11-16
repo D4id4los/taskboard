@@ -103,6 +103,13 @@ export struct StackColumnModel {
     // disarms. Presentation fact only: the armed identity lives in
     // the view state's flow, indexed into this pass's columns.
     delete-armed: bool,
+    // The insertion indicator's data path (UX-R8 D-2, US-2/AC-3 +
+    // US-5): the aimed gap index into this column's task table — −1
+    // = not aimed. One data path for every aim gesture (keyboard
+    // slots, drag gaps): the models pass derives it from the armed
+    // move/drag flow. Geometry stays slint-local (a delegate paints
+    // the hairline; no window-level overlay).
+    aim-gap: int,
 }
 
 export component BoardLayout inherits Rectangle {
@@ -176,6 +183,14 @@ export component BoardLayout inherits Rectangle {
     callback board-card-drag-armed(int, int);
     callback board-drag-hovered(int);
     callback board-card-dropped(int);
+    // The gap drop grammar (UX-R8 D-2, US-2; the `// slint:` seam
+    // comment is the #782 fold): each card's gap-zone DropArea
+    // reports the aimed (column, gap) on hover and on drop — gap
+    // `task-index` above the card's midline, `task-index + 1` below.
+    // slint: board-gap-hovered
+    callback board-gap-hovered(int, int);
+    // slint: board-gap-dropped
+    callback board-gap-dropped(int, int);
     // The bool is the negotiated outcome (`drag-finished`): true = a
     // completed drop (the dropped seam already confirmed), false = a
     // cancelled drag.
@@ -611,6 +626,48 @@ export component BoardLayout inherits Rectangle {
                                         context-requested(x, y) => root.task-context(column-index, task-index, x, y);
                                         done-toggled => root.task-done-toggled(column-index, task-index);
                                     }
+                                    // The insertion indicator (UX-R8 D-2,
+                                    // US-2/AC-3): a delegate-local hairline at
+                                    // the card's top edge when this card's
+                                    // leading gap is aimed — geometry stays
+                                    // slint-local, no window-level overlay. A
+                                    // plain Rectangle: paint only, the
+                                    // TouchAreas beneath keep every click.
+                                    if (column.aim-gap == task-index): Rectangle {
+                                        width: 100%;
+                                        height: 2px * Theme.base-scale;
+                                        y: 0;
+                                        background: Semantic.sync-active;
+                                        border-radius: Theme.radius-small;
+                                    }
+                                    // The gap drop target (UX-R8 D-2, US-2):
+                                    // a full-size child DropArea — the drag
+                                    // runtime designates the deepest accepting
+                                    // DropArea, so a release over a card lands
+                                    // here and resolves the gap edge from the
+                                    // pointer geometry *inside the delegate*
+                                    // (the r2 D-E invariant holds: indexes
+                                    // only). The card's own DragArea arm fires
+                                    // on `dragging`, not on accept, so the
+                                    // arm is untouched.
+                                    gap-zone := DropArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        can-drop(event) => {
+                                            DragState.pointer-x = self.absolute-position.x + event.position.x;
+                                            DragState.pointer-y = self.absolute-position.y + event.position.y;
+                                            root.board-gap-hovered(column-index,
+                                                event.position.y < drag-card.height / 2
+                                                    ? task-index : task-index + 1);
+                                            DragAction.move
+                                        }
+                                        dropped(event) => {
+                                            root.board-gap-dropped(column-index,
+                                                event.position.y < drag-card.height / 2
+                                                    ? task-index : task-index + 1);
+                                            return event.proposed-action;
+                                        }
+                                    }
                                 }
                             }
 
@@ -625,6 +682,17 @@ export component BoardLayout inherits Rectangle {
                                 accepted(text) => root.create-committed(column-index, text);
                                 edited(text) => root.create-edited(column-index, text);
                                 focus-lost() => root.text-flow-focus-lost();
+                            }
+
+                            // The after-last insertion marker (UX-R8 D-2,
+                            // US-2/AC-3): the bare surface's aimed gap `len`
+                            // (the append point) paints the same hairline
+                            // above the Add-Task ghost — the indicator's
+                            // append twin, slint-local like the delegate's.
+                            if (column.aim-gap == column.tasks.length): Rectangle {
+                                height: 2px * Theme.base-scale;
+                                background: Semantic.sync-active;
+                                border-radius: Theme.radius-small;
                             }
 
                             // The per-column Add Task ghost (r2 D8): the

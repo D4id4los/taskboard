@@ -9254,6 +9254,59 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
+    // The gap hover report (UX-R8 D-2, US-2/S1): a gap-zone DropArea's
+    // hover address, resolved to (stack, gap) through the id tables.
+    // An unresolvable (column, gap) — the stale-tables race — is
+    // absorbed silently (hover asserts nothing).
+    // slint: board-gap-hovered
+    install_seam!(window: window.on_board_gap_hovered, adapter: adapter;
+    bind mut (a, window), args (column, gap), {        let (Ok(column), Ok(gap)) = (usize::try_from(column), usize::try_from(gap)) else {
+        return;
+    };
+    let Flow::DragMove { .. } = a.view_state.flow() else {
+        return;
+    };
+    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+        return;
+    };
+    let state = a.state.load_full();
+    if gap > state.tasks_in_stack(stack).len() {
+        return; // a stale gap index: absorbed (hover asserts nothing)
+    }
+    let outcomes = a.view_state.drag_gap(&state, stack, gap);
+    a.apply_outcomes(&window, &outcomes);
+
+    });
+
+    // The gap drop (UX-R8 D-2, US-2/S2): re-assert the (stack, gap)
+    // aim, then confirm through the shared construction site. The
+    // stale twins (the `board-card-dropped` F8 law verbatim): an
+    // unresolvable column or gap on drop *settles* the flow — the
+    // move dispatches nothing and no armed ghost survives.
+    // slint: board-gap-dropped
+    install_seam!(window: window.on_board_gap_dropped, adapter: adapter;
+    bind mut (a, window), args (column, gap), {        let (Ok(column), Ok(gap)) = (usize::try_from(column), usize::try_from(gap)) else {
+        return;
+    };
+    let Flow::DragMove { .. } = a.view_state.flow() else {
+        return;
+    };
+    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+        let state = a.state.load_full();
+        a.settle_flow(&window, &state);
+        return;
+    };
+    let state = a.state.load_full();
+    if gap > state.tasks_in_stack(stack).len() {
+        a.settle_flow(&window, &state);
+        return;
+    }
+    let mut outcomes = a.view_state.drag_gap(&state, stack, gap);
+    outcomes.extend(a.view_state.confirm_drag_move(&state));
+    a.apply_outcomes(&window, &outcomes);
+
+    });
+
     // The finished outcome (round 3, R2/F8): the flow settles
     // whenever it is still armed — `false` (a cancelled drag —
     // release outside any accepting column, the runtime's Exit
