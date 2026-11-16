@@ -455,6 +455,13 @@ pub struct ReminderRule {
     /// stamps it equal to `created_at`; no rule-edit verbs exist yet
     /// (removals delete, they never stamp a survivor).
     pub updated_at: DateTime<Utc>,
+    /// The row's author (F1's `by` leg, the stored duel rank): the
+    /// document's `by` when adopted, the device identity when created
+    /// locally, `None` for rows that predate the slot (never privileged —
+    /// the `None < Some` leg keeps them honest). Documented leniency:
+    /// `None` here means "author unknown", not "authored by nobody".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<crate::ids::AuthorId>,
 }
 
 /// The [`CreateAdhocAlarm`](crate::messages::StateCommand::CreateAdhocAlarm)
@@ -525,6 +532,13 @@ pub struct BreakRule {
     /// (v1's only verbs are create and delete, so `clock == created`
     /// for every row this version writes; D-5).
     pub created_at: DateTime<Utc>,
+    /// The row's author (F1's `by` leg, the stored duel rank): the
+    /// document's `by` when adopted, the device identity when created
+    /// locally, `None` for rows that predate the slot (never privileged —
+    /// the `None < Some` leg keeps them honest). Documented leniency:
+    /// `None` here means "author unknown", not "authored by nobody".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<crate::ids::AuthorId>,
 }
 
 /// Proof that an occurrence was notified — the per-device at-most-once
@@ -2409,6 +2423,7 @@ mod tests {
                         kind: ReminderKind::DueOffset(offset),
                         created_at: now,
                         updated_at: now,
+                    by: None,
                     };
                     let r = ReminderRef::Rule(rule.id);
                     let rule_id = rule.id;
@@ -2564,6 +2579,7 @@ mod tests {
             ),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         };
         // A fire instant below chrono's representable floor suppresses
         // the reminder instead of panicking the evaluator.
@@ -2597,6 +2613,7 @@ mod tests {
             kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         };
         let rule_b = ReminderRule {
             insistence: Insistence::Normal,
@@ -2605,6 +2622,7 @@ mod tests {
             kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         };
         reminders.rules.insert(rule_a.id, rule_a);
         reminders.rules.insert(rule_b.id, rule_b);
@@ -2649,6 +2667,7 @@ mod tests {
             kind: ReminderKind::DueOffset(offset),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         }
     }
 
@@ -3089,6 +3108,7 @@ mod tests {
             kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         };
         let reminder = ReminderRef::Rule(rule.id);
         let mut reminders = ReminderState::default();
@@ -3355,6 +3375,7 @@ mod tests {
             insistence: Insistence::Alarm,
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         };
         let mut reminders = ReminderState::default();
         reminders.alarms.insert(alarm.id, alarm.clone());
@@ -3534,6 +3555,7 @@ mod tests {
             kind: ReminderKind::DueOffset(offset),
             created_at,
             updated_at: created_at,
+            by: None,
         }
     }
 
@@ -3587,6 +3609,7 @@ mod tests {
                 kind: crate::reminders::ReminderKind::DueOffset(ReminderOffset::at_due()),
                 created_at: due,
                 updated_at: due,
+            by: None,
             };
             let reminder = ReminderRef::Rule(rule.id);
             let instants: Vec<DateTime<Utc>> = (0..=6)
@@ -3853,6 +3876,7 @@ mod tests {
                 ),
                 created_at: instant,
                 updated_at: instant,
+                by: None,
             };
             assert_eq!(
                 occurrence_of(&rule, Some(instant)),
@@ -3897,6 +3921,7 @@ mod tests {
             .expect("positive threshold"),
             insistence,
             created_at: ts(100),
+            by: None,
         }
     }
 
@@ -3910,6 +3935,7 @@ mod tests {
             created_at: ts(100),
             updated_at: ts(100),
             kind: TimeEntryKind::Work,
+            by: None,
         }
     }
 
@@ -4404,6 +4430,7 @@ mod tests {
             kind: ReminderKind::At(AtInstant::whole_second(at).expect("whole-second")),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         }
     }
 
@@ -4710,6 +4737,7 @@ mod tests {
             kind: ReminderKind::DueOffset(ReminderOffset::at_due()),
             created_at: ts(100),
             updated_at: ts(100),
+            by: None,
         };
         let mut reminders = ReminderState {
             rules: BTreeMap::from([
@@ -4876,6 +4904,7 @@ mod tests {
                     kind: ReminderKind::DueOffset(offset),
                     created_at: now,
                     updated_at: now,
+                by: None,
                 };
                 rules.insert(rule.id, rule);
             }
@@ -4968,6 +4997,7 @@ mod tests {
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
+            by: None,
         }
     }
 
@@ -4994,6 +5024,7 @@ mod tests {
             HabitLogEntry {
                 count,
                 clock: ts(500),
+                by: None,
             },
         );
     }
@@ -5877,6 +5908,7 @@ mod tests {
                                 ),
                                 created_at: ts(100),
                                 updated_at: ts(100),
+                                by: None,
                             },
                         );
                     }

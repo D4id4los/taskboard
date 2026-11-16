@@ -356,6 +356,7 @@ mod tests {
             created_at: start,
             updated_at: start,
             kind,
+            by: None,
         };
         if let Some(end) = end {
             e.updated_at = end;

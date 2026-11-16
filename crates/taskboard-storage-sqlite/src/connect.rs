@@ -393,6 +393,7 @@ mod tests {
                 uuid::Uuid::from_u128(3),
             )),
             deleted: false,
+            by: None,
         };
         let key = taskboard_domain::HabitLogKey {
             habit: habit.id,
@@ -408,6 +409,7 @@ mod tests {
                 taskboard_domain::HabitLogEntry {
                     count: 2,
                     clock: chrono::TimeZone::timestamp_opt(&chrono::Utc, 200, 0).unwrap(),
+                    by: None,
                 },
             ),
         ])

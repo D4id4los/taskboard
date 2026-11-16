@@ -79,6 +79,7 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
                     clocks: HabitClocks::all(stamp),
                     continued_from,
                     deleted,
+                    by: None,
                 }
             },
         )
@@ -181,6 +182,7 @@ pub fn habit_fixture_strategy() -> impl Strategy<Value = HabitFixture> {
                         clock: now
                             - chrono::TimeDelta::try_hours(i64::try_from(i).unwrap() * 24 + 48)
                                 .expect("bounded offsets"),
+                        by: None,
                     },
                 );
                 cursor = crate::habit::period_before(habit.target.kind(), cursor);

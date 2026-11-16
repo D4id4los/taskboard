@@ -212,6 +212,7 @@ pub fn add_break_rule(
                 .expect("the fixture threshold is strictly positive"),
             insistence,
             created_at: epoch(),
+            by: None,
         },
     );
     id
@@ -239,6 +240,7 @@ pub fn add_open_entry(
             created_at: start,
             updated_at: start,
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: None,
         },
     );
     id
@@ -277,6 +279,7 @@ pub fn add_completed_task(
                 created_at: start,
                 updated_at: end,
                 kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                by: None,
             },
         );
     }
@@ -325,6 +328,7 @@ pub fn deliver_task_notification(
             ),
             created_at: now,
             updated_at: now,
+            by: None,
         },
     );
     state

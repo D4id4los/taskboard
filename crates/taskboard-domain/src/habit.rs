@@ -215,6 +215,13 @@ pub struct Habit {
     /// Tombstone. Resurrection-safe on sync by the same LWW-clock
     /// argument as tasks (the fold is chunk 6's).
     pub deleted: bool,
+    /// The row's author (F1's `by` leg, the stored duel rank): the
+    /// document's `by` when adopted, the device identity when created
+    /// locally, `None` for rows that predate the slot (never privileged —
+    /// the `None < Some` leg keeps them honest). Documented leniency:
+    /// `None` here means "author unknown", not "authored by nobody".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<crate::ids::AuthorId>,
 }
 
 impl Habit {
@@ -281,6 +288,13 @@ pub struct HabitLogEntry {
     pub count: u32,
     /// The row's LWW clock (always the writing planner's `now`).
     pub clock: DateTime<Utc>,
+    /// The row's author (F1's `by` leg, the stored duel rank): the
+    /// document's `by` when adopted, the device identity when created
+    /// locally, `None` for rows that predate the slot (never privileged —
+    /// the `None < Some` leg keeps them honest). Documented leniency:
+    /// `None` here means "author unknown", not "authored by nobody".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<crate::ids::AuthorId>,
 }
 
 /// The habit sub-state, nested in [`crate::state::AppState`] like
@@ -614,6 +628,7 @@ mod tests {
             clocks: HabitClocks::all(Utc.timestamp_opt(100, 0).unwrap()),
             continued_from: None,
             deleted: false,
+            by: None,
         }
     }
 
@@ -652,6 +667,7 @@ mod tests {
             HabitLogEntry {
                 count: 2,
                 clock: Utc.timestamp_opt(500, 0).unwrap(),
+                by: None,
             },
         );
         let json = serde_json::to_string(&state).unwrap();
@@ -1076,6 +1092,7 @@ mod tests {
             HabitLogEntry {
                 count: 5,
                 clock: at,
+                by: None,
             },
         );
     }
@@ -1096,6 +1113,7 @@ mod tests {
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
+            by: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let now = crate::days::window_start(today, day.day_start_time, day.offset)
@@ -1124,6 +1142,7 @@ mod tests {
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
+            by: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let now = crate::days::window_start(today, day.day_start_time, day.offset)
@@ -1157,6 +1176,7 @@ mod tests {
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
+            by: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let w = |d: NaiveDate| WindowStart::of_period(PeriodKind::Day, d);
@@ -1210,6 +1230,7 @@ mod tests {
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
+            by: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(); // a Wednesday
         let now = crate::days::window_start(today, day.day_start_time, day.offset)
@@ -1276,6 +1297,7 @@ mod seam_tests {
             clocks: HabitClocks::all(ts(100)),
             continued_from: series.map(|s| SeriesId::from(uuid::Uuid::from_u128(s))),
             deleted: false,
+            by: None,
         }
     }
 
@@ -1341,6 +1363,7 @@ mod seam_tests {
             HabitLogEntry {
                 count: 2,
                 clock: ts(100),
+                by: None,
             },
         );
     }

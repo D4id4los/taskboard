@@ -891,6 +891,7 @@ mod tests {
                 clocks: HabitClocks::all(T0 - TimeDelta::hours(1)),
                 continued_from: None,
                 deleted: false,
+                by: None,
             },
         );
         let occurrence = T0 - chrono::TimeDelta::try_minutes(30).expect("30 min"); // the window's anchor reading (00:30, midnight day start)

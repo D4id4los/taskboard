@@ -766,6 +766,7 @@ mod tests {
             clocks: taskboard_domain::HabitClocks::all(ts(100)),
             continued_from: None,
             deleted,
+            by: None,
         }
     }
 
@@ -986,6 +987,7 @@ mod tests {
         let _ = HabitLogEntry {
             count: 0,
             clock: ts(0),
+            by: None,
         };
         let _ = HabitState::default();
     }

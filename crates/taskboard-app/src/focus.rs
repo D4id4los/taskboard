@@ -483,6 +483,7 @@ mod tests {
             created_at: start,
             updated_at: start,
             kind,
+            by: None,
         }
     }
 

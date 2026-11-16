@@ -1146,6 +1146,7 @@ mod journal_payload_tests {
                 before: Some(HabitLogEntry {
                     count: 1,
                     clock: chrono::Utc.timestamp_opt(100, 0).unwrap(),
+                    by: None,
                 }),
             }],
             watermark: UndoWatermark(
@@ -1154,6 +1155,7 @@ mod journal_payload_tests {
                     EntityStamps::HabitLog(HabitLogEntry {
                         count: 5,
                         clock: chrono::Utc.timestamp_opt(150, 0).unwrap(),
+                        by: None,
                     }),
                 )]
                 .into_iter()

@@ -3364,6 +3364,7 @@ mod flush_seed {
             clocks: taskboard_domain::HabitClocks::all(ts(T + 10)),
             continued_from: None,
             deleted: false,
+            by: None,
         };
         let habit_id = habit.id;
         state.habits.habits.insert(habit.id, habit);
@@ -3378,6 +3379,7 @@ mod flush_seed {
             taskboard_domain::HabitLogEntry {
                 count: 1,
                 clock: ts(T + 20),
+                by: None,
             },
         );
         state.outbox.push(PendingOp {
@@ -3407,6 +3409,7 @@ mod flush_seed {
                 .unwrap(),
                 insistence: taskboard_domain::Insistence::Alarm,
                 created_at: ts(T + 10),
+                by: None,
             },
         );
         state
@@ -3440,6 +3443,7 @@ mod flush_seed {
                 ),
                 created_at: ts(T),
                 updated_at: ts(T),
+                by: None,
             },
         );
         state

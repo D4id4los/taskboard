@@ -4847,6 +4847,7 @@ mod tests {
                 created_at: epoch(),
                 updated_at: epoch(),
                 kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                by: None,
             },
         );
         let verb = presentation::detail_tracking_verb(&state, Some(t.id));
@@ -4923,6 +4924,7 @@ mod tests {
             created_at: start,
             updated_at: end.unwrap_or(start),
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: None,
         }
     }
 

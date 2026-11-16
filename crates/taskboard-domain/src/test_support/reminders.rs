@@ -101,6 +101,7 @@ pub fn reminder_rule_strategy() -> impl Strategy<Value = ReminderRule> {
             insistence,
             created_at,
             updated_at: created_at,
+            by: None,
         })
 }
 
@@ -258,6 +259,7 @@ pub fn build_reminders(tasks: &BTreeMap<TaskId, Task>, rows: Vec<ReminderRow>) -
                         kind: crate::reminders::ReminderKind::DueOffset(row.offset),
                         updated_at: row.created_at,
                         created_at: row.created_at,
+                        by: None,
                     };
                     rule_ids.push(rule.id);
                     state.rules.insert(rule.id, rule);

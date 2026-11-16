@@ -2038,6 +2038,7 @@ fn the_task_detail_model_carries_the_tracked_total_and_it_freezes_when_closed() 
                 created_at: start,
                 updated_at: start,
                 kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                by: None,
             },
         );
         let rig = rig(state);
@@ -2096,6 +2097,7 @@ fn open_entry_on(state: &mut AppState, task: TaskId) {
             created_at: start,
             updated_at: start,
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: None,
         },
     );
 }
@@ -3425,6 +3427,7 @@ fn closed_entry_at(
             created_at: start,
             updated_at: start,
             kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            by: None,
         },
     );
     id
@@ -3640,6 +3643,7 @@ fn the_running_rows_edit_seeds_an_empty_end_and_the_mask_keeps_it_open() {
                 created_at: start,
                 updated_at: start,
                 kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                by: None,
             },
         );
         let mut rig = rig(state);
@@ -3808,6 +3812,7 @@ fn the_tracked_today_section_opens_its_task_and_an_empty_day_collapses() {
                 created_at: start,
                 updated_at: start,
                 kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                by: None,
             },
         );
         let journey = rig(state);
