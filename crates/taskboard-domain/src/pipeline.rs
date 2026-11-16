@@ -455,7 +455,10 @@ pub fn apply_sync_report(
     app_data: &crate::messages::AppDataEvidence,
     features: crate::capabilities::DeckFeatures,
     day: crate::days::DayCalendar,
-    author: Option<crate::ids::AuthorId>,
+    // Kept per the design plan §4.2: the parameter stays on the
+    // signature even though the sidecar folds now read the stored slot
+    // (a follow-up cleanup issue owns its removal if it stays dead).
+    #[allow(unused_variables)] author: Option<crate::ids::AuthorId>,
 ) -> (
     AppState,
     Vec<PersistenceAction>,
@@ -992,7 +995,6 @@ pub fn apply_sync_report(
                 &card_key,
                 task_id,
                 intent.reminder_rules,
-                author,
             );
             // The dismissals fold rides the same pass, AFTER the rules
             // fold (design D-9's fold-order property: a rule adopted in
@@ -1018,14 +1020,14 @@ pub fn apply_sync_report(
                     card.as_deck().map(|num| (num.to_string(), *id))
                 })
                 .collect();
-            folds.fold_time_entries(Some(rows), &board_cards, author);
+            folds.fold_time_entries(Some(rows), &board_cards);
         }
         // The habit folds are board-level too: once per document, right
         // after the time-entries fold (§5b's order). Both sections fold
         // against the same copy-on-write state; no card map is needed —
         // habits carry no card hop at all.
-        folds.fold_habits(document.sections.habits.as_ref(), board_id, author);
-        folds.fold_habit_log(document.sections.habit_log.as_ref(), author);
+        folds.fold_habits(document.sections.habits.as_ref(), board_id);
+        folds.fold_habit_log(document.sections.habit_log.as_ref());
         // The break folds are board-level too (#588 D-11/D-10, §5b's
         // order — after the habit folds): rules first (LWW against the
         // local rows, the fold stamps the locally-bound board), then
@@ -1034,7 +1036,7 @@ pub fn apply_sync_report(
         // suppressed by the already-folded dismissal). The per-card
         // loop above never reads the reserved entry: it looks up only
         // card keys of present tasks.
-        folds.fold_break_rules(document.sections.break_rules.as_ref(), board_id, author);
+        folds.fold_break_rules(document.sections.break_rules.as_ref(), board_id);
         folds.fold_break_dismissals(
             document
                 .sections
@@ -1479,7 +1481,6 @@ impl<'a> SectionFolds<'a> {
         card_key: &str,
         task_id: crate::ids::TaskId,
         protected: bool,
-        author: Option<crate::ids::AuthorId>,
     ) {
         let Some(entry) = entries.and_then(|entries| entries.get(card_key)) else {
             return;
@@ -1487,7 +1488,7 @@ impl<'a> SectionFolds<'a> {
         let rules = self
             .folded_rules
             .get_or_insert_with(|| self.current.reminders.rules.clone());
-        let changes = fold_reminder_rules(rules, task_id, entry, protected, author);
+        let changes = fold_reminder_rules(rules, task_id, entry, protected);
         for rule in changes.upserts {
             self.rule_actions
                 .push(PersistenceAction::UpsertReminderRule(rule));
@@ -1521,13 +1522,12 @@ impl<'a> SectionFolds<'a> {
         &mut self,
         rows: Option<&std::collections::BTreeMap<String, crate::appdata::TimeEntryRecord>>,
         board_cards: &std::collections::BTreeMap<String, crate::ids::TaskId>,
-        author: Option<crate::ids::AuthorId>,
     ) {
         let Some(rows) = rows else { return };
         let tracking = self
             .folded_tracking
             .get_or_insert_with(|| self.current.tracking.clone());
-        let changes = crate::merge::fold_time_entries(tracking, rows, board_cards, author);
+        let changes = crate::merge::fold_time_entries(tracking, rows, board_cards);
         for entry in changes.upserts {
             self.tracking_actions
                 .push(PersistenceAction::UpsertTimeEntry(entry));
@@ -1543,13 +1543,12 @@ impl<'a> SectionFolds<'a> {
         &mut self,
         rows: Option<&std::collections::BTreeMap<String, crate::appdata::HabitRecord>>,
         board_id: crate::ids::BoardId,
-        author: Option<crate::ids::AuthorId>,
     ) {
         let Some(rows) = rows else { return };
         let habits = self
             .folded_habits
             .get_or_insert_with(|| self.current.habits.clone());
-        let changes = crate::merge::fold_habits(habits, rows, board_id, author);
+        let changes = crate::merge::fold_habits(habits, rows, board_id);
         for habit in changes.upserts {
             self.habit_actions
                 .push(PersistenceAction::UpsertHabit(habit));
@@ -1560,13 +1559,12 @@ impl<'a> SectionFolds<'a> {
     fn fold_habit_log(
         &mut self,
         rows: Option<&std::collections::BTreeMap<String, crate::appdata::HabitLogRecord>>,
-        author: Option<crate::ids::AuthorId>,
     ) {
         let Some(rows) = rows else { return };
         let habits = self
             .folded_habits
             .get_or_insert_with(|| self.current.habits.clone());
-        let changes = crate::merge::fold_habit_log(habits, rows, author);
+        let changes = crate::merge::fold_habit_log(habits, rows);
         for (key, entry) in changes.records {
             self.habit_actions
                 .push(PersistenceAction::RecordHabitLog(key, entry));
@@ -1578,13 +1576,12 @@ impl<'a> SectionFolds<'a> {
         &mut self,
         rows: Option<&std::collections::BTreeMap<String, crate::appdata::BreakRuleEntry>>,
         board_id: crate::ids::BoardId,
-        author: Option<crate::ids::AuthorId>,
     ) {
         let Some(rows) = rows else { return };
         let break_rules = self
             .folded_break_rules
             .get_or_insert_with(|| self.current.reminders.break_rules.clone());
-        let changes = crate::merge::fold_break_rules(break_rules, rows, board_id, author);
+        let changes = crate::merge::fold_break_rules(break_rules, rows, board_id);
         for rule in changes.upserts {
             self.break_rule_actions
                 .push(PersistenceAction::UpsertBreakRule(rule));
@@ -1783,7 +1780,9 @@ pub fn apply_files_board_snapshot(
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
     connector: &crate::ids::ConnectorId,
-    author: Option<crate::ids::AuthorId>,
+    // Same-design note as `apply_sync_report`: kept on the signature
+    // per the design plan §4.2; the folds read the stored slot now.
+    #[allow(unused_variables)] author: Option<crate::ids::AuthorId>,
 ) -> (AppState, Vec<PersistenceAction>) {
     let _span = tracing::debug_span!(
         "apply_files_board_snapshot",
@@ -1927,7 +1926,6 @@ pub fn apply_files_board_snapshot(
                 &card_key,
                 task_id,
                 intent.reminder_rules,
-                author,
             );
             folds.fold_card_dismissals(document.sections.dismissals.as_ref(), &card_key);
         }
@@ -1937,11 +1935,11 @@ pub fn apply_files_board_snapshot(
                 .filter(|t| stacks.get(&t.stack).map(|s| s.board) == Some(board_id))
                 .map(|t| (t.id.as_uuid().to_string(), t.id))
                 .collect();
-            folds.fold_time_entries(Some(rows), &board_cards, author);
+            folds.fold_time_entries(Some(rows), &board_cards);
         }
-        folds.fold_habits(document.sections.habits.as_ref(), board_id, author);
-        folds.fold_habit_log(document.sections.habit_log.as_ref(), author);
-        folds.fold_break_rules(document.sections.break_rules.as_ref(), board_id, author);
+        folds.fold_habits(document.sections.habits.as_ref(), board_id);
+        folds.fold_habit_log(document.sections.habit_log.as_ref());
+        folds.fold_break_rules(document.sections.break_rules.as_ref(), board_id);
         folds.fold_break_dismissals(
             document
                 .sections

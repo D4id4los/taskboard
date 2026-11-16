@@ -6174,7 +6174,7 @@ mod author_by_tests {
         )]
         .into_iter()
         .collect();
-        crate::merge::fold_habit_log(&mut state, &relayed_rows, None);
+        crate::merge::fold_habit_log(&mut state, &relayed_rows);
         assert_eq!(state.log.get(&key).map(|e| e.count), Some(3));
         let authored_rows = [(
             key.wire_form(),
@@ -6186,7 +6186,7 @@ mod author_by_tests {
         )]
         .into_iter()
         .collect();
-        crate::merge::fold_habit_log(&mut state, &authored_rows, None);
+        crate::merge::fold_habit_log(&mut state, &authored_rows);
         assert_eq!(
             state.log.get(&key).map(|e| e.count),
             Some(4),
