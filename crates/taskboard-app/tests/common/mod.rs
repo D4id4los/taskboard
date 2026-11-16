@@ -215,36 +215,53 @@ impl Drop for TaskboardEnvLock {
     }
 }
 
-/// [`taskboard_env_lock`] plus a sandboxed config home: `XDG_CONFIG_HOME`
-/// points at a fresh tempdir for the guard's lifetime, so default-path
-/// resolution (`AppConfig::load(None)`, `config::path(None)`) never
-/// reads the machine's live `taskboard.toml`. A test that wants a file
-/// on the XDG read path plants it under [`XdgLock::config_home`].
+/// [`taskboard_env_lock`] plus a sandboxed config home: the
+/// platform-appropriate config-dir seam points at a fresh tempdir for
+/// the guard's lifetime, so default-path resolution
+/// (`AppConfig::load(None)`, `config::path(None)`) never reads the
+/// machine's live `taskboard.toml`. A test that wants a file on the
+/// sandbox read path plants it under [`XdgLock::config_home`].
+///
+/// Per-platform seam (`cfg!`-armed, #730): on Linux `dirs::config_dir()`
+/// honors `XDG_CONFIG_HOME` — the seam is identical to the pre-#730
+/// body, byte-for-byte behavior. On macOS `dirs::config_dir()` resolves
+/// `$HOME/Library/Application Support` and ignores `XDG_CONFIG_HOME`,
+/// so `HOME` is redirected to the sandbox root as well (both overrides
+/// set while the env mutex is held; the breadth is confined to the test
+/// process holding the lock). On Windows `dirs::config_dir()` reads the
+/// Roaming `AppData` known-folder API and honors no env seam — no
+/// deterministic sandbox exists in-process, so every consumer is
+/// `#[cfg(not(target_os = "windows"))]`-gated with a named-gap comment
+/// (#730; no registry/known-folder mutation in tests).
 pub fn xdg_lock() -> XdgLock {
     let env = taskboard_env_lock();
     let home = tempdir();
-    let xdg = EnvOverride::set(
-        "XDG_CONFIG_HOME",
-        home.path().to_str().expect("utf-8 tempdir path"),
-    );
+    let sandbox = home.path().to_str().expect("utf-8 tempdir path");
+    let mut overrides = Vec::new();
+    overrides.push(EnvOverride::set("XDG_CONFIG_HOME", sandbox));
+    if cfg!(target_os = "macos") {
+        overrides.push(EnvOverride::set("HOME", sandbox));
+    }
     XdgLock {
-        _xdg: xdg,
+        overrides,
         home,
         _env: env,
     }
 }
 
-/// Holds the env mutex and the sandboxed config home. Field order is
-/// drop order: the prior `XDG_CONFIG_HOME` (set or unset) is restored
-/// before the tempdir goes and while the mutex is still held.
+/// Holds the env mutex, the saved `TASKBOARD_*` snapshot, and the
+/// sandboxed config home. Field order is drop order: the prior config
+/// seams (set or unset) are restored before the tempdir goes and while
+/// the mutex is still held.
 pub struct XdgLock {
-    _xdg: EnvOverride,
+    overrides: Vec<EnvOverride>,
     home: tempfile::TempDir,
     _env: TaskboardEnvLock,
 }
 
 impl XdgLock {
-    /// The sandboxed `XDG_CONFIG_HOME`.
+    /// The sandboxed config home (the `XDG_CONFIG_HOME` root on Linux,
+    /// the redirected `HOME` root on macOS).
     #[must_use]
     pub fn config_home(&self) -> &Path {
         self.home.path()

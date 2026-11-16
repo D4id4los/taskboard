@@ -86,6 +86,10 @@ async fn l9_explicit_standalone_refuses_login_before_prompting() {
 /// (nextest: /dev/null → the empty line; the wiremock mock accepts any
 /// credential), and the credential store is steered to `env` via the
 /// config env overlay so no keyring is touched.
+#[cfg(not(target_os = "windows"))]
+// platform gap: dirs::config_dir()
+// on Windows reads the Roaming AppData known folder and honors no env
+// seam — no deterministic sandbox exists in-process (#730).
 #[tokio::test]
 async fn l10_login_with_no_config_anywhere_writes_the_xdg_candidate() {
     use taskboard_app::cli::Command;
@@ -137,6 +141,10 @@ async fn l10_login_with_no_config_anywhere_writes_the_xdg_candidate() {
 /// is the operator's "the config is this file" declaration — the alias
 /// writes there (symmetric with `--config`, C19), never the XDG
 /// candidate.
+#[cfg(not(target_os = "windows"))]
+// platform gap: dirs::config_dir()
+// on Windows reads the Roaming AppData known folder and honors no env
+// seam — no deterministic sandbox exists in-process (#730).
 #[tokio::test]
 async fn l11_login_honors_a_missing_taskboard_config_target() {
     use taskboard_app::cli::Command;
@@ -186,6 +194,10 @@ async fn l11_login_honors_a_missing_taskboard_config_target() {
 /// alias overlays it in place (comments and unrelated overrides
 /// survive), exactly as `--config` would; the first compositional pin
 /// of the XDG-if-present read arm through the verb that owns it.
+#[cfg(not(target_os = "windows"))]
+// platform gap: dirs::config_dir()
+// on Windows reads the Roaming AppData known folder and honors no env
+// seam — no deterministic sandbox exists in-process (#730).
 #[tokio::test]
 async fn l12_login_overlays_an_existing_xdg_config() {
     use taskboard_app::cli::Command;
