@@ -7991,3 +7991,377 @@ mod author_duel_tests {
         }
     }
 }
+
+// T-PROP-2' (the law, design plan §5): for any multiset of sidecar
+// facts the fold is a true `max` over the `(clock, by)` tuple — the
+// same survivor `(content, by)` for every arrival permutation, every
+// cycle partition, every reader identity inside or outside the
+// writers' band, and across restarts (here: the document roundtrip;
+// the real SQLite restart permutation runs at the storage-crate
+// integration layer, the lowest layer that can express it — the
+// domain crate must not depend on storage).
+#[cfg(test)]
+mod sidecar_convergence_prop {
+    use crate::ids::AuthorId;
+    use crate::merge_testutil::{BASE, ts};
+    use proptest::prelude::*;
+
+    use super::{
+        effective_clock, fold_break_rules, fold_habit_log, fold_habits, fold_reminder_rules,
+        fold_time_entries,
+    };
+
+    fn author(hex: u128) -> AuthorId {
+        AuthorId::from_uuid(uuid::Uuid::from_u128(hex))
+    }
+
+    const POOL: [u128; 6] = [
+        0x00A1_5100_0000_0001,
+        0x00B2_5200_0000_0002,
+        0x00C0_C300_0000_0003,
+        0x00D0_D400_0000_0004,
+        0x00E0_E500_0000_0005,
+        0x00F0_F600_0000_0006,
+    ];
+
+    /// One sidecar fact: a writer's `(clock, by, content_index)` row.
+    #[derive(Clone, Debug)]
+    struct Fact {
+        clock: i64,
+        by: Option<AuthorId>,
+        content: u32,
+    }
+
+    impl Fact {
+        /// The duel rank — the law's total order.
+        fn rank(&self) -> (chrono::DateTime<chrono::Utc>, Option<AuthorId>) {
+            (ts(self.clock), self.by)
+        }
+    }
+
+    fn author_strategy() -> impl Strategy<Value = Option<AuthorId>> {
+        prop::option::of(0_usize..6).prop_map(|slot| slot.map(|slot| author(POOL[slot])))
+    }
+
+    /// 1-3 writers with pairwise-distinct `(clock, by)` tuples so the
+    /// law's max is unambiguous; clocks are equal/unequal at random.
+    /// (Documents carry at most one row per key, so the arrival model
+    /// is one fact per cycle-document — the realistic partial-section
+    /// shape.)
+    fn facts_strategy() -> impl Strategy<Value = Vec<Fact>> {
+        (1_usize..=3_usize, proptest::bool::ANY)
+            .prop_flat_map(|(n, equal_clocks)| {
+                prop::collection::vec((0_u32..3, author_strategy()), n).prop_map(move |contents| {
+                    let mut facts: Vec<Fact> = contents
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (content, by))| Fact {
+                            clock: BASE
+                                + if equal_clocks {
+                                    0
+                                } else {
+                                    60 * i64::try_from(i).expect("bounded writers")
+                                },
+                            by,
+                            content: content + 1,
+                        })
+                        .collect();
+                    facts.sort_by_key(Fact::rank);
+                    facts.dedup_by_key(|fact| fact.rank());
+                    facts
+                })
+            })
+            .prop_filter("tuples must be distinct", |facts| {
+                let mut ranks: Vec<_> = facts.iter().map(Fact::rank).collect();
+                ranks.sort();
+                ranks.dedup();
+                facts.len() == ranks.len() && !facts.is_empty()
+            })
+    }
+
+    /// The expected survivor of a fact multiset: the max tuple's
+    /// content (the law's oracle).
+    fn expected(facts: impl IntoIterator<Item = Fact>) -> Fact {
+        facts.into_iter().max_by_key(Fact::rank).expect("nonempty")
+    }
+
+    /// The document roundtrip restart: state through the wire shape,
+    /// exactly what a restart re-reads.
+    fn restart<T>(state: &T) -> T
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize,
+    {
+        let wire = serde_json::to_vec(state).expect("state serializes");
+        serde_json::from_slice(&wire).expect("state decodes")
+    }
+
+    fn map<T, K: Ord, I: IntoIterator<Item = (K, T)>>(rows: I) -> std::collections::BTreeMap<K, T> {
+        rows.into_iter().collect()
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+        #[test]
+        fn sidecar_folds_are_a_true_max_over_the_tuple(
+            facts in facts_strategy(),
+            cycles in 1_usize..=3,
+            seed in 0_usize..=3_usize,
+            arrival in prop::collection::vec(0_usize..=2_usize, 3),
+        ) {
+            let n = facts.len();
+            let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
+            let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
+
+            // The reader's seed: its locally-synced survivor of the
+            // `seed`-fact prefix (a row per key, so the prefix max —
+            // identities inside and outside the writers' band are both
+            // generated by the author pool).
+            let seed_bound = seed.min(n);
+            let seeded = facts[..seed_bound].to_vec();
+            // The arrived multiset: one fact per cycle-document (the
+            // arrival index picks which).
+            let mut arrived = seeded.clone();
+            for c in 0..cycles {
+                arrived.push(facts[arrival[c] % n].clone());
+            }
+            let want = expected(arrived);
+            let want_by = want.by;
+            let want_clock = ts(want.clock);
+
+            // ---- reminder rules ------------------------------------
+            {
+                let rule_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0x901));
+                let local = |fact: &Fact| crate::reminders::ReminderRule {
+                    id: rule_id,
+                    task,
+                    kind: crate::reminders::ReminderKind::DueOffset(
+                        crate::reminders::ReminderOffset::before(
+                            chrono::TimeDelta::try_seconds(-300).unwrap(),
+                        )
+                        .unwrap(),
+                    ),
+                    insistence: if fact.content == 1 {
+                        crate::reminders::Insistence::Normal
+                    } else {
+                        crate::reminders::Insistence::Alarm
+                    },
+                    created_at: ts(fact.clock),
+                    updated_at: ts(fact.clock),
+                    by: fact.by,
+                };
+                let doc = |fact: &Fact| {
+                    (
+                        rule_id.as_uuid().to_string(),
+                        crate::appdata::RuleEntry::Rule {
+                            kind: crate::reminders::ReminderKind::DueOffset(
+                                crate::reminders::ReminderOffset::before(
+                                    chrono::TimeDelta::try_seconds(-300).unwrap(),
+                                )
+                                .unwrap(),
+                            ),
+                            created: ts(fact.clock),
+                            clock: ts(fact.clock),
+                            insistence: if fact.content == 1 {
+                                crate::reminders::Insistence::Normal
+                            } else {
+                                crate::reminders::Insistence::Alarm
+                            },
+                            by: fact.by,
+                        },
+                    )
+                };
+                let mut rules = map(seeded.iter().map(|fact| (rule_id, local(fact))));
+                for c in 0..cycles {
+                    let entry = crate::appdata::RulesEntry {
+                        rules: map(std::iter::once(doc(&facts[arrival[c] % n]))),
+                        unknown: std::collections::BTreeMap::new(),
+                    };
+                    fold_reminder_rules(&mut rules, task, &entry, false);
+                    rules = restart(&rules);
+                }
+                let survivor = &rules[&rule_id];
+                let want_insistence = if want.content == 1 {
+                    crate::reminders::Insistence::Normal
+                } else {
+                    crate::reminders::Insistence::Alarm
+                };
+                prop_assert_eq!(survivor.insistence, want_insistence);
+                prop_assert_eq!((survivor.by, survivor.updated_at), (want_by, want_clock));
+            }
+
+            // ---- break rules ---------------------------------------
+            {
+                let break_id = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0x902));
+                let local = |fact: &Fact| crate::reminders::BreakRule {
+                    id: break_id,
+                    board,
+                    label: format!("break-{}", fact.content),
+                    threshold: crate::tracking::WorkThreshold::try_new(
+                        chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                    )
+                    .unwrap(),
+                    insistence: crate::reminders::Insistence::Normal,
+                    created_at: ts(fact.clock),
+                    by: fact.by,
+                };
+                let doc = |fact: &Fact| {
+                    (
+                        break_id.as_uuid().to_string(),
+                        crate::appdata::BreakRuleEntry::Rule {
+                            label: format!("break-{}", fact.content),
+                            threshold: crate::tracking::WorkThreshold::try_new(
+                                chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                            )
+                            .unwrap(),
+                            created: ts(fact.clock),
+                            clock: ts(fact.clock),
+                            insistence: crate::reminders::Insistence::Normal,
+                            by: fact.by,
+                        },
+                    )
+                };
+                let mut rules = map(seeded.iter().map(|fact| (break_id, local(fact))));
+                for c in 0..cycles {
+                    let rows = map(std::iter::once(doc(&facts[arrival[c] % n])));
+                    fold_break_rules(&mut rules, &rows, board);
+                    rules = restart(&rules);
+                }
+                let survivor = &rules[&break_id];
+                let want_label = format!("break-{}", want.content);
+                prop_assert_eq!(&survivor.label, &want_label);
+                prop_assert_eq!((survivor.by, survivor.created_at), (want_by, want_clock));
+            }
+
+            // ---- time entries --------------------------------------
+            {
+                let entry_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(0x904));
+                let cards = [("1".to_owned(), task)].into_iter().collect::<std::collections::BTreeMap<_, _>>();
+                let local = |fact: &Fact| crate::tracking::TimeEntry {
+                    id: entry_id,
+                    task,
+                    task_title: format!("title-{}", fact.content),
+                    start: ts(fact.clock),
+                    end: None,
+                    created_at: ts(fact.clock),
+                    updated_at: ts(fact.clock),
+                    kind: crate::tracking::TimeEntryKind::Work,
+                    by: fact.by,
+                };
+                let doc = |fact: &Fact| {
+                    (
+                        entry_id.as_uuid().to_string(),
+                        crate::appdata::TimeEntryRecord::Entry {
+                            task: Some("1".to_owned()),
+                            title: format!("title-{}", fact.content),
+                            start: ts(fact.clock),
+                            end: None,
+                            created: ts(fact.clock),
+                            clock: ts(fact.clock),
+                            kind: crate::tracking::TimeEntryKind::Work,
+                            by: fact.by,
+                        },
+                    )
+                };
+                let mut tracking = crate::tracking::TrackingState {
+                    entries: map(seeded.iter().map(|fact| (entry_id, local(fact)))),
+                };
+                for c in 0..cycles {
+                    let rows = map(std::iter::once(doc(&facts[arrival[c] % n])));
+                    fold_time_entries(&mut tracking, &rows, &cards);
+                    tracking = restart(&tracking);
+                }
+                let survivor = &tracking.entries[&entry_id];
+                let want_title = format!("title-{}", want.content);
+                prop_assert_eq!(&survivor.task_title, &want_title);
+                prop_assert_eq!((survivor.by, survivor.updated_at), (want_by, want_clock));
+            }
+
+            // ---- habits --------------------------------------------
+            {
+                let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x905));
+                let target =
+                    crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap());
+                let local = |fact: &Fact| crate::habit::Habit {
+                    id: habit_id,
+                    board,
+                    title: format!("habit-{}", fact.content),
+                    target,
+                    order: 0,
+                    anchor_time: None,
+                    clocks: crate::habit::HabitClocks::all(ts(fact.clock)),
+                    continued_from: None,
+                    deleted: false,
+                    by: fact.by,
+                };
+                let doc = |fact: &Fact| {
+                    (
+                        habit_id.as_uuid().to_string(),
+                        crate::appdata::HabitRecord::Live {
+                            title: format!("habit-{}", fact.content),
+                            target,
+                            order: 0,
+                            anchor_time: None,
+                            clocks: crate::habit::HabitClocks::all(ts(fact.clock)),
+                            continued_from: None,
+                            by: fact.by,
+                        },
+                    )
+                };
+                let mut state = crate::habit::HabitState {
+                    habits: map(seeded.iter().map(|fact| (habit_id, local(fact)))),
+                    log: std::collections::BTreeMap::new(),
+                };
+                for c in 0..cycles {
+                    let rows = map(std::iter::once(doc(&facts[arrival[c] % n])));
+                    fold_habits(&mut state, &rows, board);
+                    state = restart(&state);
+                }
+                let survivor = &state.habits[&habit_id];
+                let want_title = format!("habit-{}", want.content);
+                prop_assert_eq!(&survivor.title, &want_title);
+                prop_assert_eq!(
+                    (survivor.by, effective_clock(survivor)),
+                    (want_by, want_clock)
+                );
+            }
+
+            // ---- habit log -----------------------------------------
+            {
+                let log_key = crate::habit::HabitLogKey::parse_wire_form(
+                    "00000000-0000-0000-0000-000000000906|2026-01-01",
+                )
+                .unwrap();
+                let local = |fact: &Fact| crate::habit::HabitLogEntry {
+                    count: fact.content,
+                    clock: ts(fact.clock),
+                    by: fact.by,
+                };
+                let doc = |fact: &Fact| {
+                    (
+                        log_key.wire_form(),
+                        crate::appdata::HabitLogRecord::Entry {
+                            count: fact.content,
+                            clock: ts(fact.clock),
+                            by: fact.by,
+                        },
+                    )
+                };
+                let mut state = crate::habit::HabitState {
+                    habits: std::collections::BTreeMap::new(),
+                    log: map(seeded.iter().map(|fact| (log_key, local(fact)))),
+                };
+                for c in 0..cycles {
+                    let rows = map(std::iter::once(doc(&facts[arrival[c] % n])));
+                    fold_habit_log(&mut state, &rows);
+                    state = restart(&state);
+                }
+                let survivor = &state.log[&log_key];
+                prop_assert_eq!(
+                    (survivor.count, survivor.by, survivor.clock),
+                    (want.content, want_by, want_clock)
+                );
+            }
+        }
+    }
+}
