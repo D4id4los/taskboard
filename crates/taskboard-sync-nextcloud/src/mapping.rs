@@ -172,7 +172,9 @@ pub fn classify_push(err: &DeckError, ctx: PushCtx) -> Option<PushResult> {
         }
         // 2xx body that failed to decode: the write succeeded.
         DeckError::Json(_) => Some(PushResult::Applied { echo: None }),
-        DeckError::RateLimited { .. } | DeckError::Unavailable | DeckError::Transport(_) => None,
+        DeckError::RateLimited { .. } | DeckError::Unavailable { .. } | DeckError::Transport(_) => {
+            None
+        }
         // The client is constructed once at boot; an invalid base URL can
         // never surface mid-cycle. Classified conservatively as a server
         // rejection (retryable, stays queued).
@@ -191,7 +193,7 @@ pub fn classify_push(err: &DeckError, ctx: PushCtx) -> Option<PushResult> {
 #[must_use]
 pub fn classify_read(err: &DeckError) -> SyncErrorKind {
     match err {
-        DeckError::Transport(_) | DeckError::RateLimited { .. } | DeckError::Unavailable => {
+        DeckError::Transport(_) | DeckError::RateLimited { .. } | DeckError::Unavailable { .. } => {
             SyncErrorKind::Network
         }
         DeckError::Unauthorized => SyncErrorKind::Auth,
@@ -232,7 +234,7 @@ pub fn classify_download_evidence(err: &DeckError) -> AppDataUnreadable {
         // constructed once at boot) / upload-only validation.
         DeckError::Transport(_)
         | DeckError::RateLimited { .. }
-        | DeckError::Unavailable
+        | DeckError::Unavailable { .. }
         | DeckError::NotFound
         | DeckError::InvalidBaseUrl
         | DeckError::InvalidUpload => AppDataUnreadable::Transport,
@@ -594,7 +596,7 @@ mod tests {
         for err in [
             DeckError::Transport(reqwest::get("http://127.0.0.1:1/").await.unwrap_err()),
             DeckError::RateLimited { retry_after: None },
-            DeckError::Unavailable,
+            DeckError::Unavailable { retry_after: None },
         ] {
             assert!(classify_push(&err, existing).is_none(), "{err:?}");
         }
@@ -686,7 +688,7 @@ mod tests {
         for err in [
             transport().await,
             DeckError::RateLimited { retry_after: None },
-            DeckError::Unavailable,
+            DeckError::Unavailable { retry_after: None },
             DeckError::NotFound,
             DeckError::InvalidBaseUrl,
             DeckError::InvalidUpload,

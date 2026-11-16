@@ -90,7 +90,7 @@ fn deck_variant(err: &DeckError) -> &'static str {
         DeckError::PreconditionFailed => "PreconditionFailed",
         DeckError::RateLimited { .. } => "RateLimited",
         DeckError::Server(_) => "Server",
-        DeckError::Unavailable => "Unavailable",
+        DeckError::Unavailable { .. } => "Unavailable",
     }
 }
 

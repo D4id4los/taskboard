@@ -55,9 +55,15 @@ pub enum DeckError {
     /// A non-retryable 5xx server error carrying the status code.
     #[error("server error (status {0})")]
     Server(u16),
-    /// Service unavailable (HTTP 503); retries exhausted.
+    /// Service unavailable (HTTP 503); retries exhausted. Carries the
+    /// server's `Retry-After` hint (either RFC 9110 form, resolved at
+    /// attempt time) when present and parseable — `None` when absent,
+    /// malformed, or unparseable.
     #[error("service unavailable")]
-    Unavailable,
+    Unavailable {
+        /// Advertised wait before the next attempt, if the server sent one.
+        retry_after: Option<std::time::Duration>,
+    },
 }
 
 impl DeckError {
@@ -71,7 +77,7 @@ impl DeckError {
     pub(crate) fn is_transport(&self) -> bool {
         matches!(
             self,
-            Self::Transport(_) | Self::RateLimited { .. } | Self::Unavailable
+            Self::Transport(_) | Self::RateLimited { .. } | Self::Unavailable { .. }
         )
     }
 }
