@@ -394,6 +394,19 @@ only.
 
 ## 5. Commit sequencing
 
+**Follow-up note (the D-2 amended-delta gate, recorded 2026-11-17
+before the fix landed):** the investigation
+(`.artifacts/reports/2026-11-17-n19-files-sync-pending-investigation-report.md`)
+refuted H1/H2/H4/H5 and confirmed a *contract* arm rather than the
+expected derivation repair: the files drain's refusal to publish
+ref-delete groups strands attributed ops forever on a files-bound
+board (no Deck actor serves the binding again). The amendment: the
+files drain materializes ref-delete groups as tombstone entities
+(local-row resolution first, then a files-tagged tombstone minted
+from the ref's UUID; a Deck-tagged unresolvable ref stays queued with
+the typed warn). The #150-era pin's letter narrows: the pin test is
+re-authored to the new contract in the fix commit.
+
 1. `test(files-sync): the N-19 reproduction test` — the fixture +
    the failing reproduction (committed as the investigation's
    opening evidence; the pre-commit hooks + nextest gate expect the
