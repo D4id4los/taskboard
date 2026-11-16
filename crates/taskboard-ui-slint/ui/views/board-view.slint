@@ -101,6 +101,10 @@ export component BoardView inherits FocusScope {
     // threaded to the window's seams (the drag family's pattern).
     callback gap-hovered(int, int);
     callback gap-dropped(int, int);
+    // The compact segment drop grammar (UX-R8 D-3, US-3): threaded
+    // to the window's seams (the drag family's pattern).
+    callback switcher-drop-hovered(int);
+    callback switcher-card-dropped(int);
     callback card-drag-finished(int, int, bool);
     // Any flow holds: the DragAreas refuse to arm (the XOR belt).
     in property <bool> flow-open: false;
@@ -162,6 +166,8 @@ export component BoardView inherits FocusScope {
                 board-card-dropped(c) => root.card-dropped(c);
                 board-gap-hovered(c, g) => root.gap-hovered(c, g);
                 board-gap-dropped(c, g) => root.gap-dropped(c, g);
+                switcher-drop-hovered(c) => root.switcher-drop-hovered(c);
+                switcher-card-dropped(c) => root.switcher-card-dropped(c);
                 board-card-drag-finished(c, r, ok) => root.card-drag-finished(c, r, ok);
                 move-target: root.board.move-target;
                 stack-create-open: root.board.stack-create-open;

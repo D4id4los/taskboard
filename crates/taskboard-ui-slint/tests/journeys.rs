@@ -21320,3 +21320,83 @@ fn us2_s1_gap_hover_arms_the_indicator_state() {
         },
     );
 }
+
+/// US-3/S1–S2 — the compact segment drop moves the card: compact arm,
+/// segment hover + drop → one append `MoveTask` (R-3); the selected
+/// stack's own segment release dispatches nothing (AC-2); a stale
+/// segment index settles. AC-3 (a drop that never enters a segment
+/// keeps the in-column grammar) is the us2 journey's column leg.
+#[test]
+fn us3_s2_compact_segment_drop_moves_the_card() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = state
+        .tasks
+        .values()
+        .find(|task| task.title == "task-0")
+        .map(|task| task.id)
+        .expect("the fixture's first task");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(600, 800);
+            assert!(
+                harness.handle.window().get_compact_active(),
+                "600 px is the compact breakpoint"
+            );
+
+            // The commit leg: arm on the selected stack's first card,
+            // hover the second stack's segment, release.
+            harness.handle.window().invoke_board_card_drag_armed(0, 0);
+            harness
+                .handle
+                .window()
+                .invoke_board_switcher_drop_hovered(1);
+            assert_eq!(
+                harness.handle.window().get_board_model().move_target,
+                1,
+                "the hovered segment highlights (the move-target paint)"
+            );
+            harness
+                .handle
+                .window()
+                .invoke_board_switcher_card_dropped(1);
+            harness.assert_commands(&[StateCommand::MoveTask {
+                id: task0,
+                stack: fixture.stack_b,
+                order: 1,
+            }]);
+            harness.engine.settle(&harness.handle);
+
+            // AC-2: the selected stack's own segment is a no-op.
+            harness.handle.window().invoke_board_card_drag_armed(0, 0);
+            harness
+                .handle
+                .window()
+                .invoke_board_switcher_drop_hovered(0);
+            harness
+                .handle
+                .window()
+                .invoke_board_switcher_card_dropped(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the same-stack segment release ends the drag"
+            );
+
+            // The stale segment index settles (never guesses).
+            harness.handle.window().invoke_board_card_drag_armed(0, 0);
+            harness
+                .handle
+                .window()
+                .invoke_board_switcher_card_dropped(i32::try_from(usize::MAX).unwrap_or(i32::MAX));
+            harness.assert_commands(&[]);
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the stale segment settles the drag"
+            );
+        },
+    );
+}

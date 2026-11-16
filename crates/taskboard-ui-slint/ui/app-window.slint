@@ -488,6 +488,8 @@ export component AppWindow inherits Window {
                 card-dropped(c) => root.board-card-dropped(c);
                 gap-hovered(c, g) => root.board-gap-hovered(c, g);
                 gap-dropped(c, g) => root.board-gap-dropped(c, g);
+                switcher-drop-hovered(c) => root.board-switcher-drop-hovered(c);
+                switcher-card-dropped(c) => root.board-switcher-card-dropped(c);
                 card-drag-finished(c, r, ok) => root.board-card-drag-finished(c, r, ok);
                 new-stack-activated() => root.board-new-stack-clicked();
                 board-default-preset-clicked() => root.board-default-preset-clicked();
@@ -1702,6 +1704,10 @@ export component AppWindow inherits Window {
     // drop reports (the drag family's index-only convention).
     pure callback board-gap-hovered(int, int);
     pure callback board-gap-dropped(int, int);
+    // The compact segment drop grammar (UX-R8 D-3, US-3): the
+    // switcher segments' hover and drop reports.
+    pure callback board-switcher-drop-hovered(int);
+    pure callback board-switcher-card-dropped(int);
     pure callback board-card-drag-finished(int, int, bool);
     // The stack-create flow (usability D7): the on-board button
     // routes the same registry action as the `S` binding (§7.1).

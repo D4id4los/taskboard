@@ -9175,6 +9175,7 @@ fn install_stack_width_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
 /// drag-finished outcome. Every handler is flow-guarded — a seam
 /// arriving with no active `Flow::DragMove` is a post-teardown echo
 /// and is absorbed (the cancel matrix's race arm).
+#[allow(clippy::too_many_lines)] // one seam block family, kept flat (the install family's rule)
 fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The payload minted once at mount (the plan's P-3): non-empty
     // (the runtime refuses to start a drag without one); the adapter
@@ -9302,6 +9303,60 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         return;
     }
     let mut outcomes = a.view_state.drag_gap(&state, stack, gap);
+    outcomes.extend(a.view_state.confirm_drag_move(&state));
+    a.apply_outcomes(&window, &outcomes);
+
+    });
+
+    // The compact segment's hover report (UX-R8 D-3, US-3/S1): the
+    // switcher's DropArea address resolved to its stack — the
+    // highlight rides the existing move-target paint (model-driven),
+    // so the report is the column-level aim (no gap). A stale segment
+    // index is absorbed silently.
+    // slint: switcher-drop-hovered
+    install_seam!(window: window.on_board_switcher_drop_hovered, adapter: adapter;
+    bind mut (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
+        return;
+    };
+    let Flow::DragMove { .. } = a.view_state.flow() else {
+        return;
+    };
+    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+        return;
+    };
+    let state = a.state.load_full();
+    let outcomes = a.view_state.drag_target(&state, stack);
+    a.apply_outcomes(&window, &outcomes);
+
+    });
+
+    // The compact segment drop (UX-R8 D-3, US-3/S2): resolve the
+    // segment's stack, then guard — the dragged task's *own* stack's
+    // segment is the selected stack's segment in the compact
+    // one-column leg (R-3's append-only rule makes a same-stack
+    // segment drop meaningless), so it settles the flow and dispatches
+    // nothing (AC-2). Otherwise confirm through the shared
+    // construction site: the column-level aim appends (R-3 verbatim).
+    // A stale segment index settles (never guesses, the F8 law).
+    // slint: switcher-card-dropped
+    install_seam!(window: window.on_board_switcher_card_dropped, adapter: adapter;
+    bind mut (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
+        return;
+    };
+    let Flow::DragMove { task, .. } = a.view_state.flow() else {
+        return;
+    };
+    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
+        let state = a.state.load_full();
+        a.settle_flow(&window, &state);
+        return;
+    };
+    let state = a.state.load_full();
+    if state.tasks.get(task).is_some_and(|t| t.stack == stack) {
+        a.settle_flow(&window, &state);
+        return;
+    }
+    let mut outcomes = a.view_state.drag_target(&state, stack);
     outcomes.extend(a.view_state.confirm_drag_move(&state));
     a.apply_outcomes(&window, &outcomes);
 
