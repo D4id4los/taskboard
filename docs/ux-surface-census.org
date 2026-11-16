@@ -785,6 +785,74 @@ the unruled registers.
 | sync | =sync= `cli.rs:199` | registered CLI-only per D-10; its GUI twin ceremony is the =RequestSync= arm — cross-referenced, not duplicated |
 | boards use (dead) | =BoardsCmd::Use= `cli.rs:358`; dispatch `commands/mod.rs:949` (one-shot refuses) and `commands/mod.rs:1949` (unreachable) | parses but is unreachable — backlog **#776**; recorded here, *not* as a capability row (nothing a user can do) |
 
+* Slice: Focus restoration & modal containment (round 8)
+
+Baseline: =5bb1db36= (the round-8 dispatch's stage-1 chunk plan). Origin:
+the accepted UX journey plan
+=.artifacts/plans/2026-11-16-focus-restoration-ux-plan.md= (2026-11-16)
+and the chunk plan
+=.artifacts/plans/2026-11-17-ui-r8-focus-restoration-plan.md= (2026-11-17).
+The slice covers the round-8 focus family: the focus-origin restore over
+the overlay census sites, the control walk's mask clamp, the action
+menu's focused-open, the Today walk's single handoff, the title/
+description armed-field indicators, and the notification surface's
+keyboard grammar (#668/#669/#670/#724).
+
+*Named finding (the engagement-armed posture, D-N1's recorded
+deviation)*: the notification surface is *ambient* — its rows persist
+while the user keeps working — so the accepted plan's total-mask letter
+is read narrowly: =ContextId::NotificationSurface= rides the chain head
+exactly while the surface is *engaged* (armed by the surface's first
+walk or verb stroke through the key-path engagement arm
+=`keyscope::notification_grammar_stroke`, disarmed by the Escape close,
+the last row's exit, or rows emptying). The keymap contract's totality
+(AC-4) is posture-independent. The operator may order the literal total
+mask at review.
+
+*Named finding (the create/rename rows' withdrawal)*: the chunk plan's
+census row 16 (the create/rename flows) is withdrawn from the origin
+record — the inline create row's commit is the braindump grammar whose
+exit re-seeds the walk through reconcile; a restore armed beside it
+fights that re-seed (the ten-step journey pins it), and the rename
+cells are their own re-entry points. The census therefore counts 18
+sites, not 20.
+
+*Named finding (the menu focused-open's physical letter)*: the menu
+panel lives outside the single key scope (=§5.1=), and slint resets an
+unrealized item's focus on the first key event — a physical rows-scope
+grab dead-ends the raw key path (the null-platform journey
+=`keymap_adapter_tests::injected_keys_open_navigate_and_invoke_the_menu`
+pins raw delivery). The focused-open is the shell cursor's
+remembered/first row (the focused-control fact); the walk starts inside
+the menu one keypress from invocation as accepted.
+
+*Column semantics*: the focus family is presentation choreography over
+every GUI surface (the alarm-window slice's global-overlay precedent);
+each row carries the same evidence in every GUI column. The CLI column
+records the true absences (R-1's scoping).
+
+| Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
+|---|---|---|---|---|---|---|---|
+| app.overlay_focus_restore | E — the census sites' restore (the chunk plan §2 table; 18 sites after the create/rename withdrawal): the one-shot focus origin (D-F1, `adapter.rs::FocusOrigin`) recorded by the site's open pass and restored at the exit funnels (the element, else the recorded container anchor, else today's view-scope letter — `FocusFacts` is the typed oracle; the detail's title/description cells consume it physically) | E — same restore evidence (the detail cells' legs: us1_s1/us1_s3) | E — same restore evidence (the capture/overlay legs: us1_s1) | E — same restore evidence (the walk overlay's exits restore into the walk) | E — same restore evidence | E — same restore evidence | — (R-1) |
+| app.modal_tab_trap | E — the walk clamps at the mask boundary (US-2/W-2, D-W2): under a masked site the cursor steps within the host's pushed extent and wraps (the degenerate extent ≤ 1 stays; no synthetic Tab — nothing under the mask is reachable; the labels overlay is the multi-control wrap host, us2_s1; the single-stop hosts stay, us2_s2); the insert-mode text grammar untouched (no keymap rows changed) | E — same clamp evidence (the labels/recur/due hosts) | E — same clamp evidence (the timer setter/capture hosts) | E — same clamp evidence | E — same clamp evidence | E — same clamp evidence | — (R-1) |
+| app.menu_focus | E — the menu opens focused on its rows (US-3/W-3, D-M3): the walk starts inside the menu at the remembered/first row (the shell cursor's focused-control fact; us3_s1), arrows move rows in place, Return invokes one keypress from opening; the physical rows-scope grab is withdrawn (the recorded deviation above) | E — same menu-focus evidence (the context menus' open arms) | E — same menu-focus evidence | E — same menu-focus evidence | E — same menu-focus evidence | E — same menu-focus evidence | — (R-1) |
+| nav.item_walk (evidence extension, US-4) | E — the walk's handoff extension: a cross-board step's identity-diff re-anchor is suppressed when the walk landed on a row (D-H4, #670; us4_s1) — the pre-existing bindings unchanged | E — same handoff evidence | E — same handoff evidence (the Today cross-board walk parks focus on the walked row) | — (R-6 stands) | — (R-6 stands) | — (R-6 stands) | U (T-24 family stands) |
+| task.title_edit / task.description_edit (indicator evidence, US-5) | D — the armed-field flags (D-F5): the detail field models carry title-armed/description-armed (the arm path's pushed half); the closed cells' rings read the flags beside their own has-focus and the walk-stop fact — the same Theme tokens, no theme work (R-3; us5_s1) | E — same indicator evidence | D — same indicator evidence | — (R-3 stands) | — (R-3 stands) | — (R-3 stands) | E (pre-existing) |
+| notification.rows_keyboard (evidence extension, US-6) | E — the r5 alarm grammar's twin (D-N1): the engagement-armed =NotificationSurface= context — the walk pair (Down/Up, clamped, pre-selected), the Escape close (nothing dispatched), and the seven per-verb keys d/e/s/m/c/t/o bound in every preset (the contract oracle `keymap/mod.rs::every_preset_binds_the_notification_surface_grammar`); the verbs route the exact seam bodies the row buttons run (click ≡ key, us6_s2); the row-touch exemption in `focus_coverage.rs` retires with the grammar (the walk covers the rows) | E — same notification keyboard evidence | E — same notification keyboard evidence | E — same notification keyboard evidence | E — same notification keyboard evidence | E — same notification keyboard evidence | — (R-1) |
+
+** Rulings (Focus restoration, round 8)
+
+| ID | Ruling | Reason | Home |
+|---|---|---|---|
+| R-F1 | The create/rename flows carry no focus-origin record | The braindump grammar's commit re-seeds the walk through reconcile; a restore armed beside it fights the re-seed (the ten-step journey pins the walk state). The census counts 18 sites. | the slice's named finding above; the chunk plan §2 row 16 (withdrawn) |
+| R-F2 | The menu focused-open is the shell cursor's fact, not a physical rows-scope grab | The menu panel lives outside the single key scope; slint resets an unrealized item's focus on the first key event, dead-ending raw keys (the null-platform journey pins it). AC-1's behavior — one keypress from invocation — is preserved through the cursor. | the slice's named finding above |
+
+** Unruled register (Focus restoration, round 8)
+
+None — every deliberate absence is the plans' own rulings (R-1's CLI
+scoping, R-3's no-theme-work, R-6's read-only views), restated in the
+rows above.
+
 * Appendix: diff against the phase-2 seed
 
 The phase-2 seed (`docs/ux-surface-census.org` at =fb5863ed=, with
