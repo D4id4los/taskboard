@@ -165,7 +165,10 @@ extension F1 §4 anticipated).
    authorless-lane byte-compat argument; likely rejected, recorded as
    the alternative that avoids migration entirely.
 4. **Migration/compat dimension (orthogonal to A–C)**: for each roaming
-   family, decide migration 0024 vs amending 0023 pre-release, the
+   family, decide the migration vehicle (corrected 2026-11-16, stage
+   3, per #858: 0024/0025 have landed and 0023 is shipped history —
+   the vehicle is a *new* migration, realized as 0026 in the design
+   plan, not "0024 vs amend 0023" as first written), the
    read rule for pre-author columns (absent → `None`; the
    `appdata.rs:295-299` demote leg already defines the wire rule),
    and the compat story for existing on-disk sidecars (a persisted
