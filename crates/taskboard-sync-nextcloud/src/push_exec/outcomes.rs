@@ -120,7 +120,7 @@ pub(super) fn classify(group: &PushGroup, err: &DeckError, ctx: PushCtx) -> Grou
         // for this group's writes (they did not land) or anything after.
         None => GroupOutcome::Aborted {
             landed: Vec::new(),
-            floor: err.advertised_hint().unwrap_or(std::time::Duration::ZERO),
+            floor: err.advertised_floor(),
         },
     }
 }
