@@ -69,6 +69,35 @@ pub fn day_window(
     (start, end)
 }
 
+/// The instant that ends `date`'s local day window: the opening
+/// instant of `date + 1`'s window. The N-4 stamping law's mint (the
+/// task-detail-editor UX plan US-1) — a date-only due/scheduled entry
+/// means "that whole day counts", so the named date's stamp is its
+/// window end, never 00:00. Pure, total, deterministic; with the
+/// default `"00:00"` start this is the named date's next local
+/// midnight — one millisecond after the note's literal
+/// `23:59:59.999`, identical classification at every whole-second
+/// comparison. A `"03:00"` start wanders the stamp into the early
+/// morning of `date + 1` — exactly the night-owl day-end derivation
+/// (the plan's recorded day-end decision: derived from
+/// `day_start_time` + 24h, never a second knob).
+///
+/// Composition only: `window_start` of the next calendar date — the
+/// same `+ Days::new(1)` arithmetic [`day_window`]'s `end` already
+/// performs, no new date math. Total for every representable date at
+/// least one day inside chrono's date range (the `Days` arithmetic
+/// saturates only at [`chrono::NaiveDate`]'s extremes — the same
+/// domain-of-validity sentence [`day_window`] carries). Nothing reads
+/// the environment: time and offset are data (the crate's clock rule).
+#[must_use]
+pub fn day_window_end(
+    date: NaiveDate,
+    day_start_time: chrono::NaiveTime,
+    offset: FixedOffset,
+) -> DateTime<Utc> {
+    window_start(date + Days::new(1), day_start_time, offset)
+}
+
 /// The half-open window covering the last `days` local day-windows
 /// *including the one `now` falls in*: `start` is the opening instant
 /// of local date `today − (days−1)`, `end` the opening instant of
@@ -144,6 +173,15 @@ impl DayCalendar {
     #[must_use]
     pub fn instant(&self, date: NaiveDate, time_of_day: chrono::NaiveTime) -> DateTime<Utc> {
         offset_local_to_utc(date.and_time(time_of_day), self.offset)
+    }
+
+    /// The instant that ends `date`'s local day window —
+    /// [`day_window_end`] over this calendar (the stamping law's
+    /// consumer face; the GUI adapter's `calendar()` and the CLI's
+    /// `resolved_day_calendar()` both hold a `DayCalendar`).
+    #[must_use]
+    pub fn day_end(&self, date: NaiveDate) -> DateTime<Utc> {
+        day_window_end(date, self.day_start_time, self.offset)
     }
 
     /// The next day-window boundary after `now`: the opening instant of
@@ -500,8 +538,107 @@ mod tests {
         (-86_399_i32..=86_399).prop_map(|s| FixedOffset::east_opt(s).unwrap())
     }
 
+    // ---- day_window_end (the N-4 stamping law, task-detail-editor
+    // ---- UX plan US-1/D-2) ------------------------------------------
+
+    /// Dates two years either side of 2026 — far from chrono's
+    /// saturation extremes, so the `+1 day` composition stays total.
+    fn date_strategy() -> impl Strategy<Value = NaiveDate> {
+        (-800_i64..=800).prop_map(|days| {
+            chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+                .unwrap()
+                .checked_add_signed(chrono::TimeDelta::try_days(days).unwrap())
+                .unwrap()
+        })
+    }
+
+    /// D-2 unit 1: a `"00:00"` start at a fixed offset — `day_window_end(D)`
+    /// is D+1's local midnight. Hand-computed: local 2026-06-16 00:00
+    /// +02:00 = 2026-06-15 22:00 UTC.
+    #[test]
+    fn default_start_stamps_next_local_midnight() {
+        let end = day_window_end(date(2026, 6, 15), time(0, 0), offset_hours(2));
+        assert_eq!(end, utc(1_781_560_800)); // 2026-06-15 22:00:00 UTC
+    }
+
+    /// D-2 unit 2: a night-owl `"03:00"` start, bare date 2026-11-16 —
+    /// the instant is 2026-11-17 03:00 local (the "wander into the
+    /// early morning" case, N-4's letter). Hand-computed: local
+    /// 2026-11-17 03:00 +02:00 = 2026-11-17 01:00 UTC.
+    #[test]
+    fn night_owl_start_stamps_next_morning() {
+        let end = day_window_end(date(2026, 11, 16), time(3, 0), offset_hours(2));
+        assert_eq!(end, utc(1_794_877_200)); // 2026-11-17 01:00:00 UTC
+        let local = end.with_timezone(&offset_hours(2));
+        assert_eq!(
+            (local.date_naive(), local.time()),
+            (date(2026, 11, 17), time(3, 0))
+        );
+    }
+
+    /// The consumer face: `DayCalendar::day_end` is `day_window_end`
+    /// over the calendar's own pair.
+    #[test]
+    fn day_end_is_the_free_function_over_the_calendar() {
+        let calendar = DayCalendar {
+            day_start_time: time(3, 0),
+            offset: offset_hours(2),
+        };
+        assert_eq!(
+            calendar.day_end(date(2026, 11, 16)),
+            day_window_end(date(2026, 11, 16), time(3, 0), offset_hours(2))
+        );
+    }
+
     proptest! {
         #![proptest_config(proptest_config(256))]
+
+        /// D-2 prop 1 (the origin AC-1 round-trip law): for any `now`
+        /// inside `date`'s window, `day_window(now, ..).1 ==
+        /// day_window_end(date, ..)` — the law is the window end,
+        /// pinned by construction-independent comparison (both sides
+        /// re-derived through the public API).
+        #[test]
+        fn day_end_equals_the_window_end_of_the_named_date(
+            date in date_strategy(),
+            day_start_time in day_start_time_strategy(),
+            offset in offset_strategy(),
+        ) {
+            let now = window_start(date, day_start_time, offset);
+            let (_, end) = day_window(now, day_start_time, offset);
+            prop_assert_eq!(day_window_end(date, day_start_time, offset), end);
+        }
+
+        /// D-2 prop 2 (the overdue-classification flip): the whole
+        /// configured day counts — every instant of the named day is
+        /// strictly before the stamp.
+        #[test]
+        fn day_end_is_strictly_after_every_instant_of_the_named_day(
+            date in date_strategy(),
+            day_start_time in day_start_time_strategy(),
+            offset in offset_strategy(),
+            seconds_into_day in 0_i64..86_400,
+        ) {
+            let now = window_start(date, day_start_time, offset)
+                + chrono::TimeDelta::try_seconds(seconds_into_day).unwrap();
+            prop_assert!(day_window_end(date, day_start_time, offset) > now);
+        }
+
+        /// D-2 prop 3 (the fixed-offset corollary): the stamp is
+        /// exactly 24h after the named date's window start (the
+        /// `window_is_exactly_24_hours` twin).
+        #[test]
+        fn day_end_is_exactly_24h_after_the_window_start(
+            date in date_strategy(),
+            day_start_time in day_start_time_strategy(),
+            offset in offset_strategy(),
+        ) {
+            prop_assert_eq!(
+                day_window_end(date, day_start_time, offset)
+                    - window_start(date, day_start_time, offset),
+                chrono::TimeDelta::try_hours(24).unwrap()
+            );
+        }
 
         #[test]
         fn window_contains_now(
