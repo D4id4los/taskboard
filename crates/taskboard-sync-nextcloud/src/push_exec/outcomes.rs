@@ -24,8 +24,15 @@ pub enum GroupOutcome {
     /// carries the outcomes for writes that *did* complete before the
     /// transport failure — most importantly a create whose post-create
     /// sub-call failed: without the evidence the engine would re-POST the
-    /// create next cycle, and Deck has no idempotency keys.
-    Aborted { landed: Vec<PushOutcome> },
+    /// create next cycle, and Deck has no idempotency keys. `floor`
+    /// carries the aborting error's advertised `Retry-After` hint
+    /// (`ZERO` when it had none) so the actor can floor the next cycle's
+    /// schedule — a 429 during push must not be retried on the bare
+    /// backoff curve.
+    Aborted {
+        landed: Vec<PushOutcome>,
+        floor: std::time::Duration,
+    },
 }
 
 // ---- outcome assembly -------------------------------------------
@@ -111,6 +118,9 @@ pub(super) fn classify(group: &PushGroup, err: &DeckError, ctx: PushCtx) -> Grou
         }]),
         // Transport class: the cycle aborts (decision 8) — no outcome
         // for this group's writes (they did not land) or anything after.
-        None => GroupOutcome::Aborted { landed: Vec::new() },
+        None => GroupOutcome::Aborted {
+            landed: Vec::new(),
+            floor: err.advertised_hint().unwrap_or(std::time::Duration::ZERO),
+        },
     }
 }

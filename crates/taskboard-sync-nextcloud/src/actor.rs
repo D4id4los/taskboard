@@ -564,11 +564,14 @@ async fn cycle(
                 }
                 match executor.execute(&group, &board_ops, tables).await {
                     GroupOutcome::Outcomes(mut outcomes) => pushes.append(&mut outcomes),
-                    GroupOutcome::Aborted { landed } => {
+                    GroupOutcome::Aborted { landed, floor } => {
                         // Transport failure: no pull — the snapshot would
                         // predate the unfinished pushes anyway. The landed
-                        // outcomes travel as evidence; the episode edge
-                        // fires once and the cycle ends (D-12).
+                        // outcomes travel as evidence; the aborting error's
+                        // advertised hint floors the next cycle's schedule
+                        // (a 429 mid-push must not be retried on the bare
+                        // curve); the episode edge fires once and the
+                        // cycle ends (D-12).
                         pushes.extend(landed);
                         fail_cycle(
                             id,
@@ -576,7 +579,7 @@ async fn cycle(
                             reports,
                             system,
                             SyncErrorKind::Network,
-                            Duration::ZERO,
+                            floor,
                             Some(target),
                             started,
                             pushes,

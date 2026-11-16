@@ -3,6 +3,7 @@
 //! single-file `push_exec.rs`.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use taskboard_domain::{
     CardShape, DeckFeatures, EntityTables, LocalOp, MaterializedOp, PendingOp, PushGroup,
@@ -1440,8 +1441,72 @@ async fn label_delta_transport_failure_aborts_the_cycle() {
         .await;
 
     assert!(
-        matches!(outcome, GroupOutcome::Aborted { ref landed } if landed.is_empty()),
+        matches!(outcome, GroupOutcome::Aborted { ref landed, .. } if landed.is_empty()),
         "a transport-class label failure aborts with nothing landed: {outcome:?}"
+    );
+}
+
+/// D8 (chunk F, #222): a push abort driven by a *rate-limited* write
+/// carries the advertised `Retry-After` as the abort floor, so the actor
+/// floors the next cycle's schedule instead of retrying on the bare
+/// curve.
+#[tokio::test]
+async fn rate_limited_write_abort_carries_the_advertised_floor() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_string(card_json(55, 7, 3)))
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/index.php/apps/deck/api/v1.0/boards/42/stacks/7/cards/55",
+        ))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "2"))
+        .mount(&server)
+        .await;
+
+    let client = DeckClient::new(&server.uri(), "u", "t").unwrap();
+    let mut exec = PushExecutor::new(
+        &client,
+        overlay_with(42, &[], &[(10, 7, 55)], &[]),
+        FEATURES,
+    );
+    let shape = CardShape {
+        title: "edited".into(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        order: 9,
+        archived: false,
+        labels: std::collections::BTreeSet::new(),
+    };
+    let outcome = exec
+        .execute(
+            &group(
+                100,
+                MaterializedOp::UpdateTask {
+                    task: task_id(10),
+                    card: shape,
+                },
+                taskboard_domain::PushTarget::Task(task_id(10)),
+                &[],
+            ),
+            &[],
+            empty_tables(),
+        )
+        .await;
+
+    assert!(
+        matches!(
+            outcome,
+            GroupOutcome::Aborted { floor, ref landed }
+                if floor == Duration::from_secs(2) && landed.is_empty()
+        ),
+        "a 429 abort carries the advertised hint as the floor: {outcome:?}"
     );
 }
 
@@ -1976,7 +2041,10 @@ async fn preflight_404_with_a_transport_failing_listing_aborts_the_cycle() {
 
     assert_eq!(
         outcome,
-        GroupOutcome::Aborted { landed: Vec::new() },
+        GroupOutcome::Aborted {
+            landed: Vec::new(),
+            floor: std::time::Duration::ZERO
+        },
         "a transport-class listing failure aborts with no outcomes"
     );
 }
@@ -2073,7 +2141,7 @@ async fn transport_failure_aborts_without_outcomes() {
         )
         .await;
     assert!(
-        matches!(outcome, GroupOutcome::Aborted { landed } if landed.is_empty()),
+        matches!(outcome, GroupOutcome::Aborted { landed, .. } if landed.is_empty()),
         "a transport failure on the group's own write lands nothing"
     );
 }
@@ -2139,7 +2207,7 @@ async fn transport_failure_after_a_landed_create_keeps_its_evidence() {
         )
         .await;
 
-    let GroupOutcome::Aborted { landed } = outcome else {
+    let GroupOutcome::Aborted { landed, .. } = outcome else {
         panic!("expected a transport abort");
     };
     assert_eq!(landed.len(), 1, "the create's evidence survives the abort");
@@ -2345,7 +2413,7 @@ async fn create_stack_transport_failure_aborts() {
         .await;
     assert!(matches!(
         outcome,
-        GroupOutcome::Aborted { landed } if landed.is_empty()
+        GroupOutcome::Aborted { landed, .. } if landed.is_empty()
     ));
 }
 
@@ -2510,7 +2578,7 @@ async fn move_stack_transport_failure_aborts_the_cycle() {
             tables_with(&[stack_row(5, "Doing", 0)], &[]),
         )
         .await;
-    assert!(matches!(outcome, GroupOutcome::Aborted { landed } if landed.is_empty()));
+    assert!(matches!(outcome, GroupOutcome::Aborted { landed, .. } if landed.is_empty()));
 }
 
 #[tokio::test]
@@ -2672,7 +2740,7 @@ async fn rename_board_transport_failure_aborts_the_cycle() {
             tables_with_boards(&[board_row(1, "x")]),
         )
         .await;
-    assert!(matches!(outcome, GroupOutcome::Aborted { landed } if landed.is_empty()));
+    assert!(matches!(outcome, GroupOutcome::Aborted { landed, .. } if landed.is_empty()));
 }
 
 #[tokio::test]
@@ -2954,7 +3022,7 @@ async fn ref_card_delete_transport_failure_aborts_the_cycle() {
             empty_tables(),
         )
         .await;
-    assert!(matches!(outcome, GroupOutcome::Aborted { landed } if landed.is_empty()));
+    assert!(matches!(outcome, GroupOutcome::Aborted { landed, .. } if landed.is_empty()));
 }
 
 // ---- board delete push path ----------------------------------------
@@ -3146,7 +3214,7 @@ async fn create_label_transport_failure_aborts() {
         .await;
     assert!(matches!(
         outcome,
-        GroupOutcome::Aborted { landed } if landed.is_empty()
+        GroupOutcome::Aborted { landed, .. } if landed.is_empty()
     ));
 }
 
@@ -3732,7 +3800,7 @@ async fn post_create_archive_transport_failure_aborts_with_the_create_as_landed(
         )
         .await;
 
-    let GroupOutcome::Aborted { landed } = outcome else {
+    let GroupOutcome::Aborted { landed, .. } = outcome else {
         panic!("a transport failure on the post-create archive aborts the group");
     };
     assert_eq!(landed.len(), 1, "the create's evidence rides the abort");
