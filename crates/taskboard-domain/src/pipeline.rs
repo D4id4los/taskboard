@@ -8861,4 +8861,116 @@ mod author_journey_tests {
             "the higher author's row wins on both readers"
         );
     }
+
+    /// T-RELAY-1 (two-engine journey, #708 L4 end-to-end): A and B
+    /// write equal-clock distinct contents; C folds both (in either
+    /// order) and flushes its document — the flush re-emits the
+    /// survivor under its *true* author (`row.by.or(author)`), so a
+    /// fresh D folding C's document converges to the same survivor
+    /// (content, by) as folding A's/B's directly. The pre-slot flush
+    /// (`by: author`) would relay C's identity instead and diverge.
+    #[test]
+    fn the_relayed_superset_converges_on_a_fresh_reader() {
+        use crate::appdata::BreakRuleEntry;
+        let a = author(0x6EA1_0000_0000_0001);
+        let b = author(0x6EB2_0000_0000_0002);
+        let c = author(0x6EC3_0000_0000_0003);
+        let board_id = crate::ids::BoardId::from(uuid::Uuid::from_u128(800));
+        let rule_id = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0x602));
+
+        let doc_row = |label: &str, by: Option<AuthorId>| BreakRuleEntry::Rule {
+            label: label.to_owned(),
+            threshold: crate::tracking::WorkThreshold::try_new(
+                chrono::TimeDelta::try_seconds(1_500).unwrap(),
+            )
+            .unwrap(),
+            created: ts(BASE + 60),
+            clock: ts(BASE + 60),
+            insistence: crate::reminders::Insistence::Normal,
+            by,
+        };
+        let local_with = |rule: Option<crate::reminders::BreakRule>| {
+            let mut state = base_state(bound_task(1));
+            if let Some(rule) = rule {
+                state.reminders.break_rules.insert(rule_id, rule);
+            }
+            state
+        };
+        let section_document = |rows: BTreeMap<String, BreakRuleEntry>| {
+            AppDataEvidence::Document(Box::new(AppDataDocument {
+                format: crate::appdata::APPDATA_FORMAT,
+                board: board(REMOTE_BOARD_NUM),
+                sections: crate::appdata::AppDataSections {
+                    break_rules: Some(rows),
+                    ..crate::appdata::AppDataSections::default()
+                },
+                unknown: BTreeMap::new(),
+            }))
+        };
+        let snapshot = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let doc_a = section_document(BTreeMap::from([(
+            rule_id.as_uuid().to_string(),
+            doc_row("a-break", Some(a)),
+        )]));
+        let doc_b = section_document(BTreeMap::from([(
+            rule_id.as_uuid().to_string(),
+            doc_row("b-break", Some(b)),
+        )]));
+
+        // C (identity c, outside the writers' band) folds both
+        // documents, b-doc first — any order converges, but pin one.
+        let mut state_c = local_with(None);
+        for doc in [&doc_b, &doc_a] {
+            state_c = fold_report(
+                &state_c,
+                &[],
+                &snapshot,
+                doc,
+                DeckFeatures::CONSERVATIVE,
+                BASE + 3_600,
+                Some(c),
+            );
+        }
+        assert_eq!(
+            state_c.reminders.break_rules[&rule_id].label, "b-break",
+            "C converges with the writers"
+        );
+        assert_eq!(
+            state_c.reminders.break_rules[&rule_id].by,
+            Some(b),
+            "C's stored slot carries the true author"
+        );
+
+        // C flushes: the overlay re-emits the survivor under its true
+        // author (row.by.or(author)), never under C's own identity.
+        let flushed =
+            crate::appdata::break_rules_for(&state_c.reminders.break_rules, board_id, Some(c));
+        assert_eq!(
+            flushed[&rule_id.as_uuid().to_string()],
+            doc_row("b-break", Some(b)),
+            "the relayed row carries the true author's rank"
+        );
+
+        // Fresh D folds C's document and A's/B's (either order): the
+        // relayed superset converges to the writers' survivor.
+        let doc_c = section_document(flushed);
+        let mut state_d = local_with(None);
+        for doc in [&doc_c, &doc_a, &doc_b] {
+            state_d = fold_report(
+                &state_d,
+                &[],
+                &snapshot,
+                doc,
+                DeckFeatures::CONSERVATIVE,
+                BASE + 3_600,
+                Some(author(0x6ED4_0000_0000_0004)),
+            );
+        }
+        let survivor_d = &state_d.reminders.break_rules[&rule_id];
+        assert_eq!(
+            (survivor_d.label.as_str(), survivor_d.by),
+            ("b-break", Some(b)),
+            "D converges with the writers through the relay"
+        );
+    }
 }
