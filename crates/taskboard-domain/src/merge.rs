@@ -7213,6 +7213,24 @@ mod author_duel_tests {
             )
         }
 
+        /// The T-ADOPT-1 ranks: writer b < doc author d < reader c, and
+        /// two clocks t1 < t2 for the two writes.
+        fn band() -> (
+            AuthorId,
+            AuthorId,
+            AuthorId,
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+        ) {
+            (
+                author(0x00B0_B000_0000_0001),
+                author(0x00D0_D000_0000_0002),
+                author(0x00C0_C000_0000_0003),
+                ts(BASE - 60),
+                ts(BASE + 60),
+            )
+        }
+
         /// Reminder rules: content leg = insistence.
         #[test]
         fn reminder_rules_fold_converges_on_the_higher_author() {
@@ -7697,6 +7715,246 @@ mod author_duel_tests {
             .collect();
             fold_habit_log(&mut state, &rows, Some(a));
             assert_eq!(state.log[&log_key].count, 1, "full-tuple tie keeps local");
+        }
+
+        // T-ADOPT-1 (the amnesia cell, evidence report §4): the
+        // reader's adoption must stamp the *document row's* author
+        // into the stored slot, so the next cycle's duel (and the next
+        // flush) rank on the true writer, never the reader. Cell:
+        // writer rank b, doc rank d, reader rank c with b < d < c —
+        // the reader adopts D in cycle 1, folds D again in cycle 2,
+        // and must converge with the writer on (content, by). Red
+        // until the adoption arms stamp `by: *by` and the duel legs
+        // read the stored slot.
+
+        /// T-ADOPT-1, reminder rules.
+        #[test]
+        fn reminder_rules_adoption_stamps_the_document_author() {
+            let (b, d, c, t1, t2) = band();
+            let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
+            let rule_id = crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(0x801));
+            let local = crate::reminders::ReminderRule {
+                id: rule_id,
+                task,
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_seconds(-300).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                insistence: crate::reminders::Insistence::Normal,
+                created_at: t1,
+                updated_at: t1,
+                by: Some(b),
+            };
+            let doc_row = crate::appdata::RuleEntry::Rule {
+                kind: crate::reminders::ReminderKind::DueOffset(
+                    crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_seconds(-600).unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                created: t2,
+                clock: t2,
+                insistence: crate::reminders::Insistence::Alarm,
+                by: Some(d),
+            };
+            let entry = crate::appdata::RulesEntry {
+                rules: [(rule_id.as_uuid().to_string(), doc_row)]
+                    .into_iter()
+                    .collect(),
+                unknown: std::collections::BTreeMap::new(),
+            };
+            let mut rules = std::collections::BTreeMap::from([(rule_id, local)]);
+            fold_reminder_rules(&mut rules, task, &entry, false, Some(c));
+            fold_reminder_rules(&mut rules, task, &entry, false, Some(c));
+            let survivor = &rules[&rule_id];
+            assert_eq!(
+                (survivor.insistence, survivor.by),
+                (crate::reminders::Insistence::Alarm, Some(d)),
+                "the reader converges with the writer on (content, by)"
+            );
+        }
+
+        /// T-ADOPT-1, break rules.
+        #[test]
+        fn break_rules_adoption_stamps_the_document_author() {
+            use crate::appdata::BreakRuleEntry;
+            let (b, d, c, t1, t2) = band();
+            let break_id = crate::ids::BreakRuleId::from(uuid::Uuid::from_u128(0x802));
+            let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
+            let local = crate::reminders::BreakRule {
+                id: break_id,
+                board,
+                label: "b-break".to_owned(),
+                threshold: crate::tracking::WorkThreshold::try_new(
+                    chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                )
+                .unwrap(),
+                insistence: crate::reminders::Insistence::Normal,
+                created_at: t1,
+                by: Some(b),
+            };
+            let rows = [(
+                break_id.as_uuid().to_string(),
+                BreakRuleEntry::Rule {
+                    label: "d-break".to_owned(),
+                    threshold: crate::tracking::WorkThreshold::try_new(
+                        chrono::TimeDelta::try_seconds(1_500).unwrap(),
+                    )
+                    .unwrap(),
+                    created: t2,
+                    clock: t2,
+                    insistence: crate::reminders::Insistence::Normal,
+                    by: Some(d),
+                },
+            )]
+            .into_iter()
+            .collect();
+            let mut rules = std::collections::BTreeMap::from([(break_id, local)]);
+            fold_break_rules(&mut rules, &rows, board, Some(c));
+            fold_break_rules(&mut rules, &rows, board, Some(c));
+            let survivor = &rules[&break_id];
+            assert_eq!(
+                (survivor.label.as_str(), survivor.by),
+                ("d-break", Some(d)),
+                "the reader converges with the writer on (content, by)"
+            );
+        }
+
+        /// T-ADOPT-1, time entries.
+        #[test]
+        fn time_entries_adoption_stamps_the_document_author() {
+            let (b, d, c, t1, t2) = band();
+            let entry_id = crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(0x804));
+            let task = crate::ids::TaskId::from(uuid::Uuid::from_u128(0x501));
+            let local = crate::tracking::TimeEntry {
+                id: entry_id,
+                task,
+                task_title: "b-title".to_owned(),
+                start: t1,
+                end: None,
+                created_at: t1,
+                updated_at: t1,
+                kind: crate::tracking::TimeEntryKind::Work,
+                by: Some(b),
+            };
+            let rows = [(
+                entry_id.as_uuid().to_string(),
+                crate::appdata::TimeEntryRecord::Entry {
+                    task: Some("1281".to_owned()),
+                    title: "d-title".to_owned(),
+                    start: t2,
+                    end: None,
+                    created: t2,
+                    clock: t2,
+                    kind: crate::tracking::TimeEntryKind::Work,
+                    by: Some(d),
+                },
+            )]
+            .into_iter()
+            .collect();
+            let cards = [("1281".to_owned(), task)].into_iter().collect();
+            let mut tracking = crate::tracking::TrackingState {
+                entries: [(entry_id, local)].into_iter().collect(),
+            };
+            fold_time_entries(&mut tracking, &rows, &cards, Some(c));
+            fold_time_entries(&mut tracking, &rows, &cards, Some(c));
+            let survivor = &tracking.entries[&entry_id];
+            assert_eq!(
+                (survivor.task_title.as_str(), survivor.by),
+                ("d-title", Some(d)),
+                "the reader converges with the writer on (content, by)"
+            );
+        }
+
+        /// T-ADOPT-1, habits.
+        #[test]
+        fn habits_adoption_stamps_the_document_author() {
+            let (b, d, c, t1, t2) = band();
+            let habit_id = crate::ids::HabitId::from(uuid::Uuid::from_u128(0x805));
+            let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(0x603));
+            let target =
+                crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(3).unwrap());
+            let local = crate::habit::Habit {
+                id: habit_id,
+                board,
+                title: "b-habit".to_owned(),
+                target,
+                order: 0,
+                anchor_time: None,
+                clocks: crate::habit::HabitClocks::all(t1),
+                continued_from: None,
+                deleted: false,
+                by: Some(b),
+            };
+            let rows = [(
+                habit_id.as_uuid().to_string(),
+                crate::appdata::HabitRecord::Live {
+                    title: "d-habit".to_owned(),
+                    target,
+                    order: 7,
+                    anchor_time: None,
+                    clocks: crate::habit::HabitClocks::all(t2),
+                    continued_from: None,
+                    by: Some(d),
+                },
+            )]
+            .into_iter()
+            .collect();
+            let mut state = crate::habit::HabitState {
+                habits: [(habit_id, local)].into_iter().collect(),
+                log: std::collections::BTreeMap::new(),
+            };
+            fold_habits(&mut state, &rows, board, Some(c));
+            fold_habits(&mut state, &rows, board, Some(c));
+            let survivor = &state.habits[&habit_id];
+            assert_eq!(
+                (survivor.title.as_str(), survivor.order, survivor.by),
+                ("d-habit", 7, Some(d)),
+                "the reader converges with the writer on (content, by)"
+            );
+        }
+
+        /// T-ADOPT-1, habit log.
+        #[test]
+        fn habit_log_adoption_stamps_the_document_author() {
+            let (b, d, c, t1, t2) = band();
+            let log_key = crate::habit::HabitLogKey::parse_wire_form(
+                "00000000-0000-0000-0000-000000000806|2026-01-01",
+            )
+            .unwrap();
+            let rows = [(
+                log_key.wire_form(),
+                crate::appdata::HabitLogRecord::Entry {
+                    count: 5,
+                    clock: t2,
+                    by: Some(d),
+                },
+            )]
+            .into_iter()
+            .collect();
+            let mut state = crate::habit::HabitState {
+                habits: std::collections::BTreeMap::new(),
+                log: [(
+                    log_key,
+                    crate::habit::HabitLogEntry {
+                        count: 1,
+                        clock: t1,
+                        by: Some(b),
+                    },
+                )]
+                .into_iter()
+                .collect(),
+            };
+            fold_habit_log(&mut state, &rows, Some(c));
+            fold_habit_log(&mut state, &rows, Some(c));
+            let survivor = &state.log[&log_key];
+            assert_eq!(
+                (survivor.count, survivor.by),
+                (5, Some(d)),
+                "the reader converges with the writer on (content, by)"
+            );
         }
     }
 }
