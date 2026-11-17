@@ -89,6 +89,18 @@ export enum SettingsBadgeTone {
     info,
 }
 
+// The publish ceremony's per-row phase (the files-sync-status plan
+// US-5, D-6): the addressed card renders the phase; the page stays
+// usable (no wholesale disable). `none` = no ceremony on this row.
+// slint: pending-phase (pre-framework seam, #782)
+export enum SettingsPublishPhase {
+    none,
+    publishing,
+    adopting,
+    done,
+    failed,
+}
+
 // One rendered connections item (the flat, positional projection of
 // the account cards — the adapter resolves every callback's item
 // index through its own address table; no id enters the model).
@@ -103,6 +115,9 @@ export struct ConnectionItem {
     show-title: bool,
     status: SettingsRowStatus,
     busy: bool,
+    // deck: this connector's publish ceremony's phase (US-5, D-6) —
+    // display-only; the terminal truth rides the outcome lane.
+    pending-phase: SettingsPublishPhase,
     // remote: bound through this connector (Disconnect vs pick/create).
     bound: bool,
     // deck: a listing has landed (else the Refresh hint renders).
@@ -1167,6 +1182,21 @@ export component SettingsView inherits FocusScope {
                         VerticalLayout {
                             alignment: center;
                             if item.busy: BusyDot {}
+                            // The ceremony's phase badge (US-5, D-6):
+                            // display-only, the terminal truth rides
+                            // the outcome lane.
+                            if item.pending-phase != SettingsPublishPhase.none: RoleText {
+                                role: Typography.caption;
+                                text: item.pending-phase == SettingsPublishPhase.publishing
+                                    ? "publishing"
+                                    : item.pending-phase == SettingsPublishPhase.adopting
+                                        ? "adopting"
+                                        : item.pending-phase == SettingsPublishPhase.done
+                                            ? "done"
+                                            : "failed";
+                                text-color: Theme.text-secondary;
+                                vertical-alignment: center;
+                            }
                         }
                         Rectangle {
                             horizontal-stretch: 1;
