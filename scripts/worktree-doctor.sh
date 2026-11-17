@@ -19,7 +19,18 @@
 #      incremental cache, so nothing else is invalidated) — skipped when
 #      an llvm-cov run appears active;
 #   3. exits nonzero when free space on the checkout's filesystem is
-#      below the floor, so callers stop instead of filling the disk.
+#      below the floor, so callers stop instead of filling the disk;
+#   4. applies the same fail-closed contract to MEMORY: exits nonzero
+#      when /proc/meminfo MemAvailable is below
+#      WORKTREE_DOCTOR_MIN_AVAIL_MIB (default 8192 — same constant and
+#      evidence base as MEMORY_GATE_MIN_AVAIL_MIB in
+#      scripts/memory-gate.sh; measured 2026-11-17: one clippy build
+#      peaks at ~3.9 GiB, floor = peak + ~2 GiB desktop headroom + ~2 GiB
+#      margin). A worktree created into a memory-starved box dies at its
+#      first pre-commit hook anyway — and an under-provisioned box is
+#      exactly the 2026-11-17 global-OOM shape
+#      (.artifacts/reports/2026-11-17-oom-incident-concurrency-learning-report.md).
+#      Unreadable MemAvailable counts as below the floor.
 #
 # The sweep enumerates via `git worktree list --porcelain` (#395): only
 # registered worktrees enter the loop, at whatever path they live at.
@@ -46,9 +57,11 @@
 # Env overrides:
 #   WORKTREE_DOCTOR_ROOT       anchor checkout (default: this repo root)
 #   WORKTREE_DOCTOR_MIN_FREE_G free-space floor in GiB (default: 25)
+#   WORKTREE_DOCTOR_MIN_AVAIL_MIB MemAvailable floor in MiB (default: 8192)
 set -euo pipefail
 
 MIN_FREE_G="${WORKTREE_DOCTOR_MIN_FREE_G:-25}"
+MIN_AVAIL_MIB="${WORKTREE_DOCTOR_MIN_AVAIL_MIB:-8192}"
 ROOT="$(cd "${WORKTREE_DOCTOR_ROOT:-$(dirname "$0")/..}" && pwd)"
 
 if ! git -C "$ROOT" fetch origin --prune --quiet 2>/dev/null; then
@@ -162,4 +175,12 @@ else
   echo "free: ? (floor: ${MIN_FREE_G}G) — unmeasurable counts as below"
   free_g=$(( MIN_FREE_G - 1 ))
 fi
-[ "$free_g" -ge "$MIN_FREE_G" ]
+[ "$free_g" -ge "$MIN_FREE_G" ] || exit 1
+
+if avail_mib="$(awk '/^MemAvailable:/ { print int($2 / 1024); found=1; exit } END { exit found ? 0 : 1 }' /proc/meminfo 2>/dev/null)"; then
+  echo "avail: ${avail_mib} MiB (floor: ${MIN_AVAIL_MIB} MiB)"
+else
+  echo "avail: ? MiB (floor: ${MIN_AVAIL_MIB} MiB) — unmeasurable counts as below"
+  avail_mib=$(( MIN_AVAIL_MIB - 1 ))
+fi
+[ "$avail_mib" -ge "$MIN_AVAIL_MIB" ]
