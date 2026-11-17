@@ -163,12 +163,6 @@ jobs:
       # Same offline-cache guarantee as the check job: builds must never
       # need a live DATABASE_URL.
       SQLX_OFFLINE: "true"
-      # Pty gap telemetry on for every CI run (issue #697): the trailing
-      # separator selects the harness's directory mode — one
-      # <test-name>-<pid>-<n>.log per pty session, no parallel clobber.
-      # The directory is created by the test harness itself; the
-      # failure-only upload below carries the data out of the job log.
-      TASKBOARD_PTY_TEST_GAP_LOG: ${{ runner.temp }}/pty-gap/
     steps:
       - uses: actions/checkout@v7
 
@@ -188,6 +182,14 @@ jobs:
           tool: nextest
 
       - name: Run Tests
+        # Job-level env cannot use the runner context (workflow-file
+        # validation rejects it), so the gap telemetry var lives on the
+        # step that consumes it. Trailing separator = directory mode
+        # (issue #697): one <test-name>-<pid>-<n>.log per pty session,
+        # no parallel clobber; the failure-only upload below carries
+        # the data out of the job log.
+        env:
+          TASKBOARD_PTY_TEST_GAP_LOG: ${{ runner.temp }}/pty-gap/
         # --no-tests=warn: green while the workspace has no tests yet.
         # Default target set (lib+bins+tests): bench targets are the
         # benchmark workflow's lane (main pushes + weekly; off PRs since
