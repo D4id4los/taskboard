@@ -20,6 +20,23 @@
 # 2026-11-17 concurrency law). Residual overlap is bounded at 2 heavy
 # jobs — the box survives 2 (it died at 8).
 #
+# Two-mode routing law (docs/agent_dispatch.org §2, issue #923 corollary
+# of 2026-11-17 ~21:20):
+#   - Short/heavy builds (clippy, cargo check, one-shot test builds —
+#     anything real but bounded by its own completion) run gated-HOLD
+#     (the default mode): lock held for the command.
+#   - Long self-capped runs (cargo-mutants --jobs N under timeout,
+#     miri batches — anything with BOTH its own job cap and a wall-clock
+#     cap) run gated-PREFLIGHT only: `--preflight` floor-checks once and
+#     never holds the lock. Holding the gate lock across a multi-hour
+#     run is an availability collapse (every other agent's gated
+#     pre-commit clippy queues behind it — observed live 2026-11-17
+#     ~21:20), not a safety measure; the self-caps are the protection.
+#   - Preflight is a pre-check by design: the floor can be eaten between
+#     the reading and the command's build phase (TOCTOU). The residual
+#     risk is covered by the resource law's stagger/cap (§2) — not
+#     "solved" here.
+#
 # Route through this gate: any agent command expected to be a real build
 # (>~1 min: cargo build, cargo test subsets, clippy re-runs) and the
 # pre-commit hook's clippy step. The full §10 suite keeps
@@ -27,9 +44,18 @@
 #
 # CI never needs this (one suite per runner); it exists for local runs.
 #
+# TMPDIR redirection (both modes, before exec): if TMPDIR is unset or
+# canonicalizes to /tmp (or under it — host /tmp is tmpfs, RAM-backed),
+# it is redirected to /var/tmp so scratch does not consume host memory;
+# an explicitly chosen non-/tmp TMPDIR is honored untouched. Best-effort:
+# an unwritable /var/tmp only warns — the gate must not turn a
+# disk-permission quirk into a refusal.
+#
 # Usage:
-#   scripts/memory-gate.sh [--] <cmd> [args…]  run <cmd> under the gate
-#   scripts/memory-gate.sh --status            report lock state + MemAvailable
+#   scripts/memory-gate.sh [--] <cmd> [args…]          run <cmd> under the gate (hold mode)
+#   scripts/memory-gate.sh --preflight [--] <cmd> [args…]
+#                                                      floor-check once, no lock, exec <cmd>
+#   scripts/memory-gate.sh --status                    report lock state + MemAvailable
 #
 # Env:
 #   MEMORY_GATE_TIMEOUT         max seconds waiting for lock OR floor before
@@ -46,16 +72,20 @@
 # headroom ⇒ ~6 GiB needed; 8192 MiB carries ~2 GiB of extra margin.
 # The same constant is duplicated as WORKTREE_DOCTOR_MIN_AVAIL_MIB in
 # scripts/worktree-doctor.sh (shell, no shared config) — tune BOTH or
-# cross-reference the evidence when it changes.
+# cross-reference the evidence when it changes. Since the two-mode law
+# (2026-11-17) it is ALSO the pre-flight floor in
+# scripts/run-quality-gates.sh — one budget, one dial.
 set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/memory-gate.sh [--] <cmd> [args…]  # run <cmd> under the memory gate
-       scripts/memory-gate.sh --status            # lock state + current MemAvailable
+usage: scripts/memory-gate.sh [--] <cmd> [args…]          # run <cmd> under the gate (hold mode)
+       scripts/memory-gate.sh --preflight [--] <cmd> [args…]  # one floor check, no lock, exec
+       scripts/memory-gate.sh --status                    # lock state + current MemAvailable
 env:   MEMORY_GATE_TIMEOUT       max wait for lock/floor in seconds (default 3600, 0 = forever)
        MEMORY_GATE_POLL          max seconds between polls/messages (default 30)
        MEMORY_GATE_MIN_AVAIL_MIB MemAvailable floor in MiB (default 8192)
+       (also the pre-flight floor in scripts/run-quality-gates.sh)
 EOF
 }
 
@@ -72,6 +102,50 @@ avail_mib() {
   awk '/^MemAvailable:/ { print int($2 / 1024); found=1; exit }
        END { exit found ? 0 : 1 }' /proc/meminfo 2>/dev/null
 }
+
+# TMPDIR redirection (issue #923 comment thread, binding): host /tmp is
+# tmpfs (RAM-backed), so scratch written there eats MemAvailable directly.
+# Both modes call this before exec. An explicitly chosen non-/tmp TMPDIR
+# is honored untouched; unwritable /var/tmp only warns (best-effort).
+redirect_tmpdir() {
+  local resolved=""
+  if [[ -n "${TMPDIR:-}" ]]; then
+    resolved="$(realpath -m -- "${TMPDIR}" 2>/dev/null)" || resolved=""
+  fi
+  # unset, or under /tmp (including exactly /tmp) → redirect
+  if [[ -z "${TMPDIR:-}" || "${resolved}" == "/tmp" || "${resolved}" == /tmp/* ]]; then
+    if [[ -d /var/tmp && -w /var/tmp ]]; then
+      export TMPDIR=/var/tmp
+      echo "memory-gate: TMPDIR redirected to /var/tmp (host /tmp is tmpfs; scratch must not consume MemAvailable)"
+    else
+      echo "memory-gate: WARNING: TMPDIR unset or under tmpfs /tmp but /var/tmp is not writable — continuing with TMPDIR=${TMPDIR:-unset}" >&2
+    fi
+  fi
+}
+
+# Preflight mode (two-mode law): one MemAvailable reading, fail closed,
+# no waiting, no lock — fd 9 is never opened, so nothing can be held
+# across the command's duration by construction. A long self-capped run
+# wants a go/no-go now, not a queue; the bounded-wait loop deliberately
+# does not apply here. The caller re-runs when the box frees up.
+if [[ "${1:-}" == "--preflight" ]]; then
+  shift
+  if [[ "${1:-}" == "--" ]]; then
+    shift
+  fi
+  if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] || [[ "$#" -eq 0 ]]; then
+    usage
+    [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]
+    exit $?
+  fi
+  if ! avail="$(avail_mib)" || (( avail < floor )); then
+    echo "memory-gate: preflight refusing — MemAvailable ${avail:-unreadable} MiB below floor ${floor} MiB (no lock was acquired)" >&2
+    exit 1
+  fi
+  echo "memory-gate: preflight MemAvailable ${avail} MiB (floor ${floor} MiB) — running: $*"
+  redirect_tmpdir
+  exec "$@"
+fi
 
 if [[ "${1:-}" == "--status" ]]; then
   common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
@@ -145,4 +219,5 @@ while ! avail="$(avail_mib)" || (( avail < floor )); do
 done
 
 echo "memory-gate: running under the gate (MemAvailable ${avail} MiB, floor ${floor} MiB): $*"
+redirect_tmpdir
 exec "$@" # exec keeps fd 9 open, so the lock lives exactly as long as the command
