@@ -2263,6 +2263,17 @@ impl Adapter {
                 });
         // The armed strip's mirror (the track-entries armed-index
         // rule): the armed row's canonical roster position, or none.
+        // US-6 pass-side clear (#840, task-detail-editor UX plan
+        // D-11): an armed identity that no longer resolves against the
+        // live roster cannot outlive its row — the lingering `Some`
+        // would leave the strip unrenderable (mirror index −1) and eat
+        // the next Escape rung. The `priority_open` subject-death
+        // rule's shape.
+        if let Some(armed) = self.label_delete_armed
+            && state.labels.get(&armed).is_none_or(|label| label.deleted)
+        {
+            self.label_delete_armed = None;
+        }
         let subject_board = self
             .view_state
             .subject_task()
@@ -10876,6 +10887,17 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         else {
             return; // a stale index against an older tables pass
         };
+        // US-6 re-arm guard (#840, D-11): a stale-index/dead-label
+        // activation — the id no longer resolving in the live roster —
+        // never re-arms (the stale-index guard the edit seam already
+        // uses); the fast double-click's second activation against the
+        // deleted row cannot resurrect the armed identity.
+        {
+            let state = a.state.load_full();
+            if state.labels.get(&label).is_none_or(|l| l.deleted) {
+                return;
+            }
+        }
         // Arming swaps out an open form (the surfaces are
         // mutually exclusive).
         a.label_form = None;
