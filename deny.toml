@@ -133,6 +133,15 @@ yanked = "warn"
 # offers no shaping-free or harfrust-backed alternative, so no safe
 # upgrade exists below the stack; revisit when krilla moves (its
 # 0.9 wave) or the ruling re-opens the stack choice.
+#
+# RUSTSEC-2026-0543: `chrono` is unmaintained (upstream development
+# paused; no vulnerability known). Unlike the ignores above this is a
+# DIRECT workspace dependency and the AGENTS-approved time stack
+# (`[workspace.dependencies]`), so this ignore is interim: the stack
+# evaluation (migration target, workspace-wide churn) is tracked in
+# the follow-up issue, not decided in a deny.toml edit. Recorded
+# 2026-11-17 when the refreshed advisory DB first surfaced it on an
+# untouched dependency graph (the DR-8 chunk-2 precedent).
 ignore = [
     "RUSTSEC-2026-0192",
     "RUSTSEC-2026-0370",
@@ -141,6 +150,7 @@ ignore = [
     "RUSTSEC-2026-0441",
     "RUSTSEC-2026-0459",
     "RUSTSEC-2026-0206",
+    "RUSTSEC-2026-0543",
 ]
 
 [sources]
