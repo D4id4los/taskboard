@@ -297,6 +297,19 @@ fn local_wall(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<chro
 }
 
 /// The local midnight convenience.
+/// The N-4 stamping law's mint over the harness's injected day facts
+/// (00:00 start, UTC boot offset) — the instant the commit funnels now
+/// produce for a bare date (US-1/D-3, task-detail-editor UX plan,
+/// 2026-11-17). The pins that predate the law assert this, not the
+/// old local midnight.
+fn window_end_utc(y: i32, mo: u32, d: u32) -> chrono::DateTime<chrono::Utc> {
+    taskboard_domain::days::day_window_end(
+        chrono::NaiveDate::from_ymd_opt(y, mo, d).expect("fixture date"),
+        chrono::NaiveTime::MIN,
+        chrono::FixedOffset::east_opt(0).expect("zero"),
+    )
+}
+
 fn local_midnight(y: i32, mo: u32, d: u32) -> chrono::DateTime<chrono::Utc> {
     local_wall(y, mo, d, 0, 0)
 }
@@ -7759,7 +7772,7 @@ fn the_typed_due_entries_reach_the_boundary() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(local_midnight(2030, 2, 28))),
+                    duedate: Some(Some(window_end_utc(2030, 2, 28))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7773,7 +7786,7 @@ fn the_typed_due_entries_reach_the_boundary() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(local_midnight(2030, 1, 31))),
+                    duedate: Some(Some(window_end_utc(2030, 1, 31))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -7879,7 +7892,7 @@ fn the_scheduled_editor_reaches_the_boundary_with_parity() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    scheduled: Some(Some(local_midnight(2030, 4, 1))),
+                    scheduled: Some(Some(window_end_utc(2030, 4, 1))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -8035,7 +8048,7 @@ fn click_away_commits_parseable_and_discards_junk() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(local_midnight(2030, 2, 14))),
+                    duedate: Some(Some(window_end_utc(2030, 2, 14))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -8082,7 +8095,7 @@ fn click_away_commits_parseable_and_discards_junk() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    scheduled: Some(Some(local_midnight(2030, 3, 1))),
+                    scheduled: Some(Some(window_end_utc(2030, 3, 1))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -8725,7 +8738,7 @@ fn the_due_picker_journeys_reach_the_boundary() {
             let picked = vec![StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(local_midnight(2030, 2, 28))),
+                    duedate: Some(Some(window_end_utc(2030, 2, 28))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }];
@@ -8746,7 +8759,7 @@ fn the_due_picker_journeys_reach_the_boundary() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(local_midnight(2030, 1, 15))),
+                    duedate: Some(Some(window_end_utc(2030, 1, 15))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
@@ -8859,7 +8872,7 @@ fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(local_midnight(2030, 1, 31))),
+                    duedate: Some(Some(window_end_utc(2030, 1, 31))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
