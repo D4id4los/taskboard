@@ -118,6 +118,9 @@ export struct ConnectionItem {
     // deck: this connector's publish ceremony's phase (US-5, D-6) —
     // display-only; the terminal truth rides the outcome lane.
     pending-phase: SettingsPublishPhase,
+    // files-board: the undo-window Restore affordance's mount (the
+    // files-sync-status plan US-6, D-7) — withheld, never greyed.
+    restore-offerable: bool,
     // remote: bound through this connector (Disconnect vs pick/create).
     bound: bool,
     // deck: a listing has landed (else the Refresh hint renders).
@@ -716,6 +719,10 @@ export component SettingsView inherits FocusScope {
     // adapter resolves the board and re-derives the action kind at
     // the trust boundary.
     callback files-board-action-clicked(int);
+    // The undo-window Restore (US-6, D-7): its own verb beside the
+    // roster's one-action grammar.
+    // slint: files-board-restore-clicked
+    callback files-board-restore-clicked(int);
     callback preset-picked(int);
     callback scale-committed(string);
     // The scale field's focus-loss seam (r3 D20a writer 7): a
@@ -1141,6 +1148,16 @@ export component SettingsView inherits FocusScope {
                         enabled: item.action-enabled && !SettingsModel.busy;
                         clicked => {
                             root.files-board-action-clicked(index);
+                        }
+                    }
+                    // The undo-window Restore (US-6, D-7): mounts only
+                    // inside the window's candidate set — withheld
+                    // outside, never greyed (the C-4 bar).
+                    if item.restore-offerable: SettingsButton {
+                        text: "Restore";
+                        enabled: !SettingsModel.busy;
+                        clicked => {
+                            root.files-board-restore-clicked(index);
                         }
                     }
                 }

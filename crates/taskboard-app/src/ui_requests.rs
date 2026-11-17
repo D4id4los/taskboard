@@ -407,6 +407,10 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
             let outcome = move_board_to_files(workspace, board).await;
             let _ = reply.send(outcome);
         }
+        UiRequest::UndoBoardMove { board, reply } => {
+            let outcome = undo_board_move(workspace, board).await;
+            let _ = reply.send(outcome);
+        }
         UiRequest::StopBoardFilesSync { board, reply } => {
             let outcome = stop_board_files_sync(workspace, board).await;
             let _ = reply.send(outcome);
@@ -1692,6 +1696,40 @@ async fn move_board_to_files(
     Ok(current_connections(workspace))
 }
 
+/// The undo-window Restore choreography (the files-sync-status plan
+/// US-6, D-7): the pre-IO guards mirror the move arm's posture (the
+/// board present and not deleted — `Gone` otherwise), then the
+/// ceremony's own undo leg runs on the running engine — the CLI's
+/// exact path, never a reimplemented undo. The leg derives the stage
+/// and refuses typed outside the window (`NothingToUndo` /
+/// `UndoClosed` / `UndoCoordinatesLost`); the reply is the fresh
+/// snapshot so the standard drain re-pushes settings.
+async fn undo_board_move(
+    workspace: &ConnectionWorkspace,
+    board: BoardId,
+) -> Result<ConnectionsSnapshot, SettingsError> {
+    let state = workspace.engine.shared_state().load();
+    state
+        .boards
+        .get(&board)
+        .filter(|b| !b.deleted)
+        .ok_or(SettingsError::Gone)?;
+    drop(state);
+    let raw = ensure_migrated(workspace)?;
+    crate::board_move_ceremony::run_on(
+        &workspace.engine,
+        &raw,
+        &workspace.store,
+        board,
+        crate::board_move_ceremony::MoveDirection::Undo,
+        crate::board_move_ceremony::DEFAULT_MOVE_TIMEOUT,
+    )
+    .await
+    .map_err(map_move_error)?;
+    tracing::info!(board = %board.as_uuid(), "settings move undo committed");
+    Ok(current_connections(workspace))
+}
+
 /// The roster's Stop-Sync choreography (round-7 D-7.3, W-4/D7): the
 /// guards are the engine's truth read fresh — the board present and
 /// not deleted (`Gone` otherwise), the binding files-typed
@@ -1785,6 +1823,16 @@ fn map_move_error(err: crate::commands::CommandError) -> SettingsError {
                 }
                 crate::board_move_ceremony::MoveError::OutboxNotQuiescent { .. } => {
                     SettingsError::OutboxNotQuiescent
+                }
+                // The undo window's typed refusals (US-6, D-7): the
+                // raced or closed stages refuse, they do not fold into
+                // a coarse failure.
+                crate::board_move_ceremony::MoveError::NothingToUndo => {
+                    SettingsError::NothingToUndo
+                }
+                crate::board_move_ceremony::MoveError::UndoClosed => SettingsError::UndoClosed,
+                crate::board_move_ceremony::MoveError::UndoCoordinatesLost => {
+                    SettingsError::UndoCoordinatesLost
                 }
                 _ => SettingsError::MoveFailed,
             }
@@ -2037,6 +2085,29 @@ mod tests {
             .await
             .expect_err("an unbound board refuses");
         assert_eq!(loose, SettingsError::BindRefused);
+    }
+
+    /// US-6 (the files-sync-status plan D-7) — the undo-window
+    /// Restore arm's guards refuse typed: a gone board is `Gone`;
+    /// with no files lane configured the ceremony refuses typed
+    /// (`FilesSyncDisabled`) — the ceremony's own undo leg is the
+    /// stage gate, never a reimplemented undo.
+    #[tokio::test]
+    async fn us6_ac1_restore_guards_refuse_typed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace = test_workspace(config).await;
+        let unbound = create_board(&workspace, "loose").await;
+
+        let gone = undo_board_move(&workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
+            .await
+            .expect_err("a gone board refuses");
+        assert_eq!(gone, SettingsError::Gone);
+        let refused = undo_board_move(&workspace, unbound)
+            .await
+            .expect_err("no files lane configured refuses typed");
+        assert_eq!(refused, SettingsError::FilesSyncDisabled);
     }
 
     /// The Stop arm's exact effect (US-2/S3): the engine receives the

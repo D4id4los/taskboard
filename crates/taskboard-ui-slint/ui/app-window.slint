@@ -240,6 +240,8 @@ export component AppWindow inherits Window {
     callback settings-publish-picked(int, int);
     // The Files roster's per-row action seam (round-7 D-7.3, W-3).
     callback settings-files-board-action-clicked(int);
+    // slint: settings-files-board-restore-clicked (US-6, D-7)
+    callback settings-files-board-restore-clicked(int);
     callback settings-create-clicked(int);
     callback settings-disconnect-clicked(int);
     callback settings-files-picked(int, int);
@@ -586,6 +588,7 @@ export component AppWindow inherits Window {
                 remote-bind-picked(i, o) => root.settings-remote-bind-picked(i, o);
                 publish-picked(i, o) => root.settings-publish-picked(i, o);
                 files-board-action-clicked(i) => root.settings-files-board-action-clicked(i);
+                files-board-restore-clicked(i) => root.settings-files-board-restore-clicked(i);
                 create-clicked(i) => root.settings-create-clicked(i);
                 disconnect-clicked(i) => root.settings-disconnect-clicked(i);
                 files-picked(i, o) => root.settings-files-picked(i, o);
