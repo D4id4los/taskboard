@@ -290,9 +290,9 @@ the existing `UpdateSettings` whole-snapshot swap (no partial states).
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | crates/taskboard-app/src/commands/mod.rs | — (routing) | — | `route_for_ipc`: the `Command::Config` arm splits — `Set`/`Unset` take the relay lane, `Print`/`Path` stay `Local` (R-2) | — | `Request::Exec` (no new wire variant) | — | US-1/S1–S2, US-2/S1 | commands::route_for_ipc tests + the routing pin test |
-| W-2 | crates/taskboard-app/src/ipc/server.rs | — | — | the daemon's Exec dispatch reaches the app handles (engine + write path) so the config-set arm can apply live | — | `StateCommand::UpdateSettings` | — | US-1/S3–S5 | ipc server seam test::us1_ac1 |
-| W-3 | crates/taskboard-app/src/ui_requests.rs, src/commands/config.rs | — | — | the editor's live-write choreography (`run_editor_write`'s guard → write → mint → apply → echo) extracted into a shared write port both the GUI arm and the daemon's config arm call — one vocabulary, three fronts | — | `StateCommand::UpdateSettings` | — | US-1/S3–S5, US-3/S2–S3 | ui_requests seam tests (the extracted port's own truth table) |
+| W-1 | crates/taskboard-app/src/commands/mod.rs | — (routing) | — | `route_for_ipc`: the `Command::Config` arm splits — `Set`/`Unset` take the relay lane, `Print`/`Path` stay `Local` (R-2) | — | — | — | US-1/S1–S2, US-2/S1 | commands::route_for_ipc tests + the routing pin test |
+| W-2 | crates/taskboard-app/src/ipc/server.rs | — | — | the daemon's Exec dispatch reaches the app handles (engine + write path) so the config-set arm can apply live | — | StateCommand::UpdateSettings | — | US-1/S3–S5 | ipc server seam test::us1_ac1 |
+| W-3 | crates/taskboard-app/src/ui_requests.rs, src/commands/config.rs | — | — | the editor's live-write choreography (`run_editor_write`'s guard → write → mint → apply → echo) extracted into a shared write port both the GUI arm and the daemon's config arm call — one vocabulary, three fronts | — | StateCommand::UpdateSettings | — | US-1/S3–S5, US-3/S2–S3 | ui_requests seam tests (the extracted port's own truth table) |
 | W-4 | crates/taskboard-app/src/settings_overlay.rs | — | — | the prove-gate *removal* writer (`remove_key`) — unset has no overlay writer today; the local `write_dotted(None)` path migrates onto it so both lanes share the prove gate | — | — | — | US-3/S2, US-2/S2 | settings_overlay tests::us3_ac1 |
 | W-5 | crates/taskboard-app/src/commands/config.rs, src/commands/output.rs | — | — | the typed outcome view (`ConfigSetView { key, value, applied_live }`) replacing the free-text "applies at the next start" line; text render keeps a human line, JSON emit carries the bits | — | — | — | US-5/S1, US-2/S3 | commands::config tests (structural `matches!`/field assertions) |
 | W-6 | crates/taskboard-app/src/cli.rs | — | — | help text for `config set`/`unset`: the live-vs-next-start posture stated per the accepted semantics | — | — | — | US-5 (docs-only) | — (help text; no text assertions — walkthrough judges it) |
@@ -308,8 +308,9 @@ the existing `UpdateSettings` whole-snapshot swap (no partial states).
 
 ## 8. Verification plan
 
-- **Test root**: `Test-root: crates/taskboard-app/` (CLI/daemon app
-  crate; no Slint delta).
+<!-- The Test-root line is a parser contract for scripts/ux-coverage.sh
+     (value = one bare path): the CLI/daemon app crate; no Slint delta. -->
+Test-root: crates/taskboard-app/
 - **Journey tests** (step-ID-named): `us1_s1_...` routing relay vs
   local; `us2_s1_...` fallback parity; `us3_s2_...` removal writer
   round-trip.

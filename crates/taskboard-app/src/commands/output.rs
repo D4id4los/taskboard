@@ -917,6 +917,7 @@ pub struct ConfigPathView {
 /// immediately, false when the write landed file-only and applies at
 /// the next start. `applied_live: false` is a success, not a refusal.
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub struct ConfigSetView {
     /// The dotted config key the verb addressed.
     pub key: String,

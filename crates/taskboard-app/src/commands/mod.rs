@@ -2776,11 +2776,10 @@ mod ipc_routing_tests {
         );
     }
 
-    /// `us2_s1`: `config unset` takes the same fallback-capable relay
-    /// lane — `IpcOrLocal` *is* the offline fallback semantics (no
-    /// daemon serving = the typed next-start local lane, US-2 AC-2).
+    /// `us3_s1`: `config unset` takes the same relay lane as set —
+    /// the lane choice the journey's S1 step dispatches on.
     #[test]
-    fn us2_s1_config_unset_takes_the_fallback_capable_lane() {
+    fn us3_s1_config_unset_takes_the_relay_lane() {
         assert_eq!(
             route_for_ipc(&Command::Config {
                 cmd: crate::cli::ConfigCmd::Unset {
@@ -2788,6 +2787,28 @@ mod ipc_routing_tests {
                 },
             }),
             IpcRoute::IpcOrLocal
+        );
+    }
+
+    /// `us2_s1`: the relay lane IS the offline fallback — `config
+    /// set` rides the same `IpcOrLocal` lane as the mutation family
+    /// (daemon if serving, else the typed next-start local lane,
+    /// US-2 AC-2's mechanism).
+    #[test]
+    fn us2_s1_config_set_rides_the_fallback_capable_lane() {
+        assert_eq!(
+            route_for_ipc(&Command::Config {
+                cmd: crate::cli::ConfigCmd::Set {
+                    key: "focus.work_mins".to_owned(),
+                    value: "50".to_owned(),
+                },
+            }),
+            route_for_ipc(&Command::Sync {
+                no_wait: false,
+                timeout_secs: 1,
+                connector: None,
+            }),
+            "the same fallback-capable lane as the mutation family"
         );
     }
 }
