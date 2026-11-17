@@ -170,6 +170,8 @@ mod tests {
     use taskboard_domain::outbox::LocalOp;
     use taskboard_domain::persistence::{PersistedState, TaskRepository};
 
+    use crate::rewind::{LEGACY_SYNC_STATUS_SINGLETON, rewind_to};
+
     /// A fresh database loads a default-shaped state (derived
     /// `pending_ops` = 0).
     #[tokio::test]
@@ -261,19 +263,14 @@ mod tests {
             .await
             .expect("raw connect");
         // Simulate a pre-0022 database: run the shipped migrations,
-        // strip the 0022 artifact and its bookkeeping row.
+        // then rewind the ledger below 0022 — the derived strips drop
+        // the 0022 artifact and every later migration's objects, and
+        // the reopening open() replays 0022.. in order.
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("DROP TABLE reflection_entries")
-            .execute(&raw)
-            .await
-            .expect("strip reflection_entries");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 22")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+        rewind_to(&raw, 21, &[]).await.expect("rewind");
         raw.close().await;
 
         let repo = open(file.path(), test_connector())
@@ -348,39 +345,15 @@ mod tests {
             .await
             .expect("raw connect");
         // Simulate a pre-0017 database: run the shipped migrations,
-        // strip the 0017 artifacts and their bookkeeping row.
+        // then rewind the ledger below 0017 — the derived strips drop
+        // the 0017 tables and every later migration's objects (0026's
+        // au_by columns included), and the reopening open() replays
+        // 0017.. in order.
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("DROP TABLE habit_log")
-            .execute(&raw)
-            .await
-            .expect("strip habit_log");
-        sqlx::query("DROP TABLE habits")
-            .execute(&raw)
-            .await
-            .expect("strip habits");
-        // 0026 rides the strip too: its `au_by` ALTERs the re-created
-        // bare habit tables (the 0018/0021 shape). reminder_rules,
-        // break_rules and time_entries survive the strip, so their
-        // au_by columns go by hand — the replayed ALTER would
-        // otherwise collide.
-        for statement in [
-            "ALTER TABLE reminder_rules DROP COLUMN au_by",
-            "ALTER TABLE break_rules DROP COLUMN au_by",
-            "ALTER TABLE time_entries DROP COLUMN au_by",
-        ] {
-            // Audited: constant, migration-owned column strips.
-            sqlx::query(sqlx::AssertSqlSafe(statement))
-                .execute(&raw)
-                .await
-                .expect("strip au_by col");
-        }
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (17, 26)")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+        rewind_to(&raw, 16, &[]).await.expect("rewind");
         raw.close().await;
 
         let repo = open(file.path(), test_connector())
@@ -450,19 +423,17 @@ mod tests {
             .await
             .expect("raw connect");
         // Simulate a 0001-era database: run the shipped migrations, then
-        // strip the 0002 column and its bookkeeping row.
+        // rewind the ledger to 0001 — the derived strips drop the 0002
+        // column and every later migration's objects; the legacy
+        // sync_status singleton is restored by hand (0006's rename
+        // rebuild is not mechanically strippable).
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("ALTER TABLE boards DROP COLUMN ck_title")
-            .execute(&raw)
+        rewind_to(&raw, 1, LEGACY_SYNC_STATUS_SINGLETON)
             .await
-            .expect("strip ck_title");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 2")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+            .expect("rewind");
         let _ = sqlx::query(
             "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, remote_seen) \
              VALUES ('00000000-0000-0000-0000-00000000000b', 42, 'board', '00ff00', 0, 0, NULL)",
@@ -498,32 +469,19 @@ mod tests {
             .await
             .expect("raw connect");
         // Simulate a 0004-era database: run the shipped migrations, then
-        // strip the 0005 effects (the clock columns and the tag rename)
-        // and the bookkeeping row.
+        // rewind the ledger to 0004 — the derived strips drop the 0005
+        // clock columns and every later migration's objects, the legacy
+        // sync_status singleton is restored by hand (0006's rename
+        // rebuild is not mechanically strippable), and the reopening
+        // open() replays 0005.. in order (the tag rename included — the
+        // fixture seeds the legacy tag after the rewind).
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("ALTER TABLE boards DROP COLUMN ck_color")
-            .execute(&raw)
+        rewind_to(&raw, 4, LEGACY_SYNC_STATUS_SINGLETON)
             .await
-            .expect("strip ck_color");
-        sqlx::query("ALTER TABLE boards DROP COLUMN ck_archived")
-            .execute(&raw)
-            .await
-            .expect("strip ck_archived");
-        sqlx::query("ALTER TABLE boards DROP COLUMN ck_deleted")
-            .execute(&raw)
-            .await
-            .expect("strip ck_deleted");
-        sqlx::query("UPDATE outbox SET op_kind = 'rename_board'")
-            .execute(&raw)
-            .await
-            .expect("restore legacy tag");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 5")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+            .expect("rewind");
         let _ = sqlx::query(
             "INSERT INTO boards (id, remote_board_id, title, color, archived, deleted, ck_title, remote_seen) \
              VALUES (?, 42, 'board', '00ff00', 0, 0, '0001-01-01T00:00:00+00:00', NULL)",
@@ -569,13 +527,13 @@ mod tests {
 
     // -- 0006: the per-board sync_status rebuild + the binding connector
     //    tag (F16-22 / connect-flow §4.5). Same construction recipe as the
-    //    0005 pin: shipped migrations, then strip 0006's effects and its
-    //    bookkeeping row so the reopening open() replays the real
-    //    upgrade path.
+    //    0005 pin: shipped migrations, then a ledger rewind so the
+    //    reopening open() replays the real upgrade path.
 
-    /// Builds a pre-0006 database: strips the `connector` column and the
-    /// per-board `sync_status` rebuild, restores the legacy singleton
-    /// (with its seed row), and deletes 0006's bookkeeping entry.
+    /// Builds a pre-0006 database: rewinds the ledger to 0005 (the
+    /// derived strips drop the `connector` column and the per-board
+    /// `sync_status` rebuild; the legacy singleton comes back with its
+    /// seed row).
     async fn pre_0006_database() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("legacy.db");
@@ -586,33 +544,14 @@ mod tests {
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("ALTER TABLE boards DROP COLUMN connector")
-            .execute(&raw)
+        // Rewind to the pre-0006 world: the derived strips drop the
+        // connector column and every later migration's object; the
+        // legacy singleton is restored by hand (0006's rename rebuild
+        // is not mechanically strippable). The reopening open() replays
+        // 0006.. in order against the legacy shapes.
+        rewind_to(&raw, 5, LEGACY_SYNC_STATUS_SINGLETON)
             .await
-            .expect("strip connector");
-        sqlx::query("DROP TABLE sync_status")
-            .execute(&raw)
-            .await
-            .expect("strip per-board status");
-        sqlx::query(
-            "CREATE TABLE sync_status (
-                id           INTEGER PRIMARY KEY CHECK (id = 1),
-                phase        TEXT NOT NULL,
-                last_error   TEXT NULL,
-                last_success TEXT NULL
-            )",
-        )
-        .execute(&raw)
-        .await
-        .expect("rebuild legacy singleton");
-        sqlx::query("INSERT INTO sync_status (id, phase) VALUES (1, 'idle')")
-            .execute(&raw)
-            .await
-            .expect("re-seed legacy singleton");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 6")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+            .expect("rewind");
         raw.close().await;
         (dir, db)
     }
@@ -905,33 +844,19 @@ mod tests {
             .await
             .expect("raw connect");
         // Simulate a 0002-era database: run the shipped migrations, then
-        // strip the 0003 column and the 0005 effects (its columns and its
-        // tag rename), plus their bookkeeping rows, so the reopening
-        // open() replays the real 0003 → 0005 upgrade path.
+        // rewind the ledger to 0002 — the derived strips drop the 0003
+        // column and every later migration's objects (0005's columns
+        // included), the legacy sync_status singleton is restored by
+        // hand (0006's rename rebuild is not mechanically strippable),
+        // and the reopening open() replays the real 0003 → 0005
+        // upgrade path.
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("ALTER TABLE outbox DROP COLUMN board_id")
-            .execute(&raw)
+        rewind_to(&raw, 2, LEGACY_SYNC_STATUS_SINGLETON)
             .await
-            .expect("strip board_id");
-        sqlx::query("ALTER TABLE boards DROP COLUMN ck_color")
-            .execute(&raw)
-            .await
-            .expect("strip ck_color");
-        sqlx::query("ALTER TABLE boards DROP COLUMN ck_archived")
-            .execute(&raw)
-            .await
-            .expect("strip ck_archived");
-        sqlx::query("ALTER TABLE boards DROP COLUMN ck_deleted")
-            .execute(&raw)
-            .await
-            .expect("strip ck_deleted");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (3, 5)")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+            .expect("rewind");
         // Legacy shape: the board id rides `stack_id` under the
         // `rename_board` tag; control rows use their ordinary columns.
         let legacy_rows: [LegacyRow; 3] = [
@@ -1018,110 +943,28 @@ mod tests {
     /// returns the intact entities with a default-shaped `reminders`
     /// section (an empty reminder dataset is exactly the hydrated shape).
     #[tokio::test]
-    #[allow(clippy::too_many_lines)] // the strip list IS the fixture
+    #[allow(clippy::too_many_lines)] // the seeded upgrade scenario IS the fixture
     async fn migration_0004_upgrades_a_pre_0004_database() {
         let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
         let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
             .await
             .expect("raw connect");
         // Simulate a 0003-era database: run the shipped migrations, then
-        // strip the 0004 artifacts and their bookkeeping row.
+        // rewind the ledger to 0003 — the derived strips drop the 0004
+        // tables and every later migration's objects (the 0007/0013
+        // ALTER targets, the 0020 kind columns, 0026's au_by columns
+        // included), the legacy sync_status singleton is restored by
+        // hand (0006's rename rebuild is not mechanically strippable),
+        // and the reopening open() replays 0004.. in order — exactly
+        // the real pre-0004 upgrade path, no hand-maintained ride-along
+        // list.
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        // Literal drops (sqlx 0.9 rejects dynamic SQL strings).
-        sqlx::query("DROP TABLE reminder_rules")
-            .execute(&raw)
+        rewind_to(&raw, 3, LEGACY_SYNC_STATUS_SINGLETON)
             .await
-            .expect("strip reminder_rules");
-        sqlx::query("DROP TABLE reminder_deliveries")
-            .execute(&raw)
-            .await
-            .expect("strip reminder_deliveries");
-        sqlx::query("DROP TABLE reminder_snoozes")
-            .execute(&raw)
-            .await
-            .expect("strip reminder_snoozes");
-        sqlx::query("DROP TABLE reminder_muted")
-            .execute(&raw)
-            .await
-            .expect("strip reminder_muted");
-        // 0007 rides the same strip: its reminder_rules ALTER targets the
-        // table 0004 re-creates, so the bookkeeping row must go with it or
-        // the re-created table would lack the column (SQLite has no
-        // dependency tracking; the real pre-0004 upgrade runs 4, …, 7 in
-        // order and lands with the column in place). 0013 is the same
-        // shape: its insistence ALTER targets the re-created table, so it
-        // replays with the strip too.
-        // 0026 rides the strip too: its `au_by` ALTERs the re-created
-        // bare tables, so the simulated pre-0004 upgrade replays it in
-        // order (the 0018/0021 shape). The tables the fixture does NOT
-        // drop lose their au_by columns by hand — the replayed ALTER
-        // would otherwise collide with the surviving column.
-        for statement in [
-            "ALTER TABLE habits DROP COLUMN au_by",
-            "ALTER TABLE habit_log DROP COLUMN au_by",
-            "ALTER TABLE time_entries DROP COLUMN au_by",
-            "ALTER TABLE break_rules DROP COLUMN au_by",
-        ] {
-            // Audited: constant, migration-owned column strips.
-            sqlx::query(sqlx::AssertSqlSafe(statement))
-                .execute(&raw)
-                .await
-                .expect("strip au_by col");
-        }
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (4, 7, 13, 20, 26)")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
-        // 0020 rides the same strip: this hand-built fixture predates
-        // the reminder_rules table entirely, so the replayed 0004
-        // re-creates it bare and the replayed 0020 adds the kind columns
-        // fresh (the real pre-0004 upgrade runs 20 in order).
-
-        // 0013's adhoc_alarms half must strip too: its table was not
-        // dropped, so the replayed ALTER would collide with the
-        // surviving column (the real pre-0004 upgrade runs 8 and 13
-        // fresh, in order).
-        sqlx::query("ALTER TABLE adhoc_alarms DROP COLUMN insistence")
-            .execute(&raw)
-            .await
-            .expect("strip insistence col");
-        // 0007's task columns ride the same strip (they re-run with it);
-        // literal statements only (sqlx 0.9 audits dynamic SQL).
-        sqlx::query("ALTER TABLE tasks DROP COLUMN scheduled")
-            .execute(&raw)
-            .await
-            .expect("strip ck col");
-        sqlx::query("ALTER TABLE tasks DROP COLUMN effort")
-            .execute(&raw)
-            .await
-            .expect("strip ck col");
-        sqlx::query("ALTER TABLE tasks DROP COLUMN importance")
-            .execute(&raw)
-            .await
-            .expect("strip ck col");
-        sqlx::query("ALTER TABLE tasks DROP COLUMN urgency")
-            .execute(&raw)
-            .await
-            .expect("strip ck col");
-        sqlx::query("ALTER TABLE tasks DROP COLUMN ck_scheduled")
-            .execute(&raw)
-            .await
-            .expect("strip ck col");
-        sqlx::query("ALTER TABLE tasks DROP COLUMN ck_effort")
-            .execute(&raw)
-            .await
-            .expect("strip ck col");
-        sqlx::query("ALTER TABLE tasks DROP COLUMN ck_importance")
-            .execute(&raw)
-            .await
-            .expect("strip ck col");
-        sqlx::query("ALTER TABLE tasks DROP COLUMN ck_urgency")
-            .execute(&raw)
-            .await
-            .expect("strip ck col");
+            .expect("rewind");
         // Seed the pre-existing entities the upgrade must not disturb
         // (FK order: board → stack → task; clocks are the NOT NULL texts).
         sqlx::query(
@@ -1172,21 +1015,15 @@ mod tests {
         let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
             .await
             .expect("raw connect");
-        // Simulate a pre-0009 database: run the shipped migrations, strip
-        // the 0009 artifacts and their bookkeeping row, then seed the
-        // delivery rows the backfill must convert.
+        // Simulate a pre-0009 database: run the shipped migrations,
+        // rewind the ledger below 0009 (the derived strips drop the
+        // dismissals table and every later migration's objects), then
+        // seed the delivery rows the backfill must convert.
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("DROP TABLE reminder_dismissals")
-            .execute(&raw)
-            .await
-            .expect("strip reminder_dismissals");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 9")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+        rewind_to(&raw, 8, &[]).await.expect("rewind");
         for (reminder, occurrence) in [
             (
                 "rule:00000000-0000-0000-0000-0000000000aa",
@@ -1488,41 +1325,15 @@ mod tests {
             .await
             .expect("raw connect");
         // Simulate a pre-0015 database: run the shipped migrations,
-        // strip the 0015 artifacts and their bookkeeping row — and 0018's
-        // and 0021's with them (the kind column ALTERs 0015's table and
-        // the board column ALTERs 0018's, so a simulated pre-0015
-        // database must not carry 0018 or 0021 either).
+        // then rewind the ledger below 0015 — the derived strips drop
+        // the 0015 table and every later migration's objects (0018's
+        // kind column, 0021's board column, 0026's au_by columns
+        // included), and the reopening open() replays 0015.. in order.
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("DROP TABLE time_entries")
-            .execute(&raw)
-            .await
-            .expect("strip time_entries");
-        sqlx::query("DROP TABLE break_rules")
-            .execute(&raw)
-            .await
-            .expect("strip break_rules");
-        // 0026 rides the strip too: its `au_by` ALTERs the re-created
-        // bare tables (the 0018/0021 shape). reminder_rules, habits and
-        // habit_log survive the strip, so their au_by columns go by
-        // hand — the replayed ALTER would otherwise collide.
-        for statement in [
-            "ALTER TABLE reminder_rules DROP COLUMN au_by",
-            "ALTER TABLE habits DROP COLUMN au_by",
-            "ALTER TABLE habit_log DROP COLUMN au_by",
-        ] {
-            // Audited: constant, migration-owned column strips.
-            sqlx::query(sqlx::AssertSqlSafe(statement))
-                .execute(&raw)
-                .await
-                .expect("strip au_by col");
-        }
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version IN (15, 18, 21, 26)")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+        rewind_to(&raw, 14, &[]).await.expect("rewind");
         raw.close().await;
 
         let repo = open(file.path(), test_connector())
@@ -1572,25 +1383,15 @@ mod tests {
         let raw = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", file.path().display()))
             .await
             .expect("raw connect");
-        // Simulate a pre-0016 database: run the shipped migrations, strip
-        // the 0016 artifacts and their bookkeeping row. Purely additive —
-        // no dependent objects to strip with it.
+        // Simulate a pre-0016 database: run the shipped migrations, then
+        // rewind the ledger below 0016 — the derived strips drop the
+        // 0016 tables and every later migration's objects, and the
+        // reopening open() replays 0016.. in order.
         sqlx::migrate!("./migrations")
             .run(&raw)
             .await
             .expect("migrate");
-        sqlx::query("DROP TABLE command_journal")
-            .execute(&raw)
-            .await
-            .expect("strip command_journal");
-        sqlx::query("DROP TABLE command_journal_head")
-            .execute(&raw)
-            .await
-            .expect("strip command_journal_head");
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 16")
-            .execute(&raw)
-            .await
-            .expect("strip bookkeeping");
+        rewind_to(&raw, 15, &[]).await.expect("rewind");
         raw.close().await;
 
         let repo = open(file.path(), test_connector())

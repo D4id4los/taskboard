@@ -21,6 +21,7 @@ use taskboard_domain::persistence::{
     ValidatorKey,
 };
 use taskboard_domain::state::{SyncErrorKind, SyncPhase, SyncStates};
+use taskboard_storage_sqlite::rewind::rewind_to;
 use taskboard_storage_sqlite::{open, open_memory};
 
 use common::actions_from_state;
@@ -2359,8 +2360,8 @@ async fn pre_0021_database_upgrades_and_backfills_the_board() {
     assert_eq!(loaded.reminders.break_rules[&rule.id], rule, "round-trips");
     db.close().await;
 
-    // The upgrade leg: simulate a pre-0021 database — strip the column
-    // and its bookkeeping row — then insert a pre-0021-shape row. The
+    // The upgrade leg: simulate a pre-0021 database — rewind the ledger
+    // to 0020 — then insert a pre-0021-shape row. The
     // migrating open re-applies 0021 and backfills the device's sole
     // bound board.
     let mut db = common::FileDb::new().await;
@@ -2372,14 +2373,10 @@ async fn pre_0021_database_upgrades_and_backfills_the_board() {
         .expect("board");
     let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
     let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
-    sqlx::query("ALTER TABLE break_rules DROP COLUMN board_id")
-        .execute(&pool)
-        .await
-        .expect("strip board_id");
-    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 21")
-        .execute(&pool)
-        .await
-        .expect("strip bookkeeping");
+    // Rewind to the pre-0021 world: the derived strips drop the board
+    // column and every later migration's object; the reopening open()
+    // replays 0021.. in order (the board backfill included).
+    rewind_to(&pool, 20, &[]).await.expect("rewind");
     sqlx::query(
         "INSERT INTO break_rules (rule_id, label, threshold_seconds, insistence, created_at) \
          VALUES ('00000000-0000-0000-0000-000000000062', 'stretch', 600, 'normal', '1970-01-01T00:00:16+00:00')",
@@ -2403,14 +2400,10 @@ async fn pre_0021_database_upgrades_and_backfills_the_board() {
     let mut db = common::FileDb::new().await;
     let raw = sqlx::sqlite::SqliteConnectOptions::new().filename(db.path());
     let pool = sqlx::SqlitePool::connect_with(raw).await.expect("raw pool");
-    sqlx::query("ALTER TABLE break_rules DROP COLUMN board_id")
-        .execute(&pool)
-        .await
-        .expect("strip board_id");
-    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 21")
-        .execute(&pool)
-        .await
-        .expect("strip bookkeeping");
+    // Rewind to the pre-0021 world: the derived strips drop the board
+    // column and every later migration's object; the reopening open()
+    // replays 0021.. in order (the board backfill included).
+    rewind_to(&pool, 20, &[]).await.expect("rewind");
     sqlx::query(
         "INSERT INTO break_rules (rule_id, label, threshold_seconds, insistence, created_at) \
          VALUES ('00000000-0000-0000-0000-000000000063', 'ghost', 600, 'normal', '1970-01-01T00:00:16+00:00')",
@@ -2609,32 +2602,6 @@ mod author_columns {
     /// clocks byte-stable. NULL = the backfilled "no author" state.
     #[tokio::test]
     async fn pre_0023_database_migrates_and_loads_authorless() {
-        const DROPS: &[&str] = &[
-            "ALTER TABLE boards DROP COLUMN au_title",
-            "ALTER TABLE boards DROP COLUMN au_color",
-            "ALTER TABLE boards DROP COLUMN au_archived",
-            "ALTER TABLE boards DROP COLUMN au_deleted",
-            "ALTER TABLE stacks DROP COLUMN au_title",
-            "ALTER TABLE stacks DROP COLUMN au_sort_order",
-            "ALTER TABLE stacks DROP COLUMN au_deleted",
-            "ALTER TABLE labels DROP COLUMN au_title",
-            "ALTER TABLE labels DROP COLUMN au_color",
-            "ALTER TABLE labels DROP COLUMN au_deleted",
-            "ALTER TABLE tasks DROP COLUMN au_title",
-            "ALTER TABLE tasks DROP COLUMN au_description",
-            "ALTER TABLE tasks DROP COLUMN au_duedate",
-            "ALTER TABLE tasks DROP COLUMN au_scheduled",
-            "ALTER TABLE tasks DROP COLUMN au_done",
-            "ALTER TABLE tasks DROP COLUMN au_position",
-            "ALTER TABLE tasks DROP COLUMN au_effort",
-            "ALTER TABLE tasks DROP COLUMN au_importance",
-            "ALTER TABLE tasks DROP COLUMN au_urgency",
-            "ALTER TABLE tasks DROP COLUMN au_recur",
-            "ALTER TABLE tasks DROP COLUMN au_kind",
-            "ALTER TABLE tasks DROP COLUMN au_archived",
-            "ALTER TABLE tasks DROP COLUMN au_deleted",
-        ];
-
         let mut db = common::FileDb::new().await;
         let repo = db.repo();
         let b = board(31);
@@ -2650,56 +2617,16 @@ mod author_columns {
         let before = repo.load().await.expect("load");
         db.close().await;
 
-        // Rewind to the pre-0023 world: drop the author columns and
-        // forget every migration above 0022. The stored clocks survive
-        // verbatim; the authors cease to exist, exactly as in a
+        // Rewind to the pre-0023 world: the derived strips drop the
+        // author columns and every later migration's object (0024's
+        // table, 0025's column, 0026's au_by columns included) and the
+        // ledger forgets everything above 0022. The stored clocks
+        // survive verbatim; the authors cease to exist, exactly as in a
         // pre-F1 database.
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
             .await
             .expect("raw connect");
-        // Rewind 0024's and 0025's objects too (the ledger forgets
-        // them below).
-        sqlx::query("DROP TABLE IF EXISTS roaming_settings")
-            .execute(&pool)
-            .await
-            .expect("drop 0024 table");
-        sqlx::query("ALTER TABLE boards DROP COLUMN remote_files_id")
-            .execute(&pool)
-            .await
-            .expect("drop 0025 column");
-
-        // Constant statements only (the dynamic-SQL audit lint): the
-        // columns are the migration's own, spelled out verbatim.
-        for statement in DROPS {
-            // Audited: every entry above is a constant, migration-owned
-            // `ALTER TABLE … DROP COLUMN` — no user data in reach.
-            sqlx::query(sqlx::AssertSqlSafe(*statement))
-                .execute(&pool)
-                .await
-                .expect("drop column");
-        }
-        // 0026 rides the same rewind: its `au_by` ALTERs the sidecar
-        // tables that survive this fixture's strip, so their au_by
-        // columns go by hand and the ledger forgets 0026 with the rest
-        // (the replayed migration would otherwise collide).
-        for statement in [
-            "ALTER TABLE reminder_rules DROP COLUMN au_by",
-            "ALTER TABLE break_rules DROP COLUMN au_by",
-            "ALTER TABLE time_entries DROP COLUMN au_by",
-            "ALTER TABLE habits DROP COLUMN au_by",
-            "ALTER TABLE habit_log DROP COLUMN au_by",
-        ] {
-            // Audited: constant, migration-owned column strips.
-            sqlx::query(sqlx::AssertSqlSafe(statement))
-                .execute(&pool)
-                .await
-                .expect("drop 0026 column");
-        }
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 22")
-            .execute(&pool)
-            .await
-            .expect("rewind ledger");
-
+        rewind_to(&pool, 22, &[]).await.expect("rewind");
         pool.close().await;
 
         db.reopen().await;
@@ -3081,14 +3008,6 @@ mod sidecar_author_slot {
     #[tokio::test]
     #[allow(clippy::too_many_lines)] // the rewind + both-sides asserts are the point
     async fn pre_0026_database_migrates_and_loads_authorless() {
-        const DROPS: &[&str] = &[
-            "ALTER TABLE reminder_rules DROP COLUMN au_by",
-            "ALTER TABLE break_rules DROP COLUMN au_by",
-            "ALTER TABLE time_entries DROP COLUMN au_by",
-            "ALTER TABLE habits DROP COLUMN au_by",
-            "ALTER TABLE habit_log DROP COLUMN au_by",
-        ];
-
         let mut db = common::FileDb::new().await;
         let repo = db.repo();
         let b = board(41);
@@ -3132,24 +3051,14 @@ mod sidecar_author_slot {
         let before = repo.load().await.expect("load");
         db.close().await;
 
-        // Rewind to the pre-0026 world: drop the author columns and
-        // forget every migration above 0025. The stored clocks survive
-        // verbatim; the stored authors cease to exist (NULL backfill).
+        // Rewind to the pre-0026 world: the derived strips drop the
+        // au_by columns and the ledger forgets everything above 0025.
+        // The stored clocks survive verbatim; the stored authors cease
+        // to exist (NULL backfill).
         let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
             .await
             .expect("raw connect");
-        for statement in DROPS {
-            // Audited: every entry above is a constant, migration-owned
-            // `ALTER TABLE … DROP COLUMN` — no user data in reach.
-            sqlx::query(sqlx::AssertSqlSafe(*statement))
-                .execute(&pool)
-                .await
-                .expect("drop column");
-        }
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 25")
-            .execute(&pool)
-            .await
-            .expect("rewind ledger");
+        rewind_to(&pool, 25, &[]).await.expect("rewind");
         pool.close().await;
 
         db.reopen().await;
