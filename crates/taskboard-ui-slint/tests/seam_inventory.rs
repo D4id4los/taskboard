@@ -219,6 +219,20 @@ const SEAM_INVENTORY: &[&str] = &[
     "task_date_picker_key",
     "task_date_picker_toggled",
     "task_date_quick_toggled",
+    // The intra-picker click arm (task-detail-editor UX plan US-2/D-6,
+    // 2026-11-17): the TimeField's field click arms the one-shot
+    // focus-steal latch before the focus move.
+    "task_date_time_field_armed",
+    // The effort row's seams (task-detail-editor UX plan US-3/D-8,
+    // #838, 2026-11-17): the inline editor's open/mirror/commit/
+    // clear/cancel and the focus-loss settle (the date-editor buffer
+    // pattern over adapter state).
+    "task_effort_edit_opened",
+    "task_effort_edited",
+    "task_effort_committed",
+    "task_effort_cleared",
+    "task_effort_cancelled",
+    "task_effort_focus_lost",
     "task_date_quick_typed",
     "task_date_time_accepted",
     "task_date_time_edited",
