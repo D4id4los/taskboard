@@ -47,6 +47,15 @@ use taskboard_ui_slint::{UiHandle, UiSettings, View};
 /// a review-visible event.
 const EXEMPT: &[(&str, &str)] = &[
     (
+        "TouchArea:TimeField::arm-touch",
+        "the intra-picker click arm (task-detail-editor UX plan US-2/D-6, \
+         2026-11-17): an overlay over the field element only, whose click \
+         arms the one-shot focus-steal latch and then moves focus itself \
+         (a TouchArea click never moves focus natively — the recorded \
+         negative). The keyboard path is the inner TextInput's own tab \
+         stop; the overlay never intercepts keys",
+    ),
+    (
         "TouchArea:Toolbar::inbox-chip",
         "chrome chip, AT-operable; a focused chrome FocusScope is a key \
          sink (the D-T16 recorded deviation) — `view.inbox` is its key path",
@@ -992,14 +1001,24 @@ fn assert_item_walk_covers(
         step(mounted, next);
         check_holder(mounted);
     }
-    // Rewind to the first delegate (structural bound: the count).
-    for _ in 0..count {
+    // Rewind to the first delegate. A generous budget: the mount
+    // anchor may sit anywhere in the model now that the quick list
+    // opens scrolled to the current-time slot (task-detail-editor UX
+    // plan US-2/D-7, 2026-11-17) — the ladder clamps at 0, so the
+    // walk must press prev until it lands there, not budget on the
+    // anchor being inside the first `count` rows.
+    for _ in 0..(count + 128) {
         if read(&mounted.handle) == Some(0) {
             break;
         }
         step(mounted, prev);
         check_holder(mounted);
     }
+    assert_eq!(
+        read(&mounted.handle),
+        Some(0),
+        "the rewind reached the first delegate"
+    );
     let mut forward = vec![read(&mounted.handle)];
     while forward.len() < count {
         step(mounted, next);

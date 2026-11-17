@@ -2147,6 +2147,21 @@ impl Adapter {
         // The editor's push half reads its level; without one the
         // mirrors render exactly the wiped state the old enforce pass
         // produced (empty buffer, the `--:--` value echo).
+        // The quick options' open-time seed (task-detail-editor UX
+        // plan US-2/D-7, N-6): the FIRST pass of an armed editor
+        // without a picker-held time captures the device now's local
+        // time-of-day — captured once, so the per-pass derivation
+        // never snaps the highlight back to "now" over the user's
+        // ladder walk (a picker-held time wins for the whole session).
+        if let Some(editor) = self.view_state.date_editor_mut()
+            && editor.time_open_seed.is_none()
+            && editor
+                .picker
+                .as_ref()
+                .is_none_or(|picker| picker.time().is_none())
+        {
+            editor.time_open_seed = Some(chrono::Local::now().time());
+        }
         let editor = self.view_state.date_editor();
         let time_text = editor.map_or("--:--", |e| e.time_text.as_str());
         let time_slots: Vec<chrono::NaiveTime> = if editor.is_some_and(|e| e.picker.is_some()) {
@@ -2166,18 +2181,15 @@ impl Adapter {
             Vec::new()
         };
         // The quick options' focused slot (task-detail-editor UX plan
-        // US-2/D-7, N-6): a picker-held time still wins (re-opening
-        // after a typed entry stays on the entry); when the picker
-        // holds no time, the seed is the device now's local
-        // time-of-day (truncated to the slot grid) — the list opens
-        // scrolled to the current time, never the list head.
-        let time_nearest_row = crate::due_edit::nearest_slot(
-            &time_slots,
-            editor
-                .and_then(|e| e.picker.as_ref())
-                .and_then(super::due_edit::DuePickerState::time)
-                .or_else(|| Some(chrono::Local::now().time())),
-        );
+        // US-2/D-7, N-6): the flyout's open-time seed (captured once —
+        // see the lazy capture above) — a picker-held time wins
+        // (re-opening after a typed entry stays on the entry), else
+        // the device now's local time-of-day at capture. The list
+        // opens scrolled to the current time, never the list head, and
+        // the ladder walk owns the highlight afterwards (no per-pass
+        // recompute snap-back).
+        let time_nearest_row =
+            crate::due_edit::nearest_slot(&time_slots, editor.and_then(|e| e.time_open_seed));
         let now2 = chrono::Utc::now();
         let due = crate::models::DueEditorPush {
             text: editor.map_or("", |e| e.buffer.as_str()),
