@@ -911,6 +911,23 @@ pub struct ConfigPathView {
     pub write_path: String,
 }
 
+/// The `config set`/`unset` receipt (journey W-5): which knob, the
+/// echoed value (`None` for an unset), and the typed lane bit —
+/// `applied_live` true when a running engine took the snapshot
+/// immediately, false when the write landed file-only and applies at
+/// the next start. `applied_live: false` is a success, not a refusal.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ConfigSetView {
+    /// The dotted config key the verb addressed.
+    pub key: String,
+    /// The echoed value in its canonical text form; `None` for an
+    /// unset (the override was removed).
+    pub value: Option<String>,
+    /// The typed lane bit: the running app applied the write
+    /// immediately (true) or the file layer only — next start (false).
+    pub applied_live: bool,
+}
+
 /// The `connect` (and deprecated `login` alias) receipt. No secret ever
 /// appears in any projection.
 // The bools are independent, documented receipt facts (what the

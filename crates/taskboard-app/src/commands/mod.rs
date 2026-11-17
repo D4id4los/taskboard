@@ -525,6 +525,7 @@ impl CommandError {
                 crate::commands::config::ConfigSetError::UnknownKey { .. } => "config-unknown-key",
                 crate::commands::config::ConfigSetError::BadValue { .. } => "config-bad-value",
                 crate::commands::config::ConfigSetError::Io(_) => "config-write-failed",
+                crate::commands::config::ConfigSetError::Rejected(_) => "config-write-rejected",
             },
             Self::Bootstrap(err) => match **err {
                 BootstrapError::InstanceLocked { .. } => "instance-locked",
@@ -1483,7 +1484,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             )
             .await
         }
-        Command::Config { cmd } => config::handle(&cmd, &mut ctx),
+        Command::Config { cmd } => config::handle(&cmd, &mut ctx).await,
         Command::Status => {
             // No core boot: the config resolves for the db path only; a
             // rejected config is the one typed failure status reports.
@@ -2358,7 +2359,13 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         Command::Connect { .. }
         | Command::Login { .. }
         | Command::Logout
-        | Command::Config { .. }
+        // `config print`/`config path` stay `Local` (journey R-2):
+        // file-authoritative diagnostics; write-through guarantees the
+        // file is written *before* the engine apply, so a local print
+        // never lags a successful set.
+        | Command::Config {
+            cmd: crate::cli::ConfigCmd::Print | crate::cli::ConfigCmd::Path,
+        }
         // The gui verb is a lifecycle arm main intercepts before
         // routing ever sees it; pinning it `Local` keeps the
         // never-relayed rule compiler- and test-enforced — any
@@ -2409,6 +2416,15 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         // Capture rides the mutation lane (boot-local over the core,
         // like the task verbs).
         | Command::Capture { .. }
+        // The config mutation verbs ride the relay lane (journey W-1,
+        // #845): the daemon writes the file through the prove gate and
+        // applies live via `UpdateSettings`; no daemon serving = the
+        // typed next-start local lane (IpcOrLocal *is* the US-2
+        // fallback). No new wire variant — `Request::Exec` relays the
+        // argv and the daemon re-parses it (D2).
+        | Command::Config {
+            cmd: crate::cli::ConfigCmd::Set { .. } | crate::cli::ConfigCmd::Unset { .. },
+        }
         | Command::Sync { .. } => IpcRoute::IpcOrLocal,
     }
 }
@@ -2583,6 +2599,11 @@ mod ipc_routing_tests {
             Command::Config {
                 cmd: crate::cli::ConfigCmd::Print,
             },
+            // `config path` stays a file-authoritative diagnostic
+            // (journey R-2).
+            Command::Config {
+                cmd: crate::cli::ConfigCmd::Path,
+            },
             Command::Boards {
                 cmd: BoardsCmd::List { connector: None },
             },
@@ -2642,6 +2663,20 @@ mod ipc_routing_tests {
                     board: None,
                     title: "t".to_owned(),
                     order: None,
+                },
+            },
+            // The config mutation verbs ride the relay lane (journey
+            // W-1, #845): daemon if serving (live apply), else the
+            // local next-start lane.
+            Command::Config {
+                cmd: crate::cli::ConfigCmd::Set {
+                    key: "focus.work_mins".to_owned(),
+                    value: "50".to_owned(),
+                },
+            },
+            Command::Config {
+                cmd: crate::cli::ConfigCmd::Unset {
+                    key: "focus.work_mins".to_owned(),
                 },
             },
             Command::Labels {
@@ -2724,6 +2759,36 @@ mod ipc_routing_tests {
         for command in &ipc_or_local {
             assert_eq!(route_for_ipc(command), IpcRoute::IpcOrLocal, "{command:?}");
         }
+    }
+
+    /// `us1_s1`: `config set` takes the relay lane — the daemon (when
+    /// one serves) is where the live apply happens (US-1/S1–S2).
+    #[test]
+    fn us1_s1_config_set_takes_the_relay_lane() {
+        assert_eq!(
+            route_for_ipc(&Command::Config {
+                cmd: crate::cli::ConfigCmd::Set {
+                    key: "focus.work_mins".to_owned(),
+                    value: "50".to_owned(),
+                },
+            }),
+            IpcRoute::IpcOrLocal
+        );
+    }
+
+    /// `us2_s1`: `config unset` takes the same fallback-capable relay
+    /// lane — `IpcOrLocal` *is* the offline fallback semantics (no
+    /// daemon serving = the typed next-start local lane, US-2 AC-2).
+    #[test]
+    fn us2_s1_config_unset_takes_the_fallback_capable_lane() {
+        assert_eq!(
+            route_for_ipc(&Command::Config {
+                cmd: crate::cli::ConfigCmd::Unset {
+                    key: "focus.work_mins".to_owned(),
+                },
+            }),
+            IpcRoute::IpcOrLocal
+        );
     }
 }
 
