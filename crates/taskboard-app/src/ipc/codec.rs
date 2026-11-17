@@ -94,7 +94,67 @@ pub async fn read_frame<R: tokio::io::AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::{Error, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, read_frame, write_frame};
+    use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::AsyncRead;
     use tokio::io::DuplexStream;
+    use tokio::io::ReadBuf;
+
+    /// A reader that fails every read with a *non-EOF* io error —
+    /// feeds `read_frame` a failure that is not a clean close.
+    struct Failing {
+        error: io::ErrorKind,
+    }
+
+    impl AsyncRead for Failing {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::new(
+                self.get_mut().error,
+                "injected read failure",
+            )))
+        }
+    }
+
+    /// Serves the queued prefix bytes first, then fails with a
+    /// non-EOF io error mid-frame.
+    struct FailingAfter {
+        served: Vec<u8>,
+        prefix: Vec<u8>,
+        error: io::ErrorKind,
+    }
+
+    impl FailingAfter {
+        fn new(prefix: Vec<u8>, error: io::ErrorKind) -> Self {
+            Self {
+                served: Vec::new(),
+                prefix,
+                error,
+            }
+        }
+    }
+
+    impl AsyncRead for FailingAfter {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            if this.served.len() < this.prefix.len() {
+                this.served
+                    .extend_from_slice(&this.prefix[this.served.len()..]);
+                buf.put_slice(&this.served);
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Ready(Err(io::Error::new(this.error, "injected read failure")))
+            }
+        }
+    }
 
     /// A memory pipe pair with a payload buffer comfortably above the
     /// test frame sizes.
@@ -221,6 +281,32 @@ mod tests {
         assert!(matches!(
             read_frame(&mut rx, MAX_REQUEST_BYTES).await,
             Err(Error::Utf8)
+        ));
+    }
+
+    /// A non-EOF io error while reading the length prefix is typed
+    /// `Io`, not `Eof`: only a clean close maps to `Eof`.
+    #[tokio::test]
+    async fn a_non_eof_error_on_the_length_prefix_is_an_io_error() {
+        let mut reader = Failing {
+            error: io::ErrorKind::PermissionDenied,
+        };
+        assert!(matches!(
+            read_frame(&mut reader, MAX_REQUEST_BYTES).await,
+            Err(Error::Io(_))
+        ));
+    }
+
+    /// The same for the payload read: a mid-frame non-EOF failure is
+    /// typed `Io`, not `Eof`. The reader serves a valid 4-byte
+    /// length prefix, then fails.
+    #[tokio::test]
+    async fn a_non_eof_error_mid_frame_is_an_io_error() {
+        let mut reader =
+            FailingAfter::new(4u32.to_le_bytes().to_vec(), io::ErrorKind::PermissionDenied);
+        assert!(matches!(
+            read_frame(&mut reader, MAX_REQUEST_BYTES).await,
+            Err(Error::Io(_))
         ));
     }
 }
