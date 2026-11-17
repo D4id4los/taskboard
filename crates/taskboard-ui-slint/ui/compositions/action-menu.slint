@@ -10,6 +10,22 @@ import { Responsive, Breakpoint } from "../responsive.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { MenuPanelFacts } from "../menu-facts.slint";
+import { IconKind } from "../widgets/icon.slint";
+import { IconButton } from "../widgets/icon-button.slint";
+
+// The quick-bar row (UX-R8 chunk-5 D-2, US-1): the routing id (the
+// Rust vec is the resolver), the icon, and the shown/withheld verdict.
+// `visible: false` is the C-4 withheld rule — the model carries the
+// row; the bar renders only the shown half. The action string is
+// informational; the Rust side resolves by index.
+export struct QuickBarEntryModel {
+    action: string,
+    // The registry label — the element's address / a11y label (D16).
+    label: string,
+    icon: IconKind,
+    enabled: bool,
+    visible: bool,
+}
 
 export struct MenuEntryModel {
     // The registry id — `""` for a submenu-parent row (the tests'
@@ -31,6 +47,15 @@ export component ActionMenu inherits Rectangle {
     // superseded by `submenu-entries` while a group is open.
     in property <[MenuEntryModel]> entries;
     in property <[MenuEntryModel]> submenu-entries;
+    // The quick actions bar (UX-R8 chunk-5 D-2, US-1): a leading
+    // icon-button row above the Flickable. An empty model renders
+    // nothing — every other menu consumer passes [] and is
+    // bit-identical. The bar is pointer/click + the preset keys,
+    // deliberately not a cursor stop (the r4 D7 prominence posture).
+    in property <[QuickBarEntryModel]> quick-bar;
+    // slint: menu-quick-bar-invoked — a bar button routes its
+    // ActionId through the Rust vec (click ≡ key).
+    callback invoke-quick-bar(int);
     in property <int> selected-index;
     in property <int> root-selected-index: 0;
     // The open group as its parent row's root-page index (−1 = root).
@@ -106,6 +131,26 @@ export component ActionMenu inherits Rectangle {
     border-width: Theme.focus-ring-width;
     border-color: Theme.focus-ring;
     border-radius: Theme.radius-medium;
+
+    // The quick actions bar (UX-R8 chunk-5 D-2): a leading
+    // icon-button HorizontalLayout above the Flickable — only while
+    // the model carries a shown row (empty renders nothing).
+    if (root.quick-bar.length > 0): HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        padding-top: Theme.space-2;
+        spacing: Theme.space-1;
+        for bar-entry[bar-index] in root.quick-bar: Rectangle {
+            visible: bar-entry.visible;
+            quick-bar-button := IconButton {
+                icon: bar-entry.icon;
+                enabled: bar-entry.enabled;
+                label: bar-entry.label;
+                // slint: menu-quick-bar-invoked
+                clicked => { root.invoke-quick-bar(bar-index); }
+            }
+        }
+    }
 
     flick := Flickable {
         // The viewport auto-tracks the content's preferred size; the

@@ -149,6 +149,10 @@ const SEAM_INVENTORY: &[&str] = &[
     "menu_dismiss_requested",
     "menu_entry_invoked",
     "menu_level_back",
+    // The quick actions bar's invocation (UX-R8 chunk-5 D-2, US-1):
+    // the bar-button seam resolves against the open-time vec (#782's
+    // fold — the inventory is the cross-check root).
+    "menu_quick_bar_invoked",
     "menu_submenu_entry_invoked",
     "notification_cancel_clicked",
     "notification_dismiss_clicked",

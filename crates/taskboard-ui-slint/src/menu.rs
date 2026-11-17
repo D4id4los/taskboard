@@ -239,6 +239,92 @@ pub const BOARD_CONTEXT: &[ActionId] = &[
     ActionId::BoardDelete,
 ];
 
+/// The quick-bar icon vocabulary (UX-R8 chunk-5 D-2, US-1): the
+/// Rust-side half of the slint `IconKind` mapping — menu.rs stays
+/// slint-free; the adapter's push maps it onto the generated enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickBarIcon {
+    /// Schedule today (the shared calendar glyph).
+    Calendar,
+    /// Schedule tomorrow (calendar-plus — deliberately distinct, the
+    /// F1 shared-icon lesson).
+    CalendarPlus,
+    /// Unschedule (calendar-minus).
+    CalendarMinus,
+    /// Start tracking (the play triangle).
+    Play,
+    /// Stop tracking (the stop square).
+    Stop,
+}
+
+/// One quick-bar row (UX-R8 chunk-5 D-2, US-1): the routing id (click
+/// ≡ key — the preset stroke routes the same `ActionId`), its icon,
+/// and the shown/withheld verdict. `visible: false` is the C-4
+/// withheld rule — the model still carries the row; the bar renders
+/// only the shown half.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuickBarEntry {
+    pub action: ActionId,
+    pub icon: QuickBarIcon,
+    pub enabled: bool,
+    pub visible: bool,
+}
+
+/// The task context menu's quick bar (UX-R8 chunk-5 D-2 over D-4's
+/// per-family verdicts): schedule today/tomorrow always shown;
+/// unschedule withheld on an unscheduled subject; the tracking twin's
+/// shown half flips with the subject's tracking state (`tracked_here`
+/// → Stop shown; `tracking_elsewhere` → Start shown greyed; neither
+/// → Start shown). Built once at open; nothing re-derives it while
+/// the menu holds (the D-1 pin covers the bar).
+#[must_use]
+pub fn task_quick_bar(
+    scheduled: bool,
+    tracked_here: bool,
+    tracking_elsewhere: bool,
+) -> Vec<QuickBarEntry> {
+    let mut bar = vec![
+        QuickBarEntry {
+            action: ActionId::TaskScheduleToday,
+            icon: QuickBarIcon::Calendar,
+            enabled: true,
+            visible: true,
+        },
+        QuickBarEntry {
+            action: ActionId::TaskScheduleTomorrow,
+            icon: QuickBarIcon::CalendarPlus,
+            enabled: true,
+            visible: true,
+        },
+        QuickBarEntry {
+            action: ActionId::TaskUnschedule,
+            icon: QuickBarIcon::CalendarMinus,
+            enabled: true,
+            visible: scheduled,
+        },
+    ];
+    let (start_visible, stop_visible) = if tracked_here {
+        (false, true)
+    } else {
+        (true, false)
+    };
+    bar.push(QuickBarEntry {
+        action: ActionId::TaskTrackStart,
+        icon: QuickBarIcon::Play,
+        // The singleton precondition (the origin US-1/AC-4 shown-half
+        // rule): another task's open entry greys Start.
+        enabled: !tracking_elsewhere,
+        visible: start_visible,
+    });
+    bar.push(QuickBarEntry {
+        action: ActionId::TaskTrackStop,
+        icon: QuickBarIcon::Stop,
+        enabled: true,
+        visible: stop_visible,
+    });
+    bar
+}
+
 /// One object context menu (round-2 D21): the named actions
 /// projected through the same `row()` as every page — binding hints
 /// included. Over `[Board, Global]` (the one chain every object menu
@@ -800,6 +886,60 @@ mod tests {
                 assert!(e.enabled, "{} keeps its static bit", e.action.unwrap());
             }
         }
+    }
+
+    /// UX-R8 chunk-5 D-2/D-4 (US-1/AC-4, US-2/AC-1) — the quick
+    /// bar's per-subject composition as typed presence/enablement
+    /// (withheld = absent from the shown set, greyed = present +
+    /// disabled), never text:
+    /// schedule today/tomorrow always shown; unschedule withheld on
+    /// an unscheduled subject; the tracking twin's shown half flips
+    /// (here → Stop, elsewhere → Start greyed, neither → Start).
+    #[test]
+    fn the_quick_bar_composes_per_subject() {
+        let shown = |bar: &[QuickBarEntry]| -> Vec<ActionId> {
+            bar.iter().filter(|e| e.visible).map(|e| e.action).collect()
+        };
+        // A plain, untracked, unscheduled subject: Start shown, the
+        // schedule pair shown, unschedule withheld, stop withheld.
+        let bar = task_quick_bar(false, false, false);
+        assert_eq!(
+            shown(&bar),
+            vec![
+                ActionId::TaskScheduleToday,
+                ActionId::TaskScheduleTomorrow,
+                ActionId::TaskTrackStart,
+            ],
+            "the plain subject's shown half"
+        );
+        assert!(
+            bar.iter()
+                .all(|e| e.action != ActionId::TaskTrackStart || e.enabled),
+            "start is enabled when nothing is tracked"
+        );
+
+        // The subject holds THE open entry: stop shown + enabled,
+        // start withheld.
+        let bar = task_quick_bar(true, true, false);
+        assert_eq!(
+            shown(&bar),
+            vec![
+                ActionId::TaskScheduleToday,
+                ActionId::TaskScheduleTomorrow,
+                ActionId::TaskUnschedule,
+                ActionId::TaskTrackStop,
+            ],
+            "the tracking subject's shown half"
+        );
+
+        // Another task's open entry: start shown GREYED (the
+        // singleton precondition), stop withheld.
+        let bar = task_quick_bar(false, false, true);
+        let start = bar
+            .iter()
+            .find(|e| e.action == ActionId::TaskTrackStart)
+            .expect("start shown");
+        assert!(start.visible && !start.enabled, "elsewhere greys start");
     }
 
     /// Every projected row (registry rows included, parents excluded)

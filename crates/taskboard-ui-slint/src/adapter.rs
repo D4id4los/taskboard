@@ -27,7 +27,7 @@ use tokio::sync::oneshot;
 
 use taskboard_domain::ConnectorId;
 
-use crate::actions::{ActionId, ContextId, MenuGroup};
+use crate::actions::{ActionId, ContextId, MenuGroup, REGISTRY};
 use crate::keymap::Keymap;
 use crate::menu::{self, MenuEntry};
 use crate::models::IdTables;
@@ -361,6 +361,11 @@ pub(crate) struct Adapter {
     /// The open menu's kind (UX-R8 D-1): the refresh-time re-derivation
     /// guard scopes itself to `Main`; reset to `Main` at every close.
     menu_kind: MenuKind,
+    /// The task context menu's quick bar (UX-R8 chunk-5 D-2): built
+    /// once at open, resolved by the bar seam against this vec (the
+    /// `root_entries` index-resolver pattern; stale indices absorbed).
+    /// Empty for every other menu consumer.
+    quick_bar_entries: Vec<crate::menu::QuickBarEntry>,
     /// The Add-task ghost's clicked stack (r4 D4); consumed by the
     /// next `task.create` dispatch, then cleared (one-shot, the
     /// `reminder_target` precedent).
@@ -805,6 +810,40 @@ impl Adapter {
         let keyboard = window.global::<KeyboardState>();
         keyboard.set_menu_entries(Self::menu_model(&self.root_entries));
         keyboard.set_menu_submenu_entries(Self::menu_model(&self.menu_entries));
+        keyboard.set_menu_quick_bar(Self::quick_bar_model(&self.quick_bar_entries));
+    }
+
+    /// The quick bar as the slint model rows (UX-R8 chunk-5 D-2): the
+    /// Rust icon vocabulary maps onto the generated `IconKind` here —
+    /// menu.rs stays slint-free.
+    fn quick_bar_model(
+        entries: &[crate::menu::QuickBarEntry],
+    ) -> ModelRc<crate::QuickBarEntryModel> {
+        ModelRc::from(
+            entries
+                .iter()
+                .map(|entry| crate::QuickBarEntryModel {
+                    action: entry.action.id().to_owned().into(),
+                    // The registry label — the element's address / the
+                    // a11y label (D16).
+                    label: REGISTRY
+                        .iter()
+                        .find(|row| row.id == entry.action)
+                        .map_or("", |row| row.label)
+                        .into(),
+                    icon: match entry.icon {
+                        crate::menu::QuickBarIcon::Calendar => crate::IconKind::Calendar,
+                        crate::menu::QuickBarIcon::CalendarPlus => crate::IconKind::CalendarPlus,
+                        crate::menu::QuickBarIcon::CalendarMinus => crate::IconKind::CalendarMinus,
+                        crate::menu::QuickBarIcon::Play => crate::IconKind::Play,
+                        crate::menu::QuickBarIcon::Stop => crate::IconKind::Stop,
+                    },
+                    enabled: entry.enabled,
+                    visible: entry.visible,
+                })
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
     }
 
     /// One page as the slint model rows.
@@ -5203,6 +5242,7 @@ impl Adapter {
         self.menu_chain.clear();
         self.menu_anchor = MenuAnchor::Hamburger;
         self.menu_kind = MenuKind::Main;
+        self.quick_bar_entries.clear();
         self.sync_menu_models(window);
         // The direct callers (toggle, dismissal layer, mouse invoke)
         // bypass `route`'s trailing sync; the shared helper keeps the
@@ -8649,6 +8689,7 @@ pub(crate) fn install(
         menu_chain: Vec::new(),
         menu_anchor: MenuAnchor::Hamburger,
         menu_kind: MenuKind::Main,
+        quick_bar_entries: Vec::new(),
         create_target: None,
         reminder_target: None,
         notification_cursor: None,
@@ -8853,6 +8894,33 @@ pub(crate) fn install(
                 return;
             };
             a.invoke_root_entry(&window, index);
+
+        });
+    }
+    {
+        // The quick bar's invocation seam (UX-R8 chunk-5 D-2, US-1):
+        // invoke_entry's posture — a disabled entry arms the T-19
+        // disabled notice (its registry description), an enabled one
+        // closes the menu first and routes (round-1 D3). Stale
+        // indices against an older open's vec are absorbed.
+        install_seam!(window: window.on_menu_quick_bar_invoked, adapter: &adapter;
+        bind mut (a, window), args (index: i32), {            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            let Some(entry) = a.quick_bar_entries.get(index).cloned() else {
+                return;
+            };
+            if !entry.enabled {
+                let description = REGISTRY
+                    .iter()
+                    .find(|row| row.id == entry.action)
+                    .map_or("", |row| row.description);
+                a.arm_disabled_menu_notice(description);
+                a.push_notice(&window);
+                return;
+            }
+            a.apply_close_menu(&window);
+            a.route(&window, entry.action);
 
         });
     }
@@ -9856,13 +9924,24 @@ fn install_menu_dismiss_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
 /// binding hint resolves — the F-B7 fix. Stale indices against an
 /// older tables pass are absorbed silently.
 impl Adapter {
-    fn open_context_menu(&mut self, window: &AppWindow, x: f32, y: f32, ids: &[ActionId]) {
+    fn open_context_menu(
+        &mut self,
+        window: &AppWindow,
+        x: f32,
+        y: f32,
+        ids: &[ActionId],
+        bar: Vec<crate::menu::QuickBarEntry>,
+    ) {
         let chain = [ContextId::Board, ContextId::Global].to_vec();
         self.menu_anchor = MenuAnchor::Pointer(x, y);
         self.menu_kind = MenuKind::Object;
         self.menu_chain = chain;
         self.root_entries = menu::object_entries(&self.keymap, &self.menu_chain, ids);
         self.menu_entries = self.root_entries.clone();
+        // The quick bar (UX-R8 chunk-5 D-2): built once at open —
+        // the D-1 pin covers it; every other menu consumer passes
+        // [] (an empty model renders nothing).
+        self.quick_bar_entries = bar;
         self.shell.menu = crate::shell::MenuState {
             open: true,
             selected: 0,
@@ -9908,6 +9987,26 @@ impl Adapter {
         // reads it here.
         let selection_covers =
             subject.is_some_and(|subject| self.view_state.selection().contains(&subject));
+        // The quick bar's subject facts (UX-R8 chunk-5 D-2/D-4): the
+        // scheduled flag and the tracking shown half, derived from the
+        // loaded state (the adapter already loads it for the #492
+        // tracker check). The multi-selection branch hands no bar —
+        // the multi grammar owns itself.
+        let bar = if selection_covers {
+            Vec::new()
+        } else {
+            let subject = subject.or(self.view_state.focused_task());
+            let (scheduled, tracked_here, tracking_elsewhere) = {
+                let state = self.state.load();
+                let scheduled = subject
+                    .and_then(|id| state.tasks.get(&id))
+                    .is_some_and(|task| task.scheduled.is_some());
+                let open = crate::presentation::tracking_open_task(&state);
+                let tracked_here = open.is_some_and(|open| Some(open) == subject);
+                (scheduled, tracked_here, open.is_some() && !tracked_here)
+            };
+            menu::task_quick_bar(scheduled, tracked_here, tracking_elsewhere)
+        };
         let ids: Vec<ActionId> = if selection_covers {
             menu::TASK_CONTEXT_MULTI.to_vec()
         } else {
@@ -9919,7 +10018,7 @@ impl Adapter {
             ids.extend_from_slice(extra);
             ids
         };
-        self.open_context_menu(window, x, y, &ids);
+        self.open_context_menu(window, x, y, &ids, bar);
     }
 }
 
@@ -10199,7 +10298,7 @@ fn open_stack_context(a: &mut Adapter, window: &AppWindow, column: i32, x: f32, 
     let state = a.state.load_full();
     let outcomes = a.view_state.select_stack(&state, stack);
     a.apply_outcomes(window, &outcomes);
-    a.open_context_menu(window, x, y, menu::STACK_CONTEXT);
+    a.open_context_menu(window, x, y, menu::STACK_CONTEXT, Vec::new());
 }
 
 /// The stack card's bare-surface body seams (r3 D4 / r4 D3): the
@@ -10243,7 +10342,7 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
     let state = a.state.load_full();
     let outcomes = a.view_state.select_board(&state, board);
     a.apply_outcomes(&window, &outcomes);
-    a.open_context_menu(&window, x, y, menu::BOARD_CONTEXT);
+    a.open_context_menu(&window, x, y, menu::BOARD_CONTEXT, Vec::new());
 
     });
     // The stack-rename field (per-column; the flow names the stack —

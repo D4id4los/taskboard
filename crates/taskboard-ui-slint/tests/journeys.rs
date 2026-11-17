@@ -23219,3 +23219,121 @@ fn us3_s2_main_menu_dwell_regrey_stands() {
         },
     );
 }
+
+/// US-1/S1 (origin AC-1) — the quick bar's "schedule today" routes
+/// the exact sparse mask: `UpdateTask` with `scheduled ==
+/// Some(Some(<today's day-window end>))`, every other mask None; the
+/// invocation closes the menu first (round-1 D3). Typed command
+/// assertion, never text.
+#[test]
+fn us1_s1_schedule_today_commits_the_exact_mask() {
+    let (fixture, state) = fixture::journey_state();
+    let day_start = taskboard_domain::SettingsSnapshot::default().day_start_time;
+    let offset = UiSettings::default().boot_offset;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            assert!(
+                keyboard(&harness).get_menu_quick_bar().row_count() > 0,
+                "the task context menu carries the quick bar"
+            );
+
+            // Today's local date (single-read capture; the window end
+            // only moves at a day boundary).
+            let today = chrono::Local::now().date_naive();
+            let end = taskboard_domain::days::day_window_end(today, day_start, offset);
+            harness.driver.click_by_label("Schedule today");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(end)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the invocation closed the menu"
+            );
+        },
+    );
+}
+
+/// US-1/S2 (origin AC-2) — "schedule tomorrow" routes the identical
+/// mask shape carrying the next day window's end (the additive
+/// `days::next_day_window` fact — never `+24h` arithmetic).
+#[test]
+fn us1_s2_schedule_tomorrow_commits_the_exact_mask() {
+    let (fixture, state) = fixture::journey_state();
+    let day_start = taskboard_domain::SettingsSnapshot::default().day_start_time;
+    let offset = UiSettings::default().boot_offset;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+
+            let now = chrono::Utc::now();
+            let (_, tomorrow_end) = taskboard_domain::days::next_day_window(now, day_start, offset);
+            harness.driver.click_by_label("Schedule tomorrow");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(tomorrow_end)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+        },
+    );
+}
+
+/// US-1/S3 (origin AC-3) — a scheduled subject's bar carries
+/// "Unschedule"; clicking it routes the clear twin
+/// `scheduled: Some(None)`, exact.
+#[test]
+fn us1_s3_unschedule_commits_the_clear_twin() {
+    let (fixture, mut state) = fixture::journey_state();
+    state
+        .tasks
+        .get_mut(&fixture.task1)
+        .expect("fixture task")
+        .scheduled = Some(chrono::Utc::now());
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            harness.driver.click_by_label("Unschedule");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(None),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }]);
+        },
+    );
+}
