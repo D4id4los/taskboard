@@ -1090,6 +1090,50 @@ pub fn tracking_chip(state: &AppState) -> Option<TrackingChip> {
     })
 }
 
+/// The task context menu's per-subject facts (UX-R8 chunk-5 D-4,
+/// US-2): derived from the loaded state at open — the state/kind
+/// inputs the withheld-vs-greyed verdicts read. `has_armed_timer`
+/// derives `false` by construction: the domain's alarms are
+/// standalone (`AdhocAlarm` anchors no task), so no task-anchored
+/// timer exists and the `TimerCancel` row withholds on every task
+/// menu (the C-4 law — the row routed `NoTarget` from this menu
+/// anyway).
+#[must_use]
+pub fn task_menu_subject(
+    state: &AppState,
+    subject: Option<TaskId>,
+) -> crate::menu::TaskMenuSubject {
+    let tracked_here = tracking_open_task(state).is_some_and(|open| Some(open) == subject);
+    crate::menu::TaskMenuSubject {
+        tracked_here,
+        tracking_elsewhere: tracking_open_task(state).is_some() && !tracked_here,
+        has_reminder_rules: subject.is_some_and(|subject| {
+            state
+                .reminders
+                .rules
+                .values()
+                .any(|rule| rule.task == subject)
+        }),
+        is_series: subject
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.recur.is_some()),
+        // The habit kind lives in `HabitState`, not `TaskKind` (the
+        // domain's habits are separate entities): no task-level habit
+        // kind exists, so `is_habit` derives `false` — the habit verbs'
+        // dispatch targets are habit rows and the rows withheld here
+        // routed `NoTarget` from this menu anyway (the recorded
+        // deviation from the plan's `kind == Habit` spelling).
+        is_habit: false,
+        is_tracker: subject
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.kind == taskboard_domain::entities::TaskKind::Tracker),
+        has_armed_timer: false,
+        scheduled: subject
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.scheduled.is_some()),
+    }
+}
+
 /// The shared open-entry task (the card badge's visibility input):
 /// one derivation with [`tracking_chip`].
 #[must_use]
