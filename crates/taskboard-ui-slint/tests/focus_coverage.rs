@@ -47,6 +47,17 @@ use taskboard_ui_slint::{UiHandle, UiSettings, View};
 /// a review-visible event.
 const EXEMPT: &[(&str, &str)] = &[
     (
+        "TouchArea:TaskCard::track-hit",
+        "the card's play/pause control (UX-R8 chunk-5 D-6, US-4): \
+         pointer-grade per R-3 — a per-card tab stop would promote \
+         tracking onto every card's Tab space (the r4 D-7 prominence \
+         reasoning; the walk-coverage reading-order assertion is the \
+         recorded probe). The keyboard paths are the quick bar's \
+         preset keys (the schedule/tracking family, every preset) and \
+         the context menu's tracking rows — click ≡ key at the action \
+         level (the StatusBar::stop-touch rationale's card twin)",
+    ),
+    (
         "TouchArea:TimeField::arm-touch",
         "the intra-picker click arm (task-detail-editor UX plan US-2/D-6, \
          2026-11-17): an overlay over the field element only, whose click \
