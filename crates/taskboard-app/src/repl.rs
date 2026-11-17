@@ -1707,6 +1707,7 @@ mod tests {
             Command::Boards {
                 cmd: BoardsCmd::Publish {
                     board: None,
+                    to_files: false,
                     timeout_secs: 1,
                     connector: None,
                 },
@@ -1844,6 +1845,36 @@ mod tests {
         let before = format!("{command:?}");
         let after = format!("{:?}", super::prefill_boards(command, None));
         assert_eq!(before, after, "no selection: DF-2 defaults verbatim");
+    }
+
+    /// Journey US-1/S2 (`us1_s2`): the REPL prefill fills
+    /// `publish --to-files`'s `--board` from the session selection —
+    /// the same command-family convention as every board-scoped arm
+    /// (D-5), direction flag irrelevant to the fill.
+    #[test]
+    fn prefill_fills_publish_to_files_arm_from_the_selection_us1_s2() {
+        let current = Some(taskboard_domain::BoardId::from_uuid(uuid::Uuid::nil()));
+        let filled = super::prefill_boards(
+            Command::Boards {
+                cmd: BoardsCmd::Publish {
+                    board: None,
+                    to_files: true,
+                    timeout_secs: 1,
+                    connector: None,
+                },
+            },
+            current,
+        );
+        let Command::Boards {
+            cmd: BoardsCmd::Publish {
+                board, to_files, ..
+            },
+        } = filled
+        else {
+            panic!("expected boards publish --to-files");
+        };
+        assert_eq!(board, current, "the to-files arm pre-fills --board");
+        assert!(to_files, "the direction flag rides through untouched");
     }
 }
 

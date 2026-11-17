@@ -441,6 +441,7 @@ async fn r7_dispatch_line_routes_every_verb_family() {
             Command::Boards {
                 cmd: BoardsCmd::Publish {
                     board: None,
+                    to_files: false,
                     timeout_secs: 1,
                     connector: None,
                 },

@@ -337,18 +337,29 @@ pub enum BoardsCmd {
         title: String,
     },
     /// Publish a local board as a new Nextcloud board and bind it
-    /// (the migration path for stand-alone data; sync-only).
+    /// (the migration path for stand-alone data; sync-only). With
+    /// `--to-files`, never touches Deck: the board binds straight onto
+    /// the local files-sync tier (the GUI roster's publish ceremony).
     Publish {
         /// Target board (uuid); the single live board when omitted.
         #[arg(long, value_parser = parse_board_id)]
         board: Option<taskboard_domain::BoardId>,
+        /// Bind directly onto the files-sync tier instead of creating
+        /// a Deck board (requires the `[files_sync]` lane; no remote
+        /// board is ever created).
+        #[arg(long, conflicts_with = "connector")]
+        to_files: bool,
         /// The connector whose server the remote board is created on
         /// and whose binding tag the bind mints; the default (first)
-        /// connector when omitted.
+        /// connector when omitted. (Meaningless with `--to-files` —
+        /// the files tier has exactly one connector — and refused at
+        /// the parse boundary.)
         #[arg(long)]
         connector: Option<String>,
-        /// Wait budget for the settling first sync cycle, in seconds
-        /// (default 60).
+        /// Wait budget in seconds (default 60). The Deck path spends
+        /// it on the settling first sync; the `--to-files` path keeps
+        /// it as the bind await's budget only — the files actor picks
+        /// the board up on its next cycle.
         #[arg(long, default_value_t = 60)]
         timeout_secs: u64,
     },
@@ -1799,6 +1810,10 @@ mod tests {
         assert_eq!(err.kind(), ClapErrorKind::MissingRequiredArgument);
         assert!(err.use_stderr(), "a usage error exits nonzero");
     }
+
+    // The `boards publish --to-files` parse law (US-1/S1, the R-4
+    // conflict) lives in the journey Test-root
+    // (`tests/cli_standalone.rs::us1_s1_..`) — one behavior, one test.
 
     #[test]
     fn parse_due_accepts_rfc3339_bare_date_and_none() {

@@ -1625,26 +1625,23 @@ async fn publish_board_to_files(
     if crate::bootstrap::files_sync_spawn_decision(&raw).is_none() {
         return Err(SettingsError::FilesSyncDisabled);
     }
-    let state = workspace.engine.shared_state().load();
-    let row = state
-        .boards
-        .get(&board)
-        .filter(|b| !b.deleted && !b.archived)
-        .ok_or(SettingsError::Gone)?;
-    if row.remote.is_some() {
-        return Err(SettingsError::BindRefused);
-    }
-    drop(state);
-    workspace
-        .engine
-        .execute(StateCommand::BindBoard {
-            board,
-            remote: RemoteBoardId::files(board.as_uuid()),
-            connector: ConnectorId::from_kebab(crate::bootstrap::FILES_SYNC_CONNECTOR_NAME)
-                .expect("FILES_SYNC_CONNECTOR_NAME is kebab"),
-        })
+    // Guard ② ③ + the assign step live in the shared ceremony helper
+    // (D-2, #764): the CLI's `boards publish --to-files` runs the exact
+    // same mint, so publish and move cannot diverge. The lane guard's
+    // timing — above, before the state snapshot — stays here verbatim.
+    crate::commands::boards::files_bind_on(&workspace.engine, board)
         .await
-        .map_err(|e| map_execute_error(&e))?;
+        .map_err(|err| match err {
+            crate::commands::CommandError::BoardArchived { .. } => SettingsError::Gone,
+            crate::commands::CommandError::Engine(exec) => map_execute_error(&exec),
+            other => {
+                tracing::warn!(
+                    error = %other,
+                    "settings publish to files: an unexpected error class"
+                );
+                SettingsError::Gone
+            }
+        })?;
     tracing::info!(board = %board.as_uuid(), "settings publish to files committed");
     Ok(current_connections(workspace))
 }

@@ -168,6 +168,18 @@ pub enum CommandError {
         /// The currently bound remote board id.
         current: u64,
     },
+    /// The direct files-publish prelude (`boards publish --to-files`,
+    /// #764 journey US-2/S3) names an archived board: the GUI ceremony's
+    /// gone ruling refuses non-live boards, and "archived" is neither
+    /// the engine's `UnknownBoard` nor `BoardDeleted` class — the engine
+    /// deliberately keeps archived boards commandable, so this verb's
+    /// live-row check is app-layer. The GUI settings arm folds it into
+    /// its `Gone` class verbatim (zero behavior delta).
+    #[error("board {} is archived", board.as_uuid())]
+    BoardArchived {
+        /// The archived board.
+        board: taskboard_domain::BoardId,
+    },
     /// No task matches the selector.
     #[error("no such task")]
     UnknownTask(String),
@@ -529,6 +541,7 @@ impl CommandError {
             Self::Unreachable => "unreachable",
             Self::UnknownBoard(_) | Self::UnknownBoardSelector { .. } => "unknown-board",
             Self::BoardAlreadyBound { .. } => "board-already-bound",
+            Self::BoardArchived { .. } => "board-archived",
             Self::UnknownTask(_) => "unknown-task",
             Self::AmbiguousTask { .. } => "ambiguous-task",
             Self::UnknownStack(_) => "unknown-stack",
@@ -989,26 +1002,47 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             cmd:
                 BoardsCmd::Publish {
                     board,
+                    to_files,
                     timeout_secs,
                     connector,
                 },
         } => {
-            run_core(
-                &mut ctx.io,
-                ctx.config_path.clone(),
-                boards::render_text_select,
-                move |config, store| async move {
-                    boards::publish(
-                        config,
-                        store,
-                        board,
-                        Duration::from_secs(timeout_secs),
-                        connector.as_deref(),
-                    )
-                    .await
-                },
-            )
-            .await
+            if to_files {
+                // The direct local-to-Files bind (#764): the same
+                // receipt family, a different ceremony.
+                run_core(
+                    &mut ctx.io,
+                    ctx.config_path.clone(),
+                    boards::render_text_files_publish,
+                    move |config, store| async move {
+                        boards::publish_to_files(
+                            config,
+                            store,
+                            board,
+                            Duration::from_secs(timeout_secs),
+                        )
+                        .await
+                    },
+                )
+                .await
+            } else {
+                run_core(
+                    &mut ctx.io,
+                    ctx.config_path.clone(),
+                    boards::render_text_select,
+                    move |config, store| async move {
+                        boards::publish(
+                            config,
+                            store,
+                            board,
+                            Duration::from_secs(timeout_secs),
+                            connector.as_deref(),
+                        )
+                        .await
+                    },
+                )
+                .await
+            }
         }
         Command::Boards {
             cmd: BoardsCmd::Color { board, color },
@@ -1976,27 +2010,45 @@ async fn boards_line(
         ),
         BoardsCmd::Publish {
             board,
+            to_files,
             timeout_secs,
             connector,
         } => {
-            match boards::publish_prelude(
-                session.session_config(),
-                session.session_store(),
-                connector.as_deref(),
-            ) {
-                Ok((client, spec)) => emit_result(
+            if to_files {
+                // The direct local-to-Files bind (#764): the session's
+                // config carries the lane guard, the session core the
+                // ceremony — one ceremony, two routings (D-5).
+                emit_result(
                     io,
-                    boards::publish_on(
+                    boards::publish_to_files_on(
                         &app.engine,
-                        &client,
+                        session.session_config(),
                         board,
                         Duration::from_secs(timeout_secs),
-                        &spec.name,
                     )
                     .await,
-                    boards::render_text_select,
-                ),
-                Err(err) => report_to(io, &err),
+                    boards::render_text_files_publish,
+                )
+            } else {
+                match boards::publish_prelude(
+                    session.session_config(),
+                    session.session_store(),
+                    connector.as_deref(),
+                ) {
+                    Ok((client, spec)) => emit_result(
+                        io,
+                        boards::publish_on(
+                            &app.engine,
+                            &client,
+                            board,
+                            Duration::from_secs(timeout_secs),
+                            &spec.name,
+                        )
+                        .await,
+                        boards::render_text_select,
+                    ),
+                    Err(err) => report_to(io, &err),
+                }
             }
         }
         BoardsCmd::Color { board, color } => emit_result(

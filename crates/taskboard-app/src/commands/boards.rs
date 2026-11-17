@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use taskboard_domain::{CommandOutcome, RemoteBoardId, StateCommand, SyncPhase, SyncStatus};
 
 use crate::commands::output::{
-    BoardDestructReceipt, BoardReceipt, BoardsListEntry, PublishReceipt, ReconcileReceipt,
-    SelectReceipt, SyncStatusView, UnbindReceipt,
+    BoardDestructReceipt, BoardReceipt, BoardsListEntry, FilesPublishReceipt, PublishReceipt,
+    ReconcileReceipt, SelectReceipt, SyncStatusView, UnbindReceipt,
 };
 use crate::commands::{CommandError, map_deck_error};
 use crate::config::AppConfig;
@@ -885,6 +885,174 @@ fn receipt_with_board(
     receipt
 }
 
+/// The direct local-to-Files publish (#764, journey US-1): bind a live
+/// unbound local board straight onto the files-sync tier without ever
+/// touching Deck — the exact ceremony the GUI roster's publish row
+/// dispatches (round-7 D-7.3). Deck-first-then-move (`boards move
+/// --to-files`) stays the CLI's only *remote* path; this verb never
+/// creates a remote board. `--timeout-secs` budgets the bind await
+/// only — the files actor picks the board up on its next cycle.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: [`CommandError::SyncDisabled`] when the
+/// files lane is unconfigured (journey US-2/S1), the resolution /
+/// gone / bind-refused classes (US-2/S2–S4) otherwise,
+/// [`CommandError::SyncTimedOut`] when the bind await outlives its
+/// budget.
+pub async fn publish_to_files(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    board: Option<taskboard_domain::BoardId>,
+    timeout: Duration,
+) -> Result<FilesPublishReceipt, CommandError> {
+    // The lane guard rides the config, before any boot (the GUI
+    // ceremony's guard order — the lane refuses before the state
+    // snapshot; journey US-2/S1).
+    files_bind_prelude(&config)?;
+    let sink = crate::bootstrap::resolve_notifier_sink(&config);
+    let app = crate::bootstrap::bootstrap(config, store, sink).await?;
+    let result = files_publish_steps(&app.engine, board, timeout).await;
+    let _ = app.shutdown().await;
+    result
+}
+
+/// The session twin's prelude (the REPL/daemon `boards_line` routing):
+/// the same lane guard against the session's config, then the same
+/// steps on the session core — one ceremony, two routings (D-5).
+///
+/// # Errors
+///
+/// [`CommandError`] — as [`publish_to_files`].
+pub(crate) async fn publish_to_files_on(
+    engine: &taskboard_state::EngineHandle,
+    config: &AppConfig,
+    board: Option<taskboard_domain::BoardId>,
+    timeout: Duration,
+) -> Result<FilesPublishReceipt, CommandError> {
+    files_bind_prelude(config)?;
+    files_publish_steps(engine, board, timeout).await
+}
+
+/// The lane guard, shared by both routings: `[files_sync]` enabled with
+/// a resolvable anchor, else the typed lane-disabled refusal (journey
+/// US-2/S1; no `BindBoard` is executed and the state tree is
+/// untouched).
+fn files_bind_prelude(config: &AppConfig) -> Result<(), CommandError> {
+    if crate::bootstrap::files_sync_spawn_decision(config).is_none() {
+        return Err(CommandError::SyncDisabled);
+    }
+    Ok(())
+}
+
+/// The files-publish steps on a booted core: the shared boards-family
+/// resolution (US-2/S4, no new semantics), the extracted files bind
+/// with its live-row refusal classes (US-2/S2–S3, in
+/// [`files_bind_on`]), and the receipt read-back (US-1/S4).
+async fn files_publish_steps(
+    engine: &taskboard_state::EngineHandle,
+    board: Option<taskboard_domain::BoardId>,
+    timeout: Duration,
+) -> Result<FilesPublishReceipt, CommandError> {
+    // The gone/refused classes (unknown, soft-deleted, archived,
+    // already-bound) all refuse inside `files_bind_on` — its live-row
+    // check runs before the bind, so the timeout never masks a refusal
+    // as `SyncTimedOut`.
+    let board_id = crate::commands::resolve_board(engine, board)?;
+    tokio::time::timeout(timeout, files_bind_on(engine, board_id))
+        .await
+        .map_err(|_| CommandError::SyncTimedOut)??;
+    // The receipt read-back (US-1/S4): a fresh snapshot, structural
+    // fields only — the files remote id minted from the board's own
+    // uuid, the board's live flags.
+    let state = engine.shared_state().load_full();
+    // The journey's US-1/S4 escape: a read-back miss surfaces as the
+    // typed error path, never a panic — the bind already committed, so
+    // a rerun lands in the US-2/S2 already-bound refusal naming it.
+    let Some(settled) = state.boards.get(&board_id) else {
+        return Err(engine_rejected(
+            taskboard_domain::CommandError::UnknownBoard(board_id),
+        ));
+    };
+    let Some(binding) = settled.remote.as_ref() else {
+        return Err(CommandError::Unreachable);
+    };
+    let files_remote_id = binding.board.as_files().ok_or(CommandError::Unreachable)?;
+    Ok(FilesPublishReceipt {
+        board_id: board_id.as_uuid().to_string(),
+        files_remote_id: files_remote_id.to_string(),
+        title: settled.title.clone(),
+        archived: settled.archived,
+        deleted: settled.deleted,
+        sync: SyncStatusView::new(state.sync.get(board_id).unwrap_or(&SyncStatus::default())),
+    })
+}
+
+/// The extracted files-bind ceremony (D-2): the GUI roster's
+/// `publish_board_to_files` guard ② ③ plus the `BindBoard` assign step,
+/// moved verbatim out of `ui_requests.rs` so the GUI arm and the CLI
+/// verb cannot mint differently. The caller owns the lane guard (its
+/// timing — before the state snapshot — is pinned by the GUI seam
+/// test).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed: the gone classes
+/// (`UnknownBoard`/`BoardDeleted`/[`CommandError::BoardArchived`]),
+/// `BoardAlreadyBound` (deck-bound and files-bound refuse alike), the
+/// engine's pass-through classes otherwise. The `BindBoard` outcome is
+/// contract-checked (`Bound`/`NoOp`) and discarded — both callers read
+/// the committed fact back from the state snapshot.
+pub(crate) async fn files_bind_on(
+    engine: &taskboard_state::EngineHandle,
+    board: taskboard_domain::BoardId,
+) -> Result<(), CommandError> {
+    let state = engine.shared_state().load();
+    let row = match state.boards.get(&board) {
+        None => {
+            return Err(engine_rejected(
+                taskboard_domain::CommandError::UnknownBoard(board),
+            ));
+        }
+        Some(b) if b.deleted => {
+            return Err(engine_rejected(
+                taskboard_domain::CommandError::BoardDeleted(board),
+            ));
+        }
+        Some(b) if b.archived => return Err(CommandError::BoardArchived { board }),
+        Some(b) => b,
+    };
+    if let Some(current) = row.remote.as_ref() {
+        return Err(engine_rejected(
+            taskboard_domain::CommandError::BoardAlreadyBound {
+                board,
+                bound: current.board,
+            },
+        ));
+    }
+    drop(state);
+    let outcome = engine
+        .execute(StateCommand::BindBoard {
+            board,
+            remote: RemoteBoardId::files(board.as_uuid()),
+            connector: taskboard_domain::ConnectorId::from_kebab(
+                crate::bootstrap::FILES_SYNC_CONNECTOR_NAME,
+            )
+            .expect("FILES_SYNC_CONNECTOR_NAME is kebab"),
+        })
+        .await?;
+    match outcome {
+        CommandOutcome::Bound { .. } | CommandOutcome::NoOp => Ok(()),
+        other => unreachable!("BindBoard answers Bound or NoOp, got {other:?}"),
+    }
+}
+
+/// The engine-rejection shape the boards family folds prelude refusals
+/// into (one rule, one shape — `publish_on`'s precedent).
+fn engine_rejected(err: taskboard_domain::CommandError) -> CommandError {
+    CommandError::Engine(Box::new(taskboard_state::ExecuteError::Rejected(err)))
+}
+
 /// The binding ceremony: pre-validate (fresh listing, the validated
 /// entry feeds the mint) → boot → resolve-or-mint the local board →
 /// `BindBoard` → nudge → wait for that board's adoption → automatic
@@ -1217,6 +1385,17 @@ pub fn render_text_select(receipt: &SelectReceipt) -> String {
         ),
         None => base,
     }
+}
+
+/// The human-readable files-publish receipt (#764 journey US-1/S4):
+/// the read-back's structural fields — the files remote id names the
+/// bound channel (a Deck number never appears on this path).
+#[must_use]
+pub fn render_text_files_publish(receipt: &FilesPublishReceipt) -> String {
+    format!(
+        "published board {} onto the files tier as {} — \"{}\"; sync: {}",
+        receipt.board_id, receipt.files_remote_id, receipt.title, receipt.sync.phase
+    )
 }
 
 /// The human-readable unbind receipt.

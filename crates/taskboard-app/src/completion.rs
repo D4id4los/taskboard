@@ -1164,6 +1164,19 @@ mod tests {
         for long in ["server", "user"] {
             assert!(login_flags.iter().any(|f| f.long == long));
         }
+        // `boards publish`'s flag menu carries the new direction flag
+        // (#764 journey US-1/S1): the R-4 pair is offered, the conflict
+        // law lives at the parse boundary.
+        let publish_flags = spec
+            .flags
+            .get(&vec!["boards".to_owned(), "publish".to_owned()])
+            .expect("boards publish walked");
+        for long in ["to-files", "connector", "board", "timeout-secs"] {
+            assert!(
+                publish_flags.iter().any(|f| f.long == long),
+                "--{long} must be offered for boards publish"
+            );
+        }
         assert_eq!(
             routed(&spec, "connect ", 8),
             Kind::None,
