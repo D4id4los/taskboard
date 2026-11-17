@@ -532,6 +532,42 @@ expression: rows
   menu_rank: 88
   description: "Re-commits the focused task to today by stamping its due date at the day window's end; confirmation-free."
   menu_group: task
+- id: task.schedule-today
+  label: Schedule today
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 101
+  description: "Stamps the focused task's scheduled day to today at the day window's end; confirmation-free."
+  menu_group: task
+- id: task.schedule-tomorrow
+  label: Schedule tomorrow
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 102
+  description: "Stamps the focused task's scheduled day to tomorrow at the next day window's start; confirmation-free."
+  menu_group: task
+- id: task.unschedule
+  label: Unschedule
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 103
+  description: "Clears the focused task's scheduled day; confirmation-free."
+  menu_group: task
 - id: task.move
   label: Move task
   contexts:

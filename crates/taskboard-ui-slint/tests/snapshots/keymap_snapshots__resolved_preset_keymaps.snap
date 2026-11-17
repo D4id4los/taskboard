@@ -102,6 +102,15 @@ expression: rows
             - F10
           action: task.track-stop
         - sequence:
+            - F11
+          action: task.schedule-today
+        - sequence:
+            - Ctrl+F11
+          action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+Shift+F11
+          action: task.unschedule
+        - sequence:
             - Ctrl+Home
           action: nav.first-item
         - sequence:
@@ -194,6 +203,15 @@ expression: rows
             - Ctrl+F3
           action: board.color-edit
         - sequence:
+            - F11
+          action: task.schedule-today
+        - sequence:
+            - Ctrl+F11
+          action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+Shift+F11
+          action: task.unschedule
+        - sequence:
             - Ctrl+Home
           action: nav.first-item
         - sequence:
@@ -222,6 +240,15 @@ expression: rows
         - sequence:
             - Down
           action: nav.next-item
+        - sequence:
+            - F11
+          action: task.schedule-today
+        - sequence:
+            - Ctrl+F11
+          action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+Shift+F11
+          action: task.unschedule
         - sequence:
             - Ctrl+Home
           action: nav.first-item
@@ -281,6 +308,15 @@ expression: rows
         - sequence:
             - F10
           action: task.track-stop
+        - sequence:
+            - F11
+          action: task.schedule-today
+        - sequence:
+            - Ctrl+F11
+          action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+Shift+F11
+          action: task.unschedule
         - sequence:
             - Ctrl+Home
           action: nav.first-item
@@ -575,6 +611,10 @@ expression: rows
           action: task.track-start
         - sequence:
             - Ctrl+c
+            - Ctrl+n
+          action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+c
             - Ctrl+o
           action: task.track-stop
         - sequence:
@@ -589,6 +629,14 @@ expression: rows
             - Ctrl+c
             - Ctrl+w
           action: task.move
+        - sequence:
+            - Ctrl+c
+            - Ctrl+x
+          action: task.unschedule
+        - sequence:
+            - Ctrl+c
+            - Ctrl+y
+          action: task.schedule-today
         - sequence:
             - Ctrl+d
           action: task.delete
@@ -657,6 +705,10 @@ expression: rows
           action: stack.move
         - sequence:
             - Ctrl+c
+            - Ctrl+n
+          action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+c
             - p
           action: board.default-preset
         - sequence:
@@ -675,6 +727,14 @@ expression: rows
             - Ctrl+c
             - Ctrl+w
           action: task.move
+        - sequence:
+            - Ctrl+c
+            - Ctrl+x
+          action: task.unschedule
+        - sequence:
+            - Ctrl+c
+            - Ctrl+y
+          action: task.schedule-today
         - sequence:
             - Ctrl+c
             - Delete
@@ -720,6 +780,18 @@ expression: rows
         - sequence:
             - Ctrl+b
           action: nav.prev-control
+        - sequence:
+            - Ctrl+c
+            - Ctrl+n
+          action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+c
+            - Ctrl+x
+          action: task.unschedule
+        - sequence:
+            - Ctrl+c
+            - Ctrl+y
+          action: task.schedule-today
         - sequence:
             - Ctrl+f
           action: nav.next-control
@@ -769,6 +841,10 @@ expression: rows
           action: task.track-start
         - sequence:
             - Ctrl+c
+            - Ctrl+n
+          action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+c
             - Ctrl+o
           action: task.track-stop
         - sequence:
@@ -783,6 +859,14 @@ expression: rows
             - Ctrl+c
             - Ctrl+u
           action: reminder.rule-add
+        - sequence:
+            - Ctrl+c
+            - Ctrl+x
+          action: task.unschedule
+        - sequence:
+            - Ctrl+c
+            - Ctrl+y
+          action: task.schedule-today
         - sequence:
             - Ctrl+f
           action: nav.next-control
@@ -1037,8 +1121,17 @@ expression: rows
             - O
           action: task.track-stop
         - sequence:
+            - X
+          action: task.unschedule
+        - sequence:
+            - Y
+          action: task.schedule-tomorrow
+        - sequence:
             - t
           action: task.due-today
+        - sequence:
+            - y
+          action: task.schedule-today
     - context: board
       bindings:
         - sequence:
@@ -1047,6 +1140,15 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - X
+          action: task.unschedule
+        - sequence:
+            - Y
+          action: task.schedule-tomorrow
+        - sequence:
+            - y
+          action: task.schedule-today
     - context: stack-detail
       bindings:
         - sequence:
@@ -1055,6 +1157,15 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - X
+          action: task.unschedule
+        - sequence:
+            - Y
+          action: task.schedule-tomorrow
+        - sequence:
+            - y
+          action: task.schedule-today
     - context: task-detail
       bindings:
         - sequence:
@@ -1073,6 +1184,12 @@ expression: rows
             - O
           action: task.track-stop
         - sequence:
+            - X
+          action: task.unschedule
+        - sequence:
+            - Y
+          action: task.schedule-tomorrow
+        - sequence:
             - a
           action: reminder.rule-add
         - sequence:
@@ -1087,6 +1204,9 @@ expression: rows
         - sequence:
             - s
           action: task.scheduled-edit
+        - sequence:
+            - y
+          action: task.schedule-today
         - sequence:
             - F3
           action: task.importance-edit
