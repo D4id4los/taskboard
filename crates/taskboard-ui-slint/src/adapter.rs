@@ -1157,6 +1157,41 @@ impl Adapter {
         window.global::<KeyboardState>().set_last_feedback(feedback);
     }
 
+    /// The selection verbs' dispatch (UX-R8 D-6): Complete sends one
+    /// `SetTaskDone` per member in anchor order (a tracker member's
+    /// completion is impossible — the per-task absorb drops it and
+    /// continues, the #492 shape); Delete arms the multi strip
+    /// (`ConfirmDelete(Tasks)`, the anchor-order snapshot) — the
+    /// armed repeat confirms, Escape/a settle disarm (the shared
+    /// grammar).
+    fn route_selection_verb(&mut self, window: &AppWindow, id: ActionId) {
+        let state = self.state.load_full();
+        match id {
+            ActionId::TaskComplete => {
+                let members = self.view_state.selection_anchor_order(&state);
+                for member in members {
+                    let Some(task) = state.tasks.get(&member) else {
+                        continue; // the per-task absorb (the id-table law)
+                    };
+                    if task.kind == taskboard_domain::entities::TaskKind::Tracker {
+                        continue; // the completion is impossible (#492)
+                    }
+                    self.send(StateCommand::SetTaskDone {
+                        id: member,
+                        done: true,
+                    });
+                }
+            }
+            ActionId::TaskDelete => {
+                let members = self.view_state.selection_anchor_order(&state);
+                let outcomes = self.view_state.arm_multi_delete(members);
+                self.apply_outcomes(window, &outcomes);
+            }
+            _ => unreachable!("the intercept's guard owns the verb set"),
+        }
+        self.finish_mutation(window);
+    }
+
     /// One fire-and-forget command send (the route arm's convention):
     /// a full or closed inbox is logged and dropped — never a panic
     /// (D16's forwarder convention).
@@ -1168,6 +1203,17 @@ impl Adapter {
 
     /// One action through the router (design §5 pipeline's last hop).
     pub(crate) fn route(&mut self, window: &AppWindow, id: ActionId) {
+        // The selection's verb intercept (UX-R8 D-6, US-4/S3–S4): a
+        // non-empty selection turns Complete/Delete into the
+        // per-task sequences (click ≡ key — the menu rows and the
+        // preset strokes land here alike). Empty selection keeps the
+        // existing single-target semantics untouched.
+        if matches!(id, ActionId::TaskComplete | ActionId::TaskDelete)
+            && !self.view_state.selection().is_empty()
+        {
+            self.route_selection_verb(window, id);
+            return;
+        }
         let mut ctx = self.shell.dispatch_ctx();
         ctx.create_target = self.create_target.take();
         ctx.reminder_target = self.reminder_target;
@@ -3768,6 +3814,10 @@ impl Adapter {
             //    settle first, audit §6 rows S) --
             (Flow::None, UiEffect::FocusToday) => self.view_state.focus_today(),
             (Flow::None, UiEffect::OpenInbox) => self.view_state.open_inbox(&state),
+            // UX-R8 D-4's Escape cell: the move-cancel stroke with
+            // no flow is the settle law's keyboard face — the
+            // selection clears, nothing dispatches.
+            (Flow::None, UiEffect::CancelMove) => self.view_state.clear_selection(),
             (Flow::None, UiEffect::FocusNext) => {
                 let day = self.day_ctx();
                 self.view_state
@@ -9505,6 +9555,7 @@ impl Adapter {
         x: f32,
         y: f32,
         extra: &[ActionId],
+        subject: Option<TaskId>,
     ) {
         // The tracker hide-set (issue #492): a tracker card's menu
         // omits the impossible complete verb. Only the impossible verb
@@ -9517,12 +9568,25 @@ impl Adapter {
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.kind == taskboard_domain::entities::TaskKind::Tracker);
         drop(state);
-        let mut ids: Vec<ActionId> = menu::TASK_CONTEXT
-            .iter()
-            .copied()
-            .filter(|id| !(tracker && *id == ActionId::TaskComplete))
-            .collect();
-        ids.extend_from_slice(extra);
+        // The selection branch (UX-R8 D-6, US-4/S3): a member
+        // invocation opens the multi row set (the count caption is
+        // chunk 5's menu grammar); a non-member (or board-surface-
+        // foreign) invocation opens the single-card menu unchanged.
+        // D-11: the invoking settle kept the selection, so the menu
+        // reads it here.
+        let selection_covers =
+            subject.is_some_and(|subject| self.view_state.selection().contains(&subject));
+        let ids: Vec<ActionId> = if selection_covers {
+            menu::TASK_CONTEXT_MULTI.to_vec()
+        } else {
+            let mut ids: Vec<ActionId> = menu::TASK_CONTEXT
+                .iter()
+                .copied()
+                .filter(|id| !(tracker && *id == ActionId::TaskComplete))
+                .collect();
+            ids.extend_from_slice(extra);
+            ids
+        };
         self.open_context_menu(window, x, y, &ids);
     }
 }
@@ -9539,7 +9603,7 @@ fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     };
     let outcomes = a.view_state.activate_card(task, stack);
     a.apply_outcomes(&window, &outcomes);
-    a.open_task_context_menu(&window, x, y, &[]);
+    a.open_task_context_menu(&window, x, y, &[], Some(task));
 
     });
 }
@@ -9559,7 +9623,8 @@ fn install_stack_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     };
     let outcomes = a.view_state.activate_card(task, stack);
     a.apply_outcomes(&window, &outcomes);
-    a.open_task_context_menu(&window, x, y, &[]);
+    // The stack-detail surface carries no selection (R-1's scoping).
+    a.open_task_context_menu(&window, x, y, &[], None);
 
     });
 }
@@ -9741,7 +9806,8 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_today_row_context_requested, adapter: adapter;
     bind mut (a, window), args (section, row, x, y), {        settle_pointer_conflict(&mut a, &window);
     if focus_today_row(&mut a, &window, section, row).is_some() {
-        a.open_task_context_menu(&window, x, y, &[ActionId::TaskDueToday]);
+        // The today surface carries no selection (R-1's scoping).
+        a.open_task_context_menu(&window, x, y, &[ActionId::TaskDueToday], None);
     }
 
     });
@@ -10168,7 +10234,11 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // Nothing dispatches: selection is presentation state (R-2).
     // slint: task-clicked-modifiers
     install_seam!(window: window.on_board_task_clicked_modifiers, adapter: adapter;
-    bind mut (a, window), args (column, row, shift, control), {        settle_pointer_conflict(&mut a, &window);
+    bind mut (a, window), args (column, row, shift, control), {        // The selection's own seam: the pointer-conflict ritual settles
+        // a live flow but KEEPS the selection — the gesture builds on
+        // the anchor (the D-4 settle-clear law is for foreign settles:
+        // Escape, the modal opens, the surface changes).
+        settle_pointer_conflict_keeping_selection(&mut a, &window, true);
     let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
         return;
     };

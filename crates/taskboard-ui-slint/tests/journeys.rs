@@ -21452,13 +21452,15 @@ fn us4_s1_modifier_clicks_build_the_selection() {
             assert_eq!(sel(&harness, 1, 0), (true, false), "the ctrl member");
             harness.assert_commands(&[]);
 
-            // Shift+walk (the named-key rows with shift): extends to
-            // the next card in reading order.
+            // Shift+walk (the named-key rows with shift): the plain
+            // walk moves focus (the selection rides), then the shift
+            // stroke extends to the newly focused card.
+            harness.press(ActionId::NavNextItem);
             harness.stroke(parse("Shift+Down").expect("Shift+Down"));
             assert_eq!(
-                sel(&harness, 1, 1),
+                sel(&harness, 0, 1),
                 (true, false),
-                "the walk extended to the next card"
+                "the walk extended to the newly focused card"
             );
             harness.assert_commands(&[]);
 
@@ -21524,6 +21526,145 @@ fn us4_s4_escape_clears_the_selection_without_dispatch() {
                 !selected(&harness),
                 "the foreign settle cleared the selection"
             );
+        },
+    );
+}
+
+/// US-4/S2 — the selection drag moves all in anchor order: N≥2
+/// selection, gap drop → one `MoveTask` per member, anchor order,
+/// relative order kept.
+#[test]
+fn us4_s2_selection_drag_moves_all_in_anchor_order() {
+    let (fixture, state) = fixture::golden_state();
+    let task0 = state
+        .tasks
+        .values()
+        .find(|task| task.title == "task-0")
+        .map(|task| task.id)
+        .expect("the fixture's first task");
+    let task1 = state
+        .tasks
+        .values()
+        .find(|task| task.title == "task-1")
+        .map(|task| task.id)
+        .expect("the fixture's second task");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // Build the pair: shift+click both cards (anchor task0).
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 1, true, false);
+
+            // Drag from a member to stack b's gap 0: the cross-stack
+            // append sequence (append_order + i per member).
+            harness.handle.window().invoke_board_card_drag_armed(0, 0);
+            harness.handle.window().invoke_board_gap_hovered(1, 0);
+            harness.handle.window().invoke_board_gap_dropped(1, 0);
+            harness.assert_commands(&[
+                StateCommand::MoveTask {
+                    id: task0,
+                    stack: fixture.stack_b,
+                    order: 1,
+                },
+                StateCommand::MoveTask {
+                    id: task1,
+                    stack: fixture.stack_b,
+                    order: 2,
+                },
+            ]);
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                harness.board_shape(),
+                vec![0, 3],
+                "the set landed in stack b"
+            );
+            assert!(
+                !harness.handle.window().get_board_drag_open(),
+                "the drop ends the drag"
+            );
+        },
+    );
+}
+
+/// US-4/S3 — the multi-selection menu withholds the single-target
+/// rows: a member invocation opens the `TASK_CONTEXT_MULTI` row set
+/// (structural: the armed rows' `ActionIds`), Complete dispatches the
+/// per-task sequence, the Delete arm confirms per task and Escape
+/// disarms.
+#[test]
+fn us4_s3_multi_menu_withholds_single_target_rows() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+
+            // Build the pair, then open the context menu on a member.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 1, true, false);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            let keyboard = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>();
+            assert!(keyboard.get_menu_open(), "the menu opened");
+            let rows: Vec<String> = {
+                let entries = keyboard.get_menu_entries();
+                (0..entries.row_count())
+                    .map(|i| entries.row_data(i).expect("row").action.to_string())
+                    .collect()
+            };
+            // The multi row set (structural; D-11: the selection
+            // survived the menu's settle).
+            assert_eq!(
+                rows,
+                vec!["task.complete".to_owned(), "task.delete".to_owned()],
+                "the multi grammar: complete, delete (destructive last)"
+            );
+
+            // Complete via the menu's row: the per-task sequence
+            // (drained before the engine's apply — settle drains).
+            harness.press(ActionId::MenuInvoke);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), 2, "one SetTaskDone per member, in order");
+            harness.engine.settle(&harness.handle);
+            assert!(
+                drained
+                    .iter()
+                    .all(|c| matches!(c, StateCommand::SetTaskDone { done: true, .. }))
+            );
+
+            // The armed multi delete via the preset stroke: the arm
+            // dispatches nothing; the repeat confirms; Escape disarms.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            harness.press(ActionId::TaskDelete);
+            harness.assert_commands(&[]);
+            harness.press(ActionId::TaskMoveCancel);
+            harness.assert_commands(&[]);
         },
     );
 }

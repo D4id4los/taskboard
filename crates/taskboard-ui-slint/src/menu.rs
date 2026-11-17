@@ -159,6 +159,16 @@ pub fn context_entries(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
     )
 }
 
+/// The multi-selection menu's row set (UX-R8 D-6, US-4/S3, W-5): the
+/// multi-sensible verbs only — complete then delete (the BF-W-N2
+/// destructive-last rule is the row order). Single-target-only rows
+/// (tracking arms, series/habit verbs, open/entries, and chunk 5's
+/// quick schedule family) are **withheld, not greyed** (C-4). Chunk 5
+/// builds the menu grammar (the applicable-row filter + submenus);
+/// this named const is the row set the selection branch hands it —
+/// the named-const-slice pattern, never a re-pasted row block.
+pub const TASK_CONTEXT_MULTI: &[ActionId] = &[ActionId::TaskComplete, ActionId::TaskDelete];
+
 /// The task context menu's action list (round-2 D21): the Task
 /// group's rows in rank order.
 pub const TASK_CONTEXT: &[ActionId] = &[
