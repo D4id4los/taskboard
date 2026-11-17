@@ -8,8 +8,7 @@
 
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { TooltipState } from "tooltip.slint";
-import { IconButton } from "icon-button.slint";
-import { IconKind } from "icon.slint";
+import { Icon, IconKind } from "icon.slint";
 
 // The rule-D decoration vocabulary (D21): future surfaces (W1
 // importance/urgency, habits, reminders) ride this slot.
@@ -224,15 +223,41 @@ export component TaskCard inherits Rectangle {
         }
 
         // The card's play/pause tracking control (UX-R8 chunk-5 D-6,
-        // US-4; pointer-grade per R-3 — no card-scoped key): beside
-        // the decoration region, hidden entirely on a tracker card
-        // (the can-done hide posture).
-        if (root.model.can-done): track-control := IconButton {
-            icon: root.model.track-state == TrackCardState.running-here ? IconKind.stop : IconKind.play;
-            label: root.model.track-state == TrackCardState.running-here
-                ? "Stop tracking" : "Start tracking";
-            // slint: track-toggled
-            clicked => { root.track-toggled(); }
+        // US-4; pointer-grade per R-3 — no card-scoped key AND no tab
+        // stop: a per-card FocusScope with focus-on-tab-navigation
+        // would promote tracking onto every card's Tab space (the r4
+        // D-7 prominence reasoning; the done-box's no-tab-stop
+        // posture — the a11y role carries the AT/keyboard activation
+        // through the addressing chains' own walk)). Beside the
+        // decoration region; hidden entirely on a tracker card (the
+        // can-done hide posture).
+        if (root.model.can-done): track-control := Rectangle {
+            width: Theme.space-6;
+            height: Theme.space-6;
+            track-hit := TouchArea {
+                clicked => { root.track-toggled(); }
+            }
+            background: track-hit.has-hover ? Theme.surface-hover : transparent;
+            border-radius: Theme.radius-small;
+            track-focus := FocusScope {
+                width: 100%;
+                height: 100%;
+                focus-on-tab-navigation: false;
+                accessible-role: AccessibleRole.button;
+                accessible-label: root.model.track-state == TrackCardState.running-here
+                    ? "Stop tracking" : "Start tracking";
+                // slint: track-toggled
+                accessible-action-default => { root.track-toggled(); }
+            }
+            Icon {
+                width: Theme.icon-size;
+                height: Theme.icon-size;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                kind: root.model.track-state == TrackCardState.running-here
+                    ? IconKind.stop : IconKind.play;
+                colorize: track-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
+            }
         }
 
         VerticalLayout {
