@@ -568,7 +568,6 @@ async fn run_loop(
                             ids: ids.as_ref(),
                             clock: clock.as_ref(),
                             notifier: &notifier,
-                            author,
                         },
                         &metrics,
                         &system_out,
@@ -997,7 +996,6 @@ async fn ingest_sync_report(
         ids,
         clock,
         notifier,
-        author,
     } = seams;
     tracing::debug!("sync report ingested");
     let now = clock.now();
@@ -1081,7 +1079,6 @@ async fn ingest_sync_report(
                         &app_data,
                         features,
                         day,
-                        author,
                     );
                     // The pipeline's broadcast verdicts (R3's resurrect is the
                     // only producer today): upgrade-or-drop like the storage
@@ -1141,7 +1138,6 @@ async fn ingest_sync_report(
                         ids,
                         now,
                         &connector,
-                        author,
                     );
                     append_status_if_changed(core, &mut batch, &merged.sync);
                     // The files report carries no pull validators (its
@@ -1543,7 +1539,6 @@ struct IngestSeams<'a> {
     ids: &'a dyn IdGenerator,
     clock: &'a dyn Clock,
     notifier: &'a mpsc::Sender<NotifierMessage>,
-    author: Option<taskboard_domain::ids::AuthorId>,
 }
 
 /// The day roll's seams.

@@ -293,7 +293,6 @@ proptest! {
                 day_start_time: chrono::NaiveTime::MIN,
                 offset: chrono::FixedOffset::east_opt(0).unwrap(),
             },
-            None,
         );
         // The engine appends the status action iff phase or last_success
         // changed — the same rule the actor applies.
