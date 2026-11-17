@@ -346,21 +346,32 @@ pub fn deliver_task_notification(
 /// pending ops — the step-9 status read's subject.
 #[must_use]
 pub fn journey_state() -> (Fixture, AppState) {
-    let (fixture, mut state) = golden_state();
+    journey_state_at(chrono::Utc::now())
+}
+
+/// [`journey_state`] seeded against an explicit `now`: the single-read
+/// capture (`docs/testing_strategy.org` §6.1, tool 6). The overdue
+/// stamp is derived through the same `DayCalendar`/`review_window`
+/// vocabulary the harness's day window reads — anchored on the
+/// *vocabulary*, not the pass's instant — so the fixture is
+/// Today-nonempty by construction (#843): `task1`'s stamp is
+/// yesterday's midnight in the fixture's UTC calendar, strictly
+/// before any pass window's start (the overdue predicate
+/// `duedate < now` is satisfied for every pass `now ≥ now`).
+#[must_use]
+pub fn journey_state_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppState) {
+    let (fixture, mut state) = golden_state_at(now);
     let mut overdue = state.tasks.get(&fixture.task1).expect("task").clone();
     // Midnight-aligned (round-3 D9): the due phrases now carry the
     // UTC `· HH:MM` suffix for non-midnight instants — a wall-clock
     // stamp would make the goldens run-dependent. Midnight renders
     // exactly the date-only shape the goldens pin.
-    let today = chrono::Utc::now().date_naive();
-    overdue.duedate = Some(
-        today
-            .checked_sub_signed(TimeDelta::try_days(1).unwrap())
-            .expect("yesterday exists")
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight")
-            .and_utc(),
-    );
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).expect("utc"),
+    };
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    overdue.duedate = Some(yesterday.and_hms_opt(0, 0, 0).expect("midnight").and_utc());
     state.tasks.insert(fixture.task1, overdue);
     // The projection is derived: two fabricated ops give the badge its
     // pending count; the phase carries the stored Offline.
