@@ -1509,8 +1509,11 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
             NotUndoableReason::HabitSurface
         ))
     ));
-    // Restore class.
-    h.exec(&StateCommand::DeleteStack { id: stack })
+    // Restore class (`DeleteStack` left the family in #356's D-1
+    // reclassification — its undo is the composite restore; the
+    // remaining restore-class verbs still refuse).
+    let label = h.label(board);
+    h.exec(&StateCommand::DeleteLabel { id: label })
         .expect("deleted");
     assert!(matches!(
         h.exec(&StateCommand::Undo),

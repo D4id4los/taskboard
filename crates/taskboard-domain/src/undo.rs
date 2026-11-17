@@ -115,6 +115,14 @@ fn record_entry(
         | StateCommand::AssignLabel { .. }
         | StateCommand::UnassignLabel { .. }
         | StateCommand::RestoreTask { .. }
+        // The #356 reclassification: `DeleteStack` journals the full
+        // cascade pre-images (stack + every tombstoned task — the
+        // arm-agnostic capture gets them for free), so its inverse is
+        // synthesizable (D-1/D-3). `RestoreStack` rides the same
+        // surface (D-2): its pre-image is the tombstoned stack, and its
+        // inverse is the ordinary `DeleteStack` cascade (D-5).
+        | StateCommand::DeleteStack { .. }
+        | StateCommand::RestoreStack { .. }
         // The pause is a one-field task edit under the recur clock
         // (issue #506): the recur pre-image inverts it exactly (the
         // UpdateTask class restores the whole rule verbatim).
@@ -123,7 +131,7 @@ fn record_entry(
             watermark: watermark_of(actions),
         },
         // ---- the typed families (§3 rows; the lockstep's other half)
-        StateCommand::DeleteStack { .. } | StateCommand::DeleteLabel { .. } => {
+        StateCommand::DeleteLabel { .. } => {
             UndoFacts::NotUndoable(NotUndoableReason::RestoreClass)
         }
         StateCommand::CreateBoard { .. }
@@ -328,6 +336,7 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         | StateCommand::ReconcileByTitle { board } => Some(*board),
         StateCommand::RenameStack { id, .. }
         | StateCommand::DeleteStack { id }
+        | StateCommand::RestoreStack { id }
         | StateCommand::MoveStack { id, .. } => app.stacks.get(id).map(|s| s.board),
         StateCommand::UpdateLabel { id, .. } | StateCommand::DeleteLabel { id } => {
             app.labels.get(id).map(|l| l.board)
@@ -556,24 +565,39 @@ pub fn plan_undo(
             UndoFacts::PreImages { .. } => unreachable!("checked above"),
         }));
     };
-    // 3-5. Watermark check + inverse synthesis (one per-arm walk) and
-    // the CreateStack occupancy guard.
-    let inverse = synthesize_undo(app, entry, images, watermark)?;
-    if let StateCommand::DeleteStack { id } = &inverse {
-        let occupied = app
-            .tasks
-            .values()
-            .any(|task| task.stack == *id && task.is_live());
-        if occupied {
-            return Err(CommandError::UndoTargetHasDependents { stack: *id });
+    // 3-5. Watermark check + inverse synthesis (one per-arm walk). Most
+    // classes synthesize one inverse; `DeletedStack` synthesizes the
+    // composite restore batch (D-3.2: stack first, members in pre-image
+    // order).
+    let inverses = synthesize_undo(app, entry, images, watermark)?;
+    // The occupancy guard (D-2): every synthesized `DeleteStack`
+    // inverse carries it — the `CreatedStack` inverse and the
+    // `RestoredStack` inverse alike (undo never silently cascades
+    // entities newer than the entry it inverts). The composite
+    // `DeletedStack` batch contains no `DeleteStack` inverse: its
+    // atomicity is the watermark check above.
+    for inverse in &inverses {
+        if let StateCommand::DeleteStack { id } = inverse {
+            let occupied = app
+                .tasks
+                .values()
+                .any(|task| task.stack == *id && task.is_live());
+            if occupied {
+                return Err(CommandError::UndoTargetHasDependents { stack: *id });
+            }
         }
     }
-    // 5. The inverse plans through the ordinary catalogue: typed
+    // 5. Each inverse plans through the ordinary catalogue: typed
     // rejections, no-op semantics, bound/unbound splits, cascades, op
-    // enqueue, nudge — all inherited.
-    let plan = plan_command(app, outbox, &inverse, ids, defaults, day, now, author)?;
+    // enqueue, nudge — all inherited. All plan against the pre-state
+    // (the batch applies in emission order, the `DeleteStack` cascade's
+    // own shape); the merged batch is one undo.
+    let mut actions = Vec::new();
+    for inverse in &inverses {
+        let plan = plan_command(app, outbox, inverse, ids, defaults, day, now, author)?;
+        actions.extend(plan.actions);
+    }
     // 6. The pushed-edit rule (D-U2), two behaviours per entry.
-    let mut actions = plan.actions;
     if !entry.pushed {
         // Retraction: the server never knew — drop the inverse's fresh
         // enqueues and fail the entry's own ops (all still pending by
@@ -681,6 +705,15 @@ enum InverseClass {
     DeleteTask,
     /// `CreateStack`: title + order stamps, then the occupancy guard.
     CreatedStack,
+    /// `DeleteStack` (#356): the composite restore — the stack row must
+    /// still stand tombstoned on the recorded stamp, every cascaded
+    /// member likewise (all-or-nothing, D-3.1); the inverse is
+    /// `RestoreStack` + N × `RestoreTask`.
+    DeletedStack,
+    /// `RestoreStack` (#356): the restored stack must still stand live
+    /// on the recorded title/order stamps; the inverse is the ordinary
+    /// `DeleteStack` cascade with the same occupancy guard (D-2/D-5).
+    RestoredStack,
     /// `RenameStack`: the title clock.
     RenameStack,
     /// `MoveStack`: the order clock.
@@ -730,6 +763,8 @@ impl JournalEntry {
             StateCommand::MoveTask { .. } => Ok(InverseClass::MoveTask),
             StateCommand::DeleteTask { .. } => Ok(InverseClass::DeleteTask),
             StateCommand::CreateStack { .. } => Ok(InverseClass::CreatedStack),
+            StateCommand::DeleteStack { .. } => Ok(InverseClass::DeletedStack),
+            StateCommand::RestoreStack { .. } => Ok(InverseClass::RestoredStack),
             StateCommand::RenameStack { .. } => Ok(InverseClass::RenameStack),
             StateCommand::MoveStack { .. } => Ok(InverseClass::MoveStack),
             StateCommand::CreateLabel { .. } => Ok(InverseClass::CreatedLabel),
@@ -747,8 +782,7 @@ impl JournalEntry {
             // every other arm is unreachable here (the wrapper only
             // journals the arms above). The engine-routed/no-op arms
             // are carried for the lockstep: one arm, one row.
-            StateCommand::DeleteStack { .. }
-            | StateCommand::DeleteLabel { .. }
+            StateCommand::DeleteLabel { .. }
             | StateCommand::CreateBoard { .. }
             | StateCommand::BindBoard { .. }
             | StateCommand::RenameBoard { .. }
@@ -790,7 +824,9 @@ impl JournalEntry {
 
 /// The synthesis catalogue: builds the inverse `StateCommand` for the
 /// head's class, running the watermark check over exactly the class's
-/// write set (D7) on the way. No wildcard — a new `StateCommand` arm
+/// write set (D7) on the way. Most classes synthesize one inverse;
+/// `DeletedStack` synthesizes the composite `RestoreStack` + N ×
+/// `RestoreTask` batch (D-3.2). No wildcard — a new `StateCommand` arm
 /// fails compilation in both classification matches until it gets a
 /// row (the lockstep, #244's pattern).
 #[allow(clippy::too_many_lines)] // one catalogue; splitting hides the table
@@ -799,7 +835,7 @@ fn synthesize_undo(
     entry: &JournalEntry,
     images: &[PreImage],
     watermark: &UndoWatermark,
-) -> Result<StateCommand, CommandError> {
+) -> Result<Vec<StateCommand>, CommandError> {
     fn task_image(images: &[PreImage]) -> Option<&crate::entities::Task> {
         images.iter().find_map(|image| match image {
             PreImage::Task {
@@ -885,7 +921,7 @@ fn synthesize_undo(
                     return Err(refuse(entity, field));
                 }
             }
-            Ok(StateCommand::DeleteTask { id })
+            Ok(vec![StateCommand::DeleteTask { id }])
         }
         InverseClass::UpdateTask => {
             let Some(pre) = task_image(images) else {
@@ -895,10 +931,10 @@ fn synthesize_undo(
                 return Err(refuse(JournalEntity::Task(pre.id), UndoField::Title));
             };
             let changes = task_changes_from_pre(pre, current, watermark)?;
-            Ok(StateCommand::UpdateTask {
+            Ok(vec![StateCommand::UpdateTask {
                 id: pre.id,
                 changes,
-            })
+            }])
         }
         InverseClass::SetTaskDone => {
             let Some(pre) = task_image(images) else {
@@ -911,10 +947,10 @@ fn synthesize_undo(
             check_task_field(app, pre.id, watermark, UndoField::Done, |clocks| {
                 clocks.done
             })?;
-            Ok(StateCommand::SetTaskDone {
+            Ok(vec![StateCommand::SetTaskDone {
                 id: pre.id,
                 done: pre.done.is_some(),
-            })
+            }])
         }
         InverseClass::MoveTask => {
             let Some(pre) = task_image(images) else {
@@ -923,11 +959,11 @@ fn synthesize_undo(
             check_task_field(app, pre.id, watermark, UndoField::Position, |clocks| {
                 clocks.position
             })?;
-            Ok(StateCommand::MoveTask {
+            Ok(vec![StateCommand::MoveTask {
                 id: pre.id,
                 stack: pre.stack,
                 order: pre.order,
-            })
+            }])
         }
         InverseClass::DeleteTask => {
             let Some(pre) = task_image(images) else {
@@ -945,10 +981,10 @@ fn synthesize_undo(
             if !current.deleted || current.clocks.deleted != clocks.deleted {
                 return Err(refuse(entity, UndoField::Deleted));
             }
-            Ok(StateCommand::RestoreTask {
+            Ok(vec![StateCommand::RestoreTask {
                 id: pre.id,
                 resurrect: Box::new(pre.clone()),
-            })
+            }])
         }
         InverseClass::CreatedStack => {
             let Some(id) = images.iter().find_map(|image| match image {
@@ -974,7 +1010,100 @@ fn synthesize_undo(
             }
             // The occupancy guard runs in `plan_undo` (presence, not
             // clocks); the synthesis returns the plain inverse.
-            Ok(StateCommand::DeleteStack { id })
+            Ok(vec![StateCommand::DeleteStack { id }])
+        }
+        InverseClass::DeletedStack => {
+            // The composite restore (D-3): the entry's pre-images hold
+            // the stack (before: `Some`) and every cascaded task. The
+            // watermark check is all-or-nothing over the whole set
+            // (D-3.1): the stack row must still exist, still be
+            // tombstoned, on the recorded `deleted` stamp — and every
+            // member likewise — before *any* inverse is returned, so a
+            // divergence refuses the whole line with zero actions.
+            let Some(stack_id) = images.iter().find_map(|image| match image {
+                PreImage::Stack {
+                    id,
+                    before: Some(_),
+                    ..
+                } => Some(*id),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let stack_entity = JournalEntity::Stack(stack_id);
+            let Some(EntityStamps::Stack(clocks)) = watermark.0.get(&stack_entity) else {
+                return Err(refuse(stack_entity, UndoField::Deleted));
+            };
+            let Some(current_stack) = app.stacks.get(&stack_id) else {
+                return Err(refuse(stack_entity, UndoField::Deleted));
+            };
+            if !current_stack.deleted || current_stack.clocks.deleted != clocks.deleted {
+                return Err(refuse(stack_entity, UndoField::Deleted));
+            }
+            // The members: exactly the entry's own pre-image set (D-4),
+            // in pre-image order; anything individually deleted or
+            // restored since diverges on its `deleted` stamp.
+            let mut inverses = vec![StateCommand::RestoreStack { id: stack_id }];
+            for image in images {
+                let PreImage::Task {
+                    id,
+                    before: Some(pre),
+                    ..
+                } = image
+                else {
+                    continue;
+                };
+                let entity = JournalEntity::Task(*id);
+                let Some(EntityStamps::Task { clocks, .. }) = watermark.0.get(&entity) else {
+                    return Err(refuse(entity, UndoField::Deleted));
+                };
+                let Some(current) = app.tasks.get(id) else {
+                    return Err(refuse(entity, UndoField::Deleted));
+                };
+                if !current.deleted || current.clocks.deleted != clocks.deleted {
+                    return Err(refuse(entity, UndoField::Deleted));
+                }
+                inverses.push(StateCommand::RestoreTask {
+                    id: *id,
+                    resurrect: Box::new(pre.as_ref().clone()),
+                });
+            }
+            Ok(inverses)
+        }
+        InverseClass::RestoredStack => {
+            // Undoing a restore re-deletes the stack through the
+            // ordinary `DeleteStack` cascade (D-5); the checked scope is
+            // the CreatedStack-style title+order stamps on the restored
+            // row, plus the restore still standing (not re-tombstoned).
+            let Some(id) = images.iter().find_map(|image| match image {
+                PreImage::Stack {
+                    id,
+                    before: Some(_),
+                    ..
+                } => Some(*id),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::Stack(id);
+            let Some(EntityStamps::Stack(clocks)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::Title));
+            };
+            let Some(current) = app.stacks.get(&id) else {
+                return Err(refuse(entity, UndoField::Title));
+            };
+            if current.deleted {
+                return Err(refuse(entity, UndoField::Deleted));
+            }
+            if current.clocks.title != clocks.title {
+                return Err(refuse(entity, UndoField::Title));
+            }
+            if current.clocks.order != clocks.order {
+                return Err(refuse(entity, UndoField::Order));
+            }
+            // The occupancy guard runs in `plan_undo` (the inverse is
+            // the `DeleteStack` cascade; presence, not clocks).
+            Ok(vec![StateCommand::DeleteStack { id }])
         }
         InverseClass::RenameStack => {
             let Some(pre) = images.iter().find_map(|image| match image {
@@ -996,10 +1125,10 @@ fn synthesize_undo(
             if current.clocks.title != clocks.title {
                 return Err(refuse(entity, UndoField::Title));
             }
-            Ok(StateCommand::RenameStack {
+            Ok(vec![StateCommand::RenameStack {
                 id: pre.id,
                 new_title: pre.title.clone(),
-            })
+            }])
         }
         InverseClass::MoveStack => {
             let Some(pre) = images.iter().find_map(|image| match image {
@@ -1021,10 +1150,10 @@ fn synthesize_undo(
             if current.clocks.order != clocks.order {
                 return Err(refuse(entity, UndoField::Order));
             }
-            Ok(StateCommand::MoveStack {
+            Ok(vec![StateCommand::MoveStack {
                 id: pre.id,
                 order: pre.order,
-            })
+            }])
         }
         InverseClass::CreatedLabel => {
             let Some(id) = images.iter().find_map(|image| match image {
@@ -1048,7 +1177,7 @@ fn synthesize_undo(
             if current.clocks.color != clocks.color {
                 return Err(refuse(entity, UndoField::Color));
             }
-            Ok(StateCommand::DeleteLabel { id })
+            Ok(vec![StateCommand::DeleteLabel { id }])
         }
         InverseClass::UpdateLabel => {
             let Some(pre) = images.iter().find_map(|image| match image {
@@ -1076,10 +1205,10 @@ fn synthesize_undo(
                 })?;
                 changes.color = Some(pre.color.clone());
             }
-            Ok(StateCommand::UpdateLabel {
+            Ok(vec![StateCommand::UpdateLabel {
                 id: pre.id,
                 changes,
-            })
+            }])
         }
         InverseClass::Membership => {
             // Assign/Unassign share one shape: the command names the
@@ -1112,9 +1241,9 @@ fn synthesize_undo(
                 Some(crate::entities::MembershipState::Added { .. })
             );
             if currently_added {
-                Ok(StateCommand::UnassignLabel { task, label })
+                Ok(vec![StateCommand::UnassignLabel { task, label }])
             } else {
-                Ok(StateCommand::AssignLabel { task, label })
+                Ok(vec![StateCommand::AssignLabel { task, label }])
             }
         }
         InverseClass::CreatedTimeEntry => {
@@ -1141,7 +1270,7 @@ fn synthesize_undo(
             if current.updated_at != *recorded {
                 return Err(refuse(entity, UndoField::UpdatedAt));
             }
-            Ok(StateCommand::DeleteTimeEntry { id })
+            Ok(vec![StateCommand::DeleteTimeEntry { id }])
         }
         InverseClass::AdjustTimeEntry => {
             let Some(pre) = images.iter().find_map(|image| match image {
@@ -1167,7 +1296,7 @@ fn synthesize_undo(
             if current.updated_at != *recorded {
                 return Err(refuse(entity, UndoField::UpdatedAt));
             }
-            Ok(StateCommand::AdjustTimeEntry {
+            Ok(vec![StateCommand::AdjustTimeEntry {
                 id: pre.id,
                 start: (pre.start != current.start).then_some(pre.start),
                 end: if pre.end == current.end {
@@ -1176,7 +1305,7 @@ fn synthesize_undo(
                     pre.end
                 },
                 kind: None,
-            })
+            }])
         }
         InverseClass::CreatedHabit => {
             // Undo tombstones the created habit. No occupancy guard
@@ -1214,7 +1343,7 @@ fn synthesize_undo(
                     return Err(refuse(entity, field));
                 }
             }
-            Ok(StateCommand::DeleteHabit { habit: id })
+            Ok(vec![StateCommand::DeleteHabit { habit: id }])
         }
         InverseClass::UpdateHabit => {
             let Some(pre) = images.iter().find_map(|image| match image {
@@ -1262,10 +1391,10 @@ fn synthesize_undo(
                 check(UndoField::HabitAnchorTime, |clocks| clocks.anchor_time)?;
                 changes.anchor_time = Some(pre.anchor_time);
             }
-            Ok(StateCommand::UpdateHabit {
+            Ok(vec![StateCommand::UpdateHabit {
                 habit: pre.id,
                 changes,
-            })
+            }])
         }
         InverseClass::MoveHabit => {
             let Some(pre) = images.iter().find_map(|image| match image {
@@ -1289,10 +1418,10 @@ fn synthesize_undo(
             if current.clocks.order != clocks.order {
                 return Err(refuse(entity, UndoField::Order));
             }
-            Ok(StateCommand::MoveHabit {
+            Ok(vec![StateCommand::MoveHabit {
                 habit: pre.id,
                 order: pre.order,
-            })
+            }])
         }
         InverseClass::AdjustHabitLog => {
             // The key comes from the stored command payload; the pre
@@ -1325,11 +1454,11 @@ fn synthesize_undo(
             if app.habits.log.get(&key) != Some(recorded_post) {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             }
-            Ok(StateCommand::AdjustHabitLog {
+            Ok(vec![StateCommand::AdjustHabitLog {
                 habit,
                 window,
                 count: recorded_pre.count,
-            })
+            }])
         }
     }
 }
