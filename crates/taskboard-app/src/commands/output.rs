@@ -971,6 +971,30 @@ pub struct SelectReceipt {
 /// binding adoption *is* the select ceremony onto a fresh board).
 pub type PublishReceipt = SelectReceipt;
 
+/// The `boards publish --to-files` receipt (#764, journey US-1/S4):
+/// the read-back of the direct files bind, structural fields only —
+/// the files remote id the ceremony minted (the board's own uuid,
+/// which *is* the bound-channel-Files fact: a Deck payload never
+/// appears on this path), the board's live flags, and the sync row at
+/// the read-back. Shaped after the boards family's publish receipt
+/// (the bind adoption + sync view), with the remote id in its
+/// namespace-honest text form instead of a Deck wire number.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FilesPublishReceipt {
+    /// The published board's local uuid.
+    pub board_id: String,
+    /// The files remote id the ceremony minted (the board's own uuid).
+    pub files_remote_id: String,
+    /// The board title at the read-back.
+    pub title: String,
+    /// The board's archived flag at the read-back.
+    pub archived: bool,
+    /// The board's deleted flag at the read-back.
+    pub deleted: bool,
+    /// Sync status at the read-back.
+    pub sync: SyncStatusView,
+}
+
 /// The `boards create` receipt: the new local board projection.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct BoardReceipt {

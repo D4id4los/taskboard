@@ -328,6 +328,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::UnknownBoard(_) | CommandError::UnknownBoardSelector { .. } => {
                 "unknown-board"
             }
+            CommandError::BoardArchived { .. } => "board-archived",
             CommandError::BoardAlreadyBound { .. } => "board-already-bound",
             CommandError::UnknownTask(_) => "unknown-task",
             CommandError::AmbiguousTask { .. } => "ambiguous-task",

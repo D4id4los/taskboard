@@ -221,3 +221,468 @@ async fn st5_human_list_carries_the_standalone_note() {
     assert!(standalone_note(true, list.sync.pending_ops).is_some());
     assert!(standalone_note(false, list.sync.pending_ops).is_none());
 }
+
+// --- The `boards publish --to-files` journeys (#764, journey plan
+// `2026-11-17-boards-publish-to-files-ux-plan.md`; the step-ID tokens
+// are normative). The files-lane fixtures need a wiremock Nextcloud
+// anchor: the lane's spawn gate resolves the account from the
+// connector set, and the Deck module's first cycle pulls against it.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use taskboard_app::commands::CommandError;
+use taskboard_app::config::AppConfig;
+use taskboard_app::secrets::CredentialStore;
+use wiremock::MockServer;
+
+use common::{EnvOverride, FakeCredentialStore, env_lock, mount_standard_pull, valid_config};
+
+/// A files-lane config over a tempdir db: one Nextcloud connector (the
+/// wiremock anchor) plus `[files_sync] enabled` — the lane gate
+/// resolves by construction. Callers hold [`env_lock`] and plant the
+/// `XDG_DATA_HOME` sandbox for the actor's device identity.
+fn files_lane_config(server: &MockServer, dir: &std::path::Path, db: &str) -> AppConfig {
+    let mut config = valid_config(&server.uri());
+    config.storage.db_path = Some(dir.join(db));
+    config.files_sync.enabled = true;
+    // The fixture's own snappiness: every invocation is a full process
+    // (boot + shutdown), and the dead-end mock leaves the files actor
+    // backing off — a 1s per-actor join budget keeps the journey
+    // tests' wall time out of the timeout lake. Terminal states are
+    // asserted, never timing.
+    config.app.shutdown_timeout_secs = 1;
+    config
+}
+
+/// The data-dir seam sandbox: `dirs::data_dir()` honors
+/// `XDG_DATA_HOME` on Linux; the files actor's `device.json` lands in
+/// the tempdir instead of the machine's live application-data
+/// directory.
+struct DataDirSandbox {
+    _override: EnvOverride,
+    _lock: common::EnvGuard,
+}
+
+impl DataDirSandbox {
+    fn new(dir: &std::path::Path) -> Self {
+        let lock = env_lock();
+        let override_ =
+            EnvOverride::set("XDG_DATA_HOME", dir.to_str().expect("utf-8 tempdir path"));
+        Self {
+            _override: override_,
+            _lock: lock,
+        }
+    }
+}
+
+/// One files-lane journey fixture: the wiremock anchor, the fake
+/// credential store, the sandboxed data dir, and the lane-enabled
+/// config. Each journey test is a full "process" per invocation, like
+/// every suite in this file.
+struct FilesJourney {
+    /// Holds the tempdir (the db lives in it) for the fixture's
+    /// lifetime; asserted through `config`, never read directly.
+    #[allow(dead_code)]
+    dir: tempfile::TempDir,
+    /// Holds the data-dir sandbox for the fixture's lifetime.
+    #[allow(dead_code)]
+    data: DataDirSandbox,
+    /// Holds the wiremock anchor alive for the fixture's lifetime;
+    /// reachable through `config`, never read directly.
+    #[allow(dead_code)]
+    server: MockServer,
+    store: Arc<dyn CredentialStore>,
+    config: AppConfig,
+}
+
+async fn files_journey(db: &str) -> FilesJourney {
+    let dir = tempdir();
+    let data = DataDirSandbox::new(dir.path());
+    let server = MockServer::start().await;
+    mount_standard_pull(&server, serde_json::json!([])).await;
+    let store: Arc<dyn CredentialStore> =
+        Arc::new(FakeCredentialStore::with(&server.uri(), "alice", "pw"));
+    let config = files_lane_config(&server, dir.path(), db);
+    FilesJourney {
+        dir,
+        data,
+        server,
+        store,
+        config,
+    }
+}
+
+/// Reads the persisted binding of `board` from a fresh boot (the
+/// CLI-side twin of the GUI seam test's exact-mint assertion shape).
+async fn persisted_binding_of(
+    config: &AppConfig,
+    store: &Arc<dyn CredentialStore>,
+    board_uuid: uuid::Uuid,
+) -> Option<(String, uuid::Uuid)> {
+    let app = taskboard_app::bootstrap::bootstrap(
+        config.clone(),
+        Arc::clone(store),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("boots");
+    let binding = app
+        .engine
+        .shared_state()
+        .load()
+        .boards
+        .get(&taskboard_domain::BoardId::from_uuid(board_uuid))
+        .expect("the board exists")
+        .remote
+        .as_ref()
+        .map(|b| (b.connector.as_str().to_owned(), b.board.as_files()));
+    app.shutdown().await;
+    binding.map(|(connector, remote)| (connector, remote.expect("a files payload")))
+}
+
+/// Journey US-1/S1 (`us1_s1`): the parse boundary — `--to-files`
+/// resolves alone (with `--connector` as `None` and the bare Deck
+/// grammar unchanged), and the R-4 `--connector` pair refuses as a
+/// typed clap conflict before any boot. (The journey plan's Test-root
+/// is this file; the cli.rs-side parse module carries no duplicate.)
+#[test]
+fn us1_s1_to_files_parses_and_the_r4_connector_conflict_refuses_before_boot() {
+    use clap::Parser as _;
+    use taskboard_app::cli::Command;
+    use taskboard_app::cli::{BoardsCmd, Cli};
+
+    let parsed = Cli::try_parse_from(["taskboard", "boards", "publish", "--to-files"])
+        .expect("--to-files alone parses");
+    let Command::Boards {
+        cmd:
+            BoardsCmd::Publish {
+                board,
+                to_files,
+                connector,
+                timeout_secs,
+            },
+    } = parsed.command.expect("a subcommand parsed")
+    else {
+        panic!("the publish verb parsed into a different shape");
+    };
+    assert!(to_files, "the direction flag resolved");
+    assert_eq!(board, None);
+    assert_eq!(connector, None, "--to-files alone keeps --connector None");
+    assert_eq!(timeout_secs, 60, "the settling budget default holds");
+
+    let bare = Cli::try_parse_from(["taskboard", "boards", "publish"])
+        .expect("the bare Deck publish grammar is unchanged");
+    let Command::Boards {
+        cmd: BoardsCmd::Publish { to_files, .. },
+    } = bare.command.expect("a subcommand parsed")
+    else {
+        panic!("the bare publish verb parsed into a different shape");
+    };
+    assert!(!to_files, "bare publish stays the Deck migration path");
+
+    let conflict = Cli::try_parse_from([
+        "taskboard",
+        "boards",
+        "publish",
+        "--to-files",
+        "--connector",
+        "x",
+    ])
+    .expect_err("the R-4 conflict refuses at the parse boundary");
+    assert_eq!(
+        conflict.kind(),
+        clap::error::ErrorKind::ArgumentConflict,
+        "a typed parse conflict, exit 2, nothing booted"
+    );
+}
+
+/// Journey US-1/S2 (`us1_s2`): the verb prelude — the files lane
+/// configured, the single live local board resolved with `--board`
+/// omitted — and the ceremony proceeds to a committed bind.
+#[tokio::test]
+async fn us1_s2_prelude_resolves_the_lane_and_the_single_live_board_then_binds() {
+    let j = files_journey("us1s2.db").await;
+    let created = boards::create(j.config.clone(), Arc::clone(&j.store), "Personal", None)
+        .await
+        .expect("board");
+
+    let receipt = boards::publish_to_files(
+        j.config.clone(),
+        Arc::clone(&j.store),
+        None,
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("the prelude holds and the ceremony commits");
+    assert_eq!(
+        receipt.board_id, created.id,
+        "the resolved board is the one bound"
+    );
+}
+
+/// Journey US-1/S3 (`us1_s3`): the exact files bind mint — the
+/// persisted binding is the files connector with the board's own uuid
+/// as the files remote id, the GUI ceremony's payload verbatim.
+#[tokio::test]
+async fn us1_s3_the_bind_is_the_exact_files_mint_persisted() {
+    let j = files_journey("us1s3.db").await;
+    let created = boards::create(j.config.clone(), Arc::clone(&j.store), "Personal", None)
+        .await
+        .expect("board");
+    let board_uuid = uuid::Uuid::parse_str(&created.id).expect("create mints a uuid");
+
+    boards::publish_to_files(
+        j.config.clone(),
+        Arc::clone(&j.store),
+        None,
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("the ceremony commits");
+
+    let binding = persisted_binding_of(&j.config, &j.store, board_uuid).await;
+    assert_eq!(
+        binding,
+        Some(("files-sync".to_owned(), board_uuid)),
+        "the mint: the files connector owns the binding, the remote id is the board's own uuid"
+    );
+}
+
+/// Journey US-1/S4 (`us1_s4`): the receipt read-back — structural
+/// fields naming the Files channel (the files remote id, the board's
+/// live flags, the sync row), rendered from a fresh snapshot.
+#[tokio::test]
+async fn us1_s4_the_receipt_reads_back_the_files_binding_structurally() {
+    let j = files_journey("us1s4.db").await;
+    let created = boards::create(j.config.clone(), Arc::clone(&j.store), "Personal", None)
+        .await
+        .expect("board");
+    let board_uuid = uuid::Uuid::parse_str(&created.id).expect("create mints a uuid");
+
+    let receipt = boards::publish_to_files(
+        j.config.clone(),
+        Arc::clone(&j.store),
+        None,
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("the ceremony commits");
+    assert_eq!(receipt.board_id, board_uuid.to_string());
+    assert_eq!(
+        receipt.files_remote_id,
+        board_uuid.to_string(),
+        "the mint: the files remote id is the board's own uuid"
+    );
+    assert_eq!(receipt.title, "Personal");
+    assert!(!receipt.archived);
+    assert!(!receipt.deleted);
+}
+
+/// Journey US-2/S1 (`us2_s1`): the files lane unconfigured — the typed
+/// lane-disabled refusal, and the state tree is unchanged (the board
+/// stays unbound; no `BindBoard` executed).
+#[tokio::test]
+async fn us2_s1_lane_disabled_refuses_before_any_command_and_the_tree_is_unchanged() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "us2s1.db");
+
+    boards::create(config.clone(), forbidden_store(), "Personal", None)
+        .await
+        .expect("board");
+    let err = boards::publish_to_files(
+        config.clone(),
+        forbidden_store(),
+        None,
+        Duration::from_secs(1),
+    )
+    .await
+    .expect_err("no files lane");
+    assert!(
+        matches!(err, CommandError::SyncDisabled),
+        "typed lane-disabled refusal"
+    );
+
+    // The state tree is unchanged: the board never bound (a fresh boot
+    // reads the persisted state).
+    let app = taskboard_app::bootstrap::bootstrap(
+        config,
+        forbidden_store(),
+        Arc::new(taskboard_app::notifications::LogSink),
+    )
+    .await
+    .expect("boots");
+    let unbound = app
+        .engine
+        .shared_state()
+        .load()
+        .boards
+        .values()
+        .all(|b| b.remote.is_none());
+    app.shutdown().await;
+    assert!(unbound, "no BindBoard executed under the refusal");
+}
+
+/// Journey US-2/S2 (`us2_s2`): a board that already carries a binding
+/// refuses typed (`BoardAlreadyBound`) and the existing binding is
+/// untouched — the files payload named in the refusal is the persisted
+/// mint.
+#[tokio::test]
+async fn us2_s2_already_bound_refuses_typed_and_the_binding_is_untouched() {
+    let j = files_journey("us2s2.db").await;
+    let created = boards::create(j.config.clone(), Arc::clone(&j.store), "Personal", None)
+        .await
+        .expect("board");
+    let board_uuid = uuid::Uuid::parse_str(&created.id).expect("create mints a uuid");
+    boards::publish_to_files(
+        j.config.clone(),
+        Arc::clone(&j.store),
+        None,
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("the first publish binds");
+
+    let err = boards::publish_to_files(
+        j.config.clone(),
+        Arc::clone(&j.store),
+        Some(taskboard_domain::BoardId::from_uuid(board_uuid)),
+        Duration::from_secs(60),
+    )
+    .await
+    .expect_err("a bound board refuses");
+    let CommandError::Engine(err) = err else {
+        panic!("the bind-refused class expected, got a different error");
+    };
+    let taskboard_state::ExecuteError::Rejected(
+        taskboard_domain::CommandError::BoardAlreadyBound { board, bound },
+    ) = &*err
+    else {
+        panic!("BoardAlreadyBound expected, got a different rejection");
+    };
+    assert_eq!(board.as_uuid(), board_uuid);
+    assert_eq!(
+        bound.as_files(),
+        Some(board_uuid),
+        "the files payload named"
+    );
+
+    // The existing binding is untouched by the refusal.
+    let binding = persisted_binding_of(&j.config, &j.store, board_uuid).await;
+    assert_eq!(
+        binding,
+        Some(("files-sync".to_owned(), board_uuid)),
+        "the existing binding is untouched by the refusal"
+    );
+}
+
+/// Journey US-2/S3 (`us2_s3`, parameterized: unknown, soft-deleted,
+/// archived): the typed gone refusals — each class distinct, no
+/// partial bind.
+#[tokio::test]
+async fn us2_s3_gone_boards_refuse_typed_unknown_deleted_archived() {
+    let j = files_journey("us2s3.db").await;
+
+    // Unknown: a uuid no board carries.
+    let unknown = uuid::Uuid::now_v7();
+    let err = boards::publish_to_files(
+        j.config.clone(),
+        Arc::clone(&j.store),
+        Some(taskboard_domain::BoardId::from_uuid(unknown)),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect_err("unknown board");
+    assert!(
+        matches!(err, CommandError::Engine(ref e)
+            if matches!(&**e, taskboard_state::ExecuteError::Rejected(
+                taskboard_domain::CommandError::UnknownBoard(_)))),
+        "typed unknown-board refusal"
+    );
+
+    // Soft-deleted: the tombstoned board's class.
+    let created = boards::create(j.config.clone(), Arc::clone(&j.store), "Doomed", None)
+        .await
+        .expect("board");
+    let doomed =
+        taskboard_domain::BoardId::from_uuid(uuid::Uuid::parse_str(&created.id).expect("uuid"));
+    boards::delete(j.config.clone(), Arc::clone(&j.store), Some(doomed), true)
+        .await
+        .expect("delete");
+    let err = boards::publish_to_files(
+        j.config.clone(),
+        Arc::clone(&j.store),
+        Some(doomed),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect_err("deleted board");
+    assert!(
+        matches!(err, CommandError::Engine(ref e)
+            if matches!(&**e, taskboard_state::ExecuteError::Rejected(
+                taskboard_domain::CommandError::BoardDeleted(_)))),
+        "typed board-deleted refusal"
+    );
+
+    // Archived: the app-layer live-row limb (the engine keeps archived
+    // boards commandable; the GUI ceremony's gone ruling does not).
+    let created = boards::create(j.config.clone(), Arc::clone(&j.store), "Shelved", None)
+        .await
+        .expect("board");
+    let shelved =
+        taskboard_domain::BoardId::from_uuid(uuid::Uuid::parse_str(&created.id).expect("uuid"));
+    boards::archive(j.config.clone(), Arc::clone(&j.store), Some(shelved), true)
+        .await
+        .expect("archive");
+    let err = boards::publish_to_files(
+        j.config,
+        Arc::clone(&j.store),
+        Some(shelved),
+        Duration::from_secs(1),
+    )
+    .await
+    .expect_err("archived board");
+    assert!(
+        matches!(err, CommandError::BoardArchived { board } if board == shelved),
+        "typed board-archived refusal"
+    );
+}
+
+/// Journey US-2/S4 (`us2_s4`): the omitted `--board` with zero or
+/// several live boards rides the shared exactly-one-live-board
+/// resolution — the same `ambiguous-board` class the other boards
+/// verbs use, no new semantics.
+#[tokio::test]
+async fn us2_s4_resolution_is_the_shared_exactly_one_live_board_rule() {
+    let j = files_journey("us2s4.db").await;
+
+    // Zero live boards: the ambiguity refusal with empty candidates.
+    let err = boards::publish_to_files(
+        j.config.clone(),
+        Arc::clone(&j.store),
+        None,
+        Duration::from_secs(1),
+    )
+    .await
+    .expect_err("zero live boards");
+    let CommandError::AmbiguousBoard { candidates } = err else {
+        panic!("the shared resolution class expected, got a different error");
+    };
+    assert!(candidates.is_empty(), "zero candidates");
+
+    // Several live boards: the same class, every live uuid a candidate.
+    boards::create(j.config.clone(), Arc::clone(&j.store), "One", None)
+        .await
+        .expect("board");
+    boards::create(j.config.clone(), Arc::clone(&j.store), "Two", None)
+        .await
+        .expect("board");
+    let err =
+        boards::publish_to_files(j.config, Arc::clone(&j.store), None, Duration::from_secs(1))
+            .await
+            .expect_err("several live boards");
+    let CommandError::AmbiguousBoard { candidates } = err else {
+        panic!("the shared resolution class expected, got a different error");
+    };
+    assert_eq!(candidates.len(), 2, "every live board is a candidate");
+}
