@@ -8325,10 +8325,20 @@ fn a_foreign_field_steal_settles_the_due_per_the_rule() {
             harness.type_text("2030-03-01");
             harness.driver.click_by_label("Edit description");
             harness.driver.advance_time(0);
+            // Consciously updated with US-1/D-3 (task-detail-editor UX
+            // plan, 2026-11-17): the settle funnel's commit mint is the
+            // N-4 stamping law — a bare date stamps the named date's
+            // day-window end over the injected day facts (the harness's
+            // boot facts: 00:00 start, UTC offset), never the old
+            // local midnight.
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(local_midnight(2030, 3, 1))),
+                    duedate: Some(Some(taskboard_domain::days::day_window_end(
+                        chrono::NaiveDate::from_ymd_opt(2030, 3, 1).expect("fixture date"),
+                        chrono::NaiveTime::MIN,
+                        chrono::FixedOffset::east_opt(0).expect("zero"),
+                    ))),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
