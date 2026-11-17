@@ -10100,6 +10100,63 @@ fn us3_ac2_refresh_overrides_the_backoff() {
     );
 }
 
+/// US-6 AC-1 (the files-sync-status plan, D-7) — the Restore
+/// affordance mounts on an unbound live roster row and routes the
+/// exact `UndoBoardMove` (the ceremony's undo leg is the typed gate
+/// app-side); a bound row mounts nothing (the withholding fold's
+/// journey leg).
+#[test]
+fn us6_ac1_restore_mounts_and_dispatches_the_undo_request() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let loose = uuid::Uuid::new_v4();
+    state_board(&mut state, loose, "loose", None);
+    let deck = uuid::Uuid::new_v4();
+    state_board(&mut state, deck, "deck rider", Some("work"));
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let loose_row = items(&harness)
+                .iter()
+                .position(|item| item.kind == K::FilesBoard && item.title == "loose")
+                .expect("the unbound row renders");
+            let deck_row = items(&harness)
+                .iter()
+                .position(|item| item.kind == K::FilesBoard && item.title == "deck rider")
+                .expect("the bound row renders");
+            assert!(
+                items(&harness)[loose_row].restore_offerable,
+                "the window's candidate set mounts Restore"
+            );
+            assert!(
+                !items(&harness)[deck_row].restore_offerable,
+                "bound rows withhold"
+            );
+            window.invoke_settings_files_board_restore_clicked(
+                i32::try_from(loose_row).expect("fits"),
+            );
+            let requests = harness.drain_requests();
+            assert_eq!(requests.len(), 1, "the Restore routed");
+            assert!(matches!(
+                &requests[0],
+                taskboard_ui_slint::requests::UiRequest::UndoBoardMove { board, .. }
+                    if board.as_uuid() == loose
+            ));
+        },
+    );
+}
+
 /// US-5 AC-1 (the files-sync-status plan, D-6) — the page's other
 /// controls stay enabled while a publish is pending: the wholesale
 /// disable flag is absent on the publish path (typed over the model's

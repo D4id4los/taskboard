@@ -173,6 +173,16 @@ pub enum SettingsError {
     /// queued and the ceremony never drops them. Folds
     /// `MoveError::OutboxNotQuiescent`.
     OutboxNotQuiescent,
+    /// No move is in flight for the board (US-6 AC-2's typed refusal
+    /// on a raced or absent stage). Folds
+    /// `MoveError::NothingToUndo` / `NotDeckBound`.
+    NothingToUndo,
+    /// The move's commit point has passed; the undo window is over
+    /// (US-6). Folds `MoveError::UndoClosed`.
+    UndoClosed,
+    /// The retired Deck coordinates can no longer be named (US-6).
+    /// Folds `MoveError::UndoCoordinatesLost`.
+    UndoCoordinatesLost,
     /// A move-ceremony step failed (D-5): the floor publish/confirm,
     /// the commit record, the Deck marker, a stranded-op or refused
     /// binding write, a foreign subtree, a state read — the coarse
@@ -447,6 +457,16 @@ pub enum UiRequest {
     /// Deck-bound, the files lane is off, or the outbox is still
     /// moving; the reply carries the fresh snapshot.
     MoveBoardToFiles {
+        board: BoardId,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// Undo a Deck→Files move that has not committed (the
+    /// files-sync-status plan US-6, D-7): the `boards move --undo`
+    /// ceremony's twin, run on the running engine. The arm derives
+    /// the stage and refuses typed outside the undo window
+    /// (`NothingToUndo` / `UndoClosed` / `UndoCoordinatesLost`); the
+    /// reply carries the fresh snapshot.
+    UndoBoardMove {
         board: BoardId,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },

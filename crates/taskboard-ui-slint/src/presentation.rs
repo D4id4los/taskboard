@@ -6007,6 +6007,12 @@ pub struct FilesBoardRow {
     pub archived: bool,
     pub action: Option<FilesBoardAction>,
     pub action_enabled: bool,
+    /// The undo-window Restore affordance's mount (the files-sync-status
+    /// plan US-6, D-7): the engine's shared read proves the retirement
+    /// fact (the binding is gone — the window's candidate set); the
+    /// ceremony's own undo leg is the typed gate, refusing
+    /// `NothingToUndo` outside the window. Archived boards withhold.
+    pub restore_offerable: bool,
 }
 
 /// The per-account roster fold (round-7 D-7.3, W-2/D3): every live
@@ -6054,6 +6060,7 @@ pub fn files_board_roster(state: &AppState, files_on: bool) -> Vec<FilesBoardRow
                 archived: board.archived,
                 action: Some(action),
                 action_enabled: files_on && !board.archived,
+                restore_offerable: channel.is_none() && !board.archived,
             }
         })
         .collect();
@@ -9196,6 +9203,54 @@ mod recur_editor_validity_tests {
 mod files_sync_chip_fold_tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// US-6 AC-2 — the Restore affordance withholds outside the
+    /// window's candidate set (bound or archived boards never mount
+    /// it; unbound live boards do — the ceremony's undo leg is the
+    /// typed gate on a raced stage).
+    #[test]
+    fn us6_ac2_outside_the_window_no_restore_mounts() {
+        use taskboard_domain::{Board, BoardClocks, BoardId, Color, RemoteBoardBinding};
+        let board_row = |title: &str, bound: bool, archived: bool| Board {
+            id: BoardId::from_uuid(uuid::Uuid::new_v4()),
+            remote: bound.then(|| RemoteBoardBinding {
+                board: taskboard_domain::RemoteBoardId::deck(1),
+                connector: taskboard_domain::ConnectorId::from("work"),
+            }),
+            title: title.to_owned(),
+            color: Color::new(""),
+            archived,
+            deleted: false,
+            clocks: BoardClocks {
+                title: BoardClocks::epoch(),
+                color: BoardClocks::epoch(),
+                archived: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
+            remote_seen: None,
+        };
+        let mut state = AppState::default();
+        let deck_row = board_row("deck rider", true, false);
+        state.boards.insert(deck_row.id, deck_row);
+        let loose = board_row("loose", false, false);
+        state.boards.insert(loose.id, loose);
+        let archived = board_row("archived", false, true);
+        state.boards.insert(archived.id, archived);
+        let rows = files_board_roster(&state, true);
+        let offer = |title: &str| {
+            rows.iter()
+                .find(|row| row.title == title)
+                .map(|row| row.restore_offerable)
+        };
+        assert_eq!(offer("deck rider"), Some(false), "bound boards withhold");
+        assert_eq!(offer("archived"), Some(false), "archived boards withhold");
+        assert_eq!(
+            offer("loose"),
+            Some(true),
+            "the window's candidate set mounts"
+        );
+    }
 
     /// US-5 AC-1 — the addressed card's phase fold (typed): the
     /// publish kinds map onto the ceremony phases, anything else is

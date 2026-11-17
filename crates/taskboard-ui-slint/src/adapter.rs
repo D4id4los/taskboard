@@ -5590,11 +5590,17 @@ impl SettingsVm {
             | SettingsError::AttachFailed
             // The move's step-failure class (round-6 D-6.8 phase 2,
             // D-5) folds every ceremony step class; the concrete
-            // `MoveError` rode the app's log.
-            | SettingsError::MoveFailed => SettingsOutcome::Failed,
+            // `MoveError` rode the app's log. The undo window's lost
+            // coordinates fold the same failed class (US-6).
+            | SettingsError::MoveFailed
+            | SettingsError::UndoCoordinatesLost => SettingsOutcome::Failed,
             // The move's refusal classes (D-5): a lane-off or
-            // busy-outbox world refused the attempt.
-            SettingsError::FilesSyncDisabled | SettingsError::OutboxNotQuiescent => {
+            // busy-outbox world refused the attempt; the undo
+            // window's raced/closed stages refuse too (US-6).
+            SettingsError::FilesSyncDisabled
+            | SettingsError::OutboxNotQuiescent
+            | SettingsError::NothingToUndo
+            | SettingsError::UndoClosed => {
                 SettingsOutcome::Rejected
             }
         }
@@ -6361,6 +6367,7 @@ impl Adapter {
             listed: false,
             files_on: false,
             pending_phase: crate::models::publish_card_phase(None),
+            restore_offerable: false,
             files_enabled_pinned: false,
             files_anchor_pinned: false,
             files_restart: false,
@@ -6462,6 +6469,7 @@ impl Adapter {
                         kind: crate::ConnectionItemKind::FilesBoard,
                         title: row.title.clone().into(),
                         busy,
+                        restore_offerable: row.restore_offerable,
                         badge_text: crate::presentation::files_board_badge_label(row.badge).into(),
                         badge_tone: crate::presentation::files_board_badge_tone(row.badge),
                         action_label: row
@@ -7444,6 +7452,39 @@ impl Adapter {
     /// computed it, and the D6 enabled rule (`files_on ∧ !archived`)
     /// gates the dispatch — a disabled or stale row's click is
     /// absorbed silently.
+    /// The undo-window Restore seam (the files-sync-status plan US-6,
+    /// D-7): routes the exact `UndoBoardMove` — the ceremony's undo
+    /// leg is the typed gate. The pending machine takes the move
+    /// grammar (the row's busy dot rides `PendingKind::Move`).
+    pub(crate) fn settings_files_board_restore(&mut self, window: &AppWindow, item: usize) {
+        let Some(ItemAddr::FilesBoard { board, connector }) =
+            self.settings.items.get(item).cloned()
+        else {
+            return;
+        };
+        if self.settings.pending.is_some() {
+            return;
+        }
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::UndoBoardMove { board, reply };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Move,
+            PendingReply::List(reply_rx),
+            &connector,
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
     pub(crate) fn settings_files_board_action(&mut self, window: &AppWindow, item: usize) {
         let Some(ItemAddr::FilesBoard { board, connector }) =
             self.settings.items.get(item).cloned()
@@ -13486,6 +13527,13 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 return;
             };
             a.settings_files_board_action(&window, item);
+
+        });
+        install_seam!(window: window.on_settings_files_board_restore_clicked, adapter: adapter; // slint: files-board-restore-clicked (US-6, D-7)
+        bind mut (a, window), args (item), {            let Ok(item) = usize::try_from(item) else {
+                return;
+            };
+            a.settings_files_board_restore(&window, item);
 
         });
     }

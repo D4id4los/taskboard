@@ -87,6 +87,11 @@ fn error_text(err: &SettingsError) -> &'static str {
         SettingsError::MoveFailed => {
             "The move did not finish; running it again picks up where it stopped."
         }
+        SettingsError::NothingToUndo => "No move is in flight for this board; nothing to undo.",
+        SettingsError::UndoClosed => "The move already committed; the undo window is over.",
+        SettingsError::UndoCoordinatesLost => {
+            "The retired connection's details are gone; restore manually."
+        }
     }
 }
 
@@ -392,8 +397,11 @@ mod tests {
             SettingsError::FilesSyncDisabled,
             SettingsError::OutboxNotQuiescent,
             SettingsError::MoveFailed,
+            SettingsError::NothingToUndo,
+            SettingsError::UndoClosed,
+            SettingsError::UndoCoordinatesLost,
         ];
-        assert_eq!(all.len(), 19, "the variant list is the enum's totality");
+        assert_eq!(all.len(), 22, "the variant list is the enum's totality");
         for err in all {
             assert_ne!(
                 status_text(SettingsOutcome::Rejected, Some(&err)),
@@ -483,6 +491,9 @@ mod tests {
             Just(SettingsError::FilesSyncDisabled),
             Just(SettingsError::OutboxNotQuiescent),
             Just(SettingsError::MoveFailed),
+            Just(SettingsError::NothingToUndo),
+            Just(SettingsError::UndoClosed),
+            Just(SettingsError::UndoCoordinatesLost),
         ]
     }
 
@@ -549,6 +560,9 @@ mod tests {
             SettingsError::FilesSyncDisabled => "files-sync-disabled",
             SettingsError::OutboxNotQuiescent => "outbox-not-quiescent",
             SettingsError::MoveFailed => "move-failed",
+            SettingsError::NothingToUndo => "nothing-to-undo",
+            SettingsError::UndoClosed => "undo-closed",
+            SettingsError::UndoCoordinatesLost => "undo-coordinates-lost",
         }
     }
 
