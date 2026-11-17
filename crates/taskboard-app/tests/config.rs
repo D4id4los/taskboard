@@ -476,7 +476,10 @@ fn c16_env_override_names_both_answers() {
     let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("env-named.toml");
-    set_env("TASKBOARD_CONFIG", file.to_str().expect("utf-8 path"));
+    // RAII restore: a leaked TASKBOARD_CONFIG would poison every later
+    // plant-and-restore test in this binary (the ordering-dependent
+    // leak taskboard_env_lock_restores_ambient_values caught).
+    let _config = EnvOverride::set("TASKBOARD_CONFIG", file.to_str().expect("utf-8 path"));
     let view = config::path(None);
     assert_eq!(view.config_path.map(PathBuf::from), Some(file.clone()));
     assert_eq!(PathBuf::from(&view.write_path), file);
@@ -770,5 +773,34 @@ fn composed_load_env_overrides_the_file_layer() {
     assert_eq!(
         file_only.nextcloud.server_url.as_deref(),
         Some("https://file.example")
+    );
+}
+
+/// The migration ladder's happy path, re-homed from the in-crate unit
+/// tests (#865): the re-load leg of `load_migrated` composes the
+/// process env over the migrated file, so the pin needs the TASKBOARD_*
+/// scrub this harness can hold. Same assertions, one layer up.
+#[test]
+fn migration_ladder_the_happy_path_migrates_and_reloads() {
+    let _env = taskboard_env_lock();
+    let dir = tempdir();
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(
+        &config,
+        "[nextcloud]\nserver_url = \"https://cloud.example\"\nusername = \"alice\"\n",
+    )
+    .expect("seed");
+
+    let loaded = taskboard_app::migration::load_migrated(Some(config.clone())).expect("serves");
+    let entries = loaded.sync.connectors.as_deref().expect("array world");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].server_url, "https://cloud.example",
+        "the identity keys moved into the connector entry"
+    );
+    assert_eq!(loaded.nextcloud.server_url, None, "identity keys moved");
+    assert!(
+        dir.path().join("taskboard.toml.bak-legacy").is_file(),
+        "the backup exists"
     );
 }
