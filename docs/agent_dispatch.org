@@ -51,6 +51,32 @@ earned by a recovered incident. The full narrative:
   and ends its stage cleanly; the dispatcher runs the gate. A silent
   wait for a held lock is indistinguishable from a stall and dies at
   the inactivity cutoff (observed four times before this rule; #879).
+- *Real builds route through the memory gate*: any agent command
+  expected to be a real build (>~1 min — =cargo build=, =cargo test=
+  subsets, clippy re-runs) and the pre-commit hook's clippy step run
+  under =scripts/memory-gate.sh=: an exclusive cross-worktree flock
+  serializes build-vs-build memory peaks, and a =MemAvailable= floor
+  (=MEMORY_GATE_MIN_AVAIL_MIB=, default 8192) is polled before the
+  command starts — bounded wait (=MEMORY_GATE_TIMEOUT=, default 3600s),
+  then a nonzero exit. =--status= reports the lock state and the
+  current reading. The full §10 suite keeps =run-quality-gates.sh=
+  (its own, distinct lock). Evidence: the 2026-11-17 global OOM —
+  7 concurrent cold per-worktree clippy builds + 1 llvm-cov build
+  drove a 30G box under (a measured clippy re-check peaks at
+  ~3.9 GiB; floor = peak + ~2 GiB desktop headroom + margin)
+  (.artifacts/reports/2026-11-17-oom-incident-concurrency-learning-report.md).
+- *Resource law (the concurrency cap)*: at most **3 concurrent
+  work-performing agents per box**, with **staggered starts ≥3
+  minutes apart** (cold pre-commit build peaks must not align), and
+  the **dispatcher's full §10 suite runs only in a free window** —
+  zero agents mid-build; the llvm-cov build is the heaviest single
+  job on the box and counts as an agent slot of its own. Docs-only
+  stages count toward the cap (their commits trigger hook builds —
+  the incident's main memory source). The memory gate protects
+  memory; this cap protects latency and the inactivity cutoffs.
+  Evidence: the 2026-11-17 OOM (same report); 2–3 staggered agents
+  is operator-validated practice on this box. This bullet supersedes
+  the interim rule in that report's §5.
 
 * 3. Stage-exit verification (the dispatcher never trusts reports)
 

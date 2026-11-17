@@ -117,6 +117,19 @@ observable activity, so long silent commands kill working agents.
    (commits present, tree clean, gate evidence re-runnable). A stalled
    or quota-cut stage is completed from its landed commits or resumed
    with a state-check message — never re-dispatched blind.
+6. *Resource law (concurrency cap + memory gate)*: at most **3
+   concurrent work-performing agents per box**, staggered ≥3 minutes
+   apart (cold pre-commit build peaks must not align); the
+   **dispatcher's full §10 suite runs only in a free window** — zero
+   agents mid-build (llvm-cov counts as an agent slot of its own);
+   docs-only stages count toward the cap (their commits trigger hook
+   builds). Any real build (>~1 min) and the pre-commit hook's clippy
+   step route through `scripts/memory-gate.sh` (cross-worktree flock +
+   `MemAvailable` floor, bounded wait, `--status`); the full §10 suite
+   keeps `scripts/run-quality-gates.sh`. Gate deferral follows item 3.
+   Evidence: the 2026-11-17 global OOM
+   (`.artifacts/reports/2026-11-17-oom-incident-concurrency-learning-report.md`);
+   full law: `docs/agent_dispatch.org` §2.
 
 0. **Every stage, every agent**: out-of-scope findings become
    `backlog:` GitHub issues (or comments on existing ones) the moment
