@@ -10479,8 +10479,15 @@ fn the_account_cards_group_connectors_and_the_options_project_the_state() {
                  card, LocalOnly sorted first), a Deck row per connector — plus the
                  binding-without-listing Remote row (round-6 D-6.7)"
             );
-            assert_eq!(shape[2].1, "home", "the roster's LocalOnly row sorts first");
-            assert_eq!(shape[3].1, "away", "the deck-bound board's roster row");
+            // The deck-bound board rides the card's own connector
+            // ("work") — the ThisConnection group sorts first (the
+            // files-sync-status plan US-10 AC-3's home truth);
+            // "home" is the roster's LocalOnly row.
+            assert_eq!(
+                shape[2].1, "away",
+                "the own-card deck binding reads ThisConnection first"
+            );
+            assert_eq!(shape[3].1, "home", "the roster's LocalOnly row follows");
             assert_eq!(shape[4].1, "work");
             assert_eq!(shape[6].1, "work-2");
             assert!(
