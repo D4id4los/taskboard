@@ -1323,6 +1323,36 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    /// US-5 (task-detail-editor UX plan D-10, #706): the over-view
+    /// restore's typed subject-liveness guard. A truncation-exact
+    /// restore re-reveals the buried root without `reconcile`'s
+    /// subject-death pass (that pops a `TaskDetail` only while it is
+    /// the *current* view — under a pushed over-view the pop never
+    /// runs), so a subject tombstoned under the over-view would
+    /// restore an empty detail shell. Called from every over-view
+    /// restore seam after the truncate: a restored root `TaskDetail`
+    /// whose snapshot subject no longer resolves to a live task falls
+    /// back to the board (the selection-repair shape; `reconcile`'s
+    /// normalize picks the lowest live board when that one is gone
+    /// too). Inert for live subjects (AC-2: the existing restoration
+    /// tests stand) — the focus contract composes: the close seam's
+    /// focus-restore funnel runs after this swap.
+    pub fn repair_restored_root(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        if self.view() == ViewId::TaskDetail {
+            let dead = self.subject_task.is_none_or(|id| {
+                !state
+                    .tasks
+                    .get(&id)
+                    .is_some_and(taskboard_domain::Task::is_live)
+            });
+            if dead {
+                self.replace_root(ViewId::Board);
+                return vec![FlowOutcome::RefreshNow];
+            }
+        }
+        Vec::new()
+    }
+
     /// Ends the topmost pushed view level (the close-over primitive):
     /// truncates to its index; without one, the navigation fallback
     /// swaps the root to the board (the retired

@@ -22291,3 +22291,50 @@ fn us4_s1_rule_replace_preserves_paused_until() {
         },
     );
 }
+
+// -- task-detail-editor UX plan US-5 (dispatch chunk 3): the
+// -- restoration guard (#706) — a dead subject never restores an
+// -- empty detail shell as the root.
+
+/// US-5/S1 (AC-1): the detail view buried under the settings surface,
+/// its subject tombstoned while the over-view holds — the restore
+/// falls back to the board (the typed guard), never the empty shell.
+/// The guard is inert for live subjects (AC-2 — the existing
+/// restoration tests stand).
+#[test]
+fn us5_s1_dead_subject_restores_the_board() {
+    let (fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            harness.handle.dispatch_action(ActionId::AppSettings);
+            harness.driver.advance_time(0);
+            assert_eq!(window.get_current_view(), View::Settings);
+            // The subject dies under the over-view.
+            let mut changed = harness.engine.snapshot().as_ref().clone();
+            if let Some(task) = changed.tasks.get_mut(&fx.task0) {
+                task.deleted = true;
+            }
+            harness.engine.replace_state(changed, &harness.handle);
+            harness.driver.advance_time(0);
+            // The restore: the settings toggle closes the over-view.
+            harness.handle.dispatch_action(ActionId::AppSettings);
+            harness.driver.advance_time(0);
+            assert_ne!(
+                window.get_current_view(),
+                View::TaskDetail,
+                "a dead subject never restores the detail shell"
+            );
+            assert_eq!(
+                window.get_current_view(),
+                View::Board,
+                "the root falls back to the subject's board"
+            );
+        },
+    );
+}
