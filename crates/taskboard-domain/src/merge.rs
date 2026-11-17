@@ -1654,6 +1654,13 @@ pub fn detect_crash_window_duplicates(
 /// under candidate arrival order — the fold's inputs carry their own
 /// stamps, not their positions.
 ///
+/// A candidate whose ref **equals** the bound member's ref is a
+/// structural no-op (#856): it is dropped from the group before
+/// survivorship, so the bound member survives, `rebind` stays false,
+/// and `doomed` is empty — the stamp-based oldest-survivor rule (DEC-5)
+/// applies to *distinct* cards only, never to a rewind of the task's
+/// own binding.
+///
 /// # Panics
 ///
 /// Never with a non-empty group (the pipeline only forms verdicts over
@@ -1668,8 +1675,17 @@ pub fn collapse_for_task(
     satisfied_op: Option<OpId>,
 ) -> DuplicateCollapse {
     // (ref, stamp, is_bound): on equal stamps the bound member sorts first.
+    // Same-ref candidates are dropped pre-fold (#856): they carry no
+    // duplication to resolve, and letting one win on an older stamp would
+    // rebind the task to the ref it is already bound to, rewinding
+    // `remote_seen`.
     let mut members: Vec<(RemoteCardRef, DateTime<Utc>, bool)> = candidates
         .into_iter()
+        .filter(|(ref_, _)| {
+            bound
+                .as_ref()
+                .is_none_or(|(bound_ref, _)| ref_ != bound_ref)
+        })
         .map(|(ref_, stamp)| (ref_, stamp, false))
         .collect();
     if let Some((ref_, stamp)) = bound {
@@ -6011,34 +6027,32 @@ mod duplicate_reconcile_tests {
     }
 
     /// The degenerate same-ref shape (#682's diagnosis, backlog #856):
-    /// a collapse candidate whose ref equals the bound member's ref.
-    /// Characterized as production behaves today — `doomed` is empty
-    /// (nothing to delete), the survivor is chosen by stamp alone, and
-    /// on an exact stamp tie the bound member sorts first (DEC-5). The
+    /// a collapse candidate whose ref equals the bound member's ref is
+    /// a **structural no-op** — the candidate is dropped from the group
+    /// before survivorship, so the bound member survives, `rebind` is
+    /// false, and `doomed` stays empty regardless of the candidate's
+    /// stamp. This forbids the #856 rewind (an older same-ref candidate
+    /// rolling `remote_seen` backwards via the rebind path). The
     /// proptest above excludes the shape at the premise level; this
-    /// unit test keeps it characterized instead of left to generator
-    /// luck. The open production question (an older same-ref candidate
-    /// rewinds the binding via the rebind path) is backlog #856, not
-    /// pinned as desired here.
+    /// unit test pins the contract at the `collapse_for_task` boundary.
     #[test]
-    fn the_degenerate_same_ref_group_characterizes_collapse() {
+    fn a_same_ref_candidate_is_a_structural_no_op() {
         let bound = (card_ref(1, 42), crate::merge_testutil::ts(1_000));
         let same_ref = card_ref(1, 42);
 
-        // Older same-ref candidate: survives by stamp, rebind fires
-        // (the #856 rewind shape), doomed stays empty.
+        // Older same-ref candidate: dropped — bound survives, no
+        // rebind, doomed empty (the #856 rewind is forbidden).
         let older = collapse_for_task(
             TaskId::from(Uuid::from_u128(1)),
             Some(bound),
             vec![(same_ref, crate::merge_testutil::ts(500))],
             None,
         );
-        assert_eq!(older.survivor, same_ref);
-        assert!(older.rebind);
+        assert_eq!(older.survivor, bound.0);
+        assert!(!older.rebind);
         assert_eq!(older.doomed, []);
 
-        // Exact stamp tie: the bound member sorts first (DEC-5) — no
-        // rebind churn, doomed stays empty.
+        // Exact stamp tie: no rebind churn, doomed stays empty.
         let tied = collapse_for_task(
             TaskId::from(Uuid::from_u128(1)),
             Some(bound),
@@ -6059,6 +6073,66 @@ mod duplicate_reconcile_tests {
         assert_eq!(newer.survivor, bound.0);
         assert!(!newer.rebind);
         assert_eq!(newer.doomed, []);
+
+        // Multiple same-ref candidates: all dropped, same verdict (D3).
+        let multi = collapse_for_task(
+            TaskId::from(Uuid::from_u128(1)),
+            Some(bound),
+            vec![
+                (same_ref, crate::merge_testutil::ts(500)),
+                (same_ref, crate::merge_testutil::ts(1_500)),
+            ],
+            None,
+        );
+        assert_eq!(multi.survivor, bound.0);
+        assert!(!multi.rebind);
+        assert_eq!(multi.doomed, []);
+    }
+
+    /// D7 invariant: across a collapse *sequence* mixing same-ref and
+    /// distinct-ref candidates, no same-ref-bearing collapse can rewind
+    /// the binding — each yields `rebind == false` and an empty `doomed`
+    /// — while the distinct-ref collapse in the middle still rebinds
+    /// (routing sanity). Typed outcomes only.
+    #[test]
+    fn a_collapse_sequence_never_rewinds_through_a_same_ref_group() {
+        let task = TaskId::from(Uuid::from_u128(1));
+        let bound = (card_ref(1, 42), crate::merge_testutil::ts(1_000));
+        let same_ref = card_ref(1, 42);
+        let distinct = card_ref(1, 43);
+
+        // 1. same-ref (older stamp) — no rewind.
+        let first = collapse_for_task(
+            task,
+            Some(bound),
+            vec![(same_ref, crate::merge_testutil::ts(500))],
+            None,
+        );
+        assert_eq!(first.survivor, bound.0);
+        assert!(!first.rebind);
+        assert_eq!(first.doomed, []);
+
+        // 2. distinct-ref (older stamp) — the legitimate rebind fires.
+        let second = collapse_for_task(
+            task,
+            Some(bound),
+            vec![(distinct, crate::merge_testutil::ts(500))],
+            None,
+        );
+        assert_eq!(second.survivor, distinct);
+        assert!(second.rebind);
+        assert_eq!(second.doomed, [bound.0]);
+
+        // 3. same-ref again (newer stamp) — no rewind.
+        let third = collapse_for_task(
+            task,
+            Some(bound),
+            vec![(same_ref, crate::merge_testutil::ts(2_000))],
+            None,
+        );
+        assert_eq!(third.survivor, bound.0);
+        assert!(!third.rebind);
+        assert_eq!(third.doomed, []);
     }
 
     // ---- DR-5/2: the time-entries fold (D-T12/D-13) -----------------
