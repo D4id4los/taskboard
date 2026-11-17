@@ -244,8 +244,12 @@ export component TaskCard inherits Rectangle {
                 height: 100%;
                 focus-on-tab-navigation: false;
                 accessible-role: AccessibleRole.button;
+                // The card-own labels (distinct from the quick bar's
+                // registry-label buttons — the a11y address must be
+                // unambiguous between the popup's bar and the cards'
+                // controls; the wording is walkthrough-graded).
                 accessible-label: root.model.track-state == TrackCardState.running-here
-                    ? "Stop tracking" : "Start tracking";
+                    ? "Stop tracking task" : "Track task";
                 // slint: track-toggled
                 accessible-action-default => { root.track-toggled(); }
             }
