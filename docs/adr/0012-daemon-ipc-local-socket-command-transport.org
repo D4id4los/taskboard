@@ -348,3 +348,17 @@ its detail), exit 130, the socket closed mid-exchange. =connect= and
 =login= are excluded (their prompts are sync reads inside =poll=; a
 handler would consume the ^C and leave the read silently running); the
 second ^C inside the exit window forces at 130.
+
+* Amendment (2026-11-17): =ConnectionRefused= joins the connect-budget retry set
+
+Issue #570's early shape: a relayed verb answered =instance-locked=
+because =try_connect= classified an immediate =ConnectionRefused= as
+"no daemon" and fell through to in-process bootstrap — colliding with
+the *live* lock holder. On a unix socket, refused means the artifact
+exists but nobody accepts *yet*: a daemon live or mid-boot, never a
+daemon-less world. =NotFound= (stale artifact, holder dead, lock
+free) and =PermissionDenied= (not ours to guess) keep the immediate
+fall-through; refused now retries within the existing 1 s connect
+budget (50 ms cadence) before yielding =None=. Worst-case added
+latency for a genuinely dead-but-present artifact is the budget
+itself; the honest fallback outcome is unchanged.
