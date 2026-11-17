@@ -28,6 +28,7 @@ use taskboard_domain::{
     StateCommand, TaskId,
 };
 use taskboard_ui_slint::actions::{ActionId, ContextId};
+use taskboard_ui_slint::adapter::REPAINT_CADENCE_MS;
 use taskboard_ui_slint::keymap::stroke::{self, parse};
 use taskboard_ui_slint::{FieldValidity, SettingsOutcome, UiSettings, View};
 
@@ -23123,6 +23124,97 @@ fn us6_s2_cancel_disarm_keeps_the_ladder() {
             assert!(
                 !window.get_task_model().labels_open,
                 "one rung closes the overlay"
+            );
+        },
+    );
+}
+
+/// US-3/S1 (N-11, origin AC-1) — the reproduction: a card context
+/// menu held open across an engine-publish refresh tick keeps its
+/// model. The mock clock fires the cadence pass (`advance_time` —
+/// the oracle-matching tool; the tick's forced lane is the swap
+/// surface the round-8 note N-11 records). Typed model assertion:
+/// the row set's action ids, never labels.
+#[test]
+fn us3_s1_open_context_menu_survives_the_dwell_interval() {
+    let (_fixture, state) = fixture::journey_state();
+    let republish = state.clone();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let model = |harness: &Harness| model_snapshot(harness);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_menu_open()
+                    && keyboard(&harness).get_menu_pointer_anchored(),
+                "the context request opened the anchored popup"
+            );
+            let before = model(&harness);
+            assert!(
+                before.iter().any(|a| a == "task.complete"),
+                "the context rows are mounted"
+            );
+
+            // The dwell: advance the mock clock past the repaint
+            // cadence and fire a refresh pass (the engine publishes —
+            // the concurrent-sync shape the note records).
+            harness.engine.replace_state(republish, &harness.handle);
+            harness.driver.advance_time(REPAINT_CADENCE_MS);
+            let after = model(&harness);
+            assert_eq!(after, before, "the popup's model is unchanged");
+            assert!(
+                after.iter().all(|a| a != "app.settings"),
+                "the main menu's quick rows never swapped in"
+            );
+        },
+    );
+}
+
+/// US-3/S1 companion (origin AC-2) — the main menu's own refresh-time
+/// re-derivation stands: an open main menu re-greys from a published
+/// state while it holds (the round-3 D27c behaviour the fix must not
+/// regress).
+#[test]
+fn us3_s2_main_menu_dwell_regrey_stands() {
+    let (_fixture, mut state) = fixture::golden_state();
+    state.undo = taskboard_domain::UndoView::default();
+    let mut live = state.clone();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::AppMenu);
+            harness.driver.advance_time(0);
+            let row_state = |harness: &Harness, action: &str| {
+                let entries = keyboard(harness).get_menu_entries();
+                (0..entries.row_count())
+                    .map(|i| entries.row_data(i).expect("row"))
+                    .find(|row| row.action == action)
+                    .expect("the row renders on the root page")
+                    .enabled
+            };
+            assert!(!row_state(&harness, "app.undo"), "the empty line greys");
+
+            live.undo = taskboard_domain::UndoView {
+                can_undo: true,
+                can_redo: false,
+                head_label: None,
+                recent: vec![],
+            };
+            harness.engine.replace_state(live, &harness.handle);
+            harness.driver.advance_time(REPAINT_CADENCE_MS);
+            assert!(
+                row_state(&harness, "app.undo"),
+                "the main menu re-greys while it holds"
             );
         },
     );
