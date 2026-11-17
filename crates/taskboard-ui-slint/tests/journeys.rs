@@ -21144,7 +21144,6 @@ fn us5_s1_the_title_and_description_fields_carry_the_focus_flag() {
     );
 }
 
-
 /// The journey fixture's Today-nonempty-by-construction contract
 /// (#843, clock-discipline §6.1): given `journey_state_at(now)`, the
 /// domain oracle `today_sections` classifies `task1` into the overdue
@@ -21177,7 +21176,7 @@ fn the_journey_fixture_is_today_nonempty_by_construction() {
             "task1 is overdue at pass instant {pass}"
         );
     }
-
+}
 
 // -- task-detail-editor UX plan US-1 (dispatch chunk 3): the N-4
 // -- stamping law — date-only due entries commit the day-window end.
@@ -21343,7 +21342,6 @@ fn us1_s5_quick_set_forms_follow_the_law() {
             ));
         },
     );
-
 }
 
 // ---------------------------------------------------------------------------

@@ -217,6 +217,13 @@ export component TrackEntriesPanel inherits Rectangle {
                             focus-on-mount: root.form-grid-focus;
                             picker-key(k) => { root.date-grid-key(k); }
                             day-clicked(c) => { root.date-day-clicked(c); }
+                            // Date-only mount (show-time: false): the
+                            // TimeField never mounts, so the intra-picker
+                            // click arm (task-detail-editor UX plan
+                            // US-2/D-6) is structurally dead here — the
+                            // forward is the mount-inventory's totality
+                            // law, never a live path.
+                            time-field-armed() => { }
                         }
                         // The span: the two TimeFields over the one
                         // lenient grammar (D26); the end field's
