@@ -458,3 +458,108 @@ fn restore_stack_and_reclassified_delete_stack_entries_round_trip() {
         assert_eq!(back, entry);
     }
 }
+
+// ---- the per-board projection (#355, D-6) --------------------------------
+
+/// The `derive_for_board` projection over a two-board journal: the scope
+/// predicate (`entry.board == Some(board)`), the head gate, the sibling
+/// rule for redo, and the per-board recent window — one behavior, one
+/// test, lowest layer.
+#[test]
+fn derive_for_board_filters_can_undo_can_redo_and_the_recent_window() {
+    let ids = CountingIds::new();
+    let board_a = crate::ids::BoardId::from_uuid(uuid::Uuid::from_u128(11));
+    let board_b = crate::ids::BoardId::from_uuid(uuid::Uuid::from_u128(22));
+    let tagged = |board: Option<crate::ids::BoardId>, parent, stamp: i64| JournalEntry {
+        board,
+        ..entry_at(&ids, parent, stamp)
+    };
+    let mut journal = JournalState::default();
+    // Empty line: the scoped question answers no for every board.
+    for board in [board_a, board_b] {
+        let view = UndoView::derive_for_board(&journal, board);
+        assert!(!view.can_undo);
+        assert!(!view.can_redo);
+        assert_eq!(view.head_label, None);
+    }
+    // A two-board line: a-root → b-child → a-tip.
+    let a_root = tagged(Some(board_a), None, 100);
+    let b_child = tagged(Some(board_b), Some(a_root.id), 200);
+    let a_tip = tagged(Some(board_a), Some(b_child.id), 300);
+    journal.entries = vec![a_root.clone(), b_child.clone(), a_tip.clone()];
+    journal.head = Some(a_tip.id);
+    // Board A: head in scope, but the head has no child.
+    let a_view = UndoView::derive_for_board(&journal, board_a);
+    assert!(a_view.can_undo);
+    assert!(!a_view.can_redo, "the tip has no child");
+    assert!(a_view.head_label.is_some(), "label only when can_undo");
+    // Board B: the head is out of scope — can_undo and head_label both
+    // refuse; the tip has no child at all, so no redo either.
+    let b_view = UndoView::derive_for_board(&journal, board_b);
+    assert!(!b_view.can_undo);
+    assert_eq!(b_view.head_label, None);
+    assert!(!b_view.can_redo);
+    // Retreat the head into the middle: A's head (a_root) has the
+    // out-of-scope b_child — no in-scope child, so no redo for A.
+    journal.head = Some(a_root.id);
+    let a_mid = UndoView::derive_for_board(&journal, board_a);
+    assert!(a_mid.can_undo);
+    assert!(!a_mid.can_redo, "b_child is out of A's scope");
+    let b_mid = UndoView::derive_for_board(&journal, board_b);
+    assert!(!b_mid.can_undo);
+    assert!(b_mid.can_redo, "b_child is in scope for B");
+    // A None-tagged entry belongs to no board scope.
+    let none_tip = tagged(None, Some(a_root.id), 400);
+    journal.entries.push(none_tip.clone());
+    journal.head = Some(none_tip.id);
+    for board in [board_a, board_b] {
+        let view = UndoView::derive_for_board(&journal, board);
+        assert!(!view.can_undo, "a None-tagged head is out of scope");
+        assert_eq!(view.head_label, None);
+    }
+    // The recent window is the per-board slice, still bounded: 12
+    // A-tagged entries above the newest B/None tags.
+    for i in 0..12i64 {
+        journal.entries.push(tagged(Some(board_a), None, 500 + i));
+    }
+    let a_windowed = UndoView::derive_for_board(&journal, board_a);
+    assert_eq!(a_windowed.recent.len(), UNDO_RECENT_WINDOW);
+    assert_eq!(
+        a_windowed.recent.first().map(|row| row.id),
+        journal.entries.last().map(|entry| entry.id),
+        "newest-first within the scope"
+    );
+    assert!(
+        a_windowed.recent.iter().all(|row| journal
+            .entry(row.id)
+            .is_some_and(|entry| entry.board == Some(board_a))),
+        "the window carries in-scope rows only"
+    );
+    // B's window sees nothing of A's twelve.
+    assert_eq!(
+        UndoView::derive_for_board(&journal, board_b)
+            .recent
+            .iter()
+            .filter(|row| journal
+                .entry(row.id)
+                .is_some_and(|entry| entry.created_at >= ts(500)))
+            .count(),
+        0
+    );
+}
+
+/// D-2's cheap insurance: the two appended arms' serde representation
+/// pins (externally tagged, field-named) — appended, never inserted, so
+/// the existing representations stay byte-stable.
+#[test]
+fn undo_on_board_and_redo_on_board_commands_round_trip() {
+    use crate::messages::StateCommand;
+    let board = crate::ids::BoardId::from_uuid(uuid::Uuid::from_u128(77));
+    let undo = StateCommand::UndoOnBoard { board };
+    let redo = StateCommand::RedoOnBoard { board };
+    for command in [undo, redo] {
+        let json = serde_json::to_string(&command).expect("serializes");
+        let back: StateCommand = serde_json::from_str(&json).expect("decodes");
+        assert_eq!(back, command);
+    }
+}
