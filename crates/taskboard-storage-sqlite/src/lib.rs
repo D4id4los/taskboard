@@ -73,6 +73,12 @@ pub(crate) mod error;
 pub(crate) mod port;
 pub(crate) mod repo;
 
+/// Migration-rewind fixture support (#877). Workspace-internal test
+/// plumbing — hidden from the rendered API, used by this crate's and
+/// the app crate's migration-upgrade fixtures.
+#[doc(hidden)]
+pub mod rewind;
+
 pub use actor::{StorageCommand, StorageHandle, spawn_storage_actor};
 pub use connect::{open, open_memory};
 pub use error::OpenError;
