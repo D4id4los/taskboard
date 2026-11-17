@@ -463,11 +463,13 @@ fn the_ten_step_keyboard_session() {
                 "the created task joined stack a"
             );
 
-            // -- step 4: task.edit — walk to the created task, open the
+            // -- step 4: task.edit — the created card is ALREADY the
+            //    focused card (UX-R8 chunk-5 US-5's create-focus
+            //    handoff landed on top of this journey's original
+            //    NavNextItem walk — the walk steps are superseded; the
+            //    emphasis assertion is the same oracle), open the
             //    detail, type over the selected title, save (R1's risk
-            //    case: the title field's keyboard reachability) ---------
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            //    case: the title field's keyboard reachability) ------
             assert_eq!(
                 harness.emphasized_card(),
                 Some((0, 2)),
