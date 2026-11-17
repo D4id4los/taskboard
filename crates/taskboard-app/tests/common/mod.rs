@@ -684,8 +684,10 @@ pub(crate) struct V01xIds {
 /// non-idle `sync_status` singleton.
 ///
 /// Method (the storage crate's own migration-fixture pattern): run the
-/// shipped migrations, then strip 0006's effects (the column, the rebuilt
-/// table, the bookkeeping row) — leaving exactly the pre-0006 shape.
+/// shipped migrations, then rewind the ledger to 0005 — the derived
+/// strips drop every later migration's object and the legacy
+/// `sync_status` singleton is restored by hand (0006's rename rebuild is
+/// not mechanically strippable) — leaving exactly the pre-0006 shape.
 #[allow(clippy::too_many_lines)] // one normative fixture; the seeded rows ARE the shape
 pub(crate) async fn write_v01x_db(
     db_path: &Path,
@@ -703,31 +705,13 @@ pub(crate) async fn write_v01x_db(
         .run(&raw)
         .await
         .expect("migrate");
-    for (sql, why) in [
-        (
-            "ALTER TABLE boards DROP COLUMN connector",
-            "strip the tag column",
-        ),
-        ("DROP TABLE sync_status", "strip the rebuilt table"),
-        (
-            "CREATE TABLE sync_status (id INTEGER PRIMARY KEY CHECK (id = 1), \
-             phase TEXT NOT NULL, last_error TEXT NULL, last_success TEXT NULL)",
-            "restore the 0005 singleton",
-        ),
-        (
-            "INSERT INTO sync_status (id, phase) VALUES (1, 'idle')",
-            "the singleton seed",
-        ),
-        (
-            "DELETE FROM _sqlx_migrations WHERE version = 6",
-            "strip the bookkeeping",
-        ),
-    ] {
-        sqlx::query(sql)
-            .execute(&raw)
-            .await
-            .unwrap_or_else(|err| panic!("{why} must apply: {err}"));
-    }
+    taskboard_storage_sqlite::rewind::rewind_to(
+        &raw,
+        5,
+        taskboard_storage_sqlite::rewind::LEGACY_SYNC_STATUS_SINGLETON,
+    )
+    .await
+    .expect("rewind to the v0.1.x ledger");
 
     let ids = V01xIds {
         board: uuid::Uuid::from_u128(0x00DA_0000_0000_0000_0000_0000_0000_0001),
