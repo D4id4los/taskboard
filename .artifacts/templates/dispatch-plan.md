@@ -106,6 +106,10 @@ observable activity, so long silent commands kill working agents.
 3. *Any command a subagent expects to exceed ~5 minutes runs
    backgrounded* with short interleaved polls and useful work between
    polls — and the agent commits all landed work BEFORE any wait.
+   *Flock deferral (#879)*: when the gate lock is contended and no
+   other useful work remains, never block — commit all landed work,
+   report "gate deferred: lock held by <holder>", and end the stage;
+   the dispatcher runs the gate.
 4. *Stage prompts restate this discipline verbatim* (an agent that
    must find it in another file will not carry it).
 5. *Dispatcher stage-exit verification*: before dispatching stage N+1,
