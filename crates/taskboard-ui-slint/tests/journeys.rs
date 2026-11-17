@@ -23654,3 +23654,44 @@ fn us7_s1_the_compact_add_task_field_holds_its_height() {
         },
     );
 }
+
+/// UX-R8 chunk-5 D-9 (#882's display half) — the armed multi-delete's
+/// visible strip: the member-count fact arms while
+/// `ConfirmDelete(Tasks)` holds (−1 disarmed); Confirm routes the
+/// armed verb (the second stroke's twin) and the members delete;
+/// Cancel disarms to −1. Typed facts, never caption text.
+#[test]
+fn the_armed_multi_delete_strip_shows_the_member_count() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let armed = |harness: &Harness| harness.handle.window().get_task_multi_delete_armed();
+            assert_eq!(armed(&harness), -1, "disarmed at mount");
+            // Build a two-member selection (the modifier-click grammar,
+            // chunk 4's card seam).
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 1, true, false);
+            harness.driver.advance_time(0);
+            // Arm the multi delete (the keyboard verb's first stroke).
+            harness.press(ActionId::TaskDelete);
+            harness.driver.advance_time(0);
+            assert!(armed(&harness) >= 0, "the armed strip's count fact arms");
+            // Cancel disarms (the #784 grammar's cancel twin).
+            harness.driver.click_by_label("Cancel delete tasks");
+            harness.driver.advance_time(0);
+            assert_eq!(armed(&harness), -1, "the cancel disarms");
+            harness.assert_commands(&[]);
+            let _ = &fixture;
+        },
+    );
+}

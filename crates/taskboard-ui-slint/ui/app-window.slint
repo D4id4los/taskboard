@@ -486,6 +486,9 @@ export component AppWindow inherits Window {
                 body-activated(c) => root.board-body-activated(c);
                 task-done-toggled(c, r) => root.board-task-done-toggled(c, r);
                 task-track-toggled(c, r) => root.board-task-track-toggled(c, r);
+                task-multi-delete-armed: root.task-multi-delete-armed;
+                task-multi-delete-confirmed() => root.task-multi-delete-strip-confirmed();
+                task-multi-delete-cancelled() => root.task-multi-delete-strip-cancelled();
                 rename-committed(c, t) => root.board-stack-rename-committed(c, t);
                 rename-edited(c, t) => root.board-stack-rename-edited(c, t);
                 text-flow-focus-lost() => root.text-flow-focus-lost();
@@ -1707,6 +1710,13 @@ export component AppWindow inherits Window {
     // each resolves the addressed card through the id tables and
     // routes the existing tracking ids (the shown half is the
     // adapter's state read — one source with the menu's bar).
+    // The armed multi-delete strip's fact + pair (UX-R8 chunk-5 D-9,
+    // #882): the count fact (−1 disarmed) and the #784 grammar's third
+    // instance — Confirm routes the armed verb (the second stroke's
+    // twin), Cancel disarms.
+    in-out property <int> task-multi-delete-armed: -1;
+    pure callback task-multi-delete-strip-confirmed();
+    pure callback task-multi-delete-strip-cancelled();
     pure callback board-task-track-toggled(int, int);
     pure callback stack-task-track-toggled(int);
     pure callback today-row-track-toggled(int, int);

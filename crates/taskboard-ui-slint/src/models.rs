@@ -1985,6 +1985,19 @@ fn push_board(
     // the board-bar region's strip mounts while the board is the
     // armed subject.
     window.set_board_delete_armed(matches!(flow, Flow::ConfirmDelete(DeleteTarget::Board(_))));
+    // The armed multi-delete strip's window-level fact (UX-R8 chunk-5
+    // D-9, #882): the member count with −1 as the disarmed sentinel —
+    // the count caption needs the number (the #784 grammar's third
+    // instance beside the stack/board strips).
+    window.set_task_multi_delete_armed(match &flow {
+        Flow::ConfirmDelete(DeleteTarget::Tasks(members)) => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            {
+                members.len() as i32
+            }
+        }
+        _ => -1,
+    });
     // The pointer drag's window bits (r2 chunk-8 D-D): the ghost's
     // open flag and its card snapshot rebuild on every pass while the
     // drag flow holds (the chunk-2 refresh-survival invariant made

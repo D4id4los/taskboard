@@ -60,6 +60,10 @@ const SEAM_INVENTORY: &[&str] = &[
     "habits_undo_log_clicked",
     // The armed-delete strips' pair (UX R-2 D-2, #784): Confirm
     // routes the armed verb, Cancel disarms — one install each.
+    // The armed multi-delete strip's pair (UX-R8 chunk-5 D-9, #882):
+    // the #784 grammar's third instance.
+    "task_multi_delete_strip_confirmed",
+    "task_multi_delete_strip_cancelled",
     "board_delete_strip_confirmed",
     "board_delete_strip_cancelled",
     "stack_delete_strip_confirmed",

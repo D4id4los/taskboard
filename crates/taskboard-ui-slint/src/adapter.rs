@@ -10747,6 +10747,18 @@ fn install_delete_strip_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // before the route re-arms (the confirm would never commit).
     // One flow lives at a time, so no foreign flow can be settled
     // by a strip interaction.
+    // The armed multi-delete strip's pair (UX-R8 chunk-5 D-9, #882):
+    // Confirm routes the armed verb (the second stroke's twin — the
+    // armed repeat confirms), Cancel disarms with nothing dispatched.
+    install_seam!(window: window.on_task_multi_delete_strip_confirmed, adapter: adapter;
+    bind mut (a, window), args (), {
+        a.route(&window, ActionId::TaskDelete);
+    });
+    install_seam!(window: window.on_task_multi_delete_strip_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {
+        let outcomes = a.view_state.cancel_confirm_delete();
+        a.apply_outcomes(&window, &outcomes);
+    });
     install_seam!(window: window.on_board_delete_strip_confirmed, adapter: adapter;
     bind mut (a, window), args (), {
         a.route(&window, ActionId::BoardDelete);
