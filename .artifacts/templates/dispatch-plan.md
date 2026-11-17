@@ -126,7 +126,11 @@ observable activity, so long silent commands kill working agents.
    builds). Any real build (>~1 min) and the pre-commit hook's clippy
    step route through `scripts/memory-gate.sh` (cross-worktree flock +
    `MemAvailable` floor, bounded wait, `--status`); the full §10 suite
-   keeps `scripts/run-quality-gates.sh`. Gate deferral follows item 3.
+   keeps `scripts/run-quality-gates.sh`. *Two-mode routing*: builds and
+   the hook's clippy step route gated-hold; self-capped long runs
+   (mutants/miri-style — own job cap + wall-clock cap) route
+   `memory-gate.sh --preflight` only; never hold the gate lock across a
+   multi-hour run. Gate deferral follows item 3.
    Evidence: the 2026-11-17 global OOM
    (`.artifacts/reports/2026-11-17-oom-incident-concurrency-learning-report.md`);
    full law: `docs/agent_dispatch.org` §2.
