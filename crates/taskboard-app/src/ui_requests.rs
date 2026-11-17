@@ -568,6 +568,108 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
     }
 }
 
+/// Which front applied a settings write (journey W-3, the shared
+/// live-write port's lane bit): `Applied` — a live engine took the
+/// snapshot; `NoEngine` — the caller handed no engine (the one-shot
+/// CLI lane; the file applies at the next start); `EngineGone` — an
+/// engine was handed but could not apply (stopped mid-flight): the
+/// file *is* written, the next start applies it (the editor's `Gone`
+/// precedent — the file stays the boot authority, no partial repair).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveApply {
+    Applied,
+    NoEngine,
+    EngineGone,
+}
+
+/// The shared write port's success payload: the re-decoded, validated
+/// effective config (file + standing env — the boot provider chain)
+/// plus which front applied.
+#[derive(Debug)]
+pub(crate) struct SettingsWriteOutcome {
+    pub effective: AppConfig,
+    pub apply: LiveApply,
+}
+
+/// The shared write port's typed refusals (front-agnostic): the env
+/// guard, the writer's own classes (IO + prove gate), and the
+/// effective re-decode/validate failure. Fronts map these onto their
+/// own lattices (the editor's `SettingsError`, the CLI's
+/// `ConfigSetError`).
+#[derive(Debug)]
+pub(crate) enum SettingsWriteError {
+    /// One of `guard_keys` is pinned by a `TASKBOARD_*` override.
+    EnvLocked,
+    /// The writer refused (IO, or the prove gate's typed rejection) —
+    /// the file is untouched and no command was sent.
+    Overlay(crate::settings_overlay::OverlayError),
+    /// The effective re-decode or validation failed after a successful
+    /// write — the gate raced another writer; typed, nothing sent.
+    Config(Box<ConfigError>),
+}
+
+/// The live-write choreography, extracted from the editor's
+/// `run_editor_write` (journey W-3: one vocabulary, three fronts —
+/// the GUI editor arms, the daemon's `config set/unset` arm, and the
+/// CLI's local lane all call this):
+///
+/// 1. the env-lock guard — any key in `guard_keys` pinned by a
+///    `TASKBOARD_*` override refuses typed before the file is
+///    touched;
+/// 2. the typed writer runs against the handed write path — never a
+///    fresh resolution; the prove gate's refusal maps typed, **no
+///    command is sent**, engine and file untouched;
+/// 3. the *effective* config re-decodes and validates (the gate just
+///    proved this document boots; the typed arm stays — never an
+///    `expect` on a file another process may have raced) and mints
+///    the domain snapshot;
+/// 4. when an engine is handed, `UpdateSettings` carries the whole
+///    snapshot; a failed apply is the typed `EngineGone` next-start
+///    outcome, not an error — the file is written and the boot is
+///    its authority.
+pub(crate) async fn run_settings_write(
+    path: &std::path::Path,
+    locked: &std::collections::BTreeSet<String>,
+    guard_keys: &[&str],
+    write: impl FnOnce(&std::path::Path) -> Result<(), crate::settings_overlay::OverlayError>,
+    engine: Option<&EngineHandle>,
+) -> Result<SettingsWriteOutcome, SettingsWriteError> {
+    if guard_keys.iter().any(|key| locked.contains(*key)) {
+        return Err(SettingsWriteError::EnvLocked);
+    }
+    write(path).map_err(SettingsWriteError::Overlay)?;
+    let effective = AppConfig::extract_raw(Some(path))
+        .map_err(|err| SettingsWriteError::Config(Box::new(err)))?;
+    effective
+        .validate()
+        .map_err(|err| SettingsWriteError::Config(Box::new(err)))?;
+    let settings = effective.settings_snapshot();
+    if let Some(engine) = engine {
+        match engine
+            .execute(StateCommand::UpdateSettings { settings })
+            .await
+        {
+            Ok(_) => {
+                return Ok(SettingsWriteOutcome {
+                    effective,
+                    apply: LiveApply::Applied,
+                });
+            }
+            Err(err) => {
+                tracing::warn!(%err, "settings written but the engine did not apply them");
+            }
+        }
+    }
+    Ok(SettingsWriteOutcome {
+        apply: if engine.is_some() {
+            LiveApply::EngineGone
+        } else {
+            LiveApply::NoEngine
+        },
+        effective,
+    })
+}
+
 /// One editor write's persist-then-command choreography (the GUI
 /// settings editor's write port; round-5 chunk 5, D-5.3):
 ///
@@ -598,28 +700,34 @@ async fn run_editor_write(
     let path = workspace.config_write_path.as_path();
     let locked =
         AppConfig::env_overridden_keys(Some(path)).map_err(|err| map_config_error(&err))?;
-    if editor_write_env_locked(field, &locked) {
-        return Err(SettingsError::EnvLocked { field });
+    // The shared live-write port (journey W-3) — the editor is front
+    // (a); its typed lattice maps the port's refusals below.
+    let outcome = run_settings_write(
+        path,
+        &locked,
+        editor_guard_keys(field),
+        write,
+        Some(&workspace.engine),
+    )
+    .await;
+    match outcome {
+        Ok(out) => {
+            if out.apply == LiveApply::EngineGone {
+                // A stopped engine: the file *is* written (the next
+                // boot picks it up) while the running engine keeps its
+                // old values — the typed refusal lets the UI say so.
+                return Err(SettingsError::Gone);
+            }
+            let published = workspace.engine.shared_state().load();
+            Ok(crate::ui::settings_snapshot_from_domain(
+                &out.effective,
+                &published.settings,
+            ))
+        }
+        Err(SettingsWriteError::EnvLocked) => Err(SettingsError::EnvLocked { field }),
+        Err(SettingsWriteError::Overlay(err)) => Err(map_overlay_error(field, &err)),
+        Err(SettingsWriteError::Config(err)) => Err(map_config_error(&err)),
     }
-    write(path).map_err(|err| map_overlay_error(field, &err))?;
-    let effective = AppConfig::extract_raw(Some(path)).map_err(|err| map_config_error(&err))?;
-    // The gate just proved this document boots; the typed arm stays
-    // (never an `expect` on a file another process may have raced).
-    effective.validate().map_err(|err| map_config_error(&err))?;
-    let settings = effective.settings_snapshot();
-    workspace
-        .engine
-        .execute(StateCommand::UpdateSettings { settings })
-        .await
-        .map_err(|err| {
-            tracing::warn!(%err, "settings written but the engine did not apply them");
-            SettingsError::Gone
-        })?;
-    let published = workspace.engine.shared_state().load();
-    Ok(crate::ui::settings_snapshot_from_domain(
-        &effective,
-        &published.settings,
-    ))
 }
 
 /// The lane's sink mirror → the config's choice.
@@ -653,16 +761,34 @@ fn map_overlay_error(field: Field, err: &crate::settings_overlay::OverlayError) 
     }
 }
 
-/// The env-lock verdict for one editor write: the field's own key is
-/// pinned, or — the Files row's case (round-6 D-6.6) — the row writes
-/// two keys (`enabled` + the re-anchor), so a pinned
+/// The env-lock guard keys for one editor write: the field's own key,
+/// or — the Files row's case (round-6 D-6.6) — both keys the row
+/// writes (`enabled` + the re-anchor), so a pinned
 /// `files_sync.anchor` must refuse the whole pick too; the writer
 /// would otherwise churn the file under a pinned effective value.
-fn editor_write_env_locked(field: Field, locked: &std::collections::BTreeSet<String>) -> bool {
-    if locked.contains(editor_field_key(field)) {
-        return true;
+/// The connection-form fields never ride the editor writers (empty
+/// guard: no key can match).
+fn editor_guard_keys(field: Field) -> &'static [&'static str] {
+    match field {
+        Field::FilesSyncEnabled => &["files_sync.enabled", "files_sync.anchor"],
+        Field::Name | Field::ServerUrl | Field::Username | Field::Password | Field::Scale => &[],
+        Field::DayStart => &["preferences.day_start_time"],
+        Field::RemindersEnabled => &["reminders.enabled"],
+        Field::TickSecs => &["reminders.tick_secs"],
+        Field::ReminderSink => &["reminders.sink"],
+        Field::ReminderBefore => &["reminders.default_before"],
+        Field::PollInterval => &["sync.poll_interval_secs"],
+        Field::BackoffInitial => &["sync.backoff_initial_secs"],
+        Field::BackoffMax => &["sync.backoff_max_secs"],
+        Field::DueSoonDays => &["ui.due_soon_days"],
+        Field::FocusEnabled => &["focus.enabled"],
+        Field::FocusWorkMins => &["focus.work_mins"],
+        Field::FocusBreakMins => &["focus.break_mins"],
+        Field::FocusChain => &["focus.chain"],
+        Field::FocusLongBreakMins => &["focus.long_break_mins"],
+        Field::FocusLongBreakEvery => &["focus.long_break_every"],
+        Field::FocusNotify => &["focus.notify"],
     }
-    field == Field::FilesSyncEnabled && locked.contains("files_sync.anchor")
 }
 
 /// The dotted config key each editor `Field` writes (the blame
@@ -3132,29 +3258,198 @@ mod tests {
     #[test]
     fn the_files_write_env_lock_covers_both_of_its_keys() {
         use std::collections::BTreeSet;
-        let locked: BTreeSet<String> = ["files_sync.anchor"]
-            .into_iter()
-            .map(String::from)
-            .collect();
+        let guard = |field: Field, keys: &[&str]| -> bool {
+            let locked: BTreeSet<String> = keys.iter().map(|k| (*k).to_owned()).collect();
+            editor_guard_keys(field)
+                .iter()
+                .any(|key| locked.contains(*key))
+        };
         assert!(
-            editor_write_env_locked(Field::FilesSyncEnabled, &locked),
+            guard(Field::FilesSyncEnabled, &["files_sync.anchor"]),
             "a pinned anchor locks the Files pick"
         );
-        let locked: BTreeSet<String> = ["files_sync.enabled"]
+        assert!(guard(Field::FilesSyncEnabled, &["files_sync.enabled"]));
+        assert!(
+            !guard(Field::FocusEnabled, &["files_sync.enabled"]),
+            "another field's verdict reads its own key only"
+        );
+        assert!(guard(Field::FocusEnabled, &["focus.enabled"]));
+        assert!(
+            !guard(Field::FilesSyncEnabled, &["focus.enabled"]),
+            "an unrelated pin does not lock the Files row"
+        );
+    }
+
+    // -- the shared live-write port's truth table (journey W-3) ----------
+
+    /// The port over a seeded file + a real booted core; returns the
+    /// workspace's engine and the seeded path.
+    async fn port_workspace(
+        seed_text: &str,
+    ) -> (
+        tempfile::TempDir,
+        ConnectionWorkspace,
+        crate::bootstrap::App,
+    ) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("taskboard.toml");
+        std::fs::write(&path, seed_text).expect("seed config");
+        let (workspace, app) = test_workspace_with_app(path).await;
+        (dir, workspace, app)
+    }
+
+    #[allow(clippy::unnecessary_wraps)] // the port's writer signature
+    fn noop_write(_: &std::path::Path) -> Result<(), crate::settings_overlay::OverlayError> {
+        Ok(())
+    }
+
+    /// `us4_s1`: the port's env guard fires first — a pinned
+    /// `guard_keys` entry refuses typed and the writer never runs
+    /// (nothing wrote, nothing sent), on any front.
+    #[tokio::test]
+    async fn us4_s1_the_port_env_guard_refuses_before_the_write() {
+        let (_dir, workspace, _app) = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let locked: std::collections::BTreeSet<String> = ["reminders.tick_secs"]
             .into_iter()
             .map(String::from)
             .collect();
-        assert!(editor_write_env_locked(Field::FilesSyncEnabled, &locked));
+        let mut writer_ran = false;
+        let result = run_settings_write(
+            workspace.config_write_path.as_path(),
+            &locked,
+            &["reminders.tick_secs"],
+            |path| {
+                writer_ran = true;
+                noop_write(path)
+            },
+            Some(&workspace.engine),
+        )
+        .await;
         assert!(
-            !editor_write_env_locked(Field::FocusEnabled, &locked),
-            "another field's verdict reads its own key only"
+            matches!(result, Err(SettingsWriteError::EnvLocked)),
+            "typed env refusal: {result:?}"
         );
-        let locked: BTreeSet<String> = ["focus.enabled"].into_iter().map(String::from).collect();
-        assert!(editor_write_env_locked(Field::FocusEnabled, &locked));
+        assert!(!writer_ran, "the writer never ran");
+    }
+
+    /// `us4_s3`: a validity-crossing write refuses at the port typed
+    /// (`Overlay(Rejected)`) and the engine is untouched — the prove
+    /// gate runs before any `UpdateSettings` (the file-before-engine
+    /// order, US-1 AC-2's negative arm).
+    #[tokio::test]
+    async fn us4_s3_the_port_prove_refusal_sends_no_command() {
+        let (_dir, workspace, _app) = port_workspace(
+            "[sync]\npoll_interval_secs = 30\nbackoff_initial_secs = 5\nbackoff_max_secs = 300\n",
+        )
+        .await;
+        let locked = std::collections::BTreeSet::new();
+        let result = run_settings_write(
+            workspace.config_write_path.as_path(),
+            &locked,
+            &["sync.backoff_initial_secs"],
+            |path| crate::settings_overlay::set_backoff_initial(path, 400),
+            Some(&workspace.engine),
+        )
+        .await;
         assert!(
-            !editor_write_env_locked(Field::FilesSyncEnabled, &locked),
-            "an unrelated pin does not lock the Files row"
+            matches!(
+                result,
+                Err(SettingsWriteError::Overlay(
+                    crate::settings_overlay::OverlayError::Rejected(_)
+                ))
+            ),
+            "typed prove refusal: {result:?}"
         );
+        let published = workspace.engine.shared_state().load();
+        assert_eq!(
+            u64::from(published.settings.backoff_initial_secs),
+            crate::config::DEFAULT_BACKOFF_INITIAL_SECS,
+            "the engine never saw the refused write"
+        );
+        let text = std::fs::read_to_string(workspace.config_write_path.as_path()).expect("file");
+        assert!(
+            text.contains("backoff_initial_secs = 5"),
+            "the file is untouched: {text}"
+        );
+    }
+
+    /// The live lane: a hand-to-the-port write lands in the file AND
+    /// the engine publishes the new snapshot (`Applied`) — the
+    /// US-1/US-3 choreography in one place.
+    #[tokio::test]
+    async fn the_port_applies_live_to_a_real_engine() {
+        let (_dir, workspace, _app) = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let locked = std::collections::BTreeSet::new();
+        let outcome = run_settings_write(
+            workspace.config_write_path.as_path(),
+            &locked,
+            &["reminders.tick_secs"],
+            |path| crate::settings_overlay::set_reminder_tick(path, 45),
+            Some(&workspace.engine),
+        )
+        .await
+        .expect("the write lands");
+        assert_eq!(outcome.apply, LiveApply::Applied, "the live lane");
+        let published = workspace.engine.shared_state().load();
+        assert_eq!(u64::from(published.settings.tick_secs), 45);
+        let text = std::fs::read_to_string(workspace.config_write_path.as_path()).expect("file");
+        assert!(text.contains("tick_secs = 45"), "the file wrote: {text}");
+    }
+
+    /// A stopped engine (`EngineGone`) is NOT an error at the port:
+    /// the file is written, the next start applies it (D7's typed
+    /// next-start outcome — the fronts decide how to render it).
+    #[tokio::test]
+    async fn the_port_engine_gone_reports_the_next_start_lane() {
+        let (_dir, workspace, app) = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        // Drain the engine (the D-5.3 journey's pattern): every later
+        // `execute` answers `EngineGone`.
+        app.system
+            .send(taskboard_domain::SystemEvent::Shutdown)
+            .expect("the engine subscribes");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let probe = workspace.engine.execute(StateCommand::RequestSync).await;
+                if matches!(probe, Err(taskboard_state::ExecuteError::EngineGone)) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the engine drained");
+        let locked = std::collections::BTreeSet::new();
+        let outcome = run_settings_write(
+            workspace.config_write_path.as_path(),
+            &locked,
+            &["reminders.tick_secs"],
+            |path| crate::settings_overlay::set_reminder_tick(path, 45),
+            Some(&workspace.engine),
+        )
+        .await
+        .expect("the write still lands");
+        assert_eq!(outcome.apply, LiveApply::EngineGone, "the next-start lane");
+        let text = std::fs::read_to_string(workspace.config_write_path.as_path()).expect("file");
+        assert!(text.contains("tick_secs = 45"), "the file wrote: {text}");
+    }
+
+    /// The no-engine lane (the one-shot CLI front): the write lands,
+    /// the port reports `NoEngine` — the typed `applied_live: false`.
+    #[tokio::test]
+    async fn the_port_no_engine_lane_reports_next_start() {
+        let (_dir, workspace, _app) = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let locked = std::collections::BTreeSet::new();
+        let outcome = run_settings_write(
+            workspace.config_write_path.as_path(),
+            &locked,
+            &["reminders.tick_secs"],
+            |path| crate::settings_overlay::set_reminder_tick(path, 45),
+            None,
+        )
+        .await
+        .expect("the write lands");
+        assert_eq!(outcome.apply, LiveApply::NoEngine);
+        assert_eq!(outcome.effective.reminders.tick_secs, 45);
     }
 
     /// A garbage minute write reaching the handler from a non-UI lane
