@@ -1894,24 +1894,26 @@ fn push_board(
             .expect("just inserted above")
             .diff(&cards);
         tables.board_tasks.push(task_ids);
+        let aimed_gap = aim
+            .filter(|(aimed, _)| aimed == stack_id)
+            .map(|(_, gap)| gap);
         columns.push(StackColumnModel {
             // The armed-delete strip's per-column flag (UX R-2 D-2):
             // this column's stack is the armed subject.
             delete_armed: stack_delete_armed(&flow, stack_id),
-            // The insertion indicator's aimed gap (UX-R8 D-2): the
-            // aim's gap index on the aimed column, −1 elsewhere (the
-            // move-target convention).
-            aim_gap: aim
-                .filter(|(aimed, _)| aimed == stack_id)
-                .map_or(-1, |(_, gap)| i32::try_from(gap).unwrap_or(i32::MAX)),
-            // The count badge's move-aim state (UX-R8 D-7): set
-            // exactly on the aimed column (AC-2's guard), with the
-            // labelled twin empty everywhere else.
-            move_aim: aim.is_some_and(|(aimed, _)| &aimed == stack_id),
-            badge_label: SharedString::from(
-                aim.filter(|(aimed, _)| aimed == stack_id)
-                    .map_or(String::new(), |_| MOVE_AIM_BADGE_LABEL.to_owned()),
-            ),
+            // This column is the aim (resolved once per pass, applied
+            // to the aimed column only — US-5/AC-2's guard is the
+            // derivation itself: no aim, no column carries the bit).
+            // The insertion indicator's aimed gap (UX-R8 D-2), the
+            // count badge's move-aim state (UX-R8 D-7) and its
+            // labelled twin derive from it.
+            aim_gap: aimed_gap.map_or(-1, |gap| i32::try_from(gap).unwrap_or(i32::MAX)),
+            move_aim: aimed_gap.is_some(),
+            badge_label: SharedString::from(if aimed_gap.is_some() {
+                MOVE_AIM_BADGE_LABEL
+            } else {
+                ""
+            }),
             title: SharedString::from(stack.title.clone()),
             // The column's own persistent handle: the outer row fires
             // only when scalars or the inner handle actually differ
