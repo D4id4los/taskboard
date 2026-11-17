@@ -420,6 +420,60 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskTrackStop, ContextId::TaskDetail, &["F10"]),
     (ActionId::TaskTrackStart, ContextId::Today, &["F9"]),
     (ActionId::TaskTrackStop, ContextId::Today, &["F10"]),
+    // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
+    // D-10): the CUA F-key family continues after F10 — F11 free in
+    // this preset (F1-F10 and F12 were bound; verified). The
+    // Ctrl+Shift+U fallback is avoided (the IBus unicode composer
+    // precedent, the snooze note's rule); the shift-chord F11
+    // continuation carries the clear twin.
+    (ActionId::TaskScheduleToday, ContextId::Board, &["F11"]),
+    (ActionId::TaskScheduleToday, ContextId::Today, &["F11"]),
+    (
+        ActionId::TaskScheduleToday,
+        ContextId::StackDetail,
+        &["F11"],
+    ),
+    (ActionId::TaskScheduleToday, ContextId::TaskDetail, &["F11"]),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::Board,
+        &["Ctrl+F11"],
+    ),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::Today,
+        &["Ctrl+F11"],
+    ),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::StackDetail,
+        &["Ctrl+F11"],
+    ),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::TaskDetail,
+        &["Ctrl+F11"],
+    ),
+    (
+        ActionId::TaskUnschedule,
+        ContextId::Board,
+        &["Ctrl+Shift+F11"],
+    ),
+    (
+        ActionId::TaskUnschedule,
+        ContextId::Today,
+        &["Ctrl+Shift+F11"],
+    ),
+    (
+        ActionId::TaskUnschedule,
+        ContextId::StackDetail,
+        &["Ctrl+Shift+F11"],
+    ),
+    (
+        ActionId::TaskUnschedule,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+F11"],
+    ),
     // The overlay's own context (D-2): the Escape ladder + the tab
     // walk (the entries-overlay's per-view row pattern).
     (
@@ -694,6 +748,74 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Today,
         &["Ctrl+c", "Ctrl+o"],
     ),
+    // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
+    // D-10 with the C-5 re-picks recorded): the plan's C-c C-o and
+    // C-c C-u candidates are OCCUPIED (the clock pair's stop and the
+    // rule-add mnemonic — verified against the chord inventory), so
+    // the free-set re-picks: C-c C-y the today stamp (the yank-to-
+    // today mnemonic; free), C-c C-n tomorrow (the next-day mnemonic;
+    // free), C-c C-x the clear twin (org's C-x submenu mnemonic; free
+    // in this preset).
+    (
+        ActionId::TaskScheduleToday,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+y"],
+    ),
+    (
+        ActionId::TaskScheduleToday,
+        ContextId::Today,
+        &["Ctrl+c", "Ctrl+y"],
+    ),
+    (
+        ActionId::TaskScheduleToday,
+        ContextId::StackDetail,
+        &["Ctrl+c", "Ctrl+y"],
+    ),
+    (
+        ActionId::TaskScheduleToday,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+y"],
+    ),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+n"],
+    ),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::Today,
+        &["Ctrl+c", "Ctrl+n"],
+    ),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::StackDetail,
+        &["Ctrl+c", "Ctrl+n"],
+    ),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+n"],
+    ),
+    (
+        ActionId::TaskUnschedule,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+x"],
+    ),
+    (
+        ActionId::TaskUnschedule,
+        ContextId::Today,
+        &["Ctrl+c", "Ctrl+x"],
+    ),
+    (
+        ActionId::TaskUnschedule,
+        ContextId::StackDetail,
+        &["Ctrl+c", "Ctrl+x"],
+    ),
+    (
+        ActionId::TaskUnschedule,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+x"],
+    ),
     (
         ActionId::LabelOverlayDismiss,
         ContextId::Labels,
@@ -938,6 +1060,33 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     // the Today context (the HabitCreate row's pattern — the view
     // context resolves before ViNormal); free in both contexts.
     (ActionId::TaskDueToday, ContextId::Today, &["t"]),
+    // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
+    // D-10 with the C-5 re-picks recorded): the preset carries no
+    // function keys (the F-family grep found none), so the letter
+    // grammar carries the family — y the today stamp (yank-to-today;
+    // free), Y tomorrow (the shifted twin; free), X the clear twin
+    // (free; x is unbound at these contexts too). The ViNormal rows
+    // (the board walk's motion chain) carry the same trio.
+    (ActionId::TaskScheduleToday, ContextId::Today, &["y"]),
+    (ActionId::TaskScheduleToday, ContextId::Board, &["y"]),
+    (ActionId::TaskScheduleToday, ContextId::StackDetail, &["y"]),
+    (ActionId::TaskScheduleToday, ContextId::TaskDetail, &["y"]),
+    (ActionId::TaskScheduleTomorrow, ContextId::Today, &["Y"]),
+    (ActionId::TaskScheduleTomorrow, ContextId::Board, &["Y"]),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::StackDetail,
+        &["Y"],
+    ),
+    (
+        ActionId::TaskScheduleTomorrow,
+        ContextId::TaskDetail,
+        &["Y"],
+    ),
+    (ActionId::TaskUnschedule, ContextId::Today, &["X"]),
+    (ActionId::TaskUnschedule, ContextId::Board, &["X"]),
+    (ActionId::TaskUnschedule, ContextId::StackDetail, &["X"]),
+    (ActionId::TaskUnschedule, ContextId::TaskDetail, &["X"]),
     // Round 3 (D29, #231): the banner verbs — bare s/m in ViNormal
     // (free; no family growth). Global stays exactly one row (the
     // vi-shape contract).

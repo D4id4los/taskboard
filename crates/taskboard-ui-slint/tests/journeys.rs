@@ -23426,3 +23426,48 @@ fn us2_ac4_escape_ladder_steps_submenu_then_menu() {
         },
     );
 }
+
+/// US-1/AC-5 (D-10) — click ≡ key: the preset stroke (standard's F11,
+/// resolved through the same keymap lookup the hint projection uses)
+/// routes the identical command as the bar click — one exact-mask
+/// assertion per leg on the same mount.
+#[test]
+fn us1_ac5_bar_key_and_click_route_identically() {
+    let (fixture, state) = fixture::journey_state();
+    let day_start = taskboard_domain::SettingsSnapshot::default().day_start_time;
+    let offset = UiSettings::default().boot_offset;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let today = chrono::Local::now().date_naive();
+            let end = taskboard_domain::days::day_window_end(today, day_start, offset);
+            let expect = || StateCommand::UpdateTask {
+                id: fixture.task1,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(end)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            };
+
+            // The click leg.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            harness.driver.click_by_label("Schedule today");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[expect()]);
+
+            // The key leg: the card stays focused after the click's
+            // close (the same chain the bar's routed dispatch sees —
+            // the menu context itself masks the view chain, D11).
+            harness.press(ActionId::TaskScheduleToday);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[expect()]);
+        },
+    );
+}
