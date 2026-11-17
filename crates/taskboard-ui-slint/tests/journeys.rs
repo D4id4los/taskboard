@@ -19846,6 +19846,15 @@ fn us2_s4_target_free_board_select_opens_flyout_and_return_selects() {
 /// today seam's route and pins the exact due write.
 #[test]
 fn us6_s2_today_row_menu_and_preset_key_recommit() {
+    // `today_overdue_state`, not `journey_state` (#843, C2 stage-2
+    // diagnosis 2026-11-17): the journey context-requests row (0,0)
+    // *after* its own re-commit, and `TaskDueToday` writes the today
+    // window's exclusive end — the recommitted row legitimately
+    // leaves the matrix, so with `journey_state`'s single overdue row
+    // the post-commit request is a stale-index no-op and the menu
+    // never opens. The two-overdue-row fixture keeps a surviving row;
+    // the pre-commit Today-nonempty precondition of `journey_state`
+    // is separately pinned by the contract test below.
     let (_fixture, state, _walked) = fixture::today_overdue_state();
     support::driver::run(
         support::driver::DriverOptions {
@@ -21085,4 +21094,38 @@ fn us5_s1_the_title_and_description_fields_carry_the_focus_flag() {
             );
         },
     );
+}
+
+/// The journey fixture's Today-nonempty-by-construction contract
+/// (#843, clock-discipline §6.1): given `journey_state_at(now)`, the
+/// domain oracle `today_sections` classifies `task1` into the overdue
+/// section for every pass instant across the today window — the same
+/// classification the harness's day pass derives, so fixture and pass
+/// agree by construction. Typed set-membership, no mount.
+#[test]
+fn the_journey_fixture_is_today_nonempty_by_construction() {
+    let now = chrono::Utc::now();
+    let (fixture, state) = fixture::journey_state_at(now);
+    let calendar = taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: chrono::FixedOffset::east_opt(0).expect("utc"),
+    };
+    let today = calendar.today(now);
+    let window =
+        taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, today, calendar);
+    // The pass reads its window per repaint: every instant the pass
+    // can observe, from the captured `now` through the today window's
+    // end, must classify task1 overdue.
+    let pass_instants = [
+        now,
+        window.end() - chrono::TimeDelta::try_minutes(1).expect("one minute"),
+        window.end(),
+    ];
+    for pass in pass_instants {
+        let sections = taskboard_domain::days::today_sections(&state.tasks, pass, window.bounds());
+        assert!(
+            sections.overdue.contains(&fixture.task1),
+            "task1 is overdue at pass instant {pass}"
+        );
+    }
 }
