@@ -875,3 +875,78 @@ async fn a_pushed_log_time_undo_enqueues_instead_of_retracting() {
     );
     assert_eq!(persisted.tracking.entries, app.tracking.entries);
 }
+
+#[tokio::test]
+async fn a_delete_stack_undo_flips_the_published_state_and_the_persisted_journal() {
+    let mut rig = Rig::start().await;
+    let board = rig
+        .state()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("seed board");
+    let outcome = rig
+        .run(StateCommand::CreateStack {
+            board,
+            title: "stack".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted");
+    let stack = match outcome {
+        CommandOutcome::CreatedStack(id) => id,
+        other => panic!("expected CreatedStack, got {other:?}"),
+    };
+    let outcome = rig
+        .run(StateCommand::CreateTask {
+            title: "t".into(),
+            stack,
+            order: 1,
+        })
+        .await
+        .expect("accepted");
+    let task = match outcome {
+        CommandOutcome::CreatedTask(id) => id,
+        other => panic!("expected CreatedTask, got {other:?}"),
+    };
+    let outcome = rig
+        .run(StateCommand::DeleteStack { id: stack })
+        .await
+        .expect("accepted");
+    assert!(matches!(outcome, CommandOutcome::Applied));
+    let app = rig.state();
+    assert!(app.stacks[&stack].deleted);
+    assert!(app.tasks[&task].deleted);
+    // Undo: the composite restore flips the published state...
+    let outcome = rig.run(StateCommand::Undo).await.expect("accepted");
+    assert!(matches!(outcome, CommandOutcome::Undone { .. }));
+    let app = rig.state();
+    assert!(!app.stacks[&stack].deleted, "the stack lives again");
+    assert!(!app.tasks[&task].deleted, "the cascade member lives again");
+    // ...and the persisted journal agrees (memory ≡ disk), the head
+    // moved off the delete entry.
+    let persisted = rig.repo.snapshot();
+    assert!(!persisted.stacks[&stack].deleted, "memory ≡ disk");
+    assert!(!persisted.tasks[&task].deleted, "memory ≡ disk");
+    let delete_entry = persisted
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::DeleteStack { .. }))
+        .expect("the delete is journaled");
+    assert_eq!(
+        persisted.journal.head, delete_entry.parent,
+        "the head sits on the delete entry's parent"
+    );
+    assert_eq!(
+        app.undo,
+        taskboard_domain::UndoView::derive(&persisted.journal),
+        "the published undo projection derives from the persisted line"
+    );
+    // Redo re-plans the forward intent: the delete re-cascades.
+    rig.run(StateCommand::Redo).await.expect("accepted");
+    let app = rig.state();
+    assert!(app.stacks[&stack].deleted);
+    assert!(app.tasks[&task].deleted);
+}

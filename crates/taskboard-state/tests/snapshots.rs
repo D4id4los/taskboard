@@ -2437,6 +2437,41 @@ async fn s52_a_not_undoable_head_journals_and_refuses() {
     s.snap("s52");
 }
 
+/// s53: the #356 stack delete/restore cycle — the delete journals its
+/// full cascade pre-images (reclassified undoable, D-1), the undo
+/// restores the stack and its member through the composite planner
+/// (D-3), and the line's head/redone path read honestly from the
+/// persisted journal (the delete entry's facts are the pin).
+#[cfg_attr(miri, ignore)] // insta needs socketpair (environment gate)
+#[tokio::test]
+async fn s53_stack_delete_undo_restores_the_cascade() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    s.run(StateCommand::CreateStack {
+        board,
+        title: "stack".into(),
+        order: 1,
+    })
+    .await;
+    let stack = *s
+        .handle
+        .shared_state()
+        .load()
+        .stacks
+        .keys()
+        .next()
+        .expect("stack");
+    s.run(StateCommand::CreateTask {
+        title: "cascaded".into(),
+        stack,
+        order: 1,
+    })
+    .await;
+    s.run(StateCommand::DeleteStack { id: stack }).await;
+    s.run(StateCommand::Undo).await;
+    s.snap("s53");
+}
+
 // ---------------------------------------------------------------------
 // U-series — the user-data import journeys (DR-8 chunk 3, D-ES3/4):
 // how foreign wire rows enter the disk contract. The rows carry their
