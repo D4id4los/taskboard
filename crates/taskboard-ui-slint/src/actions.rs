@@ -2469,6 +2469,10 @@ mod tests {
             ActionId::TaskDueEdit,
             ActionId::TaskScheduledEdit,
             ActionId::TaskDescriptionEdit,
+            // The scheduled field's quick verbs (UX-R8 chunk-5 D-3).
+            ActionId::TaskScheduleToday,
+            ActionId::TaskScheduleTomorrow,
+            ActionId::TaskUnschedule,
         ];
         for id in ALL {
             assert_eq!(REGISTRY.iter().filter(|e| e.id == *id).count(), 1);

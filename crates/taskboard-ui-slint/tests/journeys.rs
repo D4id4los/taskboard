@@ -23695,3 +23695,32 @@ fn the_armed_multi_delete_strip_shows_the_member_count() {
         },
     );
 }
+
+/// US-1/S4 (origin AC-4) — the quick bar's tracking twin: a
+/// non-tracking subject's bar routes =`StartTracking`= (the existing
+/// id, card-focused); the shown half rides the subject's tracking
+/// state (the composition test pins the halves; the card control's
+/// journeys pin the flips).
+#[test]
+fn us1_s4_bar_tracking_twin_routes_the_shown_half() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            harness.driver.click_by_label("Start tracking");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::StartTracking {
+                task: fixture.task1,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            }]);
+        },
+    );
+}
