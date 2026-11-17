@@ -407,6 +407,14 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
             let outcome = move_board_to_files(workspace, board).await;
             let _ = reply.send(outcome);
         }
+        UiRequest::MoveBoardToDeck {
+            board,
+            target_connector,
+            reply,
+        } => {
+            let outcome = move_board_to_deck(workspace, board, &target_connector).await;
+            let _ = reply.send(outcome);
+        }
         UiRequest::UndoBoardMove { board, reply } => {
             let outcome = undo_board_move(workspace, board).await;
             let _ = reply.send(outcome);
@@ -1696,6 +1704,64 @@ async fn move_board_to_files(
     Ok(current_connections(workspace))
 }
 
+/// The Deck-to-Deck rebind choreography (the files-sync-status plan
+/// US-10, D-11): the precondition list is typed, in order, before any
+/// IO — ① the target connector is configured (`Gone` for an unknown
+/// target) and Deck-typed (`BindRefused` for a non-Deck one); ② the
+/// board present, not deleted/archived (`Gone`); ③ the binding
+/// Deck-typed (`BindRefused` — a files-bound or unbound board has no
+/// Deck-to-Deck move); ④ a different connector (a same-connector pick
+/// refuses typed, not a no-op); ⑤ the target's actor lane live (the
+/// attached-connector lookup the bind arm's `ensure_attached` guards
+/// with; a dead lane refuses typed). The engine verb preserves the
+/// remote id verbatim; the reply is the fresh snapshot so the
+/// roster's badges re-derive.
+async fn move_board_to_deck(
+    workspace: &ConnectionWorkspace,
+    board: BoardId,
+    target_connector: &str,
+) -> Result<ConnectionsSnapshot, SettingsError> {
+    let raw = ensure_migrated(workspace)?;
+    let entry = connector_entry(&raw, target_connector)?;
+    if entry.backend != crate::config::SyncBackend::Nextcloud {
+        return Err(SettingsError::BindRefused);
+    }
+    let state = workspace.engine.shared_state().load();
+    let row = state
+        .boards
+        .get(&board)
+        .filter(|b| !b.deleted && !b.archived)
+        .ok_or(SettingsError::Gone)?;
+    let binding = row.remote.as_ref().ok_or(SettingsError::BindRefused)?;
+    let Some(remote_deck) = binding.board.as_deck() else {
+        return Err(SettingsError::BindRefused);
+    };
+    let current = binding.connector.clone();
+    drop(state);
+    let target_id = ConnectorId::from_kebab(target_connector).map_err(|_| SettingsError::Gone)?;
+    if current == target_id {
+        return Err(SettingsError::BindRefused);
+    }
+    if workspace.control.connector_commands(&target_id).is_none() {
+        return Err(SettingsError::BindRefused);
+    }
+    workspace
+        .engine
+        .execute(StateCommand::RebindBoard {
+            board,
+            connector: target_id,
+            remote: taskboard_domain::RemoteBoardId::deck(remote_deck),
+        })
+        .await
+        .map_err(|e| map_execute_error(&e))?;
+    tracing::info!(
+        board = %board.as_uuid(),
+        target = %target_connector,
+        "settings deck-to-deck rebind committed"
+    );
+    Ok(current_connections(workspace))
+}
+
 /// The undo-window Restore choreography (the files-sync-status plan
 /// US-6, D-7): the pre-IO guards mirror the move arm's posture (the
 /// board present and not deleted — `Gone` otherwise), then the
@@ -2145,6 +2211,168 @@ mod tests {
             .expect("the board is in the fresh snapshot");
         assert_eq!(replied.bound_channel, None);
         assert_eq!(replied.bound_connector, None);
+    }
+
+    // -- the Deck-to-Deck rebind arm (the files-sync-status plan
+    // US-10, D-11) ---------------------------------------------------
+
+    /// The two-connector config the rebind fixtures read: both
+    /// entries Deck-typed (the config layer refuses `standalone`
+    /// entries outright, so the non-Deck-target refusal is
+    /// defense-in-depth the file path cannot reach — noted, not
+    /// fixture-tested).
+    fn write_two_connector_config(path: &std::path::Path) {
+        std::fs::write(
+            path,
+            "[ui]\nscale = 1.0\n\
+             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://c.example\"\nusername = \"alice\"\n\
+             [[sync.connectors]]\nname = \"other-deck\"\nbackend = \"nextcloud\"\n\
+             server_url = \"https://d.example\"\nusername = \"bob\"\n",
+        )
+        .expect("seed two-connector config");
+    }
+
+    /// US-10 AC-1 (app-arm) — the atomic re-target: the binding's
+    /// connector is replaced and the remote Deck id is preserved
+    /// verbatim (the ceremony's identity-preservation pin); the reply
+    /// is the fresh snapshot whose channel half carries the move.
+    #[tokio::test]
+    async fn us10_ac1_rebind_preserves_the_remote_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        write_two_connector_config(&config);
+        let workspace = test_workspace(config).await;
+        let board = create_board(&workspace, "deck board").await;
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board,
+                remote: taskboard_domain::RemoteBoardId::deck(42),
+                connector: taskboard_domain::ConnectorId::from("work"),
+            })
+            .await
+            .expect("deck bind lands");
+        // The target's actor lane attaches (the preflight listing the
+        // bind arm uses; a pure client constructor, no IO).
+        let client = taskboard_sync_nextcloud::DeckClient::new("https://d.example", "bob", "pw")
+            .expect("client mints");
+        workspace
+            .control
+            .attach_connector(taskboard_domain::ConnectorId::from("other-deck"), client)
+            .await
+            .expect("the lane attaches");
+
+        let snapshot = move_board_to_deck(&workspace, board, "other-deck")
+            .await
+            .expect("the rebind commits");
+        let state = workspace.engine.shared_state().load();
+        let binding = state
+            .boards
+            .get(&board)
+            .expect("the board survives")
+            .remote
+            .as_ref()
+            .expect("the binding survives");
+        assert_eq!(
+            binding.connector.as_str(),
+            "other-deck",
+            "the connector re-targets"
+        );
+        assert_eq!(
+            binding.board,
+            taskboard_domain::RemoteBoardId::deck(42),
+            "the remote id is preserved verbatim"
+        );
+        let replied = snapshot
+            .boards
+            .iter()
+            .find(|info| info.id == board.as_uuid())
+            .expect("the board is in the fresh snapshot");
+        assert_eq!(
+            replied.bound_channel,
+            Some(taskboard_ui_slint::requests::BoardChannel::Deck),
+            "the channel half stays structural"
+        );
+    }
+
+    /// US-10 AC-2 (app-arm) — the precondition gates refuse typed,
+    /// in order: an unknown target is `Gone`; a gone or archived
+    /// board is `Gone`; unbound and files-bound boards are
+    /// `BindRefused`; a same-connector pick is `BindRefused` (a typed
+    /// refusal, not a no-op); a dead target lane is `BindRefused`.
+    #[tokio::test]
+    async fn us10_ac2_rebind_preconditions_refuse_typed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        write_two_connector_config(&config);
+        let workspace = test_workspace(config).await;
+        let deck_bound = create_board(&workspace, "deck board").await;
+        let files_bound = create_board(&workspace, "files board").await;
+        let unbound = create_board(&workspace, "loose").await;
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board: deck_bound,
+                remote: taskboard_domain::RemoteBoardId::deck(42),
+                connector: taskboard_domain::ConnectorId::from("work"),
+            })
+            .await
+            .expect("deck bind lands");
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board: files_bound,
+                remote: taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
+                connector: taskboard_domain::ConnectorId::from("files-sync"),
+            })
+            .await
+            .expect("files bind lands");
+
+        let unknown = move_board_to_deck(&workspace, deck_bound, "nope")
+            .await
+            .expect_err("an unknown target refuses");
+        assert_eq!(unknown, SettingsError::Gone);
+        let gone = move_board_to_deck(
+            &workspace,
+            BoardId::from_uuid(uuid::Uuid::now_v7()),
+            "other-deck",
+        )
+        .await
+        .expect_err("a gone board refuses");
+        assert_eq!(gone, SettingsError::Gone);
+        let unbound_refusal = move_board_to_deck(&workspace, unbound, "other-deck")
+            .await
+            .expect_err("an unbound board refuses");
+        assert_eq!(unbound_refusal, SettingsError::BindRefused);
+        let files = move_board_to_deck(&workspace, files_bound, "other-deck")
+            .await
+            .expect_err("a files-bound board refuses");
+        assert_eq!(files, SettingsError::BindRefused);
+        let same = move_board_to_deck(&workspace, deck_bound, "work")
+            .await
+            .expect_err("a same-connector pick refuses");
+        assert_eq!(same, SettingsError::BindRefused);
+        // The dead lane: the target is configured but its actor was
+        // never attached — the refusal precedes the engine verb.
+        let dead_lane = move_board_to_deck(&workspace, deck_bound, "other-deck")
+            .await
+            .expect_err("a dead target lane refuses");
+        assert_eq!(dead_lane, SettingsError::BindRefused);
+        let state = workspace.engine.shared_state().load();
+        assert_eq!(
+            state
+                .boards
+                .get(&deck_bound)
+                .expect("present")
+                .remote
+                .as_ref()
+                .expect("bound")
+                .connector
+                .as_str(),
+            "work",
+            "no refusal mutated the binding"
+        );
     }
 
     // -- the #749 re-verification (the files-sync-status plan US-7,

@@ -1024,6 +1024,18 @@ pub struct BoardReceipt {
     pub color: String,
 }
 
+/// The `boards move --to-connection` receipt (the files-sync-status
+/// plan US-10, D-11): the board and the connection it now rides — the
+/// remote Deck id is preserved verbatim (the engine verb's pin), so
+/// it names no receipt field.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RebindReceipt {
+    /// Local board uuid.
+    pub board: String,
+    /// The connector name the binding now rides.
+    pub connection: String,
+}
+
 /// The `boards use` receipt (REPL-only, D6-6): the session's selected
 /// board. `board: null` serializes (not skips) — the honest "no board
 /// selected" query answer; `title` is present only with a selection.

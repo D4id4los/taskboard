@@ -1254,7 +1254,9 @@ export component SettingsView inherits FocusScope {
                         // picker's closed field IS the button — the
                         // remote rows' picker grammar (one affordance,
                         // the flyout renders window-level from site 2).
-                        DeckPublishPicker {
+                        // slint: deck-publish-picker (the journey
+                        // probe's element address, US-9/S1)
+                        deck-publish-picker := DeckPublishPicker {
                             item-index: index;
                             publish-picked(item-index, option) => {
                                 root.publish-picked(item-index, option);

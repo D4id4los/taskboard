@@ -477,6 +477,19 @@ pub enum CommandError {
         /// The offending name.
         name: String,
     },
+    /// `boards move --to-connection` named a configured connector
+    /// that is not Deck-typed: the rebind is a Deck-to-Deck move
+    /// (the files-sync-status plan US-10, D-11's typed refusal).
+    #[error("connector {:?} is not a Deck connection", name)]
+    RebindTargetNotDeck {
+        /// The named (configured, non-Deck) connector.
+        name: String,
+    },
+    /// `boards move --to-connection` on a board whose binding has no
+    /// Deck-to-Deck move (unbound, files-bound, or a same-connector
+    /// pick — a typed refusal, not a no-op; D-11's refusal set).
+    #[error("the board has no Deck-to-Deck move")]
+    RebindRefused,
     /// A REPL-only line (`boards use`) was invoked one-shot: the
     /// selection is session state; there is nothing to select for a
     /// single invocation.
@@ -592,6 +605,8 @@ impl CommandError {
             Self::IpcTimeout => "ipc-timeout",
             Self::IpcVersion { .. } => "ipc-version",
             Self::UnknownConnector { .. } => "unknown-connector",
+            Self::RebindTargetNotDeck { .. } => "rebind-target-not-deck",
+            Self::RebindRefused => "rebind-refused",
             Self::SessionOnly => "session-only",
             Self::Cancelled => "cancelled",
         }
@@ -630,7 +645,9 @@ impl CommandError {
                 ))
             }
             Self::UnknownBoard(id) => Some(id.to_string()),
-            Self::UnknownConnector { name } => Some(name.clone()),
+            Self::UnknownConnector { name } | Self::RebindTargetNotDeck { name } => {
+                Some(name.clone())
+            }
             Self::Engine(err)
                 if matches!(
                     &**err,
@@ -700,6 +717,9 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
     use taskboard_domain::CommandError as D;
     match err {
         D::UnknownBoard(_) | D::BoardDeleted(_) => "unknown-board",
+        // The rebind verb's refusal (US-10, D-11): no Deck binding to
+        // move (or a raced same-connector pick).
+        D::NotDeckBound => "not-deck-bound",
         D::UnknownTask(_) | D::TaskDeleted(_) => "unknown-task",
         D::UnknownStack(_) | D::StackDeleted(_) => "unknown-stack",
         D::UnknownLabel(_) | D::LabelDeleted(_) => "unknown-label",
@@ -1102,8 +1122,36 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                     to_deck,
                     undo: _,
                     timeout_secs,
+                    ref to_connection,
                 },
         } => {
+            // The Deck-to-Deck rebind (the files-sync-status plan
+            // US-10, D-11): the move-family's third direction — the
+            // same ceremony route (boot, run, shutdown), the rebind's
+            // own precondition list, no move budget (the verb is
+            // atomic, D-11's payload note).
+            if let Some(target) = to_connection {
+                let target = target.clone();
+                return run_core(
+                    &mut ctx.io,
+                    ctx.config_path.clone(),
+                    crate::commands::boards::render_text_rebind,
+                    move |config, store| async move {
+                        let sink = crate::bootstrap::resolve_notifier_sink(&config);
+                        let app =
+                            crate::bootstrap::bootstrap(config.clone(), Arc::clone(&store), sink)
+                                .await?;
+                        let result =
+                            crate::commands::boards::rebind_deck_to_deck(
+                                &app, &config, board, &target,
+                            )
+                            .await;
+                        let _ = app.shutdown().await;
+                        result
+                    },
+                )
+                .await;
+            }
             let direction = move_direction(to_files, to_deck);
             if direction == crate::board_move_ceremony::MoveDirection::ToDeck {
                 return report_to(
@@ -2096,19 +2144,30 @@ async fn boards_line(
             to_deck,
             undo: _,
             timeout_secs,
-        } => emit_result(
-            io,
-            crate::board_move_ceremony::run_on(
-                &app.engine,
-                session.session_config(),
-                session.session_store(),
-                board,
-                move_direction(to_files, to_deck),
-                Duration::from_secs(timeout_secs),
-            )
-            .await,
-            crate::board_move_ceremony::render_text,
-        ),
+            ref to_connection,
+        } => {
+            if let Some(target) = to_connection {
+                emit_result(
+                    io,
+                    boards::rebind_deck_to_deck(app, session.session_config(), board, target).await,
+                    boards::render_text_rebind,
+                )
+            } else {
+                emit_result(
+                    io,
+                    crate::board_move_ceremony::run_on(
+                        &app.engine,
+                        session.session_config(),
+                        session.session_store(),
+                        board,
+                        move_direction(to_files, to_deck),
+                        Duration::from_secs(timeout_secs),
+                    )
+                    .await,
+                    crate::board_move_ceremony::render_text,
+                )
+            }
+        }
         BoardsCmd::Unbind { board, confirm } => emit_result(
             io,
             boards::unbind_on(app, board, confirm).await,

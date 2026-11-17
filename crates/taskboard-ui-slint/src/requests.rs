@@ -460,6 +460,17 @@ pub enum UiRequest {
         board: BoardId,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
     },
+    /// Move a Deck-bound board between two Deck connectors (the
+    /// files-sync-status plan US-10, D-11): the atomic rebind — the
+    /// binding re-targets the named connector, the remote Deck id is
+    /// preserved verbatim. The arm guards the preconditions typed
+    /// (`Gone` / `BindRefused` for a non-Deck-bound board, unknown or
+    /// non-Deck target); the reply carries the fresh snapshot.
+    MoveBoardToDeck {
+        board: BoardId,
+        target_connector: String,
+        reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
     /// Undo a Deck→Files move that has not committed (the
     /// files-sync-status plan US-6, D-7): the `boards move --undo`
     /// ceremony's twin, run on the running engine. The arm derives

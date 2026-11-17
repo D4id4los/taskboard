@@ -6470,7 +6470,9 @@ impl Adapter {
                 // rendering is independent of the lane switch
                 // (toggling Files off freezes the sync, the binding
                 // persists — hiding the rows would fake the world).
-                for row in crate::presentation::files_board_roster(state, files_on) {
+                for row in
+                    crate::presentation::files_board_roster(state, files_on, &files_connector)
+                {
                     let busy = matches!(
                         pending,
                         Some(PendingKind::StopFilesSync | PendingKind::PublishFiles)
@@ -7478,7 +7480,10 @@ impl Adapter {
     /// fact re-derives from the snapshot exactly as the render pass
     /// computed it, and the D6 enabled rule (`files_on ∧ !archived`)
     /// gates the dispatch — a disabled or stale row's click is
-    /// absorbed silently.
+    /// absorbed silently. The Deck branch keys on the binding's home
+    /// connector (the files-sync-status plan US-10, D-11): own card →
+    /// the Deck→Files move; a foreign card's rebind row needs no
+    /// files lane (its gate is the archived filter alone).
     /// The undo-window Restore seam (the files-sync-status plan US-6,
     /// D-7): routes the exact `UndoBoardMove` — the ceremony's undo
     /// leg is the typed gate. The pending machine takes the move
@@ -7523,15 +7528,27 @@ impl Adapter {
         }
         let files_on = self.settings.snapshot.files_sync_enabled
             && self.settings.snapshot.files_sync_anchor.as_deref() == Some(connector.as_str());
-        let channel = {
+        // The binding's channel AND its home connector, re-derived at
+        // the trust boundary: a Deck-bound board riding this card's
+        // connector is the own-card switch; one riding another
+        // connector is the rebind row (US-10, D-11 — needs no files
+        // lane, so its gate is the archived filter alone).
+        let bound = {
             let state = self.state.load();
             state
                 .boards
                 .get(&board)
                 .filter(|row| !row.deleted && !row.archived)
                 .and_then(|row| row.remote.as_ref())
-                .map(|binding| crate::presentation::bound_channel_of(&binding.board))
+                .map(|binding| {
+                    (
+                        crate::presentation::bound_channel_of(&binding.board),
+                        binding.connector.as_str() == connector.as_str(),
+                    )
+                })
         };
+        let channel = bound.map(|(channel, _)| channel);
+        let deck_own = matches!(bound, Some((crate::requests::BoardChannel::Deck, true)));
         // The D6 enabled rule re-checked at the trust boundary: a
         // disabled posture (lane off, archived) or a stale row
         // (gone / re-bound mid-flight) absorbs the click silently —
@@ -7545,19 +7562,31 @@ impl Adapter {
                 self.push_settings(window);
                 return;
             }
-            (Some(crate::requests::BoardChannel::Deck), true) => PendingKind::Move,
+            (Some(crate::requests::BoardChannel::Deck), _) => PendingKind::Move,
             (None, true) => PendingKind::PublishFiles,
             _ => return,
         };
         let (reply, reply_rx) = oneshot::channel();
         let request = match kind {
             PendingKind::PublishFiles => UiRequest::PublishBoardToFiles { board, reply },
-            // The move ceremony, reused verbatim (US-3) — no new
-            // ceremony parameters; its busy marker rides the Files
-            // row (`PendingKind::Move`'s existing grammar), not the
-            // row's.
-            PendingKind::Move => UiRequest::MoveBoardToFiles { board, reply },
-            _ => unreachable!("the roster action dispatches only its two one-step verbs"),
+            // The move family, keyed by the binding's home (the fold's
+            // own/action split re-derived): own card → the Deck→Files
+            // ceremony reused verbatim (US-3); foreign card → the
+            // Deck-to-Deck rebind (US-10), this card's connector the
+            // target. Both ride `PendingKind::Move`'s busy grammar on
+            // the target connector's Files row.
+            PendingKind::Move => {
+                if deck_own {
+                    UiRequest::MoveBoardToFiles { board, reply }
+                } else {
+                    UiRequest::MoveBoardToDeck {
+                        board,
+                        target_connector: connector.clone(),
+                        reply,
+                    }
+                }
+            }
+            _ => unreachable!("the roster action dispatches only its one-step verbs"),
         };
         // The row marker is set BEFORE the send: `send_connections_op`
         // ends in the busy push that renders it.

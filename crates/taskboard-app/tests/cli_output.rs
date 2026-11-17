@@ -379,6 +379,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::IpcTimeout => "ipc-timeout",
             CommandError::IpcVersion { .. } => "ipc-version",
             CommandError::UnknownConnector { .. } => "unknown-connector",
+            CommandError::RebindTargetNotDeck { .. } => "rebind-target-not-deck",
+            CommandError::RebindRefused => "rebind-refused",
             CommandError::SessionOnly => "session-only",
             CommandError::Cancelled => "cancelled",
             CommandError::ConfigSet(_) => "config-set-refused",
