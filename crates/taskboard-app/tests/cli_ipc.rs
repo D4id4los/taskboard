@@ -963,7 +963,12 @@ async fn j20_journal_and_its_export_over_the_relay() {
         "daemon stopped",
     )
     .await;
+    // `daemon:false` is the client's socket view — the graceful stop
+    // may not have released the instance lock yet, so the fallback legs
+    // wait for the process (and its lock) to actually die instead of
+    // racing it (issue #570; the same mitigation t16 carries).
     let _ = daemon.0.kill();
+    daemon.0.wait().expect("reap the stopped daemon");
 
     let (code, out, err) = install.run(&["--json", "journal", "show", entry_id]);
     assert_eq!(code, Some(0), "the relayed entry is durable: {out} {err}");
