@@ -9061,8 +9061,9 @@ mod recur_editor_validity_tests {
 
     /// D-S4 through the editor's own funnel: re-assembling over a
     /// ruled head carries the series and the habit seam, and the
-    /// re-set clears the pause (the shared CLI semantic, backlog
-    /// #759).
+    /// re-set preserves the pause (consciously updated with US-4,
+    /// task-detail-editor UX plan D-9 — the accepted resolution of
+    /// backlog #759; the pre-fix pin held the clearing semantic).
     #[test]
     fn editing_a_ruled_head_carries_series_identity() {
         let series = taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(42));
@@ -9082,7 +9083,7 @@ mod recur_editor_validity_tests {
             assemble_recur_draft(&RecurEditorState::fresh(), &ruled, calendar(), now()).unwrap();
         assert_eq!(rule.series, series);
         assert_eq!(rule.continued_from, Some(continued));
-        assert_eq!(rule.paused_until, None);
+        assert_eq!(rule.paused_until, Some(date(2026, 12, 24)));
     }
 
     #[test]
