@@ -974,12 +974,18 @@ impl UiHandle {
 
     /// One connector-liveness episode (round-1 chunk 3, D8): the same
     /// record-then-refresh path the system drain's pre-refresh hook
-    /// runs. Public for the component journeys (broadcast injection
-    /// needs a live engine; the journeys' harness has none).
+    /// runs — both halves of it. The tick loop pushes the notice
+    /// *before* the guarded `refresh` (the push is cheap enough to run
+    /// unconditionally); the seam replays that order, because
+    /// `refresh`'s unchanged early-return (#463) would otherwise skip
+    /// the notice half forever (issue #860). Public for the component
+    /// journeys (broadcast injection needs a live engine; the journeys'
+    /// harness has none).
     pub fn observe_connector_episode(&self, event: &taskboard_domain::SystemEvent) {
         if let Some(window) = self.window.as_weak().upgrade() {
             let mut adapter = self.adapter.borrow_mut();
             adapter.record_system_event(event);
+            adapter.push_notice(&window);
             adapter.refresh(&window);
         }
     }
@@ -1107,6 +1113,47 @@ mod mount_tests {
         )
     }
 
+    /// One live task for the connector-episode seam's title resolution.
+    fn episode_task(id: taskboard_domain::TaskId) -> taskboard_domain::Task {
+        taskboard_domain::Task {
+            id,
+            remote: None,
+            label_memberships: std::collections::BTreeMap::new(),
+            title: "the resurrected task".to_owned(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: taskboard_domain::StackId::from_uuid(uuid::Uuid::now_v7()),
+            order: 0,
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::entities::TaskClocks {
+                title: taskboard_domain::entities::BoardClocks::epoch(),
+                description: taskboard_domain::entities::BoardClocks::epoch(),
+                duedate: taskboard_domain::entities::BoardClocks::epoch(),
+                scheduled: taskboard_domain::entities::BoardClocks::epoch(),
+                done: taskboard_domain::entities::BoardClocks::epoch(),
+                position: taskboard_domain::entities::BoardClocks::epoch(),
+                effort: taskboard_domain::entities::BoardClocks::epoch(),
+                importance: taskboard_domain::entities::BoardClocks::epoch(),
+                urgency: taskboard_domain::entities::BoardClocks::epoch(),
+                recur: taskboard_domain::entities::BoardClocks::epoch(),
+                kind: taskboard_domain::entities::BoardClocks::epoch(),
+                archived: taskboard_domain::entities::BoardClocks::epoch(),
+                deleted: taskboard_domain::entities::BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
+            remote_seen: None,
+            remote_baseline: None,
+        }
+    }
+
     pub(super) fn handover() -> Handover {
         let (commands_tx, _commands_rx) = mpsc::channel(64);
         let (requests_tx, requests_rx) = mpsc::channel(16);
@@ -1195,6 +1242,45 @@ mod mount_tests {
             assert_eq!(
                 handle.window.get_files_sync_state(),
                 crate::FilesSyncChipState::Forked
+            );
+        });
+    }
+
+    /// The connector-episode seam replays the tick-tail's *notice* half
+    /// (stage-1 plan D1, issue #860): `record_system_event` mints the
+    /// `Notice` but paints nothing; without the seam's own
+    /// `push_notice`, `refresh`'s unchanged early-return (the #463
+    /// guard) leaves the minted notice unpainted forever. Clock
+    /// classification: single-read capture (`testing_strategy.org`
+    /// §6.1) — the notice's `until` is minted inside the call from the
+    /// wall clock; the assert reads the painted flag in the same
+    /// instant, so no fixture anchoring or clock freeze applies.
+    #[test]
+    fn the_connector_episode_seam_surfaces_the_resurrect_notice() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, _requests_rx, health_rx) =
+                handover();
+            let handle = mount(
+                state.clone(),
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health_rx,
+                None,
+            )
+            .expect("mount succeeds on the null platform");
+            let task_id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut app = taskboard_domain::AppState::default();
+            app.tasks.insert(task_id, episode_task(task_id));
+            state.store(Arc::new(app));
+            handle.observe_connector_episode(&taskboard_domain::SystemEvent::TaskResurrected(
+                task_id,
+            ));
+            assert!(
+                handle.window().get_notice_visible(),
+                "the resurrect notice paints through the seam"
             );
         });
     }
