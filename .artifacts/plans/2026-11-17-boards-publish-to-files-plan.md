@@ -53,6 +53,20 @@ mints the existing `StateCommand::BindBoard` with the files payload.
 - **D-6 (census)**: the census `board.publish_to_files` CLI cell and
   the R-2 ruling row flip to implemented citing the journey plan
   (journey W-5) — lands on this branch, not deferred.
+- **D-7 (recorded delta, 2026-11-17 stage 2)**: the journey's US-2/S3
+  gone class needed a limb no existing `CommandError` variant names —
+  *archived*. The engine deliberately keeps archived boards
+  commandable (its lookups check `deleted` only, `command.rs` §407),
+  so `resolve_board` returns `Ok` for them, and the GUI's single
+  `SettingsError::Gone` fold has no app-CLI counterpart that would be
+  honest to reuse (`UnknownBoard`/`BoardDeleted` would lie about a
+  board `boards list` shows). One app-level variant was added:
+  `CommandError::BoardArchived { board }` (kind `board-archived`),
+  refused by the extracted `files_bind_on` live-row check; the GUI
+  settings arm folds it into `SettingsError::Gone` verbatim — zero
+  GUI behavior delta (the seam tests stay green unchanged). No domain
+  delta. This is the D-3 escape hatch exercised, recorded here before
+  the branch lands.
 
 ## 3. Work items (TDD-first; every item embeds its journey-step token)
 
