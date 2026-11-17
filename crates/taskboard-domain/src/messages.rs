@@ -619,6 +619,21 @@ pub enum StateCommand {
         /// The already-minted snapshot (no raw strings cross here).
         settings: crate::settings::SettingsSnapshot,
     },
+    /// Restore a tombstoned stack (the #356 recovery surface,
+    /// `RestoreTask`'s stack-shaped sibling). Forward verb: the **stack
+    /// entity only** — tasks tombstoned by an old `DeleteStack` cascade
+    /// are *not* resurrected here (deliberate leniency: each tombstone
+    /// keeps its own `RestoreTask` recovery path; the combined
+    /// stack+members surface is the `DeleteStack` *undo* inverse). The
+    /// three-case planner mirrors `RestoreTask` verbatim: a pending
+    /// `DeleteStack` op retracts (`FailOp`, no new op); a pushed/bound
+    /// stack re-POSTs as a `CreateStack` op (identity churn is the
+    /// honest price, D-U2); otherwise a local resurrect. A live target
+    /// is the accepted no-op; an unknown id is a typed rejection.
+    RestoreStack {
+        /// The tombstoned stack to resurrect.
+        id: StackId,
+    },
 }
 
 /// Sparse task edit: `None` = untouched, `Some(_)` = set. Stamp the

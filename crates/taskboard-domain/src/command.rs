@@ -394,6 +394,13 @@ pub enum CommandOutcome {
         /// The resurrected task.
         id: TaskId,
     },
+    /// The command resurrected the named tombstoned stack (the #356
+    /// recovery surface; the stack entity only — tasks tombstoned by an
+    /// old cascade keep their own `RestoreTask` recovery path, D-2).
+    StackRestored {
+        /// The resurrected stack.
+        stack: StackId,
+    },
     /// Sync request accepted; the engine forwards it to the sync actor.
     SyncRequested,
     /// The settings snapshot was applied and published (the
@@ -3078,49 +3085,9 @@ pub fn plan_command(
             })
         }
         StateCommand::RestoreTask { id, resurrect } => {
-            // Precondition order (ADR 0019 §11): existence → tombstone →
-            // outbox scan. A live target is the accepted no-op (the
-            // terminal-repeat discipline); the resurrect write restores
-            // the pre-image values verbatim with a fresh tombstone clock
-            // (the R5 merge-rule field shape).
-            let stored = existing_task(app, *id)?;
-            if !stored.deleted {
-                return Ok(CommandPlan {
-                    actions: Vec::new(),
-                    outcome: CommandOutcome::NoOp,
-                });
-            }
-            let mut restored = (**resurrect).clone();
-            restored.id = *id;
-            restored.deleted = false;
-            restored.clocks.deleted = now;
-            let mut actions = Vec::new();
-            // Case 1 — pending delete op: pure retraction, no new op
-            // (the server never knew).
-            let pending_delete = outbox
-                .iter()
-                .find(|pending| {
-                    matches!(pending.op, crate::outbox::LocalOp::DeleteTask(t) if t == *id)
-                })
-                .map(|pending| pending.op_id);
-            if let Some(op_id) = pending_delete {
-                actions.push(PersistenceAction::FailOp(op_id));
-                actions.push(PersistenceAction::UpsertTask(restored));
-            } else if stored.remote.is_some() {
-                // Case 2 — pushed delete: Deck undelete is re-POST; the
-                // restored task re-binds to a fresh remote card id
-                // (identity churn is the honest price, D-U2).
-                actions.push(PersistenceAction::UpsertTask(restored));
-                actions.push(enqueue(crate::outbox::LocalOp::CreateTask(*id), ids, now));
-            } else {
-                // Case 3 — unbound, never pushed: local resurrect.
-                actions.push(PersistenceAction::UpsertTask(restored));
-            }
-            Ok(CommandPlan {
-                actions,
-                outcome: CommandOutcome::TaskRestored { id: *id },
-            })
+            plan_task_restore(app, outbox, *id, resurrect, ids, now)
         }
+        StateCommand::RestoreStack { id } => plan_stack_restore(app, outbox, *id, ids, now),
         // Engine-routed commands: the journal wrapper plans these before
         // the catalogue sees them; a direct dispatch is a typed
         // rejection (the totality arm, ADR 0019).
@@ -3137,6 +3104,110 @@ pub fn plan_command(
             outcome: CommandOutcome::SettingsApplied,
         }),
     }
+}
+
+/// The `RestoreTask` planner body, extracted verbatim (D-2) so the
+/// forward arm and the undo planner's synthesized `RestoreTask`
+/// inverses share one three-case surface.
+///
+/// Precondition order (ADR 0019 §11): existence → tombstone → outbox
+/// scan. A live target is the accepted no-op (the terminal-repeat
+/// discipline); the resurrect write restores the pre-image values
+/// verbatim with a fresh tombstone clock (the R5 merge-rule field
+/// shape).
+fn plan_task_restore(
+    app: &AppState,
+    outbox: &[PendingOp],
+    id: TaskId,
+    resurrect: &Task,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> Result<CommandPlan, CommandError> {
+    let stored = existing_task(app, id)?;
+    if !stored.deleted {
+        return Ok(CommandPlan {
+            actions: Vec::new(),
+            outcome: CommandOutcome::NoOp,
+        });
+    }
+    let mut restored = resurrect.clone();
+    restored.id = id;
+    restored.deleted = false;
+    restored.clocks.deleted = now;
+    let mut actions = Vec::new();
+    // Case 1 — pending delete op: pure retraction, no new op
+    // (the server never knew).
+    let pending_delete = outbox
+        .iter()
+        .find(|pending| matches!(pending.op, crate::outbox::LocalOp::DeleteTask(t) if t == id))
+        .map(|pending| pending.op_id);
+    if let Some(op_id) = pending_delete {
+        actions.push(PersistenceAction::FailOp(op_id));
+        actions.push(PersistenceAction::UpsertTask(restored));
+    } else if stored.remote.is_some() {
+        // Case 2 — pushed delete: Deck undelete is re-POST; the
+        // restored task re-binds to a fresh remote card id
+        // (identity churn is the honest price, D-U2).
+        actions.push(PersistenceAction::UpsertTask(restored));
+        actions.push(enqueue(crate::outbox::LocalOp::CreateTask(id), ids, now));
+    } else {
+        // Case 3 — unbound, never pushed: local resurrect.
+        actions.push(PersistenceAction::UpsertTask(restored));
+    }
+    Ok(CommandPlan {
+        actions,
+        outcome: CommandOutcome::TaskRestored { id },
+    })
+}
+
+/// The `RestoreStack` planner body (the #356 forward recovery verb,
+/// D-2): the **stack entity only** — tasks tombstoned by an old
+/// `DeleteStack` cascade are *not* resurrected here (deliberate
+/// leniency: each tombstone keeps its own [`plan_task_restore`]
+/// recovery path; the combined stack+members surface is the
+/// `DeleteStack` *undo* inverse). The three cases mirror
+/// [`plan_task_restore`] verbatim over the stack.
+fn plan_stack_restore(
+    app: &AppState,
+    outbox: &[PendingOp],
+    id: StackId,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> Result<CommandPlan, CommandError> {
+    // Existence → tombstone → outbox scan; a live target is the
+    // accepted no-op (the terminal-repeat discipline, the
+    // `DeleteStack` repeat shape).
+    let stored = existing_stack(app, id)?;
+    if !stored.deleted {
+        return Ok(no_op());
+    }
+    let mut restored = stored.clone();
+    restored.deleted = false;
+    restored.clocks.deleted = now;
+    let mut actions = Vec::new();
+    // Case 1 — pending delete op: pure retraction, no new op
+    // (the server never knew).
+    let pending_delete = outbox
+        .iter()
+        .find(|pending| matches!(pending.op, crate::outbox::LocalOp::DeleteStack(s) if s == id))
+        .map(|pending| pending.op_id);
+    if let Some(op_id) = pending_delete {
+        actions.push(PersistenceAction::FailOp(op_id));
+        actions.push(PersistenceAction::UpsertStack(restored));
+    } else if stored.remote.is_some() {
+        // Case 2 — pushed delete: Deck undelete is re-POST; the
+        // restored stack re-binds to a fresh remote list id
+        // (identity churn is the honest price, D-U2).
+        actions.push(PersistenceAction::UpsertStack(restored));
+        actions.push(enqueue(crate::outbox::LocalOp::CreateStack(id), ids, now));
+    } else {
+        // Case 3 — unbound, never pushed: local resurrect.
+        actions.push(PersistenceAction::UpsertStack(restored));
+    }
+    Ok(CommandPlan {
+        actions,
+        outcome: CommandOutcome::StackRestored { stack: id },
+    })
 }
 
 /// The capture path's landing stack when none exists: mints one

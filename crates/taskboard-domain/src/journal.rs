@@ -95,9 +95,9 @@ pub enum UndoFacts {
 /// plus the two post-design surfaces).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotUndoableReason {
-    /// Restore-class verbs need restore machinery v1 does not ship
-    /// (#356): `DeleteStack`, `DeleteLabel`, `DeleteTimeEntry`,
-    /// `DeleteHabit`.
+    /// Restore-class verbs whose restore verbs are still future work
+    /// (#356 reclassified `DeleteStack`; #353/#354 follow):
+    /// `DeleteLabel`, `DeleteTimeEntry`, `DeleteHabit`.
     RestoreClass,
     /// Board ceremonies are their own defense (#357): the create/bind/
     /// rename/color/archive/delete/reset/unbind/reconcile family.
@@ -391,6 +391,7 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::UpdateReflection { .. } => "Edit reflection".into(),
         StateCommand::DeleteReflection { .. } => "Delete reflection".into(),
         StateCommand::RestoreTask { .. } => "Restore task".into(),
+        StateCommand::RestoreStack { .. } => "Restore stack".into(),
         StateCommand::PauseSeries { .. } => "Pause series".into(),
         StateCommand::ConvertSeriesToHabit { .. } => "Convert series to habit".into(),
         StateCommand::ConvertHabitToSeries { .. } => "Convert habit to series".into(),
