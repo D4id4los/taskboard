@@ -67,6 +67,12 @@ export struct BoardBarModel {
     // the verb; kiosk renders the indicator a disabled affordance —
     // visible, grey, non-interactive (no new kiosk capability).
     archived-enabled: bool,
+    // The roster's recognition cue (UX-R8 D-9, US-7, #834): true
+    // exactly when the archived set is non-empty — the glyph rides
+    // the same state so the kiosk-disabled affordance renders the
+    // same cue grey (the flag exists so the cue is model-carried,
+    // never slint-side derived).
+    archived-cue: bool,
 }
 
 export component BoardBar inherits Rectangle {
@@ -234,6 +240,7 @@ export component BoardBar inherits Rectangle {
         selected-index: -1;
         flyout-site: 3;
         field-text: "\{root.bar.archived-rows.length}";
+        field-glyph: root.bar.archived-cue;
         field-label: "Archived boards";
         field-description: "Opens the archived boards: activating a row restores the board to the bar.";
         row-activated(i) => {

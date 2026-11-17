@@ -129,6 +129,11 @@ export component Dropdown inherits Rectangle {
     // non-empty list whose verb is platform-gated, e.g. the board
     // bar's archived-boards roster on kiosk).
     in property <bool> field-enabled: true;
+    // The recognition glyph beside the field text (UX-R8 D-9, US-7):
+    // the roster indicator's archive cue — visible without hover,
+    // riding the icon vocabulary. The Dropdown stays a dumb
+    // primitive: the flag is the model's.
+    in property <bool> field-glyph: false;
     // The empty-rows caption (round-5 F14's visible-state half):
     // consumer-owned copy, rendered under the disabled field when the
     // row list is empty; empty string = no caption (the board bar's
@@ -354,6 +359,12 @@ export component Dropdown inherits Rectangle {
                         }
                     ]
                 }
+            }
+            // The recognition glyph (UX-R8 D-9, US-7): the archive
+            // cue rides ahead of the text — hover-independent, the
+            // same slot discipline as the busy dot.
+            if root.field-glyph: Icon {
+                kind: IconKind.archive;
             }
             field-text := RoleText {
                 role: Typography.body;
