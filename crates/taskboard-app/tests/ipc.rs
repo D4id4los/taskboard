@@ -145,6 +145,30 @@ async fn ip1_core_verbs_serve_and_persist_over_ipc() {
     .await;
 }
 
+/// The served socket sidecar is owner-only: `harden` must chmod 0600
+/// the artifact (ADR 0012 — OS permissions are the whole v1 auth
+/// story), so a skipped hardening step is observable on the socket.
+#[cfg(unix)]
+#[tokio::test]
+async fn ip21_the_served_socket_sidecar_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+    bounded(async {
+        let dir = tempdir();
+        let (handle, db) = served(dir.path(), "ip21.db").await;
+        let sidecar = taskboard_app::ipc::socket_sidecar(&db);
+
+        let mode = std::fs::metadata(&sidecar)
+            .expect("socket artifact exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "the socket is owner-only");
+
+        let _ = handle.join(DRAIN_BUDGET).await;
+    })
+    .await;
+}
+
 /// IP2: a typed handler failure crosses the wire as code 1 plus the
 /// error envelope (parsed; the `kind` is asserted, never the text).
 #[tokio::test]
