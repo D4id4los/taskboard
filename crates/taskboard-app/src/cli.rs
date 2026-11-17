@@ -2116,7 +2116,10 @@ mod tests {
         };
         assert_eq!(task, "draft");
         assert!(flags.archive);
-        assert!(matches!(flags.due, Some(DueSpec::Set(_))));
+        // Consciously updated with US-1/D-5 (task-detail-editor UX
+        // plan, 2026-11-17): the bare --due now parses to `Date` — the
+        // instant mint moved to the execution seam.
+        assert!(matches!(flags.due, Some(DueSpec::Date(_))));
 
         let cli = Cli::try_parse_from([
             "taskboard",
@@ -2187,7 +2190,9 @@ mod tests {
         else {
             panic!("expected tasks edit");
         };
-        assert!(matches!(scheduled, Some(DueSpec::Set(_))));
+        // Consciously updated with US-1/D-5: a bare --scheduled parses
+        // to `Date` (the mint lives at the execution seam).
+        assert!(matches!(scheduled, Some(DueSpec::Date(_))));
         assert_eq!(
             effort,
             Some(EffortSpec::Set(taskboard_domain::Effort::new(5400)))
