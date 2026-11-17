@@ -64,6 +64,19 @@ pub(crate) enum MenuAnchor {
     Pointer(f32, f32),
 }
 
+/// The open menu's kind (UX-R8 chunk-5 D-1, N-11): the main menu's
+/// pages re-derive on every refresh pass (round-3 D27c's re-grey),
+/// an object/context menu's model is built once at open and nothing
+/// re-derives it while open — the popup the user reads is the popup
+/// that fires. A typed discriminator, never an anchor proxy: an
+/// anchor shape would not survive future anchored main-menu variants.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum MenuKind {
+    #[default]
+    Main,
+    Object,
+}
+
 /// The flow kinds the settle matrix rows range over (round-3
 /// W-SM-b; audit report §6). The mirror of the per-kind settle rule:
 /// TEXT commits-or-discards, DUE clean-closes, MOVE/DRAG cancel,
@@ -345,6 +358,9 @@ pub(crate) struct Adapter {
     menu_chain: Vec<ContextId>,
     /// The open menu's anchor (round-1 D13).
     menu_anchor: MenuAnchor,
+    /// The open menu's kind (UX-R8 D-1): the refresh-time re-derivation
+    /// guard scopes itself to `Main`; reset to `Main` at every close.
+    menu_kind: MenuKind,
     /// The Add-task ghost's clicked stack (r4 D4); consumed by the
     /// next `task.create` dispatch, then cleared (one-shot, the
     /// `reminder_target` precedent).
@@ -2339,8 +2355,11 @@ impl Adapter {
         );
         // Round-3 D27c: engine syncs re-grey a live menu — the pages
         // rebuild from the fresh state while the menu holds (the
-        // cursor's length bound rides along).
-        if self.shell.menu.open {
+        // cursor's length bound rides along). UX-R8 D-1 (N-11): the
+        // re-derivation is scoped to the main menu — an object menu's
+        // model is built once at open and never swapped (the repro
+        // journey pins the swap this guard forbids).
+        if self.shell.menu.open && self.menu_kind == MenuKind::Main {
             let flow = self.view_state.flow().clone();
             let states = self.entry_states(&state, &flow);
             self.root_entries = menu::root_page(&self.keymap, &self.menu_chain, &states);
@@ -5166,6 +5185,7 @@ impl Adapter {
         self.root_entries.clear();
         self.menu_chain.clear();
         self.menu_anchor = MenuAnchor::Hamburger;
+        self.menu_kind = MenuKind::Main;
         self.sync_menu_models(window);
         // The direct callers (toggle, dismissal layer, mouse invoke)
         // bypass `route`'s trailing sync; the shared helper keeps the
@@ -8611,6 +8631,7 @@ pub(crate) fn install(
         root_entries: Vec::new(),
         menu_chain: Vec::new(),
         menu_anchor: MenuAnchor::Hamburger,
+        menu_kind: MenuKind::Main,
         create_target: None,
         reminder_target: None,
         notification_cursor: None,
@@ -9821,6 +9842,7 @@ impl Adapter {
     fn open_context_menu(&mut self, window: &AppWindow, x: f32, y: f32, ids: &[ActionId]) {
         let chain = [ContextId::Board, ContextId::Global].to_vec();
         self.menu_anchor = MenuAnchor::Pointer(x, y);
+        self.menu_kind = MenuKind::Object;
         self.menu_chain = chain;
         self.root_entries = menu::object_entries(&self.keymap, &self.menu_chain, ids);
         self.menu_entries = self.root_entries.clone();
