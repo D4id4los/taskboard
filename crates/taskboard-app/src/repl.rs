@@ -638,6 +638,22 @@ pub(crate) fn resolve_line(line: &str, json_default: bool) -> LineAction {
 /// `resolve_words(["exit"])` is a clap usage error — unit-pinned.
 #[must_use]
 pub(crate) fn resolve_words(words: &[String], json_default: bool) -> LineAction {
+    resolve_words_impl(words, json_default, false)
+}
+
+/// The daemon relay's resolver (journey W-2, #845): identical grammar,
+/// but `config set`/`unset` ride the relay lane — the daemon is the
+/// single parse authority, so the same argv resolves into a command
+/// the daemon's config arm executes against its booted core.
+/// `config print`/`path` stay refused over the wire (journey R-2:
+/// file-authoritative diagnostics are a local read).
+#[must_use]
+pub(crate) fn resolve_words_with_config_relay(words: &[String], json_default: bool) -> LineAction {
+    resolve_words_impl(words, json_default, true)
+}
+
+#[must_use]
+fn resolve_words_impl(words: &[String], json_default: bool, config_relay: bool) -> LineAction {
     if words.is_empty() {
         // A line of only quotes/escapes splits to nothing: re-prompt.
         return LineAction::Reprompt;
@@ -655,12 +671,31 @@ pub(crate) fn resolve_words(words: &[String], json_default: bool) -> LineAction 
         // A bare global-flag line (`--json`) has nothing to execute.
         None => LineAction::Reprompt,
         Some(Command::Daemon { .. }) => LineAction::Refuse(LineRefusal::Daemon),
-        Some(Command::Config { .. }) => LineAction::Refuse(LineRefusal::ConfigCommand),
         Some(Command::Gui) => LineAction::Refuse(LineRefusal::Gui),
+        parsed @ Some(Command::Config {
+            cmd: crate::cli::ConfigCmd::Set { .. } | crate::cli::ConfigCmd::Unset { .. },
+        }) if config_relay => {
+            LineAction::Execute(command_from_config_relay(parsed), cli.json || json_default)
+        }
+        Some(Command::Config { .. }) => LineAction::Refuse(LineRefusal::ConfigCommand),
         // `connect`/`login`/`logout` parse with their flags intact: the
         // session loop runs them as ceremonies (ADR 0014); the daemon
         // IPC server refuses them as terminal-bound before dispatch.
         Some(command) => LineAction::Execute(command, cli.json || json_default),
+    }
+}
+
+/// The parsed `config set`/`unset` command, moved through the relay
+/// arm (the clap parse already proved the shape; the positional words
+/// ride inside the command).
+fn command_from_config_relay(command: Option<Command>) -> Command {
+    match command {
+        Some(
+            command @ Command::Config {
+                cmd: crate::cli::ConfigCmd::Set { .. } | crate::cli::ConfigCmd::Unset { .. },
+            },
+        ) => command,
+        _ => unreachable!("the relay resolver proved a config set/unset"),
     }
 }
 
@@ -1945,6 +1980,62 @@ mod argv_tests {
         assert!(matches!(
             resolve_words(&["frobnicate".to_owned()], false),
             LineAction::PrintClap(_)
+        ));
+    }
+
+    /// `us1_s2` (journey W-2): the relay resolver parses `config
+    /// set`/`unset` into commands over the wire — the daemon is the
+    /// single parse authority — while `config print`/`path` stay
+    /// refused (R-2) and the plain resolver (the REPL's) refuses the
+    /// whole config family unchanged.
+    #[test]
+    fn us1_s2_the_relay_resolver_parses_config_mutations_and_refuses_diagnostics() {
+        use crate::cli::{Command, ConfigCmd};
+        use crate::repl::{LineRefusal, resolve_words_with_config_relay};
+        let words: Vec<String> = "config set focus.work_mins 50"
+            .split(' ')
+            .map(str::to_owned)
+            .collect();
+        match resolve_words_with_config_relay(&words, false) {
+            LineAction::Execute(
+                Command::Config {
+                    cmd: ConfigCmd::Set { key, value },
+                },
+                json,
+            ) => {
+                assert_eq!(key, "focus.work_mins");
+                assert_eq!(value, "50");
+                assert!(!json, "no default json over the relay");
+            }
+            other => panic!("the relay parses config set, got {other:?}"),
+        }
+        let words: Vec<String> = "config unset focus.work_mins"
+            .split(' ')
+            .map(str::to_owned)
+            .collect();
+        match resolve_words_with_config_relay(&words, false) {
+            LineAction::Execute(
+                Command::Config {
+                    cmd: ConfigCmd::Unset { key },
+                },
+                _,
+            ) => assert_eq!(key, "focus.work_mins"),
+            other => panic!("the relay parses config unset, got {other:?}"),
+        }
+        for line in ["config print", "config path", "config set k 1"] {
+            let words: Vec<String> = line.split(' ').map(str::to_owned).collect();
+            assert!(
+                matches!(
+                    resolve_words(&words, false),
+                    LineAction::Refuse(LineRefusal::ConfigCommand)
+                ),
+                "the plain resolver refuses {line}"
+            );
+        }
+        let words: Vec<String> = "config print".split(' ').map(str::to_owned).collect();
+        assert!(matches!(
+            resolve_words_with_config_relay(&words, false),
+            LineAction::Refuse(LineRefusal::ConfigCommand)
         ));
     }
 }

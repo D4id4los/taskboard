@@ -1531,16 +1531,18 @@ pub enum ConfigCmd {
     /// target — a side-effect-free resolution diagnostic: no decode,
     /// no core boot.
     Path,
-    /// Set one knob in the `taskboard.toml` layer (T-18, #801). `key`
-    /// is the dotted config key — exactly the vocabulary the GUI
+    /// Set one knob (T-18, #801; live propagation #845). `key` is
+    /// the dotted config key — exactly the vocabulary the GUI
     /// settings editor uses (`reminders.tick_secs`,
     /// `focus.long_break_every`, `files_sync.enabled`, ...); `value`
     /// parses per key against the same predicates the settings form
-    /// applies. Writes only the toml layer (defaults and
-    /// `TASKBOARD_*` env are never touched), atomically; the file
-    /// layer is authoritative at next start. An env-overridden key is
-    /// a typed refusal — the write would be dead text under the env
-    /// layer.
+    /// applies. When the app is running, the value applies to it
+    /// immediately (the running engine takes the change live, like
+    /// the settings editor); without a running app the write lands
+    /// in the toml layer only and applies at the next start. Defaults
+    /// and `TASKBOARD_*` env are never touched; the write is atomic
+    /// and proven bootable. An env-overridden key is a typed refusal
+    /// — the write would be dead text under the env layer.
     Set {
         /// The dotted config key (the settings editor's vocabulary).
         key: String,
@@ -1548,10 +1550,11 @@ pub enum ConfigCmd {
         /// refusal, nothing writes).
         value: String,
     },
-    /// Remove one knob's override from the `taskboard.toml` layer
-    /// (T-18, #801) — the way a set value returns to the default (or
-    /// to its env layer). Same vocabulary, same layering, same
-    /// atomicity as `config set`.
+    /// Remove one knob's override (T-18, #801; live propagation
+    /// #845) — the way a set value returns to the default (or to its
+    /// env layer). Same vocabulary, layering, atomicity, and lane
+    /// behavior as `config set`: a running app drops the override
+    /// immediately, otherwise the removal applies at the next start.
     Unset {
         /// The dotted config key (the settings editor's vocabulary).
         key: String,

@@ -557,7 +557,11 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
             format!("{}\n", crate::repl::LineRefusal::ConfigFlag),
         );
     };
-    match crate::repl::resolve_words(&argv, false) {
+    // The config mutation verbs resolve through the relay resolver
+    // (journey W-2): the daemon is the single parse authority, so the
+    // same argv parses here and its set/unset arm runs against this
+    // booted core.
+    match crate::repl::resolve_words_with_config_relay(&argv, false) {
         crate::repl::LineAction::Execute(command, json) => {
             // `connect`/`login`/`logout` are terminal-bound ceremonies
             // (ADR 0014, lane `Local`): they elicit masked secrets on
@@ -604,7 +608,21 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
                 err: &mut err,
                 json,
             };
-            let code = dispatch_line(session, app, command, &mut io).await;
+            let code = if let crate::cli::Command::Config { cmd } = &command {
+                // The daemon's config arm (journey W-2, #845): the
+                // relayed set/unset applies live against this core's
+                // engine — guard, prove-gate write, `UpdateSettings` —
+                // and its typed view travels back as the Exec bytes.
+                crate::commands::config::handle_daemon(
+                    cmd,
+                    app,
+                    session.config_path.as_deref(),
+                    &mut io,
+                )
+                .await
+            } else {
+                dispatch_line(session, app, command, &mut io).await
+            };
             // Buffer writers are UTF-8 by construction: lossless.
             (
                 code,
