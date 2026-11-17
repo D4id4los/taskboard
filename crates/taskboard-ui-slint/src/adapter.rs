@@ -70,6 +70,29 @@ pub(crate) enum MenuAnchor {
 /// re-derives it while open — the popup the user reads is the popup
 /// that fires. A typed discriminator, never an anchor proxy: an
 /// anchor shape would not survive future anchored main-menu variants.
+/// The create-focus handoff's one-shot arm (UX-R8 chunk-5 D-7, US-5):
+/// the created id is engine-minted, so the target derives from the
+/// post-apply state diff — the subject stack's live ids at commit
+/// time vs the next materialized refresh's. No new command, no new
+/// request (the origin §7 constraint).
+/// The handoff's payload (UX-R8 chunk-5 D-7): the pre-handoff focus
+/// (`None` when the create flow held none) — the hint push's input.
+#[derive(Debug, Clone)]
+struct CreateFocusHandoff {
+    before: Option<TaskId>,
+}
+
+#[derive(Debug, Clone)]
+struct CreateFocusArm {
+    stack: StackId,
+    before: std::collections::BTreeSet<TaskId>,
+    /// The state snapshot at arm time: the commit's own `RefreshNow`
+    /// pass runs BEFORE the engine applies, so the consumption waits
+    /// for the state pointer to actually change (the engine publish)
+    /// — a zero-diff pass over the SAME snapshot keeps the arm.
+    snapshot: Arc<AppState>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum MenuKind {
     #[default]
@@ -366,6 +389,11 @@ pub(crate) struct Adapter {
     /// `root_entries` index-resolver pattern; stale indices absorbed).
     /// Empty for every other menu consumer.
     quick_bar_entries: Vec<crate::menu::QuickBarEntry>,
+    /// The create-focus handoff's armed diff (UX-R8 chunk-5 D-7):
+    /// armed by `apply_outcomes`' `CreateTask` arm, consumed once by
+    /// the next materialized refresh — zero or >1 new ids clear it
+    /// with no handoff (the one-shot law, R-d).
+    create_focus_arm: Option<CreateFocusArm>,
     /// The Add-task ghost's clicked stack (r4 D4); consumed by the
     /// next `task.create` dispatch, then cleared (one-shot, the
     /// `reminder_target` precedent).
@@ -1884,6 +1912,27 @@ impl Adapter {
                     if self.arm_outcome_notice(command) {
                         self.push_notice(window);
                     }
+                    // The create-focus handoff's arming (UX-R8 chunk-5
+                    // D-7, US-5): the subject stack's live ids at
+                    // commit time — the empty-buffer settle never
+                    // emits the command (view_state's Flow::Create
+                    // guard), so it arms nothing.
+                    if let taskboard_domain::StateCommand::CreateTask { stack, .. } = command {
+                        let state = self.state.load_full();
+                        let before: std::collections::BTreeSet<TaskId> = state
+                            .tasks
+                            .values()
+                            .filter(|task| task.stack == *stack)
+                            .map(|task| task.id)
+                            .collect();
+                        let snapshot = Arc::clone(&state);
+                        drop(state);
+                        self.create_focus_arm = Some(CreateFocusArm {
+                            stack: *stack,
+                            before,
+                            snapshot,
+                        });
+                    }
                     if self.commands.try_send(command.clone()).is_err() {
                         tracing::warn!("command channel full or closed; dropped");
                     }
@@ -2202,6 +2251,13 @@ impl Adapter {
     /// calls this directly (the plan §5 audit's forced set).
     #[allow(clippy::too_many_lines)] // the pass is one linear pipeline
     pub(crate) fn refresh_forced(&mut self, window: &AppWindow) {
+        // The create-focus handoff's consumption (UX-R8 chunk-5 D-7,
+        // US-5/AC-1): the stack's live ids diffed against the commit-
+        // time snapshot — exactly one new id moves the focus (the
+        // walk handoff's existing setter) and arms the scroll hint;
+        // zero or >1 (a refused create, a racing capture) clear the
+        // arm with NO handoff — the one-shot law (R-d).
+        let create_focus_before_focused = self.consume_create_focus_arm();
         self.sync_view_context(window);
         let state = self.state.load_full();
         self.sync_settings(&state.settings);
@@ -2428,6 +2484,13 @@ impl Adapter {
             break_rule_armed_index,
             (self.reflection_active, self.reflection_armed),
         );
+        // The create-focus handoff's hint half (UX-R8 chunk-5 D-7):
+        // the tables are fresh — edge-trigger the FocusScrollHint
+        // global toward the newly focused card (the machinery chunk 4
+        // extended; the board/compact ListViews consume it).
+        if let Some(handoff) = create_focus_before_focused {
+            self.push_focus_scroll_hint(window, handoff.before);
+        }
         // Round-3 D27c: engine syncs re-grey a live menu — the pages
         // rebuild from the fresh state while the menu holds (the
         // cursor's length bound rides along). UX-R8 D-1 (N-11): the
@@ -4404,6 +4467,37 @@ impl Adapter {
     /// the row into view; pointer selections are visible by
     /// construction and hint nothing. A move that changed nothing
     /// (the walk's ends) re-arms nothing.
+    /// The one-shot arm's consumption (UX-R8 chunk-5 D-7): `Some`
+    /// = the handoff fired (the arm consumed with exactly one new
+    /// id) — the hint push edge-triggers on the handoff, never on a
+    /// prior focus. The arm always clears.
+    fn consume_create_focus_arm(&mut self) -> Option<CreateFocusHandoff> {
+        let arm = self.create_focus_arm.clone()?;
+        let state = self.state.load_full();
+        if Arc::ptr_eq(&state, &arm.snapshot) {
+            // The engine has not applied yet (the commit's own
+            // RefreshNow pass) — the arm holds for the publish.
+            return None;
+        }
+        let live: std::collections::BTreeSet<TaskId> = state
+            .tasks
+            .values()
+            .filter(|task| task.stack == arm.stack)
+            .map(|task| task.id)
+            .collect();
+        drop(state);
+        self.create_focus_arm = None;
+        let mut new_ids = live.difference(&arm.before).copied();
+        let (Some(created), None) = (new_ids.next(), new_ids.next()) else {
+            // Zero or >1 new ids: a refused create or a racing capture
+            // — no handoff (the one-shot law).
+            return None;
+        };
+        let before = self.view_state.focused_task();
+        self.view_state.set_focused(Some(created));
+        Some(CreateFocusHandoff { before })
+    }
+
     fn push_focus_scroll_hint(&mut self, window: &AppWindow, before: Option<TaskId>) {
         let focused = self.view_state.focused_task();
         if focused.is_none() || focused == before {
@@ -8752,6 +8846,7 @@ pub(crate) fn install(
         menu_anchor: MenuAnchor::Hamburger,
         menu_kind: MenuKind::Main,
         quick_bar_entries: Vec::new(),
+        create_focus_arm: None,
         create_target: None,
         reminder_target: None,
         notification_cursor: None,
