@@ -3658,10 +3658,22 @@ mod move_error_tests {
             fold(MoveError::OutboxNotQuiescent { pending: 2 }.into()),
             SettingsError::OutboxNotQuiescent
         ));
+        // The undo-window refusals map typed now (US-6, D-7).
+        assert!(matches!(
+            fold(MoveError::NothingToUndo.into()),
+            SettingsError::NothingToUndo
+        ));
+        assert!(matches!(
+            fold(MoveError::UndoClosed.into()),
+            SettingsError::UndoClosed
+        ));
+        assert!(matches!(
+            fold(MoveError::UndoCoordinatesLost.into()),
+            SettingsError::UndoCoordinatesLost
+        ));
         for step in [
             MoveError::PublishUnconfirmed,
             MoveError::FilesSubtreeForeign,
-            MoveError::UndoCoordinatesLost,
             MoveError::NotDeckBound,
         ] {
             assert!(

@@ -5471,6 +5471,10 @@ struct SettingsVm {
     /// until its reply lands.
     auto_listings:
         BTreeMap<String, oneshot::Receiver<Result<Vec<requests::RemoteBoardRow>, SettingsError>>>,
+    /// The files watch's per-board states (US-8, D-8): updated by
+    /// `drain_files_sync`, consumed by the Files roster's row fold.
+    files_board_states:
+        std::collections::BTreeMap<uuid::Uuid, crate::presentation::FilesBoardState>,
     /// The mount auto-list's typed backoff (the files-sync-status UX
     /// plan US-3, D-4): per-connector consecutive-failure record — a
     /// display posture, not a sync decision. The mount auto-list
@@ -5901,6 +5905,9 @@ impl Adapter {
             return false;
         }
         let chip = rx.borrow_and_update().clone();
+        // The per-board states map (US-8, D-8): the settings rows'
+        // adoption phase rides the same watch.
+        self.settings.files_board_states = chip.board_states.clone();
         paint_files_sync_chip(window, &chip);
         true
     }
@@ -6368,6 +6375,9 @@ impl Adapter {
             files_on: false,
             pending_phase: crate::models::publish_card_phase(None),
             restore_offerable: false,
+            adoption_phase: crate::models::files_board_adoption(
+                crate::presentation::FilesBoardAdoption::None,
+            ),
             files_enabled_pinned: false,
             files_anchor_pinned: false,
             files_restart: false,
@@ -6470,6 +6480,23 @@ impl Adapter {
                         title: row.title.clone().into(),
                         busy,
                         restore_offerable: row.restore_offerable,
+                        adoption_phase: {
+                            // The adoption phase (US-8, D-8): keyed by
+                            // the files identity (the board's own
+                            // domain uuid); boards absent from the map
+                            // render the settled truth.
+                            let files_uuid = state
+                                .boards
+                                .get(&row.board)
+                                .and_then(|b| b.remote.as_ref())
+                                .and_then(|binding| binding.board.as_files());
+                            let adoption = files_uuid
+                                .and_then(|uuid| vm.files_board_states.get(&uuid))
+                                .map_or(crate::presentation::FilesBoardAdoption::None, |st| {
+                                    st.adoption
+                                });
+                            crate::models::files_board_adoption(adoption)
+                        },
                         badge_text: crate::presentation::files_board_badge_label(row.badge).into(),
                         badge_tone: crate::presentation::files_board_badge_tone(row.badge),
                         action_label: row

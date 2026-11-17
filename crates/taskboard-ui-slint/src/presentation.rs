@@ -78,6 +78,11 @@ pub fn delivery_chip(health: &DeliveryHealth) -> Option<String> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FilesSyncChip {
     pub state: FilesSyncChipState,
+    /// The per-board states map (US-8, D-8): the adoption phase per
+    /// moved board, keyed by the files identity (the board's own
+    /// domain uuid). Boards absent from the map render the
+    /// bound/settled truth (no phase).
+    pub board_states: std::collections::BTreeMap<uuid::Uuid, FilesBoardState>,
 }
 
 /// The chip's precedence ladder rung (D-FH5): Forked > Diverged >
@@ -175,6 +180,79 @@ pub fn publish_card_phase(pending: Option<(bool, bool)>) -> Option<PublishPhase>
         Some((publishing, _)) if publishing => Some(PublishPhase::Publishing),
         Some((_, adopting)) if adopting => Some(PublishPhase::Adopting),
         _ => None,
+    }
+}
+
+/// The per-board files lane's vocabulary (the files-sync-status UX
+/// plan US-2 AC-3, D-3): the Syncing/Idle vocabulary gains the
+/// stalled truth — no state claims Syncing against a rising pending
+/// count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FilesBoardLane {
+    #[default]
+    Idle,
+    Syncing,
+    /// A cycle cannot push while ops stay attributed: the stalled
+    /// truth (warning rung — the chip is lane-level, the row
+    /// board-level).
+    Stalled,
+    Failed,
+}
+
+/// The per-board adoption phase (US-8, D-8): 1:1 over the files
+/// crate's typed findings, folded by the app-side pump.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FilesBoardAdoption {
+    /// Not part of a move: the bound/settled truth.
+    #[default]
+    None,
+    Adopting,
+    Adopted,
+    Refused,
+}
+
+/// One board's files-lane facts (D-8): the lane's stalled truth plus
+/// the adoption phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FilesBoardState {
+    pub lane: FilesBoardLane,
+    pub adoption: FilesBoardAdoption,
+}
+
+/// The stalled-truth fold (US-2 AC-3, D-3): pure over typed facts —
+/// `pending_ops > 0 ∧ last_cycle failed → Stalled`; a busy phase
+/// with nothing pending is `Syncing`; a failed cycle with nothing
+/// pending is `Failed`; else `Idle`. The law: a state may never
+/// claim Syncing against a rising count.
+#[must_use]
+pub fn files_board_lane(
+    pending_ops: u32,
+    phase_busy: bool,
+    last_cycle_failed: bool,
+) -> FilesBoardLane {
+    if pending_ops > 0 && last_cycle_failed {
+        FilesBoardLane::Stalled
+    } else if pending_ops > 0 && phase_busy {
+        FilesBoardLane::Syncing
+    } else if last_cycle_failed {
+        FilesBoardLane::Failed
+    } else {
+        FilesBoardLane::Idle
+    }
+}
+
+/// The adoption fold (US-8 AC-1, D-8): typed over ui-safe facts
+/// (exactly one finding arm holds).
+#[must_use]
+pub fn files_board_adoption(adopting: bool, adopted: bool, refused: bool) -> FilesBoardAdoption {
+    if adopting {
+        FilesBoardAdoption::Adopting
+    } else if adopted {
+        FilesBoardAdoption::Adopted
+    } else if refused {
+        FilesBoardAdoption::Refused
+    } else {
+        FilesBoardAdoption::None
     }
 }
 
@@ -9203,6 +9281,53 @@ mod recur_editor_validity_tests {
 mod files_sync_chip_fold_tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// US-2 AC-3 — the stalled truth: pending ops with a failed cycle
+    /// render Stalled, never Syncing against a rising count (the
+    /// law's typed pin).
+    #[test]
+    fn us2_ac3_stalled_renders_the_stalled_truth() {
+        assert_eq!(
+            files_board_lane(8, true, true),
+            FilesBoardLane::Stalled,
+            "a rising count may never read Syncing"
+        );
+        assert_eq!(files_board_lane(8, false, true), FilesBoardLane::Stalled);
+        assert_eq!(
+            files_board_lane(8, true, false),
+            FilesBoardLane::Syncing,
+            "pending ops with a running cycle is honest syncing"
+        );
+        assert_eq!(
+            files_board_lane(0, true, false),
+            FilesBoardLane::Idle,
+            "nothing pending is settled, whatever the phase flag"
+        );
+        assert_eq!(files_board_lane(0, false, true), FilesBoardLane::Failed);
+        assert_eq!(files_board_lane(0, false, false), FilesBoardLane::Idle);
+    }
+
+    /// US-8 AC-1 — the adoption phase fold per state (typed).
+    #[test]
+    fn us8_ac1_the_row_carries_the_adoption_phase() {
+        assert_eq!(
+            files_board_adoption(true, false, false),
+            FilesBoardAdoption::Adopting
+        );
+        assert_eq!(
+            files_board_adoption(false, true, false),
+            FilesBoardAdoption::Adopted
+        );
+        assert_eq!(
+            files_board_adoption(false, false, true),
+            FilesBoardAdoption::Refused
+        );
+        assert_eq!(
+            files_board_adoption(false, false, false),
+            FilesBoardAdoption::None,
+            "a settled board renders the bound truth"
+        );
+    }
 
     /// US-6 AC-2 — the Restore affordance withholds outside the
     /// window's candidate set (bound or archived boards never mount

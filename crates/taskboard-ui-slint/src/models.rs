@@ -31,10 +31,11 @@ use crate::{
     FilesSyncChipState as SlintFilesSyncChipState, FilesSyncChipTone as SlintFilesSyncChipTone,
     FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
     ReflectionRowModel, ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel,
-    RuleRowModel, SettingsPublishPhase as SlintSettingsPublishPhase, StackColumnModel,
-    StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
-    TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone,
-    TrackEntryRowModel, TrackedTodayRowModel, TrackingSectionModel, View,
+    RuleRowModel, SettingsAdoptionPhase as SlintSettingsAdoptionPhase,
+    SettingsPublishPhase as SlintSettingsPublishPhase, StackColumnModel, StackDetailModel,
+    StatBarModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel,
+    Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel,
+    TrackedTodayRowModel, TrackingSectionModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -3563,6 +3564,17 @@ pub fn files_sync_chip_tone(state: presentation::ChipTone) -> SlintFilesSyncChip
         presentation::ChipTone::Neutral => SlintFilesSyncChipTone::Neutral,
         presentation::ChipTone::Warning => SlintFilesSyncChipTone::Warning,
         presentation::ChipTone::Danger => SlintFilesSyncChipTone::Danger,
+    }
+}
+
+/// The adoption phase's 1:1 generated-enum ferry (US-8, D-8).
+#[must_use]
+pub fn files_board_adoption(phase: presentation::FilesBoardAdoption) -> SlintSettingsAdoptionPhase {
+    match phase {
+        presentation::FilesBoardAdoption::None => SlintSettingsAdoptionPhase::None,
+        presentation::FilesBoardAdoption::Adopting => SlintSettingsAdoptionPhase::Adopting,
+        presentation::FilesBoardAdoption::Adopted => SlintSettingsAdoptionPhase::Adopted,
+        presentation::FilesBoardAdoption::Refused => SlintSettingsAdoptionPhase::Refused,
     }
 }
 

@@ -1231,6 +1231,7 @@ mod mount_tests {
             chip_tx
                 .send(crate::presentation::FilesSyncChip {
                     state: crate::presentation::FilesSyncChipState::Forked,
+                    board_states: std::collections::BTreeMap::new(),
                 })
                 .expect("watch send");
             assert!(handle.drain_files_sync());

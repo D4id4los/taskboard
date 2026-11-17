@@ -101,6 +101,17 @@ export enum SettingsPublishPhase {
     failed,
 }
 
+// The per-board adoption phase (the files-sync-status plan US-8,
+// D-8): the Files card's rows carry the phase — a mid-move device is
+// distinguishable from a settled one. Display-only.
+// slint: adoption-phase (pre-framework seam, #782)
+export enum SettingsAdoptionPhase {
+    none,
+    adopting,
+    adopted,
+    refused,
+}
+
 // One rendered connections item (the flat, positional projection of
 // the account cards — the adapter resolves every callback's item
 // index through its own address table; no id enters the model).
@@ -121,6 +132,8 @@ export struct ConnectionItem {
     // files-board: the undo-window Restore affordance's mount (the
     // files-sync-status plan US-6, D-7) — withheld, never greyed.
     restore-offerable: bool,
+    // files-board: the adoption phase (US-8, D-8) — display-only.
+    adoption-phase: SettingsAdoptionPhase,
     // remote: bound through this connector (Disconnect vs pick/create).
     bound: bool,
     // deck: a listing has landed (else the Refresh hint renders).
@@ -1131,6 +1144,17 @@ export component SettingsView inherits FocusScope {
                     if item.archived: RoleText {
                         role: Typography.caption;
                         text: "Archived";
+                        text-color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                    // The adoption phase caption (US-8, D-8).
+                    if item.adoption-phase != SettingsAdoptionPhase.none: RoleText {
+                        role: Typography.caption;
+                        text: item.adoption-phase == SettingsAdoptionPhase.adopting
+                            ? "adopting"
+                            : item.adoption-phase == SettingsAdoptionPhase.adopted
+                                ? "adopted"
+                                : "refused";
                         text-color: Theme.text-secondary;
                         vertical-alignment: center;
                     }
