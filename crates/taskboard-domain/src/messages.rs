@@ -606,6 +606,27 @@ pub enum StateCommand {
     /// Redo the head's most recent child (greatest `(created_at, id)` —
     /// the D5 editor rule). Engine-routed symmetric to [`StateCommand::Undo`].
     Redo,
+    /// Undo the line head's journaled command, but only if it touched
+    /// `board` (issue #355): the strict frontier rule — the head is
+    /// checked, never skipped past, so an out-of-scope (or untagged)
+    /// head refuses typed (`NothingToUndoForBoard`) instead of being
+    /// walked around. Engine-routed like [`StateCommand::Undo`];
+    /// never persisted.
+    UndoOnBoard {
+        /// The board whose scope the undo answers to.
+        board: BoardId,
+    },
+    /// Redo the greatest `(created_at, id)` child of the head whose
+    /// journal entry is tagged with `board` (issue #355): the D5
+    /// editor rule narrowed to one board's tag — siblings are
+    /// alternative continuations, so selecting among the in-scope
+    /// children is the existing freedom, not a new semantics.
+    /// Engine-routed symmetric to [`StateCommand::UndoOnBoard`];
+    /// never persisted.
+    RedoOnBoard {
+        /// The board whose scope the redo answers to.
+        board: BoardId,
+    },
     /// Resurrect one tombstoned task from a journal pre-image — the
     /// inverse *instrument* of `DeleteTask`'s undo (ADR 0019 §11), not a
     /// v1 user surface. Three cases: pending delete op ⇒ retraction

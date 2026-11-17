@@ -743,6 +743,11 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::EngineRouted => "engine-routed",
         D::NothingToUndo => "nothing-to-undo",
         D::NothingToRedo => "nothing-to-redo",
+        // The #355 scoped refusals: their own kinds so a JSON consumer
+        // can tell "the line is exhausted" from "the frontier belongs
+        // to another board" (the D-5 legibility rule).
+        D::NothingToUndoForBoard { .. } => "nothing-to-undo-for-board",
+        D::NothingToRedoForBoard { .. } => "nothing-to-redo-for-board",
         D::TargetNotUndoable(_) => "target-not-undoable",
         D::TargetNoLongerInvertible { .. } => "target-not-invertible",
         D::UndoTargetHasDependents { .. } => "undo-target-has-dependents",

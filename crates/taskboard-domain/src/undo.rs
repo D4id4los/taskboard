@@ -37,6 +37,49 @@ use crate::persistence::PersistenceAction;
 use crate::reminders::ReminderDefaults;
 use crate::state::AppState;
 
+/// The undo/redo scope gate (#355): `Global` is the exact existing
+/// semantics of `Undo`/`Redo`; `Board` narrows the frontier question to
+/// one board's tag. The scope predicate: an entry is **in scope** iff
+/// `entry.board == Some(board)` — entries tagged `None` (reminder/
+/// tracking ephemera, reflections, the honest-ambiguity case where
+/// `touched_board`'s lookup chain is gone) belong to *no* board scope,
+/// while the global scope still reaches them. Scoping gates the
+/// frontier, never walks through the middle of the line (the strict
+/// frontier rule, D-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndoScope {
+    /// The whole line, unfiltered (the `Undo`/`Redo` arms' semantics).
+    Global,
+    /// Only entries tagged with this board are in scope.
+    Board(crate::ids::BoardId),
+}
+
+/// The scope predicate (D-3): does this entry tag fall inside the scope?
+#[must_use]
+fn scope_covers(scope: UndoScope, board: Option<crate::ids::BoardId>) -> bool {
+    match scope {
+        UndoScope::Global => true,
+        UndoScope::Board(scope_board) => board == Some(scope_board),
+    }
+}
+
+/// The scoped undo's typed refusal (D-5): an empty line asked from a
+/// board scope still answers the board-scoped question.
+fn nothing_to_undo(scope: UndoScope) -> CommandError {
+    match scope {
+        UndoScope::Global => CommandError::NothingToUndo,
+        UndoScope::Board(board) => CommandError::NothingToUndoForBoard { board },
+    }
+}
+
+/// The scoped redo's typed refusal (D-5), symmetric.
+fn nothing_to_redo(scope: UndoScope) -> CommandError {
+    match scope {
+        UndoScope::Global => CommandError::NothingToRedo,
+        UndoScope::Board(board) => CommandError::NothingToRedoForBoard { board },
+    }
+}
+
 /// Plans one command *with* journal capture — the engine's one planner
 /// entry point (ADR 0019 §5).
 ///
@@ -65,8 +108,50 @@ pub fn plan_journaled_command(
     author: Option<crate::ids::AuthorId>,
 ) -> Result<CommandPlan, CommandError> {
     match command {
-        StateCommand::Undo => plan_undo(app, outbox, journal, ids, defaults, day, now, author),
-        StateCommand::Redo => plan_redo(app, outbox, journal, ids, defaults, day, now, author),
+        StateCommand::Undo => plan_undo(
+            app,
+            outbox,
+            journal,
+            UndoScope::Global,
+            ids,
+            defaults,
+            day,
+            now,
+            author,
+        ),
+        StateCommand::Redo => plan_redo(
+            app,
+            outbox,
+            journal,
+            UndoScope::Global,
+            ids,
+            defaults,
+            day,
+            now,
+            author,
+        ),
+        StateCommand::UndoOnBoard { board } => plan_undo(
+            app,
+            outbox,
+            journal,
+            UndoScope::Board(*board),
+            ids,
+            defaults,
+            day,
+            now,
+            author,
+        ),
+        StateCommand::RedoOnBoard { board } => plan_redo(
+            app,
+            outbox,
+            journal,
+            UndoScope::Board(*board),
+            ids,
+            defaults,
+            day,
+            now,
+            author,
+        ),
         command => {
             let plan = plan_command(app, outbox, command, ids, defaults, day, now, author)?;
             if plan.actions.is_empty() {
@@ -268,11 +353,13 @@ fn record_entry(
             // from state; the undo line refuses-and-names.
             UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
         }
-        // Never journaled (the wrapper routes Undo/Redo; RequestSync
-        // plans an empty batch and never reaches this point — both arms
-        // stay for totality).
+        // Never journaled (the wrapper routes the undo/redo arms;
+        // RequestSync plans an empty batch and never reaches this point
+        // — all arms stay for totality).
         StateCommand::Undo
         | StateCommand::Redo
+        | StateCommand::UndoOnBoard { .. }
+        | StateCommand::RedoOnBoard { .. }
         | StateCommand::RequestSync
         | StateCommand::UpdateSettings { .. } => {
             UndoFacts::NotUndoable(NotUndoableReason::BoardCeremony)
@@ -378,6 +465,8 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         StateCommand::RestoreTask { id, .. } => task_board(*id),
         StateCommand::Undo
         | StateCommand::Redo
+        | StateCommand::UndoOnBoard { .. }
+        | StateCommand::RedoOnBoard { .. }
         | StateCommand::RequestSync
         | StateCommand::UpdateSettings { .. } => None,
     }
@@ -541,9 +630,17 @@ pub fn journal_push_marks(
 /// synthesize, plan the inverse through the ordinary catalogue, apply
 /// the pushed-edit rule's two op behaviours, move the head.
 ///
+/// `scope` gates the frontier (#355): under [`UndoScope::Board`] the
+/// head must exist *and* be tagged with that board (`None`-tagged
+/// entries are out of scope for every board — D-3); otherwise the
+/// scoped refusal is typed and nothing else runs. The head is checked,
+/// never skipped past — a board-A undo never undoes (or walks past) a
+/// board-B edit.
+///
 /// # Errors
 ///
-/// `NothingToUndo` (empty or pruned line), `TargetNotUndoable` (R-U6),
+/// `NothingToUndo` / `NothingToUndoForBoard` (empty or pruned line, or
+/// a scoped head out of scope), `TargetNotUndoable` (R-U6),
 /// `TargetNoLongerInvertible` (the R-U7 watermark), or anything the
 /// inverse's own planning rejects.
 #[allow(clippy::too_many_arguments)] // plan_command's own shape, threaded
@@ -551,6 +648,7 @@ pub fn plan_undo(
     app: &AppState,
     outbox: &[PendingOp],
     journal: &JournalState,
+    scope: UndoScope,
     ids: &dyn IdGenerator,
     defaults: &ReminderDefaults,
     day: DayCalendar,
@@ -558,9 +656,18 @@ pub fn plan_undo(
     author: Option<crate::ids::AuthorId>,
 ) -> Result<CommandPlan, CommandError> {
     // 1-2. NothingToUndo → TargetNotUndoable: deterministic, cheapest
-    // first (§6's check order).
-    let head_id = journal.head.ok_or(CommandError::NothingToUndo)?;
-    let entry = journal.entry(head_id).ok_or(CommandError::NothingToUndo)?;
+    // first (§6's check order). The scope gate sits on the frontier
+    // before the undoability check: an out-of-scope head refuses as
+    // "nothing on this board", not as its classification (D-1/D-5).
+    let head_id = journal.head.ok_or_else(|| nothing_to_undo(scope))?;
+    let entry = journal
+        .entry(head_id)
+        .ok_or_else(|| nothing_to_undo(scope))?;
+    if let UndoScope::Board(board) = scope
+        && !scope_covers(scope, entry.board)
+    {
+        return Err(CommandError::NothingToUndoForBoard { board });
+    }
     let UndoFacts::PreImages { images, watermark } = &entry.facts else {
         return Err(CommandError::TargetNotUndoable(match entry.facts {
             UndoFacts::NotUndoable(reason) => reason,
@@ -631,32 +738,38 @@ pub fn plan_undo(
 
 /// Redoes the head's most recent child (D5: greatest `(created_at, id)`
 /// — stateless, deterministic, editor-equivalent in every v1-reachable
-/// case). Redo re-plans the *forward* intent through the catalogue — a
-/// fresh edit with fresh stamps by construction; no watermark check,
-/// but the catalogue's typed rejections still apply.
+/// case). Under [`UndoScope::Board`] the D5 freedom narrows: the
+/// greatest child *among the in-scope children* — siblings are
+/// alternative continuations, so an out-of-scope newer sibling never
+/// blocks an in-scope child (#355). Redo re-plans the *forward* intent
+/// through the catalogue — a fresh edit with fresh stamps by
+/// construction; no watermark check, but the catalogue's typed
+/// rejections still apply.
 ///
 /// # Errors
 ///
-/// `NothingToRedo` (no head or no child), `TargetNotUndoable` (a
-/// `NotUndoable` child is unreachable as a redo target — defensive), or
-/// the forward command's own rejection.
+/// `NothingToRedo` / `NothingToRedoForBoard` (no head, or no child in
+/// scope), `TargetNotUndoable` (a `NotUndoable` child is unreachable as
+/// a redo target — defensive), or the forward command's own rejection.
 #[allow(clippy::too_many_arguments)] // plan_command's own shape, threaded
 pub fn plan_redo(
     app: &AppState,
     outbox: &[PendingOp],
     journal: &JournalState,
+    scope: UndoScope,
     ids: &dyn IdGenerator,
     defaults: &ReminderDefaults,
     day: DayCalendar,
     now: DateTime<Utc>,
     author: Option<crate::ids::AuthorId>,
 ) -> Result<CommandPlan, CommandError> {
-    let head_id = journal.head.ok_or(CommandError::NothingToRedo)?;
+    let head_id = journal.head.ok_or_else(|| nothing_to_redo(scope))?;
     let target = journal
         .children_of(head_id)
         .into_iter()
+        .filter(|entry| scope_covers(scope, entry.board))
         .max_by_key(|entry| (entry.created_at, entry.id))
-        .ok_or(CommandError::NothingToRedo)?;
+        .ok_or_else(|| nothing_to_redo(scope))?;
     if let UndoFacts::NotUndoable(reason) = target.facts {
         return Err(CommandError::TargetNotUndoable(reason));
     }
@@ -817,6 +930,8 @@ impl JournalEntry {
             | StateCommand::ConvertHabitToSeries { .. }
             | StateCommand::Undo
             | StateCommand::Redo
+            | StateCommand::UndoOnBoard { .. }
+            | StateCommand::RedoOnBoard { .. }
             | StateCommand::RequestSync
             | StateCommand::UpdateSettings { .. } => Err(CommandError::TargetNotUndoable(
                 NotUndoableReason::BoardCeremony,

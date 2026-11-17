@@ -335,6 +335,47 @@ impl UndoView {
                 .collect(),
         }
     }
+
+    /// The per-board projection (#355, D-6): the same [`UndoView`]
+    /// shape narrowed to one board's tag. The scope predicate is D-3's:
+    /// an entry is in scope iff `entry.board == Some(board)` — a
+    /// `None`-tagged entry belongs to no board scope. `can_undo` iff
+    /// the head exists *and* is in scope (the strict frontier rule);
+    /// `can_redo` iff the head has at least one in-scope child (the
+    /// sibling rule); `head_label` only when `can_undo`; `recent` is
+    /// the newest-first in-scope slice, still bounded by
+    /// [`UNDO_RECENT_WINDOW`] (the window applies per board). Pure, so
+    /// future UI consumers and the engine-side tests share one
+    /// derivation — the [`UndoView::derive`] precedent. Memory-only;
+    /// `AppState` and the publish path are untouched.
+    #[must_use]
+    pub fn derive_for_board(journal: &JournalState, board: BoardId) -> Self {
+        let head = journal.head.and_then(|id| journal.entry(id));
+        let can_redo = journal.head.is_some_and(|head| {
+            journal
+                .children_of(head)
+                .iter()
+                .any(|entry| entry.board == Some(board))
+        });
+        UndoView {
+            can_undo: head.is_some_and(|entry| entry.board == Some(board)),
+            can_redo,
+            head_label: head
+                .filter(|entry| entry.board == Some(board))
+                .map(|entry| command_label(&entry.command)),
+            recent: journal
+                .entries
+                .iter()
+                .rev()
+                .filter(|entry| entry.board == Some(board))
+                .take(UNDO_RECENT_WINDOW)
+                .map(|entry| UndoLabel {
+                    id: entry.id,
+                    label: command_label(&entry.command),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// The derived display text of a journaled intent. Presentation-only
@@ -396,7 +437,10 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::PauseSeries { .. } => "Pause series".into(),
         StateCommand::ConvertSeriesToHabit { .. } => "Convert series to habit".into(),
         StateCommand::ConvertHabitToSeries { .. } => "Convert habit to series".into(),
-        StateCommand::Undo | StateCommand::Redo => "Undo/redo".into(),
+        StateCommand::Undo
+        | StateCommand::Redo
+        | StateCommand::UndoOnBoard { .. }
+        | StateCommand::RedoOnBoard { .. } => "Undo/redo".into(),
         StateCommand::RequestSync => "Sync".into(),
         StateCommand::UpdateSettings { .. } => "Update settings".into(),
     }

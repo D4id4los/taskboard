@@ -190,9 +190,10 @@ pub enum CommandError {
     /// minted it, never clamped.
     #[error("rating must be between 1 and 5")]
     InvalidRating,
-    /// An engine-routed command (`Undo`/`Redo`) reached the ordinary
-    /// catalogue — unreachable through the journal wrapper, which plans
-    /// them itself before `plan_command` sees them (ADR 0019). The arm
+    /// An engine-routed command (`Undo`/`Redo`/`UndoOnBoard`/
+    /// `RedoOnBoard`) reached the ordinary catalogue — unreachable
+    /// through the journal wrapper, which plans them itself before
+    /// `plan_command` sees them (ADR 0019). The arm
     /// exists for totality: every `StateCommand` arm has a
     /// `plan_command` arm.
     #[error("command is routed by the journal wrapper")]
@@ -204,6 +205,27 @@ pub enum CommandError {
     /// (ADR 0019, the D5 editor rule).
     #[error("nothing to redo")]
     NothingToRedo,
+    /// A board-scoped undo (`UndoOnBoard`, #355) found no in-scope
+    /// head: the line is empty, or the head's journal entry is tagged
+    /// with another board — or with no board at all (the
+    /// honest-ambiguity rule). Distinct from [`CommandError::NothingToUndo`]
+    /// so a surface can tell "the line is exhausted" from "the
+    /// frontier belongs to another board": the scoped question was
+    /// "anything on *this* board?", and the typed answer is no.
+    #[error("nothing to undo on this board")]
+    NothingToUndoForBoard {
+        /// The board whose scope was asked.
+        board: BoardId,
+    },
+    /// A board-scoped redo (`RedoOnBoard`, #355) found no in-scope
+    /// child of the head — the D5 editor rule narrowed to one board's
+    /// tag. Distinct from [`CommandError::NothingToRedo`] for the same
+    /// legibility reason as [`CommandError::NothingToUndoForBoard`].
+    #[error("nothing to redo on this board")]
+    NothingToRedoForBoard {
+        /// The board whose scope was asked.
+        board: BoardId,
+    },
     /// The head's entry is typed not undoable — refuse and name the
     /// reason, never skip (R-U6).
     #[error("the head command is not undoable")]
@@ -3127,7 +3149,10 @@ pub fn plan_command(
         // Engine-routed commands: the journal wrapper plans these before
         // the catalogue sees them; a direct dispatch is a typed
         // rejection (the totality arm, ADR 0019).
-        StateCommand::Undo | StateCommand::Redo => Err(CommandError::EngineRouted),
+        StateCommand::Undo
+        | StateCommand::Redo
+        | StateCommand::UndoOnBoard { .. }
+        | StateCommand::RedoOnBoard { .. } => Err(CommandError::EngineRouted),
         StateCommand::RequestSync => Ok(CommandPlan {
             actions: Vec::new(),
             outcome: CommandOutcome::SyncRequested,
