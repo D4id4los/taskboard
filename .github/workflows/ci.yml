@@ -193,6 +193,36 @@ jobs:
       - name: Run Doc Tests
         run: cargo test --doc --workspace
 
+      - name: Upload proptest regressions on failure
+        # #857: a proptest that exhausts its retries persists the
+        # minimized counterexample to the crate's
+        # `proptest-regressions/` file — ephemeral in CI, so the
+        # failure-persistence payoff is captured as a job artifact
+        # keyed on the job outcome (a nextest retry shard failing
+        # twice writes on the second run; no step-retry counting).
+        # Retention 90d matches the flaky-watchlist triage cadence.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions
+          path: "**/proptest-regressions/**"
+          retention-days: 90
+          if-no-files: warn
+      - name: Surface the regression artifact in the job summary
+        # Typed pointer, not prose: the triaging agent finds the
+        # artifact from the job page without log-diving.
+        if: failure()
+        run: |
+          {
+            echo "## proptest failure persistence"
+            echo ""
+            echo "A proptest exhausted its retries; the persisted"
+            echo "counterexample(s) are in the \`proptest-regressions\`"
+            echo "artifact of this job (retention 90 days). Triage:"
+            echo "download it, paste the cases into the matching"
+            echo "\`proptest-regressions/*.txt\`, replay locally, fix or re-arm."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   ui-mcp-smoke:
     name: MCP Harness Smoke
     runs-on: ubuntu-latest
