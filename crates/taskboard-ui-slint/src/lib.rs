@@ -3184,7 +3184,7 @@ mod view_component_tests {
                     assert_eq!(
                         rule.paused_until,
                         Some(chrono::NaiveDate::from_ymd_opt(2026, 12, 24).unwrap()),
-                        "the re-set preserves the pause (consciously updated with US-4,                          task-detail-editor UX plan D-9 — the accepted #759 resolution)"
+                        "the re-set preserves the pause (consciously updated with US-4, task-detail-editor UX plan D-9 — the accepted #759 resolution)"
                     );
                 }
                 other => panic!("typed outcome expected, got {other:?}"),
