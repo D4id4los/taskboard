@@ -67,6 +67,27 @@ impl taskboard_domain::Clock for SteppingClock {
     }
 }
 
+/// A clock the test drives by hand: the freshness-band test's seam
+/// (issue #868) — the fixture reads `now()` to control the cache
+/// entry's age across cycles deterministically, never sleeps.
+#[derive(Debug, Default)]
+pub(crate) struct SettableClock(std::sync::Mutex<Option<DateTime<Utc>>>);
+
+impl SettableClock {
+    pub(crate) fn set(&self, at: DateTime<Utc>) {
+        *self.0.lock().expect("clock mutex") = Some(at);
+    }
+}
+
+impl taskboard_domain::Clock for SettableClock {
+    fn now(&self) -> DateTime<Utc> {
+        self.0
+            .lock()
+            .expect("clock mutex")
+            .expect("the test sets the clock before spawning the actor")
+    }
+}
+
 /// Session-only trace capture (the C4 triage harness): with
 /// `TASKBOARD_IT_TRACE=1`, installs a fmt subscriber on stderr honoring
 /// `RUST_LOG` (e.g. `RUST_LOG=taskboard_sync_nextcloud=debug`). A no-op

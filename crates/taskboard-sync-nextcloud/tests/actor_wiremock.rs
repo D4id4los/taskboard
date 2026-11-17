@@ -3021,6 +3021,79 @@ async fn a34b_the_1_19_1_listing_shape_confirms_the_anchor() {
     assert_eq!(sidecar::download_hits(&server).await, 1);
 }
 
+/// The equal-validator sidecar skip trusts the cache only inside the
+/// #868 freshness band (stage-1 plan D2b): identical Deck metadata
+/// answers from the cache while the entry's age is
+/// `actor::SKEW_BAND_SECS`; once the age reaches the band, the next
+/// scheduled cycle re-fetches the content (and restamps
+/// `fetched_at`). Request-count oracles on the wiremock journal;
+/// time control through the injected `SettableClock` — the same
+/// single-constant band the Deck actor runs in production (the #133
+/// named tolerance, never a second constant).
+#[tokio::test(start_paused = true)]
+async fn a34c_the_sidecar_skip_trusts_the_cache_only_inside_the_freshness_band() {
+    let server = start_server().await;
+    mount_capabilities(&server, Some("1.19.0")).await;
+    mount_standard_pull(
+        &server,
+        serde_json::json!([sidecar::anchor_card_json(sidecar::CARD, T)]),
+    )
+    .await;
+    sidecar::mount_detail(&server, sidecar::CARD, false).await;
+    sidecar::mount_download(&server, sidecar::document_json(BOARD, 1), 200).await;
+
+    let clock = Arc::new(common::SettableClock::default());
+    clock.set(stamped());
+    let cfg = SyncActorConfig {
+        clock: clock.clone(),
+        ..cfg()
+    };
+    let mut actor = spawn_with_cfg(&server, sidecar::repo_with_bound_anchor(), cfg);
+
+    // Cycle 1: the fill — the download endpoint is hit exactly once.
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { app_data, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    let taskboard_domain::AppDataEvidence::Document(_) = app_data else {
+        panic!("expected Document evidence, got {app_data:?}");
+    };
+    assert_eq!(sidecar::download_hits(&server).await, 1);
+
+    // Cycle 2, age inside the band (band − 1): the skip stays silent —
+    // identical metadata, still no download.
+    clock.set(
+        stamped() + chrono::TimeDelta::seconds(taskboard_sync_nextcloud::actor::SKEW_BAND_SECS - 1),
+    );
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(
+        sidecar::download_hits(&server).await,
+        1,
+        "an entry inside the band answers from the cache"
+    );
+
+    // Cycle 3, age at the band: the guard fires — the content is
+    // re-fetched once and the entry restamped.
+    clock.set(
+        stamped() + chrono::TimeDelta::seconds(taskboard_sync_nextcloud::actor::SKEW_BAND_SECS),
+    );
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { app_data, .. } = report else {
+        panic!("expected a Completed report");
+    };
+    let taskboard_domain::AppDataEvidence::Document(_) = app_data else {
+        panic!("expected Document evidence, got {app_data:?}");
+    };
+    assert_eq!(
+        sidecar::download_hits(&server).await,
+        2,
+        "an entry past the band re-fetches on the next scheduled cycle"
+    );
+}
+
 /// S-2: no anchor-titled card ⇒ `Absent`, and not a single attachment
 /// request rides the cycle.
 #[tokio::test(start_paused = true)]

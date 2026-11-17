@@ -204,6 +204,26 @@ struct LoopState {
     evicted: std::collections::BTreeMap<RemoteBoardId, taskboard_domain::AppDataSections>,
 }
 
+/// The freshness trust window for the equal-validator sidecar skip
+/// (issue #868): a cache entry younger than the band may answer from
+/// the cache on unchanged Deck metadata; once its age reaches the
+/// band, the next scheduled cycle re-fetches the content. The value is
+/// the #133 named tolerance, twinned into this crate (the files crate
+/// carries its own twin; per the skew plan §4 the constant is
+/// module-scope, twinned-per-crate — this is the Deck crate's twin,
+/// not a second constant).
+///
+/// The band is deliberately aggressive in production: a Deck sidecar
+/// older than 2 s re-fetches once per scheduled cycle. The cost is
+/// bounded — one attachment GET per board cycle, the same request the
+/// un-equal-metadata path already makes — and a single named constant
+/// is the only shape this guard admits; a cadence-style band
+/// (re-fetch near a revalidation due point) would need a second
+/// constant and is recorded as backlog debt.
+/// Public so the wiremock harness's band test can anchor its age
+/// advances to the one named constant instead of a literal.
+pub const SKEW_BAND_SECS: i64 = 2;
+
 /// One board's last successful document ingest (D11). Only a
 /// `Document`-class evidence inserts or refreshes an entry; every
 /// failure form leaves the cache untouched — the next cycle re-GETs,
@@ -212,6 +232,12 @@ struct LoopState {
 struct CachedAppData {
     last_modified: i64,
     filesize: i64,
+    /// Unix seconds when the entry's content was last fetched or
+    /// written by this actor, stamped from the injected clock at the
+    /// insert site (issue #868's fetch-time seam: the equal-validator
+    /// skip trusts the entry only while it is fresh — never
+    /// indefinitely).
+    fetched_at: i64,
     document: taskboard_domain::AppDataDocument,
 }
 
@@ -644,6 +670,7 @@ async fn cycle(
             &snapshot,
             pulled.detail_attachments,
             st,
+            cfg.clock.as_ref(),
         )
         .await
         {
@@ -789,12 +816,17 @@ async fn cycle(
                     } => {
                         pushes.extend(outcomes);
                         // The cache refresh: the next cycle must not
-                        // re-GET our own write (D-S4 item 4).
+                        // re-GET our own write (D-S4 item 4). The
+                        // freshness stamp rides the injected clock
+                        // like every stamp the actor mints; past the
+                        // #868 band the entry re-fetches like any
+                        // other — never trusted indefinitely.
                         st.documents.insert(
                             target,
                             CachedAppData {
                                 last_modified: stamp.last_modified,
                                 filesize: stamp.filesize,
+                                fetched_at: cfg.clock.now().timestamp(),
                                 document: *document,
                             },
                         );
@@ -976,12 +1008,14 @@ async fn send_report(reports: &mpsc::Sender<SyncReport>, report: SyncReport) -> 
 /// content changed (D11's cache). Success-only caching: only
 /// `Document`-class evidence touches `LoopState.documents`.
 #[allow(clippy::type_complexity)] // the triple is the read's products
+#[allow(clippy::too_many_lines)] // discovery + tombstone + cache guard + download, one order
 async fn sidecar_evidence(
     client: &DeckClient,
     target: RemoteBoardId,
     snapshot: &DeckBoardSnapshot,
     mut details: std::collections::HashMap<RemoteCardRef, Vec<crate::model::Attachment>>,
     st: &mut LoopState,
+    clock: &dyn taskboard_domain::Clock,
 ) -> Result<
     (
         AppDataEvidence,
@@ -1044,22 +1078,15 @@ async fn sidecar_evidence(
     if let Some(cached) = st.documents.get(&target)
         && cached.last_modified == candidate.last_modified
         && cached.filesize == candidate.filesize
+        && clock.now().timestamp() - cached.fetched_at < SKEW_BAND_SECS
     {
-        // Metadata equal ⇒ skip the content GET; re-folding the cached
-        // document is idempotent (chunk 4's guarantee).
-        //
-        // #133 audit row 5 verdict (no-change; see the chunk-E plan
-        // §3): Deck REST revisions churn on write — `last_modified`
-        // equality means the attachment was not rewritten since the
-        // cache was filled, so equal ⇒ equal content holds and the
-        // skip is correct. The #695 retention signature is a WebDAV
-        // *validator* behavior (the files-substrate's ETag family);
-        // Deck's revision stamp is not that validator, and wrapping
-        // the equal branch in a skew-band refresh would need a
-        // fetch-time seam on `CachedAppData` plus a clock in this
-        // actor — new seams for no reachable failure. Recorded as
-        // backlog debt instead (issue #868; the chunk-E plan §8's
-        // bounded fallback).
+        // Metadata equal AND inside the freshness band ⇒ skip the
+        // content GET; re-folding the cached document is idempotent
+        // (chunk 4's guarantee). Row-5 verdict (chunk-E plan §3): Deck
+        // revisions churn on write, so equal metadata ⇒ equal content.
+        // #868 bounds the trust — past [`SKEW_BAND_SECS`] the
+        // fall-through re-fetches once per scheduled cycle; the
+        // cadence-band alternative is backlog debt.
         return Ok((
             AppDataEvidence::Document(Box::new(cached.document.clone())),
             discovery,
@@ -1091,6 +1118,7 @@ async fn sidecar_evidence(
                     CachedAppData {
                         last_modified: candidate.last_modified,
                         filesize: candidate.filesize,
+                        fetched_at: clock.now().timestamp(),
                         document: (**document).clone(),
                     },
                 );
