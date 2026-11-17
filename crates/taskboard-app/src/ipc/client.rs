@@ -4,11 +4,16 @@
 //! binary relays `out`/`err` verbatim and exits with the daemon's code,
 //! so the observable contract is byte-identical to the in-process path.
 //!
-//! Budget policy (ADR 0012 §4.8, as amended 2026-10-27): local sockets
-//! answer or refuse instantly. Concrete refusals (absent socket,
-//! refused connection, permissions) return `None` immediately so the
-//! caller falls through to the in-process path without latency; only
-//! ambiguous failures retry within a 1 s connect budget. Every verb
+//! Budget policy (ADR 0012 §4.8, as amended 2026-10-27 and 2026-11-17):
+//! local sockets answer or refuse instantly. A `NotFound` socket (no or
+//! stale artifact — the holder is dead and the lock free) and
+//! `PermissionDenied` (not ours to guess) return `None` immediately so
+//! the caller falls through to the in-process path without latency;
+//! every other failure — `ConnectionRefused` included (issue #570: on
+//! a UDS, refused means the artifact exists but nobody accepts *yet*,
+//! a live or mid-boot daemon — an immediate fallback would collide
+//! with the live lock holder) — retries within a 1 s connect budget,
+//! then yields `None`. Every verb
 //! still self-bounds; the bounded stance adds a client read deadline
 //! that catches only the *wedged daemon* case the old no-deadline
 //! policy name-checked: `exec`/`status`/`shutdown` wrap their whole
@@ -31,9 +36,9 @@ use crate::ipc::protocol::{
 };
 use crate::ipc::socket_name;
 
-/// The connect budget for ambiguous transport failures only (see the
-/// module docs): on expiry the caller falls through to the in-process
-/// path — an honest signal, not a hang.
+/// The connect budget for refused and ambiguous transport failures
+/// (see the module docs): on expiry the caller falls through to the
+/// in-process path — an honest signal, not a hang.
 const CONNECT_BUDGET: Duration = Duration::from_secs(1);
 /// The ambiguous-failure retry cadence (well under the budget).
 const CONNECT_RETRY: Duration = Duration::from_millis(50);
@@ -115,9 +120,14 @@ pub struct Connection {
 }
 
 /// Tries to connect to the daemon serving `db_path`: `Some(connection)`
-/// when a daemon answers, `None` when nothing does (concrete refusals
-/// return immediately; ambiguous failures retry within the connect
-/// budget).
+/// when a daemon answers, `None` when nothing does. `NotFound` (no or
+/// stale artifact — the holder is dead and the lock free) and
+/// `PermissionDenied` (not ours to guess) fall through immediately;
+/// *every other* failure — `ConnectionRefused` included (issue #570:
+/// on a UDS, refused means the artifact exists but nobody accepts yet,
+/// i.e. a daemon is live or mid-boot — falling back to in-process
+/// bootstrap there collides with the live lock holder) — retries
+/// within the connect budget, then yields `None`.
 #[must_use]
 pub async fn try_connect(db_path: &Path) -> Option<Connection> {
     let name = socket_name(db_path).ok()?;
@@ -131,9 +141,7 @@ pub async fn try_connect(db_path: &Path) -> Option<Connection> {
             Err(err)
                 if matches!(
                     err.kind(),
-                    std::io::ErrorKind::NotFound
-                        | std::io::ErrorKind::ConnectionRefused
-                        | std::io::ErrorKind::PermissionDenied
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
                 ) =>
             {
                 // No artifact / stale artifact / not ours: no daemon we
@@ -595,6 +603,61 @@ mod tests {
         assert!(
             elapsed >= CONNECT_BUDGET,
             "ambiguous failures must consume the budget, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < CONNECT_BUDGET + std::time::Duration::from_secs(5),
+            "the budget bounds the wait, took {elapsed:?}"
+        );
+    }
+
+    /// A `ConnectionRefused` answer is no longer an immediate fallback
+    /// (issue #570): refused means the artifact exists but nobody
+    /// accepts *yet* — a daemon live or mid-boot — and falling through
+    /// to bootstrap there collides with the live lock holder. A
+    /// refused socket that starts serving inside the connect budget is
+    /// therefore connected, not misrouted. (A bare regular file at the
+    /// socket path answers connect with `ECONNREFUSED` — the artifact
+    /// without an acceptor.) Paused clock: no wall clock, no sleeps.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_socket_that_starts_serving_inside_the_budget_connects() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("refused-then-served.db");
+        let sidecar = socket_sidecar(&db);
+        std::fs::write(&sidecar, b"").expect("placeholder artifact");
+
+        let db_for_task = db.clone();
+        let task = tokio::spawn(async move { try_connect(&db_for_task).await });
+        // A few refused retries burn budget before the daemon appears.
+        tokio::time::advance(std::time::Duration::from_millis(200)).await;
+        std::fs::remove_file(&sidecar).expect("drop the placeholder");
+        let _listener = stalling_daemon(&db);
+
+        let outcome = task.await.expect("try_connect task joins");
+        assert!(
+            outcome.is_some(),
+            "refused-then-served connects within the budget"
+        );
+    }
+
+    /// The other side of the #570 pin: refused *throughout* still
+    /// falls through bounded — the caller reaches the in-process path
+    /// within the connect budget, never hangs on a dead artifact.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refused_socket_falls_through_within_the_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("refused-throughout.db");
+        let sidecar = socket_sidecar(&db);
+        std::fs::write(&sidecar, b"").expect("placeholder artifact");
+
+        let started = std::time::Instant::now();
+        let outcome = try_connect(&db).await;
+        assert!(outcome.is_none(), "nothing accepts on the dead artifact");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= CONNECT_BUDGET,
+            "refused connections must consume the budget, took {elapsed:?}"
         );
         assert!(
             elapsed < CONNECT_BUDGET + std::time::Duration::from_secs(5),
