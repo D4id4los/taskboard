@@ -73,6 +73,12 @@ export component BoardView inherits FocusScope {
     // slint: task-track-toggled (UX-R8 chunk-5 D-6): the card
     // control's forward.
     callback task-track-toggled(int, int);
+    // The armed multi-delete strip's fact + pair (UX-R8 chunk-5 D-9,
+    // #882): the count caption (−1 disarmed), the #784 grammar's
+    // third instance.
+    in property <int> task-multi-delete-armed;
+    callback task-multi-delete-confirmed();
+    callback task-multi-delete-cancelled();
     // The stack-rename field of one column (r2 D21).
     callback rename-committed(int, string);
     callback rename-edited(int, string);
@@ -159,6 +165,34 @@ export component BoardView inherits FocusScope {
                     tone: Tone.neutral;
                     label: "Cancel delete board";
                     clicked => root.board-delete-cancelled();
+                }
+            }
+
+            // The armed multi-delete strip (UX-R8 chunk-5 D-9, #882):
+            // the board-bar region's consequence strip — the member
+            // count names what the confirm deletes (the #784 grammar's
+            // third instance beside the stack/board strips).
+            if (root.task-multi-delete-armed >= 0): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.danger;
+                    text: "Deletes " + root.task-multi-delete-armed + " selected tasks.";
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.danger;
+                    label: "Confirm delete tasks";
+                    clicked => root.task-multi-delete-confirmed();
+                }
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Cancel delete tasks";
+                    clicked => root.task-multi-delete-cancelled();
                 }
             }
 
