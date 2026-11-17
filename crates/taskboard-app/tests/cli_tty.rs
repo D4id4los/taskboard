@@ -133,12 +133,47 @@ enum WaitOutcome {
 /// reader thread appends one `<micros-since-spawn>\t<chunk-len>` line per
 /// chunk — the data the budget derivation consumes. Diagnostic-only, off by
 /// default, no behavior change.
+///
+/// Directory mode: when the value names an existing directory or ends
+/// with a path separator, each session writes its own
+/// `<test-name>-<pid>-<n>.log` inside it (the harness `create_dir_all`s
+/// the directory first) — parallel nextest processes and parallel
+/// sessions in one test would clobber a single file, which is exactly
+/// what CI capture needs (issue #697, decision D2). A plain-file value
+/// keeps the original single-file behavior (local use).
 struct GapLog(Option<std::fs::File>, Instant);
 
 impl GapLog {
-    fn open() -> Self {
+    /// One higher than every session index handed out so far in this
+    /// process — part of the log filename so multiple sessions in one
+    /// test never share a file.
+    fn next_session_index() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SESSION_INDEX: AtomicU64 = AtomicU64::new(0);
+        SESSION_INDEX.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn open(test_name: Option<&str>) -> Self {
         let file = std::env::var("TASKBOARD_PTY_TEST_GAP_LOG")
             .ok()
+            .map(|path| {
+                let path = std::path::PathBuf::from(path);
+                // Directory mode: an existing directory, or an explicit
+                // trailing separator (the harness creates the directory
+                // itself before any session spawns).
+                let is_dir = path.is_dir() || path.as_os_str().to_string_lossy().ends_with('/');
+                if is_dir {
+                    std::fs::create_dir_all(&path).expect("create the pty gap log directory");
+                    let test_name = test_name.unwrap_or("pty").replace(['/', ':'], "-");
+                    path.join(format!(
+                        "{test_name}-{}-{}.log",
+                        std::process::id(),
+                        Self::next_session_index()
+                    ))
+                } else {
+                    path
+                }
+            })
             .map(|path| std::fs::File::create(path).expect("open the pty gap log"));
         Self(file, Instant::now())
     }
@@ -165,9 +200,13 @@ impl PtyOutput {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (progress_tx, progress_rx) = std_mpsc::channel();
         let seen_for_thread = Arc::clone(&seen);
+        // Captured on the *calling* (test) thread: the reader thread is
+        // unnamed, and the test's thread name is the log label
+        // directory mode files itself with.
+        let test_name = std::thread::current().name().map(str::to_owned);
         std::thread::spawn(move || {
             let mut pipe = out_pipe;
-            let mut gap_log = GapLog::open();
+            let mut gap_log = GapLog::open(test_name.as_deref());
             loop {
                 let mut chunk = [0u8; 4096];
                 match std::io::Read::read(&mut pipe, &mut chunk) {

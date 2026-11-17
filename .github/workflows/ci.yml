@@ -163,6 +163,12 @@ jobs:
       # Same offline-cache guarantee as the check job: builds must never
       # need a live DATABASE_URL.
       SQLX_OFFLINE: "true"
+      # Pty gap telemetry on for every CI run (issue #697): the trailing
+      # separator selects the harness's directory mode — one
+      # <test-name>-<pid>-<n>.log per pty session, no parallel clobber.
+      # The directory is created by the test harness itself; the
+      # failure-only upload below carries the data out of the job log.
+      TASKBOARD_PTY_TEST_GAP_LOG: ${{ runner.temp }}/pty-gap/
     steps:
       - uses: actions/checkout@v7
 
@@ -189,6 +195,20 @@ jobs:
         # tests/bench_fixtures.rs stays — it is a regular integration
         # test, not a bench target.
         run: cargo nextest run --workspace --no-tests=warn
+
+      - name: Upload pty gap logs
+        # Diagnostic capture on failure only (issue #697): the gap
+        # telemetry a flaky pty run produces is the budget-derivation
+        # evidence; it never belongs in the job log. Upload warnings
+        # must never fail an already-failing job.
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: pty-gap-logs
+          path: ${{ runner.temp }}/pty-gap/
+          retention-days: 30
+          if-no-files-found: ignore
 
       - name: Run Doc Tests
         run: cargo test --doc --workspace
