@@ -22235,3 +22235,59 @@ fn us3_s2_invalid_effort_keeps_the_buffer() {
         },
     );
 }
+
+// -- task-detail-editor UX plan US-4 (dispatch chunk 3): a re-set
+// -- recur rule preserves the series pause (#759) — both fronts mint
+// -- through the one domain `assemble_rule`.
+
+/// US-4/S1 (AC-1, GUI front): the recur editor's commit over a paused
+/// series dispatches `UpdateTask { recur: Some(Some(rule)) }` whose
+/// minted rule carries the existing `paused_until` — fixing a pattern
+/// never silently resumes the series. The CLI twin lives in
+/// `taskboard-app/tests/cli_repeat.rs::us4_s1_cli_rule_replace_preserves_paused_until`.
+#[test]
+fn us4_s1_rule_replace_preserves_paused_until() {
+    let (fx, mut state) = fixture::golden_state();
+    let paused = taskboard_domain::RecurRule {
+        series: taskboard_domain::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(42)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 10, 5).expect("fixture date"),
+        pattern: taskboard_domain::RecurPattern::Daily {
+            every: taskboard_domain::EveryDays::new(2).expect("valid interval"),
+        },
+        bound: taskboard_domain::RecurBound::None,
+        continued_from: None,
+        paused_until: chrono::NaiveDate::from_ymd_opt(2026, 12, 1),
+    };
+    if let Some(task) = state.tasks.get_mut(&fx.task0) {
+        task.recur = Some(paused);
+    }
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            harness.handle.dispatch_action(ActionId::SeriesEdit);
+            harness.driver.advance_time(0);
+            assert!(
+                window.get_recur_editor_open(),
+                "the recur editor arms over the paused series"
+            );
+            window.invoke_recur_commit_clicked();
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        recur: Some(Some(rule)),
+                        ..
+                    },
+                    ..
+                }] if rule.paused_until == chrono::NaiveDate::from_ymd_opt(2026, 12, 1),
+            ));
+        },
+    );
+}

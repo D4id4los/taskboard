@@ -1010,3 +1010,58 @@ async fn p8_pause_and_resume_ride_the_domain_verb() {
         "the resume cleared the field"
     );
 }
+
+/// US-4/S1 CLI front (task-detail-editor UX plan D-9, #759): re-setting
+/// the rule of a paused series preserves the pause — the same mint the
+/// GUI editor shares; `PauseSeries` remains the only clearer.
+#[tokio::test]
+async fn us4_s1_cli_rule_replace_preserves_paused_until() {
+    let dir = tempdir();
+    let config = standalone_config(dir.path(), "us4-s1.db");
+    seed(&config, "Todo", "Water plants").await;
+
+    let pause_invocation = |until: Option<NaiveDate>| repeat::RepeatInvocation::Pause {
+        task: "Water plants".into(),
+        until,
+    };
+
+    repeat::repeat(
+        config.clone(),
+        forbidden_store(),
+        set_invocation(
+            "Water plants",
+            repeat::PatternSpec::Daily(EveryDays::new(2).unwrap()),
+            repeat::BoundSpec::None,
+        ),
+    )
+    .await
+    .expect("set");
+    repeat::repeat(
+        config.clone(),
+        forbidden_store(),
+        pause_invocation(Some(noon_date(2026, 12, 1))),
+    )
+    .await
+    .expect("paused");
+    // The replacement: a different pattern on the paused series.
+    let replaced = repeat::repeat(
+        config.clone(),
+        forbidden_store(),
+        set_invocation(
+            "Water plants",
+            repeat::PatternSpec::Weekly {
+                interval: EveryWeeks::new(1).unwrap(),
+                on: None,
+            },
+            repeat::BoundSpec::None,
+        ),
+    )
+    .await
+    .expect("re-set");
+    let rule = replaced.rule.expect("the replacement kept the rule");
+    assert_eq!(
+        rule.paused_until,
+        Some(noon_date(2026, 12, 1)),
+        "the re-set mint preserves the series pause"
+    );
+}
