@@ -123,6 +123,35 @@ mod tests {
         }
     }
 
+    /// A frame of exactly `cap` bytes is the largest legal frame: the
+    /// boundary must pass in both directions (an `>=` boundary check
+    /// would refuse the contractual maximum).
+    #[tokio::test]
+    async fn a_frame_of_exactly_the_cap_is_accepted() {
+        let payload = b"exactly8";
+        debug_assert_eq!(payload.len(), 8);
+        let (mut tx, mut rx) = pipe();
+        write_frame(&mut tx, payload, 8)
+            .await
+            .expect("write at cap");
+        let back = read_frame(&mut rx, 8).await.expect("read at cap");
+        assert_eq!(back, payload);
+    }
+
+    /// An *announced* length of exactly `cap` must be accepted too:
+    /// the reader refuses only lengths above the cap.
+    #[tokio::test]
+    async fn an_announced_length_of_exactly_the_cap_is_accepted() {
+        use tokio::io::AsyncWriteExt as _;
+        let body = b"exactly8";
+        let (mut tx, mut rx) = pipe();
+        tx.write_all(&8u32.to_le_bytes()).await.expect("len");
+        tx.write_all(body).await.expect("body");
+        drop(tx);
+        let back = read_frame(&mut rx, 8).await.expect("read at cap");
+        assert_eq!(back, &body[..]);
+    }
+
     #[tokio::test]
     async fn empty_frames_round_trip() {
         let (mut tx, mut rx) = pipe();
