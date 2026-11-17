@@ -21668,3 +21668,51 @@ fn us4_s3_multi_menu_withholds_single_target_rows() {
         },
     );
 }
+
+/// US-5/S1–S2 — the move-aim bit drives the badge's labelled state:
+/// the bit is set exactly on the aimed column with its label twin
+/// non-empty; no aim gesture → no column carries the bit and every
+/// label derivation is empty (AC-2's guard). Typed flags — the label
+/// text is never asserted.
+#[test]
+fn us5_s1_the_move_aim_bit_drives_the_badge_state() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let badge = |harness: &Harness, column: usize| {
+                let board = harness.handle.window().get_board_model();
+                let column = board.stacks.row_data(column).expect("column");
+                (column.move_aim, column.badge_label.is_empty())
+            };
+
+            // AC-2's guard: no gesture, no bit.
+            assert_eq!(badge(&harness, 0), (false, true), "idle: no aim");
+            assert_eq!(badge(&harness, 1), (false, true));
+
+            // The keyboard flow's aim: the armed slot's column only.
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::TaskMove);
+            harness.stroke(parse("Down").expect("Down"));
+            harness.stroke(parse("Down").expect("Down"));
+            harness.stroke(parse("Down").expect("Down"));
+            assert_eq!(
+                badge(&harness, 1),
+                (true, false),
+                "the aimed column carries the bit and its label"
+            );
+            assert_eq!(
+                badge(&harness, 0),
+                (false, true),
+                "the unaimed column stays clear"
+            );
+
+            // The flow's end clears the bit (the settle/confirm path).
+            harness.press(ActionId::TaskMoveCancel);
+            assert_eq!(badge(&harness, 1), (false, true), "the aim cleared");
+        },
+    );
+}

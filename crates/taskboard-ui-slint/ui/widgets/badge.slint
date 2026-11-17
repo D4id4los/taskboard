@@ -8,6 +8,11 @@ import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
 export component Badge inherits Rectangle {
     in property <string> text;
     in property <Tone> tone: Tone.neutral;
+    // The labelled-state override (UX-R8 D-7, US-5): the move-aim
+    // state's accessible label — empty = the default count label
+    // (the text). The Badge stays a dumb primitive: the derivation
+    // lives in the models pass.
+    in property <string> accessible-label-override: "";
 
     border-radius: Theme.radius-small;
     // The neutral chip rides the ladder's content step (r2 D35): on
@@ -35,7 +40,8 @@ export component Badge inherits Rectangle {
     }
 
     accessible-role: AccessibleRole.text;
-    accessible-label: root.text;
+    accessible-label: root.accessible-label-override == ""
+        ? root.text : root.accessible-label-override;
 
     HorizontalLayout {
         padding-left: Theme.space-1;

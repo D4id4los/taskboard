@@ -103,6 +103,15 @@ export struct StackColumnModel {
     // disarms. Presentation fact only: the armed identity lives in
     // the view state's flow, indexed into this pass's columns.
     delete-armed: bool,
+    // The count badge's move-aim state (UX-R8 D-7, US-5/AC-1): the
+    // column is the armed move/drag flow's aim — the tone flip's
+    // labelled twin. No aim gesture → no column carries the bit
+    // (AC-2's guard: the derivation is the guard). The paired label
+    // feeds the Badge's accessible-label override (empty = the
+    // default count label; a presentation constant, never asserted
+    // as text).
+    move-aim: bool,
+    badge-label: string,
     // The insertion indicator's data path (UX-R8 D-2, US-2/AC-3 +
     // US-5): the aimed gap index into this column's task table — −1
     // = not aimed. One data path for every aim gesture (keyboard
@@ -515,6 +524,7 @@ export component BoardLayout inherits Rectangle {
                                 Badge {
                                     text: "\{column.tasks.length}";
                                     tone: column-index == root.move-target ? Tone.sync-active : Tone.neutral;
+                                    accessible-label-override: column.badge-label;
                                 }
                             }
                         }
