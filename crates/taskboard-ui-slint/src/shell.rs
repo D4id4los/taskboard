@@ -79,6 +79,10 @@ pub struct KeymapShell {
     /// complete verb's router guard and the toggle's inversion, synced
     /// by the adapter from the focused task.
     pub focused_task_tracker: bool,
+    /// Whether the focused task carries a scheduled day (UX-R8 D-3):
+    /// `task.unschedule`'s route gate, synced by the adapter from the
+    /// focused task.
+    pub focused_task_scheduled: bool,
     /// The date-picker grid holds slint focus (round-3 D25): the
     /// `DatePicker` context rides the chain head while it does —
     /// non-masking, event-mirrored from the grid's focus seam.
@@ -137,8 +141,10 @@ impl KeymapShell {
             recur_edit_target: None,
             recur_draft_rule: None,
             day_window: None,
+            tomorrow_window_end: None,
             focused_task_done: self.focused_task_done,
             focused_task_tracker: self.focused_task_tracker,
+            focused_task_scheduled: self.focused_task_scheduled,
         }
     }
 

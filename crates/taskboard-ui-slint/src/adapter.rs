@@ -1290,6 +1290,16 @@ impl Adapter {
         // The today window rides every dispatch (chunk 10 D4): state-
         // derived from the held pair, never consumed.
         ctx.day_window = Some(self.day_ctx().window);
+        // The tomorrow window's end (UX-R8 chunk-5 D-3): the additive
+        // day fact, `days::next_day_window` — never `+24h` arithmetic.
+        ctx.tomorrow_window_end = Some(
+            taskboard_domain::days::next_day_window(
+                self.day_ctx().now,
+                self.day_start.0,
+                self.day_start.1,
+            )
+            .1,
+        );
         let outcome = ActionRouter::dispatch(id, &ctx);
         match outcome {
             DispatchOutcome::Command(command) => {
@@ -1736,6 +1746,13 @@ impl Adapter {
             .focused_task()
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.kind == taskboard_domain::entities::TaskKind::Tracker);
+        // The scheduled-day fact (UX-R8 chunk-5 D-3): task.unschedule's
+        // route gate — the focused_task_done shape.
+        self.shell.focused_task_scheduled = self
+            .view_state
+            .focused_task()
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.scheduled.is_some());
     }
 
     /// The geometry capture (#412, D4): samples the window's normal

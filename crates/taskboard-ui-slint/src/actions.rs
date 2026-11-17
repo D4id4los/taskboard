@@ -289,6 +289,13 @@ pub enum ActionId {
     TaskComplete,
     TaskReopen,
     TaskDueToday,
+    /// The scheduled field's quick verbs (UX-R8 chunk-5 US-1, D-3):
+    /// the quick bar's schedule twins — each routes the existing
+    /// sparse `UpdateTask { scheduled }` mask. The *due* twin stays
+    /// `TaskDueToday`, Today-only (R-1).
+    TaskScheduleToday,
+    TaskScheduleTomorrow,
+    TaskUnschedule,
     TaskMove,
     TaskMoveCancel,
     TaskDelete,
@@ -587,6 +594,9 @@ impl ActionId {
             Self::TaskComplete => "task.complete",
             Self::TaskReopen => "task.reopen",
             Self::TaskDueToday => "task.due-today",
+            Self::TaskScheduleToday => "task.schedule-today",
+            Self::TaskScheduleTomorrow => "task.schedule-tomorrow",
+            Self::TaskUnschedule => "task.unschedule",
             Self::TaskMove => "task.move",
             Self::TaskMoveCancel => "task.move.cancel",
             Self::TaskDelete => "task.delete",
@@ -744,6 +754,12 @@ pub struct ActionEntry {
 }
 
 const GLOBAL: &[ContextId] = &[ContextId::Global];
+/// The task-schedule family's availability contexts (UX-R8 chunk-5
+/// D-3, US-1): the `task.due-today` family's surface slice —
+/// `Board`, `Today`, `StackDetail`, `TaskDetail` — the same set
+/// `VIEW_NAV` names
+/// (the slice is aliased, not re-pasted).
+const TASK_CONTEXTS: &[ContextId] = VIEW_NAV;
 const VIEW_NAV: &[ContextId] = &[
     ContextId::Today,
     ContextId::Board,
@@ -1310,6 +1326,40 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 88,
         description: "Re-commits the focused task to today by stamping its due date at the day window's end; confirmation-free.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    // The scheduled field's quick verbs (UX-R8 chunk-5 US-1, D-3):
+    // the task.due-today family's contexts, at the reminder block's
+    // head. Labels are the scheduled field's verbs — the *due* twin
+    // stays `task.due-today` (R-1).
+    ActionEntry {
+        id: ActionId::TaskScheduleToday,
+        label: "Schedule today",
+        contexts: TASK_CONTEXTS,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 101,
+        description: "Stamps the focused task's scheduled day to today at the day window's end; confirmation-free.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::TaskScheduleTomorrow,
+        label: "Schedule tomorrow",
+        contexts: TASK_CONTEXTS,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 102,
+        description: "Stamps the focused task's scheduled day to tomorrow at the next day window's start; confirmation-free.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::TaskUnschedule,
+        label: "Unschedule",
+        contexts: TASK_CONTEXTS,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 103,
+        description: "Clears the focused task's scheduled day; confirmation-free.",
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {

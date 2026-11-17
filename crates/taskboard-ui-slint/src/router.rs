@@ -550,6 +550,15 @@ pub struct DispatchCtx {
     /// derived, never consumed; `task.due-today` re-commits to its end
     /// (`NoTarget` without focus or window).
     pub day_window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    /// The next day window's end (UX-R8 chunk-5 D-3, US-1/S2): set by
+    /// the adapter per dispatch from `days::next_day_window` — the
+    /// landed day law, never `+24h` arithmetic;
+    /// `task.schedule-tomorrow` commits to it.
+    pub tomorrow_window_end: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether the focused task carries a scheduled day (UX-R8 D-3):
+    /// `task.unschedule`'s route gate, synced by the adapter from the
+    /// focused task (the `focused_task_done` shape).
+    pub focused_task_scheduled: bool,
     /// The timers form's parsed draft (DR-3/3, D-P10): set by the
     /// adapter when the form commits; `timer.create` routes from it
     /// (`NoTarget` without one).
@@ -1161,6 +1170,43 @@ impl ActionRouter {
                 }),
                 _ => DispatchOutcome::NoTarget,
             },
+            // The scheduled field's quick verbs (UX-R8 chunk-5 D-3,
+            // US-1/S1–S3): the exact sparse `scheduled` mask — today's
+            // end rides the same window instant `task.due-today`
+            // re-commits (the uniform day-boundary law), tomorrow's is
+            // the additive window fact, unschedule is the `Some(None)`
+            // clear twin. Inapplicable subjects are withheld upstream
+            // (D-4); the NoTarget arm is the stale-absorb backstop.
+            ActionId::TaskScheduleToday => match (ctx.focused_task, ctx.day_window) {
+                (Some(id), Some((_, end))) => DispatchOutcome::Command(StateCommand::UpdateTask {
+                    id,
+                    changes: taskboard_domain::TaskChanges {
+                        scheduled: Some(Some(end)),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }),
+                _ => DispatchOutcome::NoTarget,
+            },
+            ActionId::TaskScheduleTomorrow => match (ctx.focused_task, ctx.tomorrow_window_end) {
+                (Some(id), Some(end)) => DispatchOutcome::Command(StateCommand::UpdateTask {
+                    id,
+                    changes: taskboard_domain::TaskChanges {
+                        scheduled: Some(Some(end)),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }),
+                _ => DispatchOutcome::NoTarget,
+            },
+            ActionId::TaskUnschedule => match (ctx.focused_task, ctx.focused_task_scheduled) {
+                (Some(id), true) => DispatchOutcome::Command(StateCommand::UpdateTask {
+                    id,
+                    changes: taskboard_domain::TaskChanges {
+                        scheduled: Some(None),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }),
+                _ => DispatchOutcome::NoTarget,
+            },
             // The today/inbox view intents + the capture flip (chunk
             // 10): pure view intents; the adapter interprets them.
             ActionId::ViewToday => DispatchOutcome::UiEffect(UiEffect::FocusToday),
@@ -1325,8 +1371,10 @@ mod tests {
             recur_edit_target: None,
             recur_draft_rule: None,
             day_window: None,
+            tomorrow_window_end: None,
             focused_task_done: false,
             focused_task_tracker: false,
+            focused_task_scheduled: false,
         }
     }
 
@@ -1336,6 +1384,71 @@ mod tests {
             reminder: taskboard_domain::ReminderRef::Default(TaskId::from_uuid(Uuid::now_v7())),
             occurrence: chrono::Utc::now(),
         }
+    }
+
+    /// UX-R8 chunk-5 D-3 (US-1/S1–S3) — the scheduled field's quick
+    /// verbs route the exact sparse `scheduled` mask: today's window
+    /// end, tomorrow's window end, the `Some(None)` clear twin; every
+    /// other mask stays `None`. The backstops: no focus → `NoTarget`
+    /// for all three; unschedule on an unscheduled subject →
+    /// `NoTarget` (the stale-absorb posture).
+    #[test]
+    fn the_schedule_trio_routes_the_exact_sparse_masks() {
+        let end = chrono::Utc::now();
+        let mut scheduled = ctx(true);
+        scheduled.day_window = Some((end, end));
+        scheduled.tomorrow_window_end = Some(end);
+        scheduled.focused_task_scheduled = true;
+        let expected = |end: chrono::DateTime<chrono::Utc>| {
+            DispatchOutcome::Command(StateCommand::UpdateTask {
+                id: scheduled.focused_task.expect("focused"),
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(end)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            })
+        };
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskScheduleToday, &scheduled),
+            expected(end),
+            "today commits the day window's end"
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskScheduleTomorrow, &scheduled),
+            expected(end),
+            "tomorrow commits the next window's end"
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskUnschedule, &scheduled),
+            DispatchOutcome::Command(StateCommand::UpdateTask {
+                id: scheduled.focused_task.expect("focused"),
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(None),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            }),
+            "unschedule commits the clear twin"
+        );
+
+        // The backstops: target-free contexts refuse typed.
+        let bare = ctx(false);
+        for id in [
+            ActionId::TaskScheduleToday,
+            ActionId::TaskScheduleTomorrow,
+            ActionId::TaskUnschedule,
+        ] {
+            assert_eq!(
+                ActionRouter::dispatch(id, &bare),
+                DispatchOutcome::NoTarget,
+                "{id} without a focused task is NoTarget"
+            );
+        }
+        // Unscheduling an unscheduled subject refuses (the withheld
+        // row's router backstop).
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskUnschedule, &ctx(true)),
+            DispatchOutcome::NoTarget
+        );
     }
 
     /// DR-3/3 — the timer verbs route exact typed commands from their
