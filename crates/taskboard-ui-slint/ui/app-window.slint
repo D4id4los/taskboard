@@ -10,7 +10,7 @@
 
 import { Theme, Typography, Semantic } from "theme.slint";
 import { Responsive, Breakpoint } from "responsive.slint";
-import { ActionMenu, MenuEntryModel } from "compositions/action-menu.slint";
+import { ActionMenu, MenuEntryModel, QuickBarEntryModel } from "compositions/action-menu.slint";
 import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
 import { CaptureOverlay } from "compositions/capture-overlay.slint";
 import { RecurEditor, RecurEditorModel } from "compositions/recur-editor.slint";
@@ -117,6 +117,9 @@ export global KeyboardState {
     in-out property <int> menu-active-group: -1;
     in-out property <[MenuEntryModel]> menu-submenu-entries: [];
     in-out property <[MenuEntryModel]> menu-entries: [];
+    // The task context menu's quick bar (UX-R8 chunk-5 D-2): empty
+    // for every other menu consumer (an empty model renders nothing).
+    in-out property <[QuickBarEntryModel]> menu-quick-bar: [];
     // The context menu's pointer anchor (round-1 D13): the card menu
     // opens at the pointer; the hamburger anchor is the default.
     in-out property <bool> menu-pointer-anchored: false;
@@ -1324,12 +1327,15 @@ export component AppWindow inherits Window {
                     - Theme.space-1 - 2 * Theme.space-2);
             entries: KeyboardState.menu-entries;
             submenu-entries: KeyboardState.menu-submenu-entries;
+            quick-bar: KeyboardState.menu-quick-bar;
             selected-index: KeyboardState.menu-selected-index;
             root-selected-index: KeyboardState.menu-root-selected-index;
             active-group: KeyboardState.menu-active-group;
             compact: Responsive.current-breakpoint == Breakpoint.compact;
             invoke-entry(index) => root.menu-entry-invoked(index);
             invoke-submenu-entry(index) => root.menu-submenu-entry-invoked(index);
+            // slint: menu-quick-bar-invoked
+            invoke-quick-bar(index) => root.menu-quick-bar-invoked(index);
             level-back() => root.menu-level-back();
         }
 
@@ -1564,6 +1570,9 @@ export component AppWindow inherits Window {
     // rows and the compact back row.
     pure callback menu-submenu-entry-invoked(int);
     pure callback menu-level-back();
+    // The quick actions bar's invocation (UX-R8 chunk-5 D-2, US-1):
+    // the adapter resolves the index against the open-time vec.
+    pure callback menu-quick-bar-invoked(int);
 
     // The D15 focus hand-off (journey finding): an edit flow's field
     // holds slint focus while mounted and unmounts when the flow ends;

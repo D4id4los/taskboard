@@ -33,6 +33,12 @@ export enum IconKind {
     chevron-right,
     // The picker-toggle affordance (r2 D25): a calendar.
     calendar,
+    // The schedule-tomorrow affordance (UX-R8 chunk-5 D-2): a
+    // calendar-plus — deliberately distinct from the shared calendar
+    // glyph (the F1 shared-icon lesson).
+    calendar-plus,
+    // The unschedule affordance (UX-R8 chunk-5 D-2): a calendar-minus.
+    calendar-minus,
     // The done affordance (R3 chunk C): a check mark.
     check,
     // The start-tracking affordance (DR-5/4, D-T16): a play triangle.
@@ -86,6 +92,8 @@ export component Icon inherits Image {
         : kind == IconKind.minus                ? @image-url("../assets/icons/minus.svg")
         : kind == IconKind.chevron-right        ? @image-url("../assets/icons/chevron-right.svg")
         : kind == IconKind.calendar             ? @image-url("../assets/icons/calendar.svg")
+        : kind == IconKind.calendar-plus        ? @image-url("../assets/icons/calendar-plus.svg")
+        : kind == IconKind.calendar-minus       ? @image-url("../assets/icons/calendar-minus.svg")
         : kind == IconKind.check                ? @image-url("../assets/icons/check.svg")
         : kind == IconKind.play                 ? @image-url("../assets/icons/play.svg")
         : kind == IconKind.stop                 ? @image-url("../assets/icons/square.svg")
