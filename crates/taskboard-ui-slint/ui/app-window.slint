@@ -1370,6 +1370,10 @@ export component AppWindow inherits Window {
             selected-index: KeyboardState.menu-selected-index;
             is-flyout: true;
             invoke-entry(index) => root.menu-submenu-entry-invoked(index);
+            // The fly-out never carries a quick bar (its model is the
+            // empty default) — the inventory's forwarding invariant
+            // still holds (the callback lands on the same Rust seam).
+            invoke-quick-bar(index) => root.menu-quick-bar-invoked(index);
         }
 
         // The tooltip host (usability D3, round-1 D9/D10): mounted
