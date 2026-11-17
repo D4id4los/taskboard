@@ -74,6 +74,11 @@ const SEAM_INVENTORY: &[&str] = &[
     "board_card_drag_armed",
     "board_card_drag_finished",
     "board_card_dropped",
+    // The gap drop grammar (UX-R8 D-2, US-2): the gap-zone hover and
+    // drop reports (the #760 fold — this inventory is the stage-3
+    // cross-check root).
+    "board_gap_dropped",
+    "board_gap_hovered",
     "board_create_committed",
     "board_create_edited",
     "board_create_field_committed",
@@ -95,7 +100,12 @@ const SEAM_INVENTORY: &[&str] = &[
     "board_stack_width_release",
     "board_switcher_activated",
     "board_task_activated",
+    "board_switcher_card_dropped",
+    "board_switcher_drop_hovered",
     "board_task_clicked",
+    // The modifier-click grammar (UX-R8 D-5, US-4/S1): the card's
+    // modifier release (the #760 fold).
+    "board_task_clicked_modifiers",
     "board_task_context_requested",
     "board_task_done_toggled",
     "capture_accepted",
