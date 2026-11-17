@@ -183,6 +183,13 @@ pub fn publish_card_phase(pending: Option<(bool, bool)>) -> Option<PublishPhase>
     }
 }
 
+/// The publish picker's flyout site (the files-sync-status UX plan
+/// US-9, D-10): the site grammar's letter — the picker anchors beside
+/// the Deck card's remote rows' pickers (site 1; site 0 is the
+/// remote rows' own). The single home of the anchor fact; the slint
+/// mount consumes it, the tests pin it.
+pub const PUBLISH_PICKER_SITE: i32 = 1;
+
 /// The per-board files lane's vocabulary (the files-sync-status UX
 /// plan US-2 AC-3, D-3): the Syncing/Idle vocabulary gains the
 /// stalled truth — no state claims Syncing against a rising pending
@@ -9281,6 +9288,13 @@ mod recur_editor_validity_tests {
 mod files_sync_chip_fold_tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// US-9 AC-1 — the picker anchors at its card per the site
+    /// grammar (the anchor site fact, typed as the constant).
+    #[test]
+    fn us9_ac1_the_picker_anchors_at_the_card() {
+        assert_eq!(PUBLISH_PICKER_SITE, 1);
+    }
 
     /// US-2 AC-3 — the stalled truth: pending ops with a failed cycle
     /// render Stalled, never Syncing against a rising count (the

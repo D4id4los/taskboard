@@ -590,12 +590,13 @@ component RemotePicker inherits Dropdown {
 
 // The account cards' publish picker (round-6 D-6.9, #699): one Deck
 // card's "publish a local board" affordance — the same Dropdown
-// grammar as the remote rows' pickers, mounted on flyout site 2 (0 is
-// the remote rows' pickers, 1 the board bar) and mirroring the same
-// `SettingsBoardFacts`, so the window-level flyout's pick resolves to
-// this card. The options are the model's unbound-board list — the
-// unbound-only filter IS the publish precondition, the app re-derives
-// it every pass.
+// grammar as the remote rows' pickers, mounted on flyout site 1
+// beside the card's remote rows (the site grammar's letter: the
+// files-sync-status plan US-9, D-10 re-anchors from site 2; site 0
+// is the remote rows' pickers) and mirroring the same `SettingsBoardFacts`, so the
+// window-level flyout's pick resolves to this card. The options are
+// the model's unbound-board list — the unbound-only filter IS the
+// publish precondition, the app re-derives it every pass.
 component DeckPublishPicker inherits Dropdown {
     in property <int> item-index;
     callback publish-picked(int, int);
@@ -604,7 +605,7 @@ component DeckPublishPicker inherits Dropdown {
     field-text: SettingsPublishCopy.placeholder;
     field-label: SettingsPublishCopy.label;
     field-description: SettingsPublishCopy.description;
-    flyout-site: 2;
+    flyout-site: 1;
     empty-hint: SettingsPublishCopy.empty-hint;
     row-activated(i) => {
         root.publish-picked(root.item-index, i);
