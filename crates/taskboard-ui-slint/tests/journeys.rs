@@ -23527,3 +23527,76 @@ fn us4_s2_card_pause_routes_stoptracking() {
         },
     );
 }
+
+/// US-5/S1 (origin AC-1, UX-R8 chunk-5 D-7) — a non-empty inline
+/// create commit focuses the created card: the apply lands (the fake
+/// engine's settle), the diff moves the focus, and the
+/// `FocusScrollHint` global edge-triggers toward the card's column.
+#[test]
+fn us5_s1_create_focuses_the_new_card() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.guard.begin(Verb::Create);
+            harness.press(ActionId::TaskCreate);
+            harness.type_text("focus me");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.guard.end(Verb::Create);
+            harness.engine.settle(&harness.handle);
+            harness.driver.advance_time(0);
+            // The created card is stack a's third card (the append
+            // order) and holds the emphasis.
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 2)),
+                "the created card is the focused card"
+            );
+            let hint = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::FocusScrollHint>();
+            assert_eq!(
+                hint.get_target_a(),
+                0,
+                "the scroll hint edge-triggers toward the card's column"
+            );
+        },
+    );
+}
+
+/// US-5/S2 (origin AC-2) — an empty-buffer settle hands off nothing:
+/// no command, no arm, the focus unchanged.
+#[test]
+fn us5_s2_empty_settle_hands_off_nothing() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.guard.begin(Verb::Create);
+            harness.press(ActionId::TaskCreate);
+            harness.type_text("");
+            harness.stroke(parse("Return").expect("Return"));
+            harness.guard.end(Verb::Create);
+            harness.assert_commands(&[]);
+            harness.engine.settle(&harness.handle);
+            harness.driver.advance_time(0);
+            assert_ne!(
+                harness.emphasized_card(),
+                Some((0, 2)),
+                "nothing was created, nothing to focus"
+            );
+            let hint = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::FocusScrollHint>();
+            assert_eq!(hint.get_target_a(), -1, "the hint global never armed");
+        },
+    );
+}
