@@ -1035,6 +1035,10 @@ pub fn push(
         rows: ModelRc::from(bar_rows_handle),
         archived_rows: ModelRc::from(archived_rows_handle),
         archived_enabled: !kiosk,
+        // The roster's recognition cue (UX-R8 D-9, US-7/AC-1): true
+        // exactly when the archived set is non-empty (the mount rule's
+        // twin — the indicator mounts iff this is true).
+        archived_cue: !archived.is_empty(),
     });
 
     mutations += push_chrome(

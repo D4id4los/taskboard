@@ -879,8 +879,26 @@ export component BoardLayout inherits Rectangle {
     if (root.stacks.length > 0 && root.compact-active): VerticalLayout {
         spacing: Theme.space-1;
 
-        // The stack switcher: the first focusable element of the
-        // compact board (D8/D15); a segmented row of stack titles.
+        // The board bar's compact leg (UX-R8 D-8, US-6): the
+        // dropdown-at override of 0 collapses the strip to the shared
+        // Dropdown's field — the title display is the activatable
+        // anchor (click opens the site-1 flyout; the target-free
+        // BoardSelect stroke arms the same instance). The roster
+        // indicator rides along (the archive non-empty mount rule).
+        BoardBar {
+            width: 100%;
+            bar: root.board-bar;
+            segment-hint: root.board-segment-hint;
+            dropdown-at: 0;
+            segment-activated(index) => root.board-bar-activated(index);
+            archived-activated(i) => root.board-bar-archived-activated(i);
+            segment-context(i, x, y) => root.segment-context(i, x, y);
+        }
+
+        // The stack switcher: the first focusable element below the
+        // bar (D8/D15; the bar's field is the one stop in dropdown
+        // mode — the D15 order is the bar's existing grammar); a
+        // segmented row of stack titles.
         switcher := HorizontalLayout {
             spacing: Theme.space-1;
             accessible-role: AccessibleRole.tab-list;

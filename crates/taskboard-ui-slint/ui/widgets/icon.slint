@@ -58,6 +58,10 @@ export enum IconKind {
     history,
     // The armed delete affordance (r4 chunk 10, D-TS5): a trash bin.
     trash,
+    // The archived-boards roster's recognition cue (UX-R8 D-9,
+    // US-7, #834): the archive box — hover-independent, the
+    // icon-button glyph vocabulary.
+    archive,
 }
 
 export component Icon inherits Image {
@@ -93,5 +97,6 @@ export component Icon inherits Image {
         : kind == IconKind.pencil               ? @image-url("../assets/icons/pencil.svg")
         : kind == IconKind.history              ? @image-url("../assets/icons/history.svg")
         : kind == IconKind.trash                ? @image-url("../assets/icons/trash-2.svg")
+        : kind == IconKind.archive              ? @image-url("../assets/icons/archive.svg")
         : @image-url("../assets/icons/triangle-alert.svg");
 }

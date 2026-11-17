@@ -21716,3 +21716,176 @@ fn us5_s1_the_move_aim_bit_drives_the_badge_state() {
         },
     );
 }
+
+/// US-6/S1–S2 — the compact title dropdown switches boards: the title
+/// field's click opens the flyout (nothing dispatches), Escape closes
+/// with nothing dispatched (AC-2), a walked row's Return routes the
+/// `BoardSelect` seam (the segment click's route, AC-1).
+#[test]
+fn us6_s2_compact_title_dropdown_switches_board() {
+    let (_fixture, state) = fixture::two_board_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(600, 800);
+            assert!(
+                harness.handle.window().get_compact_active(),
+                "600 px is the compact breakpoint"
+            );
+
+            // S1: the title field's click opens the flyout (the raw
+            // pointer click at the field — the widget's TouchArea is
+            // the open toggle; the a11y default action is not the
+            // open arm).
+            harness.driver.advance_time(0);
+            let field = harness
+                .driver
+                .find_by_label("Boards")
+                .expect("the compact bar's dropdown field renders");
+            let pos = field.absolute_position();
+            let size = field.size();
+            harness
+                .driver
+                .click_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            assert!(
+                bar_facts(&harness).get_open(),
+                "the title click opened the flyout"
+            );
+            harness.assert_commands(&[]);
+
+            // AC-2: Escape closes with nothing dispatched.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.assert_commands(&[]);
+            assert!(!bar_facts(&harness).get_open(), "Escape closed");
+
+            // S2: re-open, walk, Return routes the selection.
+            harness
+                .driver
+                .click_at(pos.x + size.width / 2.0, pos.y + size.height / 2.0);
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Down").expect("Down"));
+            let walked = bar_facts(&harness).get_highlight();
+            harness.stroke(parse("Return").expect("Return"));
+            assert_eq!(
+                harness.handle.window().get_board_bar_model().selected,
+                walked,
+                "the walked row is the selection"
+            );
+            assert!(
+                !bar_facts(&harness).get_open(),
+                "the activation closed the flyout"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-6/S3 — the target-free `BoardSelect` stroke opens the same flyout
+/// in the compact leg (the r4 US-2/S4 flow's compact reach: the
+/// compact leg now mounts the bar instance that receives the edge);
+/// walk + Return routes the same seam.
+#[test]
+fn us6_s3_target_free_stroke_opens_the_compact_flyout() {
+    let (_fixture, state) = fixture::two_board_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(600, 800);
+            assert!(harness.handle.window().get_compact_active());
+
+            // The target-free stroke: the compact leg's mounted bar
+            // receives the switcher-request edge.
+            harness.press(ActionId::BoardSelect);
+            assert!(
+                bar_facts(&harness).get_open(),
+                "the stroke opened the compact flyout"
+            );
+            harness.stroke(parse("Down").expect("Down"));
+            let walked = bar_facts(&harness).get_highlight();
+            harness.stroke(parse("Return").expect("Return"));
+            assert_eq!(
+                harness.handle.window().get_board_bar_model().selected,
+                walked,
+                "the walked row is the selection"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-7/S1 — the roster indicator carries the glyph flag: the model's
+/// `archived-cue` is true exactly when the archived set is non-empty
+/// (the flag drives the Dropdown's field glyph; typed flag, never
+/// text).
+#[test]
+fn us7_s1_the_roster_indicator_carries_the_glyph_flag() {
+    // A live board plus an archived one: the roster mounts, the cue
+    // rides.
+    let mut state = AppState::default();
+    state_board(
+        &mut state,
+        uuid::uuid!("00000000-0000-0000-0000-00000000000e"),
+        "kept",
+        None,
+    );
+    state_board(
+        &mut state,
+        uuid::uuid!("00000000-0000-0000-0000-00000000000f"),
+        "shelved",
+        None,
+    );
+    let shelved =
+        taskboard_domain::BoardId::from_uuid(uuid::uuid!("00000000-0000-0000-0000-00000000000f"));
+    let board = state.boards.get_mut(&shelved).expect("board");
+    board.archived = true;
+    board.clocks.archived = taskboard_domain::BoardClocks::epoch();
+
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            let bar = harness.handle.window().get_board_bar_model();
+            assert!(
+                bar.archived_cue,
+                "a non-empty archive carries the recognition cue"
+            );
+            assert_eq!(
+                bar.archived_rows.row_count(),
+                1,
+                "the roster mounts exactly when the cue rides"
+            );
+        },
+    );
+
+    // The empty archive: no cue (the AC-1 negation — the indicator
+    // never renders a bare mystery digit).
+    let mut state = AppState::default();
+    state_board(
+        &mut state,
+        uuid::uuid!("00000000-0000-0000-0000-000000000010"),
+        "only",
+        None,
+    );
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = Harness::mount(SlintDriver::default(), state);
+            let bar = harness.handle.window().get_board_bar_model();
+            assert!(!bar.archived_cue, "an empty archive carries no cue");
+            assert_eq!(bar.archived_rows.row_count(), 0);
+        },
+    );
+}
