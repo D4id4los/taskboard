@@ -57,6 +57,14 @@ pub(crate) struct DateEditorState {
     pub(crate) time_text: String,
     pub(crate) time_filter_armed: bool,
     pub(crate) focus_steal: bool,
+    /// The quick options' open-time seed (task-detail-editor UX plan
+    /// US-2/D-7, N-6): captured ONCE at the flyout's open (the
+    /// picker-held time, else the device now's local time-of-day) —
+    /// the nearest-row derivation reads this, never a per-pass
+    /// recompute, so the open-time scroll-to-current does not snap the
+    /// highlight back on every refresh pass (the user's ladder walk
+    /// owns the highlight afterwards).
+    pub(crate) time_open_seed: Option<chrono::NaiveTime>,
     pub(crate) anchor: FocusAnchor,
 }
 
@@ -260,6 +268,7 @@ impl LevelState {
                     time_text: String::from("--:--"),
                     time_filter_armed: false,
                     focus_steal: false,
+                    time_open_seed: None,
                     anchor: FocusAnchor::None,
                 }),
                 // The recur editor's family-default: an empty daily
