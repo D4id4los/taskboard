@@ -1811,6 +1811,12 @@ fn armed_stack_index(flow: &Flow, stack_ids: &[StackId]) -> i32 {
 /// derivation for the per-column `aim-gap` model field (the
 /// indicator's data path) and the `move-aim` bit (US-5); the
 /// keyboard slots and the drag gaps converge here by construction.
+/// The move-aim badge's labelled state (UX-R8 D-7, US-5/AC-1): the
+/// presentation constant behind the Badge's accessible-label
+/// override — the bit's label, a #823 close. Display-only: never
+/// asserted as text, the flag derivation is the test's subject.
+pub(crate) const MOVE_AIM_BADGE_LABEL: &str = "Move target";
+
 pub(crate) fn move_aim(flow: &Flow) -> Option<(StackId, usize)> {
     match flow {
         Flow::Move { target, slot, .. } => Some((*target, *slot)),
@@ -1894,6 +1900,14 @@ fn push_board(
             aim_gap: aim
                 .filter(|(aimed, _)| aimed == stack_id)
                 .map_or(-1, |(_, gap)| i32::try_from(gap).unwrap_or(i32::MAX)),
+            // The count badge's move-aim state (UX-R8 D-7): set
+            // exactly on the aimed column (AC-2's guard), with the
+            // labelled twin empty everywhere else.
+            move_aim: aim.is_some_and(|(aimed, _)| &aimed == stack_id),
+            badge_label: SharedString::from(
+                aim.filter(|(aimed, _)| aimed == stack_id)
+                    .map_or(String::new(), |_| MOVE_AIM_BADGE_LABEL.to_owned()),
+            ),
             title: SharedString::from(stack.title.clone()),
             // The column's own persistent handle: the outer row fires
             // only when scalars or the inner handle actually differ
@@ -3989,6 +4003,8 @@ mod tests {
             width_px: 0.0,
             delete_armed: false,
             aim_gap: -1,
+            move_aim: false,
+            badge_label: "".into(),
         };
         let mut mirror = vec![column.clone()];
         let model = VecModel::from(vec![column.clone()]);
