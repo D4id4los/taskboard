@@ -22338,3 +22338,138 @@ fn us5_s1_dead_subject_restores_the_board() {
         },
     );
 }
+
+// -- task-detail-editor UX plan US-6 (dispatch chunk 3): the labels
+// -- overlay's armed identity cannot outlive its row (#840).
+
+/// US-6/S1 (AC-1): the fast double-click confirm dispatches
+/// `DeleteLabel` and leaves no armed identity; a later activation
+/// against the deleted row never re-arms (the re-arm guard + the
+/// pass-side clear), so the next Escape closes the overlay directly —
+/// no phantom rung. The rung count is observed through typed
+/// flow/overlay state, never text.
+#[test]
+fn us6_s1_double_click_delete_leaves_no_armed_identity() {
+    let (_fx, state, green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            // The fast double-click: both activations in one pass
+            // window — the second IS the confirm.
+            window.invoke_labels_overlay_delete_clicked(0);
+            window.invoke_labels_overlay_delete_clicked(0);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::DeleteLabel { id }] if *id == green
+            ));
+            assert_eq!(
+                window.get_label_overlay_armed_index(),
+                -1,
+                "the confirm clears the armed identity"
+            );
+            // The label dies; the next rows pass re-resolves the
+            // armed mirror against the roster without it — the
+            // pass-side clear drops the identity.
+            let mut changed = harness.engine.snapshot().as_ref().clone();
+            changed.labels.remove(&green);
+            harness.engine.replace_state(changed, &harness.handle);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                window.get_label_overlay_armed_index(),
+                -1,
+                "the armed identity cannot outlive its row"
+            );
+            // The re-arm guard: an activation whose id no longer
+            // resolves in the live roster (a stale tables pass) never
+            // re-arms — arm a live row, remove it under the stale
+            // tables, activate the stale index.
+            window.invoke_labels_overlay_delete_clicked(0);
+            harness.driver.advance_time(0);
+            let armed = window.get_label_overlay_armed_index();
+            assert!(armed >= 0, "a live row arms");
+            let victim = harness
+                .engine
+                .snapshot()
+                .labels
+                .values()
+                .find(|l| !l.deleted)
+                .map(|l| l.id)
+                .expect("a live label");
+            let mut roster_without_victim = harness.engine.snapshot().as_ref().clone();
+            roster_without_victim.labels.remove(&victim);
+            harness
+                .engine
+                .replace_state(roster_without_victim, &harness.handle);
+            // No advance: the tables pass still resolves the dead id.
+            window.invoke_labels_overlay_delete_clicked(0);
+            harness.driver.advance_time(0);
+            assert_eq!(harness.engine.drain().len(), 0, "nothing re-arms");
+            assert_eq!(
+                window.get_label_overlay_armed_index(),
+                -1,
+                "the dead id never re-arms"
+            );
+            // The next Escape closes the overlay directly.
+            harness
+                .handle
+                .dispatch_action(ActionId::LabelOverlayDismiss);
+            harness.driver.advance_time(0);
+            assert!(
+                !window.get_task_model().labels_open,
+                "no phantom rung — the overlay closes on the first press"
+            );
+        },
+    );
+}
+
+/// US-6/S2 (AC-2): the disarm path keeps the ladder — Cancel clears
+/// the armed identity, the overlay stays open, and one Escape rung
+/// closes it; nothing dispatches anywhere.
+#[test]
+fn us6_s2_cancel_disarm_keeps_the_ladder() {
+    let (_fx, state, _green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_delete_clicked(0);
+            harness.driver.advance_time(0);
+            assert!(window.get_label_overlay_armed_index() >= 0, "armed");
+            window.invoke_labels_overlay_delete_cancelled();
+            harness.driver.advance_time(0);
+            assert_eq!(
+                window.get_label_overlay_armed_index(),
+                -1,
+                "the disarm clears the identity"
+            );
+            assert!(
+                window.get_task_model().labels_open,
+                "the overlay's ladder is intact"
+            );
+            assert_eq!(harness.engine.drain().len(), 0);
+            harness
+                .handle
+                .dispatch_action(ActionId::LabelOverlayDismiss);
+            harness.driver.advance_time(0);
+            assert!(
+                !window.get_task_model().labels_open,
+                "one rung closes the overlay"
+            );
+        },
+    );
+}
