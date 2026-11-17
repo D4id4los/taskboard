@@ -65,6 +65,20 @@ earned by a recovered incident. The full narrative:
   drove a 30G box under (a measured clippy re-check peaks at
   ~3.9 GiB; floor = peak + ~2 GiB desktop headroom + margin)
   (.artifacts/reports/2026-11-17-oom-incident-concurrency-learning-report.md).
+  - *Two-mode routing*: *short/heavy builds* (clippy, =cargo check=,
+    one-shot test builds — anything real but bounded by its own
+    completion) run *gated-hold* (the default mode; lock held for the
+    command). *Long self-capped runs* (cargo-mutants =--jobs N= under
+    =timeout=, miri batches — any run with *both* its own job cap and a
+    wall-clock cap) run *gated-preflight only*:
+    =scripts/memory-gate.sh --preflight= floor-checks once, prints the
+    reading, and never acquires the lock. The law sentence: holding the
+    gate lock across a multi-hour run is an availability collapse
+    (every other agent's gated pre-commit clippy queues behind it —
+    observed live 2026-11-17 ~21:20, dispatcher-verified), not a safety
+    measure; the self-caps are the protection. Evidence: the #923
+    two-mode corollary and the mutants stage-2 report §4
+    (.artifacts/reports/2026-11-17-cargo-mutants-taskboard-app-report.md).
 - *Resource law (the concurrency cap)*: at most **3 concurrent
   work-performing agents per box**, with **staggered starts ≥3
   minutes apart** (cold pre-commit build peaks must not align), and
