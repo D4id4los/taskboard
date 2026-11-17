@@ -428,3 +428,33 @@ fn reflection_surface_serde_name_pins_and_labels_carry_the_arms() {
         assert!(!label.is_empty(), "every arm carries a label");
     }
 }
+
+/// D-8 persisted-compatibility: the #356 arms decode byte-stably — a
+/// journal entry carrying `RestoreStack` and the reclassified
+/// `DeleteStack` round-trip through serde JSON unchanged (the new
+/// `StateCommand` arm is appended, so no persisted payload renumbers).
+#[test]
+fn restore_stack_and_reclassified_delete_stack_entries_round_trip() {
+    let ids = CountingIds::new();
+    let stack = crate::ids::StackId::from_uuid(uuid::Uuid::from_u128(42));
+    let mk = |command| JournalEntry {
+        id: ids.new_journal_id(),
+        parent: None,
+        command,
+        facts: UndoFacts::PreImages {
+            images: Vec::new(),
+            watermark: crate::journal::UndoWatermark::default(),
+        },
+        ops: Vec::new(),
+        pushed: false,
+        board: None,
+        created_at: ts(100),
+    };
+    let restore = mk(crate::messages::StateCommand::RestoreStack { id: stack });
+    let delete = mk(crate::messages::StateCommand::DeleteStack { id: stack });
+    for entry in [restore, delete] {
+        let json = serde_json::to_string(&entry).expect("serializes");
+        let back: JournalEntry = serde_json::from_str(&json).expect("decodes");
+        assert_eq!(back, entry);
+    }
+}
