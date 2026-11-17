@@ -359,6 +359,7 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::UnassignLabel { .. } => "Unassign label".into(),
         StateCommand::CreateBoard { .. } => "Create board".into(),
         StateCommand::BindBoard { .. } => "Bind board".into(),
+        StateCommand::RebindBoard { .. } => "Rebind board".into(),
         StateCommand::RenameBoard { .. } => "Rename board".into(),
         StateCommand::SetBoardColor { .. } => "Set board color".into(),
         StateCommand::SetBoardArchived { .. } => "Archive board".into(),

@@ -278,6 +278,22 @@ pub enum StateCommand {
         /// The task whose rules are removed.
         task: TaskId,
     },
+    /// Atomic re-target of a Deck-bound board's binding to another
+    /// Deck connector (the files-sync-status plan US-10, D-11): the
+    /// binding's connector is replaced and the remote id is preserved
+    /// verbatim — the ceremony's identity-preservation pin. The
+    /// engine validates the binding exists and is Deck-typed (typed
+    /// refusal otherwise) and journals the change (the
+    /// BindBoard/UnbindBoard family — one reversible step).
+    RebindBoard {
+        /// The Deck-bound board to re-target.
+        board: BoardId,
+        /// The target connector (config-minted kebab; the app layer
+        /// resolves and guards the name, the engine is config-blind).
+        connector: ConnectorId,
+        /// The unchanged Deck remote id (preserved verbatim).
+        remote: RemoteBoardId,
+    },
     /// Detach the named board's remote binding: the board row, its
     /// content, and its queued ops survive (the ops strand honestly and
     /// drain on a re-bind); only the binding and the board's sync-status
