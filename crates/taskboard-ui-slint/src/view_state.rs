@@ -446,12 +446,6 @@ impl BoardSelection {
         self.members.contains(task)
     }
 
-    /// The members in id order (storage order; the dispatch order is
-    /// the anchor-order derivation at sequence-build time).
-    pub fn members(&self) -> impl Iterator<Item = TaskId> + '_ {
-        self.members.iter().copied()
-    }
-
     fn reset(&mut self, task: TaskId) {
         self.anchor = Some(task);
         self.members.clear();
