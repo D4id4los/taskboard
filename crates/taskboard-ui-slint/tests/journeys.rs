@@ -23273,7 +23273,10 @@ fn us1_s1_schedule_today_commits_the_exact_mask() {
 
             // Today's local date (single-read capture; the window end
             // only moves at a day boundary).
-            let today = chrono::Local::now().date_naive();
+            // The adapter's clock reads UTC over the boot offset (the
+            // default hand-over) — the capture matches the oracle's
+            // zone (the clock-discipline law's single-read capture).
+            let today = chrono::Utc::now().with_timezone(&offset).date_naive();
             let end = taskboard_domain::days::day_window_end(today, day_start, offset);
             harness.driver.click_by_label("Schedule today");
             harness.driver.advance_time(0);
@@ -23444,7 +23447,10 @@ fn us1_ac5_bar_key_and_click_route_identically() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            let today = chrono::Local::now().date_naive();
+            // The adapter's clock reads UTC over the boot offset (the
+            // default hand-over) — the capture matches the oracle's
+            // zone (the clock-discipline law's single-read capture).
+            let today = chrono::Utc::now().with_timezone(&offset).date_naive();
             let end = taskboard_domain::days::day_window_end(today, day_start, offset);
             let expect = || StateCommand::UpdateTask {
                 id: fixture.task1,
