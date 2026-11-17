@@ -743,3 +743,32 @@ fn taskboard_env_lock_restores_ambient_values() {
         remove_env("TASKBOARD_SYNC__POLL_INTERVAL_SECS");
     }
 }
+
+/// The composed-load twin (#865): the unit-level round-trips rerouted
+/// to the file layer, so exactly one test keeps the composed
+/// (defaults → file → env) `load` covered — `load` yields the env
+/// value on the same file whose `extract_file_only` decode still
+/// yields the file value: composition happens, and the file layer
+/// alone does not see env.
+#[test]
+fn composed_load_env_overrides_the_file_layer() {
+    let _env = taskboard_env_lock();
+    let dir = tempdir();
+    let file = dir.path().join("composed.toml");
+    std::fs::write(
+        &file,
+        "[nextcloud]\nserver_url = 'https://file.example'\nusername = 'alice'\n",
+    )
+    .expect("write config");
+    let _server = EnvOverride::set("TASKBOARD_NEXTCLOUD__SERVER_URL", "https://env.example");
+    let composed = AppConfig::load(Some(file.clone())).expect("the composed load");
+    assert_eq!(
+        composed.nextcloud.server_url.as_deref(),
+        Some("https://env.example")
+    );
+    let file_only = AppConfig::extract_file_only(Some(file.as_path())).expect("the file decode");
+    assert_eq!(
+        file_only.nextcloud.server_url.as_deref(),
+        Some("https://file.example")
+    );
+}

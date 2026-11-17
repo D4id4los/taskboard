@@ -664,7 +664,8 @@ mod tests {
                 legacy,
                 "the backup was restored verbatim"
             );
-            let scalar = AppConfig::load(Some(config.clone())).expect("the scalar world loads");
+            let scalar = AppConfig::extract_file_only(Some(config.as_path()))
+                .expect("the scalar world loads");
             assert!(scalar.sync.connectors.is_none());
         }
     }

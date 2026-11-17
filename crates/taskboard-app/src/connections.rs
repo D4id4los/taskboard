@@ -420,7 +420,8 @@ mod overlay_tests {
             written.contains("\"task.complete\" = [\"x\"]"),
             "overrides survive"
         );
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         let entries = loaded.sync.connectors.as_deref().expect("array");
         assert_eq!(entries.len(), 3, "appended");
         assert_eq!(entries[2].name, "family");
@@ -440,7 +441,8 @@ mod overlay_tests {
 
         let written = std::fs::read_to_string(&config).expect("read back");
         assert!(!written.contains("[nextcloud]"), "no scalar table created");
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         let entries = loaded.sync.connectors.as_deref().expect("array");
         assert_eq!(entries.len(), 2, "replaced, not appended");
         assert_eq!(entries[0].name, "work");
@@ -466,7 +468,8 @@ mod overlay_tests {
         overlay_upsert_connector(&config, &entry("work", "https://new.example", "new-user"))
             .expect("upsert lands");
 
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         let entries = loaded.sync.connectors.as_deref().expect("array");
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].server_url, "https://new.example");
@@ -523,7 +526,8 @@ mod overlay_tests {
             written.contains("[[sync.connectors]]"),
             "the array-of-tables rendering is what is minted"
         );
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         let entries = loaded.sync.connectors.as_deref().expect("created array");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "work");
@@ -549,7 +553,8 @@ mod overlay_tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600, "a created file is owner-only");
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         assert_eq!(
             loaded.sync.connectors.as_deref().expect("array")[0].name,
             "work"
@@ -598,7 +603,8 @@ mod overlay_tests {
 
         let written = std::fs::read_to_string(&config).expect("read back");
         assert!(written.contains("credential_store"), "the husk survives");
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         assert_eq!(
             loaded.sync.connectors.as_deref().expect("created array")[0].name,
             "work"
@@ -614,7 +620,8 @@ mod overlay_tests {
         let config = seed_config(&dir, AOT_FILE);
 
         assert!(overlay_remove_connector(&config, "work").expect("removes"));
-        let loaded = crate::config::AppConfig::load(Some(config.clone())).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         let entries = loaded.sync.connectors.as_deref().expect("array survives");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "personal");
@@ -623,7 +630,8 @@ mod overlay_tests {
         let written = std::fs::read_to_string(&config).expect("read");
         assert!(!written.contains("connectors"), "no empty husk");
         assert!(written.contains("scale = 1.5"), "[ui] survives");
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         assert!(loaded.sync.connectors.is_none());
     }
 
@@ -656,7 +664,8 @@ mod overlay_tests {
         let written = std::fs::read_to_string(&config).expect("read");
         assert!(written.contains("# hand-tuned"));
         assert!(written.contains("\"task.complete\" = [\"x\"]"));
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         assert!((loaded.ui.scale - 2.0).abs() < f64::EPSILON);
         assert_eq!(loaded.ui.keymap.preset, crate::config::KeymapPreset::Emacs);
         assert_eq!(loaded.ui.keymap.overrides.len(), 1, "overrides survive");
@@ -680,7 +689,8 @@ mod overlay_tests {
         overlay_upsert_connector(&config, &entry("work", "https://new.example", "new-user"))
             .expect("the husk is not the scalar world");
 
-        let loaded = crate::config::AppConfig::load(Some(config)).expect("round-trips");
+        let loaded = crate::config::AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips");
         assert_eq!(loaded.sync.connectors.as_deref().expect("array").len(), 1);
         assert_eq!(
             loaded.nextcloud.credential_store,
