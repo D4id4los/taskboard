@@ -51,19 +51,41 @@ const SESSION_LINES: [&str; 4] = [
 // strings stay synchronization gates, never asserted.
 // ---------------------------------------------------------------------------
 
+/// The largest *designed* silent window in the suite: the stalled-line
+/// leg's delayed wiremock route. Named once so the route's delay and
+/// the idle-budget derivation consume the same symbol — retuning the
+/// window cannot silently unorder the budgets (issue #697).
+const DESIGNED_SILENT_WINDOW: Duration = Duration::from_secs(10);
+
+/// `Duration`'s comparison and arithmetic operators are not `const`,
+/// so the budget formulas compute on `as_secs()` (every constant here
+/// is whole seconds) — a trivial, documented const max.
+const fn duration_secs_max(a: u64, b: u64) -> u64 {
+    if a >= b { a } else { b }
+}
+
 /// The idle-progress budget — derived, never tuned (AGENTS §5: never a bare
-/// larger constant). Formula: `PTY_IDLE_BUDGET = max(30 s, 3 × G_max)` with
-/// `G_max` the largest legitimate inter-chunk silence under the recorded
-/// stress profile (16-core dev box, sampled load 37–52 via bounded shell
-/// spinners plus a parallel scratch cargo build, 2026-11-01). The only
-/// *designed* silent window is the pty flake pass's own 10 s delayed
-/// wiremock route (the stalled-line leg); the validation legs' gap
-/// telemetry (`TASKBOARD_PTY_TEST_GAP_LOG`) recorded no legitimate gap
-/// beyond it, so the formula lands on the 30 s floor — 3× headroom over
-/// `G_max` = 10 s. That is thin headroom by the plan's own definition and is
-/// recorded as a finding in the stage-2 report; re-derivations follow this
-/// formula with fresh telemetry, never a nudge.
-const PTY_IDLE_BUDGET: Duration = Duration::from_secs(30);
+/// larger constant). Formula: `PTY_IDLE_BUDGET = max(70 s, 6 × D_max +
+/// D_max)` with `D_max` the largest designed silent window
+/// ([`DESIGNED_SILENT_WINDOW`]) — k = 6 windows plus one window of
+/// slack. Rationale (issue #697, 2026-11-17): the retired
+/// `max(30 s, 3 × G_max)` formula landed at exactly 3× the designed
+/// window — zero margin — and the recorded CI interleaving (#697,
+/// 2026-11-11 run) consumed the whole window plus session boot
+/// (~10.09 s) *and still* had load slop to burn. k = 6 + one-window
+/// slack tolerates two back-to-back designed windows plus CI-load slop
+/// inside one budget. The inequality `PTY_IDLE_BUDGET >= 6 × D_max +
+/// D_max` holds by construction: both sides derive from the same
+/// constant. Worst-case wedge-detection latency rises 30 s → 70 s — a
+/// floor movement (later, stricter wedge detection), not a permissive
+/// one; the `assert_ne!(code, Some(124))` wedge pins keep their
+/// meaning. Re-derivations follow this formula with fresh telemetry,
+/// never a nudge.
+const PTY_IDLE_BUDGET_SECS: u64 = duration_secs_max(
+    70,
+    DESIGNED_SILENT_WINDOW.as_secs() * 6 + DESIGNED_SILENT_WINDOW.as_secs(),
+);
+const PTY_IDLE_BUDGET: Duration = Duration::from_secs(PTY_IDLE_BUDGET_SECS);
 
 /// The total-wall-clock backstop — the last-resort bound for a *runaway*
 /// (progressing-but-never-terminating) session, not the wedge detector (the
@@ -76,7 +98,18 @@ const PTY_IDLE_BUDGET: Duration = Duration::from_secs(30);
 /// unbounded, legitimate runs no longer exercise the backstop at all, while
 /// a real runaway must still die and fail the `assert_ne!(code, Some(124))`
 /// wedge pins with their meaning intact.
-const PTY_SESSION_BACKSTOP: Duration = Duration::from_secs(186);
+const PTY_SESSION_BACKSTOP_SECS: u64 = duration_secs_max(120, 3 * 62);
+const PTY_SESSION_BACKSTOP: Duration = Duration::from_secs(PTY_SESSION_BACKSTOP_SECS);
+
+// Structural ordering requirement (issue #697, 2026-11-17): a wedge must
+// be detectable twice over before the runaway backstop fires — the
+// backstop may never undercut twice the idle budget. Checked at
+// compile time so neither formula's re-derivation can silently unorder
+// the pair.
+const _: () = assert!(
+    PTY_SESSION_BACKSTOP_SECS >= 2 * PTY_IDLE_BUDGET_SECS,
+    "PTY_SESSION_BACKSTOP must stay at least twice PTY_IDLE_BUDGET"
+);
 
 /// The reader thread's progress announcement.
 enum PtyProgress {
@@ -1617,7 +1650,7 @@ fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
             wiremock::Mock::given(wiremock::matchers::method("GET"))
                 .respond_with(NotifyThenDelay {
                     notify: tx,
-                    delay: Duration::from_secs(10),
+                    delay: DESIGNED_SILENT_WINDOW,
                 })
                 .mount(&server)
                 .await;
