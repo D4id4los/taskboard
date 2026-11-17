@@ -26,6 +26,9 @@
   investigation)
 - **Platform scope**: desktop (Settings is desktop; the chip renders
   in the status bar — its kiosk posture is display-only and unchanged)
+- **Test-root**: crates
+
+Test-root: crates
 
 ## 1. Scope & goals
 
@@ -402,13 +405,13 @@ stateDiagram-v2
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/compositions/status-bar.slint, src/presentation.rs, src/models.rs | the chip's tone/flag folds | — | — (display only — the fold per state) | — | — (reason: pure display state) | the chip model | US-1/S1 | presentation.rs::us1_ac1_ok_state_renders_neutral_without_the_badge |
-| W-2 | crates/taskboard-sync-files-nextcloud/, src (the per-board pending/state model) | the pending truth + the stalled state | — | the lane state fold into the per-board model (`// slint:` where the row model is pushed) | — | — (the engine fix is engine-tested; the surface renders the truth) | the per-board row model | US-2/S1 | the reproduction test (AC-1) + presentation.rs::us2_ac3_stalled_renders_the_stalled_truth |
-| W-3 | src/adapter.rs, ui/views/settings-view.slint | the auto-list backoff | — | the mount auto-list's typed backoff state + the refresh override | — (request-side) | UiRequest::ListRemoteBoards | the connector card | US-3/S1–S2 | journeys.rs::us3_ac1_backoff_suppresses_the_auto_list |
-| W-4 | ui/views/settings-view.slint, src/models.rs | per-key env-lock captions | — | the snapshot's per-key env facts → the row model bits | — | — (reason: pure display state) | the Files row model | US-4/S1 | presentation.rs::us4_ac1_the_caption_names_the_pinned_key_set |
+| W-1 | ui/compositions/status-bar.slint, src/presentation.rs, src/models.rs | the chip's tone/flag folds | — | — (display only — the fold per state) | — | — | the chip model | US-1/S1 | presentation.rs::us1_ac1_ok_state_renders_neutral_without_the_badge |
+| W-2 | crates/taskboard-sync-files-nextcloud/, src (the per-board pending/state model) | the pending truth + the stalled state | — | the lane state fold into the per-board model (`// slint:` where the row model is pushed) | — | — | the per-board row model | US-2/S1 | the reproduction test (AC-1) + presentation.rs::us2_ac3_stalled_renders_the_stalled_truth |
+| W-3 | src/adapter.rs, ui/views/settings-view.slint | the auto-list backoff | — | the mount auto-list's typed backoff state + the refresh override | — | UiRequest::ListRemoteBoards | the connector card | US-3/S1–S2 | journeys.rs::us3_ac1_backoff_suppresses_the_auto_list |
+| W-4 | ui/views/settings-view.slint, src/models.rs | per-key env-lock captions | — | the snapshot's per-key env facts → the row model bits | — | — | the Files row model | US-4/S1 | presentation.rs::us4_ac1_the_caption_names_the_pinned_key_set |
 | W-5 | ui/views/settings-view.slint, src/adapter.rs | the card-local publish phase | — | the pending lane's phase → the addressed card's row model | — | UiRequest::PublishBoard | the addressed card | US-5/S1–S2 | presentation.rs::us5_ac1_the_card_renders_the_ceremony_phase |
-| W-6 | ui/views/settings-view.slint, crates/taskboard-app/src/ui_requests.rs | the Restore affordance | — | the derived move stage → the row's Restore mount; the undo request arm | — | the undo request (§7) | the Files row via its board id | US-6/S1 | ui_requests.rs::us6_ac1_restore_rebinds_deck_inside_the_window |
-| W-7 | ui/views/settings-view.slint, src/models.rs | the adoption phase | — | the `FilesSyncStatus` watch → the row model | — | — (reason: pure display state) | the Files row model | US-8/S1 | presentation.rs::us8_ac1_the_row_carries_the_adoption_phase |
+| W-6 | ui/views/settings-view.slint, crates/taskboard-app/src/ui_requests.rs | the Restore affordance | — | the derived move stage → the row's Restore mount; the undo request arm | — | UiRequest::UndoBoardMove | the Files row via its board id | US-6/S1 | ui_requests.rs::us6_ac1_restore_rebinds_deck_inside_the_window |
+| W-7 | ui/views/settings-view.slint, src/models.rs | the adoption phase | — | the `FilesSyncStatus` watch → the row model | — | — | the Files row model | US-8/S1 | presentation.rs::us8_ac1_the_row_carries_the_adoption_phase |
 | W-8 | ui/views/settings-view.slint, src/adapter.rs | the publish picker's site anchor | — | the flyout-site grammar's site-1 anchor at the Deck card | — | UiRequest::PublishBoard | the Deck card | US-9/S1 | the site grammar tests + presentation.rs::us9_ac1_the_picker_anchors_at_the_card |
 | W-9 | ui/views/settings-view.slint, src/adapter.rs, crates/taskboard-app/src/ui_requests.rs, crates/taskboard-domain/src/messages.rs | the rebind row action + ceremony | — | the roster row action (the r7 files-action grammar's twin) + the app arm + the engine verb (`// slint:`) | — | UiRequest::MoveBoardToDeck; StateCommand::RebindBoard | the roster row via its board id + the target connector id | US-10/S1–S3 | ui_requests.rs::us10_ac1_rebind_preserves_the_remote_identity |
 
