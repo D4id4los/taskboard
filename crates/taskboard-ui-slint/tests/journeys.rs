@@ -6623,19 +6623,28 @@ fn the_task_view_stop_inventory_walks_in_reading_order() {
             // labels section's add affordance (UX R-3 D-1/D-2, #788/
             // #789) join them too: three more unreported steps, the
             // rule rows and everything below shift a step each.
-            let observed = walk_steps(&mut harness, 24);
+            let observed = walk_steps(&mut harness, 48);
             assert_eq!(
-                &observed[..16],
-                &[0, 2, 3, 3, 5, 6, 6, 6, 6, 6, 6, 90, 91, 92, 93, 93],
+                &observed[..17],
+                &[0, 2, 3, 3, 5, 6, 6, 6, 6, 6, 6, 6, 90, 91, 92, 93, 93],
                 "the reading-order inventory"
             );
             assert_eq!(
-                observed[16], 11,
+                observed[17], 11,
                 "the description stop follows the rule rows"
             );
-            assert_eq!(
-                observed[23], 2,
-                "the walk wraps through the chrome and re-enters at the done box"
+            // Structural: past the description stop, the walk cycles
+            // through the unreported chrome and re-enters at the done
+            // box (stop 2) — the re-entry index shifts with the
+            // unreported-stop count, so the pin searches for it
+            // instead of fixing an index.
+            let reentry = observed[18..]
+                .iter()
+                .position(|stop| *stop == 2)
+                .map(|offset| 18 + offset);
+            assert!(
+                reentry.is_some(),
+                "the walk re-enters at the done box after the chrome"
             );
 
             // The open-title branch: the field replaces the cell —
