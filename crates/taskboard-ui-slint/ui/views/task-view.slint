@@ -247,6 +247,9 @@ export component TaskView inherits FocusScope {
     // over the VIEW'S SUBJECT — the adapter seam resolves it (the
     // subject is not guaranteed focused; the cycle's fallback).
     callback task-done-toggled();
+    // slint: task-track-toggled (UX-R8 chunk-5 D-6): the detail card's
+    // control.
+    callback task-track-toggled();
     // The header row's hint projections (r4 D16b/D16c): keymap
     // projections pushed per refresh — never hand-written.
     in property <[string]> task-done-hint;

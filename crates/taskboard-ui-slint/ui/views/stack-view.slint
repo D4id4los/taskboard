@@ -24,6 +24,8 @@ export component StackView inherits FocusScope {
     callback task-context(int, float, float);
     // The done checkbox's toggle (r3 D6): the row's task.
     callback task-done-toggled(int);
+    // slint: task-track-toggled (UX-R8 chunk-5 D-6): the row's control.
+    callback task-track-toggled(int);
     callback create-committed(string);
     callback create-edited(string);
     // The focus-loss settle (round-3 L1).
@@ -98,6 +100,8 @@ export component StackView inherits FocusScope {
                     clicked => root.task-clicked(task-index);
                     context-requested(x, y) => root.task-context(task-index, x, y);
                     done-toggled => root.task-done-toggled(task-index);
+                    // slint: track-toggled
+                    track-toggled => root.task-track-toggled(task-index);
                 }
             }
 

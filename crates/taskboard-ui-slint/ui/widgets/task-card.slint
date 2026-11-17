@@ -8,6 +8,8 @@
 
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { TooltipState } from "tooltip.slint";
+import { IconButton } from "icon-button.slint";
+import { IconKind } from "icon.slint";
 
 // The rule-D decoration vocabulary (D21): future surfaces (W1
 // importance/urgency, habits, reminders) ride this slot.
@@ -25,6 +27,15 @@ export enum DecorationKind {
     // The tracker badge (issue #492): the never-done kind's
     // kiosk-visible name — the model carries the decision.
     tracker,
+}
+
+// The card play/pause control's shown-half input (UX-R8 chunk-5 D-6,
+// US-4): the model carries the tracking fact; the button renders play
+// when `none`, stop when `running-here`, and hides entirely on a
+// tracker card (the can-done hide posture).
+export enum TrackCardState {
+    none,
+    running-here,
 }
 
 export struct TaskDecoration {
@@ -59,6 +70,10 @@ export struct TaskCardModel {
     // Derivation lives in the models pass; no slint-side logic.
     selected: bool,
     anchor: bool,
+    // The tracking control's shown half (UX-R8 chunk-5 D-6): derived
+    // in the models pass over the open entry's subject — no local
+    // state anywhere.
+    track-state: TrackCardState,
     decorations: [TaskDecoration],
 }
 
@@ -83,6 +98,10 @@ export component TaskCard inherits Rectangle {
     // The done checkbox's toggle (r3 D6): state-less — the wiring
     // chain supplies the address; the adapter flips the model's bit.
     callback done-toggled();
+    // slint: track-toggled — the card play/pause control (UX-R8 D-6,
+    // US-4): state-less like done-toggled; the adapter routes the
+    // existing tracking ids from the model's shown half.
+    callback track-toggled();
     // The right-click context request (round-1 D13): pointer coords
     // in window coordinates (the card's absolute position + the local
     // mouse position).
@@ -195,6 +214,18 @@ export component TaskCard inherits Rectangle {
                 viewbox-width: 12;
                 viewbox-height: 12;
             }
+        }
+
+        // The card's play/pause tracking control (UX-R8 chunk-5 D-6,
+        // US-4; pointer-grade per R-3 — no card-scoped key): beside
+        // the decoration region, hidden entirely on a tracker card
+        // (the can-done hide posture).
+        if (root.model.can-done): track-control := IconButton {
+            icon: root.model.track-state == TrackCardState.running-here ? IconKind.stop : IconKind.play;
+            label: root.model.track-state == TrackCardState.running-here
+                ? "Stop tracking" : "Start tracking";
+            // slint: track-toggled
+            clicked => { root.track-toggled(); }
         }
 
         VerticalLayout {

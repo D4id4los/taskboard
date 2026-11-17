@@ -1898,6 +1898,7 @@ fn push_board(
                 sets,
                 vs,
                 now,
+                tracked_task.is_some_and(|open| open == task.id),
                 decorations_model(models, task, tracked_task, calendar, now),
             ));
         }
@@ -1999,6 +2000,7 @@ fn push_board(
             sets,
             vs,
             now,
+            tracked_task.is_some_and(|open| open == dragged.id),
             decorations_model(models, dragged, tracked_task, calendar, now),
         );
         ghost.dragging_source = false;
@@ -2157,6 +2159,7 @@ fn push_stack_detail(
             sets,
             vs,
             now,
+            tracked_task.is_some_and(|open| open == task.id),
             decorations_model(models, task, tracked_task, calendar, now),
         ));
     }
@@ -2954,6 +2957,7 @@ fn task_card_model(
     sets: &DueSets,
     vs: &ViewState,
     now: DateTime<Utc>,
+    tracked_here: bool,
     decorations: ModelRc<TaskDecoration>,
 ) -> TaskCardModel {
     let kind = presentation::due_kind(task, sets);
@@ -2984,6 +2988,14 @@ fn task_card_model(
             .selection()
             .anchor()
             .is_some_and(|anchor| anchor == task.id),
+        // The tracking control's shown half (UX-R8 chunk-5 D-6): the
+        // open entry's subject vs the card's task — the same fact the
+        // menu's bar and `entry_states` read.
+        track_state: if tracked_here {
+            crate::TrackCardState::RunningHere
+        } else {
+            crate::TrackCardState::None
+        },
         decorations,
     }
 }
@@ -3094,6 +3106,7 @@ fn push_today(
                     sets,
                     vs,
                     day.now,
+                    tracked_task.is_some_and(|open| open == task.id),
                     decorations_model(models, task, tracked_task, calendar, day.now),
                 ),
                 context: SharedString::from(presentation::today_row_context(
@@ -3241,6 +3254,7 @@ fn plan_row(
                 sets,
                 vs,
                 now,
+                tracked_task.is_some_and(|open| open == task.id),
                 decorations_model(models, task, tracked_task, calendar, now),
             )
         },
@@ -4123,7 +4137,16 @@ mod tests {
         let vs = ViewState::default();
         let now = epoch();
         let sets = DueSets::default();
-        let build = || task_card_model(&t, &sets, &vs, now, ModelRc::from(decorations.clone()));
+        let build = || {
+            task_card_model(
+                &t,
+                &sets,
+                &vs,
+                now,
+                false,
+                ModelRc::from(decorations.clone()),
+            )
+        };
         let mut mirror = vec![build()];
         let model = VecModel::from(vec![build()]);
         assert_eq!(
@@ -4138,6 +4161,7 @@ mod tests {
             &sets,
             &vs,
             now,
+            false,
             ModelRc::new(VecModel::from(field_decorations(
                 &t,
                 None,
@@ -4935,6 +4959,7 @@ mod tests {
             &DueSets::default(),
             &vs,
             epoch(),
+            false,
             ModelRc::from(decorations.clone()),
         );
         assert!(!card.can_done, "the tracker card hides the done box");
@@ -4952,6 +4977,7 @@ mod tests {
             &DueSets::default(),
             &vs,
             epoch(),
+            false,
             ModelRc::new(VecModel::from(Vec::new())),
         );
         assert!(plain.can_done);
@@ -4984,6 +5010,7 @@ mod tests {
             &DueSets::default(),
             &vs,
             epoch(),
+            false,
             ModelRc::from(decorations),
         );
         assert!(!card.can_done);

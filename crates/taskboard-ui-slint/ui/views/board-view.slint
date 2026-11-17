@@ -70,6 +70,9 @@ export component BoardView inherits FocusScope {
     callback body-activated(int);
     // The done checkbox's toggle (r3 D6).
     callback task-done-toggled(int, int);
+    // slint: task-track-toggled (UX-R8 chunk-5 D-6): the card
+    // control's forward.
+    callback task-track-toggled(int, int);
     // The stack-rename field of one column (r2 D21).
     callback rename-committed(int, string);
     callback rename-edited(int, string);
@@ -196,6 +199,7 @@ export component BoardView inherits FocusScope {
                 body-context(c, x, y) => root.body-context(c, x, y);
                 body-activated(c) => root.body-activated(c);
                 task-done-toggled(c, r) => root.task-done-toggled(c, r);
+                task-track-toggled(c, r) => root.task-track-toggled(c, r);
                 rename-committed(c, t) => root.rename-committed(c, t);
                 rename-edited(c, t) => root.rename-edited(c, t);
                 create-committed(c, t) => root.create-committed(c, t);

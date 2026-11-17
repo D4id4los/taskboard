@@ -4820,6 +4820,61 @@ fn tomorrow_window_end_is_the_next_day_window_end() {
     );
 }
 
+/// UX-R8 chunk-5 D-6 (US-4/AC-3) — the card control's one-shot flips:
+/// exactly one tracking command per state — the play click dispatches
+/// Start exactly once, and after the state flips (the settle) the
+/// same control dispatches Stop; no double dispatch per state.
+#[test]
+fn the_card_track_control_flips_one_shot_per_state() {
+    use crate::actions::ActionId;
+    let (state, fx) = fixture();
+    let mut rig = rig(state);
+    let adapter = rig.adapter();
+    {
+        let mut a = adapter.borrow_mut();
+        let outcomes = a.view_state.activate_card(fx.tasks[0], fx.stacks[0]);
+        a.apply_outcomes_for_test(rig.handle.window(), &outcomes);
+        a.refresh_forced(rig.handle.window());
+    }
+    // The play half: exactly one Start.
+    rig.handle.window().invoke_board_task_track_toggled(0, 0);
+    assert_eq!(
+        rig.drain_commands(),
+        vec![StateCommand::StartTracking {
+            task: fx.tasks[0],
+            kind: taskboard_domain::tracking::TimeEntryKind::Work,
+        }],
+        "the play half dispatches exactly one Start"
+    );
+    // The state flips (the engine settle shape): the open entry lands
+    // on the card's task, the refresh rebuilds the models.
+    let mut settled = rig.handle.test_state().load_full().as_ref().clone();
+    let now = chrono::Utc::now();
+    let entry = taskboard_domain::tracking::TimeEntry {
+        id: taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+        task: fx.tasks[0],
+        task_title: String::new(),
+        start: now,
+        created_at: now,
+        updated_at: now,
+        by: None,
+        end: None,
+        kind: taskboard_domain::tracking::TimeEntryKind::Work,
+    };
+    settled.tracking.entries.insert(entry.id, entry);
+    rig.handle.test_state().store(Arc::new(settled));
+    rig.handle.refresh();
+    adapter.borrow_mut().refresh_forced(rig.handle.window());
+    // The pause half: exactly one Stop.
+    rig.handle.window().invoke_board_task_track_toggled(0, 0);
+    assert_eq!(
+        rig.drain_commands(),
+        vec![StateCommand::StopTracking],
+        "the pause half dispatches exactly one Stop"
+    );
+    let _ = ActionId::TaskTrackStart;
+}
+
 /// `label.manage` routes the open intent from the registry (the
 /// `rule_verbs_route_from_their_targets` shape): the dotted id
 /// resolves, and the dispatch emits the `LabelsOpen` effect — no

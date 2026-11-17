@@ -485,6 +485,7 @@ export component AppWindow inherits Window {
                 body-context(c, x, y) => root.board-body-context-requested(c, x, y);
                 body-activated(c) => root.board-body-activated(c);
                 task-done-toggled(c, r) => root.board-task-done-toggled(c, r);
+                task-track-toggled(c, r) => root.board-task-track-toggled(c, r);
                 rename-committed(c, t) => root.board-stack-rename-committed(c, t);
                 rename-edited(c, t) => root.board-stack-rename-edited(c, t);
                 text-flow-focus-lost() => root.text-flow-focus-lost();
@@ -518,6 +519,7 @@ export component AppWindow inherits Window {
                 row-clicked(s, r) => root.today-row-clicked(s, r);
                 row-context(s, r, x, y) => root.today-row-context-requested(s, r, x, y);
                 row-done-toggled(s, r) => root.today-row-done-toggled(s, r);
+                row-track-toggled(s, r) => root.today-row-track-toggled(s, r);
                 timers-visible: root.timers-visible;
                 timers-absence-hint: root.timers-absence-hint;
                 timers: root.timers-model;
@@ -573,6 +575,7 @@ export component AppWindow inherits Window {
                 task-clicked(i) => root.stack-task-clicked(i);
                 task-context(i, x, y) => root.stack-task-context-requested(i, x, y);
                 task-done-toggled(i) => root.stack-task-done-toggled(i);
+                task-track-toggled(i) => root.stack-task-track-toggled(i);
                 create-committed(t) => root.stack-create-committed(t);
                 create-edited(t) => root.stack-create-edited(t);
                 text-flow-focus-lost() => root.text-flow-focus-lost();
@@ -684,6 +687,7 @@ export component AppWindow inherits Window {
                 task-track-stop-clicked() => root.task-track-stop-clicked();
                 task-track-entries-clicked() => root.task-track-entries-clicked();
                 task-done-toggled() => root.task-done-toggled();
+                task-track-toggled() => root.task-track-toggled();
                 // The priority pickers (UX R-3 D-1, #788) and the
                 // labels section's seams (D-2, #789).
                 importance-edit-asked() => root.task-importance-edit-asked();
@@ -1699,6 +1703,14 @@ export component AppWindow inherits Window {
     // registry's complete/reopen act on the focused task; the
     // checkbox addresses an arbitrary card).
     pure callback board-task-done-toggled(int, int);
+    // The card play/pause control's seams (UX-R8 chunk-5 D-6, US-4):
+    // each resolves the addressed card through the id tables and
+    // routes the existing tracking ids (the shown half is the
+    // adapter's state read — one source with the menu's bar).
+    pure callback board-task-track-toggled(int, int);
+    pure callback stack-task-track-toggled(int);
+    pure callback today-row-track-toggled(int, int);
+    pure callback task-track-toggled();
     pure callback board-segment-context-requested(int, float, float);
     // The board color strip (UX R-4 D-1, #791): a swatch click
     // commits the exact SetBoardColor and closes; a dismissal (the
