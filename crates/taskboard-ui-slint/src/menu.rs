@@ -365,8 +365,13 @@ pub fn task_context_page(
         // The verdict table (D-4): withheld beats the projection.
         let withheld = match id {
             ActionId::TaskComplete => subject.is_tracker,
-            ActionId::TaskTrackStart => !subject.tracked_here,
-            ActionId::TaskTrackStop => !subject.tracking_elsewhere && !subject.tracked_here,
+            // The twin's shown half is the bar's (D-4's "bar + rows"
+            // verdicts agree): Start shows until the subject holds
+            // THE open entry (elsewhere-tracking greys it via the
+            // states map's singleton precondition), Stop shows only
+            // then.
+            ActionId::TaskTrackStart => subject.tracked_here,
+            ActionId::TaskTrackStop => !subject.tracked_here,
             _ => false,
         };
         if withheld {
@@ -1240,7 +1245,7 @@ mod tests {
         let chain = [ContextId::Board, ContextId::Global];
         let empty = std::collections::BTreeMap::new();
         let plain = TaskMenuSubject::default();
-        let (bar, rows) = task_context_page(&keymap, &chain, plain, &empty, &[]);
+        let (_, rows) = task_context_page(&keymap, &chain, plain, &empty, &[]);
         let ids: Vec<ActionId> = rows.iter().filter_map(|e| e.action).collect();
         assert!(
             !ids.contains(&ActionId::ReminderSnooze)
@@ -1262,6 +1267,30 @@ mod tests {
             "a series-less subject withholds the Series* rows"
         );
         assert!(!ids.contains(&ActionId::TimerCancel), "no armed timer");
+        // The tracking twin's rows carry the bar's shown half (D-4's
+        // "bar + rows" verdicts): the plain subject shows Start and
+        // withholds Stop; an elsewhere-tracking subject keeps the
+        // greyed Start and withholds the Stop row too.
+        assert!(
+            ids.contains(&ActionId::TaskTrackStart) && !ids.contains(&ActionId::TaskTrackStop),
+            "the plain subject's tracking rows carry the bar's shown half"
+        );
+        let elsewhere = TaskMenuSubject {
+            tracking_elsewhere: true,
+            ..TaskMenuSubject::default()
+        };
+        let (bar, rows) = task_context_page(&keymap, &chain, elsewhere, &empty, &[]);
+        assert!(
+            !rows
+                .iter()
+                .any(|e| e.action == Some(ActionId::TaskTrackStop)),
+            "an elsewhere-tracking subject withholds the stop row"
+        );
+        let start = bar
+            .iter()
+            .find(|e| e.action == ActionId::TaskTrackStart)
+            .expect("the bar shows start");
+        assert!(!start.enabled, "elsewhere greys the start bar button");
         assert!(
             !bar.iter()
                 .any(|e| e.action == ActionId::TaskUnschedule && e.visible),
