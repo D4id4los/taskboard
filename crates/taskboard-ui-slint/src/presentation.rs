@@ -151,6 +151,33 @@ pub fn files_sync_chip_presentation(state: FilesSyncChipState) -> ChipPresentati
     }
 }
 
+/// The publish ceremony's per-row phase vocabulary (the
+/// files-sync-status UX plan US-5, D-6): the addressed card renders
+/// the phase while the ceremony rides the pending lane; the terminal
+/// truth (Done/Failed) surfaces through the existing outcome lane
+/// (the typed-error fold), the badge clearing with the reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishPhase {
+    Publishing,
+    /// The adoption nudge's budget window (the publish choreography's
+    /// 60-second sibling — the files assign step).
+    Adopting,
+    Done,
+    Failed,
+}
+
+/// The addressed card's phase fold (US-5, D-6): the pending lane's
+/// publish kinds map onto the card-local phase; anything else is no
+/// phase (`None`).
+#[must_use]
+pub fn publish_card_phase(pending: Option<(bool, bool)>) -> Option<PublishPhase> {
+    match pending {
+        Some((publishing, _)) if publishing => Some(PublishPhase::Publishing),
+        Some((_, adopting)) if adopting => Some(PublishPhase::Adopting),
+        _ => None,
+    }
+}
+
 /// The Files row's per-key env-lock bits (the files-sync-status UX
 /// plan US-4, D-5): the pinned set named per key — `files_sync.enabled`
 /// and `files_sync.anchor` fold separately from the snapshot's
@@ -9169,6 +9196,23 @@ mod recur_editor_validity_tests {
 mod files_sync_chip_fold_tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    /// US-5 AC-1 — the addressed card's phase fold (typed): the
+    /// publish kinds map onto the ceremony phases, anything else is
+    /// no phase.
+    #[test]
+    fn us5_ac1_the_card_renders_the_ceremony_phase() {
+        assert_eq!(
+            publish_card_phase(Some((true, false))),
+            Some(PublishPhase::Publishing)
+        );
+        assert_eq!(
+            publish_card_phase(Some((false, true))),
+            Some(PublishPhase::Adopting)
+        );
+        assert_eq!(publish_card_phase(Some((false, false))), None);
+        assert_eq!(publish_card_phase(None), None);
+    }
 
     fn pinned(keys: &[&str]) -> BTreeSet<String> {
         keys.iter().map(|key| (*key).to_owned()).collect()

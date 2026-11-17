@@ -31,10 +31,10 @@ use crate::{
     FilesSyncChipState as SlintFilesSyncChipState, FilesSyncChipTone as SlintFilesSyncChipTone,
     FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
     ReflectionRowModel, ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel,
-    RuleRowModel, StackColumnModel, StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi,
-    TaskCardModel, TaskDecoration, TaskDetailModel, Theme, TimerRowModel, TodayModel,
-    TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel, TrackedTodayRowModel,
-    TrackingSectionModel, View,
+    RuleRowModel, SettingsPublishPhase as SlintSettingsPublishPhase, StackColumnModel,
+    StackDetailModel, StatBarModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration,
+    TaskDetailModel, Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone,
+    TrackEntryRowModel, TrackedTodayRowModel, TrackingSectionModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -3563,6 +3563,19 @@ pub fn files_sync_chip_tone(state: presentation::ChipTone) -> SlintFilesSyncChip
         presentation::ChipTone::Neutral => SlintFilesSyncChipTone::Neutral,
         presentation::ChipTone::Warning => SlintFilesSyncChipTone::Warning,
         presentation::ChipTone::Danger => SlintFilesSyncChipTone::Danger,
+    }
+}
+
+/// The publish phase's 1:1 generated-enum ferry (the files-sync-status
+/// UX plan US-5, D-6).
+#[must_use]
+pub fn publish_card_phase(phase: Option<presentation::PublishPhase>) -> SlintSettingsPublishPhase {
+    match phase {
+        None => SlintSettingsPublishPhase::None,
+        Some(presentation::PublishPhase::Publishing) => SlintSettingsPublishPhase::Publishing,
+        Some(presentation::PublishPhase::Adopting) => SlintSettingsPublishPhase::Adopting,
+        Some(presentation::PublishPhase::Done) => SlintSettingsPublishPhase::Done,
+        Some(presentation::PublishPhase::Failed) => SlintSettingsPublishPhase::Failed,
     }
 }
 

@@ -10100,6 +10100,56 @@ fn us3_ac2_refresh_overrides_the_backoff() {
     );
 }
 
+/// US-5 AC-1 (the files-sync-status plan, D-6) — the page's other
+/// controls stay enabled while a publish is pending: the wholesale
+/// disable flag is absent on the publish path (typed over the model's
+/// busy gate), and a Files-board row action stays clickable-enabled.
+#[test]
+fn us5_ac1_the_page_stays_usable_during_a_publish() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", None);
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        general: taskboard_ui_slint::requests::SettingsSnapshot {
+            files_sync_enabled: true,
+            files_sync_anchor: Some("work".into()),
+            ..taskboard_ui_slint::requests::SettingsSnapshot::default()
+        },
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let deck_index = item_at(&harness, K::Deck, "work");
+            window.invoke_settings_publish_picked(deck_index, 0);
+            assert!(harness.drain_requests().len() == 1, "the publish routed");
+            // The wholesale-disable flag is absent: the model's busy
+            // gate is false while the ceremony rides.
+            assert!(!model(&harness).get_busy());
+            // The Files roster rows' actions stay enabled (the page's
+            // other controls usable).
+            assert!(
+                items(&harness)
+                    .iter()
+                    .filter(|item| item.kind == K::FilesBoard)
+                    .all(|item| item.action_enabled),
+                "the roster's actions stay enabled during a publish"
+            );
+        },
+    );
+}
+
 /// Round-6 D-6.7 (plan §3 T8) — an auto-list reply never touches a
 /// concurrently in-flight user op: the pending machine, the busy
 /// marker, and the outcome banner survive the background reply's
@@ -10529,10 +10579,19 @@ fn a_deck_publish_pick_routes_publish_board() {
                     board, connector, ..
                 } if board.as_uuid() == home && connector == "work"
             ));
-            assert!(model(&harness).get_busy(), "the gate is busy mid-flight");
+            // The page-usable guard (US-5 AC-1): the publish family
+            // does not take the wholesale disable — the addressed
+            // card's phase badge carries the ceremony instead.
             assert!(
-                items(&harness)[usize::try_from(deck_index).expect("fits")].busy,
-                "the ceremony rides the Deck row"
+                !model(&harness).get_busy(),
+                "the page stays usable mid-publish"
+            );
+            let deck_row = &items(&harness)[usize::try_from(deck_index).expect("fits")];
+            assert!(deck_row.busy, "the ceremony rides the Deck row");
+            assert_eq!(
+                deck_row.pending_phase,
+                taskboard_ui_slint::SettingsPublishPhase::Publishing,
+                "the card renders the ceremony phase"
             );
 
             let taskboard_ui_slint::requests::UiRequest::PublishBoard { reply, .. } =
@@ -10550,6 +10609,11 @@ fn a_deck_publish_pick_routes_publish_board() {
             assert!(
                 !model(&harness).get_busy(),
                 "the gate cleared with the reply"
+            );
+            assert_eq!(
+                items(&harness)[usize::try_from(deck_index).expect("fits")].pending_phase,
+                taskboard_ui_slint::SettingsPublishPhase::None,
+                "the terminal phase clears with the reply (US-5 AC-2)"
             );
             assert_eq!(
                 model(&harness).get_last_outcome(),

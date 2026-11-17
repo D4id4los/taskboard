@@ -6360,6 +6360,7 @@ impl Adapter {
             bound: false,
             listed: false,
             files_on: false,
+            pending_phase: crate::models::publish_card_phase(None),
             files_enabled_pinned: false,
             files_anchor_pinned: false,
             files_restart: false,
@@ -6496,6 +6497,17 @@ impl Adapter {
                                 | PendingKind::Publish
                         )
                     ) && vm.busy_target == *connector,
+                    // The ceremony's card-local phase (US-5, D-6):
+                    // display-only, the addressed connector only.
+                    pending_phase: {
+                        let publishing =
+                            pending == Some(PendingKind::Publish) && vm.busy_target == *connector;
+                        let adopting = pending == Some(PendingKind::PublishFiles)
+                            && vm.busy_target == *connector;
+                        crate::models::publish_card_phase(crate::presentation::publish_card_phase(
+                            (publishing || adopting).then_some((publishing, adopting)),
+                        ))
+                    },
                     listed: listing.is_some(),
                     ..blank.clone()
                 });
@@ -6669,7 +6681,15 @@ impl Adapter {
         self.models.push_settings_rows(&global, &rows);
         self.models.push_board_options(&global, &options);
         self.models.push_connection_items(&global, &items);
-        global.set_busy(self.settings.pending.is_some());
+        // The page-usable guard (US-5 AC-1, D-6): the publish family
+        // keeps the page's controls enabled — the addressed card's
+        // phase badge carries the ceremony; the attach/remove family
+        // keeps today's wholesale posture.
+        global.set_busy(
+            self.settings.pending.is_some_and(|kind| {
+                !matches!(kind, PendingKind::Publish | PendingKind::PublishFiles)
+            }),
+        );
         global.set_busy_target(self.settings.busy_target.clone().into());
         global.set_draft_server(self.settings.draft.server_url.clone().into());
         global.set_draft_username(self.settings.draft.username.clone().into());
