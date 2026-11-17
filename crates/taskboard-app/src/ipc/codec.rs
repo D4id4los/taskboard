@@ -102,6 +102,16 @@ mod tests {
         tokio::io::duplex(4096)
     }
 
+    /// The caps are wire-contract values (ADR 0012 §4.3): a request
+    /// frame must stay accepted at the real 64 KiB limit, a response
+    /// at 16 MiB — arithmetic drift in the constants would silently
+    /// shrink the protocol envelope.
+    #[test]
+    fn the_frame_caps_are_the_adr_0012_contract_values() {
+        assert_eq!(MAX_REQUEST_BYTES, 64 * 1024);
+        assert_eq!(MAX_RESPONSE_BYTES, 16 * 1024 * 1024);
+    }
+
     #[tokio::test]
     async fn frames_round_trip_both_directions() {
         for cap in [MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES] {
