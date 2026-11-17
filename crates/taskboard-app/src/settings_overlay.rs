@@ -342,6 +342,32 @@ pub fn set_files_sync_enabled(
     })
 }
 
+/// Removes one key from its section (the `config unset` twin of the
+/// setters, journey W-4): the prove gate runs on the *post-removal*
+/// document — a removal that would break a previously-bootable file is
+/// refused typed and the file is untouched, byte-identical to the
+/// setters' contract. An absent key (or absent section) is an
+/// idempotent no-op: nothing writes, no empty table is minted.
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn remove_key(path: &Path, section: &str, key: &str) -> Result<(), OverlayError> {
+    let doc = crate::config::overlay_document(path).map_err(OverlayError::Io)?;
+    let present = doc
+        .get(section)
+        .and_then(|item| item.as_table())
+        .is_some_and(|table| table.contains_key(key));
+    drop(doc);
+    if !present {
+        return Ok(());
+    }
+    prove_and_write_with(path, section, |table| {
+        table.remove(key);
+        Ok(())
+    })
+}
+
 /// Writes `[files_sync] anchor` (round-6 D-6.6): the connector whose
 /// Nextcloud account the lane mirrors. Creates the table if absent.
 ///
@@ -808,5 +834,71 @@ mod tests {
         )
         .expect("decodes");
         assert_eq!(decoded.files_sync.anchor.as_deref(), Some("work"));
+    }
+
+    // -- the removal writer (journey W-4, US-3/S2) -----------------------
+
+    /// `us3_s2_remove_key_leaves_the_key_and_proves_bootable`: the
+    /// removal writer drops the override, keeps every unrelated table
+    /// and comment, and the post-removal document still proves
+    /// bootable (the figment re-read sees the default again).
+    #[test]
+    fn us3_s2_remove_key_leaves_the_key_and_proves_bootable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        remove_key(&path, "reminders", "tick_secs").expect("the removal lands");
+
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            !written.contains("tick_secs"),
+            "the override is gone: {written}"
+        );
+        assert!(
+            written.contains("# operator comment") && written.contains("# keep me"),
+            "comments survived: {written}"
+        );
+        assert!(written.contains("scale = 1.5"), "[ui] survives");
+        assert!(
+            written.contains("default_before"),
+            "the sibling key survives: {written}"
+        );
+        let decoded =
+            crate::config::AppConfig::decode_file_only_str(&written).expect("still decodes");
+        decoded.validate().expect("the post-removal file boots");
+    }
+
+    /// The prove gate binds removals too: dropping the max backoff
+    /// below the standing initial value crosses the ordering, so the
+    /// removal refuses typed (`Rejected`) and the file is untouched.
+    #[test]
+    fn a_validity_crossing_removal_refuses_and_touches_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(
+            &dir,
+            "[sync]\npoll_interval_secs = 30\nbackoff_initial_secs = 400\nbackoff_max_secs = 400\n",
+        );
+        let err = remove_key(&path, "sync", "backoff_max_secs")
+            .expect_err("the crossing removal refuses");
+        assert!(
+            matches!(err, OverlayError::Rejected(_)),
+            "typed rejection: {err:?}"
+        );
+        let text = std::fs::read_to_string(&path).expect("the file survives");
+        assert!(
+            text.contains("backoff_max_secs = 400"),
+            "byte-identical file: {text}"
+        );
+    }
+
+    /// Removing an already-absent key is a typed success — the
+    /// idempotent unset.
+    #[test]
+    fn removing_an_absent_key_is_an_idempotent_success() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, "[reminders]\ntick_secs = 30\n");
+        remove_key(&path, "focus", "work_mins").expect("absent removal succeeds");
+        let text = std::fs::read_to_string(&path).expect("read back");
+        assert!(text.contains("tick_secs = 30"), "document intact: {text}");
+        assert!(!text.contains("focus"), "no empty table created: {text}");
     }
 }
