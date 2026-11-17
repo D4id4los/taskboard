@@ -14,7 +14,11 @@ cargo fmt --all -- --check
 echo "[pre-commit] slint token lint"
 python3 scripts/check_slint_tokens.py
 
-echo "[pre-commit] cargo clippy --workspace --all-targets -- -D warnings"
-cargo clippy --workspace --all-targets --quiet -- -D warnings
+# Clippy is a real build (memory-heavy on a cold/incremental tree), so it
+# goes through the cross-worktree memory gate: builds take turns and never
+# start below the MemAvailable floor (2026-11-17 OOM incident). fmt and the
+# slint lint stay ungated (instant, memory-trivial).
+echo "[pre-commit] memory-gate: cargo clippy --workspace --all-targets -- -D warnings"
+scripts/memory-gate.sh -- cargo clippy --workspace --all-targets --quiet -- -D warnings
 
 echo "[pre-commit] OK"
