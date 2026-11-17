@@ -91,6 +91,11 @@ pub enum CommandError {
     /// No board with this id exists.
     #[error("unknown board")]
     UnknownBoard(BoardId),
+    /// The board is not Deck-bound (or a same-connector rebind pick):
+    /// the Deck-to-Deck rebind has no subject (the files-sync-status
+    /// plan US-10's typed refusal).
+    #[error("the board is not deck-bound")]
+    NotDeckBound,
     /// The board is tombstoned; edit-style intents cannot target it.
     #[error("board is deleted")]
     BoardDeleted(BoardId),
@@ -1968,6 +1973,37 @@ pub fn plan_command(
                     PersistenceAction::DeleteSyncStatus(board_id),
                 ],
                 outcome: CommandOutcome::Unbound { stranded_ops },
+            })
+        }
+        StateCommand::RebindBoard {
+            board,
+            connector,
+            remote,
+        } => {
+            // Edit-style intent: a live board only; the binding must
+            // exist and be Deck-typed (a files-bound or unbound board
+            // has no Deck-to-Deck move); a same-connector pick is a
+            // typed refusal, not a no-op. The remote id is preserved
+            // verbatim (the ceremony's identity-preservation pin).
+            let board_id = live_board_of(app, *board)?;
+            let board_row = &app.boards[&board_id];
+            let Some(binding) = board_row.remote.as_ref() else {
+                return Err(CommandError::NotDeckBound);
+            };
+            if binding.board.as_deck().is_none() {
+                return Err(CommandError::NotDeckBound);
+            }
+            if binding.connector == *connector {
+                return Err(CommandError::NotDeckBound);
+            }
+            let mut updated = board_row.clone();
+            updated.remote = Some(crate::ids::RemoteBoardBinding {
+                connector: connector.clone(),
+                board: *remote,
+            });
+            Ok(CommandPlan {
+                actions: vec![PersistenceAction::UpsertBoard(updated)],
+                outcome: CommandOutcome::Bound { wiped_refs: 0 },
             })
         }
         StateCommand::ReconcileByTitle { board } => {
@@ -6230,6 +6266,118 @@ mod tests {
                 board: board_id(),
                 bound: crate::ids::RemoteBoardId::deck(42)
             })
+        );
+    }
+
+    // ---- RebindBoard (the files-sync-status plan US-10, D-11) -------
+
+    fn deck_bound_state(remote_deck: u64) -> AppState {
+        let mut app = unbound_board_state();
+        app.boards.get_mut(&board_id()).unwrap().remote =
+            crate::test_support::test_binding(crate::ids::RemoteBoardId::deck(remote_deck));
+        app
+    }
+
+    /// US-10 AC-1 — the atomic re-target: the connector is replaced,
+    /// the remote Deck id preserved verbatim (the ceremony's
+    /// identity-preservation pin).
+    #[test]
+    fn us10_ac1_rebind_preserves_the_remote_identity() {
+        let app = deck_bound_state(42);
+        let outbox: Vec<PendingOp> = Vec::new();
+        let target = crate::ids::ConnectorId::from("other-deck");
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::RebindBoard {
+                board: board_id(),
+                connector: target.clone(),
+                remote: crate::ids::RemoteBoardId::deck(42),
+            },
+        )
+        .unwrap();
+        let row = plan
+            .actions
+            .iter()
+            .find_map(|action| match action {
+                PersistenceAction::UpsertBoard(row) => Some(row.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let binding = row.remote.as_ref().unwrap();
+        assert_eq!(binding.connector, target, "the connector re-targets");
+        assert_eq!(
+            binding.board.as_deck(),
+            Some(42),
+            "the remote id is preserved verbatim"
+        );
+    }
+
+    /// US-10 AC-2 — the typed refusals: unbound and files-bound
+    /// boards refuse (`NotDeckBound`); a same-connector pick refuses;
+    /// a tombstoned board refuses.
+    #[test]
+    fn us10_ac2_precondition_refusal_renders_typed() {
+        let outbox: Vec<PendingOp> = Vec::new();
+        let target = crate::ids::ConnectorId::from("other-deck");
+        // Unbound.
+        assert_eq!(
+            run(
+                &unbound_board_state(),
+                &outbox,
+                &StateCommand::RebindBoard {
+                    board: board_id(),
+                    connector: target.clone(),
+                    remote: crate::ids::RemoteBoardId::deck(42),
+                },
+            ),
+            Err(CommandError::NotDeckBound)
+        );
+        // Files-bound.
+        let mut files_bound = unbound_board_state();
+        files_bound.boards.get_mut(&board_id()).unwrap().remote = crate::test_support::test_binding(
+            crate::ids::RemoteBoardId::files(uuid::Uuid::from_u128(7)),
+        );
+        assert_eq!(
+            run(
+                &files_bound,
+                &outbox,
+                &StateCommand::RebindBoard {
+                    board: board_id(),
+                    connector: target.clone(),
+                    remote: crate::ids::RemoteBoardId::deck(42),
+                },
+            ),
+            Err(CommandError::NotDeckBound)
+        );
+        // Same-connector pick.
+        let bound = deck_bound_state(42);
+        assert_eq!(
+            run(
+                &bound,
+                &outbox,
+                &StateCommand::RebindBoard {
+                    board: board_id(),
+                    connector: crate::test_support::test_connector(),
+                    remote: crate::ids::RemoteBoardId::deck(42),
+                },
+            ),
+            Err(CommandError::NotDeckBound)
+        );
+        // Tombstoned.
+        let mut dead = deck_bound_state(42);
+        dead.boards.get_mut(&board_id()).unwrap().deleted = true;
+        assert_eq!(
+            run(
+                &dead,
+                &outbox,
+                &StateCommand::RebindBoard {
+                    board: board_id(),
+                    connector: target,
+                    remote: crate::ids::RemoteBoardId::deck(42),
+                },
+            ),
+            Err(CommandError::BoardDeleted(board_id()))
         );
     }
 

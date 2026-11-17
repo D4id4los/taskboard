@@ -136,6 +136,7 @@ fn record_entry(
         }
         StateCommand::CreateBoard { .. }
         | StateCommand::BindBoard { .. }
+        | StateCommand::RebindBoard { .. }
         | StateCommand::RenameBoard { .. }
         | StateCommand::SetBoardColor { .. }
         | StateCommand::SetBoardArchived { .. }
@@ -327,6 +328,7 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         StateCommand::CreateStack { board, .. }
         | StateCommand::CreateLabel { board, .. }
         | StateCommand::BindBoard { board, .. }
+        | StateCommand::RebindBoard { board, .. }
         | StateCommand::RenameBoard { board, .. }
         | StateCommand::SetBoardColor { board, .. }
         | StateCommand::SetBoardArchived { board, .. }
@@ -785,6 +787,7 @@ impl JournalEntry {
             StateCommand::DeleteLabel { .. }
             | StateCommand::CreateBoard { .. }
             | StateCommand::BindBoard { .. }
+            | StateCommand::RebindBoard { .. }
             | StateCommand::RenameBoard { .. }
             | StateCommand::SetBoardColor { .. }
             | StateCommand::SetBoardArchived { .. }
