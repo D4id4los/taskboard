@@ -1020,9 +1020,14 @@ export component BoardLayout inherits Rectangle {
             // addressed through `effective-selected()` exactly as
             // before; `compact-task` names the delegate for the
             // engagement probe. The viewport absorbs the leg's
-            // surplus height (see the note on the regular leg's `lv`).
+            // surplus height (see the note on the regular leg's `lv`)
+            // — UX-R8 chunk-5 D-8 (US-7): without the stretch the
+            // surplus distributed into the unlocked armed create
+            // field (the N-13 swallow; the probe's numbers pinned
+            // 130.5px against the single-line band).
             task-viewport := ListView {
                 min-height: 0;
+                vertical-stretch: 1;
                 // The card drag-to-move owns the pointer gesture inside
                 // the viewport (see the regular leg's `lv`).
                 mouse-drag-pan-enabled: false;
@@ -1083,6 +1088,14 @@ export component BoardLayout inherits Rectangle {
             }
 
                 if (column.create-open): TextField {
+                    // The single-line band (UX-R8 chunk-5 D-8, US-7):
+                    // min AND max — the unlocked field absorbed the
+                    // compact leg's surplus (the probe's numbers
+                    // pinned 130.5px against the single-line band;
+                    // the viewport stretch alone did not settle it —
+                    // the recorded mechanism re-derivation).
+                    min-height: Theme.space-6 + 2 * Theme.space-1;
+                    max-height: Theme.space-6 + 2 * Theme.space-1;
                     placeholder: "New task title";
                     label: "New task title";
                     commit-affordance: true;

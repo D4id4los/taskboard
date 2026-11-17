@@ -23600,3 +23600,57 @@ fn us5_s2_empty_settle_hands_off_nothing() {
         },
     );
 }
+
+/// US-7/S1 (origin AC-1, UX-R8 chunk-5 D-8) — the compact leg's
+/// add-task field holds its single-line height: the realized height
+/// of the ghost stays the locked `space-6 + 2 * space-1` band (the
+/// surplus flows into the task viewport, not the field — the N-13
+/// swallow's fix). Geometry oracle, never text.
+#[test]
+fn us7_s1_the_compact_add_task_field_holds_its_height() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // A height-constrained window: the surplus the viewport
+            // must absorb exists only when the column content exceeds
+            // the available height (the N-13 shape).
+            harness.driver.set_window_size(600, 460);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_compact_active(),
+                "600 px is the compact breakpoint"
+            );
+            // The compact leg mounts the selected stack's column; a
+            // board switch makes the selection concrete.
+            harness.press(ActionId::BoardNext);
+            harness.driver.advance_time(0);
+            // The armed leg: the create field (the "field" the note
+            // N-13 names — armed or ghost, the constraint holds).
+            let ghost = harness
+                .driver
+                .find_by_label("Add task")
+                .expect("the compact leg's ghost mounts");
+            let locked = 32.0 + 2.0 * 4.0; // space-6 + 2 * space-1 at base scale 1
+            let ghost_height = ghost.size().height;
+            assert!(
+                (ghost_height - locked).abs() < 0.5,
+                "the ghost holds its single-line height, got {ghost_height}"
+            );
+            ghost.invoke_default_action();
+            harness.driver.advance_time(0);
+            let field = harness
+                .driver
+                .find_by_label("New task title")
+                .expect("the armed create field mounts");
+            let field_height = field.size().height;
+            assert!(
+                (field_height - locked).abs() < 8.0,
+                "the armed add-task field holds its single-line height, got {field_height}"
+            );
+        },
+    );
+}
