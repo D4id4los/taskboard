@@ -2048,6 +2048,9 @@ fn every_arm_journals_entry_or_nothing() {
         StateCommand::UnbindBoard { board },
         StateCommand::ReconcileByTitle { board },
         StateCommand::DeleteStack { id: stack },
+        // The tombstoned stack takes the restore verb (the #356 row:
+        // accepted, journals one PreImages entry, stack live again).
+        StateCommand::RestoreStack { id: stack },
         StateCommand::ResetBoard { board },
         StateCommand::DeleteBoard { board },
         StateCommand::RequestSync,
@@ -2712,4 +2715,493 @@ fn reflection_day_window() -> (
     let start = chrono::Utc.with_ymd_and_hms(2026, 11, 5, 0, 0, 0).unwrap();
     let end = chrono::Utc.with_ymd_and_hms(2026, 11, 6, 0, 0, 0).unwrap();
     (day, (start, end))
+}
+
+// ---- the stack restore surface (#356, round C8) ---------------------------
+
+/// Seeds `stack` + `n` tasks (titles "t0".."t{n}") and returns the ids.
+fn seeded_stack(
+    h: &mut Harness,
+    board: crate::ids::BoardId,
+    n: usize,
+) -> (crate::ids::StackId, Vec<crate::ids::TaskId>) {
+    let stack = h.stack(board);
+    let tasks = (0..n).map(|i| h.task(stack, &format!("t{i}"))).collect();
+    (stack, tasks)
+}
+
+/// Adopts a remote ref on the stack and every named task, then clears
+/// the standing create ops (the pushed/bound seed shape).
+fn bind_stack_and_tasks(h: &mut Harness, stack: crate::ids::StackId, tasks: &[crate::ids::TaskId]) {
+    {
+        let mut bound = h.disk.stacks[&stack].clone();
+        bound.remote = Some(crate::ids::RemoteStackRef {
+            board: crate::ids::RemoteBoardId::deck(7),
+            stack: crate::ids::RemoteStackId::deck(8),
+        });
+        h.disk.stacks.insert(stack, bound);
+        for task in tasks {
+            let mut bound = h.disk.tasks[task].clone();
+            bound.remote = Some(crate::ids::RemoteCardRef {
+                board: crate::ids::RemoteBoardId::deck(7),
+                stack: crate::ids::RemoteStackId::deck(8),
+                card: crate::ids::RemoteCardId::deck(9),
+            });
+            h.disk.tasks.insert(*task, bound);
+        }
+        h.disk.outbox.clear();
+        h.sync();
+    }
+}
+
+#[test]
+fn delete_stack_journals_pre_images_and_is_undoable() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, tasks) = seeded_stack(&mut h, board, 2);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    let entry = h
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::DeleteStack { .. }))
+        .expect("the delete journals one entry");
+    let UndoFacts::PreImages { images, .. } = &entry.facts else {
+        panic!("DeleteStack journals PreImages, got {:?}", entry.facts);
+    };
+    // The capture is arm-agnostic: the stack image plus one image per
+    // cascaded task, each with a `Some` pre-state.
+    let stack_images = images
+        .iter()
+        .filter(|image| {
+            matches!(
+                image,
+                PreImage::Stack {
+                    before: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    let task_images = images
+        .iter()
+        .filter(|image| {
+            matches!(
+                image,
+                PreImage::Task {
+                    before: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(stack_images, 1);
+    assert_eq!(task_images, tasks.len());
+    // Undoable: the head targets the delete entry and undo plans.
+    assert_eq!(h.journal.head, Some(entry.id));
+    let plan = h
+        .exec_plan(&StateCommand::Undo)
+        .expect("the reclassified delete undoes");
+    assert!(matches!(plan.outcome, CommandOutcome::Undone { .. }));
+}
+
+#[test]
+fn undo_of_delete_stack_restores_stack_and_cascade_locally() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, tasks) = seeded_stack(&mut h, board, 2);
+    let create_ops_before = h
+        .disk
+        .outbox
+        .iter()
+        .filter(|pending| matches!(pending.op, crate::outbox::LocalOp::CreateStack(_)))
+        .count();
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    h.exec(&StateCommand::Undo).expect("undone");
+    let create_ops_after = h
+        .disk
+        .outbox
+        .iter()
+        .filter(|pending| matches!(pending.op, crate::outbox::LocalOp::CreateStack(_)))
+        .count();
+    assert_eq!(create_ops_after, create_ops_before);
+    // The stack and every member live again, pre-delete values intact.
+    assert!(!h.disk.stacks[&stack].deleted);
+    for task in &tasks {
+        assert!(!h.disk.tasks[task].deleted);
+    }
+    assert_eq!(h.disk.stacks[&stack].title, "stack");
+    // The pending stack-delete op retracted (the unbound shape: no new
+    // create ops minted).
+    assert!(
+        !h.disk.outbox.iter().any(
+            |pending| matches!(pending.op, crate::outbox::LocalOp::DeleteStack(s) if s == stack)
+        )
+    );
+    // The head moved off the delete entry.
+    let delete_entry = h
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::DeleteStack { .. }))
+        .expect("delete entry");
+    assert_eq!(h.journal.head, delete_entry.parent);
+}
+
+#[test]
+fn undo_of_pushed_delete_stack_reposts_as_creates() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, tasks) = seeded_stack(&mut h, board, 2);
+    bind_stack_and_tasks(&mut h, stack, &tasks);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    // The delete reached the server: flip the pushed flag and retire
+    // the entry's ops from the outbox (the R-U9 post-pass post-state:
+    // completed ops leave the pending queue).
+    let delete_entry_id = h.journal.head.expect("delete is the head");
+    let mut j = h.disk.journal.clone();
+    let entry = j
+        .entries
+        .iter_mut()
+        .find(|entry| entry.id == delete_entry_id)
+        .expect("delete entry");
+    entry.pushed = true;
+    let completed = entry.ops.clone();
+    h.disk.journal = j;
+    h.disk
+        .outbox
+        .retain(|pending| !completed.contains(&pending.op_id));
+    h.sync();
+    h.exec(&StateCommand::Undo).expect("undone");
+    // Repost: a CreateStack op for the stack and a CreateTask op per
+    // member; the entry's own ops are not re-failed (the server
+    // completed them).
+    assert!(
+        h.disk.outbox.iter().any(
+            |pending| matches!(pending.op, crate::outbox::LocalOp::CreateStack(s) if s == stack)
+        )
+    );
+    for task in &tasks {
+        assert!(h.disk.outbox.iter().any(
+            |pending| matches!(pending.op, crate::outbox::LocalOp::CreateTask(t) if t == *task)
+        ));
+    }
+    assert!(!h.disk.stacks[&stack].deleted);
+}
+
+#[test]
+fn undo_of_delete_stack_refuses_field_named_when_a_member_diverged() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, tasks) = seeded_stack(&mut h, board, 2);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    // A member moved since: bump its tombstone clock (any later writer
+    // on the watermarked field).
+    let member = tasks[0];
+    let mut diverged = h.disk.tasks[&member].clone();
+    diverged.clocks.deleted = ts(h.now + 10_000);
+    h.disk.tasks.insert(member, diverged);
+    h.sync();
+    let head_before = h.journal.head;
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNoLongerInvertible {
+            field: UndoField::Deleted,
+            ..
+        })
+    ));
+    // Atomicity: the whole line refuses, the head never moves.
+    assert_eq!(h.journal.head, head_before);
+    assert!(h.disk.stacks[&stack].deleted);
+}
+
+#[test]
+fn undo_of_delete_stack_refuses_when_a_member_was_individually_restored() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, tasks) = seeded_stack(&mut h, board, 2);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    // One member takes its own recovery path: it resurrects live, and
+    // the stack-delete entry's recorded tombstone stamp has diverged.
+    // The head rewinds to the stack delete (a later line walk — the
+    // undo targets the delete entry, not the member restore).
+    let member = tasks[1];
+    h.exec(&StateCommand::RestoreTask {
+        id: member,
+        resurrect: Box::new(h.disk.tasks[&member].clone()),
+    })
+    .expect("restored");
+    assert!(!h.disk.tasks[&member].deleted);
+    let delete_entry = h
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::DeleteStack { .. }))
+        .expect("delete entry");
+    h.disk.journal.head = Some(delete_entry.id);
+    h.sync();
+    let head_before = h.journal.head;
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNoLongerInvertible {
+            field: UndoField::Deleted,
+            ..
+        })
+    ));
+    assert_eq!(h.journal.head, head_before);
+    assert!(h.disk.stacks[&stack].deleted, "no partial restore");
+}
+
+#[test]
+fn restore_stack_on_a_live_stack_is_the_accepted_noop() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, _) = seeded_stack(&mut h, board, 1);
+    let before = h.journal.entries.len();
+    let outcome = h
+        .exec(&StateCommand::RestoreStack { id: stack })
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::NoOp);
+    assert_eq!(h.journal.entries.len(), before, "nothing journaled");
+}
+
+#[test]
+fn restore_stack_then_undo_re_deletes_through_the_cascade() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, tasks) = seeded_stack(&mut h, board, 1);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    // Forward restore: the stack entity only — the member keeps its own
+    // tombstone (the documented leniency).
+    let outcome = h
+        .exec(&StateCommand::RestoreStack { id: stack })
+        .expect("restored");
+    assert!(matches!(outcome, CommandOutcome::StackRestored { .. }));
+    assert!(!h.disk.stacks[&stack].deleted);
+    assert!(h.disk.tasks[&tasks[0]].deleted);
+    // Undo re-deletes the stack through the ordinary cascade.
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(h.disk.stacks[&stack].deleted);
+    assert!(
+        !h.disk.outbox.iter().any(
+            |pending| matches!(pending.op, crate::outbox::LocalOp::DeleteStack(s) if s == stack)
+        ),
+        "the unbound re-delete retracts its own op"
+    );
+    // Redo re-plans the forward intent: the stack is restored again.
+    h.exec(&StateCommand::Redo).expect("redone");
+    assert!(!h.disk.stacks[&stack].deleted);
+}
+
+#[test]
+fn a_new_edit_after_stack_restores_forks_and_the_old_redo_path_dies() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, _) = seeded_stack(&mut h, board, 1);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    h.exec(&StateCommand::Undo).expect("undone");
+    // The new edit forks the line; the delete's redo path dies.
+    h.exec(&StateCommand::RenameStack {
+        id: stack,
+        new_title: "renamed".into(),
+    })
+    .expect("renamed");
+    let err = h.exec(&StateCommand::Redo);
+    assert!(matches!(err, Err(CommandError::NothingToRedo)));
+}
+
+#[test]
+fn stack_delete_and_restore_entries_carry_the_board_tag() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, _) = seeded_stack(&mut h, board, 1);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    h.exec(&StateCommand::RestoreStack { id: stack })
+        .expect("restored");
+    for command in h.journal.entries.iter().rev() {
+        match command.command {
+            StateCommand::DeleteStack { .. } | StateCommand::RestoreStack { .. } => {
+                assert_eq!(command.board, Some(board));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn undo_of_delete_stack_refuses_when_the_stack_row_gone() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, _tasks) = seeded_stack(&mut h, board, 1);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    // The stack row is hard-removed (an external sweep / eviction).
+    h.disk.stacks.remove(&stack);
+    h.sync();
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNoLongerInvertible {
+            field: UndoField::Deleted,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn restore_stack_currently_pins_the_reminder_rule_loss() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, tasks) = seeded_stack(&mut h, board, 1);
+    h.exec(&StateCommand::AddReminderRule {
+        task: tasks[0],
+        offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
+            .expect("valid"),
+        at: None,
+        insistence: crate::reminders::Insistence::Normal,
+    })
+    .expect("rule");
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    assert!(
+        h.disk.reminders.rules.is_empty(),
+        "the cascade removed the rule"
+    );
+    h.exec(&StateCommand::Undo).expect("undone");
+    // Currently pins the D-7 leniency (debt, not contract): the task
+    // resurrects without its reminder rules — widening pre-image
+    // capture to rules is a backlog issue, not this chunk.
+    assert!(!h.disk.tasks[&tasks[0]].deleted);
+    assert!(h.disk.reminders.rules.is_empty());
+}
+
+// ---- the proptest corpus (#356) -------------------------------------------
+
+use crate::test_support::proptest_config;
+use proptest::prelude::*;
+
+proptest! {
+    #![proptest_config(proptest_config(16))]
+
+    /// P1: undo of a stack delete either refuses typed or restores
+    /// exactly the entry's own pre-image set — the stack and its N
+    /// members — leaving the board (and everything else) untouched.
+    #[test]
+    fn undo_delete_stack_restores_exactly_the_cascade(
+        n in 1usize..=4,
+        bind in proptest::bool::ANY,
+    ) {
+        let mut h = Harness::new();
+        let board = h.board();
+        let (stack, tasks) = seeded_stack(&mut h, board, n);
+        if bind {
+            bind_stack_and_tasks(&mut h, stack, &tasks);
+        }
+        let board_before = h.disk.boards[&board].clone();
+        let pre_titles: Vec<String> =
+            tasks.iter().map(|t| h.disk.tasks[t].title.clone()).collect();
+        h.exec(&StateCommand::DeleteStack { id: stack }).expect("deleted");
+        match h.exec(&StateCommand::Undo) {
+            Ok(_) => {
+                prop_assert!(!h.disk.stacks[&stack].deleted);
+                for (i, task) in tasks.iter().enumerate() {
+                    prop_assert!(!h.disk.tasks[task].deleted);
+                    prop_assert_eq!(&h.disk.tasks[task].title, &pre_titles[i]);
+                }
+                prop_assert_eq!(&h.disk.boards[&board], &board_before);
+            }
+            Err(CommandError::UndoTargetHasDependents { .. }) => {
+                // The occupancy guard: only reachable when the inverse is
+                // a DeleteStack — never for this composite restore.
+                prop_assert!(false, "the composite restore never trips the guard");
+            }
+            Err(other) => {
+                // Any refusal is typed and leaves the tombstones standing.
+                let _ = other;
+                prop_assert!(h.disk.stacks[&stack].deleted);
+            }
+        }
+    }
+
+    /// P2: delete → undo round-trips every member's content fields to
+    /// their pre-delete values (the refreshed tombstone clock excluded).
+    #[test]
+    fn delete_undo_round_trip_preserves_member_fields(n in 1usize..=4) {
+        let mut h = Harness::new();
+        let board = h.board();
+        let (stack, tasks) = seeded_stack(&mut h, board, n);
+        let mut pre = std::collections::BTreeMap::new();
+        for task in &tasks {
+            pre.insert(*task, h.disk.tasks[task].clone());
+        }
+        h.exec(&StateCommand::DeleteStack { id: stack }).expect("deleted");
+        h.exec(&StateCommand::Undo).expect("undone");
+        for task in &tasks {
+            let before = &pre[task];
+            let after = &h.disk.tasks[task];
+            prop_assert!(!after.deleted);
+            prop_assert_eq!(&after.title, &before.title);
+            prop_assert_eq!(after.stack, before.stack);
+            prop_assert_eq!(after.order, before.order);
+            prop_assert_eq!(after.done, before.done);
+            prop_assert_eq!(after.duedate, before.duedate);
+            prop_assert_eq!(after.archived, before.archived);
+            prop_assert_eq!(after.clocks.title, before.clocks.title);
+            prop_assert_eq!(after.clocks.position, before.clocks.position);
+        }
+        prop_assert!(!h.disk.stacks[&stack].deleted);
+    }
+}
+
+/// P3 (D-6 fence property): over the board-ceremony family,
+/// every journaled entry's facts are `NotUndoable(BoardCeremony)` — the
+/// ceremony family never journals pre-images, so no stack-entry
+/// reclassification moved the fence.
+#[test]
+fn board_ceremony_commands_never_journal_pre_images() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let ceremonies = [
+        StateCommand::RenameBoard {
+            board,
+            title: "renamed".into(),
+        },
+        StateCommand::SetBoardColor {
+            board,
+            color: crate::entities::Color::new("ff0000"),
+        },
+        StateCommand::SetBoardArchived {
+            board,
+            archived: true,
+        },
+        StateCommand::UnbindBoard { board },
+        StateCommand::ReconcileByTitle { board },
+    ];
+    for command in ceremonies {
+        if let Ok(plan) = h.exec_plan(&command) {
+            if plan.actions.is_empty() {
+                continue;
+            }
+            let Some(PersistenceAction::RecordJournal(entry)) = plan.actions.last() else {
+                panic!("RecordJournal rides last for {command:?}");
+            };
+            assert!(
+                matches!(
+                    entry.facts,
+                    UndoFacts::NotUndoable(NotUndoableReason::BoardCeremony)
+                ),
+                "a ceremony journaled non-ceremony facts for {command:?}"
+            );
+        }
+    }
 }
