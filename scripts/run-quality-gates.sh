@@ -22,12 +22,28 @@
 #                                               (e.g. a lone cargo nextest run)
 #   scripts/run-quality-gates.sh --status       report the current holder
 #
+# Two-mode cross-reference (2026-11-17): this script serializes but does
+# not floor-check-with-wait — the floor check here is a one-shot
+# pre-flight refusal BEFORE the lock is acquired, so a starved box is a
+# refusal, not a queued 10–60-minute llvm-cov start. Build-vs-build
+# routing (short/heavy ⇒ hold, long self-capped ⇒ preflight-only) is the
+# memory gate's law: scripts/memory-gate.sh (docs/agent_dispatch.org §2).
+# Evidence: the 2026-11-17 OOM incident
+# (.artifacts/reports/2026-11-17-oom-incident-concurrency-learning-report.md).
+#
 # Env:
 #   GATES_LOCK_TIMEOUT  max seconds to wait for the lock before giving up
 #                       with a nonzero exit (default: 14400; 0 = forever)
 #   GATES_LOCK_POLL     max seconds between "still waiting" messages
 #                       (default: 30; also bounds reacquisition latency
 #                       after the holder releases)
+#   MEMORY_GATE_MIN_AVAIL_MIB
+#                       MemAvailable pre-flight floor in MiB (default:
+#                       8192) — the SAME constant scripts/memory-gate.sh
+#                       uses (one budget, one dial); deliberately not a
+#                       new env var. Duplicated, not sourced (shell, no
+#                       shared config; the doctor's floor keeps its own
+#                       WORKTREE_DOCTOR_MIN_AVAIL_MIB name).
 set -euo pipefail
 
 usage() {
@@ -51,6 +67,15 @@ common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 }
 lock_file="${common_dir%/}/quality-gates.lock"
 
+# Pre-flight memory floor — SAME env var + default as scripts/memory-gate.sh
+# (cross-referencing comment in its header; one budget, one dial).
+floor="${MEMORY_GATE_MIN_AVAIL_MIB:-8192}"
+
+avail_mib() {
+  awk '/^MemAvailable:/ { print int($2 / 1024); found=1; exit }
+       END { exit found ? 0 : 1 }' /proc/meminfo 2>/dev/null
+}
+
 if [[ "${1:-}" == "--status" ]]; then
   if flock -n "$lock_file" true 2>/dev/null; then
     echo "run-quality-gates: lock is FREE: $lock_file"
@@ -58,6 +83,13 @@ if [[ "${1:-}" == "--status" ]]; then
     echo "run-quality-gates: lock is HELD: $lock_file"
     echo "  holder info (best effort — the lock itself lives in the kernel):"
     sed 's/^/    /' "$lock_file" 2>/dev/null || true
+  fi
+  # Parity with scripts/memory-gate.sh --status: a status query never
+  # refuses, whatever the reading.
+  if avail="$(avail_mib)"; then
+    echo "run-quality-gates: MemAvailable ${avail} MiB (floor: ${floor} MiB)"
+  else
+    echo "run-quality-gates: MemAvailable unreadable (floor: ${floor} MiB)"
   fi
   exit 0
 fi
@@ -70,7 +102,23 @@ fi
 timeout="${GATES_LOCK_TIMEOUT:-14400}"
 poll="${GATES_LOCK_POLL:-30}"
 
+# One-shot pre-flight refusal (two-mode law, D4 of the C13 plan): check
+# MemAvailable ONCE before the lock is touched — below floor or unreadable
+# /proc fails closed, nonzero, no waiting loop. The bounded lock wait
+# (GATES_LOCK_TIMEOUT) below stays as is; a starved box is a refusal,
+# not a queued start. Same fail-closed contract as the memory gate and
+# the doctor's disk floor.
+preflight_mem_floor() {
+  if ! avail="$(avail_mib)" || (( avail < floor )); then
+    echo "run-quality-gates: pre-flight refusing — MemAvailable ${avail:-unreadable} MiB below floor ${floor} MiB (no lock was acquired)" >&2
+    exit 1
+  fi
+  echo "run-quality-gates: pre-flight MemAvailable ${avail} MiB (floor ${floor} MiB)"
+}
+
 holder_info() { tr '\n' ';' <"$lock_file" 2>/dev/null || true; }
+
+preflight_mem_floor # before the lock is touched — both the full-suite and the command path
 
 exec 9>>"$lock_file" # creates if missing; this fd carries the lock
 start_ts="$(date +%s)"
