@@ -74,6 +74,13 @@ const SEAM_INVENTORY: &[&str] = &[
     "board_card_drag_armed",
     "board_card_drag_finished",
     "board_card_dropped",
+    // The card play/pause control's seams (UX-R8 chunk-5 D-6, US-4):
+    // the four addressing chains (board/compact, stack, today,
+    // detail) route the existing tracking ids (#782's fold).
+    "board_task_track_toggled",
+    "stack_task_track_toggled",
+    "today_row_track_toggled",
+    "task_track_toggled",
     // The gap drop grammar (UX-R8 D-2, US-2): the gap-zone hover and
     // drop reports (the #760 fold — this inventory is the stage-3
     // cross-check root).

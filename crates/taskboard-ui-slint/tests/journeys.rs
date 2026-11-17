@@ -23471,3 +23471,59 @@ fn us1_ac5_bar_key_and_click_route_identically() {
         },
     );
 }
+
+/// US-4/S1 (origin AC-1) — the card's play control routes
+/// `StartTracking` with the card's task as target (the one-shot
+/// `track_target`); the model's shown half flips on the next push.
+#[test]
+fn us4_s1_card_play_routes_starttracking() {
+    let (_fixture, state) = fixture::golden_state();
+    let task0 = state.tasks.values().next().expect("fixture task").id;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.click_by_label("Start tracking");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::StartTracking {
+                task: task0,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            }]);
+        },
+    );
+}
+
+/// US-4/S2 (origin AC-2) — the running card's control routes
+/// `StopTracking` and flips back.
+#[test]
+fn us4_s2_card_pause_routes_stoptracking() {
+    let (_fixture, mut state) = fixture::golden_state();
+    // Seed an open entry on the first card (the running-here half).
+    let task0 = state.tasks.values().next().expect("fixture task").id;
+    let now = chrono::Utc::now();
+    let entry = taskboard_domain::tracking::TimeEntry {
+        id: taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+        task: task0,
+        task_title: String::new(),
+        start: now,
+        created_at: now,
+        updated_at: now,
+        by: None,
+        end: None,
+        kind: taskboard_domain::tracking::TimeEntryKind::Work,
+    };
+    state.tracking.entries.insert(entry.id, entry);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.click_by_label("Stop tracking");
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::StopTracking]);
+        },
+    );
+}

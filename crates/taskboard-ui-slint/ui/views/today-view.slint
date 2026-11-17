@@ -72,6 +72,8 @@ export component TodayView inherits FocusScope {
     // The done checkbox's toggle (r3 D6): (section, row) — the adapter
     // resolves the today table and flips the model bit.
     callback row-done-toggled(int, int);
+    // slint: row-track-toggled (UX-R8 chunk-5 D-6): the row's control.
+    callback row-track-toggled(int, int);
     // The timers section (DR-3/3, D-I6): top-of-page, above the empty
     // state and the task sections (D-P18). The desktop controls are
     // enforced model-side — `timers-visible` is false on kiosk, but
@@ -423,6 +425,10 @@ export component TodayView inherits FocusScope {
                                 }
                                 done-toggled => {
                                     root.row-done-toggled(sindex, rindex);
+                                }
+                                // slint: track-toggled
+                                track-toggled => {
+                                    root.row-track-toggled(sindex, rindex);
                                 }
                             }
                             // The context line (D-V3): the stack, or

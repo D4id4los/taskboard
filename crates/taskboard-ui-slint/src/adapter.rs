@@ -10307,6 +10307,18 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     }
 
     });
+
+    // The card play/pause control (UX-R8 chunk-5 D-6): the today
+    // leg's addressing chain.
+    install_seam!(window: window.on_today_row_track_toggled, adapter: adapter;
+    bind mut (a, window), args (section, row), {        let (Ok(section), Ok(row)) = (usize::try_from(section), usize::try_from(row)) else {
+        return;
+    };
+    if let Some(task) = a.tables.today_row(section, row) {
+        send_card_track_toggle(&mut a, &window, task);
+    }
+
+    });
     // The Tracked section's activation (#490, D-TS7): resolves the
     // row through the tracked-today table and opens the task — the
     // today-row-activated arm verbatim (click ≡ key, §7.1).
@@ -10722,6 +10734,18 @@ fn install_stack_done_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     }
 
     });
+
+    // The card play/pause control (UX-R8 chunk-5 D-6): the stack
+    // leg's addressing chain.
+    install_seam!(window: window.on_stack_task_track_toggled, adapter: adapter;
+    bind mut (a, window), args (row), {        let Ok(row) = usize::try_from(row) else {
+        return;
+    };
+    if let Some(task) = a.tables.stack_task(row) {
+        send_card_track_toggle(&mut a, &window, task);
+    }
+
+    });
 }
 
 /// The seam-wiring decision record (chunk 4.2 of backlog round 3,
@@ -10827,6 +10851,21 @@ fn install_board_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         return;
     };
     send_toggled_done(&a, task);
+
+    });
+
+    // The card play/pause control (UX-R8 chunk-5 D-6, US-4): the
+    // board leg's addressing chain (the regular and compact cards'
+    // seam).
+    install_seam!(window: window.on_board_task_track_toggled, adapter: adapter;
+    bind mut (a, window), args (column, row), {        settle_pointer_conflict(&mut a, &window);
+    let (Ok(column), Ok(row)) = (usize::try_from(column), usize::try_from(row)) else {
+        return;
+    };
+    let Some((_, task)) = a.tables.board_task(column, row) else {
+        return;
+    };
+    send_card_track_toggle(&mut a, &window, task);
 
     });
 
@@ -12431,6 +12470,30 @@ fn slot_urgency(slot: usize) -> Option<taskboard_domain::Urgency> {
     }
 }
 
+/// The card play/pause control's routing (UX-R8 chunk-5 D-6, US-4):
+/// the shown half read from the current state — one source with the
+/// menu's bar — routes the existing tracking ids; the Start leg arms
+/// the one-shot `track_target` (the D-TU5 addressing, exact even
+/// off-focus), Stop is payload-free. A running-elsewhere subject's
+/// Start refusal is the engine's typed `NoOps` (the dispatch-time
+/// gating posture).
+fn send_card_track_toggle(
+    adapter: &mut Adapter,
+    window: &AppWindow,
+    task: taskboard_domain::TaskId,
+) {
+    let state = adapter.state.load_full();
+    let running_here =
+        crate::presentation::tracking_open_task(&state).is_some_and(|open| open == task);
+    drop(state);
+    if running_here {
+        adapter.route(window, ActionId::TaskTrackStop);
+    } else {
+        adapter.track_target = Some(task);
+        adapter.route(window, ActionId::TaskTrackStart);
+    }
+}
+
 fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {
     let done_now = adapter
         .state
@@ -13184,6 +13247,15 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // `settle_pointer_conflict`: the board checkbox settles because
     // the board owns the capture-settle lane; the view's other clicks
     // don't settle and neither does this one.
+    // The card play/pause control (UX-R8 chunk-5 D-6): the detail
+    // card's seam — the subject task.
+    install_seam!(window: window.on_task_track_toggled, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
+        return;
+    };
+    send_card_track_toggle(&mut a, &window, task);
+
+    });
     install_seam!(window: window.on_task_done_toggled, adapter: adapter;
     bind (a, _window), args (), {            let Some(task) = a.view_state.subject_task() else {
         return;

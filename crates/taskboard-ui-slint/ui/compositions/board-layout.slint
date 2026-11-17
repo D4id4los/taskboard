@@ -159,6 +159,10 @@ export component BoardLayout inherits Rectangle {
     // The done checkbox's toggle (r3 D6): (column, task) — the
     // adapter resolves the id tables and flips the model bit.
     callback task-done-toggled(int, int);
+    // slint: task-track-toggled — the card play/pause control's
+    // forward (UX-R8 chunk-5 D-6): the addressing chain supplies the
+    // (column, row) / (stack, row) address.
+    callback task-track-toggled(int, int);
     // The stack-rename field of one column (r2 D21).
     callback rename-committed(int, string);
     callback rename-edited(int, string);
@@ -649,6 +653,7 @@ export component BoardLayout inherits Rectangle {
                                         clicked-modifiers(shift, control) => root.task-clicked-modifiers(column-index, task-index, shift, control);
                                         context-requested(x, y) => root.task-context(column-index, task-index, x, y);
                                         done-toggled => root.task-done-toggled(column-index, task-index);
+                                        track-toggled => root.task-track-toggled(column-index, task-index);
                                     }
                                     // The insertion indicator (UX-R8 D-2,
                                     // US-2/AC-3): a delegate-local hairline at
@@ -1072,6 +1077,7 @@ export component BoardLayout inherits Rectangle {
                         clicked-modifiers(shift, control) => root.task-clicked-modifiers(root.effective-selected(), task-index, shift, control);
                         context-requested(x, y) => root.task-context(root.effective-selected(), task-index, x, y);
                         done-toggled => root.task-done-toggled(root.effective-selected(), task-index);
+                        track-toggled => root.task-track-toggled(root.effective-selected(), task-index);
                     }
                 }
             }
