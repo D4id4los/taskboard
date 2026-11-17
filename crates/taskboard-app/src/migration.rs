@@ -594,26 +594,11 @@ mod tests {
     mod ladder {
         use super::*;
 
-        #[test]
-        fn the_happy_path_migrates_and_reloads() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let config = dir.path().join("taskboard.toml");
-            std::fs::write(
-                &config,
-                "[nextcloud]\nserver_url = \"https://cloud.example\"\nusername = \"alice\"\n",
-            )
-            .expect("seed");
-
-            let loaded = load_migrated(Some(config.clone())).expect("serves");
-            let entries = loaded.sync.connectors.as_deref().expect("array world");
-            assert_eq!(entries.len(), 1);
-            assert_eq!(entries[0].name, crate::connectors::DEFAULT_CONNECTOR_NAME);
-            assert_eq!(loaded.nextcloud.server_url, None, "identity keys moved");
-            assert!(
-                dir.path().join("taskboard.toml.bak-legacy").is_file(),
-                "the backup exists"
-            );
-        }
+        // The happy-path composed ladder moved to the integration suite
+        // (`tests/config.rs`): the re-load leg composes the process env
+        // over the migrated file, so the pin needs the TASKBOARD_* scrub
+        // of `taskboard_env_lock`, which only the integration harness can
+        // hold (the crate forbids the env mutation) — #865's re-homing.
 
         #[cfg(unix)]
         #[test]
