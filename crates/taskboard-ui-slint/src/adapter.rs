@@ -3947,7 +3947,14 @@ impl Adapter {
             // the choke point covers them (r4 chunk 4).
             (Flow::None, UiEffect::OpenSettings) => {
                 if self.view_state.view() == crate::view_state::ViewId::Settings {
-                    self.view_state.close_settings()
+                    {
+                        let mut outcomes = self.view_state.close_settings();
+                        // US-5 (#706): the restore's subject-liveness
+                        // guard runs before the context sync, so the
+                        // focus-restore funnel lands on the fallback.
+                        outcomes.extend(self.view_state.repair_restored_root(&state));
+                        outcomes
+                    }
                 } else {
                     self.view_state.open_settings()
                 }
@@ -4018,7 +4025,10 @@ impl Adapter {
             // planner-context Escape row rides the same route.
             (Flow::None, UiEffect::OpenPlanNextDay) => {
                 if self.view_state.view() == crate::view_state::ViewId::PlanNextDay {
-                    let outcomes = self.view_state.close_plan_next_day();
+                    let mut outcomes = self.view_state.close_plan_next_day();
+                    // US-5 (#706): the restore's subject-liveness
+                    // guard (see the OpenSettings close arm).
+                    outcomes.extend(self.view_state.repair_restored_root(&state));
                     // The walk's return (plan D-W3): closing the
                     // planner is the built-in skip (P12) and resumes
                     // the same way — the walk re-opens at Prompts over
@@ -9999,7 +10009,13 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
 fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_settings_back_clicked, adapter: adapter;
     bind mut (a, window), args (), {        Adapter::dismiss_tooltip(&window);
-    let outcomes = a.view_state.close_settings();
+    let mut outcomes = a.view_state.close_settings();
+    // US-5 (#706): the restore's subject-liveness guard (see the
+    // OpenSettings close arm).
+    {
+        let state = a.state.load_full();
+        outcomes.extend(a.view_state.repair_restored_root(&state));
+    }
     a.apply_outcomes(&window, &outcomes);
     a.sync_view_context(&window);
     a.sync(&window);
