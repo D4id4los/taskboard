@@ -44,6 +44,13 @@ earned by a recovered incident. The full narrative:
 - *Any subagent command expected over ~5 minutes runs backgrounded*,
   with short interleaved polls and useful work between polls — and the
   agent commits all landed work BEFORE beginning any wait.
+- *Flock deferral (never block on the gate lock)*: when the
+  =run-quality-gates.sh= flock is contended *and no other useful work
+  remains*, the agent never blocks waiting for the lock — it commits
+  all landed work, reports "gate deferred: lock held by <holder>",
+  and ends its stage cleanly; the dispatcher runs the gate. A silent
+  wait for a held lock is indistinguishable from a stall and dies at
+  the inactivity cutoff (observed four times before this rule; #879).
 
 * 3. Stage-exit verification (the dispatcher never trusts reports)
 
@@ -133,6 +140,7 @@ landed-state summary, not a from-scratch prompt.
 | Review stall before push | agent dead post-fix commits | dispatcher verified fixes, pushed, opened PR |
 | CI flake on docs-only PR | one test fails, passes on re-run | comment on the flaky-test family issue, =gh run rerun --failed=, re-watch |
 | Foreign stash in worktree | unexpected conflict during baseline check | reset --hard after verifying commits landed; incident reported; foreign content verified absent from diffs |
+| Agent died waiting on the gate flock | agent dead while the lock was held by another session | landed work intact — the dispatcher re-runs the gate itself and proceeds (the pre-#879 shape of the stall-on-coverage row; now prevented by the §2 flock-deferral rule) |
 
 * 9. Where each rule lives
 
