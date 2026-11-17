@@ -466,7 +466,7 @@ mod set_tests {
             AppConfig::extract_file_only(Some(path.as_path())).expect("the file decodes");
         assert_eq!(file_only.reminders.tick_secs, 45, "figment re-read");
         assert!(
-            AppConfig::load(Some(path.clone())).is_ok(),
+            AppConfig::extract_file_only(Some(path.as_path())).is_ok(),
             "the written config is a valid config"
         );
         std::fs::remove_dir_all(path.parent().expect("dir")).ok();

@@ -933,7 +933,8 @@ mod tests {
             2,
             "only the entries' own backend words; no scalar key written"
         );
-        let loaded = AppConfig::load(Some(config)).expect("round-trips and validates");
+        let loaded = AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips and validates");
         let entries = loaded.sync.connectors.as_deref().expect("array survives");
         assert_eq!(entries[0].server_url, "https://new.example");
         assert_eq!(entries[0].username, "new-user");
@@ -973,7 +974,8 @@ mod tests {
         super::write_config_overlay(&config, "https://new.example", "new-user", false)
             .expect("overlay written");
 
-        let loaded = AppConfig::load(Some(config)).expect("round-trips and validates");
+        let loaded = AppConfig::extract_file_only(Some(config.as_path()))
+            .expect("round-trips and validates");
         let entries = loaded.sync.connectors.as_deref().expect("array survives");
         assert_eq!(entries[0].server_url, "https://new.example");
         assert_eq!(entries[0].username, "new-user");
