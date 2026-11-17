@@ -27,7 +27,7 @@ use tokio::sync::oneshot;
 
 use taskboard_domain::ConnectorId;
 
-use crate::actions::{ActionId, ContextId, MenuGroup, REGISTRY};
+use crate::actions::{ActionId, ContextId, REGISTRY};
 use crate::keymap::Keymap;
 use crate::menu::{self, MenuEntry};
 use crate::models::IdTables;
@@ -736,6 +736,10 @@ impl Adapter {
             // still shows `can_undo` (R-U6 refuses at planning, typed).
             (ActionId::AppUndo, state.undo.can_undo),
             (ActionId::AppRedo, state.undo.can_redo),
+            // The live pause arm (UX-R8 chunk-5 D-4): the commit row
+            // greys unless the pause editor's draft is armed — the
+            // TaskMoveCancel flow-grey precedent.
+            (ActionId::SeriesPauseCommit, self.pause_draft.is_some()),
         ])
     }
 
@@ -792,15 +796,30 @@ impl Adapter {
                 keyboard.set_menu_pointer_y(y);
             }
         }
-        keyboard.set_menu_active_group(match self.shell.menu.active_group {
+        // The active page's parent-row index (round-1 D6; UX-R8 D-5
+        // widens the shape): the fly-out/replace machinery keys off
+        // this int for both the main groups and the task families —
+        // the presentation reads the position, never the kind.
+        keyboard.set_menu_active_group(match self.active_submenu() {
             None => -1,
-            Some(group) => self
+            Some(sub) => self
                 .root_entries
                 .iter()
-                .position(|entry| entry.submenu == Some(group))
+                .position(|entry| entry.submenu == Some(sub))
                 .and_then(|i| i32::try_from(i).ok())
                 .unwrap_or(-1),
         });
+    }
+
+    /// The open submenu's target (UX-R8 chunk-5 D-5): the main
+    /// group's page or the task family's — the ladder and the
+    /// parent-row position sync read it.
+    fn active_submenu(&self) -> Option<crate::menu::Submenu> {
+        match (self.shell.menu.active_group, self.shell.menu.task_group) {
+            (Some(group), _) => Some(crate::menu::Submenu::Group(group)),
+            (None, Some(family)) => Some(crate::menu::Submenu::Task(family)),
+            (None, None) => None,
+        }
     }
 
     /// The two-tier menu models (round-1 D6): the root page model
@@ -2419,8 +2438,20 @@ impl Adapter {
             let flow = self.view_state.flow().clone();
             let states = self.entry_states(&state, &flow);
             self.root_entries = menu::root_page(&self.keymap, &self.menu_chain, &states);
-            self.menu_entries = match self.shell.menu.active_group {
-                Some(group) => menu::group_page(&self.keymap, &self.menu_chain, &states, group),
+            self.menu_entries = match self.active_submenu() {
+                Some(crate::menu::Submenu::Group(group)) => {
+                    menu::group_page(&self.keymap, &self.menu_chain, &states, group)
+                }
+                Some(crate::menu::Submenu::Task(family)) => {
+                    let subject = self.current_task_subject();
+                    menu::task_submenu_page(
+                        &self.keymap,
+                        &self.menu_chain,
+                        subject,
+                        &states,
+                        family,
+                    )
+                }
                 None => self.root_entries.clone(),
             };
             self.shell.menu.len = self.menu_entries.len();
@@ -4979,7 +5010,11 @@ impl Adapter {
                     self.apply_outcomes(window, &outcomes);
                     self.finish_mutation(window);
                 } else {
-                    let was_submenu = self.shell.menu.active_group.is_some();
+                    // The Escape ladder (UX-R8 chunk-5 D-5, US-2/AC-4):
+                    // a task-family submenu steps down first, then a
+                    // main group's page, then the close — Escape 1
+                    // closes the submenu, Escape 2 the menu.
+                    let was_submenu = self.active_submenu().is_some();
                     self.shell.apply(&effect, self.root_entries.len());
                     if was_submenu {
                         // Restored to the root page: the active page is
@@ -5252,16 +5287,43 @@ impl Adapter {
 
     /// Activating a parent row (round-1 D6, keyboard `InvokeSelected`
     /// or a root-panel click): park the root cursor, open the group's
-    /// page as the active one. A parent row never dispatches.
-    fn activate_parent(&mut self, window: &AppWindow, group: MenuGroup) {
+    /// page as the active one. A parent row never dispatches. UX-R8
+    /// chunk-5 D-5: a task-family parent mounts the family's curated
+    /// child page (`shell.menu.task_group` parks beside
+    /// `active_group`; the Escape ladder consults it first).
+    #[allow(clippy::too_many_lines)] // the two submenu kinds, kept flat
+    fn activate_submenu(&mut self, window: &AppWindow, submenu: crate::menu::Submenu) {
         self.shell.menu.root_selected = self.shell.menu.selected;
         self.shell.menu.selected = 0;
-        self.shell.menu.active_group = Some(group);
-        {
-            let state = self.state.load_full();
-            let flow = self.view_state.flow().clone();
-            let states = self.entry_states(&state, &flow);
-            self.menu_entries = menu::group_page(&self.keymap, &self.menu_chain, &states, group);
+        match submenu {
+            crate::menu::Submenu::Group(group) => {
+                self.shell.menu.active_group = Some(group);
+                self.shell.menu.task_group = None;
+                {
+                    let state = self.state.load_full();
+                    let flow = self.view_state.flow().clone();
+                    let states = self.entry_states(&state, &flow);
+                    self.menu_entries =
+                        menu::group_page(&self.keymap, &self.menu_chain, &states, group);
+                }
+            }
+            crate::menu::Submenu::Task(family) => {
+                self.shell.menu.task_group = Some(family);
+                self.shell.menu.active_group = None;
+                let subject = self.current_task_subject();
+                {
+                    let state = self.state.load_full();
+                    let flow = self.view_state.flow().clone();
+                    let states = self.entry_states(&state, &flow);
+                    self.menu_entries = menu::task_submenu_page(
+                        &self.keymap,
+                        &self.menu_chain,
+                        subject,
+                        &states,
+                        family,
+                    );
+                }
+            }
         }
         self.shell.menu.len = self.menu_entries.len();
         self.sync_menu_models(window);
@@ -5280,8 +5342,8 @@ impl Adapter {
         let Some(entry) = page.get(index) else {
             return;
         };
-        if let Some(group) = entry.submenu {
-            self.activate_parent(window, group);
+        if let Some(sub) = entry.submenu {
+            self.activate_submenu(window, sub);
             return;
         }
         let Some(action) = entry.action else {
@@ -5342,9 +5404,9 @@ impl Adapter {
     /// like Quit dispatches.
     fn invoke_root_entry(&mut self, window: &AppWindow, index: usize) {
         let submenu = self.root_entries.get(index).and_then(|entry| entry.submenu);
-        if let Some(group) = submenu {
+        if let Some(sub) = submenu {
             self.shell.menu.selected = index;
-            self.activate_parent(window, group);
+            self.activate_submenu(window, sub);
             return;
         }
         // The disabled guard rides the root twin too (the keyboard
@@ -9947,6 +10009,7 @@ impl Adapter {
             selected: 0,
             len: self.menu_entries.len(),
             active_group: None,
+            task_group: None,
             root_selected: 0,
         };
         self.sync_menu_models(window);
@@ -9968,57 +10031,77 @@ impl Adapter {
         extra: &[ActionId],
         subject: Option<TaskId>,
     ) {
-        // The tracker hide-set (issue #492): a tracker card's menu
-        // omits the impossible complete verb. Only the impossible verb
-        // is hidden — the reopen no-op stays (dispatch-time semantics
-        // unchanged); the toggle entry is always offered.
-        let state = self.state.load();
-        let tracker = self
-            .view_state
-            .focused_task()
-            .and_then(|id| state.tasks.get(&id))
-            .is_some_and(|task| task.kind == taskboard_domain::entities::TaskKind::Tracker);
-        drop(state);
         // The selection branch (UX-R8 D-6, US-4/S3): a member
         // invocation opens the multi row set (the count caption is
-        // chunk 5's menu grammar); a non-member (or board-surface-
-        // foreign) invocation opens the single-card menu unchanged.
-        // D-11: the invoking settle kept the selection, so the menu
-        // reads it here.
+        // D-9); a non-member (or board-surface-foreign) invocation
+        // opens the curated single-card menu.
         let selection_covers =
             subject.is_some_and(|subject| self.view_state.selection().contains(&subject));
-        // The quick bar's subject facts (UX-R8 chunk-5 D-2/D-4): the
-        // scheduled flag and the tracking shown half, derived from the
-        // loaded state (the adapter already loads it for the #492
-        // tracker check). The multi-selection branch hands no bar —
-        // the multi grammar owns itself.
-        let bar = if selection_covers {
-            Vec::new()
-        } else {
-            let subject = subject.or(self.view_state.focused_task());
-            let (scheduled, tracked_here, tracking_elsewhere) = {
-                let state = self.state.load();
-                let scheduled = subject
-                    .and_then(|id| state.tasks.get(&id))
-                    .is_some_and(|task| task.scheduled.is_some());
-                let open = crate::presentation::tracking_open_task(&state);
-                let tracked_here = open.is_some_and(|open| Some(open) == subject);
-                (scheduled, tracked_here, open.is_some() && !tracked_here)
-            };
-            menu::task_quick_bar(scheduled, tracked_here, tracking_elsewhere)
+        if selection_covers {
+            let ids: Vec<ActionId> = menu::TASK_CONTEXT_MULTI.to_vec();
+            self.open_context_menu(window, x, y, &ids, Vec::new());
+            return;
+        }
+        // The curated grammar (UX-R8 chunk-5 D-4/D-5, US-2): the
+        // quick bar + the applicable rows + the four families compose
+        // through `task_context_page` over the per-subject facts (the
+        // #492 tracker hide-set moved into `TaskMenuSubject::is_tracker`
+        // — semantics unchanged, the reopen no-op stays).
+        // The one chain every object menu opens with (round-2 D21) —
+        // set before the composition so the projection resolves the
+        // board-surface verbs' hints.
+        self.menu_chain = [ContextId::Board, ContextId::Global].to_vec();
+        let subject_id = subject.or(self.view_state.focused_task());
+        let (bar, entries) = {
+            let state = self.state.load_full();
+            let flow = self.view_state.flow().clone();
+            let states = self.entry_states(&state, &flow);
+            let subject = crate::presentation::task_menu_subject(&state, subject_id);
+            menu::task_context_page(&self.keymap, &self.menu_chain, subject, &states, extra)
         };
-        let ids: Vec<ActionId> = if selection_covers {
-            menu::TASK_CONTEXT_MULTI.to_vec()
-        } else {
-            let mut ids: Vec<ActionId> = menu::TASK_CONTEXT
-                .iter()
-                .copied()
-                .filter(|id| !(tracker && *id == ActionId::TaskComplete))
-                .collect();
-            ids.extend_from_slice(extra);
-            ids
+        self.open_context_menu_with(window, x, y, entries, bar);
+    }
+
+    /// The single-card subject's facts (UX-R8 chunk-5 D-4): the
+    /// focused task is the subject on every card surface (the
+    /// context seams' focus-first posture).
+    fn current_task_subject(&self) -> crate::menu::TaskMenuSubject {
+        let state = self.state.load_full();
+        crate::presentation::task_menu_subject(&state, self.view_state.focused_task())
+    }
+
+    /// The context-menu opener over pre-computed rows (UX-R8 chunk-5
+    /// D-5): the curated builder's landing — the id-list variant
+    /// delegates with the projected rows.
+    fn open_context_menu_with(
+        &mut self,
+        window: &AppWindow,
+        x: f32,
+        y: f32,
+        entries: Vec<crate::menu::MenuEntry>,
+        bar: Vec<crate::menu::QuickBarEntry>,
+    ) {
+        self.menu_anchor = MenuAnchor::Pointer(x, y);
+        self.menu_kind = MenuKind::Object;
+        // The one chain every object menu opens with (round-2 D21):
+        // every board-surface verb's binding hint resolves over it.
+        self.menu_chain = [ContextId::Board, ContextId::Global].to_vec();
+        self.root_entries = entries;
+        self.menu_entries = self.root_entries.clone();
+        // The quick bar (UX-R8 chunk-5 D-2): built once at open —
+        // the D-1 pin covers it; every other menu consumer passes
+        // [] (an empty model renders nothing).
+        self.quick_bar_entries = bar;
+        self.shell.menu = crate::shell::MenuState {
+            open: true,
+            selected: 0,
+            len: self.menu_entries.len(),
+            active_group: None,
+            task_group: None,
+            root_selected: 0,
         };
-        self.open_context_menu(window, x, y, &ids, bar);
+        self.sync_menu_models(window);
+        self.sync(window);
     }
 }
 

@@ -1393,14 +1393,36 @@ fn the_context_menu_focuses_and_routes_the_card() {
                 "the menu is anchored at the pointer"
             );
 
-            // The entries are the Task group's flat page: no parent
-            // rows, no Quit, Complete task present.
+            // The entries are the curated grammar (UX-R8 chunk-5
+            // US-2/AC-3): core rows + the rare families as submenu
+            // parents, no Quit. The fixture's plain task withholds
+            // Convert ▸ (no habit/series rows apply) — the empty-page
+            // cascade.
             let entries = keyboard(&harness).get_menu_entries();
             let rows: Vec<_> = (0..entries.row_count())
                 .map(|i| entries.row_data(i).expect("row"))
                 .collect();
-            assert!(rows.iter().all(|r| !r.submenu), "flat: no parents");
+            let parents: Vec<_> = rows
+                .iter()
+                .filter(|r| r.submenu)
+                .map(|r| r.label.clone())
+                .collect();
+            assert_eq!(
+                parents,
+                ["Reminders", "Timers", "Entries"],
+                "the rendered submenu parents (Convert withheld)"
+            );
             assert!(rows.iter().all(|r| r.action != "app.exit"), "no Quit");
+            assert!(
+                rows.iter()
+                    .skip_while(|r| !r.submenu)
+                    .all(|r| r.submenu || r.action == "task.delete"),
+                "after the first parent only parents and the destructive row follow"
+            );
+            assert!(
+                rows.last().map(|r| r.action.clone()) == Some("task.delete".into()),
+                "the destructive row renders last (BF-W-N2)"
+            );
             assert!(
                 rows.iter().any(|r| r.action == "task.complete"),
                 "the card context offers Complete task"
@@ -23334,6 +23356,73 @@ fn us1_s3_unschedule_commits_the_clear_twin() {
                     ..taskboard_domain::TaskChanges::default()
                 },
             }]);
+        },
+    );
+}
+
+/// US-2/AC-4 (UX-R8 chunk-5 D-5) — the Escape ladder: activating a
+/// submenu parent (the fixture's Reminders ▸) mounts the family page;
+/// Escape 1 closes the submenu (the menu stays, the root page
+/// restored), Escape 2 closes the menu. Typed facts, never text.
+#[test]
+fn us2_ac4_escape_ladder_steps_submenu_then_menu() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+
+            // Open the Reminders family page via the parent row's
+            // click seam (the same Rust path the keyboard's
+            // InvokeSelected reaches).
+            let entries = keyboard(&harness).get_menu_entries();
+            let parent = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .position(|r| r.submenu && r.label == "Reminders")
+                .expect("the Reminders parent renders");
+            harness
+                .handle
+                .window()
+                .invoke_menu_entry_invoked(i32::try_from(parent).expect("small index"));
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open(), "the menu stays");
+            let submenu = keyboard(&harness).get_menu_submenu_entries();
+            let child_actions: Vec<_> = (0..submenu.row_count())
+                .map(|i| submenu.row_data(i).expect("row").action.to_string())
+                .collect();
+            assert!(
+                child_actions.contains(&"reminder.rule-add".to_owned()),
+                "the family's child rows mounted"
+            );
+
+            // Escape 1: the submenu closes, the menu stays.
+            harness.press(ActionId::MenuDismiss);
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_menu_open(),
+                "Escape 1 keeps the menu"
+            );
+            assert_eq!(
+                keyboard(&harness).get_menu_submenu_entries().row_count(),
+                keyboard(&harness).get_menu_entries().row_count(),
+                "the root page is restored"
+            );
+
+            // Escape 2: the menu closes.
+            harness.press(ActionId::MenuDismiss);
+            harness.driver.advance_time(0);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "Escape 2 closes the menu"
+            );
         },
     );
 }

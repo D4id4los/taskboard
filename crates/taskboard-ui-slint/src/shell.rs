@@ -27,6 +27,10 @@ pub struct MenuState {
     /// geometry (the activated row's position in the panel) and lives
     /// in the markup, not here.
     pub active_group: Option<MenuGroup>,
+    /// The task context menu's open family (UX-R8 chunk-5 D-5): the
+    /// task families park here beside `active_group` (mutually
+    /// exclusive); the Escape ladder consults it first.
+    pub task_group: Option<crate::menu::TaskMenuGroup>,
     /// The root page's cursor, preserved across a submenu round-trip.
     pub root_selected: usize,
 }
@@ -163,6 +167,7 @@ impl KeymapShell {
                     selected: 0,
                     len: menu_len,
                     active_group: None,
+                    task_group: None,
                     root_selected: 0,
                 };
             }
@@ -171,7 +176,14 @@ impl KeymapShell {
                 // Level-aware (round-1 D6): a submenu page steps back
                 // to the root with the cursor restored on the parent
                 // row; at the root it is the full close.
-                if self.menu.active_group.is_some() {
+                // The Escape ladder (UX-R8 chunk-5 D-5): the task
+                // family's page steps down first, then the main
+                // group's, then the close.
+                if self.menu.task_group.is_some() {
+                    self.menu.task_group = None;
+                    self.menu.selected = self.menu.root_selected;
+                    self.menu.len = menu_len;
+                } else if self.menu.active_group.is_some() {
                     self.menu.active_group = None;
                     self.menu.selected = self.menu.root_selected;
                     self.menu.len = menu_len;
@@ -325,6 +337,7 @@ mod tests {
                 selected: 0,
                 len: 3,
                 active_group: None,
+                task_group: None,
                 root_selected: 0
             }
         );
@@ -385,6 +398,7 @@ mod tests {
                 selected: 4,
                 len: 10,
                 active_group: None,
+                task_group: None,
                 root_selected: 4
             },
             "back restores the root page and its cursor"

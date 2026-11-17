@@ -29,8 +29,84 @@ pub struct MenuEntry {
     pub enabled: bool,
     /// The first chain-visible binding, one display string per stroke.
     pub hint: Vec<String>,
-    /// `Some(group)` for a submenu-parent row (round-1 D6).
-    pub submenu: Option<MenuGroup>,
+    /// `Some(submenu)` for a submenu-parent row (round-1 D6; UX-R8
+    /// chunk-5 D-5 widens the shape with the task families).
+    pub submenu: Option<Submenu>,
+}
+
+/// A submenu-parent row's target (UX-R8 chunk-5 D-5): the main menu's
+/// `MenuGroup` pages, or the task context menu's curated families.
+/// NOT `MenuGroup` variants — new `MenuGroup` rows would leak parent
+/// rows onto the main root page, whose `root_page` iterates
+/// `MenuGroup::all()`; the main menu's Task page stays exactly as
+/// landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Submenu {
+    Group(MenuGroup),
+    Task(TaskMenuGroup),
+}
+
+/// The task context menu's rare families (UX-R8 chunk-5 D-5, US-2):
+/// Convert ▸ (the habit/series verbs), Reminders ▸, Timers ▸, and
+/// Entries ▸ — each child row keeps its existing `ActionId`, hint,
+/// and shortcut projection (the T-3 contract per family).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskMenuGroup {
+    Convert,
+    Reminders,
+    Timers,
+    Entries,
+}
+
+impl TaskMenuGroup {
+    /// The declaration order the parents render in.
+    pub const ALL: &'static [TaskMenuGroup] = &[
+        TaskMenuGroup::Convert,
+        TaskMenuGroup::Reminders,
+        TaskMenuGroup::Timers,
+        TaskMenuGroup::Entries,
+    ];
+
+    /// The parent row's label (the element's address, D16).
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            TaskMenuGroup::Convert => "Convert",
+            TaskMenuGroup::Reminders => "Reminders",
+            TaskMenuGroup::Timers => "Timers",
+            TaskMenuGroup::Entries => "Entries",
+        }
+    }
+}
+
+/// The task context menu's per-subject facts (UX-R8 chunk-5 D-4,
+/// US-2): the state/kind inputs the withheld-vs-greyed verdicts
+/// derive from. Derived at open from the loaded `AppState` (see
+/// `presentation::task_menu_subject`); a plain data carrier — menu.rs
+/// stays projection-only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // one fact per field — the verdict table reads each by name (the plan's D-4 shape)
+pub struct TaskMenuSubject {
+    /// The subject holds THE open tracking entry.
+    pub tracked_here: bool,
+    /// Another task's open tracking entry.
+    pub tracking_elsewhere: bool,
+    /// Any reminder rule row (or reminder state) on the subject.
+    pub has_reminder_rules: bool,
+    /// The subject is a recurring series (`recur.is_some()`).
+    pub is_series: bool,
+    /// The subject's kind is Habit.
+    pub is_habit: bool,
+    /// The subject's kind is Tracker (the #492 filter).
+    pub is_tracker: bool,
+    /// The subject holds an armed timer. The domain's alarms are
+    /// standalone (`AdhocAlarm` anchors no task), so no task-anchored
+    /// timer exists today — the fact derives `false` and the
+    /// `TimerCancel` row withholds on every task menu (the C-4 law:
+    /// the row routed `NoTarget` from this menu anyway).
+    pub has_armed_timer: bool,
+    /// The subject carries a scheduled day.
+    pub scheduled: bool,
 }
 
 /// The preset-irrelevant filter (round-3 D27b): the Mode group
@@ -111,7 +187,7 @@ pub fn root_page(
                 description: "Opens this group of actions.",
                 enabled: true,
                 hint: Vec::new(),
-                submenu: Some(*group),
+                submenu: Some(Submenu::Group(*group)),
             });
         }
     }
@@ -143,6 +219,195 @@ pub fn group_page(
         .collect();
     rows.sort_by_key(|(rank, index, _)| (*rank, *index));
     rows.into_iter().map(|(_, _, entry)| entry).collect()
+}
+
+/// The task context menu's frequent core (UX-R8 chunk-5 D-5): the
+/// rows that stay top-level for every applicable subject — everything
+/// else in `TASK_CONTEXT` belongs to a family (the `Reminders ▸` etc.
+/// pages). The destructive delete is pinned last by
+/// [`task_context_page`], not listed here.
+const TASK_CURATED_CORE: &[ActionId] = &[
+    ActionId::TaskCreate,
+    ActionId::TaskEdit,
+    ActionId::TaskComplete,
+    ActionId::TaskReopen,
+    ActionId::TaskMove,
+    ActionId::TaskMoveCancel,
+    ActionId::TaskScheduleToday,
+    ActionId::TaskScheduleTomorrow,
+    ActionId::TaskUnschedule,
+    ActionId::TaskTrackStart,
+    ActionId::TaskTrackStop,
+    ActionId::TaskToggleTracker,
+];
+
+/// One family's curated rows (UX-R8 chunk-5 D-5): the family's
+/// registry rows through the applicable filter, in `(menu_rank,
+/// registry order)` — the same `row()` projection as every page (the
+/// T-3 hint contract holds per family).
+#[must_use]
+pub fn task_submenu_page(
+    keymap: &Keymap,
+    chain: &[ContextId],
+    subject: TaskMenuSubject,
+    states: &std::collections::BTreeMap<ActionId, bool>,
+    family: TaskMenuGroup,
+) -> Vec<MenuEntry> {
+    let ids = task_family_ids(subject, family);
+    let mut rows: Vec<(u16, usize, MenuEntry)> = chain_visible(chain)
+        .iter()
+        .filter(|(_, entry)| ids.contains(&entry.id))
+        .map(|(index, entry)| {
+            let mut projected = row(keymap, chain, states, entry);
+            // The applicable-but-blocked verdict (UX-R8 chunk-5 D-4):
+            // `ReminderMute` greys — never withholds — without rules
+            // (the origin AC-2's "stay").
+            if entry.id == ActionId::ReminderMute && !subject.has_reminder_rules {
+                projected.enabled = false;
+            }
+            (entry.menu_rank, *index, projected)
+        })
+        .collect();
+    rows.sort_by_key(|(rank, index, _)| (*rank, *index));
+    rows.into_iter().map(|(_, _, entry)| entry).collect()
+}
+
+/// A family's applicable row ids (UX-R8 chunk-5 D-4's per-family
+/// verdicts): inapplicable rows are WITHHELD (dropped), applicable-
+/// but-blocked rows stay greyed (the states map's `false` override).
+fn task_family_ids(subject: TaskMenuSubject, family: TaskMenuGroup) -> Vec<ActionId> {
+    match family {
+        TaskMenuGroup::Reminders => {
+            let mut ids = Vec::new();
+            if subject.has_reminder_rules {
+                ids.extend([
+                    ActionId::ReminderSnooze,
+                    ActionId::ReminderUnmute,
+                    ActionId::ReminderRuleRemove,
+                ]);
+            }
+            // `ReminderMute` greys (not withholds) without rules — the
+            // applicable verb, precondition-blocked (the origin AC-2's
+            // "stay"); the greying rides the states map.
+            ids.push(ActionId::ReminderMute);
+            ids.push(ActionId::ReminderRuleAdd);
+            ids
+        }
+        TaskMenuGroup::Timers => {
+            // `TimerCreate` always (the dispatch-time refusal is the
+            // backstop); `TimerCancel` withholds without an armed
+            // timer (see `TaskMenuSubject::has_armed_timer`).
+            let mut ids = vec![ActionId::TimerCreate];
+            if subject.has_armed_timer {
+                ids.push(ActionId::TimerCancel);
+            }
+            ids
+        }
+        TaskMenuGroup::Entries => vec![ActionId::TaskTrackEntries],
+        TaskMenuGroup::Convert => {
+            let mut ids = Vec::new();
+            if subject.is_habit {
+                ids.extend([
+                    ActionId::HabitRepair,
+                    ActionId::HabitConvertArm,
+                    ActionId::HabitConvertToSeries,
+                ]);
+            }
+            if subject.is_series {
+                ids.extend([
+                    ActionId::SeriesPause,
+                    ActionId::SeriesPauseCommit,
+                    ActionId::SeriesResume,
+                    ActionId::SeriesConvertArm,
+                    ActionId::SeriesConvertToHabit,
+                ]);
+            }
+            ids
+        }
+    }
+}
+
+/// The task-card context menu's curated page (UX-R8 chunk-5 D-5,
+/// US-2): the quick bar (D-2) + the frequent core rows (create, edit,
+/// complete/reopen, move, move-cancel, the schedule trio, the
+/// tracking twin) in registry order → one submenu-parent row per
+/// family whose child page is non-empty for the subject (the
+/// empty-page cascade) → destructive rows last (BF-W-N2). Returns
+/// `(bar, rows)`. `extra` extends the core section (the today seam's
+/// `TaskDueToday`). Deviation from the plan's signature: the `states`
+/// map rides along — the flow-grey verdicts (`TaskMoveCancel`, the
+/// live pause arm) are state facts the projection must read.
+#[must_use]
+#[allow(clippy::too_many_lines)] // the verdict table spelled once
+pub fn task_context_page(
+    keymap: &Keymap,
+    chain: &[ContextId],
+    subject: TaskMenuSubject,
+    states: &std::collections::BTreeMap<ActionId, bool>,
+    extra: &[ActionId],
+) -> (Vec<QuickBarEntry>, Vec<MenuEntry>) {
+    let bar = task_quick_bar(
+        subject.scheduled,
+        subject.tracked_here,
+        subject.tracking_elsewhere,
+    );
+
+    // The core section: TASK_CONTEXT's registry-order walk (the T-12
+    // source of truth) minus the submenu families, through the
+    // per-row verdicts.
+    let mut rows: Vec<(u16, usize, MenuEntry)> = Vec::new();
+    let mut delete_row: Option<MenuEntry> = None;
+    for (index, entry) in chain_visible(chain) {
+        let id = entry.id;
+        if !TASK_CURATED_CORE.contains(&id) && !extra.contains(&id) && id != ActionId::TaskDelete {
+            continue;
+        }
+        // The verdict table (D-4): withheld beats the projection.
+        let withheld = match id {
+            ActionId::TaskComplete => subject.is_tracker,
+            ActionId::TaskTrackStart => !subject.tracked_here,
+            ActionId::TaskTrackStop => !subject.tracking_elsewhere && !subject.tracked_here,
+            _ => false,
+        };
+        if withheld {
+            continue;
+        }
+        let projected = row(keymap, chain, states, entry);
+        if id == ActionId::TaskDelete {
+            // BF-W-N2: destructive last — pinned out of the rank walk.
+            delete_row = Some(projected);
+        } else {
+            rows.push((entry.menu_rank, index, projected));
+        }
+    }
+    rows.sort_by_key(|(rank, index, _)| (*rank, *index));
+    let mut page: Vec<MenuEntry> = rows.into_iter().map(|(_, _, entry)| entry).collect();
+    // The extras (the today seam's due-today twin): after the core
+    // rank walk, before the parents.
+    for id in extra {
+        if let Some(entry) = REGISTRY.iter().find(|entry| entry.id == *id) {
+            page.push(row(keymap, chain, states, entry));
+        }
+    }
+    // One parent per rendered family (the empty-page cascade: a
+    // rule-less subject renders no Reminders ▸ parent at all).
+    for family in TaskMenuGroup::ALL {
+        if task_submenu_page(keymap, chain, subject, states, *family).is_empty() {
+            continue;
+        }
+        page.push(MenuEntry {
+            action: None,
+            label: family.label(),
+            description: "Opens this group of actions.",
+            enabled: true,
+            hint: Vec::new(),
+            submenu: Some(Submenu::Task(*family)),
+        });
+    }
+    if let Some(delete) = delete_row {
+        page.push(delete);
+    }
+    (bar, page)
 }
 
 /// The task-card context menu (round-1 D13, round-2 D21 spelling):
@@ -179,6 +444,11 @@ pub const TASK_CONTEXT: &[ActionId] = &[
     ActionId::TaskMove,
     ActionId::TaskMoveCancel,
     ActionId::TaskDelete,
+    // UX-R8 chunk-5 D-3/D-11: the scheduled field's quick verbs —
+    // ranks 101/102/103, between the delete and the reminder block.
+    ActionId::TaskScheduleToday,
+    ActionId::TaskScheduleTomorrow,
+    ActionId::TaskUnschedule,
     ActionId::ReminderSnooze,
     ActionId::ReminderMute,
     ActionId::ReminderUnmute,
@@ -394,7 +664,7 @@ mod tests {
             .iter()
             .copied()
             .filter(|g| *g != MenuGroup::Mode)
-            .map(Some)
+            .map(|g| Some(Submenu::Group(g)))
             .collect();
         assert_eq!(
             parents, expected_parents,
@@ -469,6 +739,11 @@ mod tests {
             ActionId::TaskMove,
             ActionId::TaskMoveCancel,
             ActionId::TaskDelete,
+            // UX-R8 chunk-5 D-3: the scheduled field's quick verbs
+            // join at ranks 101/102/103.
+            ActionId::TaskScheduleToday,
+            ActionId::TaskScheduleTomorrow,
+            ActionId::TaskUnschedule,
             ActionId::ReminderSnooze,
             ActionId::ReminderMute,
             ActionId::ReminderUnmute,
@@ -553,7 +828,14 @@ mod tests {
         // An empty group's parent is absent: the parents on the page
         // are exactly the groups whose group page is non-empty for
         // the same chain.
-        let page_groups: Vec<_> = rows.iter().filter_map(|e| e.submenu).collect();
+        let page_groups: Vec<_> = rows
+            .iter()
+            .filter_map(|e| e.submenu)
+            .map(|sub| match sub {
+                Submenu::Group(g) => g,
+                Submenu::Task(_) => unreachable!("the main root page has no task families"),
+            })
+            .collect();
         let non_empty: Vec<_> = MenuGroup::all()
             .iter()
             .copied()
@@ -818,7 +1100,9 @@ mod tests {
             .keymap;
             let rows = root_page(&keymap, &board_chain(), &empty);
             assert!(
-                !rows.iter().any(|e| e.submenu == Some(MenuGroup::Mode)),
+                !rows
+                    .iter()
+                    .any(|e| e.submenu == Some(Submenu::Group(MenuGroup::Mode))),
                 "{preset:?}: no Mode parent row"
             );
             assert!(
@@ -833,7 +1117,8 @@ mod tests {
         .keymap;
         let rows = root_page(&vi, &board_chain(), &empty);
         assert!(
-            rows.iter().any(|e| e.submenu == Some(MenuGroup::Mode)),
+            rows.iter()
+                .any(|e| e.submenu == Some(Submenu::Group(MenuGroup::Mode))),
             "vi carries the Mode parent row"
         );
         assert!(
@@ -940,6 +1225,174 @@ mod tests {
             .find(|e| e.action == ActionId::TaskTrackStart)
             .expect("start shown");
         assert!(start.visible && !start.enabled, "elsewhere greys start");
+    }
+
+    /// UX-R8 chunk-5 D-4 (US-2/AC-1–2) — the withheld matrix, typed
+    /// presence/enablement over synthesized subjects:
+    /// a rule-less subject withholds Snooze/Unmute/RuleRemove while
+    /// Mute stays (greyed); a series-less subject withholds the
+    /// Series* rows; a tracker subject withholds Complete; the
+    /// `TimerCancel` row withholds everywhere (no task-anchored timer
+    /// exists — see `TaskMenuSubject::has_armed_timer`).
+    #[test]
+    fn the_task_context_page_withholds_inapplicable_rows() {
+        let keymap = standard_keymap();
+        let chain = [ContextId::Board, ContextId::Global];
+        let empty = std::collections::BTreeMap::new();
+        let plain = TaskMenuSubject::default();
+        let (bar, rows) = task_context_page(&keymap, &chain, plain, &empty, &[]);
+        let ids: Vec<ActionId> = rows.iter().filter_map(|e| e.action).collect();
+        assert!(
+            !ids.contains(&ActionId::ReminderSnooze)
+                && !ids.contains(&ActionId::ReminderUnmute)
+                && !ids.contains(&ActionId::ReminderRuleRemove),
+            "a rule-less subject withholds the rule-needing reminder rows"
+        );
+        // The family rows live behind the parents (D-5): the mute
+        // verdict reads the Reminders child page.
+        let reminders = task_submenu_page(&keymap, &chain, plain, &empty, TaskMenuGroup::Reminders);
+        let reminder_ids: Vec<ActionId> = reminders.iter().filter_map(|e| e.action).collect();
+        assert!(
+            reminder_ids.contains(&ActionId::ReminderMute)
+                && reminder_ids.contains(&ActionId::ReminderRuleAdd),
+            "Mute and the rule-add verb stay (the applicable set)"
+        );
+        assert!(
+            !ids.contains(&ActionId::SeriesPause),
+            "a series-less subject withholds the Series* rows"
+        );
+        assert!(!ids.contains(&ActionId::TimerCancel), "no armed timer");
+        assert!(
+            !bar.iter()
+                .any(|e| e.action == ActionId::TaskUnschedule && e.visible),
+            "the bar withholds unschedule on the unscheduled subject"
+        );
+        // The rule-less subject's Mute row greys (applicable verb,
+        // precondition-blocked) — presence + disabled, never text.
+        let mute = reminders
+            .iter()
+            .find(|e| e.action == Some(ActionId::ReminderMute))
+            .expect("mute present");
+        assert!(!mute.enabled, "mute greys without rules");
+
+        // A scheduled, series subject flips the halves.
+        let subject = TaskMenuSubject {
+            scheduled: true,
+            is_series: true,
+            has_reminder_rules: true,
+            ..TaskMenuSubject::default()
+        };
+        let (_, rows) = task_context_page(&keymap, &chain, subject, &empty, &[]);
+        assert!(
+            rows.iter()
+                .any(|e| e.submenu == Some(Submenu::Task(TaskMenuGroup::Convert))),
+            "the Convert family renders for a series subject"
+        );
+        let convert = task_submenu_page(&keymap, &chain, subject, &empty, TaskMenuGroup::Convert);
+        let convert_ids: Vec<ActionId> = convert.iter().filter_map(|e| e.action).collect();
+        for id in [
+            ActionId::SeriesPause,
+            ActionId::SeriesPauseCommit,
+            ActionId::SeriesResume,
+            ActionId::SeriesConvertArm,
+            ActionId::SeriesConvertToHabit,
+        ] {
+            assert!(convert_ids.contains(&id), "{id} applies to the subject");
+        }
+        let reminders =
+            task_submenu_page(&keymap, &chain, subject, &empty, TaskMenuGroup::Reminders);
+        let reminder_ids: Vec<ActionId> = reminders.iter().filter_map(|e| e.action).collect();
+        assert!(
+            reminder_ids.contains(&ActionId::ReminderSnooze)
+                && reminder_ids.contains(&ActionId::ReminderRuleRemove),
+            "the rule-needing reminder rows apply on a rule-bearing subject"
+        );
+
+        // The #492 kind filter: a tracker subject withholds Complete
+        // (the reopen no-op stays — dispatch semantics unchanged).
+        let tracker = TaskMenuSubject {
+            is_tracker: true,
+            ..TaskMenuSubject::default()
+        };
+        let (_, rows) = task_context_page(&keymap, &chain, tracker, &empty, &[]);
+        let ids: Vec<ActionId> = rows.iter().filter_map(|e| e.action).collect();
+        assert!(!ids.contains(&ActionId::TaskComplete));
+        assert!(ids.contains(&ActionId::TaskReopen));
+    }
+
+    /// UX-R8 chunk-5 D-5 (US-2/AC-3) — the submenu tree: the rare
+    /// families render as parents, each child page keeping its ids
+    /// and hints, and the page composes core → parents → delete last.
+    #[test]
+    fn the_task_context_page_composes_the_submenu_tree() {
+        let keymap = standard_keymap();
+        let chain = [ContextId::Board, ContextId::Global];
+        let empty = std::collections::BTreeMap::new();
+        let (bar, rows) =
+            task_context_page(&keymap, &chain, TaskMenuSubject::default(), &empty, &[]);
+        assert!(!bar.is_empty(), "the bar rides the page");
+        // Core rows precede the parents; after the first parent only
+        // parents and the pinned delete follow.
+        let first_parent = rows
+            .iter()
+            .position(|e| e.action.is_none())
+            .expect("parents render");
+        assert!(
+            rows[first_parent..]
+                .iter()
+                .all(|e| e.action.is_none() || e.action == Some(ActionId::TaskDelete)),
+            "after the first parent only parents and the delete follow"
+        );
+        assert_eq!(
+            rows.last().and_then(|e| e.action),
+            Some(ActionId::TaskDelete),
+            "the destructive row renders last (BF-W-N2)"
+        );
+        // The parents of the plain subject: Reminders (Mute/RuleAdd
+        // apply), Timers (TimerCreate applies), Entries — Convert
+        // withholds entirely (the empty-page cascade).
+        let parents: Vec<_> = rows[first_parent..]
+            .iter()
+            .filter_map(|e| e.submenu)
+            .map(|sub| match sub {
+                Submenu::Task(family) => family,
+                Submenu::Group(_) => unreachable!("no main-menu parents here"),
+            })
+            .collect();
+        assert_eq!(
+            parents,
+            [
+                TaskMenuGroup::Reminders,
+                TaskMenuGroup::Timers,
+                TaskMenuGroup::Entries
+            ],
+            "one parent per rendered family"
+        );
+        // Child pages keep ids + hints (the T-3 contract per family).
+        let reminders = task_submenu_page(
+            &keymap,
+            &chain,
+            TaskMenuSubject::default(),
+            &empty,
+            TaskMenuGroup::Reminders,
+        );
+        assert!(
+            reminders
+                .iter()
+                .any(|e| e.action == Some(ActionId::ReminderRuleAdd)),
+            "the family's children keep their ids"
+        );
+        let habit = TaskMenuSubject {
+            is_habit: true,
+            ..TaskMenuSubject::default()
+        };
+        let convert = task_submenu_page(&keymap, &chain, habit, &empty, TaskMenuGroup::Convert);
+        assert!(
+            convert
+                .iter()
+                .any(|e| e.action == Some(ActionId::HabitRepair)),
+            "the habit family's children mount for a habit subject"
+        );
     }
 
     /// Every projected row (registry rows included, parents excluded)
