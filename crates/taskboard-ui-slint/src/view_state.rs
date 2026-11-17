@@ -402,10 +402,16 @@ pub enum Flow {
 /// The armed delete's subject (UX R-2 D-2, #784): the resolved target
 /// the confirmation names — one armed subject per the shared grammar,
 /// re-arming swaps to the new subject.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeleteTarget {
     Stack(StackId),
     Board(BoardId),
+    /// The armed multi delete (UX-R8 D-6, US-4/AC-3): the selection's
+    /// anchor-order snapshot at arm time; a member dying mid-arm
+    /// prunes via `reconcile` (empty → disarm), and the confirm
+    /// dispatches one `DeleteTask` per member (each a journal
+    /// `PreImage` — `AppUndo` reverses stepwise, engine truth).
+    Tasks(Vec<TaskId>),
 }
 
 /// The board selection (UX-R8 D-4, US-4/S1, W-4): adapter-owned
@@ -580,6 +586,97 @@ pub fn slot_order(state: &AppState, stack: StackId, gap: usize) -> i64 {
     let a = tasks[gap - 1].order;
     let b = tasks[gap].order;
     a + (b - a) / 2
+}
+
+/// The multi-move sequence (UX-R8 D-6, US-4/S2): one `MoveTask` per
+/// selected member in `members` order (the anchor order, D-4),
+/// relative order preserved within the moved set — the set's members
+/// reinsert in their existing relative sequence at the aim point.
+/// Cross-stack (or bare-surface) aims append: `append_order + i` per
+/// member; a same-stack gap splices the block between the remaining
+/// neighbours (room allowing; otherwise the deterministic append
+/// fallback — the documented leniency, the engine's `(order, id)`
+/// sort keeps any collision stable). Per-task absorb: a member not
+/// live against the passed state is dropped and the sequence
+/// continues — no batch verb, no early abort.
+///
+/// # Panics
+/// Never: the per-member index conversions saturate at `i64::MAX`
+/// (the documented leniency — sequence lengths are far below the
+/// conversion's reach anyway).
+#[must_use]
+pub fn multi_move_commands(
+    state: &AppState,
+    members: &[TaskId],
+    target: StackId,
+    gap: Option<usize>,
+) -> Vec<StateCommand> {
+    let is_live = |id: TaskId| {
+        state
+            .tasks
+            .get(&id)
+            .is_some_and(taskboard_domain::Task::is_live)
+    };
+    let live: Vec<TaskId> = members.iter().copied().filter(|id| is_live(*id)).collect();
+    if live.is_empty() {
+        return Vec::new();
+    }
+    // The existing relative sequence: the members' current canonical
+    // position — stack ring order, then in-stack order.
+    let ring = ViewState::move_ring(state);
+    let mut sorted = live;
+    sorted.sort_by_key(|id| {
+        let task = &state.tasks[id];
+        (
+            ring.iter().position(|stack| *stack == task.stack),
+            task.order,
+        )
+    });
+    let same_stack = sorted
+        .iter()
+        .any(|id| state.tasks.get(id).is_some_and(|t| t.stack == target));
+    let per_member = |base: i64| -> Vec<i64> {
+        (0..sorted.len())
+            .map(|i| base + i64::try_from(i).unwrap_or(i64::MAX))
+            .collect()
+    };
+    let orders: Vec<i64> = if same_stack {
+        let set: std::collections::BTreeSet<TaskId> = sorted.iter().copied().collect();
+        let remaining: Vec<i64> = state
+            .tasks_in_stack(target)
+            .iter()
+            .filter(|t| !set.contains(&t.id))
+            .map(|t| t.order)
+            .collect();
+        let gap = gap.unwrap_or(remaining.len());
+        let append_base = remaining.last().map_or(0, |last| last + 1);
+        if gap >= remaining.len() {
+            per_member(append_base)
+        } else {
+            let a = remaining[gap - 1];
+            let b = remaining[gap];
+            let k = i64::try_from(sorted.len()).unwrap_or(i64::MAX);
+            if b - a > k {
+                let step = (b - a) / (k + 1);
+                (0..sorted.len())
+                    .map(|i| a + step * (i64::try_from(i).unwrap_or(i64::MAX) + 1))
+                    .collect()
+            } else {
+                per_member(append_base)
+            }
+        }
+    } else {
+        per_member(append_order(state, target))
+    };
+    sorted
+        .into_iter()
+        .zip(orders)
+        .map(|(id, order)| StateCommand::MoveTask {
+            id,
+            stack: target,
+            order,
+        })
+        .collect()
 }
 
 /// The one `MoveTask` construction site (r2 chunk-8 D-F): the
@@ -3205,17 +3302,35 @@ impl ViewState {
             self.write_flow(Flow::None);
             return vec![FlowOutcome::RefreshNow];
         }
-        let order = gap.map_or_else(
-            || append_order(state, target),
-            |g| slot_order(state, target, g),
-        );
-        let command = FlowOutcome::Command(StateCommand::MoveTask {
-            id: task,
-            stack: target,
-            order,
-        });
+        // The multi-drag branch (UX-R8 D-6, US-4/AC-1): a drag armed
+        // from any selected member moves the set — one `MoveTask` per
+        // member in anchor order, relative order preserved. A
+        // single-task selection behaves exactly as today.
+        let members: Vec<TaskId> = if !self.selection.is_empty() && self.selection.contains(&task) {
+            self.selection_anchor_order(state)
+        } else {
+            vec![task]
+        };
+        let commands: Vec<FlowOutcome> = if members.len() > 1 {
+            multi_move_commands(state, &members, target, gap)
+                .into_iter()
+                .map(FlowOutcome::Command)
+                .collect()
+        } else {
+            let order = gap.map_or_else(
+                || append_order(state, target),
+                |g| slot_order(state, target, g),
+            );
+            vec![FlowOutcome::Command(StateCommand::MoveTask {
+                id: task,
+                stack: target,
+                order,
+            })]
+        };
         self.write_flow(Flow::None);
-        vec![command, FlowOutcome::RefreshNow]
+        let mut outcomes = commands;
+        outcomes.push(FlowOutcome::RefreshNow);
+        outcomes
     }
 
     /// `RequestMove` during a move flow: cancel, nothing dispatched.
@@ -3445,11 +3560,33 @@ impl ViewState {
             return Vec::new();
         };
         self.write_flow(Flow::None);
-        let command = match target {
-            DeleteTarget::Stack(stack) => StateCommand::DeleteStack { id: stack },
-            DeleteTarget::Board(board) => StateCommand::DeleteBoard { board },
-        };
-        vec![FlowOutcome::Command(command), FlowOutcome::RefreshNow]
+        match target {
+            DeleteTarget::Stack(stack) => {
+                vec![
+                    FlowOutcome::Command(StateCommand::DeleteStack { id: stack }),
+                    FlowOutcome::RefreshNow,
+                ]
+            }
+            DeleteTarget::Board(board) => {
+                vec![
+                    FlowOutcome::Command(StateCommand::DeleteBoard { board }),
+                    FlowOutcome::RefreshNow,
+                ]
+            }
+            // The multi delete's confirm (UX-R8 D-6, US-4/AC-3): one
+            // `DeleteTask` per member of the arm-time snapshot — each
+            // a journal PreImage; `AppUndo` reverses stepwise. The
+            // snapshot's prune is reconcile's job; the engine absorbs
+            // a vanished id (the typed no-op).
+            DeleteTarget::Tasks(members) => {
+                let mut outcomes: Vec<FlowOutcome> = members
+                    .into_iter()
+                    .map(|id| FlowOutcome::Command(StateCommand::DeleteTask { id }))
+                    .collect();
+                outcomes.push(FlowOutcome::RefreshNow);
+                outcomes
+            }
+        }
     }
 
     /// The armed delete's disarm (the strip's Cancel, a foreign
@@ -3462,6 +3599,19 @@ impl ViewState {
         } else {
             Vec::new()
         }
+    }
+
+    /// The armed multi delete (UX-R8 D-6, US-4/AC-3): `TaskDelete`
+    /// with a non-empty selection arms `ConfirmDelete(Tasks)` — the
+    /// anchor-order snapshot, nothing dispatches, the armed strip's
+    /// grammar verbatim (the invoking verb's second stroke confirms;
+    /// Escape / a foreign settle disarm with nothing dispatched).
+    pub fn arm_multi_delete(&mut self, members: Vec<TaskId>) -> Vec<FlowOutcome> {
+        if matches!(self.flow(), Flow::ConfirmDelete(DeleteTarget::Tasks(_))) {
+            return self.commit_confirm_delete();
+        }
+        self.write_flow(Flow::ConfirmDelete(DeleteTarget::Tasks(members)));
+        vec![FlowOutcome::RefreshNow]
     }
 
     /// `board.color-edit` (UX R-4 D-1, #791): arms the color picker
@@ -3692,6 +3842,17 @@ impl ViewState {
             // ends the flow silently — nothing dispatches (the
             // rename-vanish pattern; the strip unmounts on the next
             // model pass).
+            // The armed multi delete (UX-R8 D-6): a member dying
+            // mid-arm prunes the snapshot (empty → disarm) — the
+            // rename-vanish pattern over a member set.
+            Flow::ConfirmDelete(DeleteTarget::Tasks(members)) => {
+                let pruned: Vec<TaskId> = members.into_iter().filter(|id| is_live(*id)).collect();
+                if pruned.is_empty() {
+                    self.write_flow(Flow::None);
+                } else {
+                    self.write_flow(Flow::ConfirmDelete(DeleteTarget::Tasks(pruned)));
+                }
+            }
             Flow::ConfirmDelete(DeleteTarget::Stack(stack)) if !stacks.contains(&stack) => {
                 self.write_flow(Flow::None);
             }
@@ -3976,6 +4137,171 @@ mod tests {
             })],
             "an empty target stack's only slot is the canonical 0"
         );
+    }
+
+    // -- the multi sequences (UX-R8 D-6, US-4/S2) -------------------------
+
+    #[test]
+    fn multi_move_appends_in_existing_relative_order() {
+        let (state, _, [_s0, s1], [a, b, _c]) = fixture();
+        // The pair a, b moves from s0 to s1 (cross-stack append):
+        // relative order kept, one command per member.
+        let commands = multi_move_commands(&state, &[a, b], s1, None);
+        assert_eq!(
+            commands,
+            vec![
+                StateCommand::MoveTask {
+                    id: a,
+                    stack: s1,
+                    order: 1
+                },
+                StateCommand::MoveTask {
+                    id: b,
+                    stack: s1,
+                    order: 2
+                },
+            ],
+            "append_order + i per member in existing sequence"
+        );
+        // The anchor order (a first) is the caller's; the sequence's
+        // members land in their existing relative order regardless.
+        let commands = multi_move_commands(&state, &[b, a], s1, None);
+        assert_eq!(
+            commands,
+            vec![
+                StateCommand::MoveTask {
+                    id: a,
+                    stack: s1,
+                    order: 1
+                },
+                StateCommand::MoveTask {
+                    id: b,
+                    stack: s1,
+                    order: 2
+                },
+            ],
+            "the set sorts into its existing relative sequence"
+        );
+    }
+
+    #[test]
+    fn multi_move_splices_the_block_at_the_same_stack_gap() {
+        let (mut state, _, [s0, _], [a, b, _c]) = fixture();
+        // A fourth task d(2) in s0: orders a(0), b(1), d(2). Moving
+        // the pair a, b between d and nothing (gap after the set's
+        // removal = len) appends after d.
+        let d = TaskId::from_uuid(uuid::Uuid::now_v7());
+        state.tasks.insert(d, task(d, s0, 2));
+        let commands = multi_move_commands(&state, &[a, b], s0, Some(2));
+        assert_eq!(
+            commands,
+            vec![
+                StateCommand::MoveTask {
+                    id: a,
+                    stack: s0,
+                    order: 3
+                },
+                StateCommand::MoveTask {
+                    id: b,
+                    stack: s0,
+                    order: 4
+                },
+            ],
+            "the block appends after the remaining neighbours"
+        );
+        // A between-gap with room: move a alone between b(1) and d(2)
+        // — no room for a block, but the single member takes the
+        // midpoint... the block path needs room > k; room = 1, k = 1
+        // → the append fallback (the documented leniency).
+        let commands = multi_move_commands(&state, &[a], s0, Some(2));
+        assert_eq!(
+            commands,
+            vec![StateCommand::MoveTask {
+                id: a,
+                stack: s0,
+                order: 3
+            }],
+            "a no-room gap falls back to the deterministic append"
+        );
+    }
+
+    #[test]
+    fn multi_move_absorbs_a_vanished_member_and_continues() {
+        let (mut state, _, [_s0, s1], [a, b, _c]) = fixture();
+        // b dies mid-sequence (the engine applied its deletion): the
+        // sequence drops b's command and continues with a.
+        state.tasks.get_mut(&b).expect("task").deleted = true;
+        let commands = multi_move_commands(&state, &[a, b], s1, None);
+        assert_eq!(
+            commands,
+            vec![StateCommand::MoveTask {
+                id: a,
+                stack: s1,
+                order: 1
+            }],
+            "the vanished member's command is dropped, no early abort"
+        );
+        // An all-dead set dispatches nothing.
+        state.tasks.get_mut(&a).expect("task").deleted = true;
+        assert_eq!(
+            multi_move_commands(&state, &[a, b], s1, None),
+            [] as [StateCommand; 0]
+        );
+    }
+
+    #[test]
+    fn the_multi_delete_confirms_one_task_per_member() {
+        let (state, _, [_s0, _s1], [a, b, _c]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let outcomes = vs.arm_multi_delete(vec![a, b]);
+        assert_eq!(
+            outcomes,
+            vec![FlowOutcome::RefreshNow],
+            "the arm dispatches nothing"
+        );
+        assert_eq!(
+            *vs.flow(),
+            Flow::ConfirmDelete(DeleteTarget::Tasks(vec![a, b])),
+            "the armed strip carries the anchor-order snapshot"
+        );
+        // The repeat (or the strip's Confirm) dispatches one
+        // `DeleteTask` per member (each a journal PreImage).
+        let outcomes = vs.arm_multi_delete(vec![a, b]);
+        assert_eq!(
+            outcomes[..2],
+            [
+                FlowOutcome::Command(StateCommand::DeleteTask { id: a }),
+                FlowOutcome::Command(StateCommand::DeleteTask { id: b }),
+            ][..]
+        );
+        assert_eq!(*vs.flow(), Flow::None);
+        // Escape disarms with nothing dispatched.
+        let outcomes = vs.arm_multi_delete(vec![a, b]);
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        let outcomes = vs.cancel_confirm_delete();
+        assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
+        assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    #[test]
+    fn the_multi_delete_prunes_a_dead_member_and_disarms_on_empty() {
+        let (mut state, _, [_s0, _s1], [a, b, _c]) = fixture();
+        state.tasks.get_mut(&b).expect("task").deleted = true;
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.arm_multi_delete(vec![a, b]);
+        // The reconcile pass prunes the dead member from the snapshot.
+        vs.reconcile(&state);
+        assert_eq!(
+            *vs.flow(),
+            Flow::ConfirmDelete(DeleteTarget::Tasks(vec![a])),
+            "the dead member's prune follows the strip"
+        );
+        // Every member dying disarms.
+        state.tasks.get_mut(&a).expect("task").deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(*vs.flow(), Flow::None, "an empty snapshot disarms");
     }
 
     // -- the slot grammar (UX-R8 D-1, US-1/AC-3) --------------------------

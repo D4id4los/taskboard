@@ -5114,7 +5114,7 @@ fn the_today_context_menu_extends_with_due_today_and_the_card_menus_do_not() {
         // A board card's menu: the Task context rows, no due-today.
         adapter
             .borrow_mut()
-            .open_task_context_menu(rig.handle.window(), 10.0, 10.0, &[]);
+            .open_task_context_menu(rig.handle.window(), 10.0, 10.0, &[], None);
         let card_ids = ids_of(&rig);
         assert!(
             !card_ids.iter().any(|id| id == "task.due-today"),
@@ -5126,6 +5126,7 @@ fn the_today_context_menu_extends_with_due_today_and_the_card_menus_do_not() {
             10.0,
             10.0,
             &[ActionId::TaskDueToday],
+            None,
         );
         let today_ids = ids_of(&rig);
         assert!(
