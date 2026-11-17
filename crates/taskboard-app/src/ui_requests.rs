@@ -2147,6 +2147,68 @@ mod tests {
         assert_eq!(replied.bound_connector, None);
     }
 
+    // -- the #749 re-verification (the files-sync-status plan US-7,
+    // D-9) ---------------------------------------------------------
+
+    /// US-7 AC-1 — the re-verification's evidence: the landed r7
+    /// roster's Stop Sync reaches every files-bound row (the roster
+    /// renders every live board once per card; files-bound rows carry
+    /// the Stop action on the anchor card), the arm's guards are
+    /// typed (`Gone` for a stale board, `BindRefused` for non-files
+    /// rows — the row grammar cannot normally offer those), and the
+    /// effect is the exact unbind. This journey records the premise:
+    /// the disconnect story is complete, #749 closes with this
+    /// evidence (the closing comment is stage 3 bookkeeping).
+    #[tokio::test]
+    async fn us7_ac1_stop_sync_exercises_the_landed_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+        let workspace = test_workspace(config).await;
+        let board = create_board(&workspace, "files board").await;
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board,
+                remote: taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
+                connector: taskboard_domain::ConnectorId::from("files-sync"),
+            })
+            .await
+            .expect("files bind lands");
+
+        // The effect: the exact unbind — the binding goes, the board
+        // survives, the reply is the fresh snapshot.
+        let snapshot = stop_board_files_sync(&workspace, board)
+            .await
+            .expect("unbind");
+        let row = snapshot
+            .boards
+            .iter()
+            .find(|b| b.name == "files board")
+            .expect("the board survives");
+        assert_eq!(row.bound_channel, None, "the files binding is gone");
+
+        // The guard shape: non-files rows refuse typed.
+        let deck_bound = create_board(&workspace, "deck board").await;
+        workspace
+            .engine
+            .execute(StateCommand::BindBoard {
+                board: deck_bound,
+                remote: taskboard_domain::RemoteBoardId::deck(9),
+                connector: taskboard_domain::ConnectorId::from("work"),
+            })
+            .await
+            .expect("deck bind lands");
+        let deck = stop_board_files_sync(&workspace, deck_bound)
+            .await
+            .expect_err("a deck-bound row refuses");
+        assert_eq!(deck, SettingsError::BindRefused);
+        let stale = stop_board_files_sync(&workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
+            .await
+            .expect_err("a stale row refuses");
+        assert_eq!(stale, SettingsError::Gone);
+    }
+
     // -- the Publish arm (round-7 D-7.3, W-6) ---------------------------
 
     /// A config whose files lane is spawnable (`[files_sync] enabled`
