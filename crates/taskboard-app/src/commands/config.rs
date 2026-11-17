@@ -839,6 +839,28 @@ mod set_tests {
         std::fs::remove_dir_all(path.parent().expect("dir")).ok();
     }
 
+    /// `us5_s1` (US-5 AC-1): the typed receipt's shape — `key`, the
+    /// echoed `value` (canonical text form, not the raw spelling),
+    /// and the lane bit — structural, machine-checkable.
+    #[tokio::test]
+    async fn us5_s1_the_typed_view_carries_key_value_and_lane_bit() {
+        let path = temp_config("view");
+        let _ = std::fs::remove_file(&path);
+        let view = set(Some(path.clone()), "reminders.tick_secs", "45")
+            .await
+            .expect("set");
+        assert_eq!(view.key, "reminders.tick_secs");
+        assert_eq!(view.value.as_deref(), Some("45"));
+        assert!(!view.applied_live, "the local lane bit");
+        let view = unset(Some(path.clone()), "reminders.tick_secs")
+            .await
+            .expect("unset");
+        assert_eq!(view.key, "reminders.tick_secs");
+        assert_eq!(view.value, None, "an unset echoes no value");
+        assert!(!view.applied_live);
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
     /// US-5 AC-2: `config print` stays truthful after a set — the
     /// printed effective value equals the written one (the file is
     /// written before any engine apply).
@@ -857,11 +879,13 @@ mod set_tests {
 
     // -- the daemon lane (journey W-2, US-1) ------------------------------
 
-    /// `us1_ac1`: a set against a running daemon's engine applies
-    /// live — the engine publishes the new value AND the file layer
-    /// carries it — and the typed view reports `applied_live: true`.
+    /// `us1_s4` + `us1_s5` (US-1 AC-1): a set against a running
+    /// daemon's engine applies live — the overlay write lands the
+    /// proven file (S4), the engine takes the `UpdateSettings`
+    /// snapshot (S5) — and the typed view reports
+    /// `applied_live: true`.
     #[tokio::test]
-    async fn us1_ac1_the_daemon_lane_applies_live_and_writes_the_file() {
+    async fn us1_s4_the_daemon_lane_write_lands_and_applies_live() {
         let (path, app) = daemon_fixture("ac1").await;
         let locked = std::collections::BTreeSet::new();
         let view = set_with_locked(&path, "focus.work_mins", "50", &locked, Some(&app.engine))
@@ -878,6 +902,34 @@ mod set_tests {
         );
         let text = std::fs::read_to_string(&path).expect("the file");
         assert!(text.contains("work_mins = 50"), "the file wrote: {text}");
+        app.shutdown().await;
+    }
+
+    /// `us1_s6` (US-5/S1 on the live lane): the daemon arm's reply
+    /// view is the typed `ConfigSetView` — JSON carries `key`,
+    /// `value`, and the lane bit `applied_live: true`; the text lane
+    /// is one honest line.
+    #[tokio::test]
+    async fn us1_s6_the_daemon_reply_view_carries_the_lane_bit() {
+        let (path, app) = daemon_fixture("s6").await;
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut io = crate::commands::CommandIo {
+            out: &mut out,
+            err: &mut err,
+            json: true,
+        };
+        let cmd = ConfigCmd::Set {
+            key: "focus.work_mins".to_owned(),
+            value: "50".to_owned(),
+        };
+        let code = handle_daemon(&cmd, &app, Some(&path), &mut io).await;
+        assert_eq!(code, 0, "a live set is a success");
+        let view: ConfigSetView =
+            serde_json::from_slice(&out).expect("the typed view travels as JSON");
+        assert_eq!(view.key, "focus.work_mins");
+        assert_eq!(view.value.as_deref(), Some("50"));
+        assert!(view.applied_live, "the live lane bit");
         app.shutdown().await;
     }
 
@@ -913,11 +965,11 @@ mod set_tests {
         app.shutdown().await;
     }
 
-    /// `us3_ac1`: unset propagates live on the daemon lane — the
+    /// `us3_s3`: unset propagates live on the daemon lane — the
     /// engine publishes the default-derived snapshot and the file no
     /// longer carries the key.
     #[tokio::test]
-    async fn us3_ac1_the_daemon_lane_unset_propagates_live() {
+    async fn us3_s3_the_daemon_lane_unset_propagates_live() {
         let (path, app) = daemon_fixture("ac3").await;
         let locked = std::collections::BTreeSet::new();
         set_with_locked(&path, "focus.work_mins", "50", &locked, Some(&app.engine))
@@ -950,11 +1002,12 @@ mod set_tests {
         app.shutdown().await;
     }
 
-    /// `us4_s1` on the daemon lane: an env-pinned key refuses typed
-    /// before the write and before any engine command (the guard runs
-    /// in the daemon's own env truth — D8's asymmetry).
+    /// `us1_s3` (the daemon arm's env guard, US-1/S3; also US-4/S1's
+    /// daemon-side pin): an env-pinned key refuses typed before the
+    /// write and before any engine command (the guard runs in the
+    /// daemon's own env truth — D8's asymmetry).
     #[tokio::test]
-    async fn us4_s1_the_daemon_lane_env_guard_refuses_typed() {
+    async fn us1_s3_the_daemon_lane_env_guard_refuses_typed() {
         let (path, app) = daemon_fixture("ac4").await;
         let mut locked = std::collections::BTreeSet::new();
         locked.insert("reminders.tick_secs".to_owned());
