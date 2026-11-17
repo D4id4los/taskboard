@@ -84,6 +84,10 @@ export component TaskCard inherits Rectangle {
     // regression probe reads them instead of re-measuring text; the
     // automation lane shares the seam.
     out property <length> title-width: title-text.width;
+    // The done checkbox's hover flag (UX-R8 chunk-5 D-8, US-6): the
+    // house hover treatment's input — a model fact the probes read,
+    // never styling text. N-15's hover half.
+    out property <bool> done-hover: done-hit.has-hover;
     out property <length> title-preferred-width: title-text.preferred-width;
     callback activated();
     callback clicked();
@@ -192,6 +196,9 @@ export component TaskCard inherits Rectangle {
             border-radius: Theme.radius-small;
             border-width: Theme.focus-ring-width;
             border-color: root.model.done ? Semantic.success : Theme.text-secondary;
+            // The house hover treatment (the r1 R-1 posture — the
+            // Theme's existing hover token, no new primitive).
+            background: done-hit.has-hover && !root.model.done ? Theme.surface-hover : transparent;
             accessible-role: AccessibleRole.checkbox;
             // The done/undone verb pair (a presentation literal; the
             // role + label pair is what the a11y tree announces).

@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The done checkbox's hover-flag probe (UX-R8 chunk-5 D-8, US-6): a
+// TaskCard mounted at rest — the probe reads the card's `done-hover`
+// out property (the house hover treatment's input), never styling
+// text. The hover transition itself is platform-driven (the
+// TouchArea's has-hover); the flag is the model the treatment reads.
+import { TaskCard } from "../ui/widgets/task-card.slint";
+import { DueKind, Theme } from "../ui/theme.slint";
+
+export component TaskCardHoverProbe inherits Window {
+    out property <bool> hover: tc.done-hover;
+    width: Theme.space-15;
+    height: Theme.space-15;
+    tc := TaskCard {
+        y: Theme.space-2;
+        width: 100%;
+        height: Theme.space-8;
+        model: {
+            title: "probe card",
+            due-phrase: "",
+            scheduled-phrase: "",
+            effort-phrase: "",
+            due-kind: DueKind.none,
+            done: false,
+            can-done: true,
+            emphasis: false,
+            dragging-source: false,
+            decorations: [],
+        };
+    }
+}

@@ -41,6 +41,7 @@ fn main() {
         "board_bar_probe",
         "editor_viewport_probe",
         "task_card_title_probe",
+        "task_card_hover_probe",
         "stat_bars_severing_probe",
         "window_max_probe",
     ];
