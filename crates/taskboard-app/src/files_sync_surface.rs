@@ -10,8 +10,10 @@
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use taskboard_sync_files_nextcloud::status::{CycleOutcome, FilesSyncStatus};
-use taskboard_ui_slint::presentation::{FilesSyncChip, FilesSyncChipState};
+use taskboard_sync_files_nextcloud::status::{BoardMoveFinding, CycleOutcome, FilesSyncStatus};
+use taskboard_ui_slint::presentation::{
+    FilesBoardAdoption, FilesBoardState, FilesSyncChip, FilesSyncChipState,
+};
 
 /// The chip's precedence ladder (D-FH5): Forked loudest, then
 /// Diverged, Parked, `CycleFailed`, `Ok` — the fork halts data flow
@@ -32,7 +34,30 @@ pub fn files_sync_chip(status: &FilesSyncStatus) -> FilesSyncChip {
     } else {
         FilesSyncChipState::Ok
     };
-    FilesSyncChip { state }
+    FilesSyncChip {
+        state,
+        // The per-board states map (US-8, D-8): the moved boards'
+        // adoption phase, 1:1 over the typed findings; the lane rides
+        // the failed cycle (per-board pending composes engine-side).
+        board_states: status
+            .moved_boards
+            .iter()
+            .map(|(uuid, finding)| {
+                let adoption = match finding {
+                    BoardMoveFinding::Adopting { .. } => FilesBoardAdoption::Adopting,
+                    BoardMoveFinding::Adopted { .. } => FilesBoardAdoption::Adopted,
+                    BoardMoveFinding::Refused(_) => FilesBoardAdoption::Refused,
+                };
+                (
+                    *uuid,
+                    FilesBoardState {
+                        lane: taskboard_ui_slint::presentation::FilesBoardLane::Idle,
+                        adoption,
+                    },
+                )
+            })
+            .collect(),
+    }
 }
 
 fn rejected_rows(status: &FilesSyncStatus) -> usize {
