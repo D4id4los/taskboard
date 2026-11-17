@@ -766,10 +766,11 @@ pub enum DraftBound {
 /// mints a fresh `SeriesId` (v7). The anchor is
 /// [`series_reference_date`] — never a raw-UTC date treated as local.
 /// The bare-flag defaults derive from the anchor (weekly: its
-/// weekday; monthly: its day-of-month). `paused_until` is `None`: the
-/// pause is the `PauseSeries` verb's field alone — a re-set rule
-/// clears any pause (the pre-existing CLI semantic, pinned by the
-/// tests and recorded as backlog issue #759).
+/// weekday; monthly: its day-of-month). `paused_until` is preserved
+/// from the head's existing rule (US-4, task-detail-editor UX plan
+/// D-9 — the accepted resolution of backlog issue #759): a re-set
+/// rule never silently resumes the series; `PauseSeries` remains the
+/// only pause clearer.
 ///
 /// Every fallible mint sits at the *callers*' trust boundaries (the
 /// CLI flag collapse; the GUI field parsers); the two in-body
@@ -832,7 +833,11 @@ pub fn assemble_rule(
         pattern,
         bound,
         continued_from,
-        paused_until: None,
+        // US-4 (task-detail-editor UX plan D-9, #759): a re-set rule
+        // PRESERVES the series' existing pause — fixing a pattern never
+        // silently resumes the series. `PauseSeries` stays the only
+        // pause *clearer*; this mint only stops the silent lift.
+        paused_until: head.recur.as_ref().and_then(|r| r.paused_until),
     }
 }
 
@@ -3418,12 +3423,42 @@ mod assemble_rule_tests {
         }
     }
 
+    /// US-4 (task-detail-editor UX plan D-9, #759): a re-set rule
+    /// preserves the series' existing pause — fixing a pattern never
+    /// silently resumes the series. Written FIRST (the reproduction:
+    /// the mint stamped `paused_until: None`); the fix is the
+    /// preservation in the mint body.
+    #[test]
+    fn a_rule_replacement_preserves_the_series_pause() {
+        let existing = RecurRule {
+            series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(42)),
+            anchor: date(2026, 9, 1),
+            pattern: RecurPattern::Daily {
+                every: EveryDays::new(2).unwrap(),
+            },
+            bound: RecurBound::None,
+            continued_from: None,
+            paused_until: Some(date(2026, 12, 1)),
+        };
+        let now = midnight_utc(date(2026, 10, 21));
+        let rule = assemble_rule(
+            &head(Some(date(2026, 10, 5)), Some(existing)),
+            daily(),
+            DraftBound::None,
+            calendar(),
+            now,
+        );
+        assert_eq!(rule.paused_until, Some(date(2026, 12, 1)));
+    }
+
     #[test]
     fn paused_until_is_none_in_every_assembled_rule() {
-        // The D-E3 pin: a re-set rule clears any pause — the
-        // pre-existing CLI semantic, now GUI-shared by construction.
-        // Naming it here makes a future change a conscious one (the
-        // product question is backlog #759, not this chunk's).
+        // Consciously flipped with US-4 (task-detail-editor UX plan
+        // D-9, #759): the D-E3 pin held the pre-fix clearing semantic
+        // ("a re-set rule clears any pause"); the accepted product
+        // change makes the mint preserve the pause across every
+        // pattern/bound the grammar can express. The resume path is
+        // untouched — `PauseSeries` remains the only clearer.
         let existing = RecurRule {
             series: crate::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(42)),
             anchor: date(2026, 9, 1),
@@ -3452,7 +3487,7 @@ mod assemble_rule_tests {
                 calendar(),
                 now,
             );
-            assert_eq!(rule.paused_until, None);
+            assert_eq!(rule.paused_until, Some(date(2026, 12, 24)));
         }
     }
 
@@ -3471,6 +3506,9 @@ mod assemble_rule_tests {
             let now = midnight_utc(date(2026, 10, 21));
             let expected_series = rule.series;
             let expected_continued = rule.continued_from;
+            // US-4 (#759): the preservation rides every pattern/bound
+            // too — the generated pause survives the re-mint.
+            let expected_pause = rule.paused_until;
             let mut ruled = head(Some(scheduled), Some(rule));
             // Exercise both weekly-default and explicit draft arms via
             // a fixed daily draft plus the count bound.
@@ -3483,7 +3521,7 @@ mod assemble_rule_tests {
             );
             prop_assert_eq!(assembled.series, expected_series);
             prop_assert_eq!(assembled.continued_from, expected_continued);
-            prop_assert_eq!(assembled.paused_until, None);
+            prop_assert_eq!(assembled.paused_until, expected_pause);
 
             ruled.recur = None;
             let fresh_a = assemble_rule(&ruled, daily(), DraftBound::None, calendar(), now);
