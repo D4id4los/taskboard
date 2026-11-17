@@ -48,18 +48,18 @@ async fn mount_auth_reject(status: u16) -> wiremock::MockServer {
 }
 
 /// Seeds an array-world config naming one connector at `server`.
+fn array_config_text(dir: &std::path::Path, server: &str) -> String {
+    format!(
+        "[storage]\ndb_path = '{}/taskboard.db'\n\
+         [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+         server_url = \"{server}\"\nusername = \"old-user\"\n",
+        dir.display()
+    )
+}
+
 fn seed_array_config(dir: &std::path::Path, server: &str) -> PathBuf {
     let path = dir.join("taskboard.toml");
-    std::fs::write(
-        &path,
-        format!(
-            "[storage]\ndb_path = '{}/taskboard.db'\n\
-             [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
-             server_url = \"{server}\"\nusername = \"old-user\"\n",
-            dir.display()
-        ),
-    )
-    .expect("seed config");
+    std::fs::write(&path, array_config_text(dir, server)).expect("seed config");
     path
 }
 
@@ -232,7 +232,11 @@ async fn a_failing_verify_persists_nothing_and_replies_typed() {
     );
 
     let written = std::fs::read_to_string(&config).expect("read back");
-    assert!(!written.contains("home"), "nothing persisted");
+    assert_eq!(
+        written,
+        array_config_text(dir.path(), "https://unused.example"),
+        "a rejected verify persists nothing"
+    );
     assert!(
         store.load(&server.uri(), "alice").is_err(),
         "no secret stored"
