@@ -279,6 +279,11 @@ pub enum BoardsCmd {
         /// Undo a move that has not committed.
         #[arg(long, group = "move_direction")]
         undo: bool,
+        /// Deck-to-Deck rebind: move this Deck-bound board onto the
+        /// named Deck connector (the files-sync-status plan US-10) —
+        /// the remote Deck board id is preserved verbatim.
+        #[arg(long, group = "move_direction")]
+        to_connection: Option<String>,
         /// Wait budget for the final Deck pull, in seconds (the
         /// shared `DEFAULT_MOVE_TIMEOUT`, seconds half).
         #[arg(long, default_value_t = 60)]

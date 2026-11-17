@@ -6039,6 +6039,12 @@ pub enum FilesBoardAction {
     Switch,
     /// Local-only → this card's files lane (`PublishBoardToFiles`).
     Publish,
+    /// Deck-bound under ANOTHER Deck account's card → this card's
+    /// connection (`MoveBoardToDeck`, the files-sync-status plan
+    /// US-10, D-11): the rebind row action (R-3: the roster row, never
+    /// a connector-level affordance). Enabled without the files lane
+    /// — a Deck-to-Deck move needs no `[files_sync]` truth.
+    Rebind,
 }
 
 /// The action's affordance label, pinned to the journey tables'
@@ -6050,6 +6056,7 @@ pub const fn files_board_action_label(action: FilesBoardAction) -> &'static str 
         FilesBoardAction::Stop => "Stop Sync",
         FilesBoardAction::Switch => "Switch to Sync via this Connection",
         FilesBoardAction::Publish => "Sync via this Connection",
+        FilesBoardAction::Rebind => "Move to this Connection",
     }
 }
 
@@ -6108,22 +6115,45 @@ pub struct FilesBoardRow {
 /// (US-1 AC-2: visibility of archived boards is the roster's job);
 /// only deleted boards are out. `files_on` is the card's lane fact
 /// (enabled ∧ this card holds the resolved anchor); the D6 enabled
-/// rule is `files_on ∧ !archived`. Pure over the state; kiosk-safe
+/// rule is `files_on ∧ !archived`. `card_connector` is the card's
+/// representative connector (the adapter's files-anchor walk — its
+/// first Nextcloud connector): a Deck-bound board whose binding
+/// already rides it reads `ThisConnection`; a Deck-bound board riding
+/// another connector reads `OtherConnection` with the honest state
+/// made actionable — the rebind row (`Move to this Connection`,
+/// the files-sync-status plan US-10, D-11; R-3: the roster row, never
+/// a connector-level affordance). The rebind row needs no files lane
+/// (a Deck-to-Deck move is connection-plane work), so its enabled
+/// rule is `!archived` alone. Pure over the state; kiosk-safe
 /// by construction.
 #[must_use]
-pub fn files_board_roster(state: &AppState, files_on: bool) -> Vec<FilesBoardRow> {
+pub fn files_board_roster(
+    state: &AppState,
+    files_on: bool,
+    card_connector: &str,
+) -> Vec<FilesBoardRow> {
     let mut rows: Vec<FilesBoardRow> = state
         .boards
         .values()
         .filter(|board| !board.deleted)
         .map(|board| {
-            let channel = board
-                .remote
-                .as_ref()
-                .map(|binding| bound_channel_of(&binding.board));
+            let bound = board.remote.as_ref().map(|binding| {
+                (
+                    bound_channel_of(&binding.board),
+                    binding.connector.as_str() == card_connector,
+                )
+            });
+            let channel = bound.map(|(channel, _)| channel);
+            let deck_own = matches!(bound, Some((crate::requests::BoardChannel::Deck, true)));
             let badge = match channel {
                 None => FilesBoardBadge::LocalOnly,
-                Some(crate::requests::BoardChannel::Deck) => FilesBoardBadge::OtherConnection,
+                Some(crate::requests::BoardChannel::Deck) => {
+                    if deck_own {
+                        FilesBoardBadge::ThisConnection
+                    } else {
+                        FilesBoardBadge::OtherConnection
+                    }
+                }
                 Some(crate::requests::BoardChannel::Files) => {
                     if files_on {
                         FilesBoardBadge::ThisConnection
@@ -6134,8 +6164,22 @@ pub fn files_board_roster(state: &AppState, files_on: bool) -> Vec<FilesBoardRow
             };
             let action = match channel {
                 None => FilesBoardAction::Publish,
-                Some(crate::requests::BoardChannel::Deck) => FilesBoardAction::Switch,
+                // The board's own card: the Deck→Files switch stands;
+                // a foreign card: the binding's honest state becomes
+                // the rebind row (US-10, D-11).
+                Some(crate::requests::BoardChannel::Deck) => {
+                    if deck_own {
+                        FilesBoardAction::Switch
+                    } else {
+                        FilesBoardAction::Rebind
+                    }
+                }
                 Some(crate::requests::BoardChannel::Files) => FilesBoardAction::Stop,
+            };
+            let action_enabled = if action == FilesBoardAction::Rebind {
+                !board.archived
+            } else {
+                files_on && !board.archived
             };
             FilesBoardRow {
                 board: board.id,
@@ -6144,7 +6188,7 @@ pub fn files_board_roster(state: &AppState, files_on: bool) -> Vec<FilesBoardRow
                 channel,
                 archived: board.archived,
                 action: Some(action),
-                action_enabled: files_on && !board.archived,
+                action_enabled,
                 restore_offerable: channel.is_none() && !board.archived,
             }
         })
@@ -6844,7 +6888,7 @@ mod files_board_roster_tests {
     #[test]
     fn us1_s2_badge_tone_and_sort_fold() {
         let (state, files, deck, zeta, alpha, _archived) = roster_state();
-        let rows = files_board_roster(&state, true);
+        let rows = files_board_roster(&state, true, "work");
         let title_of = |board: BoardId| {
             state
                 .boards
@@ -6856,8 +6900,8 @@ mod files_board_roster_tests {
             rows.iter()
                 .map(|row| title_of(row.board))
                 .collect::<Vec<_>>(),
-            vec!["files board", "shelved", "alpha", "zeta", "deck board"],
-            "ThisConnection, then LocalOnly by (title), then OtherConnection — archived stays flagged in its channel group"
+            vec!["deck board", "files board", "shelved", "alpha", "zeta"],
+            "ThisConnection (the deck board rides the card's own connector — US-10 AC-3's home truth), then LocalOnly by (title), then OtherConnection — archived stays flagged in its channel group"
         );
         let by_title = |name: &str| {
             rows.iter()
@@ -6870,7 +6914,7 @@ mod files_board_roster_tests {
         );
         assert_eq!(
             by_title("deck board").badge,
-            FilesBoardBadge::OtherConnection
+            FilesBoardBadge::ThisConnection
         );
         assert_eq!(by_title("alpha").badge, FilesBoardBadge::LocalOnly);
         assert_eq!(by_title("files board").channel, Some(BoardChannel::Files));
@@ -6883,7 +6927,7 @@ mod files_board_roster_tests {
         assert!(!by_title("files board").archived);
         // The lane off re-reads the same bindings: Files-bound reads
         // OtherConnection, LocalOnly unchanged.
-        let rows_off = files_board_roster(&state, false);
+        let rows_off = files_board_roster(&state, false, "work");
         let by_title_off = |name: &str| {
             rows_off
                 .iter()
@@ -6901,15 +6945,71 @@ mod files_board_roster_tests {
             FilesBoardBadge::OtherConnection,
         );
         assert_eq!(by_title_off("alpha").badge, FilesBoardBadge::LocalOnly);
-        // The deck fold is lane-independent.
+        // The deck fold is lane-independent: the home-connector truth
+        // holds with the lane off too.
         assert_eq!(
             by_title_off("deck board").badge,
-            FilesBoardBadge::OtherConnection
+            FilesBoardBadge::ThisConnection
         );
         assert_eq!(by_title("files board").board, files);
         assert_eq!(by_title("deck board").board, deck);
         assert_eq!(by_title("alpha").board, alpha);
         assert_eq!(by_title("zeta").board, zeta);
+    }
+
+    /// US-10 AC-3 — the badges re-derive after the move: a Deck-bound
+    /// board riding another connector reads `OtherConnection` with
+    /// the rebind row (`Move to this Connection`) enabled without the
+    /// files lane (archived alone withholds); after the binding
+    /// re-targets the card's connector, the same fold reads
+    /// `ThisConnection` with the switch action restored.
+    #[test]
+    fn us10_ac3_badges_re_derive_after_the_move() {
+        let (state, _files, deck, _zeta, _alpha, _archived) = roster_state();
+        // Foreign card ("other-deck"): the honest other-connection
+        // state becomes actionable.
+        let foreign = files_board_roster(&state, false, "other-deck");
+        let row = foreign
+            .iter()
+            .find(|row| row.board == deck)
+            .expect("the deck row renders");
+        assert_eq!(row.badge, FilesBoardBadge::OtherConnection);
+        assert_eq!(row.action, Some(FilesBoardAction::Rebind));
+        assert!(row.action_enabled, "the rebind needs no files lane");
+        // The move: the binding re-targets the card's connector (the
+        // engine verb's atomic re-target, remote preserved) — the fold
+        // re-derives on the next pass.
+        let binding = state
+            .boards
+            .get(&deck)
+            .and_then(|board| board.remote.as_ref())
+            .expect("deck-bound fixture");
+        let mut moved = state.clone();
+        moved.boards.get_mut(&deck).unwrap().remote = Some(taskboard_domain::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from("other-deck"),
+            board: binding.board,
+        });
+        let after = files_board_roster(&moved, false, "other-deck");
+        let row = after
+            .iter()
+            .find(|row| row.board == deck)
+            .expect("the deck row renders");
+        assert_eq!(row.badge, FilesBoardBadge::ThisConnection);
+        assert_eq!(row.action, Some(FilesBoardAction::Switch));
+        assert!(
+            !row.action_enabled,
+            "the switch keeps the D6 rule (files_on ∧ !archived)"
+        );
+        // The archived foreign row withholds the rebind affordance's
+        // activation (the honest disabled posture).
+        let mut dead = state.clone();
+        dead.boards.get_mut(&deck).unwrap().archived = true;
+        let archived_row = files_board_roster(&dead, false, "other-deck")
+            .into_iter()
+            .find(|row| row.board == deck)
+            .expect("archived decks stay visible");
+        assert_eq!(archived_row.action, Some(FilesBoardAction::Rebind));
+        assert!(!archived_row.action_enabled);
     }
 
     /// US-1/S2 — the badge label map pinned exhaustively to the UX
@@ -6959,12 +7059,12 @@ mod files_board_roster_tests {
         let (state, .., archived) = roster_state();
         // Anchor card, lane on: every action enabled but the
         // archived row's.
-        for row in files_board_roster(&state, true) {
+        for row in files_board_roster(&state, true, "work") {
             let expected = row.board != archived;
             assert_eq!(row.action_enabled, expected, "row {:?}", row.board);
         }
         let by_channel = |channel: Option<BoardChannel>| {
-            files_board_roster(&state, true)
+            files_board_roster(&state, true, "work")
                 .into_iter()
                 .find(|row| row.channel == channel)
                 .expect("a row of the channel renders")
@@ -6980,7 +7080,7 @@ mod files_board_roster_tests {
         );
         // Lane off: same labels, everything disabled (R-3's honest
         // posture — the action that would apply, unavailable).
-        for row in files_board_roster(&state, false) {
+        for row in files_board_roster(&state, false, "work") {
             assert!(!row.action_enabled, "lane off disables {:?}", row.board);
             assert!(row.action.is_some(), "the label still renders");
         }
@@ -7002,6 +7102,10 @@ mod files_board_roster_tests {
         assert_eq!(
             files_board_action_label(FilesBoardAction::Publish),
             "Sync via this Connection",
+        );
+        assert_eq!(
+            files_board_action_label(FilesBoardAction::Rebind),
+            "Move to this Connection",
         );
     }
 }
@@ -9376,7 +9480,7 @@ mod files_sync_chip_fold_tests {
         state.boards.insert(loose.id, loose);
         let archived = board_row("archived", false, true);
         state.boards.insert(archived.id, archived);
-        let rows = files_board_roster(&state, true);
+        let rows = files_board_roster(&state, true, "work");
         let offer = |title: &str| {
             rows.iter()
                 .find(|row| row.title == title)

@@ -1351,6 +1351,94 @@ async fn wait_for_adoption(
     }
 }
 
+/// The twin's config-side precondition resolution (US-10, D-11): the
+/// named connector configured (`UnknownConnector`), Deck-typed
+/// (`RebindTargetNotDeck`), the name kebab-mintable. Pure over the
+/// config — a refusal here precedes any IO (the engine verb's own
+/// refusal set gates the binding half).
+pub(crate) fn rebind_target(
+    config: &AppConfig,
+    target: &str,
+) -> Result<taskboard_domain::ConnectorId, CommandError> {
+    use crate::config::SyncBackend;
+    let entry = config
+        .sync
+        .connectors
+        .iter()
+        .flatten()
+        .find(|entry| entry.name == target)
+        .ok_or_else(|| CommandError::UnknownConnector {
+            name: target.to_owned(),
+        })?;
+    if entry.backend != SyncBackend::Nextcloud {
+        return Err(CommandError::RebindTargetNotDeck {
+            name: target.to_owned(),
+        });
+    }
+    taskboard_domain::ConnectorId::from_kebab(target).map_err(|_| CommandError::UnknownConnector {
+        name: target.to_owned(),
+    })
+}
+
+/// The `boards move --to-connection` ceremony (the files-sync-status
+/// plan US-10, D-11; the settings arm's twin): the config-side
+/// preconditions resolve typed before any IO — ① the named connector
+/// configured (`UnknownConnector`), ② Deck-typed
+/// (`RebindTargetNotDeck`) — then the engine verb's own refusal set
+/// gates the binding half (the board live, the binding Deck-typed, a
+/// different connector: `NotDeckBound` / `UnknownBoard` /
+/// `BoardDeleted`, the settings arm's ②–④ stated engine-side). The
+/// verb is atomic: the connector re-targets, the remote Deck id is
+/// preserved verbatim, no unowned window.
+pub(crate) async fn rebind_deck_to_deck(
+    app: &crate::App,
+    config: &AppConfig,
+    board: taskboard_domain::BoardId,
+    target: &str,
+) -> Result<crate::commands::output::RebindReceipt, CommandError> {
+    use crate::commands::output::RebindReceipt;
+    let target_id = rebind_target(config, target)?;
+    // The unchanged remote id is the one datum the verb cannot derive
+    // itself — read the binding, refuse typed when there is no Deck
+    // half to preserve (the engine's refusal set covers the raced
+    // shapes).
+    let remote_deck = {
+        let state = app.engine.shared_state().load();
+        let row = state
+            .boards
+            .get(&board)
+            .ok_or(CommandError::RebindRefused)?;
+        let binding = row.remote.as_ref().ok_or(CommandError::RebindRefused)?;
+        binding.board.as_deck().ok_or(CommandError::RebindRefused)?
+    };
+    app.engine
+        .execute(StateCommand::RebindBoard {
+            board,
+            connector: target_id,
+            remote: RemoteBoardId::deck(remote_deck),
+        })
+        .await
+        .map_err(|err| CommandError::Engine(Box::new(err)))?;
+    tracing::info!(
+        board = %board.as_uuid(),
+        target = %target,
+        "cli deck-to-deck rebind committed"
+    );
+    Ok(RebindReceipt {
+        board: board.as_uuid().to_string(),
+        connection: target.to_owned(),
+    })
+}
+
+/// The human-readable rebind receipt (US-10, D-11).
+#[must_use]
+pub fn render_text_rebind(receipt: &crate::commands::output::RebindReceipt) -> String {
+    format!(
+        "board {} is now synced via connection {}",
+        receipt.board, receipt.connection
+    )
+}
+
 /// The human-readable boards listing.
 #[must_use]
 pub fn render_text_list(entries: &[BoardsListEntry]) -> String {
@@ -1467,7 +1555,7 @@ pub fn render_text_destruct(receipt: &BoardDestructReceipt) -> String {
 
 #[cfg(test)]
 mod spec_tests {
-    use super::{client_for_spec, list};
+    use super::{client_for_spec, list, rebind_target};
     use crate::config::{AppConfig, ConnectorCfg, CredentialStoreKind, SyncBackend};
     use crate::secrets::{AppPassword, CredentialError, CredentialStore};
     use std::sync::Arc;
@@ -1524,6 +1612,35 @@ mod spec_tests {
 
     /// `client_for_spec` builds from the spec's identity: the fixed
     /// store observes the (`server_url`, `username`) pair it is asked for.
+    /// US-10/S2 — the CLI twin's config-side preconditions refuse
+    /// typed before any IO (the files-sync-status plan US-10, D-11):
+    /// an unconfigured target is `unknown-connector`; a configured
+    /// non-Deck target is `rebind-target-not-deck`; a Deck target
+    /// resolves to its connector id.
+    #[test]
+    fn us10_s2_cli_twin_refuses_the_config_side_preconditions_typed() {
+        let mut config = two_connector_config();
+        config
+            .sync
+            .connectors
+            .as_mut()
+            .expect("seeded")
+            .push(ConnectorCfg {
+                name: "hub".into(),
+                backend: SyncBackend::Standalone,
+                server_url: "https://h.example".into(),
+                username: "uh".into(),
+            });
+        let unknown = rebind_target(&config, "gama").expect_err("gama is not configured");
+        assert_eq!(unknown.error_kind(), "unknown-connector");
+        assert_eq!(unknown.error_detail().as_deref(), Some("gama"));
+        let not_deck = rebind_target(&config, "hub").expect_err("hub is not Deck-typed");
+        assert_eq!(not_deck.error_kind(), "rebind-target-not-deck");
+        assert_eq!(not_deck.error_detail().as_deref(), Some("hub"));
+        let deck = rebind_target(&config, "beta").expect("beta resolves");
+        assert_eq!(deck.as_str(), "beta");
+    }
+
     #[test]
     fn client_for_spec_loads_by_the_spec_identity() {
         #[derive(Debug)]

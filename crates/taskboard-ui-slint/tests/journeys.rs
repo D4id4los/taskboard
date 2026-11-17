@@ -39,6 +39,10 @@ struct Harness {
     handle: taskboard_ui_slint::UiHandle,
     engine: FakeEngine,
     guard: Guard,
+    /// The files watch's sender half held open (the watch's
+    /// `has_changed` gate errors once every sender drops — the drained
+    /// chip's seed must stay a live change).
+    files_tx: Option<tokio::sync::watch::Sender<taskboard_ui_slint::presentation::FilesSyncChip>>,
     /// The request lane's receiver half (the tests drain it directly —
     /// the `FakeEngine` pattern, minus the engine). Drained by the
     /// width journeys (round-1 T-10–T-12); the request-lane plumbing
@@ -60,6 +64,37 @@ impl Harness {
     /// The settings journeys' variant: the hand-over carries the
     /// configured connectors (the settings row list's seed).
     fn mount_with_settings(driver: SlintDriver, state: AppState, settings: UiSettings) -> Self {
+        Self::mount_full(driver, state, settings, None)
+    }
+
+    /// The files-watch journeys' variant (the files-sync-status plan
+    /// US-8, D-8): the mount carries a live `FilesSyncChip` watch —
+    /// the per-board adoption states the roster rows fold over.
+    fn mount_with_files_sync(
+        driver: SlintDriver,
+        state: AppState,
+        settings: UiSettings,
+        chip: taskboard_ui_slint::presentation::FilesSyncChip,
+    ) -> Self {
+        let (tx, rx) =
+            tokio::sync::watch::channel(taskboard_ui_slint::presentation::FilesSyncChip::default());
+        // The chip rides the channel's first send (the watch's
+        // has_changed gate — the drain consumes it); the sender stays
+        // alive on the harness (a closed channel errors the gate).
+        let _ = tx.send(chip);
+        let mut harness = Self::mount_full(driver, state, settings, Some(rx));
+        harness.files_tx = Some(tx);
+        harness
+    }
+
+    fn mount_full(
+        driver: SlintDriver,
+        state: AppState,
+        settings: UiSettings,
+        files_sync: Option<
+            tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::FilesSyncChip>,
+        >,
+    ) -> Self {
         let state = Arc::new(ArcSwap::from_pointee(state));
         let (commands, engine) = FakeEngine::channel(Arc::clone(&state));
         let (requests_tx, requests_rx) = tokio::sync::mpsc::channel(16);
@@ -71,7 +106,7 @@ impl Harness {
             requests_tx,
             settings,
             detached_health(),
-            None,
+            files_sync,
         )
         .expect("mount succeeds on the testing backend");
         let mut harness = Self {
@@ -79,6 +114,7 @@ impl Harness {
             handle,
             engine,
             guard: Guard::default(),
+            files_tx: None,
             requests_rx: std::sync::Mutex::new(requests_rx),
         };
         harness.driver.bind(&harness.handle);
@@ -10922,9 +10958,20 @@ fn us1_s3_disabled_row_action_postures_absorb_click() {
                 assert!(row.action_enabled, "anchor rows are enabled");
                 assert!(!row.busy, "no ceremony in flight");
             }
-            // The non-anchor card's half: same labels, disabled.
+            // The non-anchor card's half: the files-family rows stay
+            // disabled (R-3's lane-off posture); the Deck-bound row is
+            // the rebind row (the files-sync-status plan US-10, D-11 —
+            // a Deck-to-Deck move needs no files lane) and rides
+            // enabled.
             for row in roster.iter().skip(3) {
-                assert!(!row.action_enabled, "non-anchor rows are disabled (R-3)");
+                if row.title == "deck rider" {
+                    assert!(
+                        row.action_enabled,
+                        "the rebind row is enabled without the files lane"
+                    );
+                } else {
+                    assert!(!row.action_enabled, "non-anchor rows are disabled (R-3)");
+                }
             }
             // Clicking a disabled row dispatches nothing.
             let disabled_index = items(&harness)
@@ -11329,6 +11376,335 @@ fn us2_s3_badge_flips_local_only_and_action_rearms() {
     );
 }
 
+/// US-7/S1 — the #749 re-verification journey (the files-sync-status
+/// plan US-7, D-9): the landed Stop Sync action still stages its
+/// armed confirm (the r2 grammar), sends exactly one
+/// `StopBoardFilesSync`, and the reply's fresh snapshot re-derives
+/// the `LocalOnly` badge — the unbind reaches the roster, the issue's
+/// premise holds.
+#[test]
+fn us7_s1_stop_sync_stages_confirms_once_and_rederives_local_only() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::SettingsBadgeTone;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            // The staged confirm: arm dispatches nothing, the armed
+            // fact rides the row; Confirm sends the exact request
+            // once and clears the arm before the send.
+            window.invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            assert!(harness.drain_requests().is_empty(), "the arm sends nothing");
+            assert!(items(&harness)[row].armed, "the armed fact rides the row");
+            window.invoke_settings_files_action_confirmed(i32::try_from(row).expect("fits"));
+            let mut requests = harness.drain_requests();
+            let taskboard_ui_slint::requests::UiRequest::StopBoardFilesSync { reply, .. } =
+                requests.remove(0)
+            else {
+                panic!("the stop routed");
+            };
+            assert!(
+                !items(&harness)[row].armed,
+                "the arm cleared before the send"
+            );
+            // The unbind lands engine-side; the reply's snapshot
+            // echoes it — the next truth is the reply.
+            let mut next = AppState::default();
+            state_board(&mut next, files, "files rider", None);
+            harness.engine.replace_state(next, &harness.handle);
+            reply
+                .send(Ok(ConnectionsSnapshot {
+                    boards: vec![taskboard_ui_slint::requests::BoardInfo {
+                        id: files,
+                        name: "files rider".into(),
+                        bound_connector: None,
+                        bound_channel: None,
+                    }],
+                    connectors: harness_settings_connectors(),
+                }))
+                .expect("the reply lane is alive");
+            harness.handle.drain_setting_replies();
+
+            let all = items(&harness);
+            let flipped = all
+                .iter()
+                .find(|item| item.kind == K::FilesBoard && item.title == "files rider")
+                .expect("the row re-renders");
+            assert_eq!(
+                flipped.badge_tone,
+                SettingsBadgeTone::Neutral,
+                "the unbound truth reads LocalOnly"
+            );
+        },
+    );
+}
+
+/// US-8/S1 — the adoption phase per row (the files-sync-status plan
+/// US-8, D-8): the files watch's per-board states fold 1:1 onto the
+/// roster rows — a mid-move board renders its phase, a board absent
+/// from the map renders the settled truth.
+#[test]
+fn us8_s1_the_row_carries_the_adoption_phase_from_the_watch() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    use taskboard_ui_slint::presentation::{FilesBoardAdoption, FilesBoardState, FilesSyncChip};
+    let mut state = AppState::default();
+    let moved = uuid::Uuid::new_v4();
+    let settled = uuid::Uuid::new_v4();
+    let files_id = uuid::Uuid::now_v7();
+    state_files_board_with_identity(&mut state, moved, "moving rider", files_id);
+    state_files_board_with_identity(&mut state, settled, "settled rider", uuid::Uuid::now_v7());
+    let chip = FilesSyncChip {
+        board_states: std::collections::BTreeMap::from([(
+            files_id,
+            FilesBoardState {
+                adoption: FilesBoardAdoption::Adopting,
+                ..FilesBoardState::default()
+            },
+        )]),
+        ..FilesSyncChip::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let again = state.clone();
+            let mut harness = Harness::mount_with_files_sync(
+                SlintDriver::default(),
+                state,
+                two_card_settings(),
+                chip,
+            );
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            // The drain (the loop's timer may have consumed the send
+            // first — either path applies the same map); the re-push
+            // re-folds the roster rows over it.
+            let drained = harness.handle.drain_files_sync();
+            assert!(drained, "the seeded chip drains");
+            harness.engine.replace_state(again, &harness.handle);
+            harness.driver.advance_time(30);
+            let phase_of = |title: &str| {
+                let all = items(&harness);
+                all.iter()
+                    .find(|item| item.kind == K::FilesBoard && item.title == title)
+                    .expect("the row renders")
+                    .adoption_phase
+            };
+            assert!(
+                matches!(
+                    phase_of("moving rider"),
+                    taskboard_ui_slint::SettingsAdoptionPhase::Adopting
+                ),
+                "the map's board carries its phase"
+            );
+            assert!(
+                matches!(
+                    phase_of("settled rider"),
+                    taskboard_ui_slint::SettingsAdoptionPhase::None
+                ),
+                "a board absent from the map renders the settled truth"
+            );
+        },
+    );
+}
+
+/// US-9/S1 — the publish picker anchors at the Deck card (the
+/// files-sync-status plan US-9, D-10): opening the card's picker
+/// mounts the window-level flyout at site 1 — the observation facts
+/// name the Deck row as the active item with the field's geometry —
+/// and Escape declines the ladder and closes.
+#[test]
+fn us9_s1_the_picker_opens_anchored_at_the_deck_card_and_escapes() {
+    // The single-card posture (the remote-picker journey's proven
+    // coordinate seam): two unbound boards feed the picker's options.
+    let mut state = AppState::default();
+    let home = uuid::Uuid::new_v4();
+    let away = uuid::Uuid::new_v4();
+    state_board(&mut state, home, "home", None);
+    state_board(&mut state, away, "away", None);
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            refresh_with(&harness, "work", vec![remote_row(2, "r")]);
+            harness.driver.advance_time(0);
+
+            // Real-pointer click on the Deck card's publish picker
+            // (the element query is the address; the traversal races
+            // right after the refresh — retry across clock turns).
+            let mut target = None;
+            for _ in 0..20 {
+                harness.driver.advance_time(0);
+                if let Some(found) = harness
+                    .driver
+                    .find_all_by_id("SettingsView::deck-publish-picker")
+                    .into_iter()
+                    .next()
+                {
+                    target = Some(found);
+                    break;
+                }
+            }
+            let picker = target.expect("the Deck card's picker renders");
+            let pos = picker.absolute_position();
+            let size = picker.size();
+            let x = pos.x + size.width * 0.5;
+            let y = pos.y + size.height / 2.0;
+            harness.driver.hover_at(x, y);
+            harness.driver.advance_time(0);
+            harness.driver.click_at(x, y);
+            harness.driver.advance_time(30);
+            let facts = board_facts(&harness);
+            let deck_rows: Vec<i32> = items(&harness)
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| item.kind == taskboard_ui_slint::ConnectionItemKind::Deck)
+                .map(|(index, _)| i32::try_from(index).expect("fits"))
+                .collect();
+            assert!(!deck_rows.is_empty(), "the Deck rows render");
+            assert!(facts.get_open(), "the flyout opens");
+            assert!(
+                deck_rows.contains(&facts.get_active_item()),
+                "the anchor names a Deck card's row (site 1)"
+            );
+            // The dismissal contract: Escape declines and closes.
+            raw_key(&harness, slint::platform::Key::Escape);
+            harness.driver.advance_time(10);
+            assert!(
+                !board_facts(&harness).get_open(),
+                "Escape closes the flyout"
+            );
+        },
+    );
+}
+
+/// US-10/S1 — the rebind row (the files-sync-status plan US-10,
+/// D-11): a Deck-bound board riding card A's connector renders under
+/// card B with the actionable rebind affordance enabled without the
+/// files lane (B holds no anchor); clicking it dispatches exactly
+/// one `MoveBoardToDeck` targeting card B's connector, while the
+/// own-card row keeps the Deck→Files switch; a stale index absorbs.
+#[test]
+fn us10_s1_rebind_row_dispatches_move_board_to_deck_at_the_foreign_card() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let deck = uuid::Uuid::new_v4();
+    state_board(&mut state, deck, "deck rider", Some("a"));
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness =
+                Harness::mount_with_settings(SlintDriver::default(), state, two_card_settings());
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            let window = harness.handle.window();
+
+            let rows = roster_indexes(&harness, K::FilesBoard, "deck rider");
+            assert_eq!(rows.len(), 2, "the roster renders once per card");
+            // The foreign card's row: enabled though B's files lane
+            // is off (the rebind needs no files lane).
+            let foreign = rows[1];
+            assert!(
+                items(&harness)[foreign].action_enabled,
+                "the rebind row is enabled without the files lane"
+            );
+            window
+                .invoke_settings_files_board_action_clicked(i32::try_from(foreign).expect("fits"));
+            let requests = harness.drain_requests();
+            assert!(
+                matches!(
+                    &requests[..],
+                    [taskboard_ui_slint::requests::UiRequest::MoveBoardToDeck {
+                        board,
+                        target_connector,
+                        ..
+                    }] if board.as_uuid() == deck && target_connector == "b"
+                ),
+                "the foreign card's click routes the rebind onto its connector"
+            );
+            // The busy grammar rides the Files row (the move family's
+            // existing marker; card B's Files row, not card A's).
+            let busy_files = items(&harness)
+                .iter()
+                .filter(|item| item.kind == K::Files && item.busy)
+                .count();
+            assert_eq!(busy_files, 1, "exactly the target card's Files row is busy");
+            // The in-flight rebind absorbs further clicks (the one
+            // pending machine); the own card's switch dispatch is
+            // US-3/S1's journey, not this one's.
+            let own = rows[0];
+            window.invoke_settings_files_board_action_clicked(i32::try_from(own).expect("fits"));
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the pending absorbs the second click"
+            );
+            assert!(
+                items(&harness)[own].action_enabled,
+                "the own card's switch stays enabled under its anchor"
+            );
+        },
+    );
+}
+
+/// The files-bound fixture with a pinned files identity (US-8/S1):
+/// the adoption map keys on the board's own domain uuid.
+fn state_files_board_with_identity(
+    state: &mut AppState,
+    id: uuid::Uuid,
+    title: &str,
+    files_identity: uuid::Uuid,
+) {
+    use taskboard_domain::{
+        Board, BoardClocks, BoardId, Color, ConnectorId, RemoteBoardBinding, RemoteBoardId,
+    };
+    let id = BoardId::from_uuid(id);
+    state.boards.insert(
+        id,
+        Board {
+            id,
+            remote: Some(RemoteBoardBinding {
+                board: RemoteBoardId::files(files_identity),
+                connector: ConnectorId::from("files-sync"),
+            }),
+            title: title.to_owned(),
+            color: Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: BoardClocks::epoch(),
+                color: BoardClocks::epoch(),
+                archived: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
+            remote_seen: None,
+        },
+    );
+}
+
 /// The two-card identity rows, echoed back in the replies (the
 /// connector half re-renders the rows from the reply, r2 D32).
 fn harness_settings_connectors() -> Vec<taskboard_ui_slint::requests::ConnectorInfo> {
@@ -11347,7 +11723,9 @@ fn us3_s1_switch_action_dispatches_move_board_to_files() {
     use taskboard_ui_slint::ConnectionItemKind as K;
     let mut state = AppState::default();
     let deck = uuid::Uuid::new_v4();
-    state_board(&mut state, deck, "deck rider", Some("work"));
+    // The board rides the anchor card's own connector (the own-card
+    // switch; a foreign-card Deck row is US-10's rebind row).
+    state_board(&mut state, deck, "deck rider", Some("a"));
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
