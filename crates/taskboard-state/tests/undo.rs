@@ -77,9 +77,14 @@ struct Rig {
 
 impl Rig {
     async fn start() -> Self {
-        let repo = Arc::new(InMemoryRepository::with_state(seed_bound_board_state(
-            "kiosk",
-        )));
+        Self::start_with(seed_bound_board_state("kiosk")).await
+    }
+
+    /// A rig over a caller-supplied persisted seed (the multi-board
+    /// scoped-undo scenarios; a fresh `CountingIds` engine would collide
+    /// with fixture ids minted the same way).
+    async fn start_with(seed: PersistedState) -> Self {
+        let repo = Arc::new(InMemoryRepository::with_state(seed));
         let clock = FixedClock::new(T0);
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
@@ -949,4 +954,112 @@ async fn a_delete_stack_undo_flips_the_published_state_and_the_persisted_journal
     let app = rig.state();
     assert!(app.stacks[&stack].deleted);
     assert!(app.tasks[&task].deleted);
+}
+
+// ---- the per-board undo scope (#355) ---------------------------------------
+
+#[tokio::test]
+async fn engine_scoped_undo_refuses_when_the_head_is_out_of_scope_and_the_published_state_is_unchanged()
+ {
+    let mut rig = {
+        let mut seed = seed_bound_board_state("kiosk");
+        // A second board on a distinct id: `board()` mints from a fresh
+        // counter (id 1, the seed's own), so burn one and mint the next.
+        let ids = taskboard_domain::test_support::CountingIds::new();
+        let _ = taskboard_domain::idgen::IdGenerator::new_board_id(&ids);
+        let mut second = seed.boards.values().next().cloned().expect("seed board");
+        second.id = taskboard_domain::idgen::IdGenerator::new_board_id(&ids);
+        second.title = "second".into();
+        seed.boards.insert(second.id, second);
+        Rig::start_with(seed).await
+    };
+    let (board_a, board_b) = {
+        let mut keys = rig.state().boards.keys().copied().collect::<Vec<_>>();
+        keys.sort();
+        (
+            keys.first().copied().expect("board a"),
+            keys.last().copied().expect("board b"),
+        )
+    };
+    // Board B gets the line's head: a stack, a task.
+    let stack_b = expect_created_stack(
+        rig.run(StateCommand::CreateStack {
+            board: board_b,
+            title: "stack".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    expect_created_task(
+        rig.run(StateCommand::CreateTask {
+            title: "t".into(),
+            stack: stack_b,
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    // The scoped undo on board A asks a frontier that belongs to B.
+    let persisted_before = rig.repo.snapshot();
+    let err = rig
+        .run(StateCommand::UndoOnBoard { board: board_a })
+        .await
+        .expect_err("typed refusal");
+    assert!(matches!(
+        err,
+        ExecuteError::Rejected(taskboard_domain::CommandError::NothingToUndoForBoard { board })
+            if board == board_a
+    ));
+    // The published state and the persisted journal are unchanged: the
+    // head was checked, never skipped past.
+    assert_eq!(rig.repo.snapshot(), persisted_before);
+    let app = rig.state();
+    assert!(app.undo.can_undo, "the global line still has a head");
+}
+
+#[tokio::test]
+async fn engine_scoped_undo_flips_the_published_state_and_the_persisted_journal() {
+    let mut rig = Rig::start().await;
+    let board = rig
+        .state()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("seed board");
+    let stack = expect_created_stack(
+        rig.run(StateCommand::CreateStack {
+            board,
+            title: "stack".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    let task = expect_created_task(
+        rig.run(StateCommand::CreateTask {
+            title: "t".into(),
+            stack,
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    // The scoped undo through the engine: published projection and
+    // persisted journal agree (the mirror of the global engine test).
+    let outcome = rig
+        .run(StateCommand::UndoOnBoard { board })
+        .await
+        .expect("accepted");
+    assert!(matches!(outcome, CommandOutcome::Undone { .. }));
+    let app = rig.state();
+    assert!(app.tasks[&task].deleted, "the create undone");
+    let persisted = rig.repo.snapshot();
+    assert!(persisted.tasks[&task].deleted, "memory ≡ disk");
+    assert_eq!(
+        persisted.journal.head,
+        app.undo.recent.last().map(|label| label.id),
+        "the head sits on the oldest entry"
+    );
 }

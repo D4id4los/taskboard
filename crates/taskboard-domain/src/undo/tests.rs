@@ -1759,33 +1759,30 @@ fn the_pushed_flag_keeps_the_inverse_ops_and_drops_the_retraction() {
 
 #[test]
 fn engine_routed_commands_are_typed_rejections_in_the_catalogue() {
-    let h = Harness::new();
+    let mut h = Harness::new();
+    let board = h.board();
     // Direct dispatch through the plain catalogue is a typed rejection
-    // (the wrapper is the only legal route).
-    let err = crate::command::plan_command(
-        &h.app(),
-        &[],
-        &StateCommand::Undo,
-        &h.ids,
-        &crate::reminders::ReminderDefaults::default(),
-        Harness::day(),
-        ts(h.now),
-        None,
-    )
-    .expect_err("typed");
-    assert!(matches!(err, CommandError::EngineRouted));
-    let err = crate::command::plan_command(
-        &h.app(),
-        &[],
-        &StateCommand::Redo,
-        &h.ids,
-        &crate::reminders::ReminderDefaults::default(),
-        Harness::day(),
-        ts(h.now),
-        None,
-    )
-    .expect_err("typed");
-    assert!(matches!(err, CommandError::EngineRouted));
+    // (the wrapper is the only legal route). The scoped arms (#355)
+    // ride the same rejection arm — engine-routed like Undo/Redo.
+    for command in [
+        StateCommand::Undo,
+        StateCommand::Redo,
+        StateCommand::UndoOnBoard { board },
+        StateCommand::RedoOnBoard { board },
+    ] {
+        let err = crate::command::plan_command(
+            &h.app(),
+            &[],
+            &command,
+            &h.ids,
+            &crate::reminders::ReminderDefaults::default(),
+            Harness::day(),
+            ts(h.now),
+            None,
+        )
+        .expect_err("typed");
+        assert!(matches!(err, CommandError::EngineRouted));
+    }
 }
 
 // ---- journal_push_marks (R-U9) -------------------------------------------
@@ -2053,12 +2050,25 @@ fn every_arm_journals_entry_or_nothing() {
         StateCommand::RestoreStack { id: stack },
         StateCommand::ResetBoard { board },
         StateCommand::DeleteBoard { board },
+        // The engine-routed scoped arms (#355): like Undo/Redo, they
+        // route to the line and journal nothing — the lockstep table's
+        // two "nothing" rows; the line mechanics live in the scoped
+        // tests above. Skipped here for the same reason as Undo/Redo.
+        StateCommand::UndoOnBoard { board },
+        StateCommand::RedoOnBoard { board },
         StateCommand::RequestSync,
     ];
     for command in &commands {
-        // Undo/Redo route to the line (no journaling classification) —
-        // exercised in the line-mechanics tests; skip here.
-        if matches!(command, StateCommand::Undo | StateCommand::Redo) {
+        // Undo/Redo (and their scoped #355 twins) route to the line (no
+        // journaling classification) — exercised in the line-mechanics
+        // tests; skip here.
+        if matches!(
+            command,
+            StateCommand::Undo
+                | StateCommand::Redo
+                | StateCommand::UndoOnBoard { .. }
+                | StateCommand::RedoOnBoard { .. }
+        ) {
             continue;
         }
         let before = h.journal.entries.len();
@@ -2649,6 +2659,7 @@ fn reflection_heads_are_typed_not_undoable() {
         &h.app(),
         &h.outbox,
         &h.journal,
+        UndoScope::Global,
         &h.ids,
         &crate::reminders::ReminderDefaults::default(),
         Harness::day(),
@@ -3202,6 +3213,394 @@ fn board_ceremony_commands_never_journal_pre_images() {
                 ),
                 "a ceremony journaled non-ceremony facts for {command:?}"
             );
+        }
+    }
+}
+
+// ---- the per-board undo scope (#355, D-1..D-5) ----------------------------
+
+#[test]
+fn scoped_undo_refuses_typed_when_the_head_is_another_boards_edit() {
+    let mut h = Harness::new();
+    let board_a = h.board();
+    let board_b = h.board();
+    let stack_a = h.stack(board_a);
+    let stack_b = h.stack(board_b);
+    h.task(stack_a, "a");
+    h.task(stack_b, "b");
+    // The head is board B's edit.
+    let disk_before = h.disk.clone();
+    let journal_before = h.journal.clone();
+    let err = h
+        .exec(&StateCommand::UndoOnBoard { board: board_a })
+        .expect_err("the frontier belongs to another board");
+    assert!(matches!(
+        err,
+        CommandError::NothingToUndoForBoard { board } if board == board_a
+    ));
+    // State and journal byte-identical, head unmoved: the head is
+    // checked, never skipped past (the strict frontier rule, D-1).
+    assert_eq!(h.disk, disk_before);
+    assert_eq!(h.journal, journal_before);
+    // The global undo still reaches the head.
+    h.exec(&StateCommand::Undo).expect("global undo");
+}
+
+#[test]
+fn scoped_undo_restores_when_the_head_is_in_scope() {
+    let mut h = Harness::new();
+    let board_a = h.board();
+    let board_b = h.board();
+    let stack_b = h.stack(board_b);
+    h.task(stack_b, "b");
+    let stack_a = h.stack(board_a);
+    let task = h.task(stack_a, "a");
+    // The head is board A's edit: the scoped undo plans the same shape
+    // as the global undo — the create undone.
+    let outcome = h
+        .exec(&StateCommand::UndoOnBoard { board: board_a })
+        .expect("in scope");
+    assert!(matches!(outcome, CommandOutcome::Undone { .. }));
+    assert!(h.disk.tasks[&task].deleted);
+    // Composition with the C8 restore (D-1): a DeleteStack head in
+    // scope fires the combined stack+cascade restore through the
+    // scoped arm.
+    let (stack, tasks) = seeded_stack(&mut h, board_a, 2);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    let outcome = h
+        .exec(&StateCommand::UndoOnBoard { board: board_a })
+        .expect("combined restore");
+    assert!(matches!(outcome, CommandOutcome::Undone { .. }));
+    assert!(!h.disk.stacks[&stack].deleted);
+    for task in &tasks {
+        assert!(!h.disk.tasks[task].deleted);
+    }
+}
+
+#[test]
+fn scoped_undo_on_a_none_tagged_head_refuses() {
+    let mut h = Harness::new();
+    let board = h.board();
+    // The honest-ambiguity fixture: an inbox capture carries no board
+    // tag (D-3: `None` belongs to no board scope).
+    h.exec(&StateCommand::CaptureTask {
+        title: "inbox".into(),
+        board: None,
+    })
+    .expect("captured");
+    let disk_before = h.disk.clone();
+    let err = h
+        .exec(&StateCommand::UndoOnBoard { board })
+        .expect_err("a None tag is out of every board scope");
+    assert!(matches!(
+        err,
+        CommandError::NothingToUndoForBoard { board: b } if b == board
+    ));
+    assert_eq!(h.disk, disk_before, "the scoped refusal is inert");
+    // The global undo still reaches the None-tagged head.
+    h.exec(&StateCommand::Undo).expect("global undo reaches it");
+}
+
+#[test]
+fn scoped_undo_on_a_not_undoable_head_still_names_the_reason() {
+    let mut h = Harness::new();
+    let board = h.board();
+    h.exec(&StateCommand::RenameBoard {
+        board,
+        title: "renamed".into(),
+    })
+    .expect("renamed");
+    // In scope, so the classification check runs — the D-5 passthrough
+    // row, verbatim from the global undo.
+    let err = h
+        .exec(&StateCommand::UndoOnBoard { board })
+        .expect_err("ceremony head");
+    assert!(matches!(
+        err,
+        CommandError::TargetNotUndoable(NotUndoableReason::BoardCeremony)
+    ));
+}
+
+#[test]
+fn scoped_redo_picks_the_greatest_in_scope_child() {
+    let mut h = Harness::new();
+    let board_a = h.board();
+    let board_b = h.board();
+    let stack_a = h.stack(board_a);
+    let stack_b = h.stack(board_b);
+    h.task(stack_a, "seed");
+    // Fork off the seed entry: first an in-scope (A) child, then an
+    // out-of-scope (B) child — the B child is newer, so the global
+    // greatest is the B child.
+    h.exec(&StateCommand::Undo).expect("retreat to the seed");
+    let _child_a = match h
+        .exec(&StateCommand::CreateTask {
+            title: "child-a".into(),
+            stack: stack_a,
+            order: 1,
+        })
+        .expect("child a")
+    {
+        CommandOutcome::CreatedTask(id) => id,
+        other => panic!("expected CreatedTask, got {other:?}"),
+    };
+    h.exec(&StateCommand::Undo).expect("retreat again");
+    h.exec(&StateCommand::CreateTask {
+        title: "child-b".into(),
+        stack: stack_b,
+        order: 1,
+    })
+    .expect("child b");
+    h.exec(&StateCommand::Undo)
+        .expect("retreat to the fork point");
+    let entry_a = h
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::CreateTask { ref title, .. } if title == "child-a"))
+        .map(|entry| entry.id)
+        .expect("the A child entry");
+    let entry_b = h
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::CreateTask { ref title, .. } if title == "child-b"))
+        .map(|entry| entry.id)
+        .expect("the B child entry");
+    // Scoped: the sibling rule narrowed — the in-scope child wins even
+    // though the out-of-scope sibling is newer.
+    let outcome = h
+        .exec(&StateCommand::RedoOnBoard { board: board_a })
+        .expect("in-scope child");
+    assert_eq!(
+        outcome,
+        CommandOutcome::Redone { entry: entry_a },
+        "the greatest in-scope child"
+    );
+    // Global: the D5 rule unchanged — the greatest overall.
+    h.exec(&StateCommand::Undo)
+        .expect("retreat to the fork point");
+    let outcome = h.exec(&StateCommand::Redo).expect("global redo");
+    assert_eq!(outcome, CommandOutcome::Redone { entry: entry_b });
+}
+
+#[test]
+fn scoped_redo_refuses_when_no_child_is_in_scope() {
+    let mut h = Harness::new();
+    let board_a = h.board();
+    let board_b = h.board();
+    let stack_b = h.stack(board_b);
+    // Both the seed and the child sit on board B: the head retreats to
+    // the stack_b entry, whose children are all out of A's scope.
+    h.task(stack_b, "seed");
+    h.exec(&StateCommand::Undo).expect("retreat to the seed");
+    h.exec(&StateCommand::CreateTask {
+        title: "child-b".into(),
+        stack: stack_b,
+        order: 1,
+    })
+    .expect("child b");
+    h.exec(&StateCommand::Undo)
+        .expect("retreat to the fork point");
+    let err = h
+        .exec(&StateCommand::RedoOnBoard { board: board_a })
+        .expect_err("the only child is out of scope");
+    assert!(matches!(
+        err,
+        CommandError::NothingToRedoForBoard { board: b } if b == board_a
+    ));
+    // The global redo still picks the out-of-scope child.
+    h.exec(&StateCommand::Redo).expect("global redo");
+}
+
+#[test]
+fn scoped_undo_moves_the_head_and_journals_nothing() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    h.task(stack, "t");
+    let head = h.journal.head.expect("a head exists");
+    let head_parent = h.journal.entry(head).expect("the head entry").parent;
+    let plan = h
+        .exec_plan(&StateCommand::UndoOnBoard { board })
+        .expect("planned");
+    // The engine-routed contract, asserted structurally: the batch ends
+    // with the head move and carries no RecordJournal.
+    assert!(
+        !plan
+            .actions
+            .iter()
+            .any(|action| matches!(action, PersistenceAction::RecordJournal(_)))
+    );
+    assert_eq!(
+        plan.actions.last(),
+        Some(&PersistenceAction::MoveJournalHead(head_parent)),
+        "the head moves to the undone entry's parent"
+    );
+}
+
+#[test]
+fn cross_board_move_entry_is_tagged_with_the_source_board() {
+    let mut h = Harness::new();
+    let board_a = h.board();
+    let board_b = h.board();
+    let stack_a = h.stack(board_a);
+    let stack_b = h.stack(board_b);
+    let task = h.task(stack_a, "mover");
+    h.exec(&StateCommand::MoveTask {
+        id: task,
+        stack: stack_b,
+        order: 1,
+    })
+    .expect("moved");
+    let entry = h.journal.entries.last().expect("journaled");
+    // D-4: `touched_board` reads the pre-state, so the cross-board move
+    // is tagged with the *source* board — the board whose state the
+    // entry's inverse restores.
+    assert_eq!(entry.board, Some(board_a));
+    // The recorded consequence (R-3): the source scope can undo the
+    // move; the destination scope refuses typed.
+    h.exec(&StateCommand::UndoOnBoard { board: board_b })
+        .expect_err("the destination scope cannot undo a move into it");
+    h.exec(&StateCommand::UndoOnBoard { board: board_a })
+        .expect("the source scope undoes the move");
+    assert_eq!(h.disk.tasks[&task].stack, stack_a);
+}
+
+// ---- the per-board proptest corpus (#355) ---------------------------------
+
+/// The shared two-board edit fixture: board B's edits land first, board
+/// A's last — so the head's scope is B when `edits_a == 0 && edits_b > 0`,
+/// and A otherwise. Every edit is a distinct-title `UpdateTask` (never a
+/// no-op, so the line always grows as the counts say).
+fn two_board_edit_fixture(
+    h: &mut Harness,
+    edits_a: usize,
+    edits_b: usize,
+) -> (
+    crate::ids::BoardId,
+    crate::ids::BoardId,
+    crate::ids::TaskId,
+    crate::ids::TaskId,
+) {
+    let board_a = h.board();
+    let board_b = h.board();
+    let stack_a = h.stack(board_a);
+    let stack_b = h.stack(board_b);
+    let task_a = h.task(stack_a, "a");
+    let task_b = h.task(stack_b, "b");
+    for i in 0..edits_b {
+        h.exec(&StateCommand::UpdateTask {
+            id: task_b,
+            changes: crate::messages::TaskChanges {
+                title: Some(format!("b-edited-{i}")),
+                ..Default::default()
+            },
+        })
+        .expect("edit b");
+    }
+    for i in 0..edits_a {
+        h.exec(&StateCommand::UpdateTask {
+            id: task_a,
+            changes: crate::messages::TaskChanges {
+                title: Some(format!("a-edited-{i}")),
+                ..Default::default()
+            },
+        })
+        .expect("edit a");
+    }
+    (board_a, board_b, task_a, task_b)
+}
+
+proptest! {
+    #![proptest_config(proptest_config(16))]
+
+    /// P1 (#355's core property, mechanical via the frontier rule): a
+    /// scoped undo either refuses typed or leaves every entity of every
+    /// other board byte-identical.
+    #[test]
+    fn scoped_undo_never_touches_out_of_scope_entities(
+        edits_a in 0usize..=4,
+        edits_b in 0usize..=4,
+    ) {
+        let mut h = Harness::new();
+        let (board_a, board_b, task_a, task_b) =
+            two_board_edit_fixture(&mut h, edits_a, edits_b);
+        let task_a_before = h.disk.tasks[&task_a].clone();
+        let task_b_before = h.disk.tasks[&task_b].clone();
+        let stack_b_before = h.disk.stacks.values().find(|s| s.board == board_b).cloned().unwrap();
+        match h.exec(&StateCommand::UndoOnBoard { board: board_a }) {
+            Err(CommandError::NothingToUndoForBoard { .. }) => {
+                // The strict frontier rule: the head is B's edit, the
+                // refusal is typed, and nothing moved at all.
+                prop_assert_eq!(&h.disk.tasks[&task_a], &task_a_before);
+                prop_assert_eq!(&h.disk.tasks[&task_b], &task_b_before);
+            }
+            Ok(_) => {
+                // The undo touched A's frontier only: board B's task and
+                // stack are byte-identical.
+                prop_assert_eq!(&h.disk.tasks[&task_b], &task_b_before);
+                let stack_b_after = h.disk.stacks.values().find(|s| s.board == board_b).cloned().unwrap();
+                prop_assert_eq!(stack_b_after, stack_b_before);
+            }
+            Err(other) => prop_assert!(false, "unexpected typed refusal: {other:?}"),
+        }
+    }
+
+    /// P2 (D-6's by-construction agreement, proven): `derive_for_board`
+    /// and the scoped planners share one predicate — `can_undo` iff a
+    /// scoped `plan_undo` does not refuse `NothingToUndoForBoard`, and
+    /// `can_redo` iff a scoped `plan_redo` does not refuse
+    /// `NothingToRedoForBoard`.
+    #[test]
+    fn derive_for_board_agrees_with_the_scoped_planners(
+        edits_a in 0usize..=3,
+        edits_b in 0usize..=3,
+        retreats in 0usize..=2,
+    ) {
+        let mut h = Harness::new();
+        let (board_a, board_b, _, _) = two_board_edit_fixture(&mut h, edits_a, edits_b);
+        // Retreats along the global line (every head here is undoable
+        // until the line's NotUndoable ceremony roots); a typed refusal
+        // just ends the retreats early.
+        for _ in 0..retreats {
+            if h.exec(&StateCommand::Undo).is_err() {
+                break;
+            }
+        }
+        for board in [board_a, board_b] {
+            let view = crate::journal::UndoView::derive_for_board(&h.journal, board);
+            let undo_refused = matches!(
+                plan_undo(
+                    &h.app(),
+                    &h.outbox,
+                    &h.journal,
+                    UndoScope::Board(board),
+                    &h.ids,
+                    &crate::reminders::ReminderDefaults::default(),
+                    Harness::day(),
+                    ts(h.now),
+                    None,
+                ),
+                Err(CommandError::NothingToUndoForBoard { .. })
+            );
+            prop_assert_eq!(view.can_undo, !undo_refused);
+            let redo_refused = matches!(
+                plan_redo(
+                    &h.app(),
+                    &h.outbox,
+                    &h.journal,
+                    UndoScope::Board(board),
+                    &h.ids,
+                    &crate::reminders::ReminderDefaults::default(),
+                    Harness::day(),
+                    ts(h.now),
+                    None,
+                ),
+                Err(CommandError::NothingToRedoForBoard { .. })
+            );
+            prop_assert_eq!(view.can_redo, !redo_refused);
         }
     }
 }
