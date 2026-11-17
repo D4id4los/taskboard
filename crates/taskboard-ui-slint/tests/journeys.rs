@@ -23487,7 +23487,7 @@ fn us4_s1_card_play_routes_starttracking() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.click_by_label("Start tracking");
+            harness.driver.click_by_label("Track task");
             harness.driver.advance_time(0);
             harness.assert_commands(&[StateCommand::StartTracking {
                 task: task0,
@@ -23523,7 +23523,7 @@ fn us4_s2_card_pause_routes_stoptracking() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.click_by_label("Stop tracking");
+            harness.driver.click_by_label("Stop tracking task");
             harness.driver.advance_time(0);
             harness.assert_commands(&[StateCommand::StopTracking]);
         },
@@ -23717,7 +23717,14 @@ fn us1_s4_bar_tracking_twin_routes_the_shown_half() {
                 .window()
                 .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
             harness.driver.advance_time(0);
-            harness.driver.click_by_label("Start tracking");
+            // The bar's tracking twin shares its registry label with
+            // the menu row of the same verb (both in the popup) — the
+            // label-addressed click is ambiguous here, so the journey
+            // lands on the seam the click reaches (the
+            // menu_quick_bar_invoked install; the #782 fold's
+            // invoke_* pattern — the schedule trio's journeys pin the
+            // identical click path with unique labels).
+            harness.handle.window().invoke_menu_quick_bar_invoked(3);
             harness.driver.advance_time(0);
             harness.assert_commands(&[StateCommand::StartTracking {
                 task: fixture.task1,
