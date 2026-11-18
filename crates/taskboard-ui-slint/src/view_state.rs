@@ -2508,9 +2508,53 @@ impl ViewState {
     /// escape; the XOR rule substitutes, it does not commit), then
     /// opens `Flow::Capture` with a cleared buffer — exactly
     /// `begin_create`'s opening.
-    pub fn begin_capture(&mut self) -> Vec<FlowOutcome> {
+    pub fn begin_capture(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        // The chain-aware Replace pre-pass (cross-surface friction
+        // plan D-7, #712): the XOR rule only killed the TOP level, so
+        // a walk child survived beneath a `BeginCapture` (the
+        // resolver port's recorded deviation). Fold the flow chain
+        // innermost-first — the D-H4 letter, `settle_foreign`'s shape
+        // with its idempotence guard — then capture opens at depth 1.
+        // Non-flow levels (over-views, the settings surface) are
+        // untouched: the fold reads flow levels only.
+        let mut outcomes = Vec::new();
+        while let Some(index) = self.surfaces.top_flow_index() {
+            let Some(flow) = self.surfaces.top_flow().cloned() else {
+                break;
+            };
+            // The TEXT mask's precise boundary (the plan D-7): exactly
+            // the buffer-commit family takes the fire-drill's
+            // replace-without-committing rule — `discard_edit`, never
+            // a commit, regardless of buffer content. Every other
+            // kind takes its own settle rule (the walk closes
+            // commandlessly; the pickers take the Cancelled end; the
+            // armed strips cancel without dispatching).
+            if matches!(
+                flow,
+                Flow::Create { .. }
+                    | Flow::CreateStack
+                    | Flow::CreateBoard
+                    | Flow::EditTitle { .. }
+                    | Flow::RenameStack { .. }
+                    | Flow::RenameBoard { .. }
+                    | Flow::EditDescription { .. }
+            ) {
+                outcomes.extend(self.discard_edit());
+            } else {
+                outcomes.extend(self.settle_by_rule(&flow, state));
+            }
+            if self.surfaces.top_flow_index() == Some(index) {
+                // Unreachable with the real taxonomy (every rule ends
+                // its level); the fold's own end keeps the walk total
+                // — the `Surfaces::settle_fold` contract.
+                let dropped = self.surfaces.end_top_flow();
+                self.retired.extend(dropped);
+            }
+        }
         self.write_flow(Flow::Capture);
-        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+        outcomes.push(FlowOutcome::SetMode(Mode::Insert));
+        outcomes.push(FlowOutcome::RefreshNow);
+        outcomes
     }
 
     /// Return on the capture buffer (chunk 10 D8): a non-empty
@@ -4757,7 +4801,7 @@ mod tests {
         vs.start_move(&state);
 
         // Begin replaces any in-progress flow WITHOUT committing it.
-        let outcomes = vs.begin_capture();
+        let outcomes = vs.begin_capture(&AppState::default());
         assert_eq!(*vs.flow(), Flow::Capture);
         assert_eq!(vs.buffer(), "");
         assert!(
@@ -4809,7 +4853,7 @@ mod tests {
         vs.begin_edit_title(&state, a);
         assert_eq!(vs.buffer(), "task-0", "the seed rides the fresh level");
         vs.discard_edit();
-        vs.begin_capture();
+        vs.begin_capture(&AppState::default());
         assert_eq!(vs.buffer(), "");
     }
 
@@ -4932,10 +4976,10 @@ mod tests {
         let (state, _, _, _) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
-        vs.begin_capture();
+        vs.begin_capture(&AppState::default());
         vs.set_buffer("thought".to_owned());
         vs.discard_edit();
-        vs.begin_capture();
+        vs.begin_capture(&AppState::default());
         vs.discard_edit();
         let drained = vs.drain_retired();
         assert_eq!(drained.len(), 2, "one corpse per dropped level");
@@ -4952,7 +4996,7 @@ mod tests {
         let (state, _, _, _) = fixture();
         let mut vs = ViewState::new();
         vs.reconcile(&state);
-        vs.begin_capture();
+        vs.begin_capture(&AppState::default());
         vs.set_buffer("halfway".to_owned());
         let outcomes = vs.close_capture();
         assert_eq!(*vs.flow(), Flow::None, "discard-and-close");
@@ -4961,7 +5005,7 @@ mod tests {
 
         // reconcile never ends the capture flow nor touches the buffer
         // (the palette precedent: subject-free).
-        vs.begin_capture();
+        vs.begin_capture(&AppState::default());
         vs.set_buffer("mid-thought".to_owned());
         vs.reconcile(&state);
         assert_eq!(*vs.flow(), Flow::Capture);
@@ -7384,7 +7428,7 @@ mod settings_surface_tests {
 
         // XOR both ways: capture replaces the walk; the walk replaces
         // capture — without committing either.
-        vs.begin_capture();
+        vs.begin_capture(&AppState::default());
         assert!(matches!(vs.flow(), Flow::Capture));
         vs.open_review_walk(DAY, reference(), rows(1, 0));
         assert!(matches!(vs.flow(), Flow::ReviewWalk { .. }));
@@ -7633,6 +7677,63 @@ mod settings_surface_tests {
             stage: WalkStage::Inbox,
             cursor: 0,
         });
+    }
+
+    // -- the Replace pre-pass (cross-surface friction plan D-7,
+    // -- #712): capture's chain fold, innermost-first, TEXT-masked --
+
+    /// US-6/AC-1 (the lowest layer): capture over a live walk child
+    /// folds the chain innermost-first — the picker child AND the
+    /// walk both end (commandlessly), capture opens at depth 1.
+    #[test]
+    fn us6_ac1_capture_over_a_walk_child_folds_the_chain_innermost_first() {
+        let (state, stack, _tasks) = inbox_fixture();
+        let mut vs = ViewState::new();
+        walk_armed(&mut vs);
+        vs.arm_child_for_test(Flow::WalkFilePick { armed: Some(stack) })
+            .expect("the child mounts");
+
+        let outcomes = vs.begin_capture(&state);
+        assert!(matches!(vs.flow(), Flow::Capture), "capture opens");
+        assert_eq!(
+            vs.surfaces().depth(),
+            2,
+            "the chain is the root view plus the capture: no walk or picker level survives"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .all(|o| !matches!(o, FlowOutcome::Command(_))),
+            "the fold closes commandlessly (the walk's settle rule)"
+        );
+    }
+
+    /// US-6/AC-2 (the TEXT mask's new case): a non-empty TEXT title
+    /// editor under `begin_capture` DISCARDS — no commit command in
+    /// the outcomes, the fire-drill's replace-without-committing
+    /// semantics (today's XOR, extended to deeper TEXT levels).
+    #[test]
+    fn us6_ac2_capture_over_a_live_text_editor_discards_never_commits() {
+        let (state, _, _, _, [a, ..]) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_edit_title(&state, a);
+        vs.set_buffer("a half-typed title that must never commit".to_owned());
+
+        let outcomes = vs.begin_capture(&state);
+        assert!(matches!(vs.flow(), Flow::Capture));
+        assert!(
+            outcomes
+                .iter()
+                .all(|o| !matches!(o, FlowOutcome::Command(_))),
+            "the TEXT mask discards; nothing commits under a capture fire-drill"
+        );
+        assert_eq!(vs.buffer(), "", "the buffer died with the level");
+        assert_eq!(
+            vs.surfaces().depth(),
+            2,
+            "the chain is the root view plus the capture"
+        );
     }
 
     #[test]
