@@ -711,7 +711,11 @@ mod tests {
             mode, 0o644,
             "the rewrite must not tighten the operator's mode"
         );
-        AppConfig::extract_raw(Some(&config)).expect("the overlay still decodes");
+        // File-layer validity only (#897): `extract_raw` composes the
+        // ambient `TASKBOARD_*` env, so this leg was ambient-exposed;
+        // `extract_file_only` asserts exactly the fact under test —
+        // the written overlay decodes.
+        AppConfig::extract_file_only(Some(&config)).expect("the overlay still decodes");
     }
 
     /// The confirm grammar's truth table: y/yes in any case consent;

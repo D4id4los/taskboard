@@ -16,7 +16,7 @@ use taskboard_app::secrets::{CredentialError, CredentialStore, EnvCredentialStor
 
 mod common;
 
-use common::{FakeCredentialStore, FakePrompts, tempdir};
+use common::{FakeCredentialStore, FakePrompts, taskboard_env_lock, tempdir};
 
 const BOARDS_PATH: &str = "/index.php/apps/deck/api/v1.0/boards";
 
@@ -60,8 +60,27 @@ async fn run_connect<P: PromptReader>(
     prompts: &mut P,
     store: &Arc<dyn CredentialStore>,
 ) -> Result<ConnectReceipt, CommandError> {
+    // #897: `extract_raw` composes the ambient `TASKBOARD_*` env (the
+    // production dispatcher reads the same way), so the helper holds
+    // the env lock and clears the ambient keys for the run's lifetime
+    // — the composed input is deterministic, never machine state.
+    let _env = taskboard_env_lock();
     let raw = AppConfig::extract_raw(Some(config_path)).expect("raw config decodes");
     connect::run(config_path, raw, args, prompts, store).await
+}
+
+/// The post-write validity oracle (#897, review finding): the written
+/// file decodes and validates, read through the *file layer only*.
+/// `AppConfig::load` composes the ambient `TASKBOARD_*` env (the
+/// production dispatcher's read), so the post-write assertions were
+/// ambient-exposed; the fact under test is about the file, so the
+/// file layer alone is read — then validated, the same step `load`
+/// runs — keeping the assertion strength without the ambient.
+fn load_written(config_path: &Path) -> AppConfig {
+    let config =
+        AppConfig::extract_file_only(Some(config_path)).expect("the written config decodes");
+    config.validate().expect("the written config is valid");
+    config
 }
 
 async fn mount_auth_reject(status: u16) -> wiremock::MockServer {
@@ -404,7 +423,7 @@ async fn c17_connect_overlays_preserving_comments_and_unknown_keys() {
 
     // The result still loads and validates — and the auto install
     // stayed auto: no backend key materialized.
-    let loaded = AppConfig::load(Some(config_path.clone())).expect("overlay config is valid");
+    let loaded = load_written(&config_path);
     assert_eq!(loaded.sync.poll_interval_secs, 5);
     assert_eq!(loaded.username(), "alice");
     assert!(
@@ -457,7 +476,7 @@ async fn c17_switch_backend_writes_the_word_preserving_decor() {
         "override + inline comment survive"
     );
     assert!(written.contains("db_path = '/tmp/kiosk.db'"));
-    let loaded = AppConfig::load(Some(config_path)).expect("overlay config is valid");
+    let loaded = load_written(&config_path);
     assert!(matches!(
         loaded.sync.backend,
         Some(taskboard_app::config::SyncBackend::Nextcloud)
@@ -540,7 +559,7 @@ async fn c19_connect_creates_an_explicit_missing_config() {
     )
     .await
     .expect("connect creates the config");
-    AppConfig::load(Some(config_path)).expect("the created config loads");
+    load_written(&config_path);
 }
 
 /// C1: `--switch-backend` proceeds and rewrites the backend word — no
@@ -566,7 +585,7 @@ async fn c1_switch_backend_flag_proceeds_and_rewrites_the_word() {
     .expect("flagged switch proceeds");
     assert!(receipt.backend_switched);
     assert!(!receipt.repointed);
-    let loaded = AppConfig::load(Some(config_path)).expect("config loads");
+    let loaded = load_written(&config_path);
     assert!(matches!(
         loaded.sync.backend,
         Some(taskboard_app::config::SyncBackend::Nextcloud)
@@ -595,7 +614,7 @@ async fn c2_confirmed_backend_switch_proceeds() {
     .await
     .expect("confirmed switch proceeds");
     assert!(receipt.backend_switched);
-    let loaded = AppConfig::load(Some(config_path)).expect("config loads");
+    let loaded = load_written(&config_path);
     assert!(matches!(
         loaded.sync.backend,
         Some(taskboard_app::config::SyncBackend::Nextcloud)
@@ -928,7 +947,7 @@ async fn c11_half_configured_file_is_treated_as_unconfigured() {
     .await
     .expect("half-configured connect proceeds");
     assert!(!receipt.repointed);
-    let loaded = AppConfig::load(Some(config_path)).expect("config loads");
+    let loaded = load_written(&config_path);
     assert_eq!(loaded.username(), "alice");
     // No deletion was attempted for any other pair.
     let unrelated = store
@@ -968,7 +987,7 @@ async fn c12_standalone_plus_repoint_with_both_flags_proceeds() {
     .expect("the composed re-point proceeds");
     assert!(receipt.backend_switched);
     assert!(receipt.repointed);
-    let loaded = AppConfig::load(Some(config_path)).expect("config loads");
+    let loaded = load_written(&config_path);
     assert!(matches!(
         loaded.sync.backend,
         Some(taskboard_app::config::SyncBackend::Nextcloud)
@@ -1020,7 +1039,7 @@ async fn m7_connect_on_a_legacy_file_migrates_it_first() {
         !written.contains("[nextcloud]"),
         "the scalar table is gone (identity moved into the entry)"
     );
-    let loaded = AppConfig::load(Some(config_path.clone())).expect("round-trips");
+    let loaded = load_written(&config_path);
     let entries = loaded.sync.connectors.as_deref().expect("array");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "nextcloud");
@@ -1047,7 +1066,7 @@ async fn m7_connect_on_a_legacy_file_migrates_it_first() {
     .await
     .expect("the re-point proceeds on the array world");
     assert!(receipt.verified);
-    let loaded = AppConfig::load(Some(config_path)).expect("round-trips");
+    let loaded = load_written(&config_path);
     let entries = loaded.sync.connectors.as_deref().expect("array");
     assert_eq!(entries.len(), 1, "no duplicate entry");
     assert_eq!(entries[0].server_url, other.uri());

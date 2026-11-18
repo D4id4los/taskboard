@@ -540,7 +540,11 @@ async fn e7_tasks_label_unlabel() {
 /// store honestly refuses `delete` (`credential`).
 #[tokio::test]
 async fn e8_logout_deletes_and_strips_iff_auto() {
+    // #897: the helper's `extract_raw` reads mirror the production
+    // dispatcher's env-composing read; hold the env lock (ambient
+    // `TASKBOARD_*` cleared) so the composed input is deterministic.
     use std::io::Write as _;
+    let _env = common::taskboard_env_lock();
 
     let dir = tempdir();
     let config_path = dir.path().join("taskboard.toml");
