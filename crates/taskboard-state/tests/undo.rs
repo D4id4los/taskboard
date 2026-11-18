@@ -1130,3 +1130,69 @@ async fn engine_undo_of_restore_task_flips_the_published_state_and_the_persisted
     let app = rig.state();
     assert!(!app.tasks[&task].deleted, "redo re-restores");
 }
+
+#[tokio::test]
+async fn engine_undo_of_delete_stack_resurrects_rules_in_the_persisted_state() {
+    let mut rig = Rig::start().await;
+    let board = rig
+        .state()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("seed board");
+    let stack = expect_created_stack(
+        rig.run(StateCommand::CreateStack {
+            board,
+            title: "stack".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    let task = expect_created_task(
+        rig.run(StateCommand::CreateTask {
+            title: "t".into(),
+            stack,
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    rig.run(StateCommand::AddReminderRule {
+        task,
+        offset: taskboard_domain::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(
+            -30,
+        ))
+        .expect("valid"),
+        at: None,
+        insistence: taskboard_domain::reminders::Insistence::Normal,
+    })
+    .await
+    .expect("accepted");
+    let rule_id = *rig.state().reminders.rules.keys().next().expect("rule row");
+    let rule_before = rig.state().reminders.rules[&rule_id].clone();
+    rig.run(StateCommand::DeleteStack { id: stack })
+        .await
+        .expect("accepted");
+    assert!(
+        rig.state().reminders.rules.is_empty(),
+        "the cascade removed the rule"
+    );
+    // Undo: the composite restore resurrects the task AND, action-level,
+    // the cascaded rule — reaching the persisted state (memory ≡ disk).
+    rig.run(StateCommand::Undo).await.expect("accepted");
+    let app = rig.state();
+    assert!(!app.tasks[&task].deleted, "the task lives again");
+    assert_eq!(
+        app.reminders.rules.get(&rule_id),
+        Some(&rule_before),
+        "the rule came back verbatim"
+    );
+    let persisted = rig.repo.snapshot();
+    assert_eq!(
+        persisted.reminders.rules.get(&rule_id),
+        Some(&rule_before),
+        "the action-level resurrect reached the persisted state"
+    );
+}

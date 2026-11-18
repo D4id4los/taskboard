@@ -3069,33 +3069,6 @@ fn undo_of_delete_stack_refuses_when_the_stack_row_gone() {
     ));
 }
 
-#[test]
-fn restore_stack_currently_pins_the_reminder_rule_loss() {
-    let mut h = Harness::new();
-    let board = h.board();
-    let (stack, tasks) = seeded_stack(&mut h, board, 1);
-    h.exec(&StateCommand::AddReminderRule {
-        task: tasks[0],
-        offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
-            .expect("valid"),
-        at: None,
-        insistence: crate::reminders::Insistence::Normal,
-    })
-    .expect("rule");
-    h.exec(&StateCommand::DeleteStack { id: stack })
-        .expect("deleted");
-    assert!(
-        h.disk.reminders.rules.is_empty(),
-        "the cascade removed the rule"
-    );
-    h.exec(&StateCommand::Undo).expect("undone");
-    // Currently pins the D-7 leniency (debt, not contract): the task
-    // resurrects without its reminder rules — widening pre-image
-    // capture to rules is a backlog issue, not this chunk.
-    assert!(!h.disk.tasks[&tasks[0]].deleted);
-    assert!(h.disk.reminders.rules.is_empty());
-}
-
 // ---- the proptest corpus (#356) -------------------------------------------
 
 use crate::test_support::proptest_config;
@@ -3719,4 +3692,155 @@ fn undo_of_restore_task_refuses_when_re_tombstoned_since() {
         err,
         Err(CommandError::UndoTargetHasDependents { .. })
     ));
+}
+
+// ---- the rule-resurrect machinery (#900) -----------------------------------
+
+/// Fixture: one reminder rule on a task (the legacy due-offset shape).
+fn rule_for(h: &mut Harness, task: crate::ids::TaskId) -> crate::reminders::ReminderRule {
+    h.exec(&StateCommand::AddReminderRule {
+        task,
+        offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
+            .expect("valid"),
+        at: None,
+        insistence: crate::reminders::Insistence::Normal,
+    })
+    .expect("rule");
+    h.disk
+        .reminders
+        .rules
+        .values()
+        .next()
+        .cloned()
+        .expect("rule row")
+}
+
+/// Fixture: flips every journal entry past the push boundary (the
+/// `the_pushed_flag_keeps_the_inverse_ops_and_drops_the_retraction`
+/// precedent) so an undo's inverse enqueues survive the retraction.
+fn mark_journal_pushed(h: &mut Harness) {
+    for entry in &mut h.journal.entries {
+        entry.pushed = true;
+    }
+    h.disk.journal = h.journal.clone();
+}
+
+#[test]
+fn undo_of_delete_stack_resurrects_the_cascaded_reminder_rules() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (stack, tasks) = seeded_stack(&mut h, board, 1);
+    let rule = rule_for(&mut h, tasks[0]);
+    h.exec(&StateCommand::DeleteStack { id: stack })
+        .expect("deleted");
+    assert!(
+        h.disk.reminders.rules.is_empty(),
+        "the cascade removed the rule"
+    );
+    // Past the push boundary: the resurrect's flush triggers survive the
+    // undo (the delete's own document-lane trigger, mirrored).
+    mark_journal_pushed(&mut h);
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(!h.disk.tasks[&tasks[0]].deleted);
+    // Every rule row back verbatim (same id, same created_at, whole row).
+    assert_eq!(h.disk.reminders.rules.get(&rule.id), Some(&rule));
+    // The flush trigger enqueued per rule's task.
+    assert!(
+        h.disk
+            .outbox
+            .iter()
+            .any(|pending| matches!(pending.op, crate::outbox::LocalOp::UpdateAppData(t) if t == rule.task)),
+        "the resurrect enqueued the document-lane flush trigger"
+    );
+    // Deliveries stay pruned: a resurrect does not forge delivery proofs
+    // back into existence (D-3, correct-by-design).
+    assert!(
+        h.disk
+            .reminders
+            .deliveries
+            .iter()
+            .all(|d| d.reminder != crate::reminders::ReminderRef::Rule(rule.id)),
+        "no delivery proofs were forged back"
+    );
+}
+
+#[test]
+fn undo_of_delete_task_resurrects_its_rules_and_a_rule_readded_since_is_skipped() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    let rule_a = rule_for(&mut h, task);
+    let rule_b = {
+        h.exec(&StateCommand::RemoveReminderRule { rule: rule_a.id })
+            .expect("removed");
+        rule_for(&mut h, task)
+    };
+    let rule_b_original = rule_b.clone();
+    h.exec(&StateCommand::DeleteTask { id: task })
+        .expect("deleted");
+    assert!(h.disk.reminders.rules.is_empty());
+    // A prior resurrect (or external forge) placed a *different* row
+    // under rule_a's id: the skip-not-refuse guard leaves it standing.
+    let mut rule_a_modified = rule_a.clone();
+    rule_a_modified.insistence = crate::reminders::Insistence::Alarm;
+    h.disk
+        .reminders
+        .rules
+        .insert(rule_a.id, rule_a_modified.clone());
+    h.sync();
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(!h.disk.tasks[&task].deleted);
+    // The present same-id row was not clobbered…
+    assert_eq!(
+        h.disk.reminders.rules.get(&rule_a.id),
+        Some(&rule_a_modified)
+    );
+    // …and the absent rule came back verbatim.
+    assert_eq!(
+        h.disk.reminders.rules.get(&rule_b.id),
+        Some(&rule_b_original)
+    );
+}
+
+proptest! {
+    #![proptest_config(proptest_config(16))]
+
+    /// P2: over a generated stack with N tasks × M rules, undo of the
+    /// delete leaves exactly the rules the cascade removed — no more,
+    /// no fewer — byte-identical.
+    #[test]
+    fn rule_resurrect_restores_exactly_the_cascaded_set(n in 1usize..=3, m in 1usize..=3) {
+        let mut h = Harness::new();
+        let board = h.board();
+        let (stack, tasks) = seeded_stack(&mut h, board, n);
+        let mut rules_before = std::collections::BTreeMap::new();
+        for (i, task) in tasks.iter().enumerate() {
+            for j in 0..m {
+                let distinct: i64 = (i * 10 + j)
+                    .try_into()
+                    .expect("fixture sizes fit an i64");
+                h.exec(&StateCommand::AddReminderRule {
+                    task: *task,
+                    offset: crate::reminders::ReminderOffset::before(
+                        chrono::TimeDelta::try_minutes(-30 - distinct)
+                            .expect("representable"),
+                    )
+                    .expect("valid"),
+                    at: None,
+                    insistence: crate::reminders::Insistence::Normal,
+                })
+                .expect("rule");
+            }
+        }
+        for (id, rule) in &h.disk.reminders.rules {
+            rules_before.insert(*id, rule.clone());
+        }
+        prop_assert_eq!(rules_before.len(), n * m);
+        h.exec(&StateCommand::DeleteStack { id: stack }).expect("deleted");
+        prop_assert!(h.disk.reminders.rules.is_empty());
+        mark_journal_pushed(&mut h);
+        h.exec(&StateCommand::Undo).expect("undone");
+        prop_assert_eq!(h.disk.reminders.rules, rules_before);
+    }
 }
