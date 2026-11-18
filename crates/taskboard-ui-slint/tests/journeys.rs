@@ -24319,3 +24319,59 @@ fn us5_ac1_interleaved_dispatch_spares_the_confirm_target() {
         },
     );
 }
+
+/// US-3/S1 (cross-surface friction plan D-4, #836): leaving settings
+/// disarms the armed strip — the toggle close (the close path) and
+/// the re-entry (the mount boundary) both clear the identity; arming
+/// again works fresh (the r2 grammar stands, AC-3).
+#[test]
+fn us3_ac1_leaving_settings_disarms_the_strip() {
+    use taskboard_ui_slint::ConnectionItemKind as K;
+    let mut state = AppState::default();
+    let files = uuid::Uuid::new_v4();
+    state_files_board(&mut state, files, "files rider");
+    let settings = two_card_settings();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            harness.driver.advance_time(0);
+            let armed_count =
+                |harness: &Harness| items(harness).iter().filter(|item| item.armed).count();
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            harness
+                .handle
+                .window()
+                .invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            harness.driver.advance_time(0);
+            assert_eq!(armed_count(&harness), 1, "the strip arms (the r2 grammar)");
+
+            // The close path: the settings toggle closes the surface —
+            // the armed identity dies with it.
+            harness.press(ActionId::AppSettings);
+            harness.driver.advance_time(0);
+
+            // The mount boundary: re-entering shows no armed echo.
+            harness.press(ActionId::AppSettings);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                armed_count(&harness),
+                0,
+                "leaving settings disarms the strip; returning shows no echo"
+            );
+
+            // Arming again works fresh (the r2 grammar stands).
+            let row = roster_indexes(&harness, K::FilesBoard, "files rider")[0];
+            harness
+                .handle
+                .window()
+                .invoke_settings_files_board_action_clicked(i32::try_from(row).expect("fits"));
+            harness.driver.advance_time(0);
+            assert_eq!(armed_count(&harness), 1, "a fresh arm holds");
+        },
+    );
+}
