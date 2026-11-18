@@ -110,17 +110,17 @@ same commit as its restore (dispatch prompt 2.2 step 3).
 | 13 | Review walk overlay (`Flow::ReviewWalk`) + its children (File-to `WalkFilePick`, `WalkDatePick`, `EntryDatePicker`) | `OpenReviewWalk` / planner handoff | row-step commit, rung exits, walk close (`Record`/`Finish`/Escape ladder) | `(ReviewWalk, Task(cursor))` | the walked/next row (the D15 handoff already re-anchors; the *rung* exits restore into the walk's own field — existing `FocusAnchor::View` arms) | `us1_s3_commit_exit_restores_the_row_anchor` (walk leg) |
 | 14 | Title editor (`Flow::EditTitle`) | title arm seam (`task_title_edit` family) | commit (focus-loss settle / accepted), Escape discard | `(TitleEditor, Task(subject))` | the title cell (`title-stop`) → subject row | `us1_s1_picker_close_restores_the_invoking_field` (title leg) |
 | 15 | Description editor (`Flow::EditDescription`) | description arm seam | commit, Escape discard | `(DescriptionEditor, Task(subject))` | the description cell → subject row | covered by test 14's twin |
-| 16 | Labels overlay, roster-only board mount (`Flow::Labels { Board }`, tag-color chunk D-4, 2026-11-18) | `LabelManage` from the board surface (the menu row / Ctrl+L) | dismiss (Escape/outside), roster commit | `(LabelsOverlay, Board anchor)` | the board-bar segment (the menu's invoker — the container anchor) | the mount composes with the landed restore seams; us2_ac1's close leg exercises the exit |
 | 16 | Create task / create stack / rename flows (`Flow::Create*`, `Rename*`) | `BeginCreate*`/`StackRename`/`BoardRename` routes | commit, SetMode(Normal) discard, Escape | `(CreateFlow, View/Stack/Board)` | view scope / stack header / board bar cell | `us1_s2_vanished_origin_falls_to_the_container_anchor` (rename-of-deleted leg) |
 | 17 | Move flows (`Flow::Move`/`MoveStack`/`DragMove`) | `RequestMove` route / drag start | confirm, cancel, Escape | `(MoveFlow, Task/Stack)` | invoking row → row fallback | `us1_s1_overlay_escape_restores_the_origin` (move leg) |
 | 18 | Armed-delete confirm strip (`Flow::ConfirmDelete`) | delete verb first stroke | confirm, second stroke, Escape | `(ConfirmDelete, Stack/Board header)` | the header cell | `us1_s1_overlay_escape_restores_the_origin` (delete leg) |
 | 19 | Board color picker (`Flow::BoardColorPick`) | `BoardColorEdit` route | pick commit, Escape | `(BoardColorPick, Board header)` | board bar cell → view root | covered by test 18's family run |
 | 20 | Plan-next-day placement (`Flow::PlanPlace`) | `PlanBeginPlace` route | commit, cancel, Escape | `(PlanPlace, Task(cursor))` | planner cursor row | `us1_s1_overlay_escape_restores_the_origin` (planner leg) |
+| 21 | Labels overlay, roster-only board mount (`Flow::Labels { Board }`, tag-color chunk D-4, 2026-11-18) | `LabelManage` from the board surface (the menu row / Ctrl+L) | dismiss (Escape/outside), roster commit | `(LabelsOverlay, Board anchor)` | the board-bar segment (the menu's invoker — the container anchor) | the mount composes with the landed restore seams; us2_ac1's close leg exercises the exit |
 
 Families for the journey tests (the origin §8 names): **picker**
 (1, 2, 5, 10, 14), **menu** (7), **overlay-escape** (3, 6, 8, 9, 11,
-17, 18, 19, 20), **row-anchor-commit** (4, 13), **container-anchor
-fallback** (16 + every leg's vanished branch), **notification** (12).
+17, 18, 19, 20, 21), **row-anchor-commit** (4, 13), **container-anchor
+fallback** (16, 21 + every leg's vanished branch), **notification** (12).
 
 ## 3. Decisions (each settles an origin assumption)
 
