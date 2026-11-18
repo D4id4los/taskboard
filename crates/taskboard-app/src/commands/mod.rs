@@ -751,6 +751,9 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::TargetNotUndoable(_) => "target-not-undoable",
         D::TargetNoLongerInvertible { .. } => "target-not-invertible",
         D::UndoTargetHasDependents { .. } => "undo-target-has-dependents",
+        // The #901 restore-family divergence refusal (ids are minted
+        // once — a present same-id row is divergence, never clobbered).
+        D::TimeEntryAlreadyPresent(_) => "time-entry-already-present",
         // DR-7 chunk 1: the reflection verbs exist as engine commands
         // only; the CLI's `journal` verb family (chunk 2, #637) will map
         // its own rejections — until then these kinds surface the typed

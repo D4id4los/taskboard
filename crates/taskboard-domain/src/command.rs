@@ -248,6 +248,12 @@ pub enum CommandError {
         /// The occupied stack.
         stack: StackId,
     },
+    /// `RestoreTimeEntry` named a row that is already present with
+    /// *different* content: ids are minted once, so a same-id row can
+    /// only be an already-restored (or externally forged) divergent
+    /// fact — refuse typed, never clobber (D-4c).
+    #[error("the time entry is already present")]
+    TimeEntryAlreadyPresent(crate::ids::TimeEntryId),
 }
 
 /// Typed receipt of an accepted command.
@@ -433,6 +439,24 @@ pub enum CommandOutcome {
     /// The settings snapshot was applied and published (the
     /// `UpdateSettings` receipt).
     SettingsApplied,
+    /// The command resurrected the named tombstoned label (the #901
+    /// restore-family verb's receipt).
+    LabelRestored {
+        /// The resurrected label.
+        label: LabelId,
+    },
+    /// The command resurrected the named tombstoned habit (the #901
+    /// restore-family verb's receipt).
+    HabitRestored {
+        /// The resurrected habit.
+        habit: HabitId,
+    },
+    /// The command re-materialized the named time entry (the #901
+    /// restore-family verb's receipt).
+    EntryRestored {
+        /// The restored entry.
+        id: crate::ids::TimeEntryId,
+    },
 }
 
 /// The named board, refusing typed when the id names nothing or a
@@ -3146,6 +3170,11 @@ pub fn plan_command(
             plan_task_restore(app, outbox, *id, resurrect, ids, now)
         }
         StateCommand::RestoreStack { id } => plan_stack_restore(app, outbox, *id, ids, now),
+        StateCommand::RestoreLabel { id } => plan_label_restore(app, outbox, *id, ids, now),
+        StateCommand::RestoreTimeEntry { entry } => {
+            plan_entry_restore(app, entry.as_ref(), ids, now)
+        }
+        StateCommand::RestoreHabit { id } => plan_habit_restore(app, *id, ids, now),
         // Engine-routed commands: the journal wrapper plans these before
         // the catalogue sees them; a direct dispatch is a typed
         // rejection (the totality arm, ADR 0019).
@@ -3271,6 +3300,121 @@ fn plan_stack_restore(
     })
 }
 
+/// The `RestoreLabel` planner body (the #901 restore-family verb,
+/// D-4a): the three cases mirror [`plan_task_restore`] verbatim over
+/// the label — pending delete op retraction / pushed re-POST as a
+/// `CreateLabel` op (identity churn is the honest price, D-U2) /
+/// local resurrect. The resurrected label keeps its pre-tombstone
+/// values verbatim with a fresh tombstone clock (the R5 merge-field
+/// shape). **Recorded leniency**: the entity-death-dominance
+/// membership removals (stamped `Removed` on member tasks) stay
+/// removed — each membership's recovery surface is the ordinary
+/// `AssignLabel` verb (the OR-set re-add); the forward verb does not
+/// guess.
+fn plan_label_restore(
+    app: &AppState,
+    outbox: &[PendingOp],
+    id: LabelId,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> Result<CommandPlan, CommandError> {
+    // Existence → tombstone → outbox scan; a live target is the
+    // accepted no-op (the terminal-repeat discipline).
+    let stored = existing_label(app, id)?;
+    if !stored.deleted {
+        return Ok(no_op());
+    }
+    let mut restored = stored.clone();
+    restored.deleted = false;
+    restored.clocks.deleted = now;
+    let mut actions = Vec::new();
+    // Case 1 — pending delete op: pure retraction, no new op.
+    let pending_delete = outbox
+        .iter()
+        .find(|pending| matches!(pending.op, crate::outbox::LocalOp::DeleteLabel(l) if l == id))
+        .map(|pending| pending.op_id);
+    if let Some(op_id) = pending_delete {
+        actions.push(PersistenceAction::FailOp(op_id));
+        actions.push(PersistenceAction::UpsertLabel(restored));
+    } else if stored.remote.is_some() {
+        // Case 2 — pushed delete: Deck undelete is re-POST.
+        actions.push(PersistenceAction::UpsertLabel(restored));
+        actions.push(enqueue(crate::outbox::LocalOp::CreateLabel(id), ids, now));
+    } else {
+        // Case 3 — unbound, never pushed: local resurrect.
+        actions.push(PersistenceAction::UpsertLabel(restored));
+    }
+    Ok(CommandPlan {
+        actions,
+        outcome: CommandOutcome::LabelRestored { label: id },
+    })
+}
+
+/// The `RestoreTimeEntry` planner body (the #901 restore-family verb,
+/// D-4c): payload-carrying because the row is hard-deleted — the
+/// `RestoreTask { id, resurrect }` precedent. The planner stamps
+/// nothing and restores the payload verbatim (the journal is the only
+/// sanctioned synthesizer, D-5); a present *different* row with the
+/// same id is the typed divergence refusal (ids are minted once); a
+/// gone owner task is a typed rejection. No pushed/pending split: the
+/// delete enqueued only an `UpdateAppData` flush — the restore
+/// enqueues the same trigger (document-lane id preservation means no
+/// identity churn).
+fn plan_entry_restore(
+    app: &AppState,
+    entry: &crate::tracking::TimeEntry,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> Result<CommandPlan, CommandError> {
+    // The owner task must still exist — history outlives the tracker
+    // (entries of soft-deleted tasks stay legal), so existence only.
+    if !app.tasks.contains_key(&entry.task) {
+        return Err(CommandError::UnknownTask(entry.task));
+    }
+    if let Some(stored) = app.tracking.entries.get(&entry.id)
+        && *stored != *entry
+    {
+        return Err(CommandError::TimeEntryAlreadyPresent(entry.id));
+    }
+    Ok(CommandPlan {
+        actions: vec![
+            PersistenceAction::UpsertTimeEntry(entry.clone()),
+            enqueue(crate::outbox::LocalOp::UpdateAppData(entry.task), ids, now),
+        ],
+        outcome: CommandOutcome::EntryRestored { id: entry.id },
+    })
+}
+
+/// The `RestoreHabit` planner body (the #901 restore-family verb,
+/// D-4b): tombstone-only delete means an id-only verb with no
+/// pending/pushed split — `DeleteHabit` roams the board flush (D-H9)
+/// and enqueues no per-habit op, so the restore is `UpsertHabit` +
+/// board flush. The log is never touched (D26 — history outlives the
+/// tracker); pre-tombstone values ride back verbatim with a fresh
+/// tombstone clock.
+fn plan_habit_restore(
+    app: &AppState,
+    id: HabitId,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+) -> Result<CommandPlan, CommandError> {
+    // Existence → tombstone; a live target is the accepted no-op.
+    let stored = existing_habit(app, id)?;
+    if !stored.deleted {
+        return Ok(no_op());
+    }
+    let mut restored = stored.clone();
+    restored.deleted = false;
+    restored.clocks.deleted = now;
+    Ok(CommandPlan {
+        actions: vec![
+            PersistenceAction::UpsertHabit(restored),
+            board_flush(stored.board, ids, now),
+        ],
+        outcome: CommandOutcome::HabitRestored { habit: id },
+    })
+}
+
 /// The capture path's landing stack when none exists: mints one
 /// (`title`) appended after the board's live stacks (the
 /// `append_stack_order` arithmetic, engine-side), pushing only the
@@ -3316,7 +3460,7 @@ fn mint_capture_stack(
     id
 }
 
-fn enqueue(op: LocalOp, ids: &dyn IdGenerator, now: DateTime<Utc>) -> PersistenceAction {
+pub(crate) fn enqueue(op: LocalOp, ids: &dyn IdGenerator, now: DateTime<Utc>) -> PersistenceAction {
     PersistenceAction::EnqueueOp(PendingOp {
         op_id: ids.new_op_id(),
         op,

@@ -98,9 +98,12 @@ pub enum UndoFacts {
 /// plus the two post-design surfaces).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotUndoableReason {
-    /// Restore-class verbs whose restore verbs are still future work
-    /// (#356 reclassified `DeleteStack`; #353/#354 follow):
-    /// `DeleteLabel`, `DeleteTimeEntry`, `DeleteHabit`.
+    /// **Retired, kept for serde stability** (the C8 D-8 precedent): a
+    /// pre-#901 persisted journal that recorded this reason decodes
+    /// unchanged and keeps refusing with its recorded reason. No
+    /// command classifies here anymore — #901 moved `DeleteLabel`,
+    /// `DeleteTimeEntry`, and `DeleteHabit` to `PreImages` with
+    /// synthesized restore inverses.
     RestoreClass,
     /// Board ceremonies are their own defense (#357): the create/bind/
     /// rename/color/archive/delete/reset/unbind/reconcile family.
@@ -110,16 +113,18 @@ pub enum NotUndoableReason {
     ReminderSurface,
     /// Tracking verbs whose inverse is structurally inexpressible:
     /// `StartTracking`/`StopTracking` (no command re-opens a closed
-    /// entry — ADR 0017), `DeleteTimeEntry` (restore-class), and an
-    /// `AdjustTimeEntry` that closes an entry (the change mask cannot
-    /// clear a stamped end; D23).
+    /// entry — ADR 0017), and an `AdjustTimeEntry` that closes an entry
+    /// (the change mask cannot clear a stamped end; D23).
+    /// (`DeleteTimeEntry` journaled `PreImages` since #901 — restore
+    /// machinery.)
     TrackingSurface,
     /// Habit verbs whose inverse is lossy or unwatermarkable:
     /// `LogHabit` (a pre-log absent window would become an explicit
-    /// count-0 row — a different stored fact), `DeleteHabit`
-    /// (restore-class), an absent-window `AdjustHabitLog` (same
-    /// lossiness; D24), and an `UpdateHabit` addressing the conversion
-    /// seam (no clock slot to watermark against; D25).
+    /// count-0 row — a different stored fact), an absent-window
+    /// `AdjustHabitLog` (same lossiness; D24), and an `UpdateHabit`
+    /// addressing the conversion seam (no clock slot to watermark
+    /// against; D25). (`DeleteHabit` journaled `PreImages` since #901 —
+    /// restore machinery.)
     HabitSurface,
     /// Reflection verbs are not undoable in v1 (DR-7 D-J7), for three
     /// recorded reasons: (i) the inverse of a record is a tombstone —
@@ -453,6 +458,9 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::DeleteReflection { .. } => "Delete reflection".into(),
         StateCommand::RestoreTask { .. } => "Restore task".into(),
         StateCommand::RestoreStack { .. } => "Restore stack".into(),
+        StateCommand::RestoreLabel { .. } => "Restore label".into(),
+        StateCommand::RestoreTimeEntry { .. } => "Restore time entry".into(),
+        StateCommand::RestoreHabit { .. } => "Restore habit".into(),
         StateCommand::PauseSeries { .. } => "Pause series".into(),
         StateCommand::ConvertSeriesToHabit { .. } => "Convert series to habit".into(),
         StateCommand::ConvertHabitToSeries { .. } => "Convert habit to series".into(),
