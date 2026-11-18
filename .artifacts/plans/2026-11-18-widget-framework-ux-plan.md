@@ -173,7 +173,7 @@ menus/flyouts 200/360 px, ×base-scale). -->
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/widgets/modal-dialog.slint (new) | ModalDialog + host | open/close/accept/dismiss | modal host mount point | — | — | — | US-1/S1-S4 | widget_framework_journeys.rs::us1_s1 |
+| W-1 | ui/widgets/modal-dialog-host.slint (new; the host intents accepted/dismissed/button-invoked/closed resolve per D-W1-1 — the W1 proof mount wires capture-dismiss-requested) | ModalDialog + host | capture-dismiss-requested | modal host mount point | — | — | — | US-1/S1-S4 | widget_framework_journeys.rs::us1_s1 |
 | W-2 | ui/widgets/anchored-overlay.slint (new) | AnchoredOverlay helper | — | anchor facts struct | — | — | — | US-2/S1-S3 | widget_framework_journeys.rs::us2_s1 |
 | W-3 | task-view.slint | description editor mount | — | — | — | — | — | US-3/S1 | details_polish_journeys.rs::us3_s1 |
 | W-4 | task-view.slint | Effort Estimate row | on_effort_commit | effort seam | task.effort.set | StateCommand::UpdateTask | — | US-3/S2 | details_polish_journeys.rs::us3_s2 |
