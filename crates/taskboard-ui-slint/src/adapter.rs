@@ -1482,6 +1482,36 @@ impl Adapter {
         // so an interleaved dispatch can no longer eat a confirm's
         // target. The declaration table is router-owned
         // (`route_consumes`); the totalness test pins the vocabulary.
+        // The habit menu's verbs (H2 D4): a menu row routes the bare
+        // id — the subject resolves HERE from the opener's focus fact
+        // when no seam pre-minted the one-shot (the repair seam's
+        // exact arithmetic; a subjectless dispatch stays NoTarget).
+        if let Some(habit) = self.focused_habit {
+            match id {
+                ActionId::HabitLog if self.habit_target.is_none() => {
+                    self.habit_target = Some(habit);
+                }
+                ActionId::HabitUndoLog if self.habit_undo.is_none() => {
+                    self.habit_undo = habit_undo_target(self, habit);
+                }
+                ActionId::HabitRepair if self.habit_repair.is_none() => {
+                    let state = self.state.load_full();
+                    let target = state.habits.habits.get(&habit).and_then(|row| {
+                        crate::presentation::habit_repair_target(
+                            row,
+                            &state.habits.log,
+                            self.day_ctx().now,
+                            self.calendar(),
+                        )
+                    });
+                    drop(state);
+                    if let Some((target_window, count)) = target {
+                        self.habit_repair = Some((habit, target_window, count));
+                    }
+                }
+                _ => {}
+            }
+        }
         let wants = crate::router::route_consumes(id);
         let mut ctx = self.shell.dispatch_ctx();
         if wants.wants(crate::router::OneShotSet::CREATE_TARGET) {
