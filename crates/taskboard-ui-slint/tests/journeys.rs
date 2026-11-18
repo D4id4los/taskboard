@@ -6144,6 +6144,77 @@ fn the_kiosk_delete_stage_is_visible_gated_not_absent() {
     );
 }
 
+/// The operator's Dvorak-International role-theft report (issue
+/// #855, 2026-11-18; the keymap-parity plan US-2 AC-2 made
+/// directional): a bare Alt+, — Alt held, Shift NOT held — dispatches
+/// nothing (the pre-fix symmetric partner map let it steal the
+/// begin/end moves), while the genuinely-shifted press (the layout's
+/// base-glyph path: the `,` glyph with Alt+Shift held) fires the
+/// first-item jump, and its `.` mirror fires the last-item jump.
+/// Typed outcomes on the headless driver over the emacs preset (the
+/// preset whose rows bind `Alt+<` / `Alt+>` — the standard preset
+/// binds the Ctrl+Home/Ctrl+End pair).
+#[test]
+fn the_punctuation_partner_matches_only_the_held_shift() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let settings = taskboard_ui_slint::UiSettings {
+                keymap: taskboard_ui_slint::keymap::build(&taskboard_ui_slint::keymap::RawKeymap {
+                    preset: taskboard_ui_slint::keymap::Preset::Emacs,
+                    overrides: std::collections::BTreeMap::default(),
+                })
+                .keymap,
+                ..taskboard_ui_slint::UiSettings::default()
+            };
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            assert_eq!(
+                harness.emphasized_card(),
+                None,
+                "the board mounts unemphasized"
+            );
+            // The theft: a bare Alt+, (no Shift) must do nothing at all.
+            let bare =
+                taskboard_ui_slint::keymap::Stroke::from_event(',', false, true, false, false)
+                    .expect("the bare event converts");
+            harness.stroke(bare);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.emphasized_card(),
+                None,
+                "a bare Alt+, dispatches nothing"
+            );
+            harness.assert_commands(&[]);
+            // The operator's shifted press: the `,` glyph under
+            // Alt+Shift — the begin move.
+            let shifted =
+                taskboard_ui_slint::keymap::Stroke::from_event(',', false, true, true, false)
+                    .expect("the shifted event converts");
+            harness.stroke(shifted);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 0)),
+                "Alt+Shift+, lands on the reading order's first card (the M-< route)"
+            );
+            // The `.` mirror under Alt+Shift — the end move.
+            let shifted_end =
+                taskboard_ui_slint::keymap::Stroke::from_event('.', false, true, true, false)
+                    .expect("the shifted event converts");
+            harness.stroke(shifted_end);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((1, 0)),
+                "Alt+Shift+. lands on the reading order's last card (the M-> route)"
+            );
+        },
+    );
+}
+
 /// The dispatch (g) contract: the first/last jumps land on the far
 /// ends of the reading order and are idempotent at the target.
 #[test]
