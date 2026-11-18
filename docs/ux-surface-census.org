@@ -9,7 +9,18 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
-- *Status*: =the framework is mandatory (phase 6 complete, activated
+- *Status*: =round 8 complete (2026-11-18)= — all eight dispatch
+  chunks merged (keymap parity #862; focus restoration #872; task
+  detail editor #922; board interaction #918; task card controls
+  #933; files sync status #925; tag colour #939; cross-surface
+  friction #940), plus the operator-reported M-</M-> shift fix
+  (#936) and the files ops-dir incident fix (#942, #941) — the full
+  issue-closure ledger per chunk is in the round's dispatch plan
+  §10 (`.artifacts/plans/2026-11-16-gui-review-round8-dispatch-plan.md`);
+  every chunk's census slices carry the round-8 evidence rows and
+  the dated supersessions (C-1, C-3, R-5 overturn). The next GUI
+  review round starts from a fresh operator pass. Previously:
+  =the framework is mandatory (phase 6 complete, activated
   2026-11-16)= — every new user-visible capability requires an
   accepted UX journey plan before dispatch (=AGENTS.md= §7;
   =docs/ux_planning.org= §3). Previously: =phase 5 complete
