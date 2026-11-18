@@ -186,10 +186,10 @@ fn parse_relative(text: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
 ///
 /// Deliberate leniency boundary (D-4 of the cli-verb-grammar-hygiene
 /// plan): as [`parse`]'s documented leniency — non-padded day/month
-/// fields parse and canonicalize. The bare-date re-check below is
-/// padded-only via `NaiveDate::FromStr`, so a non-padded date-only
-/// entry commits as the parse instant (midnight of the canonical
-/// date) rather than the day-window end — refused by neither path.
+/// fields parse and canonicalize. `NaiveDate::FromStr` (the bare-date
+/// re-check below) carries the same non-padded leniency, so a
+/// non-padded date-only entry commits the day-window end of its
+/// canonical date — the full date-only stamp semantics, canonicalized.
 ///
 /// # Errors
 ///
@@ -775,13 +775,20 @@ mod tests {
         }
         // The partial prefix stays junk.
         assert!(parse("2030-01-", now(), &chrono::Utc).is_err());
-        // Through `parse_stamp`: the bare re-check is padded-only, so
-        // the non-padded date-only entry commits as the parse instant
-        // (the canonical date's midnight) — date-only, no time.
+        // Through `parse_stamp`: `NaiveDate::FromStr` carries the same
+        // non-padded leniency (verified, not assumed — the initial
+        // padded-only expectation failed against the pinned chrono),
+        // so the non-padded date-only entry commits the day-window
+        // end of its canonical date — full date-only stamp semantics.
         let day = calendar(0);
+        let date = NaiveDate::from_ymd_opt(2030, 1, 3).unwrap();
         assert_eq!(
             parse_stamp("2030-1-3", now(), &day).expect("non-padded bare date"),
-            midnight(3)
+            Some(taskboard_domain::days::day_window_end(
+                date,
+                day.day_start_time,
+                day.offset
+            ))
         );
     }
 
