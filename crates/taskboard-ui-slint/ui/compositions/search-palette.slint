@@ -88,5 +88,16 @@ export component SearchPalette inherits Rectangle {
             text: "+" + root.overflow + " more";
             visible: root.overflow > 0;
         }
+        // The empty state's cross-reference (cross-surface friction
+        // plan D-5, #772): the zero-hit/empty-query palette names its
+        // CLI twin — one ranking engine, two fronts. Judged at the
+        // walkthrough; never asserted by tests.
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: "The same ranking drives the CLI: taskboard find (or: search)";
+            visible: root.rows.length == 0;
+        }
     }
 }
