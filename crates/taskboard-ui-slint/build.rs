@@ -46,6 +46,7 @@ fn main() {
         "window_max_probe",
         "widget_framework_probe",
         "action_menu_bar_probe",
+        "overlay_migration_probe",
     ];
     for name in probes {
         compile_probe(&manifest.join(format!("tests/{name}.slint")), &out);

@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The overlay-migration probe (round-9 chunk 5): the real `TaskView`
+// mounted with a due/scheduled subject plus the migrated window-level
+// overlay mounts (the due editor and the date picker on the
+// `AnchoredOverlayHost` base — the app window's M1/M2 grammar, the
+// chunk-3 widget_framework_probe pattern). The om catalogue's
+// geometry/journey assertions read the typed root seams from Rust
+// (`overlay_migration_probe_tests.rs`); every intent lands in a
+// counter. No text assertions, no clocks.
+
+import { Theme } from "../ui/theme.slint";
+import { TaskView, TaskDetailModel } from "../ui/views/task-view.slint";
+import { DueEditor } from "../ui/compositions/due-editor.slint";
+import { DatePicker, DueDayModel } from "../ui/compositions/date-picker.slint";
+import { DatePickerFacts } from "../ui/menu-facts.slint";
+import { AnchoredOverlayHost } from "../ui/widgets/anchored-overlay.slint";
+
+export { DueDayModel, DatePickerFacts }
+
+export component OverlayMigrationProbe inherits Window {
+    width: Theme.window-default-width;
+    height: Theme.window-default-height;
+    background: Theme.background;
+
+    // ---- Fixture controls (set from Rust) ---------------------------
+    in property <TaskDetailModel> task;
+    // The usable floor (the fake status bar's top edge), injected
+    // into the hosts exactly as the app window injects `status.y`.
+    in property <length> viewport-floor: Theme.window-default-height;
+
+    // ---- Intent counters (read from Rust) ---------------------------
+    in-out property <int> date-accepted-count: 0;
+    in-out property <int> date-editor-settle-count: 0;
+    in-out property <int> picker-dismissed-count: 0;
+    in-out property <int> date-edited-count: 0;
+
+    // ---- Observation mirrors ----------------------------------------
+    out property <length> stack-x: tv.stack-rect-x;
+    out property <length> stack-y: tv.stack-rect-y;
+    out property <length> stack-width: tv.stack-rect-width;
+    out property <length> stack-height: tv.stack-rect-height;
+    out property <length> state-x: tv.state-rect-x;
+    out property <length> state-y: tv.state-rect-y;
+    out property <length> state-width: tv.state-rect-width;
+    out property <length> state-height: tv.state-rect-height;
+    out property <length> effort-y: tv.effort-rect-y;
+    out property <length> effort-height: tv.effort-rect-height;
+    out property <length> description-y: tv.description-rect-y;
+    out property <length> description-height: tv.description-rect-height;
+    out property <length> editor-viewport-height: tv.description-editor-viewport-height;
+    // The date-picker facts' mirrored half (the anchor's live copy).
+    out property <length> facts-anchor-x: DatePickerFacts.anchor-x;
+    out property <length> facts-anchor-y: DatePickerFacts.anchor-y;
+    out property <length> facts-anchor-width: DatePickerFacts.anchor-width;
+    out property <length> facts-anchor-height: DatePickerFacts.anchor-height;
+    // The placed picker panel's realized rect (the host's seams).
+    out property <length> picker-panel-x: picker-host.panel-x;
+    out property <length> picker-panel-y: picker-host.panel-y;
+    out property <length> picker-panel-width: picker-host.panel-width;
+    out property <length> picker-panel-height: picker-host.panel-height;
+    out property <bool> picker-flipped: picker-host.flipped;
+
+    tv := TaskView {
+        width: 100%;
+        height: 100%;
+        task: root.task;
+        date-edited(t) => { root.date-edited-count += 1; }
+        date-accepted(t) => { root.date-accepted-count += 1; }
+        date-editor-focus-lost() => { root.date-editor-settle-count += 1; }
+        date-picker-toggled() => { }
+    }
+
+    // M1 — the due/scheduled editor as a true overlay (the swap's
+    // replacement; the app window's mount grammar verbatim).
+    // Probe-mount shape: the hosts stay mounted unconditionally with
+    // the `open` bit as the gate — the probe reads the realized
+    // geometry through two-way mirrors even while closed (the
+    // widget_framework_probe pattern).
+    editor-host := AnchoredOverlayHost {
+        open: root.task.due-open || root.task.scheduled-open;
+        anchor-x: DatePickerFacts.anchor-x;
+        anchor-y: DatePickerFacts.anchor-y;
+        anchor-width: DatePickerFacts.anchor-width;
+        anchor-height: DatePickerFacts.anchor-height;
+        viewport-width: root.width;
+        viewport-floor: root.viewport-floor;
+        panel-preferred-width: 420px * Theme.base-scale;
+        walk-stops: 1;
+        // The D-3 edit-kind law: outside click resolves to save —
+        // the same settle seam the field's focus loss rides.
+        dismissed => { root.date-editor-settle-count += 1; }
+        DueEditor {
+            field-label: root.task.due-open ? "Due date entry" : "Start date entry";
+            field-help: "The task's deadline. Type a date, a relative offset like +2d, or use the calendar button.";
+            initial-text: root.task.due-open ? root.task.due-text : root.task.scheduled-text;
+            echo: root.task.due-open ? root.task.due-echo : root.task.scheduled-echo;
+            validity: root.task.date-validity;
+            syntax-hint: root.task.date-syntax-hint;
+            clear-affordance: true;
+            edited(text) => { root.date-edited-count += 1; }
+            accepted(text) => { root.date-accepted-count += 1; }
+            focus-lost() => { root.date-editor-settle-count += 1; }
+            picker-toggled() => { }
+        }
+    }
+
+    // M2 — the date picker on the host (the hand clamp/flip's
+    // replacement; the dismissal keeps the picker-only drop).
+    picker-host := AnchoredOverlayHost {
+        open: root.task.date-picker-open;
+        anchor-x: DatePickerFacts.anchor-x;
+        anchor-y: DatePickerFacts.anchor-y;
+        anchor-width: DatePickerFacts.anchor-width;
+        anchor-height: DatePickerFacts.anchor-height;
+        viewport-width: root.width;
+        viewport-floor: root.viewport-floor;
+        panel-preferred-width: 280px * Theme.base-scale;
+        walk-stops: 1;
+        dismissed => { root.picker-dismissed-count += 1; }
+        DatePicker {
+            caption: root.task.date-caption;
+            grid: root.task.date-grid;
+            focus-on-mount: root.task.date-grid-focus;
+            picker-key(k) => { }
+            day-clicked(c) => { }
+        }
+    }
+}
