@@ -327,3 +327,99 @@ async fn h3_unknown_habit_rejects_typed_and_persists_nothing() {
     assert_eq!(h.repo.snapshot(), before, "nothing persisted");
     h.shutdown().await;
 }
+
+/// US-6/S1 (J1, chunk 4): the `UpdateHabit` seam round-trips both
+/// additive fields through the live engine — the description and the
+/// anchor day store, publish, and persist; the canonical window stays
+/// ISO-Monday (a weekly habit's period start is untouched by the day),
+/// and a kind-mismatched variant is accepted (the domain's documented
+/// inertness — no planner policing).
+#[tokio::test]
+async fn us6_s1_update_habit_stores_the_day_inside_the_canonical_window() {
+    let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+    let clock = FixedClock::new(T0);
+    let h = spawn_over(repo.clone(), clock.clone()).await;
+    let board = h.board_id();
+    let CommandOutcome::HabitCreated(habit) = h
+        .handle
+        .execute(StateCommand::CreateHabit {
+            board,
+            title: "run".into(),
+            target: taskboard_domain::HabitTarget::PerWeek(
+                taskboard_domain::NonZeroCount::new(2).unwrap(),
+            ),
+        })
+        .await
+        .expect("create")
+    else {
+        panic!("create names the habit");
+    };
+    let wednesday = taskboard_domain::habit::AnchorDay::Weekday(chrono::Weekday::Wed);
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                description: Some("weekly long run".into()),
+                anchor_day: Some(Some(wednesday)),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::Applied => {}
+        other => panic!("the edit applies, got {other:?}"),
+    }
+    let stored = h.published().habits[&habit].clone();
+    assert_eq!(stored.description, "weekly long run");
+    assert_eq!(stored.anchor_day, Some(wednesday));
+
+    // The window stays canonical: the weekly period start of any date
+    // is its Monday, before and after the day was stored.
+    let mid_week = chrono::NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(); // a Wednesday
+    assert_eq!(
+        taskboard_domain::habit::period_start(taskboard_domain::PeriodKind::Week, mid_week),
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap()
+    );
+    // The nudge day IS that Wednesday inside the Monday window (the
+    // constructive law the reminder engine consumes — chunk 10 rides).
+    assert_eq!(
+        taskboard_domain::habit::nudge_day(
+            &stored,
+            WindowStart::of_period(taskboard_domain::PeriodKind::Week, mid_week),
+        ),
+        mid_week
+    );
+
+    // A kind-mismatched variant (MonthDay on a weekly habit) is
+    // accepted — inert at read time, never a planner refusal.
+    let month_day = taskboard_domain::habit::AnchorDay::MonthDay(
+        taskboard_domain::habit::MonthDay::new(17).expect("17"),
+    );
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                anchor_day: Some(Some(month_day)),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::Applied => {}
+        other => panic!("the inert edit applies, got {other:?}"),
+    }
+    assert_eq!(h.published().habits[&habit].anchor_day, Some(month_day));
+
+    // Persisted intent: a fresh engine over the same repository sees
+    // both fields.
+    let before = h.published();
+    h.shutdown().await;
+    let clock = FixedClock::new(T0);
+    let h2 = spawn_over(repo, clock).await;
+    assert_eq!(h2.published(), before, "memory ≡ disk across restarts");
+    h2.shutdown().await;
+}

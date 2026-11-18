@@ -354,6 +354,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::UnknownPdfLayout => "unknown-pdf-layout",
             #[cfg(feature = "pdf-export")]
             CommandError::ExportPdfRender => "pdf-render",
+            CommandError::HabitDayKindMismatch => "habit-day-kind-mismatch",
             CommandError::UnknownHabit { .. } => "unknown-habit",
             CommandError::AmbiguousHabit { .. } => "ambiguous-habit",
             CommandError::NoStacks => "no-stacks",

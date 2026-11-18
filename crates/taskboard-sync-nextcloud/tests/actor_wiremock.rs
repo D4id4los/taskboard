@@ -3461,11 +3461,13 @@ mod flush_seed {
             id: taskboard_domain::ids::HabitId::from(uuid(60)),
             board: taskboard_domain::BoardId::from(uuid(1)),
             title: "water".to_owned(),
+            description: String::new(),
             target: taskboard_domain::HabitTarget::PerDay(
                 taskboard_domain::NonZeroCount::new(3).unwrap(),
             ),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: taskboard_domain::HabitClocks::all(ts(T + 10)),
             continued_from: None,
             deleted: false,

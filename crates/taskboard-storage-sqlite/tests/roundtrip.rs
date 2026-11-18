@@ -1724,16 +1724,22 @@ async fn habit_rows_survive_a_close_reopen_including_the_tombstone() {
         id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(60)),
         board: b.id,
         title: "water".into(),
+        description: "every week notes".into(),
         target: taskboard_domain::HabitTarget::PerWeek(
             taskboard_domain::NonZeroCount::new(4).unwrap(),
         ),
         order: 4,
         anchor_time: Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
+        anchor_day: Some(taskboard_domain::habit::AnchorDay::Weekday(
+            chrono::Weekday::Wed,
+        )),
         clocks: taskboard_domain::HabitClocks {
             title: ts(100),
+            description: ts(115),
             target: ts(110),
             order: ts(120),
             anchor_time: ts(130),
+            anchor_day: ts(125),
             deleted: ts(140),
         },
         continued_from: Some(taskboard_domain::ids::SeriesId::from(
@@ -2440,11 +2446,13 @@ async fn tracker_receipts_rehydrate_and_still_guard_the_toast() {
         id: habit_id,
         board: b.id,
         title: "stretch".into(),
+        description: String::new(),
         target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
         order: 0,
         // Anchor 09:00 with a midnight day start: the 1970 epoch-scale
         // ts() stamps sit inside the same window as their own day.
         anchor_time: Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
+        anchor_day: None,
         clocks: HabitClocks::all(ts(1_000)),
         continued_from: None,
         deleted: false,
@@ -2795,11 +2803,13 @@ mod sidecar_author_slot {
             id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(id)),
             board: board.id,
             title: title.to_owned(),
+            description: String::new(),
             target: taskboard_domain::habit::HabitTarget::PerDay(
                 taskboard_domain::habit::NonZeroCount::new(3).unwrap(),
             ),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             deleted: false,
@@ -3238,4 +3248,92 @@ mod sidecar_author_slot {
             }
         }
     }
+}
+
+// The 0027 additive upgrade pin (round 9 chunk 4): raw pre-0027-shape
+// `habits` rows (no description / anchor_day / ck_description /
+// ck_anchor_day columns written) decode with the additive defaults —
+// description empty, anchor day unset, the new clocks at the epoch —
+// and a post-field habit round-trips both fields byte-equal.
+#[tokio::test]
+async fn pre_0027_habit_rows_decode_with_additive_defaults() {
+    let mut db = common::FileDb::new().await;
+    let b = board(71);
+    db.repo()
+        .apply(vec![PersistenceAction::UpsertBoard(b.clone())])
+        .await
+        .expect("board");
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+        .await
+        .expect("raw connection");
+    // Raw pre-0027-shape INSERT: only the columns 0026 knew.
+    sqlx::query(
+        r#"INSERT INTO habits (habit_id, board_id, title, target, sort_order, anchor_time,
+                     ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted)
+           VALUES ('00000000-0000-0000-0000-00000000003c', '00000000-0000-0000-0000-000000000047',
+                   'pre-field', '{"PerWeek": 2}', 1, NULL,
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00',
+                   '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00',
+                   '2020-01-01T00:00:00+00:00', 0)"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("raw insert");
+    pool.close().await;
+
+    let loaded = db.repo().load().await.expect("load");
+    let upgraded = loaded
+        .habits
+        .habits
+        .get(&taskboard_domain::ids::HabitId::from(
+            uuid::Uuid::from_u128(0x3c),
+        ))
+        .expect("the pre-field habit loads");
+    assert_eq!(upgraded.description, "", "the description backfills empty");
+    assert_eq!(upgraded.anchor_day, None, "the anchor day backfills unset");
+    assert_eq!(
+        upgraded.clocks.description,
+        taskboard_domain::habit::HabitClocks::all(
+            chrono::TimeZone::timestamp_opt(&chrono::Utc, 0, 0).unwrap()
+        )
+        .description,
+        "the new clock backfills the epoch (a mid-upgrade reader never changes fold rank)"
+    );
+    assert_eq!(
+        upgraded.clocks.anchor_day,
+        taskboard_domain::habit::HabitClocks::all(
+            chrono::TimeZone::timestamp_opt(&chrono::Utc, 0, 0).unwrap()
+        )
+        .anchor_day,
+    );
+    // The upgraded store accepts a post-field habit and round-trips
+    // both new fields byte-equal across a close/reopen.
+    db.reopen().await;
+    let post = taskboard_domain::Habit {
+        id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(0x3d)),
+        board: b.id,
+        title: "post-field".into(),
+        description: "long runs".into(),
+        target: taskboard_domain::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(3).unwrap(),
+        ),
+        order: 1,
+        anchor_time: None,
+        anchor_day: Some(taskboard_domain::habit::AnchorDay::MonthDay(
+            taskboard_domain::habit::MonthDay::new(17).expect("17"),
+        )),
+        clocks: taskboard_domain::HabitClocks::all(
+            chrono::TimeZone::timestamp_opt(&chrono::Utc, 1_000, 0).unwrap(),
+        ),
+        continued_from: None,
+        deleted: false,
+        by: None,
+    };
+    db.repo()
+        .apply(vec![PersistenceAction::UpsertHabit(post.clone())])
+        .await
+        .expect("seed");
+    db.reopen().await;
+    let loaded = db.repo().load().await.expect("reload");
+    assert_eq!(loaded.habits.habits.get(&post.id), Some(&post));
 }

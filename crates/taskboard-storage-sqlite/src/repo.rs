@@ -725,88 +725,90 @@ fn decode_reminder_rule(
     ))
 }
 
-/// Decodes one `habits` row into its [`Habit`]. `target` decodes
-/// through the mint's strict serde (a stored 0 cannot exist — corruption
-/// if it does); `anchor_time` is the "HH:MM:SS" TEXT form, `NULL` = no
-/// chip; every clock is RFC 3339 TEXT.
-type HabitRow = (
-    String,         // habit_id
-    String,         // board_id
-    String,         // title
-    String,         // target (serde_json)
-    i64,            // sort_order
-    Option<String>, // anchor_time
-    String,         // ck_title
-    String,         // ck_target
-    String,         // ck_order
-    String,         // ck_anchor_time
-    String,         // ck_deleted
-    bool,           // deleted
-    Option<String>, // continued_from
-    Option<String>, // au_by
-);
+/// Raw `habits` row (`query_as!` target; the runtime-checked tuple
+/// precedent hit sqlx's 16-element `FromRow` limit once the 0027 field
+/// family grew the row past it). `target` decodes later through the
+/// mint's strict serde; `anchor_day` is the `AnchorDay` serde JSON
+/// form, `NULL` = unset; every clock is RFC 3339 TEXT.
+struct HabitRow {
+    habit_id: String,
+    board_id: String,
+    title: String,
+    description: String,
+    target: String,
+    sort_order: i64,
+    anchor_time: Option<String>,
+    anchor_day: Option<String>,
+    ck_title: String,
+    ck_target: String,
+    ck_order: String,
+    ck_anchor_time: String,
+    ck_description: String,
+    ck_anchor_day: String,
+    ck_deleted: String,
+    deleted: bool,
+    continued_from: Option<String>,
+    au_by: Option<String>,
+}
 
 fn decode_habit(
     row: &HabitRow,
 ) -> Result<(taskboard_domain::ids::HabitId, taskboard_domain::Habit), RepositoryError> {
-    let (
-        habit_id,
-        board_id,
-        title,
-        target,
-        sort_order,
-        anchor_time,
-        ck_title,
-        ck_target,
-        ck_order,
-        ck_anchor_time,
-        ck_deleted,
-        deleted,
-        continued_from,
-        au_by,
-    ) = row;
     let id = taskboard_domain::ids::HabitId::from(
-        codec::uuid_from_text(habit_id).map_err(|_| RepositoryError::Corrupted)?,
+        codec::uuid_from_text(&row.habit_id).map_err(|_| RepositoryError::Corrupted)?,
     );
     let board = taskboard_domain::BoardId::from(
-        codec::uuid_from_text(board_id).map_err(|_| RepositoryError::Corrupted)?,
+        codec::uuid_from_text(&row.board_id).map_err(|_| RepositoryError::Corrupted)?,
     );
     let target: taskboard_domain::HabitTarget =
-        serde_json::from_str(target).map_err(|_| RepositoryError::Corrupted)?;
-    let order = *sort_order;
-    let anchor_time = match anchor_time {
+        serde_json::from_str(&row.target).map_err(|_| RepositoryError::Corrupted)?;
+    let order = row.sort_order;
+    let anchor_time = match &row.anchor_time {
         None => None,
         Some(text) => Some(
             chrono::NaiveTime::parse_from_str(text, "%H:%M:%S")
                 .map_err(|_| RepositoryError::Corrupted)?,
         ),
     };
-    let clocks = taskboard_domain::HabitClocks {
-        title: decode::clock(ck_title)?,
-        target: decode::clock(ck_target)?,
-        order: decode::clock(ck_order)?,
-        anchor_time: decode::clock(ck_anchor_time)?,
-        deleted: decode::clock(ck_deleted)?,
+    let anchor_day = match &row.anchor_day {
+        None => None,
+        Some(text) => {
+            let day: taskboard_domain::habit::AnchorDay =
+                serde_json::from_str(text).map_err(|_| RepositoryError::Corrupted)?;
+            Some(day)
+        }
     };
-    let continued_from = continued_from
+    let clocks = taskboard_domain::HabitClocks {
+        title: decode::clock(&row.ck_title)?,
+        description: decode::clock(&row.ck_description)?,
+        target: decode::clock(&row.ck_target)?,
+        order: decode::clock(&row.ck_order)?,
+        anchor_time: decode::clock(&row.ck_anchor_time)?,
+        anchor_day: decode::clock(&row.ck_anchor_day)?,
+        deleted: decode::clock(&row.ck_deleted)?,
+    };
+    let continued_from = row
+        .continued_from
         .as_deref()
         .map(codec::uuid_from_text)
         .transpose()
         .map_err(|_| RepositoryError::Corrupted)?
         .map(taskboard_domain::ids::SeriesId::from);
-    let by = decode::author(au_by.as_deref())?;
+    let by = decode::author(row.au_by.as_deref())?;
     Ok((
         id,
         taskboard_domain::Habit {
             id,
             board,
-            title: title.clone(),
+            title: row.title.clone(),
+            description: row.description.clone(),
             target,
             order,
             anchor_time,
+            anchor_day,
             clocks,
             continued_from,
-            deleted: *deleted,
+            deleted: row.deleted,
             by,
         },
     ))
@@ -1190,11 +1192,16 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
-        let habit_rows: Vec<HabitRow> = sqlx::query_as(
-            r"SELECT habit_id, board_id, title, target, sort_order, anchor_time,
-                      ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted,
-                      continued_from, au_by
-               FROM habits ORDER BY habit_id",
+        let habit_rows: Vec<HabitRow> = sqlx::query_as!(
+            HabitRow,
+            r#"SELECT habit_id, board_id, title, description, target,
+                      sort_order, anchor_time, anchor_day,
+                      ck_title, ck_target, ck_order, ck_anchor_time,
+                      COALESCE(ck_description, '1970-01-01T00:00:00+00:00') AS ck_description,
+                      COALESCE(ck_anchor_day, '1970-01-01T00:00:00+00:00') AS ck_anchor_day,
+                      ck_deleted,
+                      deleted as "deleted: bool", continued_from, au_by
+               FROM habits ORDER BY habit_id"#
         )
         .fetch_all(&mut *tx)
         .await
@@ -2193,20 +2200,24 @@ async fn execute_batch(
 
     for habit in habit_upserts {
         sqlx::query!(
-            r#"INSERT INTO habits (habit_id, board_id, title, target, sort_order, anchor_time,
-                         ck_title, ck_target, ck_order, ck_anchor_time, ck_deleted, deleted,
-                         continued_from, au_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            r#"INSERT INTO habits (habit_id, board_id, title, description, target, sort_order,
+                         anchor_time, anchor_day, ck_title, ck_target, ck_order, ck_anchor_time,
+                         ck_description, ck_anchor_day, ck_deleted, deleted, continued_from, au_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(habit_id) DO UPDATE SET
                        board_id = excluded.board_id,
                        title = excluded.title,
+                       description = excluded.description,
                        target = excluded.target,
                        sort_order = excluded.sort_order,
                        anchor_time = excluded.anchor_time,
+                       anchor_day = excluded.anchor_day,
                        ck_title = excluded.ck_title,
                        ck_target = excluded.ck_target,
                        ck_order = excluded.ck_order,
                        ck_anchor_time = excluded.ck_anchor_time,
+                       ck_description = excluded.ck_description,
+                       ck_anchor_day = excluded.ck_anchor_day,
                        ck_deleted = excluded.ck_deleted,
                        deleted = excluded.deleted,
                        continued_from = excluded.continued_from,
@@ -2214,13 +2225,19 @@ async fn execute_batch(
             codec::uuid_to_text(habit.id.as_uuid()),
             codec::uuid_to_text(habit.board.as_uuid()),
             habit.title,
+            &habit.description,
             serde_json::to_string(&habit.target).expect("target serializes"),
             habit.order,
             habit.anchor_time.map(|t| t.to_string()),
+            habit
+                .anchor_day
+                .map(|d| serde_json::to_string(&d).expect("anchor_day serializes")),
             habit.clocks.title.to_rfc3339(),
             habit.clocks.target.to_rfc3339(),
             habit.clocks.order.to_rfc3339(),
             habit.clocks.anchor_time.to_rfc3339(),
+            habit.clocks.description.to_rfc3339(),
+            habit.clocks.anchor_day.to_rfc3339(),
             habit.clocks.deleted.to_rfc3339(),
             habit.deleted,
             habit

@@ -9589,11 +9589,13 @@ fn state_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
         id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
         board,
         title: "water".into(),
+        description: String::new(),
         target: taskboard_domain::HabitTarget::PerDay(
             taskboard_domain::NonZeroCount::new(2).unwrap(),
         ),
         order: 0,
         anchor_time: None,
+        anchor_day: None,
         clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
         continued_from: None,
         deleted: false,

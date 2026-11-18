@@ -1128,6 +1128,56 @@ fn parse_anchor_edit(raw: &str) -> Result<AnchorEdit, String> {
     parse_time_of_day_flag(raw).map(AnchorEdit::Set)
 }
 
+/// `--description <text>` / `--description none` — the description
+/// change-mask value (`none` records the empty string; the
+/// `TaskChanges.description` shape). Infallible, but clap's
+/// `value_parser` seam keeps the `Result` shape.
+#[allow(clippy::unnecessary_wraps)] // clap's value_parser fn shape
+fn parse_habit_description(raw: &str) -> Result<String, String> {
+    if raw.eq_ignore_ascii_case("none") {
+        return Ok(String::new());
+    }
+    Ok(raw.to_owned())
+}
+
+/// `--day <mon..sun | 1..31>` / `--day none` — the anchor day's
+/// change-mask value. A bare 1..31 is unambiguous at this layer (the
+/// weekday names never parse as integers), so the variant choice is
+/// total; the KIND match against the habit's cadence is checked
+/// against the concurrent target flags (the typed refusal), never
+/// guessed here.
+fn parse_day_edit(raw: &str) -> Result<DayEdit, String> {
+    if raw.eq_ignore_ascii_case("none") {
+        return Ok(DayEdit::Clear);
+    }
+    let weekdays = [
+        ("mon", chrono::Weekday::Mon),
+        ("tue", chrono::Weekday::Tue),
+        ("wed", chrono::Weekday::Wed),
+        ("thu", chrono::Weekday::Thu),
+        ("fri", chrono::Weekday::Fri),
+        ("sat", chrono::Weekday::Sat),
+        ("sun", chrono::Weekday::Sun),
+    ];
+    let lower = raw.to_lowercase();
+    for (name, weekday) in weekdays {
+        if lower == name || lower == format!("{weekday:?}").to_lowercase() {
+            return Ok(DayEdit::Set(taskboard_domain::habit::AnchorDay::Weekday(
+                weekday,
+            )));
+        }
+    }
+    let n: u8 = raw
+        .parse()
+        .map_err(|_| "expected mon..sun, 1..31, or 'none'".to_owned())?;
+    match taskboard_domain::habit::MonthDay::new(n) {
+        Ok(day) => Ok(DayEdit::Set(taskboard_domain::habit::AnchorDay::MonthDay(
+            day,
+        ))),
+        Err(_) => Err("the month day must be 1..=31".to_owned()),
+    }
+}
+
 /// `--continued-from <series uuid>` / `--continued-from none`.
 fn parse_seam_edit(raw: &str) -> Result<SeamEdit, String> {
     if raw.eq_ignore_ascii_case("none") {
@@ -1301,6 +1351,15 @@ pub enum HabitsCmd {
         /// never an ordering input.
         #[arg(long, value_parser = parse_time_of_day_flag)]
         at: Option<chrono::NaiveTime>,
+        /// A free-text description; `none` records an empty one. Routed
+        /// as the immediate sparse edit (the `--at` precedent).
+        #[arg(long, value_parser = parse_habit_description)]
+        description: Option<String>,
+        /// The display/nudge anchor day (`mon`..`sun` for a weekly
+        /// habit, `1`..`31` for a monthly one); `none` records unset.
+        /// Routed as the immediate sparse edit (the `--at` precedent).
+        #[arg(long, value_parser = parse_day_edit)]
+        day: Option<DayEdit>,
     },
     /// The board's trackers in stored manual `(order, id)` order, with
     /// current-window progress and streak (the conversion seam unions a
@@ -1375,6 +1434,17 @@ pub enum HabitsCmd {
         /// New anchor chip (`HH:MM[:SS]`), or `none` to clear it.
         #[arg(long, value_parser = parse_anchor_edit)]
         at: Option<AnchorEdit>,
+        /// New free-text description, or `none` to clear it.
+        #[arg(long, value_parser = parse_habit_description)]
+        description: Option<String>,
+        /// New display/nudge anchor day (`mon`..`sun` weekly, `1`..`31`
+        /// monthly), or `none` to clear it. A kind mismatch against the
+        /// concurrent `--weekly/--monthly` flag is the typed
+        /// `habit-day-kind-mismatch` refusal; without a concurrent
+        /// cadence flag the field is accepted (the domain's documented
+        /// inertness answers).
+        #[arg(long, value_parser = parse_day_edit)]
+        day: Option<DayEdit>,
         /// Absolute manual-order slot (the `MoveHabit` semantics).
         #[arg(long)]
         order: Option<i64>,
@@ -1516,6 +1586,27 @@ impl CadenceSpec {
 fn parse_health_flag(raw: &str) -> Result<taskboard_domain::reflection::HealthFlag, String> {
     taskboard_domain::reflection::HealthFlag::try_new(raw)
         .map_err(|_| "unknown health flag (see the curated nine)".to_owned())
+}
+
+/// The `habits add/update --day` value: an anchor day, or `none`
+/// (clear).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DayEdit {
+    /// Set the anchor day.
+    Set(taskboard_domain::habit::AnchorDay),
+    /// Clear the anchor day.
+    Clear,
+}
+
+impl DayEdit {
+    /// The change-mask value (`Some(None)` = clear).
+    #[must_use]
+    pub fn change(self) -> Option<Option<taskboard_domain::habit::AnchorDay>> {
+        match self {
+            Self::Set(day) => Some(Some(day)),
+            Self::Clear => Some(None),
+        }
+    }
 }
 
 /// The `habits update --at` value: a time-of-day, or `none` (clear).
