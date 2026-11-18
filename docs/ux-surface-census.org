@@ -423,7 +423,19 @@ remaining capabilities the verb inventory derives for this surface
 `ui/views/task-view.slint`, `ui/compositions/recur-editor.slint`,
 `ui/compositions/due-editor.slint`, `ui/compositions/track-entries.slint`).
 The recur-editor and due-editor overlays are recorded here (they mount
-in this view, D-6). The global notification surface
+in this view, D-6). *Supersession (2026-11-18, round-9 overlay
+migration, chunk 5):* both editors mount on the chunk-3 base hosts
+(=AnchoredOverlayHost= for the due editor + its picker,
+=ModalDialogHost= for the recur editor). The recur editor's
+outside-click dismissal role FLIPPED per the widget-framework UX plan
+R-4 (edit-kind dialogs treat outside click as save): the round-7
+recorded semantics — the scrim click is the clean close, the draft
+dies, nothing dispatches — is superseded by outside click routes the
+commit seam (=recur-commit-clicked=); a valid draft saves, an invalid
+one re-checks and dispatches nothing (the editor stays open). Escape
+keeps the clean close (the action layer's discard). Authority:
+=.artifacts/plans/2026-11-18-widget-framework-ux-plan.md= R-4; the
+om probe's recur anatomy test pins it. The global notification surface
 (`ui/compositions/notification-surface.slint`; seams
 adapter.rs:10150-10230 — dismiss/done/snooze/mute/cancel/track-start/
 open) is a mount-time overlay outside the fixed columns; its rows are
