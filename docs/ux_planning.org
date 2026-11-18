@@ -179,20 +179,61 @@ on_*= handler in =adapter.rs=); each command / =ActionId= token must
   (=ActionId=), as the plan's command-delta Kind selects; a row with
   no command variant must carry its reason in the journey-steps
   column.
-- For each **journey step ID**: the token =us<n>_s<k>= must appear in
-  a test-function name under =crates/taskboard-ui-slint/tests/=
-  (or the crate the plan's =Test-root:= front-matter line nominates)
-  — the template's naming law makes test names the completion proof.
+- For each **wiring row whose callback resolves**: the callback must
+  additionally be listed in =seam_inventory.rs= (the adapter's
+  structural manifest). A resolved callback absent from the inventory
+  is =INVENTORY-MISS= — either a not-yet-installed seam (stage-2
+  timing) or a wiring row claiming something the adapter never
+  installed. A callback that already misses keeps =MISSING= (the
+  cross-check is an additional honesty pass on resolved wiring, not a
+  substitute). If no =seam_inventory.rs= exists under =--root=, the
+  cross-check is skipped for that run (a fixture-shape fact, not a
+  finding).
+- For each **journey step ID**: the token =us<n>_s<k>= must resolve
+  against the *plan's own nominations* — the gate trusts nothing
+  ambient (#920). Resolution order:
+  1. *Exact-name nomination*: the §6 =Test= cell names
+     =<file>.rs::<fn_name>= with =<fn_name>= not a bare =us<n>_s<k>=
+     token; the gate greps =fn <fn_name>= in the nominated file(s).
+  2. *File-scoped token nomination*: the =Test= cell names
+     =<file>.rs::us<n>_s<k>=; the gate boundary-matches
+  =fn us<n>_s<k>_= / =fn us<n>_s<k>(= restricted to that file.
+  3. *Bound-test mapping (retro cohort only, #768)*: a plan-body line
+     =bound-test: US-<n>/S<k> -> <file>.rs::<fn_name>= binds a
+     pre-existing descriptively-named test (src unit-test modules
+     included); the gate greps =fn <fn_name>= workspace-wide. A
+     =bound-test:= line naming a step the plan does not declare in §4
+     is a hard parse error. Framework-era plans may not use
+     =bound-test:= to swap the token law out — the r3 D-9 posture
+     stands.
+  4. *No nomination*: any boundary hit in the shared Test-root is
+     =AMBIGUOUS= — a bare token in a tree shared by many plans cannot
+     be attributed to this one, and that attribution failure is
+     exactly the #920 false-green; ambient hits are triage states,
+     never credits.
+
+  *Naming law (going forward)*: each plan's journey tests live in a
+  per-plan file =<topic>_journeys.rs= (=topic = the plan filename's
+  segment between the date and =-ux-plan=, =-= → =_=) and test names
+  carry the step token as a prefix, =us<n>_s<k>_<description>=; the
+  §6 =Test= column MUST nominate each journey step's file. The r9
+  plans already do. Existing files (e.g. =habits_journey.rs=) are
+  grandfathered; retro plans use the =bound-test:= mapping.
 - For each **capability-matrix cell** marked with a story: that
   story's §4 table exists and all its steps are covered per the
-  above; each ruling must have a non-empty reason.
+  above (=AMBIGUOUS= poisons the citation like =MISSING= does); each
+  ruling must have a non-empty reason.
 
-Output: one line per check — =FOUND (file:line)= or =MISSING= — then
-counts. A plain run is informational (exit 0) unless a parse error
-occurred; =--gate= exits 1 when any row is MISSING. A malformed or
-missing table is a hard parse error (exit 2,
-=PARSE-ERROR: <section>: <what>=), never a silent skip. Usage errors
-exit 64.
+Output: one line per check ending in exactly one verdict state —
+=FOUND (file:line)=, =BOUND (file:line)=, =MISSING=, =AMBIGUOUS (k
+candidates: …)=, or =INVENTORY-MISS (slint:line, adapter:line)= — then
+a counts line =checks: N, FOUND: a, MISSING: b, AMBIGUOUS: c, BOUND:
+d, INVENTORY-MISS: e=. A plain run is informational (exit 0) unless a
+parse error occurred; =--gate= exits 1 when
+=MISSING + AMBIGUOUS + INVENTORY-MISS > 0= (FOUND and BOUND are the
+only passing states). A malformed or missing table is a hard parse
+error (exit 2, =PARSE-ERROR: <section>: <what>=), never a silent skip.
+Usage errors exit 64.
 
 *Honest limits*: the gate proves *wiring exists and is
 claimed-tested*, not that the UX is good — quality is the walkthrough
