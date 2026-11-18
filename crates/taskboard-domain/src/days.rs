@@ -77,9 +77,15 @@ pub fn day_window(
 /// default `"00:00"` start this is the named date's next local
 /// midnight — one millisecond after the note's literal
 /// `23:59:59.999`, identical classification at every whole-second
-/// comparison. A `"03:00"` start wanders the stamp into the early
-/// morning of `date + 1` — exactly the night-owl day-end derivation
-/// (the plan's recorded day-end decision: derived from
+/// comparison. The caveat (`#893`): at *exact-instant* precision the
+/// window end itself is excluded by half-open membership —
+/// [`today_sections`]'s `[now, end)` reads a bare-day stamp minted at
+/// this instant as outside the day. Exact-instant membership
+/// consumers (and every stamp mint) use [`last_covered_instant`] /
+/// [`DayCalendar::day_last_instant`] instead; `day_window_end` stays
+/// the pure window-end fact. A `"03:00"` start wanders the stamp into
+/// the early morning of `date + 1` — exactly the night-owl day-end
+/// derivation (the plan's recorded day-end decision: derived from
 /// `day_start_time` + 24h, never a second knob).
 ///
 /// Composition only: `window_start` of the next calendar date — the
@@ -96,6 +102,33 @@ pub fn day_window_end(
     offset: FixedOffset,
 ) -> DateTime<Utc> {
     window_start(date + Days::new(1), day_start_time, offset)
+}
+
+/// The largest instant still *inside* the half-open window that
+/// `window_end` closes: `window_end − 1ms` (the stamping
+/// ms-resolution convention — the literal `23:59:59.999` the
+/// [`day_window_end`] doc speaks of). The `#893` unification: a
+/// bare-day stamp minted at the raw window end collides with the very
+/// `[start, end)` membership convention the window defines — a task
+/// re-committed to today's window end is excluded from today the
+/// instant it is written. Every bare-day mint site (the router's
+/// re-commit verbs via the adapter, the due editor's `parse_stamp`,
+/// the month-grid picker, the CLI `tasks edit` twins) derives its
+/// stamp through this helper — one derivation, domain-owned; no site
+/// re-derives `end − ε` locally (the #884 rule).
+///
+/// Pure, total: one millisecond is always representable, and the
+/// result stays within the named date's window for every calendar the
+/// [`day_window_end`] domain covers.
+///
+/// # Panics
+///
+/// Never in practice: the subtraction's `expect` guards a
+/// `TimeDelta::try_milliseconds(1)` that cannot fail (1 fits every
+/// representable bound).
+#[must_use]
+pub fn last_covered_instant(window_end: DateTime<Utc>) -> DateTime<Utc> {
+    window_end - chrono::TimeDelta::try_milliseconds(1).expect("one millisecond is representable")
 }
 
 /// The half-open window covering the last `days` local day-windows
@@ -176,12 +209,26 @@ impl DayCalendar {
     }
 
     /// The instant that ends `date`'s local day window —
-    /// [`day_window_end`] over this calendar (the stamping law's
-    /// consumer face; the GUI adapter's `calendar()` and the CLI's
-    /// `resolved_day_calendar()` both hold a `DayCalendar`).
+    /// [`day_window_end`] over this calendar (the window face; the GUI
+    /// adapter's `calendar()` and the CLI's `resolved_day_calendar()`
+    /// both hold a `DayCalendar`). Windows a day: membership against
+    /// it is `[instant, day_end)`. For the *stamping* face — a bare-day
+    /// due/scheduled entry — use [`DayCalendar::day_last_instant`]:
+    /// the window end itself is excluded by that very membership.
     #[must_use]
     pub fn day_end(&self, date: NaiveDate) -> DateTime<Utc> {
         day_window_end(date, self.day_start_time, self.offset)
+    }
+
+    /// The last instant still *covered by* `date`'s local day window —
+    /// [`last_covered_instant`] over [`DayCalendar::day_end`]. The
+    /// bare-day stamping mint's consumer face (`#893`): a stamp minted
+    /// here survives the exact-instant `[now, day_end)` membership of
+    /// [`today_sections`] where the raw window end does not — a task
+    /// re-committed to its own today stays in Today.
+    #[must_use]
+    pub fn day_last_instant(&self, date: NaiveDate) -> DateTime<Utc> {
+        last_covered_instant(self.day_end(date))
     }
 
     /// The next day-window boundary after `now`: the opening instant of
@@ -590,6 +637,71 @@ mod tests {
         );
     }
 
+    // ---- last_covered_instant (the #893 unification, the stamping
+    // ---- mint's covered face) ---------------------------------------
+
+    /// #893 unit 1 (the N-4 default arm): with the default `00:00`
+    /// start the last covered instant is the literal `23:59:59.999`
+    /// local — one millisecond before the window end, still inside the
+    /// named date.
+    #[test]
+    fn default_start_stamps_the_literal_last_millisecond() {
+        let calendar = DayCalendar {
+            day_start_time: time(0, 0),
+            offset: offset_hours(2),
+        };
+        let stamp = calendar.day_last_instant(date(2026, 6, 15));
+        let local = stamp.with_timezone(&offset_hours(2));
+        assert_eq!(
+            (local.date_naive(), local.time()),
+            (
+                date(2026, 6, 15),
+                NaiveTime::from_hms_nano_opt(23, 59, 59, 999_000_000).unwrap()
+            ),
+            "the literal 23:59:59.999: one ms before the excluded end"
+        );
+    }
+
+    /// #893 unit 2 (the night-owl arm): with a `03:00` start the last
+    /// covered instant is `02:59:59.999` of `date + 1`'s early morning
+    /// — one millisecond before the window end, and still inside the
+    /// named date's window (the wandering-stamp note resolves: the
+    /// mint stays inside the window it names).
+    #[test]
+    fn night_owl_start_stamps_just_before_the_window_end() {
+        let calendar = DayCalendar {
+            day_start_time: time(3, 0),
+            offset: offset_hours(2),
+        };
+        let stamp = calendar.day_last_instant(date(2026, 11, 16));
+        let end = day_window_end(date(2026, 11, 16), time(3, 0), offset_hours(2));
+        assert_eq!(stamp, end - chrono::TimeDelta::try_milliseconds(1).unwrap());
+        let local = stamp.with_timezone(&offset_hours(2));
+        assert_eq!(
+            (local.date_naive(), local.time()),
+            (
+                date(2026, 11, 17),
+                NaiveTime::from_hms_nano_opt(2, 59, 59, 999_000_000).unwrap()
+            ),
+            "one ms before the window end, still inside the named window"
+        );
+    }
+
+    /// The composition pin (the `day_end_is_the_free_function_over_`
+    /// twin): `day_last_instant` is `last_covered_instant` over
+    /// `day_end`.
+    #[test]
+    fn day_last_instant_is_the_free_function_over_day_end() {
+        let calendar = DayCalendar {
+            day_start_time: time(3, 0),
+            offset: offset_hours(2),
+        };
+        assert_eq!(
+            calendar.day_last_instant(date(2026, 11, 16)),
+            last_covered_instant(calendar.day_end(date(2026, 11, 16)))
+        );
+    }
+
     proptest! {
         #![proptest_config(proptest_config(256))]
 
@@ -638,6 +750,22 @@ mod tests {
                     - window_start(date, day_start_time, offset),
                 chrono::TimeDelta::try_hours(24).unwrap()
             );
+        }
+
+        /// #893 prop 1 (the membership-survival law): the last covered
+        /// instant of a day's window is inside `[start, end)` — the
+        /// exact fact the raw `day_window_end` mint violated (the end
+        /// is excluded by its own half-open convention).
+        #[test]
+        fn last_covered_instant_is_inside_its_own_window(
+            date in date_strategy(),
+            day_start_time in day_start_time_strategy(),
+            offset in offset_strategy(),
+        ) {
+            let start = window_start(date, day_start_time, offset);
+            let end = day_window_end(date, day_start_time, offset);
+            let stamp = last_covered_instant(end);
+            prop_assert!(start <= stamp && stamp < end);
         }
 
         #[test]
@@ -769,6 +897,27 @@ mod today_tests {
 
     fn map(tasks: Vec<Task>) -> BTreeMap<TaskId, Task> {
         tasks.into_iter().map(|t| (t.id, t)).collect()
+    }
+
+    /// #893 unit 3 (the classification face): a task due exactly at
+    /// the last covered instant classifies due-today under the exact
+    /// [`today_sections`] predicate — the stamp the re-commit verbs
+    /// now mint keeps the task in Today; the raw window-end mint
+    /// dropped it out.
+    #[test]
+    fn a_task_due_at_the_last_covered_instant_classifies_due_today() {
+        let now = stamp(1_781_485_200); // 2026-06-15 01:20 UTC
+        let window = day_window(
+            now,
+            chrono::NaiveTime::MIN,
+            FixedOffset::east_opt(0).unwrap(),
+        );
+        let covered = last_covered_instant(window.1);
+        let id = TaskId::from(uuid::Uuid::from_u128(7));
+        let tasks = map(vec![task(7, 0, Some(covered), None, None)]);
+        let sections = today_sections(&tasks, now, window);
+        assert_eq!(sections.due_today, vec![id]);
+        assert_eq!(sections.overdue, [] as [TaskId; 0]);
     }
 
     /// `(start, now, end)`: a 24h window with `now` inside it.
