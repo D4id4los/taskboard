@@ -461,6 +461,16 @@ The workspace carries a single global version (see `docs/architecture.org`);
 
 ### Fixed
 
+- The chorded-letter case law (keyboard-focus UX J3 R-6, US-3, #855):
+  a chorded uppercase-letter spelling and its real delivery now mint
+  one binding identity — `Ctrl+T` ≡ `Ctrl+Shift+t` ≠ `Ctrl+t` — so
+  every preset's uppercase-spelled chords actually fire (previously
+  neither spelling could ever resolve). All preset rows re-spell to
+  the canonical `Ctrl+Shift+<letter>` form (hint text changes
+  accordingly), and the Standard redo was re-homed from
+  `Ctrl+Shift+Z` — which collapsed into the undo identity — to
+  `Ctrl+y`.
+
 - A Deck report's absence pass tombstoned every other board's cards and
   stacks on the same connector; it now answers for its own board only.
 - A files board's folded rows could not be written to SQLite (they

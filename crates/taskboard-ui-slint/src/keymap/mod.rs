@@ -1013,13 +1013,16 @@ mod tests {
         let unmatched = Stroke::from_event('%', false, true, true, false).expect("converts");
         assert_eq!(keymap.resolve(&chain, &[unmatched]), None);
         // Shift-distinct chords stay distinct: no partner on letters
-        // (the undo/redo pair is the standard preset's Global rows).
+        // (the undo binding's shifted-z identity vs the unbound
+        // shift-less `Ctrl+z` — the re-homed redo lives on `Ctrl+y`).
         let standard = Keymap::from_preset(Preset::Standard);
         let global = [ContextId::Global];
-        let undo = stroke::parse("Ctrl+Z").expect("undo");
-        let redo = stroke::parse("Ctrl+Shift+Z").expect("redo");
+        let undo = stroke::parse("Ctrl+Z").expect("undo (either spelling)");
+        let redo = stroke::parse("Ctrl+y").expect("redo");
+        let bare_undo = stroke::parse("Ctrl+z").expect("shift-less z");
         assert_eq!(standard.resolve(&global, &[undo]), Some(ActionId::AppUndo));
         assert_eq!(standard.resolve(&global, &[redo]), Some(ActionId::AppRedo));
+        assert_eq!(standard.resolve(&global, &[bare_undo]), None);
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let before = Keymap::from_preset(preset);
             let built = build(&RawKeymap {
@@ -1115,7 +1118,9 @@ mod tests {
     }
 
     /// T7 — intra-context conflict-freeness (D21): no two actions
-    /// share a sequence in one context. Replaces the compiler-side
+    /// share a sequence in one context — post-normalization
+    /// identities, since `parse_sequence` already applies the
+    /// chorded-letter case law (J3 R-6). Replaces the compiler-side
     /// duplicate detection `KeyBinding` would have given (§5.7a,
     /// Q9).
     #[test]
@@ -1125,6 +1130,147 @@ mod tests {
                 for (i, (a, seq_a)) in rows.iter().enumerate() {
                     for (b, seq_b) in rows.iter().skip(i + 1) {
                         assert_ne!(seq_a, seq_b, "{preset:?} conflict in {context}: {a} vs {b}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// US-3/S2 — the voided pair (round plan O-8): under the binding
+    /// identity the old deliberate `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo
+    /// distinction collapsed (`parse("Ctrl+Z")` ≡
+    /// `parse("Ctrl+Shift+z")` — one identity), so the Standard redo
+    /// was re-homed to the physically-deliverable `Ctrl+y` while undo
+    /// keeps the shifted `z` identity. The spellings prove the
+    /// collapse; the resolves prove the re-home landed and the
+    /// shift-less `Ctrl+z` stays a distinct, unbound binding.
+    #[test]
+    fn us3_s2_undo_redo_pair_collapsed_and_the_redo_was_re_homed() {
+        assert_eq!(
+            stroke::parse("Ctrl+Z").expect("undo alias"),
+            stroke::parse("Ctrl+Shift+z").expect("canonical undo")
+        );
+        let keymap = Keymap::from_preset(Preset::Standard);
+        let global = [ContextId::Global];
+        assert_eq!(
+            keymap.resolve(&global, &[stroke::parse("Ctrl+Z").expect("undo press")]),
+            Some(ActionId::AppUndo),
+            "both undo spellings resolve the re-spelled shifted-z identity"
+        );
+        assert_eq!(
+            keymap.resolve(&global, &[stroke::parse("Ctrl+y").expect("redo press")]),
+            Some(ActionId::AppRedo),
+            "the re-homed redo resolves"
+        );
+        assert_eq!(
+            keymap.resolve(&global, &[stroke::parse("Ctrl+z").expect("bare ctrl z")]),
+            None,
+            "Ctrl+z stays distinct from the undo identity"
+        );
+    }
+
+    /// US-3/AC-3 — the canonical-spelling fold (D4): every preset
+    /// spelling of a chorded letter is the canonical form — mods in
+    /// Ctrl/Alt/Shift/Meta order plus one lowercase letter — so no
+    /// row spells a chorded uppercase letter (with or without
+    /// Shift). `parse` still accepts the uppercase alias (T1), but
+    /// the tables carry only canonical text.
+    #[test]
+    fn preset_chorded_letter_rows_spell_canonically() {
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            for (_, _, spellings) in preset.rows() {
+                for spelling in spellings {
+                    let stroke = stroke::parse(spelling).expect("preset spelling parses");
+                    let chorded = stroke.ctrl || stroke.alt || stroke.meta;
+                    if chorded && stroke.named_name().is_none() && stroke.key.is_ascii_alphabetic()
+                    {
+                        assert_eq!(
+                            stroke.to_string(),
+                            *spelling,
+                            "{preset:?}: non-canonical chorded-letter spelling"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// US-3/S2 — the `from_event` delivery contract (the regression
+    /// bar; no keymap test previously crossed the event boundary, so
+    /// the parse∘resolve round trip never caught the case seam): for
+    /// every preset row's chorded-letter stroke, the *real* keyboard
+    /// deliveries resolve the row's action — for a shift-bearing
+    /// identity both the lower-glyph and upper-glyph shifted
+    /// deliveries, for a shift-free one the unshifted delivery — and
+    /// the opposite shift reading never resolves it (`Ctrl+t` ≠
+    /// `Ctrl+Shift+t`).
+    #[test]
+    fn us3_s2_from_event_deliveries_resolve_every_chorded_letter_row() {
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for (action, context, spellings) in preset.rows() {
+                let chain = [context];
+                for (i, spelling) in spellings.iter().enumerate() {
+                    let token = stroke::parse(spelling).expect("preset spelling parses");
+                    let chorded = token.ctrl || token.alt || token.meta;
+                    // Bare printables are case-carrying by the D6
+                    // fold; named keys carry no case — both are
+                    // outside the chorded-letter law. Only the
+                    // sequence's last stroke is a delivery — the
+                    // earlier strokes are the held prefix.
+                    if !chorded
+                        || token.named_name().is_some()
+                        || !token.key.is_ascii_alphabetic()
+                        || i != spellings.len() - 1
+                    {
+                        continue;
+                    }
+                    let prefix: Vec<Stroke> = spellings[..i]
+                        .iter()
+                        .map(|s| stroke::parse(s).expect("prefix stroke parses"))
+                        .collect();
+                    // Chorded letter (reached when ctrl/alt/meta held).
+                    let shifted_delivery = |glyph: char| {
+                        Stroke::from_event(glyph, token.ctrl, token.alt, true, token.meta)
+                            .expect("the shifted delivery converts")
+                    };
+                    let unshifted_delivery = Stroke::from_event(
+                        token.key.to_ascii_lowercase(),
+                        token.ctrl,
+                        token.alt,
+                        false,
+                        token.meta,
+                    )
+                    .expect("the unshifted delivery converts");
+                    let resolves = |seq: Vec<Stroke>| keymap.resolve(&chain, &seq) == Some(action);
+                    let with_prefix = |last: Stroke| {
+                        let mut seq = prefix.clone();
+                        seq.push(last);
+                        seq
+                    };
+                    if token.shift {
+                        assert!(
+                            resolves(with_prefix(shifted_delivery(token.key))),
+                            "{preset:?} {action} in {context} stroke {i}: the shifted lower-glyph delivery resolves"
+                        );
+                        let upper = token.key.to_ascii_uppercase();
+                        assert!(
+                            resolves(with_prefix(shifted_delivery(upper))),
+                            "{preset:?} {action} in {context} stroke {i}: the upper-glyph delivery is the same identity"
+                        );
+                        assert!(
+                            !resolves(with_prefix(unshifted_delivery)),
+                            "{preset:?} {action} in {context} stroke {i}: the shift-less delivery must not fire the shifted binding"
+                        );
+                    } else {
+                        assert!(
+                            resolves(with_prefix(unshifted_delivery)),
+                            "{preset:?} {action} in {context} stroke {i}: the unshifted delivery resolves"
+                        );
+                        assert!(
+                            !resolves(with_prefix(shifted_delivery(token.key))),
+                            "{preset:?} {action} in {context} stroke {i}: the shifted delivery must not fire the shift-less binding"
+                        );
                     }
                 }
             }
@@ -1255,7 +1401,7 @@ mod tests {
         let seq = keymap
             .first_binding_display(ActionId::AppExit, &session_chain)
             .expect("the Global binding is found past the empty mode context");
-        assert_eq!(seq, vec!["Ctrl+Q".to_owned()]);
+        assert_eq!(seq, vec!["Ctrl+Shift+q".to_owned()]);
 
         // An action bound nowhere in the chain is still `None`.
         assert_eq!(
@@ -1385,12 +1531,14 @@ mod validation_tests {
     /// preset binding resolves verbatim.
     #[test]
     fn conflict_with_preset_drops_override_preset_survives() {
+        // The exit binding's canonical identity (`Ctrl+Shift+q`) is
+        // what the override collides with — both spellings mint it.
         let result = built(Preset::Standard, &[("app.undo", &[&["Ctrl+Q"]])]);
         let finding = one(&result, Conflict);
         assert_eq!(finding.action, Some(ActionId::AppUndo));
         assert_eq!(finding.context, ContextId::Global);
         let undo = stroke::parse("Ctrl+Z").expect("undo");
-        let quit = stroke::parse("Ctrl+Q").expect("quit");
+        let quit = stroke::parse("Ctrl+Shift+q").expect("quit");
         assert_eq!(
             result.keymap.resolve(&[ContextId::Global], &[undo]),
             Some(ActionId::AppUndo),
@@ -1420,7 +1568,7 @@ mod validation_tests {
         assert!(conflict_actions.contains(&Some(ActionId::AppUndo)));
         assert!(conflict_actions.contains(&Some(ActionId::AppRedo)));
         let undo = stroke::parse("Ctrl+Z").expect("undo");
-        let redo = stroke::parse_sequence(["Ctrl+Shift+Z"]).expect("redo");
+        let redo = stroke::parse_sequence(["Ctrl+y"]).expect("redo");
         let seq = stroke::parse("Ctrl+\\").expect("x");
         assert_eq!(
             result.keymap.resolve(&[ContextId::Global], &[undo]),

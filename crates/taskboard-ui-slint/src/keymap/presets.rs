@@ -244,36 +244,44 @@ fn chained(
 /// convention, Ctrl-chords for the global verbs.
 static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Global
-    (ActionId::AppUndo, ContextId::Global, &["Ctrl+Z"]),
-    (ActionId::AppRedo, ContextId::Global, &["Ctrl+Shift+Z"]),
-    (ActionId::AppMenu, ContextId::Global, &["Ctrl+Shift+M"]),
-    (ActionId::AppExit, ContextId::Global, &["Ctrl+Q"]),
+    (ActionId::AppUndo, ContextId::Global, &["Ctrl+Shift+z"]),
+    (ActionId::AppRedo, ContextId::Global, &["Ctrl+y"]),
+    (ActionId::AppMenu, ContextId::Global, &["Ctrl+Shift+m"]),
+    (ActionId::AppExit, ContextId::Global, &["Ctrl+Shift+q"]),
     (ActionId::AppSettings, ContextId::Global, &["Ctrl+,"]),
     (ActionId::AppHelp, ContextId::Global, &["F1"]),
-    (ActionId::CaptureQuick, ContextId::Global, &["Ctrl+K"]),
-    (ActionId::PaletteSearch, ContextId::Global, &["Ctrl+F"]),
+    (ActionId::CaptureQuick, ContextId::Global, &["Ctrl+Shift+k"]),
+    (
+        ActionId::PaletteSearch,
+        ContextId::Global,
+        &["Ctrl+Shift+f"],
+    ),
     // Focus mode (#496): one stroke from anywhere (the overlay is the
     // desktop's concentration affordance); the in-overlay rows use
     // the menu vocabulary — arrows, not j/k, for the same reason the
     // palette records (the panel has a text field), and the toggle
     // itself closes (Escape and the stroke both dismiss).
-    (ActionId::FocusModeToggle, ContextId::Global, &["Ctrl+J"]),
+    (
+        ActionId::FocusModeToggle,
+        ContextId::Global,
+        &["Ctrl+Shift+j"],
+    ),
     // Chunk 10 (D11): the today jump is one stroke from anywhere, all
     // presets (P10's promise); view.inbox and task.due-today stay
     // menu-reachable without default strokes.
-    (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
+    (ActionId::ViewToday, ContextId::Global, &["Ctrl+Shift+t"]),
     // The plan-next-day surface (#622, D-6): the one new binding —
     // the opener (toggle; the planner-context Escape row closes).
     (
         ActionId::ViewPlanNextDay,
         ContextId::Global,
-        &["Ctrl+Shift+P"],
+        &["Ctrl+Shift+p"],
     ),
     // The review walk's opener (UX R-4 D-8, #804): the CUA shift-chord
-    // family, R free in this preset's Global (Ctrl+R is the recurrence
+    // family, R free in this preset's Global (Ctrl+Shift+r is the recurrence
     // editor's TaskDetail binding — different context, no contract
     // contact).
-    (ActionId::ReviewOpen, ContextId::Global, &["Ctrl+Shift+R"]),
+    (ActionId::ReviewOpen, ContextId::Global, &["Ctrl+Shift+r"]),
     (
         ActionId::ViewPlanNextDay,
         ContextId::PlanNextDay,
@@ -289,9 +297,9 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (
         ActionId::ReminderSnooze,
         ContextId::Global,
-        &["Ctrl+Shift+S"],
+        &["Ctrl+Shift+s"],
     ),
-    (ActionId::ReminderMute, ContextId::Global, &["Ctrl+Shift+B"]),
+    (ActionId::ReminderMute, ContextId::Global, &["Ctrl+Shift+b"]),
     // Round 2 (D16): move-cancel is all-preset via Escape (Global);
     // the emacs C-g alternate lives in Board, never Global (the
     // exact-match-first resolution keeps `app.redo`'s C-g prefix
@@ -331,14 +339,14 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Round 7 (D-7.2): the create form's opener — keyboard parity is
     // the accessibility ledger's demand, so all three presets carry
     // it (the habit family's deliberate exception).
-    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
+    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     // The switcher flyout's opener (UX R-4 D-4, #794): the jump-to
     // mnemonic — a target-free stroke now opens the bar's flyout
-    // (the b/B walk steps, Ctrl+G jumps).
-    (ActionId::BoardSelect, ContextId::Board, &["Ctrl+G"]),
-    (ActionId::BoardCreate, ContextId::Board, &["Ctrl+Shift+N"]),
+    // (the b/B walk steps, Ctrl+Shift+g jumps).
+    (ActionId::BoardSelect, ContextId::Board, &["Ctrl+Shift+g"]),
+    (ActionId::BoardCreate, ContextId::Board, &["Ctrl+Shift+n"]),
     (ActionId::BoardRename, ContextId::Board, &["Ctrl+F2"]),
     // The color picker's opener (UX R-4 D-1, #791): the CUA function
     // sequence continues after F2's rename (the F3/F4 pickers'
@@ -360,7 +368,7 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::StackNext, ContextId::Board, &["Ctrl+Shift+Right"]),
     (ActionId::StackPrev, ContextId::Board, &["Ctrl+Shift+Left"]),
     (ActionId::StackRename, ContextId::Board, &["F2"]),
-    (ActionId::StackMove, ContextId::Board, &["Ctrl+Alt+M"]),
+    (ActionId::StackMove, ContextId::Board, &["Ctrl+Alt+m"]),
     (ActionId::StackDelete, ContextId::Board, &["Ctrl+Delete"]),
     // Round-1 chunk 2 (D18): the stack-width verbs share the CUA
     // Ctrl+arrows in the Board context.
@@ -388,23 +396,31 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Round 3 (W-SM-d, F26): the title re-arm — F2, the CUA rename
     // convention, matching this preset's own `StackRename = F2`.
     (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["F2"]),
-    // The recurrence editor's opener (round-7 D-7.1): Ctrl+R, the
+    // The recurrence editor's opener (round-7 D-7.1): Ctrl+Shift+r, the
     // repeat mnemonic — a `TaskTitleEdit`-class editing verb, the one
     // series verb with a preset binding (the row verbs stay
     // pointer-grade).
-    (ActionId::SeriesEdit, ContextId::TaskDetail, &["Ctrl+R"]),
+    (
+        ActionId::SeriesEdit,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+r"],
+    ),
     // The priority pickers (UX R-3 D-1, #788): F3/F4 — the CUA
     // sequence continues after F2's rename (free in this preset's
     // TaskDetail; verified against the conflict contract).
     (ActionId::TaskImportanceEdit, ContextId::TaskDetail, &["F3"]),
     (ActionId::TaskUrgencyEdit, ContextId::TaskDetail, &["F4"]),
-    // The labels overlay's opener (UX R-3 D-2, #789): Ctrl+L — the
+    // The labels overlay's opener (UX R-3 D-2, #789): Ctrl+Shift+l — the
     // labels mnemonic, verified free in all three presets'
     // TaskDetail at this HEAD (stage-1 D-4's recorded check).
-    (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    (
+        ActionId::LabelManage,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+l"],
+    ),
     // The roster-only mount's stroke (tag-color plan D-7, US-2): the
     // same action carries the same mnemonic across its contexts.
-    (ActionId::LabelManage, ContextId::Board, &["Ctrl+L"]),
+    (ActionId::LabelManage, ContextId::Board, &["Ctrl+Shift+l"]),
     // The detail editors' shortcuts (keymap-parity plan US-3, D-1/D-4):
     // the CUA function sequence continues after F4's pickers — F5/F6
     // the date editors, F7 the description editor, F8 the rule add
@@ -503,7 +519,11 @@ static STANDARD_S1: &[(ActionId, ContextId, &[&str])] = &[
     // toggle stroke close, arrows walk the switcher, Return starts
     // the selected task.
     (ActionId::FocusModeToggle, ContextId::FocusMode, &["Escape"]),
-    (ActionId::FocusModeToggle, ContextId::FocusMode, &["Ctrl+J"]),
+    (
+        ActionId::FocusModeToggle,
+        ContextId::FocusMode,
+        &["Ctrl+Shift+j"],
+    ),
     (ActionId::MenuNext, ContextId::FocusMode, &["Down"]),
     (ActionId::MenuPrevious, ContextId::FocusMode, &["Up"]),
     (ActionId::MenuInvoke, ContextId::FocusMode, &["Return"]),
@@ -589,8 +609,12 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::PaletteSearch, ContextId::Global, &["Ctrl+s"]),
     // Focus mode (#496): the CUA toggle chord (Ctrl+j is free in this
     // preset's Global — emacs' own C-j has no domain verb here).
-    (ActionId::FocusModeToggle, ContextId::Global, &["Ctrl+J"]),
-    (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
+    (
+        ActionId::FocusModeToggle,
+        ContextId::Global,
+        &["Ctrl+Shift+j"],
+    ),
+    (ActionId::ViewToday, ContextId::Global, &["Ctrl+Shift+t"]),
     // The review walk's opener (UX R-4 D-8, #804): the C-c family's
     // free Ctrl+v second stroke (the scroll pair owns bare C-v/Alt-v
     // in the view contexts — the chord is unambiguous).
@@ -668,7 +692,7 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskDueToday, ContextId::Today, &["Ctrl+c", "t"]),
     // Round 7 (D-7.2): the create form's opener — the CUA chord, free
     // in this preset's Today (the accessibility ledger's parity row).
-    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
+    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
     // Round 3 (W-SM-d, F26): the title re-arm — Return at detail is
     // unambiguous once task-detail entry no longer auto-arms (emacs
     // binds Return only at Board/Today for `task.edit`).
@@ -687,14 +711,18 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     // CUA strokes).
     (ActionId::TaskImportanceEdit, ContextId::TaskDetail, &["F3"]),
     (ActionId::TaskUrgencyEdit, ContextId::TaskDetail, &["F4"]),
-    // The labels overlay's opener (UX R-3 D-2, #789): Ctrl+L is
+    // The labels overlay's opener (UX R-3 D-2, #789): Ctrl+Shift+l is
     // free in emacs' TaskDetail (real emacs rebinds it in buffers,
     // but this preset's TaskDetail never binds it — the recorded
     // no-drift share, the StackWider pair's rule).
-    (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    (
+        ActionId::LabelManage,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+l"],
+    ),
     // The roster-only mount's stroke (tag-color plan D-7, US-2): the
     // same action carries the same mnemonic across its contexts.
-    (ActionId::LabelManage, ContextId::Board, &["Ctrl+L"]),
+    (ActionId::LabelManage, ContextId::Board, &["Ctrl+Shift+l"]),
     // The detail editors' shortcuts (keymap-parity plan US-3, D-1/D-4):
     // the org C-c user-namespace carries the domain verbs. C-c C-d is
     // the due editor (free at TaskDetail — BoardDelete's C-c Ctrl+d is
@@ -922,7 +950,11 @@ static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     // Focus mode (#496): the emacs menu vocabulary rides (both
     // dismissals); arrows as the palette-shaped alternates.
     (ActionId::FocusModeToggle, ContextId::FocusMode, &["Escape"]),
-    (ActionId::FocusModeToggle, ContextId::FocusMode, &["Ctrl+J"]),
+    (
+        ActionId::FocusModeToggle,
+        ContextId::FocusMode,
+        &["Ctrl+Shift+j"],
+    ),
     (ActionId::MenuNext, ContextId::FocusMode, &["Ctrl+n"]),
     (ActionId::MenuNext, ContextId::FocusMode, &["Down"]),
     (ActionId::MenuPrevious, ContextId::FocusMode, &["Ctrl+p"]),
@@ -1051,7 +1083,7 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     // The review walk's opener (UX R-4 D-8, #804): the g-family's
     // free w (the walk), beside the view-nav's g t.
     (ActionId::ReviewOpen, ContextId::ViNormal, &["g", "w"]),
-    (ActionId::ViewToday, ContextId::Global, &["Ctrl+T"]),
+    (ActionId::ViewToday, ContextId::Global, &["Ctrl+Shift+t"]),
     (ActionId::TaskComplete, ContextId::ViNormal, &["Space"]),
     (ActionId::TaskCreate, ContextId::ViNormal, &["o"]),
     (ActionId::StackCreate, ContextId::ViNormal, &["O"]),
@@ -1061,7 +1093,7 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Round 7 (D-7.2): the create form's opener — the ledger's
     // parity row; the Today context is chain-visible in vi too
     // (the `[Today, ViNormal, Global]` chain shape).
-    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+H"]),
+    (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
     // The today re-commit (UX R-4 D-8, #796): the bare mnemonic in
     // the Today context (the HabitCreate row's pattern — the view
     // context resolves before ViNormal); free in both contexts.
@@ -1254,13 +1286,17 @@ static VI_S4: &[(ActionId, ContextId, &[&str])] = &[
 ];
 
 static VI_S6: &[(ActionId, ContextId, &[&str])] = &[
-    // The labels overlay (UX R-3 D-2, #789): Ctrl+L is unbound in
+    // The labels overlay (UX R-3 D-2, #789): Ctrl+Shift+l is unbound in
     // normal mode here; the overlay's own context carries the
     // ladder + tab rows (the entries-overlay's vi pattern).
-    (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    (
+        ActionId::LabelManage,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+l"],
+    ),
     // The roster-only mount's stroke (tag-color plan D-7, US-2): the
     // same action carries the same mnemonic across its contexts.
-    (ActionId::LabelManage, ContextId::Board, &["Ctrl+L"]),
+    (ActionId::LabelManage, ContextId::Board, &["Ctrl+Shift+l"]),
     (
         ActionId::LabelOverlayDismiss,
         ContextId::Labels,
