@@ -1,10 +1,10 @@
 # [Plan] UX Journey Plan — fixture (gate self-test, MISSING path)
 
 <!-- Self-test data for scripts/ux-coverage.sh --self-test; never a real
-plan. Identical to plan.md plus three rows whose evidence resolves
-NOWHERE inside tree/: the W-3 callback, the W-3 command token, and the
-US-2/S3 journey step. The gate must report exactly those three MISSING
-rows and exit 1 under --gate. -->
+plan. Identical to plan.md (the §8 bound-test mapping included) plus
+three rows whose evidence resolves NOWHERE inside tree/: the W-3
+callback, the W-3 command token, and the US-2/S3 journey step. The gate
+must report exactly those three MISSING rows and exit 1 under --gate. -->
 
 - **Date**: 2026-11-13
 - **Kind**: UX journey plan fixture.

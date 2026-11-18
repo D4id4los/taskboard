@@ -69,8 +69,9 @@ usage: scripts/ux-coverage.sh <plan.md> [--gate] [--root <dir>]
   --root <dir>   repository root for evidence greps (default: the git
                  toplevel of the script's location)
   --self-test    exercise the bundled fixture's PASS, BOUND, AMBIGUOUS,
-                 INVENTORY-MISS and MISSING paths plus a malformed-table
-                 variant; asserts exit codes and row counts only
+                 INVENTORY-MISS, MISSING and dead-bound-test paths plus a
+                 malformed-table variant; asserts exit codes and row
+                 counts only
 
 exit codes: 0 all FOUND/BOUND / informational; 1 open rows under
             --gate; 2 PARSE-ERROR; 64 usage
@@ -267,7 +268,10 @@ adapter_match() { # adapter_match <callback> <adapter-file>...
 
 # Boundary fn-name match: `fn <name>` not followed by another name
 # character — `fn us1_s1` must not match `fn us1_s1_settings_cards`.
-# Emits `file:line` lines; returns 0 iff at least one hit.
+# Emits `file:line:fn-line` excerpt lines (callers count and consume
+# them; the function itself always returns 0). AMBIGUOUS candidates
+# keep the excerpt (triage); crediting evidence is stripped to
+# file:line by ev_fileline.
 fn_boundary_matches() { # fn_boundary_matches <name> <file>...
   local name=$1 f
   shift
@@ -276,6 +280,13 @@ fn_boundary_matches() { # fn_boundary_matches <name> <file>...
     grep -nE -- "fn ${name}(_|\\()" "$f" 2>/dev/null | sed "s|^|${f}:|" || true
   done
   return 0
+}
+
+# Strip a `file:line:content` excerpt down to the verdict contract's
+# `file:line` evidence (paths in the evidence universe contain no ':').
+ev_fileline() { # ev_fileline <file:line:content> -> file:line
+  local path=${1%%:*} rest=${1#*:}
+  echo "${path}:${rest%%:*}"
 }
 
 n_found=0
@@ -382,15 +393,31 @@ self_test() {
     rc=1
   fi
 
-  # 5. Malformed header: hard parse error.
+  # 5. Bound-test naming a nonexistent test: the mapping is a lie, so
+  #    the bound row reads MISSING — a gate failure, never a pass.
+  sed 's/bound-test: US-1\/S2 -> fixture_journeys.rs::us1_s2_toast_shown/bound-test: US-1\/S2 -> fixture_journeys.rs::us9_s9_does_not_exist/' \
+    "$fx/plan.md" >"$tmp/plan-deadbound.md"
+  bash "${BASH_SOURCE[0]}" "$tmp/plan-deadbound.md" --gate --root "$fx/tree" \
+    >"$tmp/deadbound.out" 2>&1 && code=0 || code=$?
+  n=$(grep -c ' journey test → MISSING$' "$tmp/deadbound.out" || true)
+  b=$(grep -c ' BOUND (' "$tmp/deadbound.out" || true)
+  if [[ $code -eq 1 && $n -eq 1 && $b -eq 0 ]]; then
+    echo "self-test 5 (dead bound-test --gate exits 1, the bound step MISSING, 0 BOUND): PASS"
+  else
+    echo "self-test 5 (dead bound-test --gate exits 1, the bound step MISSING, 0 BOUND): FAIL (exit $code, $n journey MISSING, $b BOUND)"
+    sed 's/^/    /' "$tmp/deadbound.out"
+    rc=1
+  fi
+
+  # 6. Malformed header: hard parse error.
   sed 's/| ID | Surface file |/| Id | Surface file |/' "$fx/plan.md" \
     >"$tmp/plan-broken.md"
   bash "${BASH_SOURCE[0]}" "$tmp/plan-broken.md" --gate --root "$fx/tree" \
     >"$tmp/broken.out" 2>&1 && code=0 || code=$?
   if [[ $code -eq 2 ]]; then
-    echo "self-test 5 (malformed header exits 2): PASS"
+    echo "self-test 6 (malformed header exits 2): PASS"
   else
-    echo "self-test 5 (malformed header exits 2): FAIL (exit $code)"
+    echo "self-test 6 (malformed header exits 2): FAIL (exit $code)"
     sed 's/^/    /' "$tmp/broken.out"
     rc=1
   fi
@@ -576,7 +603,7 @@ main() {
         [[ -n $path && -f $path ]] || continue
         mapfile -t hits < <(fn_boundary_matches "$name" "$path")
         if (( ${#hits[@]} > 0 )); then
-          FOUND_EV="${hits[0]}"
+          FOUND_EV=$(ev_fileline "${hits[0]}")
           emit_found "$label"
           return 0
         fi
@@ -596,7 +623,7 @@ main() {
       fi
       case ${#hits[@]} in
         0) emit_missing "$label"; return 1 ;;
-        1) FOUND_EV="${hits[0]}"; emit_found "$label"; return 0 ;;
+        1) FOUND_EV=$(ev_fileline "${hits[0]}"); emit_found "$label"; return 0 ;;
         *) emit_ambiguous "$label" "${hits[@]}"; return 1 ;;
       esac
     fi
@@ -606,7 +633,7 @@ main() {
       name=${bound_nom[$sid]}
       mapfile -t hits < <(grep -rnE --include='*.rs' "fn ${name}(_|\\()" "$root" 2>/dev/null | head -n 1 || true)
       if (( ${#hits[@]} > 0 )); then
-        FOUND_EV="${hits[0]}"
+        FOUND_EV=$(ev_fileline "${hits[0]}")
         emit_bound "$label"
         return 0
       fi
