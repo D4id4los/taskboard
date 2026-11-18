@@ -950,15 +950,21 @@ impl Serialize for TimeEntryRecord {
 /// board).
 #[derive(Debug, Clone, PartialEq)]
 pub enum HabitRecord {
-    /// `{ "title": str, "target": HabitTarget, "order": i64,
-    /// "anchor_time": "HH:MM:SS"|null, "clocks": HabitClocks,
-    /// "continued_from": uuid|null }` — the whole row, all five
+    /// `{ "title": str, "description": str, "target": HabitTarget,
+    /// "order": i64, "anchor_time": "HH:MM:SS"|null,
+    /// "anchor_day": AnchorDay|null, "clocks": HabitClocks,
+    /// "continued_from": uuid|null }` — the whole row, all seven
     /// embedded clocks riding it (they are the row's competition data).
+    /// `description`/`anchor_day` serialize always (the `title`/`order`
+    /// shape) but decode with defaults — an older device's row decodes
+    /// to `""`/`None` (additive default-absent law, D3).
     Live {
         title: String,
+        description: String,
         target: crate::habit::HabitTarget,
         order: i64,
         anchor_time: Option<chrono::NaiveTime>,
+        anchor_day: Option<crate::habit::AnchorDay>,
         clocks: crate::habit::HabitClocks,
         continued_from: Option<crate::ids::SeriesId>,
         /// The row's author (F1's `by` leg): default-absent.
@@ -978,7 +984,7 @@ pub enum HabitRecord {
 
 impl HabitRecord {
     /// The row's competition clock: the **effective clock** — `max` of
-    /// the five embedded clocks for a `Live` row, the tombstone's clock
+    /// the seven embedded clocks for a `Live` row, the tombstone's clock
     /// otherwise; `None` for verbatim content (which the union never
     /// orders against).
     #[must_use]
@@ -990,6 +996,8 @@ impl HabitRecord {
                     .max(clocks.target)
                     .max(clocks.order)
                     .max(clocks.anchor_time)
+                    .max(clocks.description)
+                    .max(clocks.anchor_day)
                     .max(clocks.deleted),
             ),
             Self::Tombstone { clock, .. } => Some(*clock),
@@ -1025,34 +1033,53 @@ impl HabitRecord {
             None | Some(Value::Null) => Some(None),
             Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
         };
+        // Default-absent additive fields (D3): an older device's row
+        // (keys absent) decodes to `""` / `None` — the lenient
+        // `Habit` serde posture, mirrored on the wire shape. A
+        // *present but non-decoding* value demotes the row (the
+        // `anchor_time` posture), never a silent rewrite.
+        let description = match map.get("description") {
+            None => Some(String::new()),
+            Some(value) => serde_json::from_value(value.clone()).ok(),
+        };
+        let anchor_day = match map.get("anchor_day") {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
+        };
         let continued_from = match map.get("continued_from") {
             None | Some(Value::Null) => Some(None),
             Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
         };
         if let (
             Ok(title),
+            Some(description),
             Ok(target),
             Ok(order),
             Some(anchor_time),
+            Some(anchor_day),
             Ok(clocks),
             Some(continued_from),
             Ok(by),
         ) = (
             serde_json::from_value(map.get("title").cloned().unwrap_or(Value::Null)),
+            description,
             // The strict target decode is load-bearing: the mint rejects
             // a stored 0, so a non-decoding target demotes the row.
             serde_json::from_value(map.get("target").cloned().unwrap_or(Value::Null)),
             serde_json::from_value(map.get("order").cloned().unwrap_or(Value::Null)),
             anchor_time,
+            anchor_day,
             serde_json::from_value(map.get("clocks").cloned().unwrap_or(Value::Null)),
             continued_from,
             decode_by(map),
         ) {
             return Self::Live {
                 title,
+                description,
                 target,
                 order,
                 anchor_time,
+                anchor_day,
                 clocks,
                 continued_from,
                 by,
@@ -1077,18 +1104,26 @@ impl Serialize for HabitRecord {
         match self {
             Self::Live {
                 title,
+                description,
                 target,
                 order,
                 anchor_time,
+                anchor_day,
                 clocks,
                 continued_from,
                 by,
             } => {
+                // The additive fields serialize always (the
+                // `title`/`order` shape — the row stays greppable, D3);
+                // old readers demote the row to `Verbatim` (the
+                // documented posture for shape growth).
                 let mut object = serde_json::json!({
                     "title": title,
+                    "description": description,
                     "target": target,
                     "order": order,
                     "anchor_time": anchor_time,
+                    "anchor_day": anchor_day,
                     "clocks": clocks,
                     "continued_from": continued_from,
                 });
@@ -2265,9 +2300,11 @@ pub fn habits_for(
             let row = if habit.is_live() {
                 HabitRecord::Live {
                     title: habit.title.clone(),
+                    description: String::new(),
                     target: habit.target,
                     order: habit.order,
                     anchor_time: habit.anchor_time,
+                    anchor_day: None,
                     clocks: habit.clocks,
                     continued_from: habit.continued_from,
                     by: habit.by.or(author),
@@ -5553,9 +5590,11 @@ mod habit_section_tests {
             id: HabitId::from(uuid::Uuid::from_u128(raw)),
             board: BoardId::from(uuid::Uuid::from_u128(board)),
             title: format!("habit {raw}"),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             deleted,
@@ -5566,9 +5605,11 @@ mod habit_section_tests {
     fn live_row(stamp: i64) -> HabitRecord {
         HabitRecord::Live {
             title: "water".to_owned(),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
 
@@ -5597,6 +5638,76 @@ mod habit_section_tests {
     }
 
     // ---- T-1: section serde ------------------------------------------------
+
+    #[test]
+    fn the_live_wire_row_serializes_both_additive_fields_and_old_rows_decode_with_defaults() {
+        // New-shape emission: both keys serialize always (the
+        // greppable-row-shape law, D3).
+        let mut h = habit(1, 2, false, 100);
+        h.description = "daily notes".to_owned();
+        h.anchor_day = Some(crate::habit::AnchorDay::Weekday(chrono::Weekday::Wed));
+        let row = HabitRecord::Live {
+            title: h.title.clone(),
+            description: h.description.clone(),
+            target: h.target,
+            order: h.order,
+            anchor_time: h.anchor_time,
+            anchor_day: h.anchor_day,
+            clocks: h.clocks,
+            continued_from: h.continued_from,
+            by: h.by,
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        let map = json.as_object().unwrap();
+        assert_eq!(map["description"], "daily notes");
+        assert_eq!(map["anchor_day"]["Weekday"], "Wed");
+        let decoded: HabitRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, row);
+
+        // Old-shape decode: an older device's row (keys absent) decodes
+        // to "" / None — never a demotion to Verbatim.
+        let old_row = serde_json::json!({
+            "title": "water",
+            "target": {"PerDay": 3},
+            "order": 0,
+            "anchor_time": null,
+            "clocks": {
+                "title": "1970-01-01T00:01:40Z", "target": "1970-01-01T00:01:40Z",
+                "order": "1970-01-01T00:01:40Z", "anchor_time": "1970-01-01T00:01:40Z",
+                "description": "1970-01-01T00:01:40Z", "anchor_day": "1970-01-01T00:01:40Z",
+                "deleted": "1970-01-01T00:01:40Z"
+            },
+            "continued_from": null
+        });
+        let decoded: HabitRecord = serde_json::from_value(old_row).unwrap();
+        let HabitRecord::Live {
+            description,
+            anchor_day,
+            ..
+        } = decoded
+        else {
+            panic!("the old-shape row decodes as Live, not Verbatim");
+        };
+        assert_eq!(description, "");
+        assert_eq!(anchor_day, None);
+    }
+
+    #[test]
+    fn the_competition_clock_reads_the_new_slots() {
+        let base = live_row(100);
+        assert_eq!(base.competition_clock(), Some(ts(100)));
+        // A row differing only in a newer description clock outranks.
+        let mut newer = live_row(100);
+        if let HabitRecord::Live { clocks, .. } = &mut newer {
+            clocks.description = ts(400);
+        }
+        assert_eq!(newer.competition_clock(), Some(ts(400)));
+        let mut newer_still = newer;
+        if let HabitRecord::Live { clocks, .. } = &mut newer_still {
+            clocks.anchor_day = ts(500);
+        }
+        assert_eq!(newer_still.competition_clock(), Some(ts(500)));
+    }
 
     #[test]
     fn the_habit_sections_ride_the_envelope_under_their_modeled_keys() {
@@ -5913,9 +6024,11 @@ mod habit_section_tests {
             emitted.get(&mine.id.as_uuid().to_string()),
             Some(&HabitRecord::Live {
                 title: mine.title.clone(),
+                description: String::new(),
                 target: mine.target,
                 order: mine.order,
                 anchor_time: mine.anchor_time,
+                anchor_day: None,
                 clocks: mine.clocks,
                 continued_from: mine.continued_from,
 

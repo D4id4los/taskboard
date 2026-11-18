@@ -1296,9 +1296,11 @@ pub fn fold_habits(
         match row {
             crate::appdata::HabitRecord::Live {
                 title,
+                description,
                 target,
                 order,
                 anchor_time,
+                anchor_day,
                 clocks,
                 continued_from,
                 by,
@@ -1316,9 +1318,11 @@ pub fn fold_habits(
                     // direction keeps local at a full-tuple tie.
                     Some(local) if (row_clock, *by) > (effective_clock(local), local.by) => {
                         local.title.clone_from(title);
+                        local.description.clone_from(description);
                         local.target = *target;
                         local.order = *order;
                         local.anchor_time = *anchor_time;
+                        local.anchor_day = *anchor_day;
                         local.clocks = *clocks;
                         local.by = *by;
                         // Wholesale adoption resurrects: the wire emits a
@@ -1335,9 +1339,11 @@ pub fn fold_habits(
                             id,
                             board,
                             title: title.clone(),
+                            description: description.clone(),
                             target: *target,
                             order: *order,
                             anchor_time: *anchor_time,
+                            anchor_day: *anchor_day,
                             clocks: *clocks,
                             continued_from: *continued_from,
                             deleted: false,
@@ -1378,6 +1384,8 @@ fn effective_clock_of(clocks: &crate::habit::HabitClocks) -> chrono::DateTime<ch
         .max(clocks.target)
         .max(clocks.order)
         .max(clocks.anchor_time)
+        .max(clocks.description)
+        .max(clocks.anchor_day)
         .max(clocks.deleted)
 }
 
@@ -6850,9 +6858,11 @@ mod habit_fold_tests {
             id: HabitId::from(uuid::Uuid::from_u128(raw)),
             board: BoardId::from(uuid::Uuid::from_u128(board)),
             title: format!("habit {raw}"),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             deleted,
@@ -6863,9 +6873,11 @@ mod habit_fold_tests {
     fn live_row(stamp: i64, title: &str) -> HabitRecord {
         HabitRecord::Live {
             title: title.to_owned(),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
             order: 1,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             by: None,
@@ -6914,6 +6926,73 @@ mod habit_fold_tests {
         assert_eq!(adopted.title, "renamed remotely");
         assert_eq!(adopted.order, 1, "the whole row adopts, clocks included");
         assert_eq!(adopted.clocks.title, ts(200));
+    }
+
+    #[test]
+    fn fold_habits_adopts_the_description_and_anchor_day_fields() {
+        let local = habit(1, 800, 100, false);
+        let board = BoardId::from(uuid::Uuid::from_u128(800));
+        let id = local.id;
+        // A strictly-newer row differing ONLY in the two new fields:
+        // the newer anchor-day clock wins the duel (the new slots are
+        // competition data, not display garnish).
+        let mut state = HabitState {
+            habits: [(id, local.clone())].into_iter().collect(),
+            log: std::collections::BTreeMap::new(),
+        };
+        let mut clocks = HabitClocks::all(ts(100));
+        clocks.description = ts(300);
+        clocks.anchor_day = ts(300);
+        let rows = [(
+            id.as_uuid().to_string(),
+            HabitRecord::Live {
+                title: local.title.clone(),
+                description: "remote notes".to_owned(),
+                target: local.target,
+                order: local.order,
+                anchor_time: local.anchor_time,
+                anchor_day: Some(crate::habit::AnchorDay::Weekday(chrono::Weekday::Wed)),
+                clocks,
+                continued_from: None,
+                by: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert_eq!(changes.upserts.len(), 1, "the newer slots win the duel");
+        let adopted = &state.habits[&id];
+        assert_eq!(adopted.description, "remote notes");
+        assert_eq!(
+            adopted.anchor_day,
+            Some(crate::habit::AnchorDay::Weekday(chrono::Weekday::Wed))
+        );
+        assert_eq!(adopted.clocks.description, ts(300));
+
+        // An equal-clock tie keeps local (the tuple-duel law extends).
+        let mut state = HabitState {
+            habits: [(id, local.clone())].into_iter().collect(),
+            log: std::collections::BTreeMap::new(),
+        };
+        let rows = [(
+            id.as_uuid().to_string(),
+            HabitRecord::Live {
+                title: local.title.clone(),
+                description: "tie breaker must not adopt".to_owned(),
+                target: local.target,
+                order: local.order,
+                anchor_time: local.anchor_time,
+                anchor_day: None,
+                clocks: HabitClocks::all(ts(100)),
+                continued_from: None,
+                by: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let changes = fold_habits(&mut state, &rows, board);
+        assert!(changes.upserts.is_empty(), "local stands at the tie");
+        assert_eq!(state.habits[&id].description, "");
     }
 
     #[test]
@@ -7506,9 +7585,11 @@ mod author_duel_tests {
                 id: habit_id,
                 board,
                 title: title.to_owned(),
+                description: String::new(),
                 target,
                 order: 0,
                 anchor_time: None,
+                anchor_day: None,
                 clocks: crate::habit::HabitClocks::all(t),
                 continued_from: None,
                 deleted: false,
@@ -7516,9 +7597,11 @@ mod author_duel_tests {
             };
             let doc_row = |title: &str, by: Option<AuthorId>| crate::appdata::HabitRecord::Live {
                 title: title.to_owned(),
+                description: String::new(),
                 target,
                 order: 0,
                 anchor_time: None,
+                anchor_day: None,
                 clocks: crate::habit::HabitClocks::all(t),
                 continued_from: None,
                 by,
@@ -7755,9 +7838,11 @@ mod author_duel_tests {
                 id: habit_id,
                 board,
                 title: title.to_owned(),
+                description: String::new(),
                 target,
                 order: 0,
                 anchor_time: None,
+                anchor_day: None,
                 clocks: crate::habit::HabitClocks::all(t),
                 continued_from: None,
                 deleted: false,
@@ -7771,9 +7856,11 @@ mod author_duel_tests {
                 habit_id.as_uuid().to_string(),
                 crate::appdata::HabitRecord::Live {
                     title: "b-habit".to_owned(),
+                    description: String::new(),
                     target,
                     order: 0,
                     anchor_time: None,
+                    anchor_day: None,
                     clocks: crate::habit::HabitClocks::all(t),
                     continued_from: None,
                     by: Some(a),
@@ -7987,9 +8074,11 @@ mod author_duel_tests {
                 id: habit_id,
                 board,
                 title: "b-habit".to_owned(),
+                description: String::new(),
                 target,
                 order: 0,
                 anchor_time: None,
+                anchor_day: None,
                 clocks: crate::habit::HabitClocks::all(t1),
                 continued_from: None,
                 deleted: false,
@@ -7999,9 +8088,11 @@ mod author_duel_tests {
                 habit_id.as_uuid().to_string(),
                 crate::appdata::HabitRecord::Live {
                     title: "d-habit".to_owned(),
+                    description: String::new(),
                     target,
                     order: 7,
                     anchor_time: None,
+                    anchor_day: None,
                     clocks: crate::habit::HabitClocks::all(t2),
                     continued_from: None,
                     by: Some(d),
@@ -8360,9 +8451,11 @@ mod sidecar_convergence_prop {
                     id: habit_id,
                     board,
                     title: format!("habit-{}", fact.content),
+                    description: String::new(),
                     target,
                     order: 0,
                     anchor_time: None,
+                    anchor_day: None,
                     clocks: crate::habit::HabitClocks::all(ts(fact.clock)),
                     continued_from: None,
                     deleted: false,
@@ -8373,9 +8466,11 @@ mod sidecar_convergence_prop {
                         habit_id.as_uuid().to_string(),
                         crate::appdata::HabitRecord::Live {
                             title: format!("habit-{}", fact.content),
+                            description: String::new(),
                             target,
                             order: 0,
                             anchor_time: None,
+                            anchor_day: None,
                             clocks: crate::habit::HabitClocks::all(ts(fact.clock)),
                             continued_from: None,
                             by: fact.by,

@@ -12,8 +12,8 @@ use proptest::prelude::*;
 
 use super::{string_strategy, timestamp_strategy};
 use crate::habit::{
-    Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget, NonZeroCount,
-    PeriodKind, period_start,
+    AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget, MonthDay,
+    NonZeroCount, PeriodKind, period_start,
 };
 
 /// One of the three period kinds, uniform.
@@ -45,8 +45,39 @@ pub fn habit_target_strategy() -> impl Strategy<Value = HabitTarget> {
     })
 }
 
+/// A random optional [`AnchorDay`], deliberately *unpaired* with any
+/// target kind: the invariance properties need the mismatched pairings
+/// (a `Weekday` on a `PerMonth` habit and a `MonthDay` on a `PerWeek`
+/// habit are the documented-inert shapes) exercised too.
+///
+/// # Panics
+///
+/// Panics only if the [`MonthDay`] mint rejects its bounded 1..=31
+/// domain — a programming error, not an input condition.
+pub fn anchor_day_strategy() -> impl Strategy<Value = Option<AnchorDay>> {
+    prop_oneof![
+        Just(None),
+        (0_u32..7).prop_map(|n| {
+            Some(AnchorDay::Weekday(
+                [
+                    chrono::Weekday::Mon,
+                    chrono::Weekday::Tue,
+                    chrono::Weekday::Wed,
+                    chrono::Weekday::Thu,
+                    chrono::Weekday::Fri,
+                    chrono::Weekday::Sat,
+                    chrono::Weekday::Sun,
+                ][n as usize],
+            ))
+        }),
+        (1_u8..=31).prop_map(|n| Some(AnchorDay::MonthDay(MonthDay::new(n).expect("1..=31")))),
+    ]
+}
+
 /// A random habit entity (anchor chips and seam links included — the
-/// negative pin that they influence no projection reads them).
+/// negative pin that they influence no projection reads them). The
+/// description and anchor day ride along for the same reason: display
+/// data that no window, streak, or ordering projection may read.
 ///
 /// # Panics
 ///
@@ -57,12 +88,14 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
         super::habit_id_strategy(),
         super::board_id_strategy(),
         string_strategy(),
+        string_strategy(),
         habit_target_strategy(),
         -100_i64..=100,
         proptest::option::of((0_u32..86_400).prop_map(|secs| {
             chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, 0)
                 .expect("in-range seconds")
         })),
+        anchor_day_strategy(),
         proptest::option::of(super::series_id_strategy()),
         timestamp_strategy(),
         any::<bool>(),
@@ -72,14 +105,29 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
         ),
     )
         .prop_map(
-            |(id, board, title, target, order, anchor_time, continued_from, stamp, deleted, by)| {
+            |(
+                id,
+                board,
+                title,
+                description,
+                target,
+                order,
+                anchor_time,
+                anchor_day,
+                continued_from,
+                stamp,
+                deleted,
+                by,
+            )| {
                 Habit {
                     id,
                     board,
                     title,
+                    description,
                     target,
                     order,
                     anchor_time,
+                    anchor_day,
                     clocks: HabitClocks::all(stamp),
                     continued_from,
                     deleted,

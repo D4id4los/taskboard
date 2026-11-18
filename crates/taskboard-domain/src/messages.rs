@@ -794,6 +794,10 @@ where
 pub struct HabitChanges {
     /// New title.
     pub title: Option<String>,
+    /// New description (the `TaskChanges.description` shape verbatim:
+    /// plain single option — `Some("")` clears, `None` = untouched;
+    /// no clear-vs-untouched ambiguity).
+    pub description: Option<String>,
     /// New quota (count *and* period kind may change).
     pub target: Option<HabitTarget>,
     /// New display anchor chip; `Some(None)` clears it, `None` =
@@ -806,6 +810,18 @@ pub struct HabitChanges {
         skip_serializing_if = "Option::is_none"
     )]
     pub anchor_time: Option<Option<chrono::NaiveTime>>,
+    /// New display/nudge anchor day (O-1 option b); `Some(None)`
+    /// clears it, `None` = untouched — the `anchor_time` test twin.
+    /// A variant mismatched to the target kind is inert at read time
+    /// (documented leniency at
+    /// [`crate::habit::AnchorDay`]); the CLI refuses mismatches at
+    /// parse time, the domain does not police it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub anchor_day: Option<Option<crate::habit::AnchorDay>>,
     /// The §4.7 conversion seam's write path: `Some(Some(series))`
     /// links, `Some(None)` unlinks, `None` = untouched. Settable only
     /// here — create never mints a link, and the field carries no clock
@@ -1127,6 +1143,30 @@ mod tests {
             let back: LabelChanges = serde_json::from_str(&json).unwrap();
             prop_assert_eq!(back, changes);
         }
+    }
+
+    /// The `anchor_day` clear-vs-untouched distinction (the
+    /// `anchor_time` test twin): an explicit `null` deserializes to
+    /// `Some(None)` (clear), an absent field to `None` (untouched),
+    /// and a set value round-trips.
+    #[test]
+    fn habit_changes_anchor_day_serde_keeps_the_double_option_layers() {
+        let cleared: HabitChanges = serde_json::from_str(r#"{"anchor_day":null}"#).unwrap();
+        assert_eq!(cleared.anchor_day, Some(None), "explicit null = clear");
+        let untouched: HabitChanges = serde_json::from_str("{}").unwrap();
+        assert_eq!(untouched.anchor_day, None, "absent field = untouched");
+        let set = HabitChanges {
+            anchor_day: Some(Some(crate::habit::AnchorDay::Weekday(chrono::Weekday::Wed))),
+            ..HabitChanges::default()
+        };
+        let json = serde_json::to_string(&set).unwrap();
+        let back: HabitChanges = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, set);
+        // The description rides the plain single option (Some("") clears).
+        let cleared_desc: HabitChanges = serde_json::from_str(r#"{"description":""}"#).unwrap();
+        assert_eq!(cleared_desc.description, Some(String::new()));
+        let untouched_desc: HabitChanges = serde_json::from_str("{}").unwrap();
+        assert_eq!(untouched_desc.description, None);
     }
 
     #[test]

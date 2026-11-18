@@ -2679,11 +2679,16 @@ pub fn plan_command(
                 id,
                 board: *board,
                 title: title.clone(),
+                // Additive defaults at mint time: the description and
+                // anchor day arrive through the sparse `UpdateHabit`
+                // edit only (the `--at` routing precedent).
+                description: String::new(),
                 target: *target,
                 order,
                 // No anchor chip, no conversion link at mint time
                 // (D-H7a): create arms never carry the seam.
                 anchor_time: None,
+                anchor_day: None,
                 clocks: HabitClocks::all(now),
                 continued_from: None,
                 deleted: false,
@@ -2717,6 +2722,23 @@ pub fn plan_command(
             {
                 updated.anchor_time = anchor_time;
                 updated.clocks.anchor_time = now;
+            }
+            if let Some(description) = &changes.description
+                && updated.description != *description
+            {
+                updated.description.clone_from(description);
+                updated.clocks.description = now;
+            }
+            if let Some(anchor_day) = changes.anchor_day
+                && updated.anchor_day != anchor_day
+            {
+                // Display/nudge data accepted as-is: a kind-mismatched
+                // variant is inert at read time (the documented
+                // leniency at `AnchorDay`), so the planner does not
+                // police it — but the edit is still contested content
+                // and stamps its clock.
+                updated.anchor_day = anchor_day;
+                updated.clocks.anchor_day = now;
             }
             if let Some(continued_from) = changes.continued_from
                 && updated.continued_from != continued_from
@@ -3063,9 +3085,11 @@ pub fn plan_command(
                 id: habit_id,
                 board,
                 title: task.title.clone(),
+                description: String::new(),
                 target: *target,
                 order,
                 anchor_time: None,
+                anchor_day: None,
                 clocks: HabitClocks::all(now),
                 continued_from: Some(rule.series),
                 deleted: false,
@@ -9716,9 +9740,11 @@ mod tests {
             id: habit_id(),
             board: BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD))),
             title: "meditate".into(),
+            description: String::new(),
             target,
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: crate::habit::HabitClocks::all(ts(T0 - 3_600)),
             continued_from: None,
             deleted: false,
@@ -9873,10 +9899,12 @@ mod tests {
                 habit: super::tests::habit_id(),
                 changes: crate::HabitChanges {
                     title: Some("renamed".into()),
+                    description: None,
                     target: Some(crate::habit::HabitTarget::PerWeek(
                         crate::habit::NonZeroCount::new(2).unwrap(),
                     )),
                     anchor_time: Some(Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap())),
+                    anchor_day: None,
                     continued_from: Some(Some(series)),
                 },
             },
@@ -9899,6 +9927,92 @@ mod tests {
         assert_eq!(updated.continued_from, Some(series));
         assert_eq!(updated.clocks.order, ts(T0 - 3_600));
         assert_eq!(updated.clocks.deleted, ts(T0 - 3_600));
+        assert_eq!(updated.clocks.description, ts(T0 - 3_600));
+        assert_eq!(updated.clocks.anchor_day, ts(T0 - 3_600));
+    }
+
+    #[test]
+    fn update_habit_stamps_the_description_and_anchor_day_clocks() {
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerWeek(
+            crate::habit::NonZeroCount::new(2).unwrap(),
+        ));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateHabit {
+                habit: super::tests::habit_id(),
+                changes: crate::HabitChanges {
+                    description: Some("weekly notes".into()),
+                    anchor_day: Some(Some(crate::habit::AnchorDay::Weekday(chrono::Weekday::Wed))),
+                    ..crate::HabitChanges::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertHabit(updated) = &plan.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(updated.description, "weekly notes");
+        assert_eq!(updated.clocks.description, now());
+        assert_eq!(
+            updated.anchor_day,
+            Some(crate::habit::AnchorDay::Weekday(chrono::Weekday::Wed))
+        );
+        assert_eq!(updated.clocks.anchor_day, now());
+        // Unnamed fields keep their clocks.
+        assert_eq!(updated.clocks.title, ts(T0 - 3_600));
+        assert_eq!(updated.clocks.target, ts(T0 - 3_600));
+
+        // A kind-mismatched variant is accepted as-is (the documented
+        // inertness at `AnchorDay`): the planner does not police it.
+        let mismatched = run(
+            &app,
+            &outbox,
+            &StateCommand::UpdateHabit {
+                habit: super::tests::habit_id(),
+                changes: crate::HabitChanges {
+                    anchor_day: Some(Some(crate::habit::AnchorDay::MonthDay(
+                        crate::habit::MonthDay::new(17).unwrap(),
+                    ))),
+                    ..crate::HabitChanges::default()
+                },
+            },
+        )
+        .unwrap();
+        let PersistenceAction::UpsertHabit(updated) = &mismatched.actions[0] else {
+            panic!("wrong action");
+        };
+        assert_eq!(
+            updated.anchor_day,
+            Some(crate::habit::AnchorDay::MonthDay(
+                crate::habit::MonthDay::new(17).unwrap()
+            ))
+        );
+
+        // A mask naming only unchanged values (both new fields
+        // included) stays the zero-action no-op.
+        let seeded = habit_app(crate::habit::HabitTarget::PerWeek(
+            crate::habit::NonZeroCount::new(2).unwrap(),
+        ));
+        let mut seeded_app = seeded.0;
+        let stored = seeded_app.habits.habits.get_mut(&habit_id()).unwrap();
+        stored.description = "weekly notes".into();
+        stored.anchor_day = Some(crate::habit::AnchorDay::Weekday(chrono::Weekday::Wed));
+        let noop = run(
+            &seeded_app,
+            &seeded.1,
+            &StateCommand::UpdateHabit {
+                habit: super::tests::habit_id(),
+                changes: crate::HabitChanges {
+                    description: Some("weekly notes".into()),
+                    anchor_day: Some(Some(crate::habit::AnchorDay::Weekday(chrono::Weekday::Wed))),
+                    ..crate::HabitChanges::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(noop, no_op());
     }
 
     #[test]

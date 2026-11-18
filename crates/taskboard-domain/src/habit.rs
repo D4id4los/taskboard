@@ -58,6 +58,76 @@ impl TryFrom<u32> for NonZeroCount {
     }
 }
 
+/// The [`MonthDay`] mint rejected the value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("month day must be 1..=31")]
+pub struct InvalidMonthDay;
+
+/// Hand-rolled A1 day-of-month: private field, fallible mint rejecting
+/// 0 and anything past 31 (every calendar month reaches at least 28;
+/// the *clamping* to the month's actual length is [`nudge_day`]'s
+/// documented leniency, not this type's job). Decode is strict (the
+/// [`NonZeroCount`] posture: a stored 0 or 32 cannot deserialize).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "u8")]
+pub struct MonthDay(u8);
+
+impl MonthDay {
+    /// The mint: `n` must be 1..=31.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidMonthDay`] when `n` is 0 or past 31.
+    pub const fn new(n: u8) -> Result<Self, InvalidMonthDay> {
+        if n == 0 || n > 31 {
+            Err(InvalidMonthDay)
+        } else {
+            Ok(Self(n))
+        }
+    }
+
+    /// The day (1..=31 always).
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for MonthDay {
+    type Error = InvalidMonthDay;
+
+    fn try_from(n: u8) -> Result<Self, Self::Error> {
+        Self::new(n)
+    }
+}
+
+/// The optional display/nudge anchor day of a habit (O-1 option b): a
+/// day *inside the canonical window* that governs display and nudging.
+/// Windows stay ISO-Monday / calendar-1st ([`period_start`] is
+/// untouched) and the streak walk never reads this field — pinned by
+/// the `anchor_day_window_invariance` properties.
+///
+/// # Documented leniency
+///
+/// A `Some(anchor_day)` on a `PerDay` habit, or a `Weekday(..)` on a
+/// `PerMonth` habit (or a `MonthDay(..)` on a `PerWeek` habit), is
+/// **inert**: [`nudge_day`] reads the variant matching the current
+/// target kind and falls through otherwise. The planner accepts the
+/// field as-is (it is display data, not window data) — no
+/// validate-and-forget path exists because nothing is validated away;
+/// mismatched variants simply never influence anything. The *CLI*
+/// refuses kind-mismatched `--day` values at parse time (cheaper
+/// feedback at the trust boundary), but the domain does not police it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AnchorDay {
+    /// For a `PerWeek` habit: the ISO weekday the nudge arms on.
+    Weekday(chrono::Weekday),
+    /// For a `PerMonth` habit: the calendar day (1..=31) the nudge
+    /// arms on — clamped to the month's actual length at read time
+    /// (a 31 in February arms on the 28th/29th).
+    MonthDay(MonthDay),
+}
+
 /// Which period a habit's target counts over. The window vocabulary of
 /// the whole module ([`period_start`] and friends).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -146,7 +216,9 @@ impl WindowStart {
 }
 
 /// The habit's per-field LWW write clocks (the §4.1 clock list,
-/// verbatim). `continued_from` carries deliberately no slot: it is
+/// verbatim) extended by the 2026-11-18 field family with the
+/// description and anchor-day slots — contested content, they roam and
+/// compete. `continued_from` carries deliberately no slot: it is
 /// conversion-seam data, not contested content (D-H7a — same treatment
 /// as `Task.remote`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +231,12 @@ pub struct HabitClocks {
     pub order: DateTime<Utc>,
     /// Anchor-time write clock.
     pub anchor_time: DateTime<Utc>,
+    /// Description write clock (the plain-`String` task precedent —
+    /// contested content, it roams and competes).
+    pub description: DateTime<Utc>,
+    /// Anchor-day write clock (the optional display/nudge day —
+    /// contested content, it roams and competes).
+    pub anchor_day: DateTime<Utc>,
     /// Tombstone clock.
     pub deleted: DateTime<Utc>,
 }
@@ -173,6 +251,8 @@ impl HabitClocks {
             target: now,
             order: now,
             anchor_time: now,
+            description: now,
+            anchor_day: now,
             deleted: now,
         }
     }
@@ -191,6 +271,12 @@ pub struct Habit {
     pub board: BoardId,
     /// Display title.
     pub title: String,
+    /// Free-text description (the `Task.description` shape verbatim:
+    /// plain `String`, no bound, no newtype — no invariant to enforce).
+    /// Display data; never an ordering or window input (the ordering
+    /// inertness property extends to it).
+    #[serde(default)]
+    pub description: String,
     /// The quota per period. A kind change never deletes former-kind
     /// log rows — they stay in the map (they sync as facts) but are
     /// analytically inert (D-H12).
@@ -206,6 +292,12 @@ pub struct Habit {
     /// the `anchor_time_never_influences_the_canonical_order` proptest
     /// stands).
     pub anchor_time: Option<chrono::NaiveTime>,
+    /// The optional display/nudge anchor day *inside the canonical
+    /// window* (O-1 option b): windows stay ISO-Monday / calendar-1st,
+    /// the streak walk never reads it, and a variant mismatched to the
+    /// target kind is inert (documented leniency at [`AnchorDay`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_day: Option<AnchorDay>,
     /// Per-field LWW clocks.
     pub clocks: HabitClocks,
     /// The §4.7 conversion seam, habit side: the series this habit
@@ -622,9 +714,11 @@ mod tests {
             id: HabitId::from(uuid::Uuid::from_u128(raw)),
             board: BoardId::from(uuid::Uuid::from_u128(900)),
             title: format!("habit {raw}"),
+            description: String::new(),
             target,
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(Utc.timestamp_opt(100, 0).unwrap()),
             continued_from: None,
             deleted: false,
@@ -641,6 +735,98 @@ mod tests {
         assert!(back.is_err(), "zero is unrepresentable at decode");
         let one: NonZeroCount = serde_json::from_str("3").unwrap();
         assert_eq!(one.get(), 3);
+    }
+
+    #[test]
+    fn month_day_mint_rejects_zero_and_32_and_decodes_strictly() {
+        assert_eq!(MonthDay::new(0), Err(InvalidMonthDay));
+        assert_eq!(MonthDay::new(32), Err(InvalidMonthDay));
+        assert_eq!(MonthDay::new(1).unwrap().get(), 1);
+        assert_eq!(MonthDay::new(31).unwrap().get(), 31);
+        // Strict decode (the NonZeroCount posture): 0 and 32 are
+        // unrepresentable at decode.
+        for raw in ["0", "32"] {
+            let back: Result<MonthDay, _> = serde_json::from_str(raw);
+            assert!(back.is_err(), "{raw} is unrepresentable at decode");
+        }
+        let seventeen: MonthDay = serde_json::from_str("17").unwrap();
+        assert_eq!(seventeen.get(), 17);
+    }
+
+    #[test]
+    fn anchor_day_round_trips_in_the_externally_tagged_wire_form() {
+        let weekday = AnchorDay::Weekday(chrono::Weekday::Wed);
+        let json = serde_json::to_string(&weekday).unwrap();
+        assert_eq!(json, r#"{"Weekday":"Wed"}"#);
+        assert_eq!(serde_json::from_str::<AnchorDay>(&json).unwrap(), weekday);
+        let month_day = AnchorDay::MonthDay(MonthDay::new(17).unwrap());
+        let json = serde_json::to_string(&month_day).unwrap();
+        assert_eq!(json, r#"{"MonthDay":17}"#);
+        assert_eq!(serde_json::from_str::<AnchorDay>(&json).unwrap(), month_day);
+    }
+
+    #[test]
+    fn habit_serde_carries_the_additive_fields_and_decodes_pre_field_rows() {
+        let mut h = habit(1, HabitTarget::PerWeek(NonZeroCount::new(2).unwrap()));
+        h.description = "every week notes".into();
+        h.anchor_day = Some(AnchorDay::Weekday(chrono::Weekday::Wed));
+        let json = serde_json::to_string(&h).unwrap();
+        let back: Habit = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, h);
+        assert!(json.contains(r#""description":"every week notes""#));
+        // Default-absent law: a pre-field document (no description /
+        // anchor_day keys) decodes with the additive defaults.
+        let pre_field = format!(
+            r#"{{"id":"{}","board":"{}","title":"old","target":{{"PerWeek":2}},"order":0,"anchor_time":null,"clocks":{{"title":"1970-01-01T00:00:00Z","target":"1970-01-01T00:00:00Z","order":"1970-01-01T00:00:00Z","anchor_time":"1970-01-01T00:00:00Z","description":"1970-01-01T00:00:00Z","anchor_day":"1970-01-01T00:00:00Z","deleted":"1970-01-01T00:00:00Z"}},"continued_from":null,"deleted":false}}"#,
+            h.id.as_uuid(),
+            h.board.as_uuid(),
+        );
+        let decoded: Habit = serde_json::from_str(&pre_field).unwrap();
+        assert_eq!(decoded.description, "");
+        assert_eq!(decoded.anchor_day, None);
+    }
+
+    #[test]
+    fn nudge_day_arm_checkpoints_per_kind() {
+        let monday = date(2026, 10, 26); // an ISO Monday
+        // PerDay ignores the field entirely (inert even when set).
+        let mut daily = habit(1, HabitTarget::PerDay(NonZeroCount::new(1).unwrap()));
+        daily.anchor_day = Some(AnchorDay::Weekday(chrono::Weekday::Wed));
+        assert_eq!(nudge_day(&daily, WindowStart(monday)), monday);
+        // PerWeek: none → the window date; Wednesday → that Wednesday.
+        let weekly = habit(2, HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()));
+        assert_eq!(nudge_day(&weekly, WindowStart(monday)), monday);
+        let mut wednesday_habit = weekly.clone();
+        wednesday_habit.anchor_day = Some(AnchorDay::Weekday(chrono::Weekday::Wed));
+        assert_eq!(
+            nudge_day(&wednesday_habit, WindowStart(monday)),
+            date(2026, 10, 28),
+            "the Wednesday inside the Monday window"
+        );
+        // A MonthDay on a PerWeek habit is inert (documented leniency).
+        let mut mismatched = weekly.clone();
+        mismatched.anchor_day = Some(AnchorDay::MonthDay(MonthDay::new(17).unwrap()));
+        assert_eq!(nudge_day(&mismatched, WindowStart(monday)), monday);
+        // PerMonth: none → the 1st; day 17 → the 17th; day 31 clamped
+        // to the month's last day (February arms on the 28th/29th).
+        let month_start = WindowStart::of_period(PeriodKind::Month, monday);
+        let monthly = habit(3, HabitTarget::PerMonth(NonZeroCount::new(1).unwrap()));
+        assert_eq!(nudge_day(&monthly, month_start), date(2026, 10, 1));
+        let mut monthly_17 = monthly.clone();
+        monthly_17.anchor_day = Some(AnchorDay::MonthDay(MonthDay::new(17).unwrap()));
+        assert_eq!(nudge_day(&monthly_17, month_start), date(2026, 10, 17));
+        let mut monthly_31 = monthly.clone();
+        monthly_31.anchor_day = Some(AnchorDay::MonthDay(MonthDay::new(31).unwrap()));
+        let february = WindowStart::of_period(PeriodKind::Month, date(2026, 2, 10));
+        assert_eq!(
+            nudge_day(&monthly_31, february),
+            date(2026, 2, 28),
+            "31 clamps to the month's last day (2026 is not a leap year)"
+        );
+        // A Weekday on a PerMonth habit is inert (documented leniency).
+        let mut mismatched_month = monthly.clone();
+        mismatched_month.anchor_day = Some(AnchorDay::Weekday(chrono::Weekday::Fri));
+        assert_eq!(nudge_day(&mismatched_month, month_start), date(2026, 10, 1));
     }
 
     #[test]
@@ -1019,6 +1205,129 @@ mod tests {
             b.sort();
             prop_assert_eq!(a, b);
         }
+
+        // US-6/AC-1: `period_start` itself is a free function of
+        // (kind, date) that cannot even name a `Habit`, so no direct
+        // pin exists for it — the load-bearing invariance pins are its
+        // consumers below.
+
+        /// US-6/AC-1 pin 1: `log_window`'s attribution is identical on
+        /// a habit and its description/anchor_day-perturbed twin — the
+        /// +1 never reads the display fields.
+        #[test]
+        fn log_window_is_invariant_under_description_and_anchor_day(
+            (fixture, probe) in habit_fixture_strategy().prop_flat_map(|fixture| {
+                (Just(fixture.clone()), 0_i64..=200_000)
+            }),
+            description in crate::test_support::string_strategy(),
+            anchor_day in crate::test_support::habit_strategies::anchor_day_strategy(),
+        ) {
+            let mut perturbed = fixture.clone();
+            perturbed.habit.description = description;
+            perturbed.habit.anchor_day = anchor_day;
+            let now = fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
+            prop_assert_eq!(
+                log_window(&perturbed.habit, &perturbed.log, now, perturbed.day),
+                log_window(&fixture.habit, &fixture.log, now, fixture.day),
+            );
+        }
+
+        /// US-6/AC-1 pin 2: `streak`'s walk (habit.rs `period_start`
+        /// contract) is identical under the perturbation, across the
+        /// in-day → +2.3-day probe grid.
+        #[test]
+        fn streak_is_invariant_under_description_and_anchor_day(
+            (fixture, probe) in habit_fixture_strategy().prop_flat_map(|fixture| {
+                (Just(fixture.clone()), 0_i64..=200_000)
+            }),
+            description in crate::test_support::string_strategy(),
+            anchor_day in crate::test_support::habit_strategies::anchor_day_strategy(),
+        ) {
+            let mut perturbed = fixture.clone();
+            perturbed.habit.description = description;
+            perturbed.habit.anchor_day = anchor_day;
+            let now = fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
+            prop_assert_eq!(
+                streak(&perturbed.habit, &perturbed.log, now, perturbed.day),
+                streak(&fixture.habit, &fixture.log, now, fixture.day),
+            );
+            prop_assert_eq!(
+                habit_streak_unioned(
+                    &perturbed.habit,
+                    &perturbed.log,
+                    &std::collections::BTreeMap::new(),
+                    now,
+                    perturbed.day,
+                ),
+                habit_streak_unioned(
+                    &fixture.habit,
+                    &fixture.log,
+                    &std::collections::BTreeMap::new(),
+                    now,
+                    fixture.day,
+                ),
+            );
+        }
+
+        /// US-6/AC-1 pin 3 (ordering inertness, the anchor_time pin's
+        /// twin): two habit sets differing only in `description` and
+        /// `anchor_day` sort to the identical canonical `(order, id)`
+        /// sequence.
+        #[test]
+        fn description_and_anchor_day_never_influence_the_canonical_order(
+            habits in proptest::collection::vec(habit_strategy(), 1..6),
+            anchor_day in crate::test_support::habit_strategies::anchor_day_strategy(),
+        ) {
+            let mut perturbed = habits.clone();
+            for (i, habit) in perturbed.iter_mut().enumerate() {
+                habit.description = format!("note {i}");
+                habit.anchor_day = anchor_day;
+            }
+            let key = |habit: &Habit| (habit.order, habit.id);
+            let mut a: Vec<_> = habits.iter().map(key).collect();
+            let mut b: Vec<_> = perturbed.iter().map(key).collect();
+            a.sort();
+            b.sort();
+            prop_assert_eq!(a, b);
+        }
+
+        /// US-6/AC-1 pin 4 (the constructive nudge law, keeping pins
+        /// 1–3 honest): with a random weekday anchored on a `PerWeek`
+        /// habit, `nudge_day` of the ISO-Monday window IS that
+        /// weekday's date inside the window — while the canonical
+        /// window start itself is still Monday (`period_start`
+        /// unchanged), proving "day inside the window", never "day
+        /// shifts the window".
+        #[test]
+        fn nudge_day_lies_inside_the_canonical_window_and_monday_stays_monday(
+            monday in naive_date_strategy(),
+            anchored in proptest::option::of(
+                (0_u32..7).prop_map(|n| match n {
+                    0 => chrono::Weekday::Mon,
+                    1 => chrono::Weekday::Tue,
+                    2 => chrono::Weekday::Wed,
+                    3 => chrono::Weekday::Thu,
+                    4 => chrono::Weekday::Fri,
+                    5 => chrono::Weekday::Sat,
+                    _ => chrono::Weekday::Sun,
+                }),
+            ),
+        ) {
+            let start = period_start(PeriodKind::Week, monday);
+            let mut weekly = habit(7, HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()));
+            weekly.anchor_day = anchored.map(AnchorDay::Weekday);
+            let day = nudge_day(&weekly, WindowStart(start));
+            prop_assert_eq!(period_start(PeriodKind::Week, day), start,
+                "the nudge day floors back to the SAME canonical window");
+            let end = period_after(PeriodKind::Week, start);
+            prop_assert!(day >= start && day < end, "the nudge day lies inside the window");
+            match weekly.anchor_day {
+                Some(AnchorDay::Weekday(wd)) if wd != chrono::Weekday::Mon => {
+                    prop_assert_eq!(day.weekday(), wd, "the nudge day IS the anchored weekday");
+                }
+                _ => prop_assert_eq!(day, start, "no (or inert) anchor reads the window start"),
+            }
+        }
     }
     /// DEBT PIN (currently-pins convention, AGENTS §5): two
     /// `LogHabit`s stamped with the SAME `now` (same planner
@@ -1107,9 +1416,11 @@ mod tests {
             id: HabitId::from(uuid::Uuid::from_u128(1)),
             board: BoardId::from(uuid::Uuid::from_u128(2)),
             title: "new".into(),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
@@ -1136,9 +1447,11 @@ mod tests {
             id: HabitId::from(uuid::Uuid::from_u128(1)),
             board: BoardId::from(uuid::Uuid::from_u128(2)),
             title: "daily".into(),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
@@ -1170,9 +1483,11 @@ mod tests {
             id: HabitId::from(uuid::Uuid::from_u128(1)),
             board: BoardId::from(uuid::Uuid::from_u128(2)),
             title: "daily".into(),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
@@ -1224,9 +1539,11 @@ mod tests {
             id: HabitId::from(uuid::Uuid::from_u128(1)),
             board: BoardId::from(uuid::Uuid::from_u128(2)),
             title: "retargeted".into(),
+            description: String::new(),
             target: HabitTarget::PerWeek(NonZeroCount::new(2).unwrap()),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
@@ -1291,9 +1608,11 @@ mod seam_tests {
             id: HabitId::from(uuid::Uuid::from_u128(1)),
             board: BoardId::from(uuid::Uuid::from_u128(2)),
             title: "morning run".into(),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
             order: 0,
             anchor_time: None,
+            anchor_day: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: series.map(|s| SeriesId::from(uuid::Uuid::from_u128(s))),
             deleted: false,
@@ -1576,6 +1895,52 @@ pub fn tracker_anchor_occurrence(
             .unwrap_or(NaiveDate::MAX)
     };
     day.instant(date, anchor_time)
+}
+
+/// The display/nudge anchor day of `window` (O-1's nudge law, the pure
+/// derivation the reminder engine consumes — the wiring itself is
+/// H4's): the day *inside the canonical window* the habit's nudge arms
+/// on. Total and pure; `window` must be (or floors to) a canonical
+/// period start of the habit's current kind — a non-canonical input is
+/// floored first, so the answer is always inside the canonical window.
+///
+/// - `PerDay`: the window date itself (a day habit has no inner day).
+/// - `PerWeek`: the window date when no [`AnchorDay`] is set (or the
+///   inert `Weekday::Mon` — the window already starts on Monday), else
+///   the in-window date matching the anchored weekday.
+/// - `PerMonth`: the window date when none, else
+///   `min(month_day, month_length)` — **documented leniency**: a 31 in
+///   a 28/29-day month arms on the month's last day (clamped, never
+///   spilling into the next window).
+#[must_use]
+pub fn nudge_day(habit: &Habit, window: WindowStart) -> NaiveDate {
+    let start = period_start(habit.target.kind(), window.as_date());
+    match (habit.target.kind(), habit.anchor_day) {
+        (PeriodKind::Week, Some(AnchorDay::Weekday(wd))) if wd != chrono::Weekday::Mon => {
+            let offset = (wd.num_days_from_monday())
+                .wrapping_sub(start.weekday().num_days_from_monday())
+                % 7;
+            start
+                .checked_add_days(chrono::Days::new(u64::from(offset)))
+                .unwrap_or(start)
+        }
+        (PeriodKind::Month, Some(AnchorDay::MonthDay(day))) => {
+            let last = last_day_of_month(start);
+            let day = day.get().min(u8::try_from(last.day()).unwrap_or(u8::MAX));
+            NaiveDate::from_ymd_opt(start.year(), start.month(), u32::from(day)).unwrap_or(start)
+        }
+        _ => start,
+    }
+}
+
+/// The month's last calendar day (28..=31; day 1 exists in every
+/// month, so the walk is total).
+fn last_day_of_month(first: NaiveDate) -> NaiveDate {
+    first
+        .checked_add_months(chrono::Months::new(1))
+        .unwrap_or(first)
+        .checked_sub_days(chrono::Days::new(1))
+        .unwrap_or(first)
 }
 
 #[cfg(test)]
