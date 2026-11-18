@@ -898,6 +898,15 @@ impl UiHandle {
     /// unchanged snapshot skips the derive+diff, the cheap wipe and
     /// settings tail still run. The repaint timer calls this; tests
     /// may call it directly.
+    ///
+    /// The guard is identity-of-the-state-Arc, so anything the derive
+    /// reads that is NOT carried in the state Arc (presentation-side
+    /// fields on the adapter) never trips it — mutating such a field
+    /// and calling this method silently skips the derive. Those
+    /// mutations must go through the adapter's forced verbs
+    /// (`adapter::Adapter::set_view_context`, `force_derive`) or
+    /// `adapter::Adapter::refresh_forced` (see the `refresh_forced`
+    /// contract on the adapter).
     pub fn refresh(&self) {
         if let Some(window) = self.window.as_weak().upgrade() {
             self.adapter.borrow_mut().refresh(&window);
