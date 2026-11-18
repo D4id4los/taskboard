@@ -40,6 +40,7 @@ export { ReviewModel }
 export { TimerRowModel, BreakRuleRowModel }
 import { DueDayModel } from "compositions/date-picker.slint";
 import { DatePicker } from "compositions/date-picker.slint";
+import { DueEditor } from "compositions/due-editor.slint";
 export { DueDayModel }
 import {
     SettingsView,
@@ -779,62 +780,87 @@ export component AppWindow inherits Window {
             }
         }
 
-            // The date-picker overlay (round-3 D10/R2): the
-            // dismissal layer first (a full-window TouchArea, no
-            // visual — the later sibling is hit-tested first, the
-            // menu's probe-P1 shape), then the anchored panel. An
-            // outside click dismisses the picker only — the editor
-            // and its buffer stay armed. The mount condition is the
-            // panel's own, so the layer can never linger. The panel
-            // sits below the field when it fits, else above, both
-            // clamped into the window (status bar included) — the
-            // min-viewport fallback is the menu's narrow-window
-            // shape.
+            // M1 (overlay migration): the due/scheduled editor as a
+            // true overlay on the AnchoredOverlayHost base — the
+            // in-flow DueEditor swap is dead, so opening shifts no
+            // sibling (the R-7 law). The anchor rides the
+            // `DatePickerFacts` global (the click-time push + the
+            // keep-alive mirrors in the view). The D-3 edit-kind law:
+            // an outside click resolves to save — the same settle
+            // funnel the field's focus loss rides.
             if (root.current-view == View.task-detail
-                    && root.task-model.date-picker-open): date-picker-backdrop := TouchArea {
-                width: 100%;
-                height: 100%;
-                clicked => root.date-picker-dismiss-requested();
-                // The right-click dismissal (r4 D2): `clicked` never
-                // fires for a right-button release, so the layer arms
-                // on the down half — the card's pointer-event idiom.
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down
-                            && event.button == PointerEventButton.right) {
-                        root.date-picker-dismiss-requested();
-                    }
+                    && (root.task-model.due-open || root.task-model.scheduled-open)):
+            AnchoredOverlayHost {
+                open: true;
+                anchor-x: DatePickerFacts.anchor-x;
+                anchor-y: DatePickerFacts.anchor-y;
+                anchor-width: DatePickerFacts.anchor-width;
+                anchor-height: DatePickerFacts.anchor-height;
+                viewport-width: root.width;
+                viewport-floor: status.y;
+                panel-preferred-width: 420px * Theme.base-scale;
+                walk-stops: 1;
+                dismissed => root.date-editor-focus-lost();
+                DueEditor {
+                    field-label: root.task-model.due-open ? "Due date entry" : "Start date entry";
+                    field-help: root.task-model.due-open
+                        ? "The task's deadline. Type a date, a relative offset like +2d, or use the calendar button."
+                        : "When work on the task starts. Same typed grammar as the due date.";
+                    entry-placeholder: "YYYY-MM-DD or +2d";
+                    initial-text: root.task-model.due-open
+                        ? root.task-model.due-text
+                        : root.task-model.scheduled-text;
+                    echo: root.task-model.due-open
+                        ? root.task-model.due-echo
+                        : root.task-model.scheduled-echo;
+                    field-focus-on-mount: root.task-model.date-field-focus;
+                    validity: root.task-model.date-validity;
+                    syntax-hint: root.task-model.date-syntax-hint;
+                    clear-affordance: true;
+                    edited(text) => root.task-date-edited(text);
+                    accepted(text) => root.task-date-accepted(text);
+                    picker-toggled() => root.task-date-picker-toggled();
+                    focus-lost() => root.date-editor-focus-lost();
                 }
             }
+            // M2 (overlay migration): the date-picker overlay on the
+            // host — the hand clamp/flip expressions and the
+            // dismissal underlay are the host's now. An outside click
+            // dismisses the picker only — the editor and its buffer
+            // stay armed (the r4 D24 rule keeps its seam). Mounted
+            // AFTER the editor overlay, so the picker's underlay
+            // receives exactly the clicks neither editor field nor
+            // picker panel absorb.
             if (root.current-view == View.task-detail
-                    && root.task-model.date-picker-open): DatePicker {
-                width: min(root.width - 2 * Theme.space-2,
-                           max(self.preferred-width, 280px * Theme.base-scale));
-                x: max(Theme.space-2,
-                       min(DatePickerFacts.anchor-x,
-                           root.width - self.width - Theme.space-2));
-                y: max(Theme.space-2,
-                       min((DatePickerFacts.anchor-y + DatePickerFacts.anchor-height
-                                + Theme.space-1 + self.height <= status.y
-                            ? DatePickerFacts.anchor-y + DatePickerFacts.anchor-height
-                                + Theme.space-1
-                            : DatePickerFacts.anchor-y - self.height - Theme.space-1),
-                           status.y - self.height - Theme.space-2));
-                caption: root.task-model.date-caption;
-                time-text: root.task-model.date-time-text;
-                grid: root.task-model.date-grid;
-                focus-on-mount: root.task-model.date-grid-focus;
-                picker-key(k) => root.task-date-picker-key(k);
-                grid-focus-changed(f) => root.date-picker-grid-focus-changed(f);
-                day-clicked(c) => root.task-date-day-clicked(c);
-                time-validity: root.task-model.date-time-validity;
-                time-error-hint: root.task-model.time-syntax-hint;
-                time-slots: root.task-model.date-time-slots;
-                time-nearest-row: root.task-model.date-time-nearest-row;
-                time-edited(t) => root.task-date-time-edited(t);
-                time-picked(m) => root.task-date-time-picked(m);
-                time-accepted(t) => root.task-date-time-accepted(t);
-                quick-toggled() => root.task-date-quick-toggled();
-                time-field-armed() => root.task-date-time-field-armed();
+                    && root.task-model.date-picker-open): AnchoredOverlayHost {
+                open: true;
+                anchor-x: DatePickerFacts.anchor-x;
+                anchor-y: DatePickerFacts.anchor-y;
+                anchor-width: DatePickerFacts.anchor-width;
+                anchor-height: DatePickerFacts.anchor-height;
+                viewport-width: root.width;
+                viewport-floor: status.y;
+                panel-preferred-width: 280px * Theme.base-scale;
+                walk-stops: 1;
+                dismissed => root.date-picker-dismiss-requested();
+                DatePicker {
+                    caption: root.task-model.date-caption;
+                    time-text: root.task-model.date-time-text;
+                    grid: root.task-model.date-grid;
+                    focus-on-mount: root.task-model.date-grid-focus;
+                    picker-key(k) => root.task-date-picker-key(k);
+                    grid-focus-changed(f) => root.date-picker-grid-focus-changed(f);
+                    day-clicked(c) => root.task-date-day-clicked(c);
+                    time-validity: root.task-model.date-time-validity;
+                    time-error-hint: root.task-model.time-syntax-hint;
+                    time-slots: root.task-model.date-time-slots;
+                    time-nearest-row: root.task-model.date-time-nearest-row;
+                    time-edited(t) => root.task-date-time-edited(t);
+                    time-picked(m) => root.task-date-time-picked(m);
+                    time-accepted(t) => root.task-date-time-accepted(t);
+                    quick-toggled() => root.task-date-quick-toggled();
+                    time-field-armed() => root.task-date-time-field-armed();
+                }
             }
 
         // The timers setter popover (r4 D33) on the AnchoredOverlayHost

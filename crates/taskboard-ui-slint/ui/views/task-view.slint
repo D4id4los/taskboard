@@ -12,7 +12,6 @@ import { TippedField } from "../widgets/tipped-field.slint";
 import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
 import { InfoTip } from "../widgets/info-tip.slint";
 import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
-import { DueEditor } from "../compositions/due-editor.slint";
 import { DueDayModel } from "../compositions/date-picker.slint";
 import { TimeSlotRow } from "../widgets/time-field.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
@@ -304,26 +303,52 @@ export component TaskView inherits FocusScope {
     // The picker's key/day seams live on the window-level overlay
     // (round-3 D10) — bound there directly, not forwarded here.
 
-    // The overlay's anchor (round-3 D10): the armed field's metadata
-    // column, window-space — read from the *unconditional* column
-    // elements (a conditional element's id is not reachable across
-    // scopes; the columns are) and mirrored into the window-level
-    // facts global the overlay reads (the MenuPanelFacts precedent;
-    // values are stale while the view is unmounted, and the
-    // overlay's mount condition is the model's date-picker-open).
+    // The overlay's anchor (round-3 D10, re-homed by the overlay
+    // migration): the armed field's closed cell, window-space — the
+    // cells stay mounted unconditionally now (the in-flow swap is
+    // dead), so the reads are unconditional too. The click-time push
+    // (D-2, the timers idiom) lands the realized geometry into the
+    // facts global in the same handler that opens; the `changed`
+    // mirrors below are the keep-alives that keep the facts live
+    // across host scrolls (the values are stale while the view is
+    // unmounted; the overlay's mount condition is the model's own
+    // open flags).
     out property <bool> date-picker-visible: root.task.date-picker-open;
+    // The overlay-migration geometry seams (round-9 chunk 5, om probe):
+    // the metadata block's realized rects, window-space — the om
+    // geometry tests read them across the due/scheduled editor's
+    // open/close (the R-7 zero-layout-shift law codified).
+    out property <length> stack-rect-x: stack-column.absolute-position.x;
+    out property <length> stack-rect-y: stack-column.absolute-position.y;
+    out property <length> stack-rect-width: stack-column.width;
+    out property <length> stack-rect-height: stack-column.height;
+    out property <length> state-rect-x: state-column.absolute-position.x;
+    out property <length> state-rect-y: state-column.absolute-position.y;
+    out property <length> state-rect-width: state-column.width;
+    out property <length> state-rect-height: state-column.height;
+    out property <length> effort-rect-x: effort-row.absolute-position.x;
+    out property <length> effort-rect-y: effort-row.absolute-position.y;
+    out property <length> effort-rect-height: effort-row.height;
+    out property <length> description-rect-y: description-section.absolute-position.y;
+    out property <length> description-rect-height: description-section.height;
+    // The editor viewport's realized height (the om_us3_s1 law: the
+    // edit mount keeps the display mount's height).
+    out property <length> description-editor-viewport-height:
+        description-display-height;
+    private property <length> description-display-height: 0;
+
     private property <length> date-anchor-x: root.task.due-open
-        ? due-column.absolute-position.x
-        : scheduled-column.absolute-position.x;
+        ? due-cell.absolute-position.x
+        : scheduled-cell.absolute-position.x;
     private property <length> date-anchor-y: root.task.due-open
-        ? due-column.absolute-position.y
-        : scheduled-column.absolute-position.y;
+        ? due-cell.absolute-position.y
+        : scheduled-cell.absolute-position.y;
     private property <length> date-anchor-width: root.task.due-open
-        ? due-column.width
-        : scheduled-column.width;
+        ? due-cell.width
+        : scheduled-cell.width;
     private property <length> date-anchor-height: root.task.due-open
-        ? due-column.height - due-caption.preferred-height
-        : scheduled-column.height - scheduled-caption.preferred-height;
+        ? due-cell.height
+        : scheduled-cell.height;
     // The mirrors (changed handlers — the row-selection mirror
     // precedent; they fire when the layout resolves the positions
     // after mount).
@@ -331,6 +356,22 @@ export component TaskView inherits FocusScope {
     changed date-anchor-y => { DatePickerFacts.anchor-y = root.date-anchor-y; }
     changed date-anchor-width => { DatePickerFacts.anchor-width = root.date-anchor-width; }
     changed date-anchor-height => { DatePickerFacts.anchor-height = root.date-anchor-height; }
+    // The click-time anchor pushes (D-2): the opener's realized
+    // geometry into the facts global in the same handler that opens —
+    // the pre-swap-height flip-misbranch is dead because nothing in
+    // the view's layout changes on open.
+    function push-due-anchor() {
+        DatePickerFacts.anchor-x = due-cell.absolute-position.x;
+        DatePickerFacts.anchor-y = due-cell.absolute-position.y;
+        DatePickerFacts.anchor-width = due-cell.width;
+        DatePickerFacts.anchor-height = due-cell.height;
+    }
+    function push-scheduled-anchor() {
+        DatePickerFacts.anchor-x = scheduled-cell.absolute-position.x;
+        DatePickerFacts.anchor-y = scheduled-cell.absolute-position.y;
+        DatePickerFacts.anchor-width = scheduled-cell.width;
+        DatePickerFacts.anchor-height = scheduled-cell.height;
+    }
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -622,7 +663,7 @@ export component TaskView inherits FocusScope {
             // The metadata row (tertiary per D17's demotion table).
             HorizontalLayout {
                 spacing: Theme.space-3;
-                VerticalLayout {
+                stack-column := VerticalLayout {
                     RoleText {
                         role: Typography.caption;
                         text-color: Theme.text-secondary;
@@ -639,15 +680,18 @@ export component TaskView inherits FocusScope {
                     // display RoleText, clickable into the DueEditor
                     // — typed entry and the calendar picker, one
                     // commit seam.
-                    due-caption := RoleText {
+                    RoleText {
                         role: Typography.caption;
                         text-color: Theme.text-secondary;
                         text: "Due date";
                     }
                     // The closed cell reads interactive (round-3
                     // D7/F13): hover surface + pointer, the title
-                    // cell's grammar.
-                    if (!root.task.due-open): due-cell := Rectangle {
+                    // cell's grammar. Always mounted — the in-flow
+                    // editor swap is dead (the overlay migration, M1):
+                    // the editor opens as a window-level overlay off
+                    // this cell's anchor, shifting no sibling.
+                    due-cell := Rectangle {
                         border-radius: Theme.radius-small;
                         border-width: due-stop.has-focus ? Theme.focus-ring-width : 0;
                         border-color: Semantic.focus-ring;
@@ -657,7 +701,10 @@ export component TaskView inherits FocusScope {
                             stop-label: "Edit due date";
                             stop-description: "Opens the due-date editor.";
                             stop-id: 5;
-                            activated => { root.due-edit-opened(); }
+                            activated => {
+                                root.push-due-anchor();
+                                root.due-edit-opened();
+                            }
                         }
                         if (due-touch.has-hover): Rectangle {
                             background: Theme.surface-hover;
@@ -682,6 +729,7 @@ export component TaskView inherits FocusScope {
                             }
                             clicked => {
                                 TooltipState.unhover();
+                                root.push-due-anchor();
                                 root.due-edit-opened();
                             }
                         }
@@ -691,30 +739,19 @@ export component TaskView inherits FocusScope {
                             text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
                         }
                     }
-                    if (root.task.due-open): DueEditor {
-                        field-help: "The task's deadline. Type a date, a relative offset like +2d, or use the calendar button.";
-                        initial-text: root.task.due-text;
-                        echo: root.task.due-echo;
-                        field-focus-on-mount: root.task.date-field-focus;
-                        validity: root.task.date-validity;
-                        syntax-hint: root.task.date-syntax-hint;
-                        clear-affordance: true;
-                        edited(text) => root.date-edited(text);
-                        accepted(text) => root.date-accepted(text);
-                        picker-toggled() => root.date-picker-toggled();
-                        focus-lost() => root.date-editor-focus-lost();
-                    }
                 }
                 // The start-date column (round-3 D8/F14): the due
                 // column's grammar, one look — same closed cell, the
                 // same editor composition.
                 scheduled-column := VerticalLayout {
-                    scheduled-caption := RoleText {
+                    RoleText {
                         role: Typography.caption;
                         text-color: Theme.text-secondary;
                         text: "Start date";
                     }
-                    if (!root.task.scheduled-open): scheduled-cell := Rectangle {
+                    // The due cell's grammar (always mounted — the
+                    // overlay migration, M1: no in-flow swap).
+                    scheduled-cell := Rectangle {
                         border-radius: Theme.radius-small;
                         border-width: scheduled-stop.has-focus ? Theme.focus-ring-width : 0;
                         border-color: Semantic.focus-ring;
@@ -724,7 +761,10 @@ export component TaskView inherits FocusScope {
                             stop-label: "Edit start date";
                             stop-description: "Opens the start-date editor.";
                             stop-id: 6;
-                            activated => { root.scheduled-edit-opened(); }
+                            activated => {
+                                root.push-scheduled-anchor();
+                                root.scheduled-edit-opened();
+                            }
                         }
                         if (scheduled-touch.has-hover): Rectangle {
                             background: Theme.surface-hover;
@@ -749,6 +789,7 @@ export component TaskView inherits FocusScope {
                             }
                             clicked => {
                                 TooltipState.unhover();
+                                root.push-scheduled-anchor();
                                 root.scheduled-edit-opened();
                             }
                         }
@@ -758,23 +799,8 @@ export component TaskView inherits FocusScope {
                             text: root.task.scheduled-phrase == "" ? "—" : root.task.scheduled-phrase;
                         }
                     }
-                    if (root.task.scheduled-open): DueEditor {
-                        field-label: "Start date entry";
-                        field-help: "When work on the task starts. Same typed grammar as the due date.";
-                        entry-placeholder: "YYYY-MM-DD or +2d";
-                        initial-text: root.task.scheduled-text;
-                        echo: root.task.scheduled-echo;
-                        field-focus-on-mount: root.task.date-field-focus;
-                        validity: root.task.date-validity;
-                        syntax-hint: root.task.date-syntax-hint;
-                        clear-affordance: true;
-                        edited(text) => root.date-edited(text);
-                        accepted(text) => root.date-accepted(text);
-                        picker-toggled() => root.date-picker-toggled();
-                        focus-lost() => root.date-editor-focus-lost();
-                    }
                 }
-                VerticalLayout {
+                state-column := VerticalLayout {
                     RoleText {
                         role: Typography.caption;
                         text-color: Theme.text-secondary;
@@ -895,7 +921,7 @@ export component TaskView inherits FocusScope {
             // editor, and the x-clear mirroring the date fields'
             // clear (empty commit = Some(None) — the walk placement's
             // posture).
-            VerticalLayout {
+            effort-row := VerticalLayout {
                 RoleText {
                     role: Typography.caption;
                     text-color: Theme.text-secondary;
@@ -1220,7 +1246,7 @@ export component TaskView inherits FocusScope {
             // the layout stretch, not the content (the editor's
             // viewport rides its Flickable — the r3 cycle trap stays
             // fenced by the widget's own geometry contract).
-            VerticalLayout {
+            description-section := VerticalLayout {
                 vertical-stretch: 1;
                 RoleText {
                     role: Typography.caption;
@@ -1228,6 +1254,10 @@ export component TaskView inherits FocusScope {
                     text: "Description";
                 }
                 if (!root.task.description-edit-open): description-display := Rectangle {
+                    // The display height's mirror (the om_us3_s1 law's
+                    // oracle): the last realized display-mount height
+                    // persists while the edit mount holds.
+                    changed height => { root.description-display-height = self.height; }
                     border-radius: Theme.radius-small;
                     horizontal-stretch: 1;
                     vertical-stretch: 1;

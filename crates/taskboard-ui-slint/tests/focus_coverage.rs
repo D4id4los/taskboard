@@ -95,10 +95,6 @@ const EXEMPT: &[(&str, &str)] = &[
     // keyboard closes every modal by its Escape/toggle binding, and a
     // walk must never tab into a dismissal backstop.
     (
-        "TouchArea:AppWindow::date-picker-backdrop",
-        "modal dismissal surface; the picker closes on Escape",
-    ),
-    (
         "TouchArea:AnchoredOverlayHost::dismissal",
         "the anchored host's dismissal underlay (round-9 W1): the \
          setter popover closes on Escape — the layer is the host's, \
@@ -1806,7 +1802,7 @@ fn date_picker_has_no_pointer_only_controls() {
         assert_modal_scan(
             &mounted,
             "DatePicker",
-            &["TouchArea:AppWindow::date-picker-backdrop"],
+            &["TouchArea:AnchoredOverlayHost::dismissal"],
         );
     });
 }
@@ -1868,7 +1864,7 @@ fn quick_list_has_no_pointer_only_controls() {
             &mounted,
             "QuickListFlyout",
             &[
-                "TouchArea:AppWindow::date-picker-backdrop",
+                "TouchArea:AnchoredOverlayHost::dismissal",
                 "TouchArea:AppWindow::time-field-backdrop",
             ],
         );
