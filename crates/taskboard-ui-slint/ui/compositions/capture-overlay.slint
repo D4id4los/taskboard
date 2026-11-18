@@ -5,7 +5,7 @@
 // `accepted`; Escape rides the action layer (ModeNormal). Typing is
 // `ViInsert`, exactly the create row's discipline.
 
-import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { Theme, Typography, RoleText } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
 
@@ -18,23 +18,15 @@ export component CaptureOverlay inherits Rectangle {
     // The focus-loss settle (round-3 L1).
     callback text-flow-focus-lost();
 
-    background: Theme.surface-raised;
-    border-radius: Theme.radius-medium;
-    border-width: Theme.focus-ring-width;
-    border-color: Semantic.focus-ring;
-    drop-shadow-blur: 12px;
-    // The walk clamp's host half (US-2/W-2, D-W2): the mask holds
-    // this scope — the degenerate extent keeps the walk on it; the
-    // consumption edge rides the `mask-focus` seam's nonce.
-    init => {
-        MaskWalkFacts.extent = 1;
-        MaskWalkFacts.cursor = 0;
-    }
+    // The panel anatomy (background, scrim, border radius) is the
+    // ModalDialogHost's since round-9 W1 — the composition renders
+    // only its body (the field and the hint line).
+    // The walk clamp's consumption half (the extent/cursor seeding
+    // moved to the host): the field grab stays this panel's own.
     property <int> watch-mask-nonce: MaskWalkFacts.nonce;
     changed watch-mask-nonce => {
         if (MaskWalkFacts.armed) {
             capture-field.grab-focus();
-            MaskWalkFacts.cursor = 0;
         }
     }
 

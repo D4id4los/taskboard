@@ -163,7 +163,18 @@ export component TimersSection inherits Rectangle {
                 // disabled affordance) — the surface itself is fenced,
                 // the caption says where alarms live.
                 enabled: !root.absence-hint;
-                clicked => { root.setter-opened(); }
+                clicked => {
+                    // The anchor's open-time mirror (round-9 W1): the
+                    // derived-alias `changed` idiom above is the
+                    // #954 race — the popover's host reads the facts
+                    // at click time, so the button pushes its
+                    // realized geometry here, deterministically.
+                    TimerSetterFacts.anchor-x = self.absolute-position.x;
+                    TimerSetterFacts.anchor-y = self.absolute-position.y;
+                    TimerSetterFacts.anchor-width = self.width;
+                    TimerSetterFacts.anchor-height = self.height;
+                    root.setter-opened();
+                }
             }
             // The break-rule create affordance (T-14, #797): the
             // section header is the permanent affordance home (the

@@ -26,6 +26,8 @@ import { LabelsPanel, LabelRowModel } from "compositions/labels-overlay.slint";
 import { TrackPanelFacts, TrackPanelWalkFacts } from "track-panel-facts.slint";
 import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
+import { ModalDialogHost, DialogKind } from "widgets/modal-dialog-host.slint";
+import { AnchoredOverlayHost } from "widgets/anchored-overlay.slint";
 import { HabitRowModel } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
@@ -76,7 +78,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
 export { ReviewWalkModel }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
@@ -835,39 +837,25 @@ export component AppWindow inherits Window {
                 time-field-armed() => root.task-date-time-field-armed();
             }
 
-        // The timers setter popover (r4 D33): the date-picker overlay
-        // twin — the dismissal layer first (a full-window TouchArea,
-        // no visual; the later sibling is hit-tested first), then the
-        // anchored panel. An outside click (or right-click down, the
-        // r4 D2 idiom) dismisses — nothing is committed, drafts are
-        // the adapter's setter-local state. The panel sits below the
-        // header button when it fits, else above, both clamped into
-        // the window (status bar included).
-        if (root.timer-setter-open): timer-setter-backdrop := TouchArea {
-            width: 100%;
-            height: 100%;
-            clicked => root.timer-setter-dismiss-requested();
-            pointer-event(event) => {
-                if (event.kind == PointerEventKind.down
-                        && event.button == PointerEventButton.right) {
-                    root.timer-setter-dismiss-requested();
-                }
-            }
-        }
-        if (root.timer-setter-open): TimerSetter {
-            width: min(root.width - 2 * Theme.space-2,
-                       max(self.preferred-width, 300px * Theme.base-scale));
-            x: max(Theme.space-2,
-                   min(TimerSetterFacts.anchor-x,
-                       root.width - self.width - Theme.space-2));
-            y: max(Theme.space-2,
-                   min((TimerSetterFacts.anchor-y + TimerSetterFacts.anchor-height
-                            + Theme.space-1 + self.height <= status.y
-                        ? TimerSetterFacts.anchor-y + TimerSetterFacts.anchor-height
-                            + Theme.space-1
-                        : TimerSetterFacts.anchor-y - self.height - Theme.space-1),
-                       status.y - self.height - Theme.space-2));
-            time-text: root.timer-setter-time-text;
+        // The timers setter popover (r4 D33) on the AnchoredOverlayHost
+        // base (round-9 W1, D-W1-3's proof mount): the hand-written
+        // clamp/flip expressions and the dismissal layer are the
+        // host's now — the site mirrors the anchor facts and wires its
+        // seams. Behavior-preserving (the identical below/flip/clamp
+        // laws, deduplicated).
+        if (root.timer-setter-open): AnchoredOverlayHost {
+            open: true;
+            anchor-x: TimerSetterFacts.anchor-x;
+            anchor-y: TimerSetterFacts.anchor-y;
+            anchor-width: TimerSetterFacts.anchor-width;
+            anchor-height: TimerSetterFacts.anchor-height;
+            viewport-width: root.width;
+            viewport-floor: status.y;
+            panel-preferred-width: 300px * Theme.base-scale;
+            walk-stops: 1;
+            dismissed => root.timer-setter-dismiss-requested();
+            TimerSetter {
+                time-text: root.timer-setter-time-text;
             time-validity: root.timer-setter-time-validity;
             time-hint: root.timer-setter-time-hint;
             time-slots: root.timer-setter-time-slots;
@@ -882,8 +870,9 @@ export component AppWindow inherits Window {
             time-picked(m) => root.timer-setter-time-picked(m);
             day-picked(d) => root.timer-setter-day-picked(d);
             insist-picked(i) => root.timer-setter-insist-picked(i);
-            commit-requested(label) => root.timer-setter-commit-requested(label);
-            close-requested() => root.timer-setter-dismiss-requested();
+                commit-requested(label) => root.timer-setter-commit-requested(label);
+                close-requested() => root.timer-setter-dismiss-requested();
+            }
         }
     // The overlay's window-level mount (D-TS1): the date-picker's
     // exact pattern — the dismissal layer first (a full-window
@@ -1457,31 +1446,28 @@ export component AppWindow inherits Window {
                 }
             }
         }
-        if (root.capture-open): capture-backdrop := TouchArea {
-            // The modal scrim: an outside click discards-and-closes
-            // (the palette-dismiss precedent routed to ModeNormal).
-            width: 100%;
-            height: 100%;
-            clicked => root.capture-dismiss-requested();
-            // The right-click dismissal (r4 D2): the card's
-            // pointer-event idiom, closing on the down half.
-            pointer-event(event) => {
-                if (event.kind == PointerEventKind.down
-                        && event.button == PointerEventButton.right) {
-                    root.capture-dismiss-requested();
-                }
+        // The capture overlay on the ModalDialogHost base (round-9 W1,
+        // D-W1-1's proof mount): the host carries the scrim, the
+        // dismissal layer, the centering, and the walk arming — the
+        // site wires only its two existing intents. Outside click
+        // keeps capture's documented discard-and-close semantics
+        // (`kind: confirm`); the R-4 edit-kind flip for capture is a
+        // W2 migration decision, deliberately not here.
+        if (root.capture-open): ModalDialogHost {
+            open: true;
+            title: "Capture";
+            kind: DialogKind.confirm;
+            body-preferred-width: 560px * Theme.base-scale;
+            walk-stops: 1;
+            viewport-floor: status.y;
+            dismissed => root.capture-dismiss-requested();
+            accepted => root.capture-dismiss-requested();
+            CaptureOverlay {
+                initial-text: root.capture-initial-text;
+                capture-edited(text) => root.capture-text-edited(text);
+                capture-accepted() => root.capture-accepted();
+                text-flow-focus-lost() => root.text-flow-focus-lost();
             }
-        }
-        if (root.capture-open): CaptureOverlay {
-            width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
-            x: (root.width - self.width) / 2;
-            y: max(Theme.space-4,
-                   min((root.height - status.height - self.height) / 2,
-                       status.y - self.height - Theme.space-2));
-            initial-text: root.capture-initial-text;
-            capture-edited(text) => root.capture-text-edited(text);
-            capture-accepted() => root.capture-accepted();
-            text-flow-focus-lost() => root.text-flow-focus-lost();
         }
         // The recurrence editor's window-level mount (round-7 D-7.1,
         // the capture-overlay precedent): the scrim closes on an

@@ -1,0 +1,198 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The anchored-overlay base layer (J2 US-2, D-W1-3): a pure geometry
+// helper (`AnchoredOverlay` — anchor facts in, a placed rect out; no
+// TouchAreas, no dismissal, no focus of its own) plus the host
+// (`AnchoredOverlayHost`) that wraps it with the window-level mount
+// grammar: the absorbing dismissal underlay first, the panel after
+// (the later sibling wins the hit test), and automatic walk-mask
+// arming (D-W1-4 — containment is a property of being an overlay,
+// not a per-widget ritual).
+//
+// The deduplicated laws (the date-picker/timer-setter expression that
+// was copy-pasted ~10×):
+//   1. `auto` prefers below: `anchor-y + anchor-height + gap`
+//      (gap = Theme.space-1).
+//   2. Flip above (`anchor-y - height - gap`) when the below rect
+//      would cross `viewport-floor`.
+//   3. Clamp y into `[Theme.space-2, viewport-floor - height -
+//      Theme.space-2]`; clamp x into `[Theme.space-2, viewport-width
+//      - width - Theme.space-2]` (the x baseline is `anchor-x`).
+//   4. Width law — caller-side (documented on the host's
+//      `preferred-width`): `min(viewport - 2·space-2,
+//      max(preferred, floor))`. Caps are bounds, never targets (R-6).
+//   5. The overlay never intersects the anchor rect when either
+//      placement resolves (assertion G-2).
+//   6. The helper computes only; sibling-order grammar stays at the
+//      mount site.
+//
+// The host does not depend on `changed absolute-position` for the
+// initial layout pass (the time-field trap, plan §7.3): anchor facts
+// ride ordinary property bindings — the caller mirrors them into the
+// host's `in` properties exactly as the old mounts bound the facts
+// globals, and `changed` keep-alives stay the caller's business.
+
+import { Theme } from "../theme.slint";
+import { MaskWalkFacts } from "../mask-walk-facts.slint";
+
+// The vertical preference: `auto` applies the below-then-flip law;
+// `below`/`above` pin one side (clamped per law 3 either way).
+export enum OverlayPlacement {
+    auto,
+    below,
+    above,
+}
+
+export component AnchoredOverlay {
+    // The anchor rect in window coordinates (the opener's realized
+    // geometry, mirrored by the caller).
+    in property <length> anchor-x;
+    in property <length> anchor-y;
+    in property <length> anchor-width;
+    in property <length> anchor-height;
+    // The usable viewport: the window width and the floor (the
+    // status bar's top edge) injected from the mount site — no
+    // upward name reaching (plan §7.4).
+    in property <length> viewport-width;
+    in property <length> viewport-floor;
+    // The overlay's realized size (the host's panel).
+    in property <length> overlay-width;
+    in property <length> overlay-height;
+    in property <OverlayPlacement> placement: OverlayPlacement.auto;
+
+    // Law 1-2: below unless it would cross the floor.
+    property <length> below-y: self.anchor-y + self.anchor-height + Theme.space-1;
+    property <bool> below-fits:
+        self.below-y + self.overlay-height <= self.viewport-floor;
+    out property <bool> flipped: self.placement == OverlayPlacement.above
+        || (self.placement == OverlayPlacement.auto && !self.below-fits);
+    // Law 3: the clamp pair.
+    out property <length> computed-y:
+        max(Theme.space-2,
+            min(self.flipped
+                    ? self.anchor-y - self.overlay-height - Theme.space-1
+                    : self.below-y,
+                self.viewport-floor - self.overlay-height - Theme.space-2));
+    out property <length> computed-x:
+        max(Theme.space-2,
+            min(self.anchor-x,
+                self.viewport-width - self.overlay-width - Theme.space-2));
+}
+
+export component AnchoredOverlayHost inherits Rectangle {
+    // Window-level mount: the host fills the window so the underlay
+    // is full-surface; the panel is positioned inside.
+    width: 100%;
+    height: 100%;
+
+    // The anchor facts (mirrored from the caller's facts global, the
+    // #954 idiom this host absorbs).
+    in property <length> anchor-x;
+    in property <length> anchor-y;
+    in property <length> anchor-width;
+    in property <length> anchor-height;
+    in property <length> viewport-width;
+    in property <length> viewport-floor;
+    in property <OverlayPlacement> placement: OverlayPlacement.auto;
+    // Width law 4 (caller-side preferred; the floor/cap tokens
+    // bound it). The realized height is the content's.
+    in property <length> panel-preferred-width: Theme.menu-min-width;
+    // D-W1-4: the panel body declares its ordered tab-stop count; the
+    // host pushes extent/cursor on mount.
+    in property <int> walk-stops: 1;
+    // The light-dismiss intent (no scrim in this family): an outside
+    // click or right-button-down closes.
+    callback dismissed();
+    // The unmount itself stays the site's flag (the `if (flag)`
+    // protocol below) — the adapter restores focus in its dismissal
+    // routing (PR #872 machinery).
+    // The open bit (the ModalDialogHost contract: mount sites keep
+    // the `if (flag): Host { open: flag; }` protocol).
+    in property <bool> open: true;
+
+    // D-W1-4: opening arms the walk mask; the consumption edge
+    // clamps the adapter's focus-index push into the declared stops.
+    function arm() {
+        MaskWalkFacts.extent = root.walk-stops;
+        MaskWalkFacts.cursor = 0;
+    }
+    property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+    init => {
+        if (root.open) { self.arm(); }
+    }
+    changed open => {
+        if (root.open) { self.arm(); }
+    }
+    changed watch-mask-nonce => {
+        if (MaskWalkFacts.armed) {
+            MaskWalkFacts.cursor = min(
+                MaskWalkFacts.focus-index >= 0 ? MaskWalkFacts.focus-index : 0,
+                max(root.walk-stops - 1, 0));
+        }
+    }
+
+    // The observation seams (the probe/test pattern): the placed
+    // panel rect, the helper's flip verdict, and the mask push.
+    out property <length> panel-x: panel.x;
+    out property <length> panel-y: panel.y;
+    out property <length> panel-width: panel.width;
+    out property <length> panel-height: panel.height;
+    out property <bool> flipped: helper.flipped;
+    out property <int> mask-extent: MaskWalkFacts.extent;
+    out property <int> mask-cursor: MaskWalkFacts.cursor;
+
+    // The dismissal layer first (the later sibling is hit-tested
+    // first, so the panel absorbs its own clicks) — the r4 D2 idiom.
+    dismissal := TouchArea {
+        width: 100%;
+        height: 100%;
+        enabled: root.open;
+        clicked => { root.dismissed(); }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                root.dismissed();
+            }
+        }
+    }
+
+    panel := Rectangle {
+        visible: root.open;
+        x: helper.computed-x;
+        y: helper.computed-y;
+        // Width law 4 (caller-side preferred; the content's own
+        // preferred lifts it); height by content — never the
+        // parent-filling default.
+        width: min(root.viewport-width - 2 * Theme.space-2,
+                   max(root.panel-preferred-width, panel-col.preferred-width));
+        height: panel-col.preferred-height;
+
+        // The absorbing dead space (the modal host's panel-root law,
+        // light-dismiss family edition): an inside click on the
+        // panel's non-interactive area never reaches the underlay.
+        TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        // The geometry calculator (a zero-size element, not a layout
+        // child — it computes, it does not render).
+        helper := AnchoredOverlay {
+            anchor-x: root.anchor-x;
+            anchor-y: root.anchor-y;
+            anchor-width: root.anchor-width;
+            anchor-height: root.anchor-height;
+            viewport-width: root.viewport-width;
+            viewport-floor: root.viewport-floor;
+            overlay-width: panel.width;
+            overlay-height: panel.height;
+            placement: root.placement;
+        }
+
+        panel-col := VerticalLayout {
+            width: 100%;
+            height: 100%;
+
+            @children
+        }
+    }
+}

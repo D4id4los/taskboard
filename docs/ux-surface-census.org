@@ -9,6 +9,15 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
+- *Status*: =round 9 W1 in flight (2026-11-18)= — the widget
+  framework base landed on its branch
+  (=feat/ui-widget-framework-base=): =ui/widgets/modal-dialog-host.slint=
+  and =ui/widgets/anchored-overlay.slint= are the new overlay base
+  layer (the J2 plan W-1/W-2 rows; ruling home for R-3/R-4/R-6, the
+  D-W1-6 =AccessibleRole.dialog= fallback); the capture modal and the
+  timer-setter popover are the two proof mounts; the taxonomy skeleton
+  is =docs/widget_interactions.org=. No consumers migrated (W2 does
+  that); the census slices diff at their migrations.
 - *Status*: =round 8 complete (2026-11-18)= — all eight dispatch
   chunks merged (keymap parity #862; focus restoration #872; task
   detail editor #922; board interaction #918; task card controls

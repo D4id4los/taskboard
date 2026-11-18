@@ -44,6 +44,7 @@ fn main() {
         "task_card_hover_probe",
         "stat_bars_severing_probe",
         "window_max_probe",
+        "widget_framework_probe",
     ];
     for name in probes {
         compile_probe(&manifest.join(format!("tests/{name}.slint")), &out);
