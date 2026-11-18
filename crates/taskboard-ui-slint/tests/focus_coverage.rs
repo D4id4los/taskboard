@@ -109,10 +109,6 @@ const EXEMPT: &[(&str, &str)] = &[
         "modal dismissal surface; the flyout closes on Escape",
     ),
     (
-        "TouchArea:AppWindow::time-field-backdrop",
-        "modal dismissal surface; the flyout closes on Escape",
-    ),
-    (
         "TouchArea:AppWindow::menu-backdrop",
         "modal dismissal surface; the menu closes on Escape",
     ),
@@ -1863,10 +1859,7 @@ fn quick_list_has_no_pointer_only_controls() {
         assert_modal_scan(
             &mounted,
             "QuickListFlyout",
-            &[
-                "TouchArea:AnchoredOverlayHost::dismissal",
-                "TouchArea:AppWindow::time-field-backdrop",
-            ],
+            &["TouchArea:AnchoredOverlayHost::dismissal"],
         );
     });
 }

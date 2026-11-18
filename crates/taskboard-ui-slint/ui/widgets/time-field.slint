@@ -93,11 +93,16 @@ export component TimeField inherits Rectangle {
     changed open-mirrored => {
         TimeFieldFacts.site = root.flyout-site;
         TimeFieldFacts.open = self.open-mirrored;
-        // The anchor geometry rides the open flip too: at click time
-        // the absolute position is realized, and the testing backend
-        // does not deliver `changed` for the pre-attach layout pass
-        // (the unreliable-mirroring record). The `anchor-abs-*` hooks
-        // below keep the mirror live across host scrolls.
+        // The anchor geometry rides the click handler below (the
+        // timers idiom: the push happens in the chevron's `clicked`,
+        // where the realized rect is deterministic — the
+        // #954 race's fix shape). The `anchor-abs-*` hooks keep the
+        // mirror live across host scrolls.
+    }
+    // The click-time anchor push (round-9 chunk 5, D-2): the opener's
+    // realized geometry into the facts global in the same handler
+    // that opens — deterministically realized, no pre-attach staleness.
+    function push-anchor-facts() {
         TimeFieldFacts.anchor-x = flyout-anchor.absolute-position.x;
         TimeFieldFacts.anchor-y = flyout-anchor.absolute-position.y;
         TimeFieldFacts.anchor-width = flyout-anchor.width;
@@ -225,6 +230,7 @@ export component TimeField inherits Rectangle {
             clicked => {
                 root.open = !root.open;
                 if (root.open) {
+                    root.push-anchor-facts();
                     root.quick-toggled();
                 }
             }

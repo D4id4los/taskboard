@@ -38,23 +38,10 @@ export component QuickListFlyout inherits Rectangle {
     drop-shadow-color: Theme.surface-hover;
     clip: true;
 
-    // The realized-geometry mirror into the class facts (the
-    // action-menu's mirror-facts shape): `init` writes the mount-time
-    // value (a `changed` hook alone misses it — the initial binding
-    // evaluation fires no change), the derived-property wraps cover
-    // every later re-layout.
-    init => {
-        TimeFieldFacts.panel-x = self.x;
-        TimeFieldFacts.panel-y = self.y;
-    }
-    property <length> panel-x-mirrored: self.x;
-    property <length> panel-y-mirrored: self.y;
-    changed panel-x-mirrored => {
-        TimeFieldFacts.panel-x = self.panel-x-mirrored;
-    }
-    changed panel-y-mirrored => {
-        TimeFieldFacts.panel-y = self.panel-y-mirrored;
-    }
+    // The realized-geometry mirror lives at the mount site now (the
+    // overlay migration, M3): the panel rides the AnchoredOverlayHost,
+    // so the window-space rect is the host's — the panel's own read
+    // would be the host-local zero.
 
     // The highlight (the cursor-ring visual language) and the seek
     // nonce: panel-local (the ladder lives here now), re-anchored

@@ -24914,3 +24914,68 @@ fn us2_s1_the_setter_opens_below_the_anchor_never_covering_it() {
         },
     );
 }
+
+// -- round-9 chunk 5: the overlay migration (J2 US-2/S3, R-8 race 2) --
+
+/// `om_us2_s3`: the time flyout's single host mount — the panel rect
+/// never intersects its field's rect, and after a forced re-resolution
+/// (a window resize re-runs the placement pass) the facts mirror
+/// tracks the host and the placement law still holds. The mount is
+/// one host for all four sites (`site` discriminates the panel
+/// contents only, never the geometry), so the site-0 pin through the
+/// due picker's time field is the class's pin.
+#[test]
+fn om_us2_s3_time_flyout_never_over_its_field_and_the_mirror_tracks() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavNextView);
+            harness.press(ActionId::NavNextView);
+            harness.driver.click_by_label("Edit due date");
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_task_model().date_picker_open);
+            harness.driver.click_by_label("Quick times");
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+
+            let facts = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::TimeFieldFacts>();
+            assert!(facts.get_open(), "the quick list flyout is open");
+            let (ay, ah, py) = (
+                facts.get_anchor_y(),
+                facts.get_anchor_height(),
+                facts.get_panel_y(),
+            );
+            assert!(
+                py >= ay + ah || py + ah <= ay,
+                "the flyout never covers its field vertically \
+                 (panel-y={py} anchor-y={ay} anchor-h={ah})"
+            );
+
+            // The forced re-resolution: a window resize re-runs the
+            // placement pass; the facts mirror tracks the placed panel
+            // and the placement law still holds.
+            harness.driver.set_window_size(800, 700);
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            let (ay2, ah2, py2) = (
+                facts.get_anchor_y(),
+                facts.get_anchor_height(),
+                facts.get_panel_y(),
+            );
+            assert!(
+                py2 >= ay2 + ah2 || py2 + ah2 <= ay2,
+                "the placement law survives the re-resolution \
+                 (panel-y={py2} anchor-y={ay2} anchor-h={ah2})"
+            );
+        },
+    );
+}
