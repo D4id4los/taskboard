@@ -52,6 +52,7 @@ export component HabitsSection inherits Rectangle {
     callback row-activated(int);
     // The done slot's log dispatch (US-1/S2): the card's done control
     // routes `habit.log` — clicking complete logs the habit.
+    // slint: habits-log-clicked
     callback log-clicked(int);
     // The row's "−1" recovery affordance (UX R-2 D-3, #786): the
     // mis-click class recovers through the audited AdjustHabitLog
@@ -65,6 +66,7 @@ export component HabitsSection inherits Rectangle {
     callback repair-clicked(int);
     // The right-click context request (H2 D4): pointer coords in
     // window coordinates — the same seam the task cards speak.
+    // slint: habits-context-requested
     callback context-requested(int, float, float);
 
     // The create flow (round-7 D-7.2): the header affordance asks,

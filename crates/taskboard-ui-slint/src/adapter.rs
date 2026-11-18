@@ -5957,7 +5957,13 @@ impl Adapter {
         }
         let entries = self.habit_menu_entries(subject);
         self.root_entries = entries;
-        self.menu_entries = self.root_entries.clone();
+        // The ACTIVE page rebuilds (the arm routes from the open
+        // submenu — the flip must land in the page the user sees,
+        // never yank the menu back to its root).
+        self.menu_entries = match self.shell.menu.task_group {
+            Some(family) => self.habit_submenu_page(family),
+            None => self.root_entries.clone(),
+        };
         self.shell.menu.len = self.menu_entries.len();
         self.shell.menu.selected = self.shell.menu.selected.min(self.menu_entries.len());
         self.sync_menu_models(window);
@@ -9869,7 +9875,7 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // focus mints inside the opener (the row activation's discipline),
     // the curated page opens anchored at the pointer. Stale index
     // absorbed (the notification-row guard shape).
-    install_seam!(window: window.on_habits_context_requested, adapter: adapter;
+    install_seam!(window: window.on_habits_context_requested, adapter: adapter; // slint callback: habits-context-requested (the habit context menu's right-click seam, H2 W-2)
     bind mut (a, window), args (index, x, y), {        let Ok(index) = usize::try_from(index) else {
         return;
     };
@@ -10190,7 +10196,7 @@ fn habit_undo_target(
 /// slots minted at menu open with the same floor-midpoint law, the
 /// UI computes midpoints, the planner stamps).
 fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    install_seam!(window: window.on_habits_log_clicked, adapter: adapter;
+    install_seam!(window: window.on_habits_log_clicked, adapter: adapter; // slint callback: habits-log-clicked (the done slot ≡ strip +1 shared seam, H2 W-1)
     bind mut (a, window), args (index), {        let Some(habit) = a
         .tables
         .habits
