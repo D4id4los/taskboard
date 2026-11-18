@@ -1338,6 +1338,7 @@ impl Adapter {
     }
 
     /// One action through the router (design §5 pipeline's last hop).
+    #[allow(clippy::too_many_lines)] // the per-bit consumption table reads flat
     pub(crate) fn route(&mut self, window: &AppWindow, id: ActionId) {
         // The selection's verb intercept (UX-R8 D-6, US-4/S3–S4): a
         // non-empty selection turns Complete/Delete into the
@@ -1350,36 +1351,93 @@ impl Adapter {
             self.route_selection_verb(window, id);
             return;
         }
+        // The per-action consumption set (cross-surface friction plan
+        // D-6, #763): only the dispatched action's declared one-shots
+        // move into the ctx — an undeclared field stays in the adapter,
+        // so an interleaved dispatch can no longer eat a confirm's
+        // target. The declaration table is router-owned
+        // (`route_consumes`); the totalness test pins the vocabulary.
+        let wants = crate::router::route_consumes(id);
         let mut ctx = self.shell.dispatch_ctx();
-        ctx.create_target = self.create_target.take();
-        ctx.reminder_target = self.reminder_target;
-        self.reminder_target = None;
-        ctx.board_target = self.board_target;
-        self.board_target = None;
-        ctx.rule_target = self.rule_target;
-        self.rule_target = None;
-        ctx.rule_add_when = self.rule_add_when;
-        self.rule_add_when = None;
-        ctx.timer_draft = self.timer_draft.take();
-        ctx.timer_target = self.timer_target.take();
-        ctx.break_rule_draft = self.break_rule_draft.take();
-        ctx.break_rule_target = self.break_rule_target.take();
-        ctx.track_entry_draft = self.track_entry_draft.take();
-        ctx.track_entry_target = self.track_entry_target.take();
-        ctx.plan_target = self.plan_target.take();
-        ctx.track_target = self.track_target.take();
-        ctx.habit_target = self.habit_target.take();
-        ctx.habit_undo = self.habit_undo.take();
-        ctx.habit_move = self.habit_move.take();
-        ctx.habit_repair = self.habit_repair.take();
-        ctx.habit_convert_target = self.habit_convert_target.take();
-        ctx.habit_create_draft = self.habit_create_draft.take();
-        ctx.pattern_draft = self.pattern_draft.take();
-        ctx.series_target = self.series_target.take();
-        ctx.pause_draft = self.pause_draft.take();
-        ctx.convert_target = self.convert_target.take();
-        ctx.recur_edit_target = self.recur_edit_target.take();
-        ctx.recur_draft_rule = self.recur_draft_rule.take();
+        if wants.wants(crate::router::OneShotSet::CREATE_TARGET) {
+            ctx.create_target = self.create_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::REMINDER_TARGET) {
+            ctx.reminder_target = self.reminder_target;
+            self.reminder_target = None;
+        }
+        if wants.wants(crate::router::OneShotSet::BOARD_TARGET) {
+            ctx.board_target = self.board_target;
+            self.board_target = None;
+        }
+        if wants.wants(crate::router::OneShotSet::RULE_TARGET) {
+            ctx.rule_target = self.rule_target;
+            self.rule_target = None;
+        }
+        if wants.wants(crate::router::OneShotSet::RULE_ADD_WHEN) {
+            ctx.rule_add_when = self.rule_add_when;
+            self.rule_add_when = None;
+        }
+        if wants.wants(crate::router::OneShotSet::TIMER_DRAFT) {
+            ctx.timer_draft = self.timer_draft.take();
+        }
+        if wants.wants(crate::router::OneShotSet::TIMER_TARGET) {
+            ctx.timer_target = self.timer_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::BREAK_RULE_DRAFT) {
+            ctx.break_rule_draft = self.break_rule_draft.take();
+        }
+        if wants.wants(crate::router::OneShotSet::BREAK_RULE_TARGET) {
+            ctx.break_rule_target = self.break_rule_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::TRACK_ENTRY_DRAFT) {
+            ctx.track_entry_draft = self.track_entry_draft.take();
+        }
+        if wants.wants(crate::router::OneShotSet::TRACK_ENTRY_TARGET) {
+            ctx.track_entry_target = self.track_entry_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::TRACK_TARGET) {
+            ctx.track_target = self.track_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::PLAN_TARGET) {
+            ctx.plan_target = self.plan_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_TARGET) {
+            ctx.habit_target = self.habit_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_UNDO) {
+            ctx.habit_undo = self.habit_undo.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_MOVE) {
+            ctx.habit_move = self.habit_move.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_REPAIR) {
+            ctx.habit_repair = self.habit_repair.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_CONVERT_TARGET) {
+            ctx.habit_convert_target = self.habit_convert_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_CREATE_DRAFT) {
+            ctx.habit_create_draft = self.habit_create_draft.take();
+        }
+        if wants.wants(crate::router::OneShotSet::PATTERN_DRAFT) {
+            ctx.pattern_draft = self.pattern_draft.take();
+        }
+        if wants.wants(crate::router::OneShotSet::SERIES_TARGET) {
+            ctx.series_target = self.series_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::PAUSE_DRAFT) {
+            ctx.pause_draft = self.pause_draft.take();
+        }
+        if wants.wants(crate::router::OneShotSet::CONVERT_TARGET) {
+            ctx.convert_target = self.convert_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::RECUR_EDIT_TARGET) {
+            ctx.recur_edit_target = self.recur_edit_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::RECUR_DRAFT_RULE) {
+            ctx.recur_draft_rule = self.recur_draft_rule.take();
+        }
         // The today window rides every dispatch (chunk 10 D4): state-
         // derived from the held pair, never consumed.
         ctx.day_window = Some(self.day_ctx().window);
@@ -2926,6 +2984,32 @@ impl Adapter {
         true
     }
 
+    /// The flow-owned one-shots' reconciliation (cross-surface
+    /// friction plan D-6, #763, AC-3): a one-shot left in the adapter
+    /// after its owner flow ended is stale — the per-`Flow`-kind
+    /// ownership table clears it at the retire drain. Armed-strip
+    /// one-shots (`habit_convert_target`, `series_target`,
+    /// `convert_target`, `pattern_draft`) are deliberately NOT
+    /// flow-owned: their law is the arm seams' re-arm-before-every-
+    /// route (defense-in-depth, unchanged) and their flags disarm via
+    /// the existing Cancel/settle paths. The walk/picker children own
+    /// none.
+    fn reconcile_one_shots(&mut self, retired: &[crate::surfaces::Level]) {
+        for level in retired {
+            match level.flow() {
+                Some(crate::view_state::Flow::EditRecur { .. }) => {
+                    self.recur_edit_target = None;
+                    self.recur_draft_rule = None;
+                }
+                Some(crate::view_state::Flow::TrackEntryForm { .. }) => {
+                    self.track_entry_draft = None;
+                    self.track_entry_target = None;
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// The retire drain (W5b D3): the retired levels' exit
     /// side-effects ride here, one consumption per level — never a
     /// per-flow wipe rule. The flat chain's only parent anchor is
@@ -2938,6 +3022,10 @@ impl Adapter {
         if retired.is_empty() {
             return;
         }
+        // The stale one-shot reconciliation (cross-surface friction
+        // plan D-6, #763): flow-owned one-shots die with their level —
+        // consumption is not ownership.
+        self.reconcile_one_shots(&retired);
         // The flat chain's levels never carry a non-view parent
         // anchor (D-H7); nested anchors consume at the drain from
         // chunk 3's ports on.
@@ -14404,6 +14492,10 @@ impl Adapter {
 
     pub(crate) fn test_series_confirm_armed(&self) -> bool {
         self.recur_confirm_armed
+    }
+
+    pub(crate) fn test_recur_edit_target(&self) -> Option<taskboard_domain::TaskId> {
+        self.recur_edit_target
     }
 }
 

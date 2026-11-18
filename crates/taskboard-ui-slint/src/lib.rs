@@ -1286,6 +1286,73 @@ mod mount_tests {
         });
     }
 
+    /// US-5/AC-3 (cross-surface friction plan D-6, #763): the stale
+    /// one-shot reconciliation — flow-owned one-shots die with their
+    /// level. The recur editor armed over a subject, foreign-settled,
+    /// retired: the adapter's `recur_edit_target` is `None` (the
+    /// structural fact), never a stale target the next funnel could
+    /// mis-route.
+    #[test]
+    fn us5_ac3_stale_one_shot_clears_at_flow_end() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, _requests_rx, health_rx) =
+                handover();
+            let handle = mount(
+                state.clone(),
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health_rx,
+                None,
+            )
+            .expect("mount succeeds on the null platform");
+            let task_id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+            let mut app = taskboard_domain::AppState::default();
+            let mut task = episode_task(task_id);
+            task.recur = Some(taskboard_domain::RecurRule {
+                series: taskboard_domain::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(11)),
+                anchor: chrono::NaiveDate::from_ymd_opt(2026, 11, 2).expect("fixture date"),
+                pattern: taskboard_domain::RecurPattern::Daily {
+                    every: taskboard_domain::EveryDays::new(2).expect("valid interval"),
+                },
+                bound: taskboard_domain::RecurBound::None,
+                continued_from: None,
+                paused_until: None,
+            });
+            app.tasks.insert(task_id, task);
+            state.store(Arc::new(app));
+            handle.set_focused_entities(Some(task_id), None);
+            // The real subject path: TaskEdit routes Activate, which
+            // opens the detail over the focused task.
+            handle
+                .adapter
+                .borrow_mut()
+                .route(handle.window(), crate::actions::ActionId::TaskEdit);
+            // The recur editor arms over the subject (the opener sets
+            // the flow level and the flow-owned one-shot).
+            handle
+                .adapter
+                .borrow_mut()
+                .route(handle.window(), crate::actions::ActionId::SeriesEdit);
+            assert!(
+                handle.adapter.borrow().test_recur_edit_target().is_some(),
+                "the editor armed with its one-shot target"
+            );
+            // The foreign settle: the leaving effect folds the flow
+            // (the settle law) and the level retires.
+            handle
+                .adapter
+                .borrow_mut()
+                .route(handle.window(), crate::actions::ActionId::NavFocusBoard);
+            assert!(
+                handle.adapter.borrow().test_recur_edit_target().is_none(),
+                "the flow-owned one-shot died with its level"
+            );
+        });
+    }
+
     /// US-2/AC-3 (cross-surface friction plan D-3, #832): the
     /// subjectless conversion arms surface the typed refusal — the
     /// status notice arms (the structural fact, never text) and no

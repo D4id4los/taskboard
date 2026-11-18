@@ -677,6 +677,172 @@ pub struct DispatchCtx {
     pub focused_task_tracker: bool,
 }
 
+/// The one-shot ctx fields a dispatched action may consume
+/// (cross-surface friction plan D-6, #763 — the per-action consumption
+/// set). Hand-rolled closed set (house A1): one private bit per
+/// adapter one-shot; a new ctx one-shot whose bit is forgotten here
+/// fails `one_shot_bits_are_total`, not production. Consumption is
+/// declared per dispatched `ActionId` — an undeclared field stays in
+/// the adapter untouched, so an interleaved dispatch can no longer eat
+/// a confirm's target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct OneShotSet(u32);
+
+impl OneShotSet {
+    pub(crate) const CREATE_TARGET: u32 = 1 << 0;
+    pub(crate) const REMINDER_TARGET: u32 = 1 << 1;
+    pub(crate) const BOARD_TARGET: u32 = 1 << 2;
+    pub(crate) const RULE_TARGET: u32 = 1 << 3;
+    pub(crate) const RULE_ADD_WHEN: u32 = 1 << 4;
+    pub(crate) const TIMER_DRAFT: u32 = 1 << 5;
+    pub(crate) const TIMER_TARGET: u32 = 1 << 6;
+    pub(crate) const BREAK_RULE_DRAFT: u32 = 1 << 7;
+    pub(crate) const BREAK_RULE_TARGET: u32 = 1 << 8;
+    pub(crate) const TRACK_ENTRY_DRAFT: u32 = 1 << 9;
+    pub(crate) const TRACK_ENTRY_TARGET: u32 = 1 << 10;
+    pub(crate) const TRACK_TARGET: u32 = 1 << 11;
+    pub(crate) const PLAN_TARGET: u32 = 1 << 12;
+    pub(crate) const HABIT_TARGET: u32 = 1 << 13;
+    pub(crate) const HABIT_UNDO: u32 = 1 << 14;
+    pub(crate) const HABIT_MOVE: u32 = 1 << 15;
+    pub(crate) const HABIT_REPAIR: u32 = 1 << 16;
+    pub(crate) const HABIT_CONVERT_TARGET: u32 = 1 << 17;
+    pub(crate) const HABIT_CREATE_DRAFT: u32 = 1 << 18;
+    pub(crate) const PATTERN_DRAFT: u32 = 1 << 19;
+    pub(crate) const SERIES_TARGET: u32 = 1 << 20;
+    pub(crate) const PAUSE_DRAFT: u32 = 1 << 21;
+    pub(crate) const CONVERT_TARGET: u32 = 1 << 22;
+    pub(crate) const RECUR_EDIT_TARGET: u32 = 1 << 23;
+    pub(crate) const RECUR_DRAFT_RULE: u32 = 1 << 24;
+    const fn set(self, bit: u32) -> Self {
+        Self(self.0 | bit)
+    }
+
+    pub(crate) const fn wants(self, bit: u32) -> bool {
+        self.0 & bit != 0
+    }
+
+    pub(crate) const fn create_target(self) -> Self {
+        self.set(Self::CREATE_TARGET)
+    }
+    pub(crate) const fn reminder_target(self) -> Self {
+        self.set(Self::REMINDER_TARGET)
+    }
+    pub(crate) const fn board_target(self) -> Self {
+        self.set(Self::BOARD_TARGET)
+    }
+    pub(crate) const fn rule_target(self) -> Self {
+        self.set(Self::RULE_TARGET)
+    }
+    pub(crate) const fn rule_add_when(self) -> Self {
+        self.set(Self::RULE_ADD_WHEN)
+    }
+    pub(crate) const fn timer_draft(self) -> Self {
+        self.set(Self::TIMER_DRAFT)
+    }
+    pub(crate) const fn timer_target(self) -> Self {
+        self.set(Self::TIMER_TARGET)
+    }
+    pub(crate) const fn break_rule_draft(self) -> Self {
+        self.set(Self::BREAK_RULE_DRAFT)
+    }
+    pub(crate) const fn break_rule_target(self) -> Self {
+        self.set(Self::BREAK_RULE_TARGET)
+    }
+    pub(crate) const fn track_entry_draft(self) -> Self {
+        self.set(Self::TRACK_ENTRY_DRAFT)
+    }
+    pub(crate) const fn track_entry_target(self) -> Self {
+        self.set(Self::TRACK_ENTRY_TARGET)
+    }
+    pub(crate) const fn track_target(self) -> Self {
+        self.set(Self::TRACK_TARGET)
+    }
+    pub(crate) const fn plan_target(self) -> Self {
+        self.set(Self::PLAN_TARGET)
+    }
+    pub(crate) const fn habit_target(self) -> Self {
+        self.set(Self::HABIT_TARGET)
+    }
+    pub(crate) const fn habit_undo(self) -> Self {
+        self.set(Self::HABIT_UNDO)
+    }
+    pub(crate) const fn habit_move(self) -> Self {
+        self.set(Self::HABIT_MOVE)
+    }
+    pub(crate) const fn habit_repair(self) -> Self {
+        self.set(Self::HABIT_REPAIR)
+    }
+    pub(crate) const fn habit_convert_target(self) -> Self {
+        self.set(Self::HABIT_CONVERT_TARGET)
+    }
+    pub(crate) const fn habit_create_draft(self) -> Self {
+        self.set(Self::HABIT_CREATE_DRAFT)
+    }
+    pub(crate) const fn pattern_draft(self) -> Self {
+        self.set(Self::PATTERN_DRAFT)
+    }
+    pub(crate) const fn series_target(self) -> Self {
+        self.set(Self::SERIES_TARGET)
+    }
+    pub(crate) const fn pause_draft(self) -> Self {
+        self.set(Self::PAUSE_DRAFT)
+    }
+    pub(crate) const fn convert_target(self) -> Self {
+        self.set(Self::CONVERT_TARGET)
+    }
+    pub(crate) const fn recur_edit_target(self) -> Self {
+        self.set(Self::RECUR_EDIT_TARGET)
+    }
+    pub(crate) const fn recur_draft_rule(self) -> Self {
+        self.set(Self::RECUR_DRAFT_RULE)
+    }
+}
+
+/// The per-action consumption declaration (the plan D-6 table): each
+/// arm names exactly the one-shot fields its dispatch body reads —
+/// derived from the dispatch arms' `ctx.` reads, with the existing
+/// router and armed-journey tests as the oracle (AC-2: every
+/// currently-passing pair passes unchanged). The arm effects
+/// (`HabitConvertArm`, `SeriesConvertArm`) read adapter-side facts,
+/// never ctx one-shots — they consume nothing.
+#[must_use]
+pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
+    use ActionId as A;
+    match id {
+        A::TaskCreate => OneShotSet::default().create_target(),
+        A::ReminderSnooze | A::ReminderMute => OneShotSet::default().reminder_target(),
+        A::ReminderRuleAdd => OneShotSet::default().rule_add_when(),
+        A::ReminderRuleRemove => OneShotSet::default().rule_target(),
+        A::TimerCreate => OneShotSet::default().timer_draft(),
+        A::TimerCancel => OneShotSet::default().timer_target(),
+        A::BreakRuleCreate => OneShotSet::default().break_rule_draft(),
+        A::BreakRuleRemoveConfirm => OneShotSet::default().break_rule_target(),
+        A::HabitLog => OneShotSet::default().habit_target(),
+        A::HabitUndoLog => OneShotSet::default().habit_undo(),
+        A::HabitMove => OneShotSet::default().habit_move(),
+        A::HabitRepair => OneShotSet::default().habit_repair(),
+        A::HabitConvertToSeries => OneShotSet::default().habit_convert_target().pattern_draft(),
+        A::HabitCreateCommit => OneShotSet::default().habit_create_draft(),
+        A::SeriesPauseCommit => OneShotSet::default().series_target().pause_draft(),
+        A::SeriesResume => OneShotSet::default().series_target(),
+        A::SeriesConvertToHabit => OneShotSet::default().series_target().convert_target(),
+        A::SeriesEditCommit => OneShotSet::default().recur_edit_target().recur_draft_rule(),
+        A::SeriesEditDetach => OneShotSet::default().recur_edit_target(),
+        A::TaskTrackStart => OneShotSet::default().track_target(),
+        A::TaskTrackEntryLog => OneShotSet::default().track_target().track_entry_draft(),
+        A::TaskTrackEntryAdjust => OneShotSet::default()
+            .track_entry_target()
+            .track_entry_draft(),
+        A::TaskTrackEntryDelete => OneShotSet::default().track_entry_target(),
+        A::PlanBeginPlace | A::PlanBoxEarlier | A::PlanBoxLater | A::PlanRemoveBox => {
+            OneShotSet::default().plan_target()
+        }
+        A::BoardSelect => OneShotSet::default().board_target(),
+        _ => OneShotSet::default(),
+    }
+}
+
 /// The pure dispatch table. Every [`ActionId`] variant is matched —
 /// adding an action without a routing decision is a compile error.
 #[derive(Debug, Clone, Copy, Default)]
@@ -2271,4 +2437,69 @@ mod tests {
             DispatchOutcome::UiEffect(UiEffect::PlanCommitPlace)
         );
     }
+}
+
+#[test]
+fn one_shot_bits_are_total() {
+    // The totalness pin (cross-surface friction plan D-6, #763):
+    // walking every registered action's declaration, the union of the
+    // declared bits equals exactly the full field set — a new ctx
+    // one-shot that forgets its declaration here (an action, or the
+    // field's bit) fails this test, not production. Structural and
+    // typed: the bit constants are private, the getters are the
+    // vocabulary.
+    let full = OneShotSet::default()
+        .create_target()
+        .reminder_target()
+        .board_target()
+        .rule_target()
+        .rule_add_when()
+        .timer_draft()
+        .timer_target()
+        .break_rule_draft()
+        .break_rule_target()
+        .track_entry_draft()
+        .track_entry_target()
+        .track_target()
+        .plan_target()
+        .habit_target()
+        .habit_undo()
+        .habit_move()
+        .habit_repair()
+        .habit_convert_target()
+        .habit_create_draft()
+        .pattern_draft()
+        .series_target()
+        .pause_draft()
+        .convert_target()
+        .recur_edit_target()
+        .recur_draft_rule();
+    let mut seen = OneShotSet::default();
+    for entry in crate::actions::REGISTRY {
+        let declared = route_consumes(entry.id);
+        // No declaration may set a bit outside the field vocabulary
+        // (the `wants` probe reads raw bits; equality pins the shape).
+        seen = OneShotSet(seen.0 | declared.0);
+    }
+    assert_eq!(
+        seen, full,
+        "the consumption declarations cover exactly the field set"
+    );
+    // The conversion confirm is the fix's flagship pair: exactly its
+    // two fields, nothing more (the stage-3 over-broad trap check).
+    let convert = route_consumes(ActionId::HabitConvertToSeries);
+    assert_eq!(
+        convert,
+        OneShotSet::default().habit_convert_target().pattern_draft()
+    );
+    // The arm intents consume nothing (the effect arm reads adapter
+    // facts, never ctx one-shots).
+    assert_eq!(
+        route_consumes(ActionId::HabitConvertArm),
+        OneShotSet::default()
+    );
+    assert_eq!(
+        route_consumes(ActionId::SeriesConvertArm),
+        OneShotSet::default()
+    );
 }

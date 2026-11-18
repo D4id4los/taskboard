@@ -24298,6 +24298,7 @@ fn us5_ac1_interleaved_dispatch_spares_the_confirm_target() {
 
             // The interleaved unrelated dispatch (a focused task's
             // completion — consumes nothing of the strip's grammar).
+            harness.handle.dispatch_action(ActionId::NavNextItem);
             harness.handle.dispatch_action(ActionId::TaskComplete);
             harness.driver.advance_time(0);
 
