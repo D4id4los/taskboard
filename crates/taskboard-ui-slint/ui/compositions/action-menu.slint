@@ -10,7 +10,7 @@ import { Responsive, Breakpoint } from "../responsive.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { MenuPanelFacts } from "../menu-facts.slint";
-import { IconKind } from "../widgets/icon.slint";
+import { Icon, IconKind } from "../widgets/icon.slint";
 import { IconButton } from "../widgets/icon-button.slint";
 
 // The quick-bar row (UX-R8 chunk-5 D-2, US-1): the routing id (the
@@ -25,6 +25,10 @@ export struct QuickBarEntryModel {
     icon: IconKind,
     enabled: bool,
     visible: bool,
+    // The routed action's first preset binding (J5 US-4 AC-1) — the
+    // same projection the menu rows carry in `hint`. Empty when
+    // unbound (the bar's pointer-first posture; no invented hints).
+    hint-keys: [string],
 }
 
 export struct MenuEntryModel {
@@ -135,7 +139,7 @@ export component ActionMenu inherits Rectangle {
     // The quick actions bar (UX-R8 chunk-5 D-2): a leading
     // icon-button HorizontalLayout above the Flickable — only while
     // the model carries a shown row (empty renders nothing).
-    if (root.quick-bar.length > 0): HorizontalLayout {
+    if (root.quick-bar.length > 0): quick-bar-row := HorizontalLayout {
         padding-left: Theme.space-2;
         padding-right: Theme.space-2;
         padding-top: Theme.space-2;
@@ -146,6 +150,7 @@ export component ActionMenu inherits Rectangle {
                 icon: bar-entry.icon;
                 enabled: bar-entry.enabled;
                 label: bar-entry.label;
+                hint-keys: bar-entry.hint-keys;
                 // slint: menu-quick-bar-invoked
                 clicked => { root.invoke-quick-bar(bar-index); }
             }
@@ -269,6 +274,12 @@ export component ActionMenu inherits Rectangle {
                             KbdHint {
                                 keys: entry.hint;
                             }
+                        }
+                        // The submenu affordance (J5 US-3 AC-1): every
+                        // submenu-parent row carries the right chevron —
+                        // one component, all menus inherit it.
+                        if (entry.submenu): submenu-chevron := Icon {
+                            kind: IconKind.chevron-right;
                         }
                     }
                 }

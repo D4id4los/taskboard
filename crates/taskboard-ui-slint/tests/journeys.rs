@@ -24197,6 +24197,204 @@ fn us1_s4_bar_tracking_twin_routes_the_shown_half() {
     );
 }
 
+// -- J5 (menus remainder, 2026-11-18): the bar remainder's journeys.
+// -- The reproduction: pre-fix, a right-click on a card covered by the
+// -- selection opened the multi row set with an EMPTY bar (`Vec::new()`)
+// -- — the H-1 shadow (the confirmed root cause of the live regression).
+
+/// J5 US-1/S1 (AC-1, the H-1 repro) — a right-click on a card the
+/// selection covers (the modifier-click grammar built it earlier) opens
+/// the task context menu WITH the quick bar: the multi bar (the R-3
+/// fix), never an empty strip. Pre-fix this fails: the multi arm passed
+/// `Vec::new()`. Typed model reads: the bar's row ids.
+#[test]
+fn us1_s1_the_selection_covered_card_menu_carries_the_quick_bar() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // Ctrl+Click card (0,1): the selection singleton covers it.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 1, false, true);
+            harness.driver.advance_time(0);
+            // The right-click on the covered card.
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open(), "the menu opens");
+
+            let bar = keyboard(&harness).get_menu_quick_bar();
+            let actions: Vec<String> = (0..bar.row_count())
+                .map(|i| bar.row_data(i).expect("row").action.to_string())
+                .collect();
+            assert!(
+                actions.contains(&"task.schedule-today".to_owned())
+                    && actions.contains(&"task.schedule-tomorrow".to_owned()),
+                "the multi bar's schedule pair is present, got {actions:?}"
+            );
+            assert!(
+                actions.contains(&"task.track-start".to_owned()),
+                "a uniform-untracked selection shows the start twin"
+            );
+            let _ = &fixture;
+        },
+    );
+}
+
+/// J5 US-2/S1 (AC-1, W-2) — the multi-selection bar routes per member:
+/// two selected members, the bar's "schedule today" dispatches one
+/// sparse `UpdateTask` per member in anchor order (the multi-sensible
+/// verb shape; the R-3 grammar). Pre-fix the bar was empty, so this
+/// could not even be expressed.
+#[test]
+fn us2_s1_the_multi_bar_routes_per_member() {
+    let (fixture, state) = fixture::journey_state();
+    let day_start = taskboard_domain::SettingsSnapshot::default().day_start_time;
+    let offset = UiSettings::default().boot_offset;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            // The two-member selection: Shift+Click spans (0,0)→(0,1).
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 1, true, false);
+            harness.driver.advance_time(0);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+
+            // The bar's first shown row routes "schedule today".
+            harness.handle.window().invoke_menu_quick_bar_invoked(0);
+            harness.driver.advance_time(0);
+            let today = chrono::Utc::now().with_timezone(&offset).date_naive();
+            let end = taskboard_domain::days::day_window_end(today, day_start, offset);
+            let mask = taskboard_domain::TaskChanges {
+                scheduled: Some(Some(end)),
+                ..taskboard_domain::TaskChanges::default()
+            };
+            harness.assert_commands(&[
+                StateCommand::UpdateTask {
+                    id: fixture.task0,
+                    changes: mask.clone(),
+                },
+                StateCommand::UpdateTask {
+                    id: fixture.task1,
+                    changes: mask,
+                },
+            ]);
+        },
+    );
+}
+
+/// J5 US-4 AC-1 (W-4's fold) — every shown bar row's hint model
+/// mirrors its action's chain-visible binding exactly: non-empty iff
+/// the action is preset-bound over the menu chain (the same projection
+/// the menu rows resolve through `row()`), empty when unbound. The
+/// keymap is the oracle; typed model lengths, never text.
+#[test]
+fn the_bar_rows_carry_their_preset_binding_hints() {
+    let (_fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            let keymap = UiSettings::default().keymap;
+            let chain = vec![
+                taskboard_ui_slint::actions::ContextId::Board,
+                taskboard_ui_slint::actions::ContextId::Global,
+            ];
+            let bar = keyboard(&harness).get_menu_quick_bar();
+            let shown: Vec<_> = (0..bar.row_count())
+                .filter_map(|i| bar.row_data(i))
+                .filter(|row| row.visible)
+                .collect();
+            assert!(!shown.is_empty(), "the card menu carries shown bar rows");
+            let bound = |action: &str| {
+                taskboard_ui_slint::actions::ActionId::from_id(action).is_some_and(|id| {
+                    keymap
+                        .first_binding_display(id, &chain)
+                        .is_some_and(|hint| !hint.is_empty())
+                })
+            };
+            for row in shown {
+                let expect_bound = bound(&row.action);
+                assert_eq!(
+                    row.hint_keys.row_count() > 0,
+                    expect_bound,
+                    "shown bar row {} mirrors its binding presence",
+                    row.action
+                );
+            }
+        },
+    );
+}
+
+/// J5 US-4 AC-2 (W-5, #927) — a deleted subject disarms the pinned
+/// menu on the reconciliation pass: the card menu open, the delete
+/// armed and confirmed, the state settles → the menu is closed (bar +
+/// rows together), terminal state asserted. Pre-fix the menu held its
+/// dead rows indefinitely (the built-once pin).
+#[test]
+fn us4_s2_a_deleted_subject_disarms_the_pinned_menu() {
+    let (fixture, state) = fixture::journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open(), "the menu opens");
+
+            // The delete: a single task's `task.delete` dispatches
+            // `DeleteTask` directly (the router arm; the armed strip is
+            // the multi/stack/board grammar) — dispatched while the
+            // menu holds.
+            harness.handle.dispatch_action(ActionId::TaskDelete);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[StateCommand::DeleteTask { id: fixture.task1 }]);
+
+            // The settle applies the delete → the reconciliation pass
+            // runs → the menu closed (terminal state only).
+            harness.engine.settle(&harness.handle);
+            harness.driver.advance_time(REPAINT_CADENCE_MS);
+            assert!(
+                !keyboard(&harness).get_menu_open(),
+                "the dead subject's menu disarmed with the settle"
+            );
+        },
+    );
+}
+
 // -- cross-surface friction UX plan US-2 (#832): the menu-routed
 // -- conversion arms route the real arming seams, subject-resolved.
 // -- The reproduction: pre-fix the adapter's effect-interpret arm is

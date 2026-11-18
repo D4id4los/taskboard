@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The action-menu bar probe (J5 US-1/US-3, tier 2): the real
+// `ActionMenu` composition mounted with a populated quick-bar model
+// (the five-entry vocabulary, mixed enabled) and a page carrying one
+// submenu parent + two leaves. The structural observation seams are
+// the element ids the tests query (`quick-bar-row`,
+// `quick-bar-button`, `submenu-chevron`) plus the exposed panel
+// geometry — no text assertions (AGENTS §5).
+
+import { Theme } from "../ui/theme.slint";
+import { ActionMenu, MenuEntryModel, QuickBarEntryModel } from "../ui/compositions/action-menu.slint";
+import { IconKind } from "../ui/widgets/icon.slint";
+
+export component ActionMenuBarProbeWindow inherits Window {
+    width: Theme.space-8 * 6;
+    height: Theme.space-8 * 10;
+
+    // The bar-presence instance (J5 US-1 AC-1): a populated bar over
+    // the context-menu page shape.
+    populated := ActionMenu {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        available-height: Theme.space-8 * 5;
+        quick-bar: [
+            { action: "task.schedule-today", label: "Schedule today", icon: IconKind.calendar, enabled: true, visible: true, hint-keys: ["F", "1", "1"] },
+            { action: "task.schedule-tomorrow", label: "Schedule tomorrow", icon: IconKind.calendar-plus, enabled: true, visible: true, hint-keys: [] },
+            { action: "task.unschedule", label: "Unschedule", icon: IconKind.calendar-minus, enabled: true, visible: true, hint-keys: [] },
+            { action: "task.track-start", label: "Track", icon: IconKind.play, enabled: false, visible: true, hint-keys: ["F", "9"] },
+            { action: "task.track-stop", label: "Stop tracking", icon: IconKind.stop, enabled: true, visible: true, hint-keys: [] },
+        ];
+        entries: [
+            { action: "task.edit", label: "Edit", description: "", enabled: true, hint: [], submenu: false },
+            { action: "", label: "Schedule", description: "", enabled: true, hint: [], submenu: true },
+            { action: "task.complete", label: "Complete", description: "", enabled: true, hint: [], submenu: false },
+        ];
+        // The probe's typed observation seams (the callback fires are
+        // the routing proof).
+        out property <int> bar-invoked: -1;
+        invoke-quick-bar(index) => { self.bar-invoked = index; }
+    }
+
+    // The barless twin (J5 US-1's "empty renders nothing" invariant):
+    // the same composition with the default empty model — the probe
+    // asserts no bar row mounts and the chevron count is zero over a
+    // leaf-only page.
+    barless := ActionMenu {
+        x: Theme.space-2;
+        y: populated.y + Theme.space-8 * 4;
+        available-height: Theme.space-8 * 4;
+        entries: [
+            { action: "task.edit", label: "Edit", description: "", enabled: true, hint: [], submenu: false },
+            { action: "task.complete", label: "Complete", description: "", enabled: true, hint: [], submenu: false },
+        ];
+    }
+
+    // The realized geometry the tests read (the zero-height squeeze
+    // guard: the bar row must own real pixels inside the panel).
+    out property <length> populated-menu-height: populated.height;
+    out property <length> barless-menu-height: barless.height;
+    // The bar-routing seam: the probe counts the bar's callback fires
+    // by index (the click ≡ key law's structural half).
+    out property <int> bar-invoked: populated.bar-invoked;
+}

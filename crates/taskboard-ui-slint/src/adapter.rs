@@ -100,6 +100,20 @@ enum MenuKind {
     Object,
 }
 
+/// The object menu's recorded subject (J5 US-4 AC-2, #927): the
+/// disarm reconcile's input. `Single` is the one pinned task; a multi
+/// selection snapshots its members (the menu disarms only when every
+/// member vanished — partial deletions leave live rows to dispatch);
+/// `None` is the stack/board menus and every non-object menu, which
+/// never disarm on task death.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum MenuSubject {
+    #[default]
+    None,
+    Single(TaskId),
+    Selection(Vec<TaskId>),
+}
+
 /// The flow kinds the settle matrix rows range over (round-3
 /// W-SM-b; audit report §6). The mirror of the per-kind settle rule:
 /// TEXT commits-or-discards, DUE clean-closes, MOVE/DRAG cancel,
@@ -384,6 +398,10 @@ pub(crate) struct Adapter {
     /// The open menu's kind (UX-R8 D-1): the refresh-time re-derivation
     /// guard scopes itself to `Main`; reset to `Main` at every close.
     menu_kind: MenuKind,
+    /// The open object menu's subject (J5 US-4 AC-2, #927): recorded
+    /// at open, read by the disarm reconcile on every state pass.
+    /// Reset to `None` at every close (`apply_close_menu`).
+    menu_subject: MenuSubject,
     /// The task context menu's quick bar (UX-R8 chunk-5 D-2): built
     /// once at open, resolved by the bar seam against this vec (the
     /// `root_entries` index-resolver pattern; stale indices absorbed).
@@ -864,36 +882,58 @@ impl Adapter {
         let keyboard = window.global::<KeyboardState>();
         keyboard.set_menu_entries(Self::menu_model(&self.root_entries));
         keyboard.set_menu_submenu_entries(Self::menu_model(&self.menu_entries));
-        keyboard.set_menu_quick_bar(Self::quick_bar_model(&self.quick_bar_entries));
+        keyboard.set_menu_quick_bar(Self::quick_bar_model(
+            &self.quick_bar_entries,
+            &self.keymap,
+            &self.menu_chain,
+        ));
     }
 
     /// The quick bar as the slint model rows (UX-R8 chunk-5 D-2): the
     /// Rust icon vocabulary maps onto the generated `IconKind` here —
-    /// menu.rs stays slint-free.
+    /// menu.rs stays slint-free. Each row carries its action's first
+    /// chain-visible binding (J5 US-4 AC-1) — the same projection the
+    /// menu rows resolve through `row()`; empty when unbound.
     fn quick_bar_model(
         entries: &[crate::menu::QuickBarEntry],
+        keymap: &crate::keymap::Keymap,
+        chain: &[ContextId],
     ) -> ModelRc<crate::QuickBarEntryModel> {
         ModelRc::from(
             entries
                 .iter()
-                .map(|entry| crate::QuickBarEntryModel {
-                    action: entry.action.id().to_owned().into(),
-                    // The registry label — the element's address / the
-                    // a11y label (D16).
-                    label: REGISTRY
-                        .iter()
-                        .find(|row| row.id == entry.action)
-                        .map_or("", |row| row.label)
-                        .into(),
-                    icon: match entry.icon {
-                        crate::menu::QuickBarIcon::Calendar => crate::IconKind::Calendar,
-                        crate::menu::QuickBarIcon::CalendarPlus => crate::IconKind::CalendarPlus,
-                        crate::menu::QuickBarIcon::CalendarMinus => crate::IconKind::CalendarMinus,
-                        crate::menu::QuickBarIcon::Play => crate::IconKind::Play,
-                        crate::menu::QuickBarIcon::Stop => crate::IconKind::Stop,
-                    },
-                    enabled: entry.enabled,
-                    visible: entry.visible,
+                .map(|entry| {
+                    let hint = keymap
+                        .first_binding_display(entry.action, chain)
+                        .unwrap_or_default();
+                    crate::QuickBarEntryModel {
+                        action: entry.action.id().to_owned().into(),
+                        // The registry label — the element's address / the
+                        // a11y label (D16).
+                        label: REGISTRY
+                            .iter()
+                            .find(|row| row.id == entry.action)
+                            .map_or("", |row| row.label)
+                            .into(),
+                        icon: match entry.icon {
+                            crate::menu::QuickBarIcon::Calendar => crate::IconKind::Calendar,
+                            crate::menu::QuickBarIcon::CalendarPlus => {
+                                crate::IconKind::CalendarPlus
+                            }
+                            crate::menu::QuickBarIcon::CalendarMinus => {
+                                crate::IconKind::CalendarMinus
+                            }
+                            crate::menu::QuickBarIcon::Play => crate::IconKind::Play,
+                            crate::menu::QuickBarIcon::Stop => crate::IconKind::Stop,
+                        },
+                        enabled: entry.enabled,
+                        visible: entry.visible,
+                        hint_keys: ModelRc::new(slint::VecModel::from(
+                            hint.iter()
+                                .map(|stroke| SharedString::from(stroke.as_str()))
+                                .collect::<Vec<_>>(),
+                        )),
+                    }
                 })
                 .collect::<Vec<_>>()
                 .as_slice(),
@@ -1299,7 +1339,11 @@ impl Adapter {
     /// continues, the #492 shape); Delete arms the multi strip
     /// (`ConfirmDelete(Tasks)`, the anchor-order snapshot) — the
     /// armed repeat confirms, Escape/a settle disarm (the shared
-    /// grammar).
+    /// grammar). The schedule trio (J5 US-2, the multi bar's verbs)
+    /// rides the same per-member shape: one sparse `UpdateTask` per
+    /// member, the router's single-target masks over anchor order
+    /// (the unschedule's per-task absorb skips already-unscheduled
+    /// members).
     fn route_selection_verb(&mut self, window: &AppWindow, id: ActionId) {
         let state = self.state.load_full();
         match id {
@@ -1323,6 +1367,55 @@ impl Adapter {
                 let outcomes = self.view_state.arm_multi_delete(members);
                 self.apply_outcomes(window, &outcomes);
             }
+            ActionId::TaskScheduleToday => {
+                let end = self.day_ctx().window.1;
+                let members = self.view_state.selection_anchor_order(&state);
+                for member in members {
+                    self.send(StateCommand::UpdateTask {
+                        id: member,
+                        changes: taskboard_domain::TaskChanges {
+                            scheduled: Some(Some(end)),
+                            ..taskboard_domain::TaskChanges::default()
+                        },
+                    });
+                }
+            }
+            ActionId::TaskScheduleTomorrow => {
+                let end = taskboard_domain::days::next_day_window(
+                    self.day_ctx().now,
+                    self.day_start.0,
+                    self.day_start.1,
+                )
+                .1;
+                let members = self.view_state.selection_anchor_order(&state);
+                for member in members {
+                    self.send(StateCommand::UpdateTask {
+                        id: member,
+                        changes: taskboard_domain::TaskChanges {
+                            scheduled: Some(Some(end)),
+                            ..taskboard_domain::TaskChanges::default()
+                        },
+                    });
+                }
+            }
+            ActionId::TaskUnschedule => {
+                let members = self.view_state.selection_anchor_order(&state);
+                for member in members {
+                    if state
+                        .tasks
+                        .get(&member)
+                        .is_some_and(|task| task.scheduled.is_some())
+                    {
+                        self.send(StateCommand::UpdateTask {
+                            id: member,
+                            changes: taskboard_domain::TaskChanges {
+                                scheduled: Some(None),
+                                ..taskboard_domain::TaskChanges::default()
+                            },
+                        });
+                    }
+                }
+            }
             _ => unreachable!("the intercept's guard owns the verb set"),
         }
         self.finish_mutation(window);
@@ -1341,12 +1434,21 @@ impl Adapter {
     #[allow(clippy::too_many_lines)] // the per-bit consumption table reads flat
     pub(crate) fn route(&mut self, window: &AppWindow, id: ActionId) {
         // The selection's verb intercept (UX-R8 D-6, US-4/S3–S4): a
-        // non-empty selection turns Complete/Delete into the
-        // per-task sequences (click ≡ key — the menu rows and the
-        // preset strokes land here alike). Empty selection keeps the
+        // non-empty selection turns Complete/Delete — and the multi
+        // bar's schedule trio (J5 US-2) — into the per-task sequences
+        // (click ≡ key — the menu rows, the bar buttons and the
+        // preset strokes land here alike). The track twins stay
+        // single-target (Stop is global, Start rides the focused
+        // member — the R-3 grammar). Empty selection keeps the
         // existing single-target semantics untouched.
-        if matches!(id, ActionId::TaskComplete | ActionId::TaskDelete)
-            && !self.view_state.selection().is_empty()
+        if matches!(
+            id,
+            ActionId::TaskComplete
+                | ActionId::TaskDelete
+                | ActionId::TaskScheduleToday
+                | ActionId::TaskScheduleTomorrow
+                | ActionId::TaskUnschedule
+        ) && !self.view_state.selection().is_empty()
         {
             self.route_selection_verb(window, id);
             return;
@@ -2327,6 +2429,15 @@ impl Adapter {
         let state = self.state.load_full();
         self.sync_settings(&state.settings);
         self.view_state.reconcile(&state);
+        // The pinned object menu's disarm (J5 US-4 AC-2, #927): the
+        // built-once model's subject died while the menu held — close
+        // on the same reconciliation pass (bar + rows disarm together,
+        // the CloseMenu path), never a frame late. A `None` subject
+        // (stack/board menus, the main menu) never disarms; a
+        // partially-deleted selection keeps its live members.
+        if self.menu_kind == MenuKind::Object && self.menu_subject_dead(&state) {
+            self.apply_close_menu(window);
+        }
         // The walk's refresh-time normalization (plan D-W2): the
         // cursor clamps against the pushed row count, an emptied
         // stage advances structurally, a dead candidate disarms. And
@@ -5523,6 +5634,21 @@ impl Adapter {
         self.finish_mutation(window);
     }
 
+    /// The disarm reconcile's predicate (J5 US-4 AC-2, #927): the
+    /// pinned single subject no longer resolves (a soft-deleted task
+    /// stays in the map — liveness is the `deleted` bit, the same
+    /// reading the id tables derive), or a snapshotted selection lost
+    /// every member. Partial losses keep the menu (its rows
+    /// dispatch-time-gate per task, the stale-absorb law).
+    fn menu_subject_dead(&self, state: &AppState) -> bool {
+        let live = |id: &TaskId| state.tasks.get(id).is_some_and(|task| !task.deleted);
+        match &self.menu_subject {
+            MenuSubject::None => false,
+            MenuSubject::Single(id) => !live(id),
+            MenuSubject::Selection(members) => members.iter().all(|member| !live(member)),
+        }
+    }
+
     fn apply_close_menu(&mut self, window: &AppWindow) {
         // Every close (the effect, the dismissal layer, the toggle,
         // and both mouse leaf paths sharing it) dismisses the tooltip
@@ -5534,6 +5660,7 @@ impl Adapter {
         self.menu_chain.clear();
         self.menu_anchor = MenuAnchor::Hamburger;
         self.menu_kind = MenuKind::Main;
+        self.menu_subject = MenuSubject::None;
         self.quick_bar_entries.clear();
         self.sync_menu_models(window);
         // The direct callers (toggle, dismissal layer, mouse invoke)
@@ -9074,6 +9201,7 @@ pub(crate) fn install(
         menu_chain: Vec::new(),
         menu_anchor: MenuAnchor::Hamburger,
         menu_kind: MenuKind::Main,
+        menu_subject: MenuSubject::None,
         quick_bar_entries: Vec::new(),
         create_focus_arm: None,
         create_target: None,
@@ -10345,6 +10473,7 @@ impl Adapter {
         let chain = [ContextId::Board, ContextId::Global].to_vec();
         self.menu_anchor = MenuAnchor::Pointer(x, y);
         self.menu_kind = MenuKind::Object;
+        self.menu_subject = MenuSubject::None;
         self.menu_chain = chain;
         self.root_entries = menu::object_entries(&self.keymap, &self.menu_chain, ids);
         self.menu_entries = self.root_entries.clone();
@@ -10387,7 +10516,40 @@ impl Adapter {
             subject.is_some_and(|subject| self.view_state.selection().contains(&subject));
         if selection_covers {
             let ids: Vec<ActionId> = menu::TASK_CONTEXT_MULTI.to_vec();
-            self.open_context_menu(window, x, y, &ids, Vec::new());
+            // The multi bar (J5 US-2, R-3's multi-sensibility): the
+            // aggregate facts over the selection's members — this is
+            // also the H-1 fix (a member right-click, the common
+            // selection-covered case, used to open a barless menu).
+            let bar = {
+                let state = self.state.load_full();
+                let members = self.view_state.selection_anchor_order(&state);
+                let tracker = crate::presentation::tracking_open_task(&state);
+                let tracked_members = members
+                    .iter()
+                    .filter(|member| Some(**member) == tracker)
+                    .count();
+                let any_scheduled = members.iter().any(|member| {
+                    state
+                        .tasks
+                        .get(member)
+                        .is_some_and(|task| task.scheduled.is_some())
+                });
+                let tracking_elsewhere = tracker.is_some_and(|open| !members.contains(&open));
+                menu::multi_quick_bar(
+                    members.len(),
+                    any_scheduled,
+                    tracked_members,
+                    tracking_elsewhere,
+                )
+            };
+            self.open_context_menu(window, x, y, &ids, bar);
+            // The disarm snapshot (#927): recorded after the opener
+            // resets it — the multi menu disarms when every member
+            // vanished.
+            self.menu_subject = MenuSubject::Selection(
+                self.view_state
+                    .selection_anchor_order(&self.state.load_full()),
+            );
             return;
         }
         // The curated grammar (UX-R8 chunk-5 D-4/D-5, US-2): the
@@ -10408,6 +10570,10 @@ impl Adapter {
             menu::task_context_page(&self.keymap, &self.menu_chain, subject, &states, extra)
         };
         self.open_context_menu_with(window, x, y, entries, bar);
+        // The disarm snapshot (#927): recorded after the opener resets
+        // it — the pinned subject's death closes the menu on the same
+        // reconciliation pass.
+        self.menu_subject = subject_id.map_or(MenuSubject::None, MenuSubject::Single);
     }
 
     /// The single-card subject's facts (UX-R8 chunk-5 D-4): the
@@ -10431,6 +10597,7 @@ impl Adapter {
     ) {
         self.menu_anchor = MenuAnchor::Pointer(x, y);
         self.menu_kind = MenuKind::Object;
+        self.menu_subject = MenuSubject::None;
         // The one chain every object menu opens with (round-2 D21):
         // every board-surface verb's binding hint resolves over it.
         self.menu_chain = [ContextId::Board, ContextId::Global].to_vec();
