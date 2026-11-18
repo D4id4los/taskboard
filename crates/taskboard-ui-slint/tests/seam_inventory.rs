@@ -147,6 +147,9 @@ const SEAM_INVENTORY: &[&str] = &[
     "walk_scrim_clicked",
     "walk_tomorrow_clicked",
     "focus_switcher_invoked",
+    // The habit row's focus fact (cross-surface friction plan D-2,
+    // #832): the activation mints the menu verbs' subject.
+    "habits_row_activated",
     "habits_convert_armed",
     "habits_convert_cancelled",
     "habits_convert_confirmed",

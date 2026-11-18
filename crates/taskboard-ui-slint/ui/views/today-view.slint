@@ -131,6 +131,8 @@ export component TodayView inherits FocusScope {
     // The row's −1 recovery (UX R-2 D-3, #786).
     callback habits-undo-log-clicked(int);
     callback habits-repair-clicked(int);
+    // The row's focus fact (cross-surface friction plan D-2, #832).
+    callback habits-row-activated(int);
     callback habits-convert-armed(int);
     callback habits-convert-confirmed(int);
     callback habits-convert-cancelled();
@@ -225,6 +227,7 @@ export component TodayView inherits FocusScope {
                     vertical-stretch: 0;
                     habits: root.habits;
                     editing-enabled: root.habits-editing-enabled;
+                    row-activated(r) => root.habits-row-activated(r);
                     plus-clicked(r) => root.habits-plus-clicked(r);
                     undo-log-clicked(r) => root.habits-undo-log-clicked(r);
                     reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);

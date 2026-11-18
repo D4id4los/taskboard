@@ -549,6 +549,7 @@ export component AppWindow inherits Window {
                 timers-break-remove-cancelled() => root.timers-break-remove-cancelled();
                 habits: root.habits-model;
                 habits-editing-enabled: root.habits-editing-enabled;
+                habits-row-activated(r) => root.habits-row-activated(r);
                 habits-plus-clicked(r) => root.habits-plus-clicked(r);
                 habits-undo-log-clicked(r) => root.habits-undo-log-clicked(r);
                 habits-reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
@@ -2009,6 +2010,7 @@ export component AppWindow inherits Window {
     // conversion flow's arm/confirm/cancel steps (one row armed at a
     // time via the armed-row property).
     pure callback habits-repair-clicked(int);
+    pure callback habits-row-activated(int);
     pure callback habits-convert-armed(int);
     pure callback habits-convert-confirmed(int);
     pure callback habits-convert-cancelled();

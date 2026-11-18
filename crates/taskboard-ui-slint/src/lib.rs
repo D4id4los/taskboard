@@ -1286,6 +1286,56 @@ mod mount_tests {
         });
     }
 
+    /// US-2/AC-3 (cross-surface friction plan D-3, #832): the
+    /// subjectless conversion arms surface the typed refusal — the
+    /// status notice arms (the structural fact, never text) and no
+    /// strip flag flips. The kiosk guard keeps the dispatch
+    /// structurally inert on the appliance (code guard; the origin's
+    /// R-2 records no kiosk leg).
+    #[test]
+    fn us2_ac3_subjectless_convert_surfaces_no_target() {
+        on_slint_thread(|| {
+            let (state, signals, system, commands, requests_tx, _requests_rx, health_rx) =
+                handover();
+            let handle = mount(
+                state,
+                signals,
+                system,
+                commands,
+                requests_tx,
+                UiSettings::default(),
+                health_rx,
+                None,
+            )
+            .expect("mount succeeds on the null platform");
+            handle
+                .adapter
+                .borrow_mut()
+                .route(handle.window(), crate::actions::ActionId::HabitConvertArm);
+            assert!(
+                handle.adapter.borrow().test_notice_armed(),
+                "the habit twin surfaces the typed refusal"
+            );
+            assert_eq!(
+                handle.adapter.borrow().test_habit_convert_armed(),
+                None,
+                "no strip arms without a focus fact"
+            );
+            handle
+                .adapter
+                .borrow_mut()
+                .route(handle.window(), crate::actions::ActionId::SeriesConvertArm);
+            assert!(
+                handle.adapter.borrow().test_notice_armed(),
+                "the series twin surfaces the typed refusal"
+            );
+            assert!(
+                !handle.adapter.borrow().test_series_confirm_armed(),
+                "no confirm strip arms without a subject"
+            );
+        });
+    }
+
     /// The delivery-health lane (round-3 chunk 7, D31): a degraded
     /// snapshot pushed on the watch surfaces as the visible chip after
     /// one drain pass; a later success clears it. Typed edges only —
