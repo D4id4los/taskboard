@@ -1453,26 +1453,12 @@ export component AppWindow inherits Window {
             window-width: root.width;
         }
 
-        // The search palette (#348): the menu overlay pattern — a
-        // full-window dismissal layer first (the later sibling is
-        // hit-tested first, so the panel absorbs its own clicks),
-        // then the centered panel. Width: the 560·scale cap the menu
-        // panel uses, shrinking to the window (the palette's rows are
-        // fixed-count, so unlike the menu there is no preferred-width
-        // term); height by content, clamped above the status bar.
-        if (root.palette-open): palette-backdrop := TouchArea {
-            width: 100%;
-            height: 100%;
-            clicked => root.palette-dismiss-requested();
-            // The right-click dismissal (r4 D2): the card's
-            // pointer-event idiom, closing on the down half.
-            pointer-event(event) => {
-                if (event.kind == PointerEventKind.down
-                        && event.button == PointerEventButton.right) {
-                    root.palette-dismiss-requested();
-                }
-            }
-        }
+        // M7 (overlay migration): the search palette on the
+        // ModalDialogHost base (J2 R-5's focus-trapped modal) — the
+        // hand backdrop/centering are the host's; the walk-mask
+        // arming is the host's too (the containment is structural:
+        // the mask extent rides the live row count + the query
+        // field).
         // The capture overlay on the ModalDialogHost base (round-9 W1,
         // D-W1-1's proof mount): the host carries the scrim, the
         // dismissal layer, the centering, and the walk arming — the
@@ -1533,18 +1519,23 @@ export component AppWindow inherits Window {
             detach-cancel-clicked() => root.recur-detach-cancel-clicked();
             }
         }
-        if (root.palette-open): palette-panel := SearchPalette {
-            width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
-            x: (root.width - self.width) / 2;
-            y: max(Theme.space-4,
-                   min((root.height - status.height - self.height) / 2,
-                       status.y - self.height - Theme.space-2));
+        if (root.palette-open): ModalDialogHost {
+            open: true;
+            title: "Search";
+            kind: DialogKind.confirm;
+            body-preferred-width: 560px * Theme.base-scale;
+            walk-stops: 1 + root.palette-model.length;
+            viewport-floor: status.y;
+            dismissed => root.palette-dismiss-requested();
+            accepted => root.palette-dismiss-requested();
+            palette-panel := SearchPalette {
             rows: root.palette-model;
             selected-index: root.palette-selected-index;
             overflow: root.palette-overflow;
             query-edited(text) => root.palette-query-edited(text);
             row-activated(index) => root.palette-row-activated(index);
             text-flow-focus-lost() => root.text-flow-focus-lost();
+            }
         }
         // The pointer drag's ghost (r2 chunk-8, D-D): the dragged
         // card's snapshot at half opacity, centred under the cursor
