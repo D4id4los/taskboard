@@ -706,11 +706,16 @@ fn cwd_guard_restores_on_unwind() {
 /// the operator's shell.
 #[test]
 fn taskboard_env_lock_restores_ambient_values() {
-    // Plant the hostile ambient values under one lock acquisition —
-    // the env mutex is not reentrant, so the helper's own acquisition
-    // must not nest inside it.
+    // Plant the hostile ambient values under the plain env mutex —
+    // `taskboard_env_lock` here would snapshot-and-clear *before* the
+    // plant and restore the operator's pre-plant ambient on drop,
+    // un-planting our values (the #905 review finding: under a
+    // hostile operator ambient, e.g. `TASKBOARD_CONFIG` set in the
+    // shell, the old outer-scope plant was wiped by its own drop and
+    // the restore assertions saw the operator's value). The plain
+    // mutex serializes `set_env` without snapshot side effects.
     {
-        let _outer = taskboard_env_lock();
+        let _m = env_lock();
         set_env("TASKBOARD_CONFIG", "/nonexistent/taskboard.toml");
         set_env("TASKBOARD_SYNC__POLL_INTERVAL_SECS", "5");
     }
@@ -728,6 +733,20 @@ fn taskboard_env_lock_restores_ambient_values() {
     );
     drop(lock);
 
+    // The read-window rule (#905, plan 2026-11-18-journey-fixture-seams
+    // §D5): the restore assertions must observe the env while the
+    // mutex is held again. The drop itself restores under its own
+    // held mutex (the guard field drops last), but a sibling's
+    // env-mutating section can interleave between our `drop(lock)` and
+    // an unlocked read under a merged threaded harness — exactly the
+    // flake's window. Re-acquire `env_lock()` (the plain mutex — no
+    // snapshot side effects; the helper is non-reentrant, so never
+    // nest `taskboard_env_lock` here): every mutex user restores its
+    // own prior while still holding it, so once our re-acquire
+    // succeeds the env deterministically shows our restored values —
+    // and only a genuinely leaking sibling can now flip these reads,
+    // which is precisely what this test exists to catch.
+    let reread = env_lock();
     assert_eq!(
         std::env::var("TASKBOARD_CONFIG").as_deref(),
         Ok("/nonexistent/taskboard.toml"),
@@ -738,6 +757,7 @@ fn taskboard_env_lock_restores_ambient_values() {
         Ok("5"),
         "the drop restored the ambient value"
     );
+    drop(reread);
     // Leave the process env as we found it — no planted-value leak
     // into sibling tests under a merged harness.
     {
