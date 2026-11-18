@@ -251,6 +251,16 @@ No new `StateCommand`, no new `UiRequest`.
   M-< / M-> fix on the real keyboard (the AC-2 oracle's human half);
   the chord-space choices' feel (the C-c family's mnemonics) judged at
   walkthrough.
+- **Addendum (2026-11-18, issue #855)**: the operator's manual
+  acceptance of US-2 AC-2 *failed* on Dvorak International — PR
+  #862's D-3 partner map was a symmetric superset over the delivered
+  glyph, so a bare Alt+, / Alt+. resolved the begin/end tokens (role
+  theft) while the shifted press did not. The fix: the partner pass
+  is directional — it fires only when the event's Shift flag is
+  genuinely held (`Stroke::chord_shift_partners`, the fold + partner
+  candidates). The map's retirement trigger (the physical/base
+  keysym seam) stands; this addendum narrows it, it does not close
+  it.
 - **#760 fold**: stage 3 cross-checks every §6 row against
   `tests/seam_inventory.rs`.
 

@@ -83,14 +83,18 @@ impl Keymap {
     /// First-match resolution over a chain (D11): the highest visible
     /// context carrying exactly `seq` wins.
     ///
-    /// The chord-shift normalization (keymap-parity plan D-3, N-17)
-    /// rides additive behind the exact pass: when no context carries
-    /// `seq` exactly and the sequence's last stroke has a
-    /// [`Stroke::chord_shift_partner`], the lookup retries once with
-    /// the partner substituted (the Dvorak-International shape: the
-    /// token spells `Alt+<`, the layout delivers the base glyph under
-    /// Alt+Shift). `has_prefix` stays exact — the chord grammar
-    /// (pending prefixes) cannot be altered by the map.
+    /// The chord-shift normalization (keymap-parity plan D-3, N-17;
+    /// made directional by the operator's Dvorak-International report
+    /// — issue #855) rides additive behind the exact pass: when no
+    /// context carries `seq` exactly and the sequence's last stroke
+    /// yields [`Stroke::chord_shift_partners`] candidates, the lookup
+    /// retries once per candidate with it substituted for the last
+    /// stroke (the Dvorak-International shape: the token spells
+    /// `Alt+<`, the layout delivers the base glyph under Alt+Shift).
+    /// An unshifted chorded event (bare Alt+,) yields no candidates —
+    /// the pre-fix symmetric superset let it steal the begin/end
+    /// tokens. `has_prefix` stays exact — the chord grammar (pending
+    /// prefixes) cannot be altered by the map.
     #[must_use]
     pub fn resolve(&self, chain: &[ContextId], seq: &[Stroke]) -> Option<ActionId> {
         for context in self.visible_chain(chain) {
@@ -98,24 +102,22 @@ impl Keymap {
                 return Some(*action);
             }
         }
-        let normalized: Option<Vec<Stroke>> = seq
-            .last()
-            .copied()
-            .and_then(Stroke::chord_shift_partner)
-            .map(|partner| {
-                let mut seq = seq.to_vec();
-                let last = seq.len() - 1;
-                seq[last] = partner;
-                seq
-            });
-        if let Some(seq) = normalized {
+        let last = seq.len().checked_sub(1)?;
+        let mut resolved = None;
+        for partner in seq[last].chord_shift_partners() {
+            let mut normalized = seq.to_vec();
+            normalized[last] = partner;
             for context in self.visible_chain(chain) {
-                if let Some(action) = self.bindings.get(&context).and_then(|b| b.get(&seq)) {
-                    return Some(*action);
+                if let Some(action) = self.bindings.get(&context).and_then(|b| b.get(&normalized)) {
+                    resolved = Some(*action);
+                    break;
                 }
             }
+            if resolved.is_some() {
+                break;
+            }
         }
-        None
+        resolved
     }
 
     /// Whether any visible binding's sequence *starts with* `seq`
@@ -960,13 +962,16 @@ mod tests {
         assert_eq!(vi.bindings_in(ContextId::Global).expect("one row").len(), 1);
     }
 
-    /// The chord-shift normalization (keymap-parity plan D-3, N-17)
-    /// is additive and exact-match wins: every pre-existing binding
-    /// resolves identically (the emacs `Alt+<` row resolves its exact
-    /// event ahead of any partner substitution), an unmatched glyph
-    /// falls through unchanged, and the shift-distinct chord pairs
-    /// (`Ctrl+Shift+Z` ≠ `Ctrl+Z`) stay distinct — letters have no
-    /// partner.
+    /// The chord-shift normalization (keymap-parity plan D-3, N-17;
+    /// made directional by the operator's Dvorak-International
+    /// role-theft report — issue #855) is additive and exact-match
+    /// wins: every pre-existing binding resolves identically (the
+    /// emacs `Alt+<` row resolves its exact event ahead of any
+    /// partner substitution), the substitution fires only when Shift
+    /// is genuinely held (a bare Alt+, dispatches nothing), an
+    /// unmatched glyph falls through unchanged, and the
+    /// shift-distinct chord pairs (`Ctrl+Shift+Z` ≠ `Ctrl+Z`) stay
+    /// distinct — letters have no partner.
     #[test]
     fn normalization_is_additive_and_exact_match_wins() {
         let keymap = Keymap::from_preset(Preset::Emacs);
@@ -984,6 +989,24 @@ mod tests {
             Stroke::from_event(',', false, true, true, false).expect("the shifted event converts");
         assert_eq!(
             keymap.resolve(&chain, &[dvorak]),
+            Some(ActionId::NavFirstItem)
+        );
+        // The operator's role-theft report (issue #855, 2026-11-18):
+        // a bare Alt+, — Shift NOT held — dispatches nothing. The
+        // pre-fix symmetric map resolved it onto the begin token.
+        let theft =
+            Stroke::from_event(',', false, true, false, false).expect("the bare event converts");
+        assert_eq!(
+            keymap.resolve(&chain, &[theft]),
+            None,
+            "bare Alt+, must never resolve the Alt+< token"
+        );
+        // A layout that composes the `<` glyph with the Shift flag
+        // still held resolves the same row through the fold candidate.
+        let shifted_glyph =
+            Stroke::from_event('<', false, true, true, false).expect("the glyph event converts");
+        assert_eq!(
+            keymap.resolve(&chain, &[shifted_glyph]),
             Some(ActionId::NavFirstItem)
         );
         // An unmatched glyph falls through unchanged.

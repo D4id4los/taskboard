@@ -125,30 +125,56 @@ pub struct Stroke {
 /// composed glyph; a layout that composes a third glyph, or any pair
 /// outside this table, stays unreachable) is filed as issue #855 —
 /// the physical/base keysym seam supersedes this map.
+///
+/// The map is **directional** since the operator's Dvorak-International
+/// role-theft report (2026-11-18, issue #855): the substitution fires
+/// only when the event's Shift flag is genuinely held
+/// ([`Stroke::chord_shift_partners`]). The original additive
+/// *symmetric* superset — matching on the glyph alone — let a bare
+/// Alt+, / Alt+. (Shift not held) resolve the `Alt+<` / `Alt+>`
+/// begin/end tokens instead of doing nothing: the report's exact
+/// failure. Shift genuinely held is the only in-seam evidence that a
+/// press meant the shifted glyph, so it gates the map.
 const PUNCT_SHIFT_PAIRS: &[(char, char)] = &[(',', '<'), ('.', '>'), ('/', '?'), (';', ':')];
 
 impl Stroke {
-    /// The chord-shift partner (keymap-parity plan D-3): for a
-    /// *chorded* stroke whose key is a member of [`PUNCT_SHIFT_PAIRS`],
-    /// the pair's other member with shift folded away (the shifted
-    /// glyph carries shift in the character — the same fold rule as
-    /// `parse`). Both directions resolve, so a token spelled with the
-    /// base glyph matches a shifted-glyph event and vice versa; the
-    /// exact-match-first resolver ordering keeps every pre-existing
-    /// token's resolution byte-identical (the normalization is
-    /// additive by construction — `Keymap::resolve` consults it only
-    /// after the exact lookup missed, and `has_prefix` stays exact).
-    /// Non-chorded strokes, named keys, and glyphs outside the table
-    /// yield `None`.
+    /// The chord-shift normalizations (keymap-parity plan D-3, made
+    /// directional by the operator's Dvorak-International role-theft
+    /// report — issue #855): for a *chorded* stroke whose key is a
+    /// member of [`PUNCT_SHIFT_PAIRS`] **and whose Shift flag is
+    /// genuinely held**, the candidate spellings the resolver retries
+    /// after the exact pass misses, in order:
+    ///
+    /// 1. the same glyph with shift folded away (a chorded token
+    ///    spelled with the shifted glyph carries shift *in the
+    ///    character* — the same fold rule as `parse` — so `Alt+<` is
+    ///    the fold of the Alt+Shift+`<`-glyph event), and
+    /// 2. the pair's other member with shift folded away (the
+    ///    Dvorak-International shape: the layout delivers the *base*
+    ///    glyph `,` under Alt+Shift, so the fold candidate misses and
+    ///    the partner candidate matches the `Alt+<` token).
+    ///
+    /// An unshifted chorded event (bare Alt+, — Shift not held) has
+    /// **no** candidates: without the Shift flag there is no evidence
+    /// the press meant the shifted glyph, and the pre-fix symmetric
+    /// map let exactly that press steal the `Alt+<` / `Alt+>` begin/
+    /// end tokens on the operator's layout. The exact-match-first
+    /// resolver ordering keeps every pre-existing token's resolution
+    /// byte-identical (`Keymap::resolve` consults these only after the
+    /// exact lookup missed, and `has_prefix` stays exact). Non-chorded
+    /// strokes, named keys, and glyphs outside the table also yield
+    /// nothing.
     #[must_use]
-    pub fn chord_shift_partner(self) -> Option<Self> {
-        if !(self.ctrl || self.alt || self.meta) {
-            return None;
+    pub fn chord_shift_partners(self) -> Vec<Self> {
+        // The directional gate (the operator report): Shift genuinely
+        // held is required — a bare Alt+, must never match `Alt+<`.
+        if !self.shift || !(self.ctrl || self.alt || self.meta) {
+            return Vec::new();
         }
         if self.named_name().is_some() {
-            return None;
+            return Vec::new();
         }
-        let partner = PUNCT_SHIFT_PAIRS.iter().find_map(|&(base, shifted)| {
+        let member = PUNCT_SHIFT_PAIRS.iter().find_map(|&(base, shifted)| {
             if self.key == base {
                 Some(shifted)
             } else if self.key == shifted {
@@ -156,12 +182,32 @@ impl Stroke {
             } else {
                 None
             }
-        })?;
-        Some(Self {
-            key: partner,
+        });
+        // Candidate 1 applies to pair members only: outside the
+        // table the shift-distinct chords stay distinct
+        // (`Ctrl+Shift+Z` ≠ `Ctrl+Z` — the undo/redo pair depends on
+        // it), exactly as before the map existed.
+        // Out of the table: no candidates. This also keeps the
+        // shift-distinct chords distinct (`Ctrl+Shift+Z` ≠ `Ctrl+Z`
+        // — the undo/redo pair depends on it), exactly as before the
+        // map existed.
+        let Some(member) = member else {
+            return Vec::new();
+        };
+        // The glyph already carries the shift, so the shift-folded
+        // spelling is always a legitimate reading of the press.
+        let mut partners = vec![Self {
             shift: false,
             ..self
-        })
+        }];
+        if member != self.key {
+            partners.push(Self {
+                key: member,
+                shift: false,
+                ..self
+            });
+        }
+        partners
     }
 
     /// The canonical modifier list in display order.
@@ -478,11 +524,13 @@ mod tests {
         );
     }
 
-    /// The chord-shift partner (keymap-parity plan D-3, N-17): the
-    /// Dvorak-International shape — a layout that delivers the base
-    /// glyph under Alt+Shift still resolves the shifted-glyph token —
-    /// and the mirror direction; non-chorded, named, and out-of-table
-    /// strokes have no partner.
+    /// The chord-shift normalizations (keymap-parity plan D-3, N-17;
+    /// made directional by the operator's Dvorak-International
+    /// role-theft report — issue #855, 2026-11-18): with Shift
+    /// genuinely held, both the shift-fold and the pair-partner
+    /// candidates appear; without Shift there is no candidate — the
+    /// theft direction is dead; non-chorded, named, and out-of-table
+    /// strokes have none either.
     #[test]
     fn alt_shifted_punct_tokens_match_base_glyph_events() {
         // The N-17 shape: the event arrives as `,` with Alt+Shift
@@ -492,26 +540,38 @@ mod tests {
         let delivered =
             Stroke::from_event(',', false, true, true, false).expect("the event converts");
         assert_ne!(token, delivered, "the raw strokes differ (the bug)");
-        assert_eq!(
-            delivered.chord_shift_partner(),
-            Some(token),
-            "the partner equals the token stroke"
+        assert!(
+            delivered.chord_shift_partners().contains(&token),
+            "the partner candidates include the token stroke"
         );
         // The mirror direction: an event delivering the shifted glyph
         // (`?` under Ctrl+Shift) matches the base-glyph token `Ctrl+/`.
         let shifted_event =
             Stroke::from_event('?', true, false, true, false).expect("the event converts");
+        let ctrl_slash = parse("Ctrl+/").expect("the token parses");
+        assert!(shifted_event.chord_shift_partners().contains(&ctrl_slash));
+        // The operator's role-theft report: a bare Alt+, — Alt held,
+        // Shift NOT held — has no candidates at all, so it can never
+        // resolve the `Alt+<` begin token.
+        let theft = Stroke::from_event(',', false, true, false, false).expect("the event converts");
         assert_eq!(
-            shifted_event.chord_shift_partner(),
-            Some(parse("Ctrl+/").expect("the token parses"))
+            theft.chord_shift_partners(),
+            Vec::new(),
+            "a bare Alt+, must never partner onto Alt+<"
         );
+        // A shifted-glyph event (`<` glyph, Shift held) folds onto its
+        // own token spelling.
+        let folded = Stroke::from_event('<', false, true, true, false).expect("the event converts");
+        assert!(folded.chord_shift_partners().contains(&token));
         // Out of reach: bare strokes, named keys, and unbound glyphs.
         let bare = parse(",").expect("bare comma");
-        assert_eq!(bare.chord_shift_partner(), None);
+        assert_eq!(bare.chord_shift_partners(), Vec::new());
         let named = parse("Ctrl+Return").expect("named chord");
-        assert_eq!(named.chord_shift_partner(), None);
-        let letter = parse("Ctrl+z").expect("letter chord");
-        assert_eq!(letter.chord_shift_partner(), None);
+        assert_eq!(named.chord_shift_partners(), Vec::new());
+        // Shift-distinct chords stay distinct: letters have no
+        // partner even with Shift held (undo/redo).
+        let redo = parse("Ctrl+Shift+z").expect("redo chord");
+        assert_eq!(redo.chord_shift_partners(), Vec::new());
     }
 
     #[test]
