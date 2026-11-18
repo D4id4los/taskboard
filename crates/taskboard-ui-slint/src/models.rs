@@ -284,6 +284,10 @@ pub struct PushModels {
     /// fresh model per card per pass would dirty every card and
     /// degrade the diff to a full `set_row_data` cascade.
     card_decorations: BTreeMap<TaskId, MirroredRows<TaskDecoration>>,
+    /// Per-card label-chip models keyed by the task (tag-color plan
+    /// D-9): the `card_decorations` handle-identity rule verbatim — a
+    /// fresh model per card per pass would dirty every card.
+    card_label_chips: BTreeMap<TaskId, MirroredRows<crate::TaskLabelChipModel>>,
     detail_tasks: MirroredRows<TaskCardModel>,
     task_rules: MirroredRows<RuleRowModel>,
     task_rule_presets: MirroredRows<SharedString>,
@@ -1195,6 +1199,9 @@ pub fn push(
     models
         .card_decorations
         .retain(|task, _| pass.contains(task));
+    models
+        .card_label_chips
+        .retain(|task, _| pass.contains(task));
     tracing::trace!(rows = mutations, "model push diff: row mutations this pass");
     tables
 }
@@ -1893,6 +1900,7 @@ fn push_board(
                 continue;
             }
             task_ids.push(task.id);
+            let (chips, chips_overflow) = card_chips(models, state, task);
             cards.push(task_card_model(
                 task,
                 sets,
@@ -1900,6 +1908,8 @@ fn push_board(
                 now,
                 tracked_task.is_some_and(|open| open == task.id),
                 decorations_model(models, task, tracked_task, calendar, now),
+                chips,
+                chips_overflow,
             ));
         }
         mutations += models
@@ -2008,6 +2018,7 @@ fn push_board(
     if let Flow::DragMove { task, .. } = &flow
         && let Some(dragged) = state.tasks.get(task)
     {
+        let (ghost_chips, ghost_overflow) = card_chips(models, state, dragged);
         let mut ghost = task_card_model(
             dragged,
             sets,
@@ -2015,6 +2026,8 @@ fn push_board(
             now,
             tracked_task.is_some_and(|open| open == dragged.id),
             decorations_model(models, dragged, tracked_task, calendar, now),
+            ghost_chips,
+            ghost_overflow,
         );
         ghost.dragging_source = false;
         window.global::<DragState>().set_ghost_model(ghost);
@@ -2128,6 +2141,22 @@ impl PushModels {
 /// per-task handle and diff the desired decorations onto it (r2
 /// D9's `card_decorations` slot — the handle identity that makes
 /// unchanged cards compare fully equal).
+/// The card label chips' persistent model (tag-color plan D-9, the
+/// `decorations_model` slot rule): diffed per pass keyed by the task,
+/// the handle stable across refreshes. Returns the handle plus the
+/// typed overflow count (the count rides the value diff).
+fn card_chips(
+    models: &mut PushModels,
+    state: &AppState,
+    task: &Task,
+) -> (ModelRc<crate::TaskLabelChipModel>, i32) {
+    let (rows, overflow) = task_card_label_chips(state, task.id);
+    let slot = models.card_label_chips.entry(task.id).or_default();
+    models.pass_tasks.insert(task.id);
+    slot.diff(&rows);
+    (ModelRc::from(slot.handle_or_insert_with()), overflow)
+}
+
 fn decorations_model(
     models: &mut PushModels,
     task: &Task,
@@ -2167,6 +2196,7 @@ fn push_stack_detail(
             continue;
         }
         tables.stack_tasks.push(task.id);
+        let (chips, chips_overflow) = card_chips(models, state, task);
         detail_rows.push(task_card_model(
             task,
             sets,
@@ -2174,6 +2204,8 @@ fn push_stack_detail(
             now,
             tracked_task.is_some_and(|open| open == task.id),
             decorations_model(models, task, tracked_task, calendar, now),
+            chips,
+            chips_overflow,
         ));
     }
     let mutations = models.detail_tasks.diff(&detail_rows);
@@ -2760,6 +2792,35 @@ fn label_chip_rows(
         .unwrap_or_default()
 }
 
+/// The card's label chips (tag-color UX plan D-9, US-3): the task's
+/// live labels in canonical order (the `BTreeSet`'s id order —
+/// `task_labels`' own order), each as (title, `swatch_hex` echo);
+/// beyond [`crate::presentation::LABEL_CHIP_CAP`] the rest collapse
+/// into the typed overflow count (the compact leg hides the row
+/// entirely — the decoration grammar's tertiary posture).
+pub(crate) fn task_card_label_chips(
+    state: &AppState,
+    task_id: TaskId,
+) -> (Vec<crate::TaskLabelChipModel>, i32) {
+    let Some(task) = state.tasks.get(&task_id) else {
+        return (Vec::new(), 0);
+    };
+    let mut chips: Vec<crate::TaskLabelChipModel> = task
+        .live_labels()
+        .iter()
+        .filter_map(|id| state.labels.get(id).filter(|label| !label.deleted))
+        .map(|label| crate::TaskLabelChipModel {
+            title: SharedString::from(label.title.clone()),
+            color: swatch_hex(&label.color),
+        })
+        .collect();
+    let hidden = chips
+        .len()
+        .saturating_sub(crate::presentation::LABEL_CHIP_CAP);
+    chips.truncate(crate::presentation::LABEL_CHIP_CAP);
+    (chips, i32::try_from(hidden).unwrap_or(i32::MAX))
+}
+
 /// The swatch echo of a lenient domain `Color`: six-hex bodies mint
 /// the typed color (the palette's own vocabulary); anything else
 /// renders transparent (the lenient value survives sync — the GUI
@@ -3019,6 +3080,7 @@ fn field_decorations(
     out
 }
 
+#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list
 fn task_card_model(
     task: &Task,
     sets: &DueSets,
@@ -3026,6 +3088,8 @@ fn task_card_model(
     now: DateTime<Utc>,
     tracked_here: bool,
     decorations: ModelRc<TaskDecoration>,
+    chips: ModelRc<crate::TaskLabelChipModel>,
+    chips_overflow: i32,
 ) -> TaskCardModel {
     let kind = presentation::due_kind(task, sets);
     TaskCardModel {
@@ -3064,6 +3128,10 @@ fn task_card_model(
             crate::TrackCardState::None
         },
         decorations,
+        // The label chips (tag-color plan D-9, US-3): the mirrored
+        // slot handle + the typed overflow count.
+        label_chips: chips,
+        label_chips_overflow: chips_overflow,
     }
 }
 
@@ -3168,14 +3236,19 @@ fn push_today(
             today_tasks.push(*id);
             rows.push(TodayRowModel {
                 id: SharedString::from(task.id.as_uuid().to_string()),
-                card: task_card_model(
-                    task,
-                    sets,
-                    vs,
-                    day.now,
-                    tracked_task.is_some_and(|open| open == task.id),
-                    decorations_model(models, task, tracked_task, calendar, day.now),
-                ),
+                card: {
+                    let (chips, chips_overflow) = card_chips(models, state, task);
+                    task_card_model(
+                        task,
+                        sets,
+                        vs,
+                        day.now,
+                        tracked_task.is_some_and(|open| open == task.id),
+                        decorations_model(models, task, tracked_task, calendar, day.now),
+                        chips,
+                        chips_overflow,
+                    )
+                },
                 context: SharedString::from(presentation::today_row_context(
                     state,
                     task,
@@ -3302,6 +3375,7 @@ fn push_today(
 
 #[allow(clippy::too_many_arguments)] // the pass-shaped parameter list
 fn plan_row(
+    state: &AppState,
     models: &mut PushModels,
     task: &Task,
     sets: &presentation::DueSets,
@@ -3312,8 +3386,9 @@ fn plan_row(
     time: &str,
     overdue: bool,
 ) -> PlanRowModel {
+    // No done box: the planner never wires the toggle (#665).
+    let (chips, chips_overflow) = card_chips(models, state, task);
     PlanRowModel {
-        // No done box: the planner never wires the toggle (#665).
         card: TaskCardModel {
             can_done: false,
             ..task_card_model(
@@ -3323,6 +3398,8 @@ fn plan_row(
                 now,
                 tracked_task.is_some_and(|open| open == task.id),
                 decorations_model(models, task, tracked_task, calendar, now),
+                chips,
+                chips_overflow,
             )
         },
         time: SharedString::from(time),
@@ -3575,6 +3652,7 @@ fn push_plan_next_day(
         }
         plan_rows.push(*id);
         boxes.push(plan_row(
+            state,
             models,
             task,
             sets,
@@ -3599,6 +3677,7 @@ fn push_plan_next_day(
         }
         plan_rows.push(*id);
         pool.push(plan_row(
+            state,
             models,
             task,
             sets,
@@ -3688,7 +3767,9 @@ pub fn files_sync_chip_state(state: presentation::FilesSyncChipState) -> SlintFi
 mod tests {
     use super::*;
 
-    use taskboard_domain::{Importance, TaskClocks, Urgency};
+    use taskboard_domain::{
+        Board, BoardClocks, Importance, Stack, StackClocks, TaskClocks, Urgency,
+    };
 
     /// The insertion indicator's aim derivation (UX-R8 D-2, US-2/AC-3):
     /// the armed move/drag flows converge on one (stack, gap) pair;
@@ -3843,6 +3924,190 @@ mod tests {
             authors: taskboard_domain::entities::LabelAuthors::default(),
             remote_seen: None,
         }
+    }
+
+    // -- tag-color UX plan (US-3/W-3, #839): the card label chips --
+
+    /// A live board for the chips tests (the palette submodule's helper
+    /// shape, spelled locally — the block sits in the outer tests mod).
+    fn chips_board(board_id: taskboard_domain::BoardId) -> Board {
+        Board {
+            id: board_id,
+            remote: None,
+            title: "board".to_owned(),
+            color: taskboard_domain::Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: epoch(),
+                color: epoch(),
+                archived: epoch(),
+                deleted: epoch(),
+            },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
+            remote_seen: None,
+        }
+    }
+
+    /// A live stack for the chips tests.
+    fn chips_stack(stack_id: StackId, board_id: taskboard_domain::BoardId) -> Stack {
+        Stack {
+            id: stack_id,
+            remote: None,
+            board: board_id,
+            title: "stack".to_owned(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: epoch(),
+                order: epoch(),
+                deleted: epoch(),
+            },
+            authors: taskboard_domain::entities::StackAuthors::default(),
+            remote_seen: None,
+        }
+    }
+
+    /// A live board/stack/task trio for the chips tests (the palette
+    /// submodule's helper shapes, spelled locally — the block is
+    /// self-contained).
+    fn chips_task(id: TaskId, stack_id: StackId) -> Task {
+        let mut task = task();
+        task.id = id;
+        task.stack = stack_id;
+        task.title = "card".to_owned();
+        task
+    }
+
+    /// US-3/AC-1 (tag-color plan W-3): the card carries one chip per live
+    /// label in canonical order (the `BTreeSet` id order), titles over
+    /// swatch echoes — derived from `Task::live_labels`, never strings.
+    #[test]
+    fn us3_ac1_the_card_carries_one_chip_per_live_label() {
+        crate::test_platform::on_slint_thread(|| {
+            let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+            let stack_id = StackId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = AppState::default();
+            state.boards.insert(board_id, chips_board(board_id));
+            state
+                .stacks
+                .insert(stack_id, chips_stack(stack_id, board_id));
+            let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+            state.tasks.insert(id, chips_task(id, stack_id));
+            // Fixed uuids: the canonical order is the ids' own BTreeSet
+            // order, so the test pins a deterministic one (a < b < gone).
+            let (a, b, gone) = (
+                LabelId::from_uuid(
+                    uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001")
+                        .expect("fixed uuid"),
+                ),
+                LabelId::from_uuid(
+                    uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002")
+                        .expect("fixed uuid"),
+                ),
+                LabelId::from_uuid(
+                    uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000003")
+                        .expect("fixed uuid"),
+                ),
+            );
+            for (lid, title, color) in [
+                (a, "alpha", "31cc7c"),
+                (b, "beta", "3a70d6"),
+                (gone, "gone", "e05a4e"),
+            ] {
+                state
+                    .labels
+                    .insert(lid, label(lid, board_id, title, color, false));
+            }
+            // `gone` is a tombstone: the roster filter drops it.
+            if let Some(l) = state.labels.get_mut(&gone) {
+                l.deleted = true;
+            }
+            // The canonical order rides the BTreeSet's id order; the
+            // membership insertion order is irrelevant.
+            for (lid, at) in [(b, epoch()), (a, epoch()), (gone, epoch())] {
+                if let Some(task) = state.tasks.get_mut(&id) {
+                    task.label_memberships.insert(
+                        lid,
+                        taskboard_domain::entities::MembershipState::Added { at },
+                    );
+                }
+            }
+            let (chips, overflow) = task_card_label_chips(&state, id);
+            assert_eq!(chips.len(), 2, "one chip per live label; tombstones drop");
+            assert_eq!(chips[0].title, "alpha", "canonical order: the id's own");
+            assert_eq!(chips[1].title, "beta");
+            assert_eq!(overflow, 0);
+        });
+    }
+
+    /// US-3/AC-2 (tag-color plan W-3): a lenient stored colour echoes
+    /// transparent on a chip — the `swatch_hex` hygiene, never re-derived.
+    #[test]
+    fn us3_ac2_a_lenient_colour_echoes_transparent_on_a_chip() {
+        crate::test_platform::on_slint_thread(|| {
+            let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+            let stack_id = StackId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = AppState::default();
+            state.boards.insert(board_id, chips_board(board_id));
+            state
+                .stacks
+                .insert(stack_id, chips_stack(stack_id, board_id));
+            let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+            state.tasks.insert(id, chips_task(id, stack_id));
+            let odd = LabelId::from_uuid(uuid::Uuid::now_v7());
+            state
+                .labels
+                .insert(odd, label(odd, board_id, "odd", "#fff nope", false));
+            if let Some(task) = state.tasks.get_mut(&id) {
+                task.label_memberships.insert(
+                    odd,
+                    taskboard_domain::entities::MembershipState::Added { at: epoch() },
+                );
+            }
+            let (chips, _) = task_card_label_chips(&state, id);
+            assert_eq!(chips.len(), 1);
+            assert_eq!(
+                chips[0].color,
+                swatch_hex(&taskboard_domain::Color::new("#fff nope")),
+                "the lenient echo rides the same swatch hygiene"
+            );
+        });
+    }
+
+    /// US-3/AC-3 (tag-color plan W-3): the cap/overflow arithmetic —
+    /// beyond `LABEL_CHIP_CAP` the chips truncate and the typed overflow
+    /// count carries the hidden remainder.
+    #[test]
+    fn us3_ac3_the_cap_collapses_the_rest_into_the_typed_overflow() {
+        crate::test_platform::on_slint_thread(|| {
+            let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+            let stack_id = StackId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = AppState::default();
+            state.boards.insert(board_id, chips_board(board_id));
+            state
+                .stacks
+                .insert(stack_id, chips_stack(stack_id, board_id));
+            let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+            state.tasks.insert(id, chips_task(id, stack_id));
+            let total = crate::presentation::LABEL_CHIP_CAP + 2;
+            for i in 0..total {
+                let lid = LabelId::from_uuid(uuid::Uuid::now_v7());
+                state
+                    .labels
+                    .insert(lid, label(lid, board_id, &format!("l{i}"), "31cc7c", false));
+                if let Some(task) = state.tasks.get_mut(&id) {
+                    task.label_memberships.insert(
+                        lid,
+                        taskboard_domain::entities::MembershipState::Added { at: epoch() },
+                    );
+                }
+            }
+            let (chips, overflow) = task_card_label_chips(&state, id);
+            assert_eq!(chips.len(), crate::presentation::LABEL_CHIP_CAP);
+            assert_eq!(overflow, 2, "the hidden remainder rides the typed flag");
+        });
     }
 
     /// The priority picker's slot rows (UX R-3 D-1/D-9): the closed
@@ -4204,6 +4469,7 @@ mod tests {
         let vs = ViewState::default();
         let now = epoch();
         let sets = DueSets::default();
+        let chips = ModelRc::new(VecModel::from(Vec::<crate::TaskLabelChipModel>::new()));
         let build = || {
             task_card_model(
                 &t,
@@ -4212,6 +4478,8 @@ mod tests {
                 now,
                 false,
                 ModelRc::from(decorations.clone()),
+                chips.clone(),
+                0,
             )
         };
         let mut mirror = vec![build()];
@@ -4235,6 +4503,8 @@ mod tests {
                 calendar(),
                 epoch(),
             ))),
+            chips.clone(),
+            0,
         );
         assert_eq!(diff_rows(&mut mirror, &model, &[fresh]), 1);
         // The mirror tracked every mutation in lockstep (#464).
@@ -5028,6 +5298,8 @@ mod tests {
             epoch(),
             false,
             ModelRc::from(decorations.clone()),
+            ModelRc::new(VecModel::from(Vec::<crate::TaskLabelChipModel>::new())),
+            0,
         );
         assert!(!card.can_done, "the tracker card hides the done box");
         let badges: Vec<_> = card
@@ -5046,6 +5318,8 @@ mod tests {
             epoch(),
             false,
             ModelRc::new(VecModel::from(Vec::new())),
+            ModelRc::new(VecModel::from(Vec::new())),
+            0,
         );
         assert!(plain.can_done);
         assert!(
@@ -5079,6 +5353,8 @@ mod tests {
             epoch(),
             false,
             ModelRc::from(decorations),
+            ModelRc::new(VecModel::from(Vec::new())),
+            0,
         );
         assert!(!card.can_done);
         assert!(

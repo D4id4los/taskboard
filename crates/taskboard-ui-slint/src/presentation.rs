@@ -605,6 +605,11 @@ pub struct ReminderTarget {
 /// (labels and boards); each consumer maps it to its own default.
 pub const SWATCHES: [&str; 6] = ["31cc7c", "3a70d6", "e05a4e", "edbf45", "9d68d9", "8f8f8f"];
 
+/// The card chips' cap (tag-color UX plan D-9, US-3): the decoration
+/// row's width budget at the narrow breakpoint; beyond it the chips
+/// collapse into the typed overflow count.
+pub const LABEL_CHIP_CAP: usize = 3;
+
 pub const RULE_PRESETS: &[chrono::TimeDelta] = &[
     chrono::TimeDelta::try_minutes(5).expect("5m fits"),
     chrono::TimeDelta::try_minutes(30).expect("30m fits"),

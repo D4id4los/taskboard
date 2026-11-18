@@ -45,6 +45,14 @@ export struct TaskDecoration {
 
 // The display model (D22, rule B): titles, due phrase, due class,
 // flags — no colours, no strings-as-bags.
+// One card label chip (tag-color UX plan D-9, US-3): the label's
+// title plus its `swatch_hex` echo (transparent for lenient stored
+// values — never re-derived).
+export struct TaskLabelChipModel {
+    title: string,
+    color: color,
+}
+
 export struct TaskCardModel {
     title: string,
     due-phrase: string,
@@ -74,6 +82,11 @@ export struct TaskCardModel {
     // state anywhere.
     track-state: TrackCardState,
     decorations: [TaskDecoration],
+    // The label chips (tag-color plan D-9): the live labels in
+    // canonical order, plus the typed overflow count beyond the cap.
+    // Derived in the models pass; the compact leg hides the row.
+    label-chips: [TaskLabelChipModel],
+    label-chips-overflow: int,
 }
 
 export component TaskCard inherits Rectangle {
@@ -327,6 +340,48 @@ export component TaskCard inherits Rectangle {
             // Rectangle carries no content-derived layout info
             // (min = preferred = 0, max = unbounded), so the merge
             // stays unbounded; the height rides the inner layout's.
+            // The label chips (tag-color plan D-9, US-3): a
+            // tertiary-class row — compact collapses it (the height
+            // contract never grows, AC-3). The plain-Rectangle host
+            // + explicit max is the round-6 R6-4 rule verbatim (the
+            // deco row's comment; the constraint-merge trap).
+            if (!root.compact && root.model.label-chips.length > 0): chips-row := Rectangle {
+                max-width: Theme.layout-severing-max-width;
+                height: chips-layout.preferred-height;
+                chips-layout := HorizontalLayout {
+                    spacing: Theme.space-1;
+                    for chip in root.model.label-chips: Rectangle {
+                        border-radius: Theme.radius-small;
+                        background: chip.color;
+                        border-width: Theme.hairline-width;
+                        border-color: Theme.border;
+                        HorizontalLayout {
+                            padding-left: Theme.space-1;
+                            padding-right: Theme.space-1;
+                            RoleText {
+                                role: Typography.badge;
+                                text-color: Theme.text-secondary;
+                                text: chip.title;
+                            }
+                        }
+                    }
+                    // The typed overflow chip (the count is model
+                    // data, not composed UI text).
+                    if (root.model.label-chips-overflow > 0): Rectangle {
+                        border-radius: Theme.radius-small;
+                        background: Theme.surface-raised;
+                        HorizontalLayout {
+                            padding-left: Theme.space-1;
+                            padding-right: Theme.space-1;
+                            RoleText {
+                                role: Typography.badge;
+                                text-color: Theme.text-secondary;
+                                text: "+" + root.model.label-chips-overflow;
+                            }
+                        }
+                    }
+                }
+            }
             if (!root.compact): deco-row := Rectangle {
                 // The explicit cap (round-6 R6-4): the single-layout
                 // lowering would otherwise inherit the inner layout's
