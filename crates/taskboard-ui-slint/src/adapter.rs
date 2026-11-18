@@ -1369,16 +1369,7 @@ impl Adapter {
             }
             ActionId::TaskScheduleToday => {
                 let end = self.day_ctx().window.1;
-                let members = self.view_state.selection_anchor_order(&state);
-                for member in members {
-                    self.send(StateCommand::UpdateTask {
-                        id: member,
-                        changes: taskboard_domain::TaskChanges {
-                            scheduled: Some(Some(end)),
-                            ..taskboard_domain::TaskChanges::default()
-                        },
-                    });
-                }
+                self.schedule_selection(&state, end);
             }
             ActionId::TaskScheduleTomorrow => {
                 let end = taskboard_domain::days::next_day_window(
@@ -1387,16 +1378,7 @@ impl Adapter {
                     self.day_start.1,
                 )
                 .1;
-                let members = self.view_state.selection_anchor_order(&state);
-                for member in members {
-                    self.send(StateCommand::UpdateTask {
-                        id: member,
-                        changes: taskboard_domain::TaskChanges {
-                            scheduled: Some(Some(end)),
-                            ..taskboard_domain::TaskChanges::default()
-                        },
-                    });
-                }
+                self.schedule_selection(&state, end);
             }
             ActionId::TaskUnschedule => {
                 let members = self.view_state.selection_anchor_order(&state);
@@ -1419,6 +1401,22 @@ impl Adapter {
             _ => unreachable!("the intercept's guard owns the verb set"),
         }
         self.finish_mutation(window);
+    }
+
+    /// The schedule pair's per-member dispatch (the arms' shared body):
+    /// one sparse `UpdateTask` per selection member in anchor order,
+    /// `scheduled` set to the shared window end, everything else
+    /// untouched.
+    fn schedule_selection(&mut self, state: &AppState, end: DateTime<Utc>) {
+        for member in self.view_state.selection_anchor_order(state) {
+            self.send(StateCommand::UpdateTask {
+                id: member,
+                changes: taskboard_domain::TaskChanges {
+                    scheduled: Some(Some(end)),
+                    ..taskboard_domain::TaskChanges::default()
+                },
+            });
+        }
     }
 
     /// One fire-and-forget command send (the route arm's convention):
