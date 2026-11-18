@@ -28,7 +28,7 @@ import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
 import { ModalDialogHost, DialogKind } from "widgets/modal-dialog-host.slint";
 import { AnchoredOverlayHost } from "widgets/anchored-overlay.slint";
-import { HabitRowModel } from "compositions/habits.slint";
+import { HabitCardModel } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
@@ -303,7 +303,7 @@ export component AppWindow inherits Window {
     pure callback timers-break-remove-cancelled();
     // The habits section (DR-6/6): the active board's tracker rows —
     // rendering is not kiosk-gated, the affordances are.
-    in-out property <[HabitRowModel]> habits-model;
+    in-out property <[HabitCardModel]> habits-model;
     in-out property <bool> habits-editing-enabled: false;
     // The create flow (round-7 D-7.2): the affordance's mount gate
     // (desktop + active board, model-side) and the armed form's
@@ -553,14 +553,10 @@ export component AppWindow inherits Window {
                 habits: root.habits-model;
                 habits-editing-enabled: root.habits-editing-enabled;
                 habits-row-activated(r) => root.habits-row-activated(r);
-                habits-plus-clicked(r) => root.habits-plus-clicked(r);
+                habits-log-clicked(r) => root.habits-log-clicked(r);
                 habits-undo-log-clicked(r) => root.habits-undo-log-clicked(r);
-                habits-reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
                 habits-repair-clicked(r) => root.habits-repair-clicked(r);
-                habits-convert-armed(r) => root.habits-convert-armed(r);
-                habits-convert-confirmed(r) => root.habits-convert-confirmed(r);
-                habits-convert-cancelled() => root.habits-convert-cancelled();
-                habits-convert-armed-row: root.habits-convert-armed-row;
+                habits-context-requested(r, x, y) => root.habits-context-requested(r, x, y);
                 habits-create-mountable: root.habits-create-mountable;
                 habits-create-open: root.habits-create-open;
                 habits-quota-validity: root.habits-quota-validity;
@@ -2004,21 +2000,19 @@ export component AppWindow inherits Window {
     // TimerCreate from the parsed draft; cancel dispatches
     // TimerCancel from the row table; the chip click focuses today.
     pure callback timers-cancel-clicked(int);
-    pure callback habits-plus-clicked(int);
+    // The +1's seam (the done slot and the strip share it, H2 D2/D3).
+    pure callback habits-log-clicked(int);
     // The row's −1 recovery seam (UX R-2 D-3, #786): routes the
     // audited AdjustHabitLog over the row's current window (count
     // n−1; count 0 is the typed NoTarget).
     pure callback habits-undo-log-clicked(int);
-    pure callback habits-reorder-asked(int, int);
-    // The habits trio (issue #506): the make-up valve, and the
-    // conversion flow's arm/confirm/cancel steps (one row armed at a
-    // time via the armed-row property).
+    // The make-up valve (issue #506): the exact (window, count) the
+    // row source resolved.
     pure callback habits-repair-clicked(int);
     pure callback habits-row-activated(int);
-    pure callback habits-convert-armed(int);
-    pure callback habits-convert-confirmed(int);
-    pure callback habits-convert-cancelled();
-    in-out property <int> habits-convert-armed-row: -1;
+    // The habit context menu's right-click seam (H2 D4): index +
+    // window coords — the task cards' `context-requested` twin.
+    pure callback habits-context-requested(int, float, float);
     // The create flow's seams (round-7 D-7.2): the header ask routes
     // the toggle; the commit funnels the minted draft (`false` = an
     // absorbed miss, the field text kept); quota keystrokes ride the

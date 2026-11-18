@@ -21,7 +21,7 @@ import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { TimersSection, TimerRowModel, BreakRuleRowModel } from "../compositions/timers.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
-import { HabitsSection, HabitRowModel } from "../compositions/habits.slint";
+import { HabitsSection, HabitCardModel } from "../compositions/habits.slint";
 import { TrackedTodaySection, TrackedTodayRowModel } from "../compositions/tracked-today.slint";
 import { TodayAnchorFacts } from "../today-anchor.slint";
 
@@ -114,7 +114,7 @@ export component TodayView inherits FocusScope {
     // above the task sections (D-P18). Renders whenever the active
     // board has live habits — on kiosk too (passive progress
     // visibility IS the point; only the actions gate).
-    in property <[HabitRowModel]> habits;
+    in property <[HabitCardModel]> habits;
     in property <bool> habits-editing-enabled;
     // The create flow's forwarding (round-7 D-7.2): the mount gate's
     // widening (`habits-create-mountable` — desktop, board active,
@@ -127,17 +127,15 @@ export component TodayView inherits FocusScope {
     callback habits-create-confirmed(string, string, int) -> bool;
     callback habits-create-cancelled();
     callback habits-create-quota-edited(string);
-    callback habits-plus-clicked(int);
+    callback habits-log-clicked(int);
     // The row's −1 recovery (UX R-2 D-3, #786).
     callback habits-undo-log-clicked(int);
     callback habits-repair-clicked(int);
     // The row's focus fact (cross-surface friction plan D-2, #832).
     callback habits-row-activated(int);
-    callback habits-convert-armed(int);
-    callback habits-convert-confirmed(int);
-    callback habits-convert-cancelled();
-    in property <int> habits-convert-armed-row: -1;
-    callback habits-reorder-asked(int, int);
+    // The right-click context request (H2 D4): the habit menu's
+    // opener (index, window x, window y).
+    callback habits-context-requested(int, float, float);
     // The Tracked section's activation seam (#490): the adapter
     // resolves the row against the tracked-today table and opens the
     // task (the today-row-activated precedent).
@@ -228,14 +226,10 @@ export component TodayView inherits FocusScope {
                     habits: root.habits;
                     editing-enabled: root.habits-editing-enabled;
                     row-activated(r) => root.habits-row-activated(r);
-                    plus-clicked(r) => root.habits-plus-clicked(r);
+                    log-clicked(r) => root.habits-log-clicked(r);
                     undo-log-clicked(r) => root.habits-undo-log-clicked(r);
-                    reorder-asked(row, slot) => root.habits-reorder-asked(row, slot);
                     repair-clicked(r) => root.habits-repair-clicked(r);
-                    convert-armed(r) => root.habits-convert-armed(r);
-                    convert-confirmed(r) => root.habits-convert-confirmed(r);
-                    convert-cancelled() => root.habits-convert-cancelled();
-                    convert-armed-row: root.habits-convert-armed-row;
+                    context-requested(r, x, y) => root.habits-context-requested(r, x, y);
                     create-open: root.habits-create-open;
                     quota-validity: root.habits-quota-validity;
                     quota-error-hint: root.habits-quota-error-hint;

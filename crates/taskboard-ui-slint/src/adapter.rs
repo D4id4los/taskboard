@@ -515,6 +515,18 @@ pub(crate) struct Adapter {
     /// The reorder's resolved (habit, order) (DR-6/6): consumed by the
     /// next `habit.move` dispatch, then cleared.
     habit_move: Option<(taskboard_domain::HabitId, i64)>,
+    /// The habit menu's reorder pair (H2 D4): both slots' floor
+    /// midpoints minted at menu open from the same row source the
+    /// section renders; consumed by the next
+    /// `habit.move-up`/`habit.move-down` dispatch, then cleared.
+    habit_move_up: Option<(taskboard_domain::HabitId, i64)>,
+    habit_move_down: Option<(taskboard_domain::HabitId, i64)>,
+    /// The open object menu's subject (H2 D1): `RowSubject::Habit` for
+    /// the habit context menu, `RowSubject::Task` for every task
+    /// card's menu — the arm/cancel effects' re-projection reads it
+    /// (the menu is built once at open, the D-1 pin; the re-projection
+    /// after an arm is the one sanctioned rebuild).
+    menu_row_subject: Option<crate::presentation::RowSubject>,
     /// The make-up valve's resolved `(habit, window, count)` (issue
     /// #506, plan D-7): presentation's `habit_repair_target` computed
     /// from the same row source the section renders; consumed by the
@@ -575,9 +587,12 @@ pub(crate) struct Adapter {
     /// on Escape/outside click, on any leaving settle, and when the
     /// subject dies (the recur flags' buffers-never-outlive rule).
     priority_open: Option<crate::router::PriorityField>,
-    /// The habits section's armed conversion row (issue #506): the
-    /// row index the confirm strip renders for; `None` = disarmed.
-    habit_convert_armed: Option<usize>,
+    /// The habits section's armed conversion subject (issue #506;
+    /// H2 D4 reworked): the armed HABIT — the menu's confirm row
+    /// enables from it and the re-projection flips it — `None` =
+    /// disarmed. One subject armed at a time; opening another
+    /// subject's menu disarms.
+    habit_convert_armed: Option<taskboard_domain::HabitId>,
     /// The create form's armed flag (round-7 D-7.2): the inline form
     /// mounts below the section header while true — adapter-owned,
     /// pushed per pass (the armed-strip doctrine; no transient UI
@@ -1520,6 +1535,12 @@ impl Adapter {
         }
         if wants.wants(crate::router::OneShotSet::HABIT_MOVE) {
             ctx.habit_move = self.habit_move.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_MOVE_UP) {
+            ctx.habit_move_up = self.habit_move_up.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_MOVE_DOWN) {
+            ctx.habit_move_down = self.habit_move_down.take();
         }
         if wants.wants(crate::router::OneShotSet::HABIT_REPAIR) {
             ctx.habit_repair = self.habit_repair.take();
@@ -2581,9 +2602,21 @@ impl Adapter {
             self.recur_pause_open = false;
             self.recur_confirm_armed = false;
         }
-        self.habit_convert_armed = self
-            .habit_convert_armed
-            .filter(|row| *row < self.tables.habits.len());
+        // The armed habit subject absorbs when its habit dies (the
+        // stale-index law at the id-table level — the armed flag is
+        // id-keyed since H2, so a vanished subject simply disarms via
+        // the open menu's re-projection).
+        // The armed habit subject absorbs when its habit dies: a dead
+        // subject disarms on the pass (the buffers-never-outlive rule).
+        if !self.habit_convert_armed.is_some_and(|armed| {
+            state
+                .habits
+                .habits
+                .get(&armed)
+                .is_some_and(taskboard_domain::habit::Habit::is_live)
+        }) {
+            self.habit_convert_armed = None;
+        }
         let recur = crate::models::RecurRowPush {
             pause_open: self.recur_pause_open,
             confirm_open: self.recur_confirm_armed,
@@ -2722,14 +2755,24 @@ impl Adapter {
                     menu::group_page(&self.keymap, &self.menu_chain, &states, group)
                 }
                 Some(crate::menu::Submenu::Task(family)) => {
-                    let subject = self.current_task_subject();
-                    menu::task_submenu_page(
-                        &self.keymap,
-                        &self.menu_chain,
-                        subject,
-                        &states,
-                        family,
-                    )
+                    // The habit menu's submenu page (H2 D4): the
+                    // Convert family reads the habit verdicts (the
+                    // armed confirm's flip + the cancel row).
+                    if matches!(
+                        self.menu_row_subject,
+                        Some(crate::presentation::RowSubject::Habit(_))
+                    ) {
+                        self.habit_submenu_page(family)
+                    } else {
+                        let subject = self.current_task_subject();
+                        menu::task_submenu_page(
+                            &self.keymap,
+                            &self.menu_chain,
+                            subject,
+                            &states,
+                            family,
+                        )
+                    }
                 }
                 None => self.root_entries.clone(),
             };
@@ -4167,9 +4210,22 @@ impl Adapter {
                     self.arm_no_target_notice(ActionId::HabitConvertArm);
                 }
                 self.push_notice(window);
-                // The strip's echo rides adapter-owned flags outside
-                // the state Arc — the unchanged-refresh guard would
-                // eat the pass (the armed-create-form precedent).
+                // The armed-confirm echo rides adapter-owned flags
+                // outside the state Arc — the unchanged-refresh guard
+                // would eat the pass (the armed-create-form
+                // precedent); the re-projection inside the arm
+                // rebuilt the open menu's page (O-7 Q3).
+                self.refresh_forced(window);
+                Vec::new()
+            }
+            // The armed conversion's cancel step (H2 D4, O-7 Q3):
+            // disarms INSIDE the open menu — the re-projected page
+            // greys the confirm again; nothing was dispatched.
+            (_, UiEffect::HabitConvertCancel) => {
+                self.habit_convert_armed = None;
+                self.habit_convert_target = None;
+                self.pattern_draft = None;
+                self.reproject_habit_menu(window);
                 self.refresh_forced(window);
                 Vec::new()
             }
@@ -5553,6 +5609,7 @@ impl Adapter {
             // in the arms.
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
+            | UiEffect::HabitConvertCancel
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
             // The recur editor's intents (round-7 D-7.1): the opener
@@ -5719,18 +5776,25 @@ impl Adapter {
             crate::menu::Submenu::Task(family) => {
                 self.shell.menu.task_group = Some(family);
                 self.shell.menu.active_group = None;
-                let subject = self.current_task_subject();
-                {
-                    let state = self.state.load_full();
-                    let flow = self.view_state.flow().clone();
-                    let states = self.entry_states(&state, &flow);
-                    self.menu_entries = menu::task_submenu_page(
-                        &self.keymap,
-                        &self.menu_chain,
-                        subject,
-                        &states,
-                        family,
-                    );
+                if matches!(
+                    self.menu_row_subject,
+                    Some(crate::presentation::RowSubject::Habit(_))
+                ) {
+                    self.menu_entries = self.habit_submenu_page(family);
+                } else {
+                    let subject = self.current_task_subject();
+                    {
+                        let state = self.state.load_full();
+                        let flow = self.view_state.flow().clone();
+                        let states = self.entry_states(&state, &flow);
+                        self.menu_entries = menu::task_submenu_page(
+                            &self.keymap,
+                            &self.menu_chain,
+                            subject,
+                            &states,
+                            family,
+                        );
+                    }
                 }
             }
         }
@@ -5838,15 +5902,181 @@ impl Adapter {
             }
             row.target
         };
-        let Some(index) = self.tables.habits.iter().position(|&row| row == habit) else {
-            return false; // the strip needs the row index; absent = NoTarget
-        };
         self.focused_habit = Some(habit);
-        self.habit_convert_armed = Some(index);
+        self.habit_convert_armed = Some(habit);
         self.habit_convert_target = Some(habit);
         self.pattern_draft = Some(crate::presentation::convert_pattern_default(target));
-        window.set_habits_convert_armed_row(i32::try_from(index).unwrap_or(i32::MAX));
+        // The armed confirm lives INSIDE the open habit menu (O-7 Q3):
+        // the one sanctioned rebuild of the built-once menu (the D-1
+        // pin) — same anchor, same kind, the confirm flips to enabled.
+        self.reproject_habit_menu(window);
         true
+    }
+
+    /// The habit menu's ONE re-projection (H2 D4): rebuilds the page
+    /// over the open menu's subject and anchor — the arm flip
+    /// (confirm greys → enables) and the cancel step's disarm both
+    /// land here. No-op unless the open menu IS the habit menu of the
+    /// still-armed subject.
+    fn reproject_habit_menu(&mut self, window: &AppWindow) {
+        let Some(crate::presentation::RowSubject::Habit(subject)) = self.menu_row_subject else {
+            return;
+        };
+        if !self.shell.menu.open {
+            return;
+        }
+        let entries = self.habit_menu_entries(subject);
+        self.root_entries = entries;
+        self.menu_entries = self.root_entries.clone();
+        self.shell.menu.len = self.menu_entries.len();
+        self.shell.menu.selected = self.shell.menu.selected.min(self.menu_entries.len());
+        self.sync_menu_models(window);
+    }
+
+    /// The habit menu's per-verb verdicts (H2 D4/D6/A3): the armed
+    /// trio flips with the armed subject, the repair row greys
+    /// without a make-up window (applicable, precondition-blocked —
+    /// never withheld), and on kiosk EVERY habit verb greys from the
+    /// states map (reading a menu is passive; the arm additionally
+    /// refuses at dispatch).
+    fn habit_menu_states(
+        &self,
+        state: &taskboard_domain::AppState,
+        habit: taskboard_domain::HabitId,
+    ) -> std::collections::BTreeMap<ActionId, bool> {
+        let mut states = self.entry_states(state, &self.view_state.flow().clone());
+        let armed = self.habit_convert_armed == Some(habit);
+        states.insert(ActionId::HabitConvertArm, !armed);
+        states.insert(ActionId::HabitConvertToSeries, armed);
+        states.insert(ActionId::HabitConvertCancel, armed);
+        let repair = state
+            .habits
+            .habits
+            .get(&habit)
+            .is_some_and(taskboard_domain::habit::Habit::is_live)
+            && state.habits.habits.get(&habit).is_some_and(|row| {
+                crate::presentation::habit_repair_target(
+                    row,
+                    &state.habits.log,
+                    self.day_ctx().now,
+                    self.calendar(),
+                )
+                .is_some()
+            });
+        states.insert(ActionId::HabitRepair, repair);
+        if self.kiosk {
+            for id in [
+                ActionId::HabitLog,
+                ActionId::HabitUndoLog,
+                ActionId::HabitRepair,
+                ActionId::HabitMoveUp,
+                ActionId::HabitMoveDown,
+                ActionId::HabitConvertArm,
+                ActionId::HabitConvertToSeries,
+                ActionId::HabitConvertCancel,
+            ] {
+                states.insert(id, false);
+            }
+        }
+        states
+    }
+
+    /// The habit menu's page over a subject (H2 D4): the curated core
+    /// plus the verdicts; also mints both reorder one-shots from the
+    /// row source (the row seam's exact arithmetic).
+    fn habit_menu_entries(
+        &mut self,
+        habit: taskboard_domain::HabitId,
+    ) -> Vec<crate::menu::MenuEntry> {
+        let state = self.state.load_full();
+        let row = state.habits.habits.get(&habit).cloned();
+        let chain = [ContextId::Board, ContextId::Global].to_vec();
+        // The reorder pair's slots (H2 D4): the row seam's exact
+        // floor-midpoint arithmetic over the section's live order —
+        // up slots at the habit's own index, down at index + 1.
+        let mut orders: Vec<i64> = state
+            .habits
+            .habits
+            .values()
+            .filter(|h| h.is_live() && h.board == row.as_ref().map_or(h.board, |r| r.board))
+            .map(|h| h.order)
+            .collect();
+        orders.sort_unstable();
+        let position = orders
+            .iter()
+            .position(|&order| Some(order) == row.as_ref().map(|r| r.order));
+        let slot_order = |slot: Option<usize>| -> Option<i64> {
+            let slot = slot?;
+            let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
+            let next = orders.get(slot).copied();
+            Some(crate::presentation::habit_drop_order(prev, next))
+        };
+        self.habit_move_up = position.map(|_| habit).zip(slot_order(position));
+        self.habit_move_down = position
+            .map(|_| habit)
+            .zip(slot_order(position.map(|p| p + 1)));
+        let states = self.habit_menu_states(&state, habit);
+        let subject = crate::presentation::task_menu_subject(
+            &state,
+            Some(crate::presentation::RowSubject::Habit(habit)),
+        );
+        drop(state);
+        crate::menu::habit_context_page(&self.keymap, &chain, subject, &states)
+    }
+
+    /// The open habit menu's submenu page (H2 D4): the Convert
+    /// family's children over the habit verdicts (the confirm flips
+    /// with the armed subject, the cancel row joins while armed).
+    /// Empty for any other family (a habit subject has no Reminders/
+    /// Timers/Entries page).
+    fn habit_submenu_page(
+        &self,
+        family: crate::menu::TaskMenuGroup,
+    ) -> Vec<crate::menu::MenuEntry> {
+        let Some(crate::presentation::RowSubject::Habit(habit)) = self.menu_row_subject else {
+            return Vec::new();
+        };
+        let state = self.state.load_full();
+        let states = self.habit_menu_states(&state, habit);
+        let subject = crate::presentation::task_menu_subject(
+            &state,
+            Some(crate::presentation::RowSubject::Habit(habit)),
+        );
+        crate::menu::habit_convert_children(
+            &self.keymap,
+            &self.menu_chain,
+            subject,
+            &states,
+            family,
+        )
+    }
+
+    /// The habit row's context menu opener (H2 D4/B1): focus the
+    /// habit (the row click's focus-fact discipline), then open the
+    /// curated page anchored at the pointer. Stale indices absorb
+    /// silently (the notification-row guard shape).
+    fn open_habit_context_menu(&mut self, window: &AppWindow, x: f32, y: f32, index: usize) {
+        settle_pointer_conflict(self, window);
+        let Some(&habit) = self.tables.habits.get(index) else {
+            return;
+        };
+        let Some(row) = self.state.load().habits.habits.get(&habit).cloned() else {
+            return;
+        };
+        if !row.is_live() {
+            return;
+        }
+        // Opening another subject's menu disarms (H2 D4: one subject
+        // armed at a time).
+        if self.habit_convert_armed.is_some_and(|armed| armed != habit) {
+            self.habit_convert_armed = None;
+            self.habit_convert_target = None;
+            self.pattern_draft = None;
+        }
+        self.focused_habit = Some(habit);
+        self.menu_row_subject = Some(crate::presentation::RowSubject::Habit(habit));
+        let entries = self.habit_menu_entries(habit);
+        self.open_context_menu_with(window, x, y, entries, Vec::new());
     }
 
     /// The series conversion strip's ONE arming site (the habit
@@ -9275,6 +9505,9 @@ pub(crate) fn install(
         focused_habit: None,
         habit_undo: None,
         habit_move: None,
+        habit_move_up: None,
+        habit_move_down: None,
+        menu_row_subject: None,
         habit_repair: None,
         habit_convert_target: None,
         pattern_draft: None,
@@ -9602,49 +9835,15 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
-    // The conversion flow: arm shows the consequence strip; Confirm
-    // routes the domain verb with the D-2 default pattern.
-    install_seam!(window: window.on_habits_convert_armed, adapter: adapter;
-    // The arming is the shared helper (cross-surface friction plan
-    // D-2, #832): the strip flags and the window echo live in exactly
-    // one place — the menu-routed effect arm writes the same cells.
-    // The stale-index posture is unchanged: a dead habit or an
-    // unresolvable row degrades to a silent no-op here (the typed
-    // notice is the menu route's surfacing only).
-    bind mut (a, window), args (index), {        let Some(&habit) = a
-        .tables
-        .habits
-        .get(usize::try_from(index).unwrap_or(usize::MAX))
-    else {
+    // The habit row's context menu (H2 D4/B1): the right-click seam —
+    // focus mints inside the opener (the row activation's discipline),
+    // the curated page opens anchored at the pointer. Stale index
+    // absorbed (the notification-row guard shape).
+    install_seam!(window: window.on_habits_context_requested, adapter: adapter;
+    bind mut (a, window), args (index, x, y), {        let Ok(index) = usize::try_from(index) else {
         return;
     };
-    if !a.arm_habit_convert(&window, habit) {
-        return;
-    }
-    a.route(&window, ActionId::HabitConvertArm);
-
-    });
-    install_seam!(window: window.on_habits_convert_confirmed, adapter: adapter;
-    bind mut (a, window), args (index), {        let Some(&habit) = a
-        .tables
-        .habits
-        .get(usize::try_from(index).unwrap_or(usize::MAX))
-    else {
-        return;
-    };
-    a.focused_habit = Some(habit);
-    a.habit_convert_target = Some(habit);
-    a.habit_convert_armed = None;
-    window.set_habits_convert_armed_row(-1);
-    a.route(&window, ActionId::HabitConvertToSeries);
-
-    });
-    install_seam!(window: window.on_habits_convert_cancelled, adapter: adapter;
-    bind mut (a, window), args (), {        a.habit_convert_armed = None;
-    a.habit_convert_target = None;
-    a.pattern_draft = None;
-    window.set_habits_convert_armed_row(-1);
-    a.refresh_forced(&window);
+    a.open_habit_context_menu(&window, x, y, index);
 
     });
 
@@ -9952,16 +10151,16 @@ fn habit_undo_target(
     (count >= 1).then_some((habit, window, count))
 }
 
-/// The habits section's seams (DR-6/6, D-P13): the +1 resolves the
-/// `IdTables.habits` index (stale index → no-op, the notification-row
-/// guard shape) and routes `habit.log`; the −1 resolves the row's
-/// current window (the `habit_undo_target` above) and routes
-/// `habit.unlog`; the reorder resolves the drop slot's free interval
-/// over the same row source the section renders (what you see is what
-/// reorders) and routes `habit.move` with the floor-midpoint order —
-/// the UI computes midpoints, the planner stamps.
+/// The habits section's seams (DR-6/6, D-P13; H2 reworked): the +1
+/// resolves the `IdTables.habits` index (stale index → no-op, the
+/// notification-row guard shape) and routes `habit.log`; the −1
+/// resolves the row's current window (the `habit_undo_target` above)
+/// and routes `habit.unlog`; the right-click opens the habit context
+/// menu (the reorder pair and the conversion live there now — the
+/// slots minted at menu open with the same floor-midpoint law, the
+/// UI computes midpoints, the planner stamps).
 fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    install_seam!(window: window.on_habits_plus_clicked, adapter: adapter;
+    install_seam!(window: window.on_habits_log_clicked, adapter: adapter;
     bind mut (a, window), args (index), {        let Some(habit) = a
         .tables
         .habits
@@ -10001,38 +10200,11 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
-    install_seam!(window: window.on_habits_reorder_asked, adapter: adapter;
-    bind mut (a, window), args (row, slot), {        let Some(&habit) = a
-        .tables
-        .habits
-        .get(usize::try_from(row).unwrap_or(usize::MAX))
-    else {
-        return; // a stale index degrades to a no-op
-    };
-    let Some(habit_row) = a.state.load().habits.habits.get(&habit).cloned() else {
-        return;
-    };
-    // The same row source the section renders: the board's live
-    // habits in stored `(order, id)` order; the drop slot's free
-    // interval brackets it.
-    let board = habit_row.board;
-    let mut orders: Vec<i64> = a
-        .state
-        .load()
-        .habits
-        .habits
-        .values()
-        .filter(|h| h.is_live() && h.board == board)
-        .map(|h| h.order)
-        .collect();
-    orders.sort_unstable();
-    let slot = usize::try_from(slot.max(0)).unwrap_or(usize::MAX);
-    let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
-    let next = orders.get(slot).copied();
-    a.habit_move = Some((habit, crate::presentation::habit_drop_order(prev, next)));
-    a.route(&window, ActionId::HabitMove);
-
-    });
+    // The row seam's reorder pair retires with the row's vertical
+    // button stack (H2 D3/D5): reorder lives in the habit context
+    // menu now (the `habit.move-up`/`habit.move-down` ids, slots
+    // minted at menu open by `habit_menu_entries`); the pointer
+    // reorder parity is H3's drag/keys replacement.
 
     // The create flow (round-7 D-7.2): the header ask routes the
     // toggle intent; the quota keystrokes ride the per-keystroke
@@ -10500,6 +10672,9 @@ impl Adapter {
         self.menu_kind = MenuKind::Object;
         self.menu_subject = MenuSubject::None;
         self.menu_chain = chain;
+        // The id-list menus have no subject (the multi set and the
+        // stack/board surfaces' curated lists).
+        self.menu_row_subject = None;
         self.root_entries = menu::object_entries(&self.keymap, &self.menu_chain, ids);
         self.menu_entries = self.root_entries.clone();
         // The quick bar (UX-R8 chunk-5 D-2): built once at open —
@@ -10531,14 +10706,27 @@ impl Adapter {
         x: f32,
         y: f32,
         extra: &[ActionId],
-        subject: Option<TaskId>,
+        subject: Option<crate::presentation::RowSubject>,
     ) {
+        // The habit arm (H2 D1/B1): the union's habit subject routes
+        // to the habit page's own opener — the task page's grammar is
+        // untouched for task subjects.
+        if let Some(crate::presentation::RowSubject::Habit(habit)) = subject {
+            let index = self.tables.habits.iter().position(|&row| row == habit);
+            if let Some(index) = index {
+                self.open_habit_context_menu(window, x, y, index);
+            }
+            return;
+        }
+        let task = subject.and_then(|subject| match subject {
+            crate::presentation::RowSubject::Task(task) => Some(task),
+            crate::presentation::RowSubject::Habit(_) => None,
+        });
         // The selection branch (UX-R8 D-6, US-4/S3): a member
         // invocation opens the multi row set (the count caption is
         // D-9); a non-member (or board-surface-foreign) invocation
         // opens the curated single-card menu.
-        let selection_covers =
-            subject.is_some_and(|subject| self.view_state.selection().contains(&subject));
+        let selection_covers = task.is_some_and(|task| self.view_state.selection().contains(&task));
         if selection_covers {
             let ids: Vec<ActionId> = menu::TASK_CONTEXT_MULTI.to_vec();
             // The multi bar (J5 US-2, R-3's multi-sensibility): the
@@ -10577,6 +10765,13 @@ impl Adapter {
             );
             return;
         }
+        // Opening another subject's menu disarms the armed habit
+        // conversion (H2 D4: one subject armed at a time).
+        if self.habit_convert_armed.is_some() {
+            self.habit_convert_armed = None;
+            self.habit_convert_target = None;
+            self.pattern_draft = None;
+        }
         // The curated grammar (UX-R8 chunk-5 D-4/D-5, US-2): the
         // quick bar + the applicable rows + the four families compose
         // through `task_context_page` over the per-subject facts (the
@@ -10586,12 +10781,16 @@ impl Adapter {
         // set before the composition so the projection resolves the
         // board-surface verbs' hints.
         self.menu_chain = [ContextId::Board, ContextId::Global].to_vec();
-        let subject_id = subject.or(self.view_state.focused_task());
+        let subject_id = task.or(self.view_state.focused_task());
+        self.menu_row_subject = subject_id.map(crate::presentation::RowSubject::Task);
         let (bar, entries) = {
             let state = self.state.load_full();
             let flow = self.view_state.flow().clone();
             let states = self.entry_states(&state, &flow);
-            let subject = crate::presentation::task_menu_subject(&state, subject_id);
+            let subject = crate::presentation::task_menu_subject(
+                &state,
+                subject_id.map(crate::presentation::RowSubject::Task),
+            );
             menu::task_context_page(&self.keymap, &self.menu_chain, subject, &states, extra)
         };
         self.open_context_menu_with(window, x, y, entries, bar);
@@ -10601,12 +10800,13 @@ impl Adapter {
         self.menu_subject = subject_id.map_or(MenuSubject::None, MenuSubject::Single);
     }
 
-    /// The single-card subject's facts (UX-R8 chunk-5 D-4): the
-    /// focused task is the subject on every card surface (the
-    /// context seams' focus-first posture).
+    /// The open menu's subject's facts (UX-R8 chunk-5 D-4; H2 D1): the
+    /// focused task on every card surface (the context seams'
+    /// focus-first posture), or the open habit menu's habit — the
+    /// submenu machinery reads the same union either way.
     fn current_task_subject(&self) -> crate::menu::TaskMenuSubject {
         let state = self.state.load_full();
-        crate::presentation::task_menu_subject(&state, self.view_state.focused_task())
+        crate::presentation::task_menu_subject(&state, self.menu_row_subject)
     }
 
     /// The context-menu opener over pre-computed rows (UX-R8 chunk-5
@@ -10657,7 +10857,13 @@ fn install_board_context_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     };
     let outcomes = a.view_state.activate_card(task, stack);
     a.apply_outcomes(&window, &outcomes);
-    a.open_task_context_menu(&window, x, y, &[], Some(task));
+    a.open_task_context_menu(
+        &window,
+        x,
+        y,
+        &[],
+        Some(crate::presentation::RowSubject::Task(task)),
+    );
 
     });
 }
@@ -14699,7 +14905,7 @@ impl Adapter {
         self.notice.is_some()
     }
 
-    pub(crate) fn test_habit_convert_armed(&self) -> Option<usize> {
+    pub(crate) fn test_habit_convert_armed(&self) -> Option<taskboard_domain::HabitId> {
         self.habit_convert_armed
     }
 

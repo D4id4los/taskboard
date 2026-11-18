@@ -111,6 +111,10 @@ pub enum UiEffect {
     /// adapter records the armed row; the dispatch itself waits for
     /// Confirm.
     HabitConvertArm,
+    /// The armed conversion's cancel step (H2 D4, O-7 Q3): the
+    /// adapter disarms the armed habit subject and re-projects the
+    /// open menu (the confirm greys again); nothing dispatched.
+    HabitConvertCancel,
     /// The create form's open/toggle (round-7 D-7.2): the adapter
     /// flips the armed flag — open when closed, discard-and-close
     /// when armed — only with an active board; kiosk stays inert
@@ -401,6 +405,7 @@ impl UiEffect {
             // state moves).
             | Self::SeriesPauseOpen
             | Self::HabitConvertArm
+            | Self::HabitConvertCancel
             | Self::HabitCreateToggle
             | Self::SeriesConvertArm
             | Self::SeriesEditorOpen
@@ -624,6 +629,12 @@ pub struct DispatchCtx {
     /// floor-midpoint order computed from the row source; `habit.move`
     /// routes from it (`NoTarget` without one).
     pub habit_move: Option<(taskboard_domain::HabitId, i64)>,
+    /// The habit menu's reorder pair (H2 D4): both slots' floor
+    /// midpoints computed at menu open from the same row source the
+    /// section renders; `habit.move-up`/`habit.move-down` route
+    /// `MoveHabit` from theirs (`NoTarget` without one).
+    pub habit_move_up: Option<(taskboard_domain::HabitId, i64)>,
+    pub habit_move_down: Option<(taskboard_domain::HabitId, i64)>,
     /// The repair affordance's resolved target (issue #506, plan D-7):
     /// the `(habit, window, post-count)` triple presentation's
     /// `habit_repair_target` computed — what you click is what
@@ -716,6 +727,11 @@ impl OneShotSet {
     pub(crate) const HABIT_REPAIR: u32 = 1 << 16;
     pub(crate) const HABIT_CONVERT_TARGET: u32 = 1 << 17;
     pub(crate) const HABIT_CREATE_DRAFT: u32 = 1 << 18;
+    // The bits past 1 << 24 are the H2 additions — a duplicated bit
+    // is invisible to the OR-based totalness pin, so the constants
+    // never share a bit with an earlier field.
+    pub(crate) const HABIT_MOVE_UP: u32 = 1 << 25;
+    pub(crate) const HABIT_MOVE_DOWN: u32 = 1 << 26;
     pub(crate) const PATTERN_DRAFT: u32 = 1 << 19;
     pub(crate) const SERIES_TARGET: u32 = 1 << 20;
     pub(crate) const PAUSE_DRAFT: u32 = 1 << 21;
@@ -778,6 +794,12 @@ impl OneShotSet {
     pub(crate) const fn habit_move(self) -> Self {
         self.set(Self::HABIT_MOVE)
     }
+    pub(crate) const fn habit_move_up(self) -> Self {
+        self.set(Self::HABIT_MOVE_UP)
+    }
+    pub(crate) const fn habit_move_down(self) -> Self {
+        self.set(Self::HABIT_MOVE_DOWN)
+    }
     pub(crate) const fn habit_repair(self) -> Self {
         self.set(Self::HABIT_REPAIR)
     }
@@ -829,6 +851,8 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::HabitLog => OneShotSet::default().habit_target(),
         A::HabitUndoLog => OneShotSet::default().habit_undo(),
         A::HabitMove => OneShotSet::default().habit_move(),
+        A::HabitMoveUp => OneShotSet::default().habit_move_up(),
+        A::HabitMoveDown => OneShotSet::default().habit_move_down(),
         A::HabitRepair => OneShotSet::default().habit_repair(),
         A::HabitConvertToSeries => OneShotSet::default().habit_convert_target().pattern_draft(),
         A::HabitCreateCommit => OneShotSet::default().habit_create_draft(),
@@ -1066,6 +1090,23 @@ impl ActionRouter {
                 }
                 None => DispatchOutcome::NoTarget,
             },
+            // The habit menu's reorder pair (H2 D4): the direction
+            // rides the routing id, the slot's floor midpoint was
+            // minted at menu open from the same row source the
+            // section renders.
+            ActionId::HabitMoveUp | ActionId::HabitMoveDown => {
+                let cell = if matches!(id, ActionId::HabitMoveUp) {
+                    ctx.habit_move_up
+                } else {
+                    ctx.habit_move_down
+                };
+                match cell {
+                    Some((habit, order)) => {
+                        DispatchOutcome::Command(StateCommand::MoveHabit { habit, order })
+                    }
+                    None => DispatchOutcome::NoTarget,
+                }
+            }
             // The habit trio (issue #506, plan D-7/D-8): the make-up
             // valve dispatches the existing audited `AdjustHabitLog`;
             // the conversion arm is a view intent (the confirm strip),
@@ -1082,6 +1123,7 @@ impl ActionRouter {
                 None => DispatchOutcome::NoTarget,
             },
             ActionId::HabitConvertArm => DispatchOutcome::UiEffect(UiEffect::HabitConvertArm),
+            ActionId::HabitConvertCancel => DispatchOutcome::UiEffect(UiEffect::HabitConvertCancel),
             ActionId::HabitConvertToSeries => {
                 match (ctx.habit_convert_target, ctx.pattern_draft.clone()) {
                     (Some(habit), Some(pattern)) => {
@@ -1529,6 +1571,8 @@ mod tests {
         DispatchCtx {
             focused_task: task.then(|| TaskId::from_uuid(Uuid::now_v7())),
             focused_stack: None,
+            habit_move_up: None,
+            habit_move_down: None,
             create_target: None,
             reminder_target: None,
             board_target: None,
@@ -2501,6 +2545,8 @@ fn one_shot_bits_are_total() {
         .habit_repair()
         .habit_convert_target()
         .habit_create_draft()
+        .habit_move_up()
+        .habit_move_down()
         .pattern_draft()
         .series_target()
         .pause_draft()
@@ -2517,6 +2563,15 @@ fn one_shot_bits_are_total() {
     assert_eq!(
         seen, full,
         "the consumption declarations cover exactly the field set"
+    );
+    // The bit-uniqueness pin (the H2 re-pair's bug class): the OR is
+    // blind to a duplicated bit, so the popcount of the ORed
+    // vocabulary must equal the field count — one private bit per
+    // one-shot, no two constants share a bit.
+    assert_eq!(
+        full.0.count_ones(),
+        27,
+        "every one-shot field owns a distinct bit"
     );
     // The conversion confirm is the fix's flagship pair: exactly its
     // two fields, nothing more (the stage-3 over-broad trap check).
