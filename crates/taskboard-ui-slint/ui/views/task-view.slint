@@ -300,7 +300,6 @@ export component TaskView inherits FocusScope {
     // across host scrolls (the values are stale while the view is
     // unmounted; the overlay's mount condition is the model's own
     // open flags).
-    out property <bool> date-picker-visible: root.task.date-picker-open;
     // The overlay-migration geometry seams (round-9 chunk 5, om probe):
     // the metadata block's realized rects, window-space — the om
     // geometry tests read them across the due/scheduled editor's

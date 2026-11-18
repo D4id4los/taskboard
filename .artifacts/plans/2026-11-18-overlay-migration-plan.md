@@ -253,3 +253,54 @@ Stage 2's gate: pre-commit hooks +
 `scripts/run-quality-gates.sh cargo nextest run --workspace`
 (long-command discipline per dispatch §1 — the coverage trio never
 runs inside the subagent).
+
+## 7. Stage-2 outcome notes (2026-11-18, implementation)
+
+### 7.1 PR callout note — the recur dismissal-role flip (D-3/R-4)
+
+To copy verbatim into the PR body:
+
+> **Behavior change (deliberate, J2 R-4):** the recurrence editor's
+> outside click now *saves* a valid draft (the modern autosave
+> expectation) instead of discarding it. An invalid draft still
+> dispatches nothing — the editor stays open with the validity echo.
+> Escape keeps the old clean close. Pinned by
+> `journeys.rs::om_us1_s1_recur_scrim_click_commits_a_valid_draft_and_nothing_else`;
+> the census (`docs/ux-surface-census.org`, recur editor row) carries
+> the supersession note.
+
+### 7.2 The #880 evidence comment (for the dispatcher's at-merge close)
+
+To copy verbatim into the closing comment:
+
+> Closed by the overlay migration (round 9 chunk 5,
+> `refactor/ui-overlay-migration`): the Effort Estimate row is the
+> always-on one-line field (commit on Return and focus loss, the D-5
+> last-committed guard) — the open/close swap whose transient editor
+> state Escape used to race no longer exists. Escape's task-detail
+> binding behaves as on any other field (the action layer's
+> text-entry guards). Evidence: `journeys.rs::om_us3_s2`
+> (type+blur ⇒ exactly one `UpdateTask`; focus+blur without edit ⇒
+> zero; Return+blur never double-dispatches).
+
+### 7.3 Deviations from the stage-1 plan
+
+- om_us2_s3 lives in `journeys.rs` (real-app mount), not the probe:
+  the testing backend's slint-side `absolute-position` reads are
+  unreliable in a freshly composed probe window (the recorded #954
+  issue; the setter journey replays facts the same way). The real-app
+  quick-time journeys carry the widget's click-time push.
+- om_us3_s1 asserts the description SECTION's realized height
+  equality across the display/edit mounts (typed seam) instead of the
+  editor element's geometry: a conditional remount's element-query
+  geometry is stale in the testing backend. The fill law is
+  structural (`height: 100%` in the edit mount).
+- M4 needed two adjacent fixes the migration surfaced: the model's
+  `track_entries_open` read the top flow (the picker child rendered
+  the panel closed under its own child — latent top-only-read bug,
+  now chain-aware), and the grid's dismissal arm forces the refresh
+  (the drop is pure presentation; no outcome carries it).
+- The M4 grid mount carries no panel-mirror facts seam: a conditional
+  mount's `changed` mirrors do not deliver in the testing backend;
+  non-intersection is the host's base law (G-2, probe-pinned both
+  directions), and the journey pins the anchor push + routing.
