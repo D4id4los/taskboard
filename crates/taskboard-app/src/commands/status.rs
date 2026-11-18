@@ -1119,6 +1119,7 @@ mod tests {
                 read_devices: 2,
                 import_rejected: 3,
             }),
+            lanes: BTreeMap::new(),
             forked_paths: [
                 "taskboard/devices/0193c000-0000-7c89-ab01-2345abcdef99/appdata.json".to_owned(),
             ]

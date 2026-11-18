@@ -331,8 +331,15 @@ pub async fn run_cycle<T: FilesTransport>(
     // next tick; it never disturbs the per-user verdict.
     let _lanes_ran = crate::board_cycle::run_board_lanes(transport, ctx, &mut st.board_lanes).await;
     status.send_if_modified(|current| {
-        let changed = current.moved_boards != st.board_lanes.moved;
+        let mut changed = current.moved_boards != st.board_lanes.moved;
         current.moved_boards.clone_from(&st.board_lanes.moved);
+        // The lanes' typed outcomes ride the same watch (#941's
+        // honesty leg): a failing lane must reach every status
+        // surface, never die in a tracing line.
+        if current.lanes != st.board_lanes.outcomes {
+            changed = true;
+            current.lanes.clone_from(&st.board_lanes.outcomes);
+        }
         changed
     });
     match verdict {
