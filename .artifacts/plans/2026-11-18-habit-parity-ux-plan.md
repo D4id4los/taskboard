@@ -186,9 +186,9 @@ flowchart LR
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | compositions/habits.slint | TaskCard substrate | on_habit_action | RowSubject::Habit router | habit.complete | StateCommand::LogHabit | ItemAddr habit row | US-1/S2 | habits_journey.rs::us1_s2 |
-| W-2 | menu.rs | HabitRow context menu | open_context_menu | MenuKind::HabitRow | habit.menu | — | — | US-2/S1 | habits_journey.rs::us2_s1 |
-| W-3 | menu.rs | convert submenu | — | — | habit.convert | StateCommand::ConvertHabitToTask | — | US-2/S2 | habits_journey.rs::us2_s2 |
+| W-1 | compositions/habits.slint | TaskCard substrate | habits-log-clicked | RowSubject::Habit router | habit.log | StateCommand::LogHabit | ItemAddr habit row | US-1/S2 | habits_journey.rs::us1_s2 |
+| W-2 | menu.rs | HabitRow context menu | habits-context-requested | MenuKind stays {Main, Object} (D4 deviation) | habit.log | — | — | US-2/S1 | habits_journey.rs::us2_s1 |
+| W-3 | menu.rs | convert submenu | — | — | habit.convert | StateCommand::ConvertHabitToSeries | — | US-2/S2 | habits_journey.rs::us2_s2 |
 | W-4 | habit editor (J2 modal) | fields | on_save | UpdateHabit seam | habit.edit | StateCommand::UpdateHabit | — | US-5/S2 | habits_journey.rs::us5_s2 |
 | W-5 | habit card | time chip | — | presentation | — | — | — | US-5/S2 | fold test |
 | W-6 | adapter.rs | traversal | — | RowSubject walk | nav.focus-* | — | ItemAddr | US-3/S1 | habits_journey.rs::us3_s1 |
@@ -230,3 +230,22 @@ bound-test: US-6/S1 -> crates/taskboard-state/tests/habits.rs::us6_s1_update_hab
 - [ ] All matrix absences carry rulings; census updated (R-2, D-H12
       supersessions)
 - [ ] Non-goals filed as backlog issues
+
+## 8. Stage-2 landing deviations (2026-11-18, chunk 6 H2 — recorded)
+
+- W-1's callback/action spellings land as the seams' real names:
+  the done slot and the strip share `habits-log-clicked`
+  (`ActionId::HabitLog`, slug `habit.log` — no `habit.complete` slug
+  exists; the done slot IS the log control, never a done bit).
+- W-2's callback is the row's right-click seam
+  `habits-context-requested`; the menu projection stays an Object
+  menu (no `MenuKind::HabitRow` variant — the stage-1 plan D4
+  deviation, cited by the census). W-2's action cell carries
+  `habit.log` (the menu row routes the same id the strip does —
+  click ≡ key).
+- W-3's command is `ConvertHabitToSeries` (the existing domain verb;
+  the plan's `ConvertHabitToTask` spelling named no real variant).
+US-1/S1 carries no wiring row of its own, so the #768 mapping binds
+the substrate journey to its landing file:
+
+bound-test: US-1/S1 -> habits_journey.rs::us1_s1_habit_rows_render_on_the_task_card_substrate

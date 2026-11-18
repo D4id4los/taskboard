@@ -1755,7 +1755,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 191,
+        menu_rank: 200,
         description: "−1 the addressed tracker's current window (the mis-click recovery; count 0 refuses typed as NoTarget).",
         // Section-scoped (the HabitLog R-11 ruling's exact twin):
         // the row's own affordance is the only invocation.
@@ -1792,7 +1792,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 192,
+        menu_rank: 205,
         description: "Adds the make-up +1 into the previous window while its overflow grace is open.",
         // Section-scoped (see HabitLog): the row's own affordance is
         // the only invocation.
@@ -1824,7 +1824,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 193,
+        menu_rank: 226,
         description: "Moves the habit one slot up its section (the floor-midpoint order law; the menu stopgap until drag/keyboard reorder).",
         // Internal dispatch verb (see HabitLog): the menu row is its
         // only affordance until H3 replaces it.
@@ -1836,7 +1836,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 194,
+        menu_rank: 236,
         description: "Moves the habit one slot down its section (the floor-midpoint order law; the menu stopgap until drag/keyboard reorder).",
         menu_group: None,
     },
@@ -1846,7 +1846,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 221,
+        menu_rank: 246,
         description: "Disarms the armed habit-to-series conversion confirm; nothing was dispatched.",
         menu_group: None,
     },
@@ -2524,6 +2524,10 @@ mod tests {
             ActionId::TaskScheduleToday,
             ActionId::TaskScheduleTomorrow,
             ActionId::TaskUnschedule,
+            // The habit menu's reorder pair + armed-cancel step (H2 D4).
+            ActionId::HabitMoveUp,
+            ActionId::HabitMoveDown,
+            ActionId::HabitConvertCancel,
         ];
         for id in ALL {
             assert_eq!(REGISTRY.iter().filter(|e| e.id == *id).count(), 1);

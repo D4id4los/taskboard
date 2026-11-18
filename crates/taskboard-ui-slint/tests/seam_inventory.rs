@@ -155,15 +155,17 @@ const SEAM_INVENTORY: &[&str] = &[
     // The habit row's focus fact (cross-surface friction plan D-2,
     // #832): the activation mints the menu verbs' subject.
     "habits_row_activated",
-    "habits_convert_armed",
-    "habits_convert_cancelled",
-    "habits_convert_confirmed",
+    // H2 (round 9 chunk 6): the row's right-click context seam joins;
+    // the convert trio and the reorder pair retire (the menu owns
+    // them), the +1 renames to the done-slot-shared log seam.
+    // seam (H2 W-2): callback "habits-context-requested".
+    "habits_context_requested",
     "habits_create_asked",
     "habits_create_cancelled",
     "habits_create_confirmed",
     "habits_create_quota_edited",
-    "habits_plus_clicked",
-    "habits_reorder_asked",
+    // seam (H2 W-1): callback "habits-log-clicked".
+    "habits_log_clicked",
     "habits_repair_clicked",
     "intercept_key",
     "menu_dismiss_requested",

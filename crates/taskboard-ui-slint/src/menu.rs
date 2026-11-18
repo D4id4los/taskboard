@@ -1712,9 +1712,21 @@ mod tests {
             ..TaskMenuSubject::default()
         };
         let page = habit_context_page(&keymap, &chain, subject, &BTreeMap::new());
-        // The core rows in declared order, then the one parent row.
-        let mut expected: Vec<Option<ActionId>> =
-            HABIT_CONTEXT.iter().map(|&id| Some(id)).collect();
+        // The core rows in the projection's rank order, then the one
+        // parent row. The arm row renders between the repair and the
+        // reorder pair (the task family's shared rank space); the set
+        // is pinned, the parent closes the page.
+        let mut expected: Vec<Option<ActionId>> = [
+            ActionId::HabitLog,
+            ActionId::HabitUndoLog,
+            ActionId::HabitRepair,
+            ActionId::HabitConvertArm,
+            ActionId::HabitMoveUp,
+            ActionId::HabitMoveDown,
+        ]
+        .iter()
+        .map(|&id| Some(id))
+        .collect();
         expected.push(None);
         assert_eq!(ids(&page), expected, "declared order + the Convert parent");
         assert!(
