@@ -645,7 +645,6 @@ pub(crate) async fn handle_daemon(
 #[cfg(test)]
 mod set_tests {
     use super::*;
-    use std::sync::Arc;
 
     use crate::config::DEFAULT_FOCUS_WORK_MINS;
     use taskboard_domain::{StateCommand, SystemEvent};
@@ -655,61 +654,6 @@ mod set_tests {
             std::env::temp_dir().join(format!("taskboard-config-set-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir.join("taskboard.toml")
-    }
-
-    /// A booted standalone core for the daemon-lane journeys (the
-    /// `ui_requests` harness shape — fakes over mocks; a real engine).
-    async fn daemon_fixture(tag: &str) -> (std::path::PathBuf, crate::App) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join(format!("taskboard-{tag}.toml"));
-        std::fs::write(&config_path, "[reminders]\ntick_secs = 30\n").expect("seed config");
-        let mut config = AppConfig::default();
-        config.storage.db_path = Some(dir.path().join("taskboard.db"));
-        config.sync.backend = Some(SyncBackend::Standalone);
-        config.validate().expect("config valid");
-        let app = crate::bootstrap::bootstrap(
-            config,
-            Arc::new(RefusingStore),
-            Arc::new(crate::notifications::LogSink),
-        )
-        .await
-        .expect("standalone boot");
-        // The tempdir must outlive the assertion window: leak the
-        // guard into the static lifetime of the test (the paths are
-        // taken out first).
-        let path = config_path.clone();
-        std::mem::forget(dir);
-        let _ = tag;
-        (path, app)
-    }
-
-    /// A credential-refusing store (the bootstrap test's shape): the
-    /// config arm never consults it.
-    struct RefusingStore;
-    impl std::fmt::Debug for RefusingStore {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("RefusingStore")
-        }
-    }
-    impl crate::secrets::CredentialStore for RefusingStore {
-        fn load(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<crate::secrets::AppPassword, crate::secrets::CredentialError> {
-            Err(crate::secrets::CredentialError::NotFound)
-        }
-        fn store(
-            &self,
-            _: &str,
-            _: &str,
-            _: crate::secrets::AppPassword,
-        ) -> Result<(), crate::secrets::CredentialError> {
-            Err(crate::secrets::CredentialError::Unsupported)
-        }
-        fn delete(&self, _: &str, _: &str) -> Result<(), crate::secrets::CredentialError> {
-            Err(crate::secrets::CredentialError::Unsupported)
-        }
     }
 
     /// D-5's happy arm, now the typed next-start lane (US-2/S3,
@@ -886,7 +830,8 @@ mod set_tests {
     /// `applied_live: true`.
     #[tokio::test]
     async fn us1_s4_the_daemon_lane_write_lands_and_applies_live() {
-        let (path, app) = daemon_fixture("ac1").await;
+        let fixture = crate::test_support::standalone_boot_fixture("ac1").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
         let locked = std::collections::BTreeSet::new();
         let view = set_with_locked(&path, "focus.work_mins", "50", &locked, Some(&app.engine))
             .await
@@ -911,7 +856,8 @@ mod set_tests {
     /// is one honest line.
     #[tokio::test]
     async fn us1_s6_the_daemon_reply_view_carries_the_lane_bit() {
-        let (path, app) = daemon_fixture("s6").await;
+        let fixture = crate::test_support::standalone_boot_fixture("s6").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
         let mut out = Vec::new();
         let mut err = Vec::new();
         let mut io = crate::commands::CommandIo {
@@ -939,7 +885,8 @@ mod set_tests {
     /// sent).
     #[tokio::test]
     async fn us1_ac2_the_daemon_lane_proves_before_the_engine() {
-        let (path, app) = daemon_fixture("ac2").await;
+        let fixture = crate::test_support::standalone_boot_fixture("ac2").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
         let before = app.engine.shared_state().load().settings.clone();
         let locked = std::collections::BTreeSet::new();
         let err = set_with_locked(
@@ -970,7 +917,8 @@ mod set_tests {
     /// longer carries the key.
     #[tokio::test]
     async fn us3_s3_the_daemon_lane_unset_propagates_live() {
-        let (path, app) = daemon_fixture("ac3").await;
+        let fixture = crate::test_support::standalone_boot_fixture("ac3").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
         let locked = std::collections::BTreeSet::new();
         set_with_locked(&path, "focus.work_mins", "50", &locked, Some(&app.engine))
             .await
@@ -1008,7 +956,8 @@ mod set_tests {
     /// daemon's own env truth — D8's asymmetry).
     #[tokio::test]
     async fn us1_s3_the_daemon_lane_env_guard_refuses_typed() {
-        let (path, app) = daemon_fixture("ac4").await;
+        let fixture = crate::test_support::standalone_boot_fixture("ac4").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
         let mut locked = std::collections::BTreeSet::new();
         locked.insert("reminders.tick_secs".to_owned());
         let err = set_with_locked(
@@ -1031,7 +980,8 @@ mod set_tests {
     /// boot authority) and `applied_live: false`.
     #[tokio::test]
     async fn us1_s5_an_engine_gone_write_reports_the_next_start_lane() {
-        let (path, app) = daemon_fixture("gone").await;
+        let fixture = crate::test_support::standalone_boot_fixture("gone").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
         app.system
             .send(SystemEvent::Shutdown)
             .expect("the engine subscribes");
