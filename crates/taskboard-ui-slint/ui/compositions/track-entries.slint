@@ -23,10 +23,10 @@ import { StatusDot } from "../widgets/status-dot.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
 import { TimeField, TimeSlotRow } from "../widgets/time-field.slint";
-import { DatePicker, DueDayModel } from "./date-picker.slint";
+import { DueDayModel } from "./date-picker.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { IconKind } from "../widgets/icon.slint";
-import { TrackPanelWalkFacts } from "../track-panel-facts.slint";
+import { TrackPanelFacts, TrackPanelWalkFacts } from "../track-panel-facts.slint";
 export { TimeSlotRow, FieldValidity }
 
 // One entries row: display parts only (D2 — ids stay in the
@@ -170,10 +170,11 @@ export component TrackEntriesPanel inherits Rectangle {
         }
         VerticalLayout {
             // The form surface (r4 D-TS4): replaces the list
-            // in-place; the ladder steps back. The embedded grid
-            // mounts INSIDE the panel (no second window-level mount,
-            // no `DatePickerFacts` contest — the due editor cannot be
-            // open while this modal overlay holds the chain).
+            // in-place; the ladder steps back. The date grid is the
+            // window-level overlay the date row anchors (the overlay
+            // migration, M4 — the due picker's mount grammar; the
+            // track panel is itself a window overlay, so the grid's
+            // host stacks above it).
             if (root.form-open): Rectangle {
                 form-scope := FocusScope {
                     width: 100%;
@@ -186,8 +187,28 @@ export component TrackEntriesPanel inherits Rectangle {
                         spacing: Theme.space-2;
                         // The date row: the typed field over the
                         // grid toggle; the hint is the syntax copy.
-                        HorizontalLayout {
+                        // The row is the grid overlay's anchor (the
+                        // overlay migration, M4): the toggle's click
+                        // pushes the realized geometry (the timers
+                        // idiom), the `changed` mirrors are the
+                        // keep-alives.
+                        date-row := HorizontalLayout {
                             spacing: Theme.space-1;
+                            // The grid anchor's keep-alives (the
+                            // overlay migration, M4): a host scroll
+                            // keeps the window-space mirror live.
+                            property <length> grid-anchor-abs-x: self.absolute-position.x;
+                            property <length> grid-anchor-abs-y: self.absolute-position.y;
+                            changed grid-anchor-abs-x => {
+                                TrackPanelFacts.form-grid-anchor-x = self.grid-anchor-abs-x;
+                                TrackPanelFacts.form-grid-anchor-width = self.width;
+                                TrackPanelFacts.form-grid-anchor-height = self.height;
+                            }
+                            changed grid-anchor-abs-y => {
+                                TrackPanelFacts.form-grid-anchor-y = self.grid-anchor-abs-y;
+                                TrackPanelFacts.form-grid-anchor-width = self.width;
+                                TrackPanelFacts.form-grid-anchor-height = self.height;
+                            }
                             TextField {
                                 horizontal-stretch: 1;
                                 placeholder: "YYYY-MM-DD";
@@ -202,28 +223,19 @@ export component TrackEntriesPanel inherits Rectangle {
                                 icon: IconKind.calendar;
                                 label: "Calendar";
                                 description: "Opens the month grid for the entry's date.";
-                                clicked => { root.date-grid-toggled(); }
+                                clicked => {
+                                    TrackPanelFacts.form-grid-anchor-x = parent.absolute-position.x;
+                                    TrackPanelFacts.form-grid-anchor-y = parent.absolute-position.y;
+                                    TrackPanelFacts.form-grid-anchor-width = parent.width;
+                                    TrackPanelFacts.form-grid-anchor-height = parent.height;
+                                    root.date-grid-toggled();
+                                }
                             }
                         }
                         if (root.form-date-validity == FieldValidity.invalid): RoleText {
                             role: Typography.caption;
                             text-color: Semantic.danger;
                             text: root.form-date-hint;
-                        }
-                        if (root.form-grid-open): DatePicker {
-                            show-time: false;
-                            caption: "";
-                            grid: root.form-grid;
-                            focus-on-mount: root.form-grid-focus;
-                            picker-key(k) => { root.date-grid-key(k); }
-                            day-clicked(c) => { root.date-day-clicked(c); }
-                            // Date-only mount (show-time: false): the
-                            // TimeField never mounts, so the intra-picker
-                            // click arm (task-detail-editor UX plan
-                            // US-2/D-6) is structurally dead here — the
-                            // forward is the mount-inventory's totality
-                            // law, never a live path.
-                            time-field-armed() => { }
                         }
                         // The span: the two TimeFields over the one
                         // lenient grammar (D26); the end field's

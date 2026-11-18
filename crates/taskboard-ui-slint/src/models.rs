@@ -2411,12 +2411,22 @@ fn push_task_detail(
     // The overlay's open flag reads the flow (the window's mount
     // condition) — subject-affine: a flow whose task stopped being
     // the viewed subject renders closed (reconcile drops it anyway;
-    // this is the push-side belt).
-    let track_open = match vs.flow() {
+    // this is the push-side belt). The read walks the CHAIN, not the
+    // top flow: the form's date-grid child (the overlay migration's
+    // window-level mount) sits on top while the overlay holds, and a
+    // top-only read would close the panel under its own child.
+    let track_open = vs.surfaces().above_levels().iter().any(|level| {
+        matches!(
+            level.flow(),
+            Some(Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. })
+        )
+    }) && match vs.flow() {
         Flow::TrackEntries { task } | Flow::TrackEntryForm { task, .. } => {
             vs.subject_task() == Some(*task)
         }
-        _ => false,
+        // A child (the date-grid picker) on top: the subject
+        // lives in the parent level below.
+        _ => true,
     };
     let presets_handle = models.task_rule_presets.handle_or_insert_with();
     let mut mutations = models.task_rule_presets.diff(&preset_rows);

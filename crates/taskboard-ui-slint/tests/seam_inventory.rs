@@ -45,6 +45,9 @@ const SEAM_INVENTORY: &[&str] = &[
     "labels_overlay_form_cancelled",
     "labels_overlay_delete_clicked",
     "labels_overlay_delete_cancelled",
+    // The date-grid overlay's light-dismiss (the overlay migration,
+    // M4).
+    "track_form_grid_dismiss_requested",
     "banner_mute_clicked",
     "banner_row_activated",
     "banner_row_open_requested",

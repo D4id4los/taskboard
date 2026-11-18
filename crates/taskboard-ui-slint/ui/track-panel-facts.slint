@@ -11,6 +11,13 @@ export global TrackPanelFacts {
     in-out property <length> anchor-x;
     in-out property <length> anchor-y;
     in-out property <length> anchor-height;
+    // The form's date grid anchor (the overlay migration, M4): the
+    // form's date row — the same click-time-push + keep-alive idiom
+    // as the class anchor above; stale while the form is closed.
+    in-out property <length> form-grid-anchor-x;
+    in-out property <length> form-grid-anchor-y;
+    in-out property <length> form-grid-anchor-width;
+    in-out property <length> form-grid-anchor-height;
 }
 
 

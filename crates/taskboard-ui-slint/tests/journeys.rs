@@ -24979,3 +24979,110 @@ fn om_us2_s3_time_flyout_never_over_its_field_and_the_mirror_tracks() {
         },
     );
 }
+
+/// `om_us1_s1`'s track-entries leg (the M4 sibling law): the form's
+/// date-grid overlay opens window-level — no form-growth on toggle
+/// (the span fields' rects stay put), the grid panel never covers its
+/// date-row anchor, and an outside click drops the grid only (the
+/// form and its mirrors stay).
+#[test]
+fn om_us1_s1_track_form_grid_opens_without_form_growth() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::NavNextItem,
+            );
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::TaskEdit,
+            );
+            harness.driver.click_by_label("Time entries");
+            harness.driver.advance_time(0);
+            harness.handle.window().invoke_track_form_add_requested();
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_track_form_open());
+
+            // The panel's layout witness before the toggle: the
+            // summary-row anchor facts (mirrored live by the view's
+            // keep-alives — they move iff the layout reflows).
+            let facts_before = {
+                let facts = harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::TrackPanelFacts>();
+                (
+                    facts.get_anchor_x(),
+                    facts.get_anchor_y(),
+                    facts.get_anchor_height(),
+                )
+            };
+
+            // The calendar toggle: the real click path (the anchor
+            // push rides the same handler).
+            harness.driver.click_by_label("Calendar");
+            harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_track_form_grid_open(),
+                "the calendar toggle opens the grid overlay"
+            );
+
+            // Zero form growth: the anchor facts are unchanged (the
+            // grid overlay's underlay occludes the inner fields from
+            // the element query while open, so the mirrored anchor is
+            // the observable).
+            let facts_after = {
+                let facts = harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::TrackPanelFacts>();
+                (
+                    facts.get_anchor_x(),
+                    facts.get_anchor_y(),
+                    facts.get_anchor_height(),
+                )
+            };
+            assert_eq!(
+                facts_before, facts_after,
+                "the form never grows on the grid toggle"
+            );
+
+            // Non-intersection lives at the base layer: the host's
+            // placement law is the G-catalogue's G-2 (probe-pinned
+            // both directions), and the M4 mount is the same-law
+            // sibling — the journey pins the routing seams instead:
+            // the grid rides the date row's click-time anchor push
+            // (the facts landed), not a stale mirror.
+            let facts = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::TrackPanelFacts>();
+            assert!(
+                facts.get_form_grid_anchor_width() > 0.0
+                    && facts.get_form_grid_anchor_height() > 0.0,
+                "the calendar click pushed the date row's realized anchor"
+            );
+
+            // The outside click drops the grid only — the form stays.
+            harness.driver.click_at(6.0, 6.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_track_form_grid_open(),
+                "the outside click dropped the grid"
+            );
+            assert!(
+                harness.handle.window().get_track_form_open(),
+                "the form survives the grid's dismissal"
+            );
+        },
+    );
+}
