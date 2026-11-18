@@ -996,6 +996,54 @@ export component AppWindow inherits Window {
                 swatches: root.label-overlay-swatches;
                 swatch-selected: root.label-overlay-swatch-selected;
                 armed-index: root.label-overlay-armed-index;
+                shows-assignment: root.label-overlay-shows-assignment;
+                row-toggled(index) => root.labels-overlay-row-toggled(index);
+                dismiss-requested() => root.labels-overlay-dismiss-requested();
+                add-requested() => root.labels-overlay-add-requested();
+                edit-requested(index) => root.labels-overlay-edit-requested(index);
+                title-edited(t) => root.labels-overlay-title-edited(t);
+                colour-edited(c) => root.labels-overlay-colour-edited(c);
+                swatch-clicked(i) => root.labels-overlay-swatch-clicked(i);
+                form-commit-requested() => root.labels-overlay-form-commit-requested();
+                form-cancelled() => root.labels-overlay-form-cancelled();
+                delete-clicked(index) => root.labels-overlay-delete-clicked(index);
+                delete-cancelled() => root.labels-overlay-delete-cancelled();
+            }
+            // The roster-only board mount (tag-color plan D-4, US-2):
+            // the window-level overlay grammar's sibling conditional —
+            // the same LabelsPanel, the same pushed halves, the same
+            // callback set; no assignment toggles (D-3's
+            // shows-assignment flag). The board-bar segment (the
+            // menu's invoker) is the focus-restore container anchor
+            // (the standing focus contract).
+            if (root.current-view == View.board
+                    && root.label-overlay-open): labels-board-backdrop := TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => root.labels-overlay-dismiss-requested();
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down
+                            && event.button == PointerEventButton.right) {
+                        root.labels-overlay-dismiss-requested();
+                    }
+                }
+            }
+            if (root.current-view == View.board
+                    && root.label-overlay-open): LabelsPanel {
+                width: min(root.width - 2 * Theme.space-2,
+                           360px * Theme.base-scale);
+                x: (parent.width - self.width) / 2;
+                y: max(Theme.space-2, (parent.height - self.height) / 2);
+                rows: root.label-overlay-rows;
+                form-open: root.label-overlay-form-open;
+                form-title: root.label-overlay-form-title;
+                form-colour: root.label-overlay-form-colour;
+                colour-valid: root.label-overlay-colour-valid;
+                colour-preview: root.label-overlay-colour-preview;
+                swatches: root.label-overlay-swatches;
+                swatch-selected: root.label-overlay-swatch-selected;
+                armed-index: root.label-overlay-armed-index;
+                shows-assignment: root.label-overlay-shows-assignment;
                 row-toggled(index) => root.labels-overlay-row-toggled(index);
                 dismiss-requested() => root.labels-overlay-dismiss-requested();
                 add-requested() => root.labels-overlay-add-requested();
@@ -2047,6 +2095,13 @@ export component AppWindow inherits Window {
     in property <[LabelRowModel]> label-overlay-rows;
     // The form surface's pushed halves (UX R-3 D-2) + intents (§5.1).
     in property <bool> label-overlay-form-open;
+    // The roster-only board mount's open flag (tag-color plan D-4):
+    // the board surface's sibling mount reads it — the same pushed
+    // halves, one overlay, two mounts.
+    in property <bool> label-overlay-open;
+    // The assignment-toggles' shown half (tag-color plan D-3): the
+    // detail mount shows them; the roster-only board mount does not.
+    in property <bool> label-overlay-shows-assignment;
     in property <string> label-overlay-form-title;
     // The colour field's pushed halves (tag-color UX plan D-5, #839).
     in property <string> label-overlay-form-colour;

@@ -487,10 +487,11 @@ expression: rows
   label: Manage labels
   contexts:
     - task-detail
+    - board
   category: task
   enabled: true
   menu_rank: 78
-  description: "Opens the labels overlay for the viewed task: assign, create, edit, delete."
+  description: "Opens the labels overlay: from the board surface the roster-only manager, from the task detail the assignment toggles too."
   menu_group: task
 - id: label.overlay-dismiss
   label: Dismiss labels overlay

@@ -49,6 +49,11 @@ export component LabelsPanel inherits Rectangle {
     // The armed delete's pushed mirror (the track-entries armed-index
     // rule): the armed roster row, or -1.
     in property <int> armed-index: -1;
+    // The assignment-toggles' shown half (tag-color plan D-3, US-2):
+    // the detail mount shows the per-row toggles; the roster-only
+    // board mount renders none (R-2's letter made visible — the
+    // row-set composition is the ruling, not a greying).
+    in property <bool> shows-assignment: true;
 
     // The intents (§5.1): no inline side effects — the id
     // resolution and the pair dispatch live in the adapter.
@@ -395,8 +400,9 @@ export component LabelsPanel inherits Rectangle {
                         }
                         // The assignment toggle (D-2): the chip ×'s
                         // twin — the row's pushed state names the
-                        // verb pair's arm; the click routes it.
-                        IconButton {
+                        // verb pair's arm; the click routes it. The
+                        // roster-only mount renders none (D-3).
+                        if (root.shows-assignment): IconButton {
                             icon: row.assigned ? IconKind.remove : IconKind.plus;
                             tone: row.assigned ? Tone.neutral : Tone.info;
                             label: row.assigned

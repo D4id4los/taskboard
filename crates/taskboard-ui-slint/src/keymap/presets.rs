@@ -402,6 +402,9 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // labels mnemonic, verified free in all three presets'
     // TaskDetail at this HEAD (stage-1 D-4's recorded check).
     (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    // The roster-only mount's stroke (tag-color plan D-7, US-2): the
+    // same action carries the same mnemonic across its contexts.
+    (ActionId::LabelManage, ContextId::Board, &["Ctrl+L"]),
     // The detail editors' shortcuts (keymap-parity plan US-3, D-1/D-4):
     // the CUA function sequence continues after F4's pickers — F5/F6
     // the date editors, F7 the description editor, F8 the rule add
@@ -689,6 +692,9 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     // but this preset's TaskDetail never binds it — the recorded
     // no-drift share, the StackWider pair's rule).
     (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    // The roster-only mount's stroke (tag-color plan D-7, US-2): the
+    // same action carries the same mnemonic across its contexts.
+    (ActionId::LabelManage, ContextId::Board, &["Ctrl+L"]),
     // The detail editors' shortcuts (keymap-parity plan US-3, D-1/D-4):
     // the org C-c user-namespace carries the domain verbs. C-c C-d is
     // the due editor (free at TaskDetail — BoardDelete's C-c Ctrl+d is
@@ -1252,6 +1258,9 @@ static VI_S6: &[(ActionId, ContextId, &[&str])] = &[
     // normal mode here; the overlay's own context carries the
     // ladder + tab rows (the entries-overlay's vi pattern).
     (ActionId::LabelManage, ContextId::TaskDetail, &["Ctrl+L"]),
+    // The roster-only mount's stroke (tag-color plan D-7, US-2): the
+    // same action carries the same mnemonic across its contexts.
+    (ActionId::LabelManage, ContextId::Board, &["Ctrl+L"]),
     (
         ActionId::LabelOverlayDismiss,
         ContextId::Labels,

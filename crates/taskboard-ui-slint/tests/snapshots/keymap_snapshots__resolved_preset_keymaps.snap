@@ -146,6 +146,9 @@ expression: rows
             - Ctrl+G
           action: board.select
         - sequence:
+            - Ctrl+L
+          action: label.manage
+        - sequence:
             - M
           action: task.move
         - sequence:
@@ -670,6 +673,9 @@ expression: rows
             - B
           action: board.previous
         - sequence:
+            - Ctrl+L
+          action: label.manage
+        - sequence:
             - b
           action: board.next
         - sequence:
@@ -1140,6 +1146,9 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - Ctrl+L
+          action: label.manage
         - sequence:
             - X
           action: task.unschedule

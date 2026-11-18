@@ -4687,7 +4687,9 @@ fn the_overlay_toggle_dispatches_the_assignment_pair() {
             .interpret_for_test(rig.handle.window(), UiEffect::LabelsOpen);
         assert!(matches!(
             adapter.borrow().view_state.flow(),
-            Flow::Labels { task } if *task == a_id
+            Flow::Labels {
+                subject: crate::view_state::LabelOverlaySubject::Task(task),
+            } if *task == a_id
         ));
         // Row 0 = green (assigned) → the unassign arm.
         rig.handle.window().invoke_labels_overlay_row_toggled(0);

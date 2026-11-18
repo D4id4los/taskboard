@@ -509,8 +509,11 @@ pub const BOARD_CONTEXT: &[ActionId] = &[
     ActionId::BoardCreate,
     ActionId::BoardRename,
     // The color picker's opener (UX R-4 D-1, #791): beside the rename
-    // row, destructive last.
+    // row. The labels manager joins beside configuration (tag-color
+    // plan D-7, US-2 — the roster-only overlay's opener); destructive
+    // last.
     ActionId::BoardColorEdit,
+    ActionId::LabelManage,
     ActionId::BoardDelete,
 ];
 
@@ -737,6 +740,10 @@ mod tests {
         let expected = [
             ActionId::TaskCreate,
             ActionId::TaskEdit,
+            // The labels manager joins the Task group over the board
+            // chain (tag-color plan D-7, US-2 — rank 78, the
+            // roster-only mount's opener).
+            ActionId::LabelManage,
             ActionId::TaskComplete,
             // Round 2 (D19/D16): reopen and move-cancel join the Task
             // group at ranks 85/95.
@@ -890,7 +897,12 @@ mod tests {
                 }
             }
         }
-        // The task list is the Task group page, spelled explicitly.
+        // The task list is the Task group page, spelled explicitly —
+        // restricted to the card context's declared rows since the
+        // tag-color D-7 widening (the labels manager joins the Task
+        // *group* over the board chain — the board surface's
+        // roster-only opener — but stays off the per-card context
+        // list; the origin plan's W-2 names BOARD_CONTEXT only).
         let task_rows = object_entries(&keymap, &chain, TASK_CONTEXT);
         let task_page = group_page(
             &keymap,
@@ -898,10 +910,12 @@ mod tests {
             &std::collections::BTreeMap::new(),
             MenuGroup::Task,
         );
-        assert_eq!(
-            ids(&task_rows),
-            task_page.iter().map(|e| e.action).collect::<Vec<_>>()
-        );
+        let task_page_ids: Vec<_> = task_page
+            .iter()
+            .map(|e| e.action)
+            .filter(|a| matches!(a, Some(id) if TASK_CONTEXT.contains(id)))
+            .collect();
+        assert_eq!(ids(&task_rows), task_page_ids);
     }
 
     /// T-11 — filtering rebased on the pages: a view chain offers the
