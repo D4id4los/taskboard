@@ -11371,7 +11371,7 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.finish_mutation(&window);
 
     });
-    install_seam!(window: window.on_capture_dismiss_requested, adapter: adapter;
+    install_seam!(window: window.on_capture_dismiss_requested, adapter: adapter; // slint callback: capture-dismiss-requested (the ModalDialogHost mount's scrim dismissal seam, round-9 W1)
     bind mut (a, window), args (), {        let outcomes = a.view_state.close_capture();
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
