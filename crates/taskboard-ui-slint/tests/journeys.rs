@@ -20390,6 +20390,125 @@ fn us15_s3_the_armed_delete_stages_then_confirms() {
     );
 }
 
+// -- tag-color UX plan (US-1/W-1, #839): the free-form colour field --
+
+/// US-1/AC-1 (tag-color plan W-1): the field path commits the exact
+/// parsed colour — a mixed-case draft mints to the stored lowercase
+/// (the domain `Color::parse` normalization) — and the palette path
+/// commits the identical payload shape (one vocabulary, both
+/// pickers).
+#[test]
+fn us1_ac1_the_form_commits_the_exact_parsed_colour() {
+    let (fx, state, _green, _red) = label_journey_state();
+    let board = state
+        .stacks
+        .get(&state.tasks.get(&fx.task0).expect("task").stack)
+        .expect("stack")
+        .board;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_add_requested();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_title_edited(slint::SharedString::from("mint"));
+            // The field path: a mixed-case six-hex draft.
+            window.invoke_labels_overlay_colour_edited(slint::SharedString::from("31CC7C"));
+            assert!(
+                window.get_label_overlay_colour_valid(),
+                "the six-hex draft is the typed valid echo"
+            );
+            assert!(window.invoke_labels_overlay_form_commit_requested());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(
+                matches!(
+                    &drained[..],
+                    [taskboard_domain::StateCommand::CreateLabel { board: b, title, color }]
+                        if *b == board && title == "mint" && color.as_str() == "31cc7c"
+                ),
+                "the committed payload is the minted (normalized) draft"
+            );
+
+            // The palette path commits the same funnel's exact payload
+            // shape (AC-1's two-pickers agreement).
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_add_requested();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_title_edited(slint::SharedString::from("sw"));
+            window.invoke_labels_overlay_swatch_clicked(2);
+            // AC-4: the field reflects the swatch's exact value.
+            harness.driver.advance_time(0);
+            assert_eq!(
+                window.get_label_overlay_form_colour().as_str(),
+                taskboard_ui_slint::presentation::SWATCHES[2],
+                "the field's pushed draft is the swatch's exact hex"
+            );
+            assert!(window.invoke_labels_overlay_form_commit_requested());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::CreateLabel { title, color, .. }]
+                    if title == "sw" && color.as_str() == taskboard_ui_slint::presentation::SWATCHES[2]
+            ));
+        },
+    );
+}
+
+/// US-1/AC-2 (tag-color plan W-1): an invalid colour draft renders the
+/// typed invalid echo (the validity flag down, the preview
+/// transparent) and the commit is the typed inert — nothing dispatches,
+/// the form stays open.
+#[test]
+fn us1_ac2_invalid_colour_renders_the_typed_echo_and_commits_nothing() {
+    let (_fx, state, _green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_add_requested();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_title_edited(slint::SharedString::from("bad"));
+            window.invoke_labels_overlay_colour_edited(slint::SharedString::from("#fff"));
+            harness.driver.advance_time(0);
+            assert!(
+                !window.get_label_overlay_colour_valid(),
+                "the invalid draft renders the typed invalid echo"
+            );
+            assert_eq!(
+                window.get_label_overlay_colour_preview(),
+                slint::Color::from_argb_u8(0, 0, 0, 0),
+                "the preview echo is transparent for an invalid draft"
+            );
+            assert!(
+                !window.invoke_labels_overlay_form_commit_requested(),
+                "the commit is the typed inert"
+            );
+            assert_eq!(harness.engine.drain().len(), 0, "nothing dispatches");
+            assert!(window.get_label_overlay_form_open(), "the form stays open");
+            // The commit-funnel still refuses after the palette path:
+            // an invalid draft cannot sneak in via `swatch-selected`.
+            window.invoke_labels_overlay_colour_edited(slint::SharedString::from("zzzzzz"));
+            assert!(!window.invoke_labels_overlay_form_commit_requested());
+            assert_eq!(harness.engine.drain().len(), 0);
+        },
+    );
+}
+
 // -- UX remediation chunk 4 (UX R-4 D-1/D-4/D-5, #791/#794/#795) --
 
 /// US-12/S1 (UX R-4 D-1, #791): the opener arms the swatch strip over

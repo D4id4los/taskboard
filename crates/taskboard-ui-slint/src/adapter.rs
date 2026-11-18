@@ -11392,6 +11392,21 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         }
 
     });
+    // The free-form colour draft (tag-color plan D-5, #839): the
+    // draft buffer takes the typed text, then the forced refresh
+    // re-echoes the validity/preview halves — the field's text is
+    // mount-only-read (never push-ward while typing), so the refresh
+    // cannot fight the caret (the swatch-clicked shape; the
+    // title-edited bare-mut stays bare because no pushed half reads
+    // the title buffer).
+    // slint: colour-edited
+    install_seam!(window: window.on_labels_overlay_colour_edited, adapter: adapter;
+    bind mut (a, window), args (text), {        if let Some(form) = a.label_form.as_mut() {
+            form.color = text.to_string();
+            a.refresh_forced(&window);
+        }
+
+    });
     install_seam!(window: window.on_labels_overlay_swatch_clicked, adapter: adapter;
     bind mut (a, window), args (index), {        let Some(swatch) =
             crate::presentation::SWATCHES.get(usize::try_from(index).unwrap_or(usize::MAX))
@@ -11412,6 +11427,12 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         if title.is_empty() {
             return false; // the typed inert — the form stays open
         }
+        // The mint at the boundary (tag-color plan D-6, US-1/AC-2):
+        // an invalid colour is the typed inert — the form stays open,
+        // nothing dispatches (the empty-title inert's twin).
+        let Ok(color) = taskboard_domain::Color::parse(&form.color) else {
+            return false;
+        };
         let Some(task) = a.view_state.subject_task() else {
             return false;
         };
@@ -11428,7 +11449,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             None => StateCommand::CreateLabel {
                 board,
                 title: title.clone(),
-                color: taskboard_domain::Color::new(form.color.clone()),
+                color: color.clone(),
             },
             Some(id) => {
                 let Some(label) = state.labels.get(&id) else {
@@ -11437,8 +11458,12 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 // The sparse-mask discipline (D-2): only the changed
                 // slots set; a no-op edit closes without dispatching.
                 let title_change = (label.title != title).then(|| title.clone());
-                let color_change = (label.color.as_str() != form.color)
-                    .then(|| taskboard_domain::Color::new(form.color.clone()));
+                // The comparison reads the minted draft: a
+                // case-only-different draft equals the stored
+                // lowercase string, so the sparse mask stays honest
+                // (the mint's normalization, plan D-6).
+                let color_change = (label.color.as_str() != color.as_str())
+                    .then(|| color.clone());
                 if title_change.is_none() && color_change.is_none() {
                     a.label_form = None;
                     a.refresh_forced(&window);
