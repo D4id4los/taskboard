@@ -17804,6 +17804,77 @@ fn the_empty_board_list_renders_the_disabled_picker_with_its_caption() {
     );
 }
 
+// -- cross-surface friction UX plan US-1 (#753): the empty-model
+// -- guard's mount fact. The guard is landed code (round-5 F14/D6's
+// -- conversion, kept by chunk-5's grammar) — this journey is the
+// -- proof-of-presence, not a fix: on a zero-row model the flyout
+// -- never mounts, through every open path the rig can fire.
+
+/// US-1/S1 (AC-1): the zero-board dropdown's open gesture mounts
+/// nothing — `DropdownFacts.open` stays false (the typed mount
+/// fact) and the lane stays empty (the guard is a typed no-op, not
+/// an absorbed error). AC-2 (the populated path opens as today) is
+/// the round-5 flyout matrix standing.
+#[test]
+fn us1_ac1_zero_row_open_mounts_nothing() {
+    let state = AppState::default();
+    // A connector without boards: the picker's rows project the
+    // state's live boards — none exist.
+    let settings = UiSettings {
+        connectors: vec![connector_row("work")],
+        ..UiSettings::default()
+    };
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
+            harness.driver.set_window_size(1000, 1400);
+            harness.press(ActionId::AppSettings);
+            settle_auto_lists(&harness, no_rows);
+            refresh_with(&harness, "work", vec![remote_row(1, "r")]);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            assert!(
+                options(&harness).is_empty(),
+                "the zero-board state projects no rows"
+            );
+
+            // Open path 1: the field click (the disabled TouchArea —
+            // unreachable by construction at zero rows).
+            click_selector_field(&mut harness.driver);
+            harness.driver.advance_time(0);
+            let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
+            assert!(!facts.get_open(), "the field click mounts no flyout");
+
+            // Open path 2: the adapter-side keyboard route (the
+            // switcher effect's own `rows > 0` gate — the effect
+            // never flips the flag at zero rows).
+            harness
+                .handle
+                .dispatch_action(taskboard_ui_slint::actions::ActionId::BoardSelect);
+            harness.driver.advance_time(0);
+            assert!(
+                !window
+                    .global::<taskboard_ui_slint::DropdownFacts>()
+                    .get_open(),
+                "the keyboard open route mounts no flyout"
+            );
+            assert!(
+                !window
+                    .global::<taskboard_ui_slint::BoardBarFacts>()
+                    .get_open(),
+                "the switcher facts stay closed"
+            );
+            assert!(
+                harness.drain_requests().is_empty(),
+                "the guard dispatched nothing"
+            );
+        },
+    );
+}
+
 /// Round-5 D6's per-site matrix, dropdown site 0 (the settings board
 /// picker): the flyout mounts window-level below the anchor, the
 /// ladder still moves through the decline arm, and an outside click
