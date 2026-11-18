@@ -59,10 +59,6 @@ pub enum MoveStage {
 /// The ceremony's typed refusals and step failures.
 #[derive(Debug, thiserror::Error)]
 pub enum MoveError {
-    /// `--to-deck`: files→Deck is fenced by ruling Q4 (2026-11-07) — a
-    /// deliberate refusal, not an absent feature.
-    #[error("the files-to-Deck direction is fenced")]
-    ReverseFenced,
     /// The board has neither a Deck binding nor a floor to resume from.
     #[error("the board is not bound to Deck")]
     NotDeckBound,
@@ -125,7 +121,6 @@ impl MoveError {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::ReverseFenced => "move-reverse-fenced",
             Self::NotDeckBound => "move-not-deck-bound",
             Self::FilesSyncDisabled => "move-files-sync-disabled",
             Self::OutboxNotQuiescent { .. } => "move-outbox-not-quiescent",
@@ -538,11 +533,15 @@ impl MoveWorld for AppWorld<'_> {
     }
 }
 
-/// What the verb was asked to do.
+/// What the verb was asked to do. `ToFiles` is the files ceremony;
+/// `Undo` the undo window. The files→Deck direction has no verb at
+/// all (grammar absence, D-2 of the cli-verb-grammar-hygiene plan) —
+/// Deck-to-Deck moves are served by the rebind ceremony
+/// (`commands::boards::rebind_deck_to_deck`), whose own precondition
+/// set refuses typed everything the old fence stood in for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveDirection {
     ToFiles,
-    ToDeck,
     Undo,
 }
 
@@ -587,9 +586,6 @@ pub async fn run_until(
     stop_after: MoveStage,
     timeout: Duration,
 ) -> Result<MoveReceipt, CommandError> {
-    if direction == MoveDirection::ToDeck {
-        return Err(MoveError::ReverseFenced.into());
-    }
     let board = crate::commands::resolve_board(engine, Some(board))?;
     let mut world = app_world(engine, config, store, board, timeout).await?;
     let (stage, steps) = match direction {
@@ -597,7 +593,7 @@ pub async fn run_until(
             let steps = undo(&mut world).await?;
             (MoveStage::NotStarted, steps)
         }
-        _ => advance(&mut world, stop_after).await?,
+        MoveDirection::ToFiles => advance(&mut world, stop_after).await?,
     };
     Ok(MoveReceipt {
         board: board.as_uuid().to_string(),

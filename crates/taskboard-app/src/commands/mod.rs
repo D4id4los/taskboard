@@ -1134,9 +1134,8 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             cmd:
                 BoardsCmd::Move {
                     board,
-                    to_files,
-                    to_deck,
-                    undo: _,
+                    to_files: _,
+                    undo,
                     timeout_secs,
                     ref to_connection,
                 },
@@ -1168,13 +1167,15 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 )
                 .await;
             }
-            let direction = move_direction(to_files, to_deck);
-            if direction == crate::board_move_ceremony::MoveDirection::ToDeck {
-                return report_to(
-                    &mut ctx.io,
-                    &CommandError::from(crate::board_move_ceremony::MoveError::ReverseFenced),
-                );
-            }
+            // Exactly one flag is present (clap's required
+            // non-multiple group); the mapping is explicit — `--undo`
+            // is named, not the `_` fallback (D-3 of the
+            // cli-verb-grammar-hygiene plan).
+            let direction = if undo {
+                crate::board_move_ceremony::MoveDirection::Undo
+            } else {
+                crate::board_move_ceremony::MoveDirection::ToFiles
+            };
             run_core(
                 &mut ctx.io,
                 ctx.config_path.clone(),
@@ -2006,16 +2007,6 @@ pub async fn dispatch_line(
     }
 }
 
-/// The `boards move` flags, which clap makes mutually exclusive.
-fn move_direction(to_files: bool, to_deck: bool) -> crate::board_move_ceremony::MoveDirection {
-    use crate::board_move_ceremony::MoveDirection as D;
-    match (to_files, to_deck) {
-        (true, _) => D::ToFiles,
-        (_, true) => D::ToDeck,
-        _ => D::Undo,
-    }
-}
-
 /// The boards family over a booted session (ADR 0011): `list` reads the
 /// session config/store; `select`/`publish` run their connector
 /// preludes against the session before touching the core; `create`/
@@ -2156,9 +2147,8 @@ async fn boards_line(
         ),
         BoardsCmd::Move {
             board,
-            to_files,
-            to_deck,
-            undo: _,
+            to_files: _,
+            undo,
             timeout_secs,
             ref to_connection,
         } => {
@@ -2169,6 +2159,13 @@ async fn boards_line(
                     boards::render_text_rebind,
                 )
             } else {
+                // Explicit mapping (D-3 of the cli-verb-grammar-hygiene
+                // plan): clap's required group admits exactly one flag.
+                let direction = if undo {
+                    crate::board_move_ceremony::MoveDirection::Undo
+                } else {
+                    crate::board_move_ceremony::MoveDirection::ToFiles
+                };
                 emit_result(
                     io,
                     crate::board_move_ceremony::run_on(
@@ -2176,7 +2173,7 @@ async fn boards_line(
                         session.session_config(),
                         session.session_store(),
                         board,
-                        move_direction(to_files, to_deck),
+                        direction,
                         Duration::from_secs(timeout_secs),
                     )
                     .await,

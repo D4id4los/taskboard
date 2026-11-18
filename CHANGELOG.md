@@ -8,6 +8,15 @@ The workspace carries a single global version (see `docs/architecture.org`);
 `scripts/bump_version.sh <major|minor|patch>` cuts release entries.
 
 ## [Unreleased]
+### Changed
+
+- The `boards move` grammar collapses to one direction flag (#874):
+  `--to-files` / `--undo` / `--to-connection <name>`. The dead
+  `--to-deck` flag (and the `move-reverse-fenced` refusal it produced)
+  is removed — it never admitted a working invocation. Deck-to-Deck
+  moves are served by `--to-connection`; a files-to-Deck tier move has
+  no verb.
+
 ### Added
 
 - The Deck-to-files move ceremony (boards-over-files chunk 6,
@@ -15,8 +24,9 @@ The workspace carries a single global version (see `docs/architecture.org`);
   board's floor, retires the Deck binding, writes a create-once commit
   record carrying the Deck-to-UUID mapping, marks the Deck sidecar, and
   binds files; any interruption resumes by rerunning. `--undo` restores
-  Deck until the commit record exists; `--to-deck` is a typed refusal
-  (Q4). Other devices adopt fold-first: a device holding the Deck board
+  Deck until the commit record exists (there is no files-to-Deck move
+  verb; the former Q4 fence is superseded by the cli-verb-grammar-hygiene
+  round, #874). Other devices adopt fold-first: a device holding the Deck board
   raises a typed finding, re-keys its rows onto the mover's ids in one
   transaction, and publishes its offline work after importing. A device
   without files sync gets a loud `moved_to_files` status from the

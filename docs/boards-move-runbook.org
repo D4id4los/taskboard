@@ -83,10 +83,17 @@ after every device reports =adopted=. A device still bound to a deleted Deck
 board treats the absence as a real deletion and tombstones the board.
 Recovery for files-side losses is in =files-sync-runbook.org= §2.
 
-* 5. The reverse direction is fenced
+* 5. There is no reverse-direction move verb
 
-=boards move --to-deck= always refuses with =MoveError::ReverseFenced=
-(ruling Q4). Changing that takes a new design round.
+=boards move --to-deck= no longer exists (the collapsed move grammar,
+D-1/D-2 of the cli-verb-grammar-hygiene plan — the flag never worked:
+every invocation was refused, ruling Q4's fence is decision-superseded,
+not silently removed). A files→Deck *tier* move has no verb at all:
+absence of grammar, not a runtime refusal. A Deck-to-Deck move
+(a rebind onto another Deck connector) is served by
+=boards move --to-connection <name>=, whose ceremony refuses typed
+before any IO (unknown connector, non-Deck target, a board without a
+Deck binding).
 
 * 6. Symptoms
 

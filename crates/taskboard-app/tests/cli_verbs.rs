@@ -1756,10 +1756,18 @@ mod ceremonies {
     }
 }
 
-/// The reverse direction is a typed refusal, and an unknown board is
-/// the ordinary unknown-board class.
+/// An unknown board is the ordinary unknown-board class. The reverse
+/// direction's fenced refusal (`move-reverse-fenced`) was removed with
+/// the `--to-deck` verb (D-2 of the cli-verb-grammar-hygiene plan —
+/// the recorded supersession, not a weakened pin): the direction is
+/// served by the rebind ceremony, whose typed refusals
+/// (`UnknownConnector` / `RebindTargetNotDeck` / `RebindRefused`) are
+/// pinned at the lowest layer by
+/// `us10_s2_cli_twin_refuses_the_config_side_preconditions_typed`
+/// (commands/boards.rs), and a files→Deck tier move has no verb at
+/// all (grammar absence).
 #[tokio::test]
-async fn boards_move_fences_the_reverse_and_refuses_unknown_boards() {
+async fn boards_move_refuses_unknown_boards() {
     use taskboard_app::board_move_ceremony::{MoveDirection, run_on};
 
     let server = wiremock::MockServer::start().await;
@@ -1776,18 +1784,6 @@ async fn boards_move_fences_the_reverse_and_refuses_unknown_boards() {
     // The refusals below fire before the world reads the config; the
     // ceremony's re-keyed signature names it explicitly.
     let config = taskboard_app::config::AppConfig::default();
-
-    let fenced = run_on(
-        &app.engine,
-        &config,
-        &store,
-        unknown,
-        MoveDirection::ToDeck,
-        budget,
-    )
-    .await
-    .expect_err("fenced");
-    assert_eq!(fenced.error_kind(), "move-reverse-fenced");
 
     let missing = run_on(
         &app.engine,
