@@ -24269,3 +24269,52 @@ fn us2_ac1_menu_convert_arm_arms_the_row_strip() {
         },
     );
 }
+
+/// US-5/S1 (AC-1, cross-surface friction plan D-6, #763): the
+/// reproduction, lands first and fails first — pre-fix `route()` takes
+/// EVERY one-shot into the dispatch ctx, so the arm's own routing
+/// already consumed the pattern draft; the confirm dispatches
+/// `NoTarget`-silently. Post-fix the confirm routes
+/// `ConvertHabitToSeries` with the armed pattern — an interleaved
+/// dispatch cannot eat the target.
+#[test]
+fn us5_ac1_interleaved_dispatch_spares_the_confirm_target() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            // The row seam arms the strip (the focus fact mints too).
+            window.invoke_habits_row_activated(0);
+            window.invoke_habits_convert_armed(0);
+            harness.driver.advance_time(0);
+
+            // The interleaved unrelated dispatch (a focused task's
+            // completion — consumes nothing of the strip's grammar).
+            harness.handle.dispatch_action(ActionId::TaskComplete);
+            harness.driver.advance_time(0);
+
+            // The confirm routes the conversion with the armed target.
+            window.invoke_habits_convert_confirmed(0);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(
+                matches!(
+                    &drained[..],
+                    [
+                        taskboard_domain::StateCommand::SetTaskDone { .. },
+                        taskboard_domain::StateCommand::ConvertHabitToSeries { .. },
+                    ]
+                ),
+                "the confirm survives the interleaving with its target: {drained:?}"
+            );
+        },
+    );
+}
