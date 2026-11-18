@@ -1352,6 +1352,8 @@ pub struct HabitRow {
     pub habit_id: String,
     /// Display title.
     pub title: String,
+    /// Free-text description (rendered only when non-empty).
+    pub description: String,
     /// The quota phrase (`3/day`).
     pub target_phrase: String,
     /// The current window's stored count.

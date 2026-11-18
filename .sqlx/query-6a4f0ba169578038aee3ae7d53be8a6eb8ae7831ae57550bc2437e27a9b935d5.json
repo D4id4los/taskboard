@@ -1,0 +1,220 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT habit_id, board_id, title, description, target,\n                      sort_order, anchor_time, anchor_day,\n                      ck_title, ck_target, ck_order, ck_anchor_time,\n                      COALESCE(ck_description, '1970-01-01T00:00:00+00:00') AS ck_description,\n                      COALESCE(ck_anchor_day, '1970-01-01T00:00:00+00:00') AS ck_anchor_day,\n                      ck_deleted,\n                      deleted as \"deleted: bool\", continued_from, au_by\n               FROM habits ORDER BY habit_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "habit_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "habit_id"
+          }
+        }
+      },
+      {
+        "name": "board_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "board_id"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "target",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "target"
+          }
+        }
+      },
+      {
+        "name": "sort_order",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "name": "anchor_time",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "anchor_time"
+          }
+        }
+      },
+      {
+        "name": "anchor_day",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "anchor_day"
+          }
+        }
+      },
+      {
+        "name": "ck_title",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "ck_title"
+          }
+        }
+      },
+      {
+        "name": "ck_target",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "ck_target"
+          }
+        }
+      },
+      {
+        "name": "ck_order",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "ck_order"
+          }
+        }
+      },
+      {
+        "name": "ck_anchor_time",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "ck_anchor_time"
+          }
+        }
+      },
+      {
+        "name": "ck_description",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "ck_anchor_day",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "ck_deleted",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "ck_deleted"
+          }
+        }
+      },
+      {
+        "name": "deleted: bool",
+        "ordinal": 15,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "deleted"
+          }
+        }
+      },
+      {
+        "name": "continued_from",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "continued_from"
+          }
+        }
+      },
+      {
+        "name": "au_by",
+        "ordinal": 17,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "habits",
+            "name": "au_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "6a4f0ba169578038aee3ae7d53be8a6eb8ae7831ae57550bc2437e27a9b935d5"
+}

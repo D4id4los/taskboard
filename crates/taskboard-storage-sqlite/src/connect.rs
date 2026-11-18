@@ -370,11 +370,13 @@ mod tests {
             id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(1)),
             board: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2)),
             title: "water".to_owned(),
+            description: String::new(),
             target: taskboard_domain::HabitTarget::PerDay(
                 taskboard_domain::NonZeroCount::new(3).unwrap(),
             ),
             order: 0,
             anchor_time: Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
+            anchor_day: None,
             clocks: taskboard_domain::HabitClocks::all(
                 chrono::TimeZone::timestamp_opt(&chrono::Utc, 100, 0).unwrap(),
             ),

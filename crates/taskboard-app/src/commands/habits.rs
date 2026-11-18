@@ -19,6 +19,8 @@ use taskboard_domain::{
     NonZeroCount, StateCommand, WindowStart, habit_streak_unioned,
 };
 
+use crate::cli::DayEdit;
+
 use crate::cli::{AnchorEdit, HabitsCmd, SeamEdit};
 use crate::commands::CommandError;
 use crate::commands::output::{
@@ -84,6 +86,10 @@ pub enum HabitsInvocation {
         board: Option<taskboard_domain::BoardId>,
         /// The anchor chip.
         at: Option<chrono::NaiveTime>,
+        /// The description's immediate sparse edit.
+        description: Option<String>,
+        /// The anchor day's immediate sparse edit.
+        day: Option<DayEdit>,
     },
     /// `list [--board]`.
     List {
@@ -114,6 +120,10 @@ pub enum HabitsInvocation {
         target: Option<TargetPick>,
         /// The chip's edit.
         at: Option<AnchorEdit>,
+        /// The description's edit (`none` clears via `Some("")`).
+        description: Option<String>,
+        /// The anchor day's edit.
+        day: Option<DayEdit>,
         /// The absolute manual-order slot (routes `MoveHabit`).
         order: Option<i64>,
         /// The seam's edit.
@@ -144,12 +154,16 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             monthly,
             board,
             at,
+            description,
+            day,
         } => HabitsInvocation::Add {
             title,
             target: TargetPick::pick(daily, weekly, monthly)
                 .expect("clap requires exactly one target flag on habits add"),
             board,
             at,
+            description,
+            day,
         },
         HabitsCmd::List { board } => HabitsInvocation::List { board },
         HabitsCmd::Log { habit } => HabitsInvocation::Log { habit },
@@ -169,6 +183,8 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             weekly,
             monthly,
             at,
+            description,
+            day,
             order,
             continued_from,
         } => HabitsInvocation::Update {
@@ -176,6 +192,8 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             title,
             target: TargetPick::pick(daily, weekly, monthly),
             at,
+            description,
+            day,
             order,
             continued_from,
         },
@@ -230,9 +248,15 @@ pub async fn run_on(
             target,
             board,
             at,
-        } => Ok(HabitOutcome::Added(
-            add_on(app, &title, target.target(), board, at).await?,
-        )),
+            description,
+            day,
+        } => {
+            let target = target.target();
+            validate_day_against_target(day, target)?;
+            Ok(HabitOutcome::Added(
+                add_on(app, &title, target, board, at, description, day).await?,
+            ))
+        }
         HabitsInvocation::List { board } => Ok(HabitOutcome::Listed(list_on(app, board)?)),
         HabitsInvocation::Log { habit } => Ok(HabitOutcome::Logged(log_on(app, &habit).await?)),
         HabitsInvocation::Adjust {
@@ -247,12 +271,64 @@ pub async fn run_on(
             title,
             target,
             at,
+            description,
+            day,
             order,
             continued_from,
-        } => Ok(HabitOutcome::Updated(
-            update_on(app, &habit, title, target, at, order, continued_from).await?,
-        )),
+        } => {
+            if let Some(pick) = target {
+                validate_day_against_target(day, pick.target())?;
+            }
+            Ok(HabitOutcome::Updated(
+                update_on(
+                    app,
+                    &habit,
+                    title,
+                    target,
+                    at,
+                    description,
+                    day,
+                    order,
+                    continued_from,
+                )
+                .await?,
+            ))
+        }
         HabitsInvocation::Rm { habit } => Ok(HabitOutcome::Removed(rm_on(app, &habit).await?)),
+    }
+}
+
+/// The US-6 parse-boundary kind check: a `--day` variant must match
+/// the concurrent cadence flag when one is given (a `mon..sun` day on
+/// `--monthly`, a `1..31` day on `--weekly`, or any `--day` at all on
+/// `--daily` are all refused typedly). Without a concurrent cadence
+/// flag the field is accepted — the domain's documented inertness is
+/// the answer, and no cross-command lookup exists in the parser.
+///
+/// # Errors
+///
+/// [`CommandError::HabitDayKindMismatch`] on any mismatched pairing.
+pub fn validate_day_against_target(
+    day: Option<DayEdit>,
+    target: HabitTarget,
+) -> Result<(), CommandError> {
+    // Absent or clearing: untouched or unset — every cadence accepts.
+    let Some(DayEdit::Set(day)) = day else {
+        return Ok(());
+    };
+    let matched = match (target.kind(), day) {
+        (taskboard_domain::PeriodKind::Week, taskboard_domain::habit::AnchorDay::Weekday(_))
+        | (taskboard_domain::PeriodKind::Month, taskboard_domain::habit::AnchorDay::MonthDay(_)) => {
+            true
+        }
+        (taskboard_domain::PeriodKind::Week, taskboard_domain::habit::AnchorDay::MonthDay(_))
+        | (taskboard_domain::PeriodKind::Month, taskboard_domain::habit::AnchorDay::Weekday(_))
+        | (taskboard_domain::PeriodKind::Day, _) => false,
+    };
+    if matched {
+        Ok(())
+    } else {
+        Err(CommandError::HabitDayKindMismatch)
     }
 }
 
@@ -269,6 +345,8 @@ pub async fn add_on(
     target: HabitTarget,
     board: Option<taskboard_domain::BoardId>,
     at: Option<chrono::NaiveTime>,
+    description: Option<String>,
+    day: Option<DayEdit>,
 ) -> Result<HabitAddReceipt, CommandError> {
     let board = super::resolve_board(&app.engine, board)?;
     let CommandOutcome::HabitCreated(habit_id) = app
@@ -282,16 +360,18 @@ pub async fn add_on(
     else {
         return Err(outcome_mismatch());
     };
-    if let Some(time) = at {
-        // Create never mints a chip (D-H7a: the mint path carries no
-        // optional fields), so `--at` routes as the immediate sparse
-        // edit — no new command arm.
+    if at.is_some() || description.is_some() || day.is_some() {
+        // Create never mints optional fields (D-H7a: the mint path
+        // carries no chips), so `--at`/`--description`/`--day` route
+        // as one immediate sparse edit — no new command arm.
         match app
             .engine
             .execute(StateCommand::UpdateHabit {
                 habit: habit_id,
                 changes: HabitChanges {
-                    anchor_time: Some(Some(time)),
+                    anchor_time: at.map(Some),
+                    description,
+                    anchor_day: day.and_then(DayEdit::change),
                     ..HabitChanges::default()
                 },
             })
@@ -427,17 +507,21 @@ pub async fn update_on(
     title: Option<String>,
     target: Option<TargetPick>,
     at: Option<AnchorEdit>,
+    description: Option<String>,
+    day: Option<DayEdit>,
     order: Option<i64>,
     continued_from: Option<SeamEdit>,
 ) -> Result<HabitUpdateReceipt, CommandError> {
     let id = resolve_habit(&app.engine.shared_state().load_full(), selector)?;
     let changes = HabitChanges {
         title,
+        description,
         target: target.map(TargetPick::target),
         anchor_time: at.map(|edit| match edit {
             AnchorEdit::Set(time) => Some(time),
             AnchorEdit::Clear => None,
         }),
+        anchor_day: day.and_then(DayEdit::change),
         continued_from: continued_from.map(|edit| match edit {
             SeamEdit::Link(series) => Some(series),
             SeamEdit::Unlink => None,
@@ -596,6 +680,7 @@ pub fn habit_rows(
             HabitRow {
                 habit_id: habit.id.as_uuid().to_string(),
                 title: habit.title.clone(),
+                description: habit.description.clone(),
                 target_phrase: target_phrase(habit.target),
                 count,
                 quota,
@@ -622,6 +707,7 @@ fn habit_view(id: HabitId, habit: &taskboard_domain::Habit) -> HabitRow {
     HabitRow {
         habit_id: id.as_uuid().to_string(),
         title: habit.title.clone(),
+        description: habit.description.clone(),
         target_phrase: target_phrase(habit.target),
         count: 0,
         quota: habit.target.quota().get(),
@@ -653,8 +739,15 @@ pub fn render_text(outcome: &HabitOutcome) -> String {
             view.habits
                 .iter()
                 .map(|row| {
+                    // The description column appears only when
+                    // non-empty (the additive display law).
+                    let description = if row.description.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {}", row.description)
+                    };
                     format!(
-                        "{} — {}/{} ({}) streak {}{}{}",
+                        "{}{description} — {}/{} ({}) streak {}{}{}",
                         row.title,
                         row.count,
                         row.quota,
@@ -760,9 +853,11 @@ mod tests {
             id: HabitId::from(uuid::Uuid::from_u128(raw)),
             board: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(board)),
             title: format!("habit {raw}"),
+            description: String::new(),
             target: HabitTarget::PerDay(NonZeroCount::new(3).unwrap()),
             order,
             anchor_time: chip,
+            anchor_day: None,
             clocks: taskboard_domain::HabitClocks::all(ts(100)),
             continued_from: None,
             deleted,
@@ -771,6 +866,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one parse sample per mask slot
     fn collapse_yields_every_subcommand() {
         use clap::Parser;
         let parse = |argv: &[&str]| -> HabitsInvocation {
@@ -841,6 +937,63 @@ mod tests {
                 ..
             }
         ));
+        // `--description` travels as text; `none` records the empty
+        // clear value.
+        assert!(matches!(
+            parse(&["habits", "add", "water", "--daily", "--description", "note"]),
+            HabitsInvocation::Add {
+                description: Some(desc),
+                ..
+            } if desc == "note"
+        ));
+        assert!(matches!(
+            parse(&["habits", "update", "x", "--description", "none"]),
+            HabitsInvocation::Update {
+                description: Some(desc),
+                ..
+            } if desc.is_empty()
+        ));
+        // `--day` parses weekday names and month days; `none` clears.
+        assert!(matches!(
+            parse(&["habits", "update", "x", "--day", "mon"]),
+            HabitsInvocation::Update {
+                day: Some(crate::cli::DayEdit::Set(
+                    taskboard_domain::habit::AnchorDay::Weekday(chrono::Weekday::Mon)
+                )),
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse(&["habits", "add", "water", "--monthly", "--day", "17"]),
+            HabitsInvocation::Add {
+                day: Some(crate::cli::DayEdit::Set(
+                    taskboard_domain::habit::AnchorDay::MonthDay(_)
+                )),
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse(&["habits", "update", "x", "--day", "none"]),
+            HabitsInvocation::Update {
+                day: Some(crate::cli::DayEdit::Clear),
+                ..
+            }
+        ));
+        // Day 0 and day 32 are parse errors (the mint's law surfaced
+        // at the CLI boundary), not typed refusals downstream.
+        for bad in ["0", "32"] {
+            assert!(
+                crate::cli::Cli::try_parse_from(vec![
+                    "taskboard",
+                    "habits",
+                    "update",
+                    "x",
+                    "--day",
+                    bad
+                ])
+                .is_err()
+            );
+        }
         assert!(matches!(
             parse(&["habits", "rm", "x"]),
             HabitsInvocation::Rm { .. }
@@ -852,6 +1005,8 @@ mod tests {
                 title: None,
                 target: None,
                 at: None,
+                description: None,
+                day: None,
                 order: None,
                 continued_from: None,
                 ..
@@ -973,6 +1128,52 @@ mod tests {
             TargetPick::pick(None, None, None).is_none(),
             "the update mask's untouched target"
         );
+    }
+
+    #[test]
+    fn the_day_kind_gate_refuses_mismatches_and_accepts_matches_and_absent_flags() {
+        use taskboard_domain::habit::{AnchorDay, MonthDay};
+        let weekly = HabitTarget::PerWeek(NonZeroCount::new(1).unwrap());
+        let monthly = HabitTarget::PerMonth(NonZeroCount::new(1).unwrap());
+        let daily = HabitTarget::PerDay(NonZeroCount::new(1).unwrap());
+        let weekday = DayEdit::Set(AnchorDay::Weekday(chrono::Weekday::Wed));
+        let month_day = DayEdit::Set(AnchorDay::MonthDay(MonthDay::new(17).unwrap()));
+        // Matched pairings pass.
+        assert!(validate_day_against_target(Some(weekday), weekly).is_ok());
+        assert!(validate_day_against_target(Some(month_day), monthly).is_ok());
+        // Mismatched pairings are the typed refusal.
+        let err = validate_day_against_target(Some(weekday), monthly).unwrap_err();
+        assert!(matches!(err, CommandError::HabitDayKindMismatch));
+        assert_eq!(err.error_kind(), "habit-day-kind-mismatch");
+        assert!(matches!(
+            validate_day_against_target(Some(month_day), weekly).unwrap_err(),
+            CommandError::HabitDayKindMismatch
+        ));
+        // Any day on a daily habit refuses (a day habit has no inner day).
+        assert!(matches!(
+            validate_day_against_target(Some(weekday), daily).unwrap_err(),
+            CommandError::HabitDayKindMismatch
+        ));
+        // Absent or clearing day passes for every cadence (the planner's
+        // inertness is the answer when the cadence is unknown here).
+        assert!(validate_day_against_target(None, weekly).is_ok());
+        assert!(validate_day_against_target(Some(DayEdit::Clear), monthly).is_ok());
+    }
+
+    #[test]
+    fn the_list_row_carries_the_description_field() {
+        let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
+        let mut state = AppState::default();
+        let mut quiet = habit(1, 2, 0, false, None);
+        let mut noted = habit(2, 2, 1, false, None);
+        quiet.description = String::new();
+        noted.description = "long runs".into();
+        state.habits.habits.insert(quiet.id, quiet.clone());
+        state.habits.habits.insert(noted.id, noted.clone());
+        let rows = habit_rows(&state, board, ts(1_700_000_000), day());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].description, "", "the empty description rides empty");
+        assert_eq!(rows[1].description, "long runs");
     }
 
     #[test]

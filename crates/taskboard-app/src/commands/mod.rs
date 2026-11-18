@@ -145,6 +145,12 @@ pub enum CommandError {
     /// The engine rejected a command.
     #[error("engine rejected the command")]
     Engine(Box<taskboard_state::ExecuteError>),
+    /// A `habits --day` value's variant mismatches the concurrent
+    /// `--weekly/--monthly` cadence flag (US-6: the CLI refuses the
+    /// kind mismatch at the parse boundary; the domain would accept
+    /// the field inertly).
+    #[error("the --day kind mismatches the target cadence")]
+    HabitDayKindMismatch,
     /// The server rejected the credentials (401/403).
     #[error("credentials rejected by the server")]
     InvalidCredentials,
@@ -580,6 +586,7 @@ impl CommandError {
             Self::UnknownPdfLayout => "unknown-pdf-layout",
             #[cfg(feature = "pdf-export")]
             Self::ExportPdfRender => "pdf-render",
+            Self::HabitDayKindMismatch => "habit-day-kind-mismatch",
             Self::UnknownHabit { .. } => "unknown-habit",
             Self::AmbiguousHabit { .. } => "ambiguous-habit",
             Self::NoStacks => "no-stacks",
