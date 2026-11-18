@@ -86,6 +86,11 @@ pub enum Command {
     /// (done included); prints ranked rows — an exact title first, then
     /// prefixes, word starts, substrings, subsequences. The scripting
     /// bridge over the same ranking the GUI palette uses.
+    // The palette's spelling twin (cross-surface friction plan
+    // D-5, #772): `search` resolves to this same variant — one
+    // ranking engine, two fronts; `find` stays primary, the alias
+    // carries the variant's arg validation verbatim.
+    #[command(alias = "search")]
     Find {
         /// The query: case-insensitive, trimmed; an empty (or
         /// whitespace-only) query matches nothing.
@@ -1965,6 +1970,41 @@ mod tests {
         for raw in ["tomorrow", "2026-13-40", ""] {
             assert!(parse_due(raw).is_err(), "{raw} must be rejected");
         }
+    }
+
+    /// US-4/AC-1 (cross-surface friction plan D-5, #772): the
+    /// `search` alias resolves to the same `Find` variant with
+    /// identical fields — the typed outcome, never help text. The
+    /// alias carries the variant's own refusals (the arg grammar
+    /// rides the variant).
+    #[test]
+    fn us4_ac1_search_alias_matches_find() {
+        let Cli {
+            command:
+                Some(Command::Find {
+                    query: fq,
+                    kind: fk,
+                    limit: fl,
+                }),
+            ..
+        } = Cli::try_parse_from(["taskboard", "find", "needle"]).expect("find parses")
+        else {
+            panic!("expected find");
+        };
+        let Cli {
+            command:
+                Some(Command::Find {
+                    query: sq,
+                    kind: sk,
+                    limit: sl,
+                }),
+            ..
+        } = Cli::try_parse_from(["taskboard", "search", "needle"])
+            .expect("the alias parses to the same variant")
+        else {
+            panic!("expected find via the alias");
+        };
+        assert_eq!((fq, fk, fl), (sq, sk, sl), "one engine, two spellings");
     }
 
     #[test]
