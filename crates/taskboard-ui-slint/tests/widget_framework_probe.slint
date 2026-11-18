@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The widget-framework probe (round-9 W1): the two base hosts mounted
+// once each against a fixed fixture — a fake status bar defines the
+// viewport floor, an opener FocusScope, a body/content box with
+// Rust-settable dimensions, and a sibling stack below the anchored
+// fixture (the layout-shift witness, G-9). Every assertion seam is a
+// typed root property; every intent lands in a counter. No text
+// assertions, no clocks. The hosts mount unconditionally with the
+// `open` bit as the gate — the probe reads the realized geometry
+// through two-way mirrors even while closed.
+
+import { Theme } from "../ui/theme.slint";
+import { MaskWalkFacts } from "../ui/mask-walk-facts.slint";
+
+// The re-export makes the mask global reachable from the Rust probe
+// (the test plays the adapter half).
+export { MaskWalkFacts }
+import { ModalDialogHost, DialogButtonModel, DialogButtonRole, DialogKind } from "../ui/widgets/modal-dialog-host.slint";
+import { AnchoredOverlayHost, OverlayPlacement } from "../ui/widgets/anchored-overlay.slint";
+
+export component WidgetFrameworkProbeWindow inherits Window {
+    // The window-default tokens (the token lint forbids literal px
+    // outside the theme; the tests read the realized size through the
+    // `win-w`/`win-h` seams).
+    width: Theme.window-default-width;
+    height: Theme.window-default-height;
+    background: Theme.background;
+
+    // ---- Fixture controls (set from Rust) ---------------------------
+    in-out property <bool> modal-open: false;
+    in-out property <DialogKind> probe-kind: DialogKind.confirm;
+    in-out property <length> probe-preferred-width: Theme.dialog-min-width;
+    in-out property <int> probe-walk-stops: 2;
+    in-out property <int> probe-initial-focus: -1;
+    in-out property <[DialogButtonModel]> probe-buttons: [
+        { label: "Cancel", role: DialogButtonRole.dismiss, enabled: true, autofocus: false },
+        { label: "Save", role: DialogButtonRole.accept, enabled: true, autofocus: false },
+    ];
+    in-out property <length> probe-body-width: Theme.space-15;
+    in-out property <length> probe-body-height: Theme.space-6;
+
+    in-out property <bool> anchored-open: false;
+    in-out property <length> anchor-x: Theme.space-8;
+    in-out property <length> anchor-y: Theme.space-4;
+    in-out property <length> anchor-w: Theme.space-8;
+    in-out property <length> anchor-h: Theme.space-6;
+    in-out property <OverlayPlacement> probe-placement: OverlayPlacement.auto;
+    in-out property <length> probe-overlay-preferred: Theme.menu-min-width;
+    in-out property <length> probe-content-width: Theme.space-15;
+    in-out property <length> probe-content-height: Theme.space-7;
+
+    // ---- Intent counters (read from Rust) ---------------------------
+    in-out property <int> accepted-count: 0;
+    in-out property <int> dismissed-count: 0;
+    in-out property <int> closed-count: 0;
+    in-out property <int> invoked-count: 0;
+    in-out property <int> invoked-index: -1;
+    in-out property <int> anchored-dismissed-count: 0;
+
+    // ---- Observation mirrors ----------------------------------------
+    // The fake status bar's top edge — the viewport floor.
+    out property <length> viewport-floor: status.y;
+    out property <length> win-w: self.width;
+    out property <length> win-h: self.height;
+    // Modal host seams.
+    out property <length> panel-x: modal.panel-x;
+    out property <length> panel-y: modal.panel-y;
+    out property <length> modal-panel-width: modal.panel-width;
+    out property <length> modal-panel-height: modal.panel-height;
+    out property <color> modal-scrim: modal.scrim-color;
+    out property <int> modal-focused-button: modal.focused-button;
+    out property <int> modal-mask-extent: modal.mask-extent;
+    out property <int> modal-mask-cursor: modal.mask-cursor;
+    // Anchored host seams.
+    out property <length> a-panel-x: anchored.panel-x;
+    out property <length> a-panel-y: anchored.panel-y;
+    out property <length> a-panel-w: anchored.panel-width;
+    out property <length> a-panel-h: anchored.panel-height;
+    out property <bool> a-flipped: anchored.flipped;
+    out property <int> a-mask-extent: anchored.mask-extent;
+    // The sibling stack's witness rects (G-9).
+    out property <length> sib0-y: witness0.y;
+    out property <length> sib1-y: witness1.y;
+    in-out property <bool> opener-focused: opener.has-focus;
+    in-out property <bool> body-stop-focused: body-stop.has-focus;
+
+    // The opener (the focus-restore target, G-12) and the fixture
+    // anchor (G-2..G-5) share the top strip; the sibling witnesses
+    // sit below in a plain layout (G-9: their rects never move).
+    opener := FocusScope {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: Theme.space-8;
+        height: Theme.space-6;
+        focus-on-tab-navigation: true;
+        accessible-role: AccessibleRole.button;
+        accessible-label: "Opener";
+    }
+    anchor-rect := Rectangle {
+        x: root.anchor-x;
+        y: root.anchor-y;
+        width: root.anchor-w;
+        height: root.anchor-h;
+        background: Theme.surface;
+        accessible-role: AccessibleRole.button;
+        accessible-label: "Anchor";
+    }
+    witness-layout := VerticalLayout {
+        x: Theme.space-2;
+        y: Theme.space-8 + Theme.space-7;
+        width: Theme.space-15;
+        spacing: Theme.space-1;
+        witness0 := Rectangle {
+            height: Theme.space-5;
+            background: Theme.surface;
+        }
+        witness1 := Rectangle {
+            height: Theme.space-5;
+            background: Theme.surface;
+        }
+    }
+
+    // ---- The modal proof mount ---------------------------------------
+    modal := ModalDialogHost {
+        open: root.modal-open;
+        title: "Probe dialog";
+        body-preferred-width: root.probe-preferred-width;
+        walk-stops: root.probe-walk-stops;
+        buttons: root.probe-buttons;
+        kind: root.probe-kind;
+        initial-focus: root.probe-initial-focus;
+        viewport-floor: root.viewport-floor;
+        accepted => {
+            root.accepted-count += 1;
+            root.modal-open = false;
+            root.closed-count += 1;
+            opener.focus();
+        }
+        dismissed => {
+            root.dismissed-count += 1;
+            root.modal-open = false;
+            root.closed-count += 1;
+            opener.focus();
+        }
+        button-invoked(i) => {
+            root.invoked-count += 1;
+            root.invoked-index = i;
+        }
+        HorizontalLayout {
+            body-stop := FocusScope {
+                width: root.probe-body-width;
+                height: root.probe-body-height;
+                focus-on-tab-navigation: true;
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Body stop";
+            }
+            Rectangle {
+                width: root.probe-body-width;
+                height: root.probe-body-height;
+                background: Theme.surface;
+            }
+        }
+    }
+
+    // ---- The anchored proof mount ------------------------------------
+    anchored := AnchoredOverlayHost {
+        open: root.anchored-open;
+        anchor-x: root.anchor-x;
+        anchor-y: root.anchor-y;
+        anchor-width: root.anchor-w;
+        anchor-height: root.anchor-h;
+        viewport-width: root.win-w;
+        viewport-floor: root.viewport-floor;
+        placement: root.probe-placement;
+        panel-preferred-width: root.probe-overlay-preferred;
+        walk-stops: 1;
+        dismissed => {
+            root.anchored-dismissed-count += 1;
+            root.anchored-open = false;
+        }
+        Rectangle {
+            width: root.probe-content-width;
+            height: root.probe-content-height;
+            background: Theme.surface-raised;
+        }
+    }
+
+    // The fake status bar: the usable floor.
+    status := Rectangle {
+        y: root.win-h - Theme.space-7;
+        width: 100%;
+        height: Theme.space-7;
+        background: Theme.surface;
+    }
+}

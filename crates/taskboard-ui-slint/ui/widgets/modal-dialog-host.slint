@@ -1,0 +1,320 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The modal-dialog base layer (J2 US-1, D-W1-1): one host carrying
+// the full modal anatomy so a mount site never re-declares it — the
+// scrim (R-3), the absorbing dismissal layer, the centered panel
+// wrapper (the capture-overlay centering expression, promoted), the
+// R-6 sizing law (caps are bounds), the button model row (US-4,
+// D-W1-2), and automatic walk-mask arming (D-W1-4).
+//
+// Laws pinned by the G-catalogue (tests/widget_framework_probe_tests.rs):
+//   - Inside clicks never close (the absorbing panel root, research
+//     §4(a) law: the TouchArea sits before the body in declaration
+//     order, so interactive children are hit-tested above it).
+//   - Outside click resolves by kind (R-4): `edit` treats outside
+//     click as accept/save; `confirm` treats it as cancel/dismiss.
+//     Destructive drafts discard only through the cancel seam.
+//   - No key handlers in the host: Escape resolves through the root
+//     capture + action layer as today (AGENTS §5 house law).
+//   - D-W1-6 fallback: slint 1.18.1 has no `AccessibleRole.dialog`
+//     (verified against i-slint-common-1.18.1 enums.rs); the panel
+//     root takes the landmark treatment (region + description).
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { MaskWalkFacts } from "../mask-walk-facts.slint";
+
+// The button's role (US-4/R-4 adjacency): layout clusters
+// dismiss-role left and accept/destructive right; the widget never
+// interprets roles beyond layout/focus/accessibility.
+export enum DialogButtonRole {
+    none,
+    accept,
+    dismiss,
+    destructive,
+}
+
+// One button row model entry (D-W1-2). `autofocus` is declarative
+// metadata mirrored by the site's `initial-focus` index (Slint
+// functions have no model reduce, so the index computation lives at
+// the mount site; W3's TextButton absorbs the refinement).
+export struct DialogButtonModel {
+    label: string,
+    role: DialogButtonRole,
+    enabled: bool,
+    autofocus: bool,
+}
+
+// The outside-click resolution (R-4).
+export enum DialogKind {
+    edit,
+    confirm,
+}
+
+// One dialog button (the CtaButtonArea shape, D-W1-2): focus + click
+// with an enabled gate. `initial-focus-index` matching `index`
+// focuses the button at mount (the autofocus half); the host passes
+// its own index down. A disabled button is never focusable
+// (the FocusScope's `enabled` gate) and never invokes.
+component DialogButton inherits Rectangle {
+    in property <DialogButtonModel> model;
+    in property <int> index;
+    in property <int> initial-focus-index: -1;
+    in property <bool> host-open: true;
+    callback invoked(int);
+    out property <bool> focused: press-focus.has-focus;
+    height: Theme.space-6;
+    min-width: Theme.space-6 * 4;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: press-focus.has-focus && root.model.enabled
+        ? Semantic.focus-ring : Theme.border;
+    background: !root.model.enabled ? Theme.surface
+        : press-hit.has-hover ? Theme.surface-hover : Theme.surface-raised;
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.model.label;
+    accessible-enabled: root.model.enabled;
+    accessible-action-default => {
+        if (root.model.enabled) { root.invoked(root.index); }
+    }
+    // The mount-focus edge: the open transition (not init — the
+    // caller's `initial-focus` may not be bound yet at creation; a
+    // conditional mount starts open, so init covers that arm too).
+    function take-initial-focus() {
+        if (root.initial-focus-index == self.index && self.model.enabled) {
+            press-focus.focus();
+        }
+    }
+    init => { self.take-initial-focus(); }
+    changed host-open => {
+        if (root.host-open) { self.take-initial-focus(); }
+    }
+    press-focus := FocusScope {
+        width: 100%;
+        height: 100%;
+        enabled: root.model.enabled;
+        focus-on-tab-navigation: true;
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.model.label;
+        accessible-enabled: root.model.enabled;
+        accessible-action-default => {
+            if (root.model.enabled) { root.invoked(root.index); }
+        }
+        key-pressed(event) => {
+            if ((event.text == Key.Return || event.text == " ")
+                    && !event.modifiers.control
+                    && !event.modifiers.alt
+                    && !event.modifiers.shift
+                    && !event.modifiers.meta) {
+                if (root.model.enabled) {
+                    root.invoked(root.index);
+                }
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+    press-hit := TouchArea {
+        // A disabled click swallows — the gate reads the same bit.
+        clicked => {
+            if (root.model.enabled) {
+                root.invoked(root.index);
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: Theme.space-3;
+        padding-right: Theme.space-3;
+        alignment: center;
+        RoleText {
+            role: Typography.body;
+            text-color: root.model.enabled ? Theme.text-primary : Theme.border;
+            text: root.model.label;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+export component ModalDialogHost inherits Rectangle {
+    // Window-level mount: the host fills the window so the scrim is
+    // full-surface; the panel is centered inside.
+    width: 100%;
+    height: 100%;
+
+    in property <string> title;
+    // R-6 sizing: the body's preferred width; the dialog tokens bound
+    // it (caps are bounds, never targets).
+    in property <length> body-preferred-width: Theme.dialog-min-width;
+    // The ordered tab-stop count of the panel body (D-W1-4).
+    in property <int> walk-stops: 1;
+    in property <[DialogButtonModel]> buttons;
+    in property <DialogKind> kind: DialogKind.confirm;
+    // The mount focus target (index into `buttons`; -1 leaves the
+    // initial focus to the body's own ritual — the capture field
+    // precedent).
+    in property <int> initial-focus: -1;
+    // The usable floor (the status bar's top edge), injected from the
+    // mount site (plan §7.4).
+    in property <length> viewport-floor;
+    // The open bit. Mount sites keep the `if (flag): Host { open: flag; }`
+    // protocol (D-W1-1 — the flag stays the unmount condition so the
+    // host can never linger); keeping the flag on the host also lets
+    // a probe (or a future self-registering site) gate the anatomy
+    // without a remount.
+    in property <bool> open: true;
+
+    // The intents (§5.1): `button-invoked` carries the model index;
+    // `accepted`/`dismissed` are the two outside-click resolutions.
+    // The unmount itself stays the site's flag (the `if (flag)`
+    // protocol below) — the adapter restores focus in its dismissal
+    // routing (PR #872 machinery).
+    callback button-invoked(int);
+    callback accepted();
+    callback dismissed();
+
+    // The focused-button observation seam (the G-13 probe reads it):
+    // -1 while no button holds focus.
+    out property <int> focused-button: focus-slot;
+    property <int> focus-slot: -1;
+
+    // The observation seams (the probe/test pattern): the realized
+    // panel rect, the scrim paint, and the mask push.
+    out property <length> panel-x: panel.x;
+    out property <length> panel-y: panel.y;
+    out property <length> panel-width: panel.width;
+    out property <length> panel-height: panel.height;
+    out property <color> scrim-color: scrim.background;
+    out property <int> mask-extent: MaskWalkFacts.extent;
+    out property <int> mask-cursor: MaskWalkFacts.cursor;
+
+    // D-W1-4: opening arms the walk mask; the consumption edge
+    // clamps the adapter's focus-index push into the declared stops.
+    function arm() {
+        MaskWalkFacts.extent = root.walk-stops;
+        MaskWalkFacts.cursor = 0;
+    }
+    property <int> watch-mask-nonce: MaskWalkFacts.nonce;
+    init => {
+        if (root.open) { self.arm(); }
+    }
+    changed open => {
+        if (root.open) {
+            self.arm();
+        } else {
+            root.focus-slot = -1;
+        }
+    }
+    changed watch-mask-nonce => {
+        if (MaskWalkFacts.armed) {
+            MaskWalkFacts.cursor = min(
+                MaskWalkFacts.focus-index >= 0 ? MaskWalkFacts.focus-index : 0,
+                max(root.walk-stops - 1, 0));
+        }
+    }
+
+    // The scrim (R-3): visible, passive paint; the dismissal
+    // TouchArea carries interaction (the r4 D2 idiom). The kind
+    // resolves the outside click (R-4).
+    scrim := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: Theme.scrim;
+        visible: root.open;
+        dismissal := TouchArea {
+            width: 100%;
+            height: 100%;
+            enabled: root.open;
+            clicked => {
+                if (root.kind == DialogKind.edit) {
+                    root.accepted();
+                } else {
+                    root.dismissed();
+                }
+            }
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.right) {
+                    if (root.kind == DialogKind.edit) {
+                        root.accepted();
+                    } else {
+                        root.dismissed();
+                    }
+                }
+            }
+        }
+    }
+
+    // The centered panel (D-W1-1's promoted capture-overlay
+    // expression). Width: the R-6 law; height: by content, capped at
+    // `viewport-floor - 2·space-4`. No vertical-stretch anywhere —
+    // the review-walk stretch class is structurally impossible.
+    panel := Rectangle {
+        visible: root.open;
+        x: (root.width - self.width) / 2;
+        y: max(Theme.space-4,
+               min((root.viewport-floor - self.height) / 2,
+                   root.viewport-floor - self.height - Theme.space-2));
+        width: min(root.width - 2 * Theme.space-2,
+                   Theme.dialog-max-width,
+                   max(root.body-preferred-width, Theme.dialog-min-width));
+        // Height by content (the layout's preferred), capped — never
+        // the parent-filling default.
+        height: min(root.viewport-floor - 2 * Theme.space-4,
+                    body-col.preferred-height);
+        background: Theme.surface-raised;
+        border-radius: Theme.radius-medium;
+        accessible-role: AccessibleRole.region;
+        accessible-description: root.title;
+
+        // The absorbing panel root (research §4(a)): clicks inside
+        // the panel bounds never close, structurally — declared
+        // first so every interactive child is hit-tested above it.
+        TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        body-col := VerticalLayout {
+            width: 100%;
+            height: 100%;
+            padding: Theme.space-2;
+            spacing: Theme.space-2;
+
+            // The dialog body (the mount site's default children);
+            // height by content — never stretched.
+            body := Rectangle {
+                HorizontalLayout { @children }
+            }
+
+            // The button row (D-W1-2): the stretch spacer pushes the
+            // cluster right (the site orders dismiss-role entries
+            // first); an empty model mounts nothing.
+            buttons-row := HorizontalLayout {
+                spacing: Theme.space-2;
+                if (root.buttons.length > 0): Rectangle {
+                    min-width: 0;
+                    horizontal-stretch: 1;
+                }
+                for btn[i] in root.buttons: DialogButton {
+                    model: btn;
+                    index: i;
+                    initial-focus-index: root.initial-focus;
+                    host-open: root.open;
+                    invoked(i) => { root.button-invoked(i); }
+                    // The seam reports enabled buttons only: a
+                    // disabled scope never participates in the walk
+                    // (the backend may restore raw focus onto a
+                    // disabled scope across a visibility toggle — the
+                    // gate here keeps the seam honest).
+                    changed focused => {
+                        if (self.focused && self.model.enabled) {
+                            root.focus-slot = i;
+                        } else if (!self.focused && root.focus-slot == i) {
+                            root.focus-slot = -1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

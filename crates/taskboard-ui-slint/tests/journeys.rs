@@ -18037,7 +18037,13 @@ fn the_setter_quick_list_takes_the_flip_leg_and_dismisses() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.set_window_size(1000, 900);
+            // A short window puts the setter's combobox genuinely low,
+            // so the quick list takes the flip leg (round-9 W1: the
+            // anchor facts mirror at click time now — the old pass
+            // rode the #954 race, which positioned the popover low by
+            // accident; the flip premise is made true by the viewport,
+            // not by the race).
+            harness.driver.set_window_size(1000, 400);
             // The setter's header button lives in the today view's
             // section (the harness's mount escape routes to Board).
             harness.press(ActionId::ViewToday);
@@ -18058,8 +18064,8 @@ fn the_setter_quick_list_takes_the_flip_leg_and_dismisses() {
                 let facts = window.global::<taskboard_ui_slint::TimeFieldFacts>();
                 assert!(facts.get_open(), "the chevron opened the quick list");
                 assert_eq!(facts.get_site(), 1, "the setter's site discriminates");
-                // The setter's combobox sits low in the popover over a
-                // 900px window, so the list takes the clamp/flip
+                // The short window's combobox sits low in the popover,
+                // so the list takes the clamp/flip
                 // grammar's flip leg: above the anchor, inside the
                 // window.
                 assert!(
@@ -24441,6 +24447,123 @@ fn us6_ac1_capture_over_a_walk_child_closes_the_walk() {
             assert!(
                 !walk_open(&harness),
                 "no phantom walk re-mounts after the dismiss"
+            );
+        },
+    );
+}
+
+// -- round-9 W1: the widget framework base (J2 US-1/S3, US-2/S1) -----------
+
+/// J2 US-1/S3 (the routing pair; the geometry laws live on the probe):
+/// a click on the capture modal's dead space keeps the dialog open,
+/// and a click on the scrim closes it — the inside-safe/outside-kind
+/// dismissal law through the real `ModalDialogHost` mount.
+#[test]
+fn us1_s3_inside_click_never_closes_and_scrim_click_dismisses() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::CaptureQuick);
+            harness.driver.advance_time(0);
+            assert!(harness.handle.window().get_capture_open());
+
+            // The panel's dead space: the padding band just above the
+            // field (the absorbing panel root's body — no interactive
+            // child there).
+            let field = harness
+                .driver
+                .find_by_label("Capture")
+                .expect("the capture field is mounted");
+            let field_pos = field.absolute_position();
+            let field_size = field.size();
+            harness
+                .driver
+                .click_at(field_pos.x + field_size.width / 2.0, field_pos.y - 4.0);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_capture_open(),
+                "an inside click never closes (US-1/S3)"
+            );
+
+            // The scrim: the window corner, far from the centered panel.
+            harness.driver.click_at(6.0, 6.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_capture_open(),
+                "the scrim click dismissed (the flag path)"
+            );
+        },
+    );
+}
+
+/// J2 US-2/S1 (the routing pair; the flip/clamp laws live on the
+/// probe): the timer-setter popover opens below its invoking button
+/// and never covers it — G-2's non-intersection through the real
+/// `AnchoredOverlayHost` mount.
+#[test]
+fn us2_s1_the_setter_opens_below_the_anchor_never_covering_it() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: false,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            open_setter(&mut harness);
+
+            // The anchor: the header button ("Set a timer"); the panel
+            // shares the label (the D33-pinned copy) and mounts last in
+            // the tree, so the last match is the panel.
+            let matches = harness.driver.find_all_by_label("Set a timer");
+            assert!(
+                matches.len() >= 2,
+                "the anchor button and the panel both address the label"
+            );
+            let anchor = &matches[0];
+            let panel = matches.last().expect("the panel match");
+            let a_pos = anchor.absolute_position();
+            let a_size = anchor.size();
+            // The known mirror race (#954: `changed absolute-position`
+            // is unreliable in the testing backend — W6's absorption):
+            // the journey mirrors the anchor facts itself, exactly what
+            // the real button does, then lets the host re-place.
+            {
+                let facts = harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::TimerSetterFacts>();
+                facts.set_anchor_x(a_pos.x);
+                facts.set_anchor_y(a_pos.y);
+                facts.set_anchor_width(a_size.width);
+                facts.set_anchor_height(a_size.height);
+            }
+            harness.driver.advance_time(0);
+
+            let p_pos = panel.absolute_position();
+            let p_size = panel.size();
+            // Below the anchor with the space-1 gap (G-3's below leg).
+            assert!(
+                p_pos.y >= a_pos.y + a_size.height,
+                "the popover opens below the anchor: panel y {} vs anchor bottom {}",
+                p_pos.y,
+                a_pos.y + a_size.height
+            );
+            // Non-intersection (G-2, both axes).
+            let no_overlap = p_pos.y >= a_pos.y + a_size.height
+                || p_pos.y + p_size.height <= a_pos.y
+                || p_pos.x >= a_pos.x + a_size.width
+                || p_pos.x + p_size.width <= a_pos.x;
+            assert!(
+                no_overlap,
+                "the popover never covers its anchor (US-2 AC-1)"
             );
         },
     );

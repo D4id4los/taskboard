@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+#+TITLE: Widget Interactions — the overlay/dialog taxonomy
+#+DATE: 2026-11-18
+#+STATUS: SKELETON (round-9 chunk W1; W7 fleshes this to the full taxonomy)
+
+* Purpose & scope
+
+Every overlay, dialog, and flyout in the UI is an instance of a base
+widget (ModalDialogHost, AnchoredOverlayHost, or a later W-chunk's
+base). Ad-hoc overlays are forbidden — a new overlay mount that
+re-declares a backdrop/panel sibling pair instead of mounting a host is
+a review-blocker (lint-by-review until a lint exists). This document is
+the taxonomy and the per-type contracts; the base implementations live
+in =crates/taskboard-ui-slint/ui/widgets/=.
+
+* Widget taxonomy (stub list; per-type contracts land with migrations)
+
+- Modal dialog — =widgets/modal-dialog-host.slint= (W1).
+- Anchored popover / flyout — =widgets/anchored-overlay.slint= (W1).
+- Menu — ActionMenu today; MenuShell in W6 (chunk 17).
+- Palette — search-palette (modal migration candidate, J2 R-5).
+- Inline editor flow — due/recur editors (W2 migration decisions).
+- Toast / status notice — status-bar compositions (W7).
+- Tooltip — =widgets/tooltip.slint= (existing base).
+
+* Per-type interaction contract (the four laws)
+
+1. *Positioning* — modals center (the capture expression, promoted);
+   anchored overlays place below the anchor, flip above when the below
+   rect would cross the viewport floor, clamp both axes into
+   =[space-2, edge - space-2]=, and never intersect the anchor rect.
+   The underlying layout never shifts (J2 R-7/R-8).
+2. *Sizing* — caps are bounds, never targets: =min(viewport - 2·space-2,
+   min(cap, max(preferred, floor)))=. Width floors/caps are Theme
+   tokens (dialog 280/560, menus 200/360, ×base-scale); height is by
+   content, capped at =floor - 2·space-4=; no vertical-stretch in any
+   host.
+3. *Dismissal* — inside clicks never close (the absorbing panel root);
+   outside click resolves by kind (R-4): =edit=-kind dialogs treat
+   outside click as accept/save, =confirm=-kind as cancel/dismiss.
+   Destructive drafts discard only through the cancel seam. The
+   right-button-down half rides the r4 D2 idiom. Anchored overlays are
+   light-dismiss (no scrim); modals carry the scrim (R-3, =Theme.scrim=).
+4. *Focus* — mounting through a host arms the walk mask
+   (=MaskWalkFacts.extent = walk-stops=, cursor 0); the walk stays
+   inside the dialog; on unmount the adapter restores focus to the
+   opener through the existing FocusFacts seam (PR #872 machinery).
+   The host has no key handlers — Escape resolves through the root
+   capture + action layer.
+
+The R-4 kind table: text/field editing dialogs (capture, recur) are
+=edit=-kind candidates at migration; confirms (remove, discard) are
+=confirm=-kind. Capture keeps =confirm= semantics until W2 decides
+otherwise (behavior-preserving W1).
+
+* Base implementations
+
+- =ModalDialogHost= — scrim + dismissal + centered panel + button
+  model (=DialogButtonModel/=DialogButtonRole=) + walk arming. Mount
+  protocol: =if (site-open-flag): ModalDialogHost { open: true; ... }=
+  as a =key-root= sibling in the modal-class block, the site wiring
+  =accepted/dismissed/button-invoked/closed= to its adapter seams.
+- =AnchoredOverlay= / =AnchoredOverlayHost= — the pure geometry helper
+  (facts in, placed rect out; =computed-x/y/flipped= seams) plus the
+  window-level host (underlay + panel + walk arming).
+- =MaskWalkFacts= integration — the host owns extent/cursor; the
+  composition keeps only its own focus grab; =armed= stays
+  adapter-owned.
+
+The mount checklist (the six steps a new dialog site performs):
+
+1. Declare the open flag in the model (the unmount condition).
+2. Mount =if (flag): <Host> { open: true; ... }= at the correct
+   sibling position (anchored block, then modal block — later siblings
+   win the hit test).
+3. Inject =viewport-floor= (=status.y=) and the anchor facts.
+4. Wire the intents (=accepted/dismissed/button-invoked/closed=) to
+   the existing adapter seams; the site fires =closed= in its
+   dismissal routing before clearing the flag.
+5. Declare =walk-stops= and the =initial-focus= index; delete any
+   per-widget mask ritual.
+6. Declare the button model (empty for button-less dialogs).
+
+* Usage rules
+
+- Dialog vs popover vs inline: a modal for focus-trapped decisions;
+  an anchored overlay for light-dismiss pickers/menus; in-layout swaps
+  only when no reflow (J2 R-2 — overlays never resize the view).
+- Destructive actions never ride outside-click or autofocus.
+- Buttons: dismiss-role clusters left, accept/destructive right; the
+  destructive role never takes autofocus.
+- One-open-overlay exclusivity: the newest host mounts above the
+  older one (sibling order); the palette/menu grammar stays the
+  one-modal-at-a-time rule (W7 records the pointer).
+
+* Testing
+
+The G-catalogue (round-9 W1 plan §5) is the pattern inventory:
+
+- Probe + facts observation — =tests/widget_framework_probe.slint= +
+  =_tests.rs= (G-1..G-13).
+- Fall-through probe — G-8/G-11 (click panel dead space vs scrim).
+- Walk-containment probe — G-10 (mask arming, push clamping).
+- Focus-restore probe — G-12 (opener re-focus after the handshake).
+- Layout-shift witness — G-9 (sibling rects before/while/after).
+- Journey routing pair — =tests/journeys.rs= =us1_s3=, =us2_s1=
+  (real mounts; one behavior, one test, lowest layer).
+
+* Known limitations & backlog
+
+- No =AccessibleRole.dialog= in slint 1.18.1 (D-W1-6): the modal panel
+  takes =region= + =accessible-description: title=; the single edit
+  point is the host (backlog: adopt =Dialog= on the slint bump that
+  ships it).
+- No =inert= property: covered chrome still hovers under an overlay
+  (backlog).
+- PopupWindow primitive rejected (round-5 D6 / J2 R-1 stands).
+- 32px touch-target upgrade path for dialog buttons (W3's TextButton).
+- Anchor-facts mirroring rides =changed absolute-position= per site
+  (the #954 race) until the host absorbs the mirroring (W6).

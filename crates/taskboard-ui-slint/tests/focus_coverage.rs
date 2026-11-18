@@ -99,8 +99,10 @@ const EXEMPT: &[(&str, &str)] = &[
         "modal dismissal surface; the picker closes on Escape",
     ),
     (
-        "TouchArea:AppWindow::timer-setter-backdrop",
-        "modal dismissal surface; the setter closes on Escape",
+        "TouchArea:AnchoredOverlayHost::dismissal",
+        "the anchored host's dismissal underlay (round-9 W1): the \
+         setter popover closes on Escape — the layer is the host's, \
+         not the site's backdrop",
     ),
     (
         "TouchArea:AppWindow::track-entries-backdrop",
@@ -123,8 +125,10 @@ const EXEMPT: &[(&str, &str)] = &[
         "modal dismissal surface; the palette closes on Escape",
     ),
     (
-        "TouchArea:AppWindow::capture-backdrop",
-        "modal dismissal surface; the capture overlay closes on Escape",
+        "TouchArea:ModalDialogHost::dismissal",
+        "the modal host's scrim dismissal layer (round-9 W1): the \
+         capture dialog closes on Escape — the layer is the host's, \
+         not the site's backdrop",
     ),
     (
         "TouchArea:AppWindow::focus-overlay-backdrop",
@@ -1142,7 +1146,7 @@ fn assert_modal_scan(mounted: &Mounted, modal_type: &str, backdrops: &[&str]) {
     assert_no_findings(&scan(&window, EXEMPT), &format!("{modal_type} window"));
     let mut matched: Vec<&str> = exempt_hits(&window, EXEMPT)
         .into_iter()
-        .filter(|hit| hit.ends_with("-backdrop"))
+        .filter(|hit| hit.ends_with("-backdrop") || hit.ends_with("::dismissal"))
         .collect();
     matched.sort_unstable();
     let mut expected = backdrops.to_vec();
@@ -1683,7 +1687,7 @@ fn capture_has_no_pointer_only_controls() {
         assert_modal_scan(
             &mounted,
             "CaptureOverlay",
-            &["TouchArea:AppWindow::capture-backdrop"],
+            &["TouchArea:ModalDialogHost::dismissal"],
         );
     });
 }
@@ -1719,7 +1723,7 @@ fn timer_setter_has_no_pointer_only_controls() {
         assert_modal_scan(
             &mounted,
             "TimerSetter",
-            &["TouchArea:AppWindow::timer-setter-backdrop"],
+            &["TouchArea:AnchoredOverlayHost::dismissal"],
         );
     });
 }

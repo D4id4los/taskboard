@@ -387,3 +387,61 @@ fn every_typography_role_has_a_role_class_mapping() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The overlay sizing fold test (round-9 W1, J2 R-6/D-W1-5): the scrim and
+// the dialog/menu floors/caps are `Npx * base-scale` expressions in the
+// theme — the token lint's rule 7 (bare px only inside token definitions).
+// The scrim is the one exempt colour token (translucent 8-digit wash, not a
+// text carrier — invisible to the contrast extractor above by construction).
+// ---------------------------------------------------------------------------
+
+/// Extracts the declared literal of one Theme dimension token
+/// (`out property <length> name: <expr>;`).
+fn theme_length_token(name: &str) -> Option<String> {
+    for line in THEME_SOURCE.lines() {
+        let line = line.split("//").next().unwrap_or(line).trim();
+        if let Some(rest) = line.strip_prefix("out property <length> ")
+            && let Some((declared, expr)) = rest.split_once(':')
+            && declared.trim() == name
+        {
+            return Some(expr.trim().trim_end_matches(';').trim().to_owned());
+        }
+    }
+    None
+}
+
+#[test]
+fn the_overlay_sizing_tokens_fold_over_base_scale() {
+    for name in [
+        "dialog-min-width",
+        "dialog-max-width",
+        "menu-min-width",
+        "menu-max-width",
+    ] {
+        let expr =
+            theme_length_token(name).unwrap_or_else(|| panic!("theme declares the {name} token"));
+        assert!(
+            expr.ends_with("* base-scale")
+                && expr.trim_end().starts_with(|c: char| c.is_ascii_digit()),
+            "{name} folds over base-scale (`Npx * base-scale`), got `{expr}`"
+        );
+    }
+}
+
+#[test]
+fn the_scrim_token_is_a_translucent_theme_colour() {
+    let line = THEME_SOURCE
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(l).trim())
+        .find(|l| l.starts_with("out property <color> scrim:"))
+        .expect("theme declares the scrim token");
+    let value = line.split_once(':').unwrap().1.trim().trim_end_matches(';');
+    // #RRGGBBAA — the 8-digit form keeps it out of the contrast
+    // extractor's pair list (a translucent wash is not a text carrier).
+    let hex = value.strip_prefix('#').expect("the scrim is a hex literal");
+    assert!(
+        hex.len() == 8 && hex.chars().all(|c| c.is_ascii_hexdigit()),
+        "the scrim is a translucent #RRGGBBAA literal, got `{value}`"
+    );
+}

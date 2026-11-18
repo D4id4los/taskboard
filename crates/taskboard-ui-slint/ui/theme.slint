@@ -106,6 +106,27 @@ export global Theme {
     //      lives here — keeps the token lint's rule 3 total) -----------
     out property <length> window-default-width: 1024px * base-scale;
     out property <length> window-default-height: 640px * base-scale;
+
+    // The modal scrim (J2 R-3, D-W1-5): translucent dark drawn under
+    // every ModalDialogHost panel — visible, non-interactive (the
+    // host's dismissal TouchArea carries interaction, the paint is
+    // passive). Anchored overlays get no scrim (the light-dismiss
+    // family). First cut from the surface ladder's darkest base at
+    // ~50% alpha; visual tuning is operator-owned (stage-3
+    // walkthrough). The 8-digit form stays invisible to the contrast
+    // extractor (token_tests) — a translucent wash is not a text
+    // carrier.
+    out property <color> scrim: #0b0d1280;
+
+    // ---- Overlay sizing floors/caps (J2 R-6, D-W1-5; sourced from
+    //      the widget inventory report §4's Qt/web defaults) ----------
+    // Caps are bounds, never targets: a dialog's width law is
+    // `min(viewport - 2·space-2, min(dialog-max-width,
+    // max(preferred-width, dialog-min-width)))`.
+    out property <length> dialog-min-width: 280px * base-scale;
+    out property <length> dialog-max-width: 560px * base-scale;
+    out property <length> menu-min-width: 200px * base-scale;
+    out property <length> menu-max-width: 360px * base-scale;
 }
 
 // The closed text-role table (§3.2): adding a role is a theme-level
