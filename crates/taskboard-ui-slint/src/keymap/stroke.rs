@@ -4,10 +4,13 @@
 //! modifier key plus modifier state, parsed from the config spelling
 //! (`"Ctrl+Alt+Delete"`, `"g"`, `"F1"`).
 //!
-//! Normalization: for *printable* keys shift is expressed by the
+//! Normalization: for *bare* printable keys shift is expressed by the
 //! character itself (`"Shift+A"` ≡ `"A"` — Slint delivers printables
-//! case-carrying); for *named* keys `Shift` is a real modifier. The
-//! canonical `Display` form (mods in Ctrl, Alt, Shift, Meta order) is
+//! case-carrying); for *named* keys `Shift` is a real modifier; for
+//! *chorded* letters the key folds to lowercase with the uppercase
+//! glyph arming the shift bit (the binding identity, J3 R-6:
+//! `Ctrl+T` ≡ `Ctrl+Shift+t` ≠ `Ctrl+t`). The canonical `Display`
+//! form (mods in Ctrl, Alt, Shift, Meta order, lowercase letter) is
 //! the kbd-hint text source.
 
 use std::fmt;
@@ -107,8 +110,9 @@ pub struct Stroke {
     pub key: char,
     pub ctrl: bool,
     pub alt: bool,
-    /// Meaningful only for named keys (shift-folded away for
-    /// printables — D6).
+    /// Meaningful only for named keys and chorded letters (the
+    /// chorded-letter binding identity, J3 R-6; bare printables
+    /// shift-fold away — D6).
     pub shift: bool,
     pub meta: bool,
 }
@@ -185,12 +189,11 @@ impl Stroke {
         });
         // Candidate 1 applies to pair members only: outside the
         // table the shift-distinct chords stay distinct
-        // (`Ctrl+Shift+Z` ≠ `Ctrl+Z` — the undo/redo pair depends on
-        // it), exactly as before the map existed.
+        // (`Ctrl+Shift+z` ≠ `Ctrl+z` — the shift bit survives the
+        // case law), exactly as before the map existed.
         // Out of the table: no candidates. This also keeps the
-        // shift-distinct chords distinct (`Ctrl+Shift+Z` ≠ `Ctrl+Z`
-        // — the undo/redo pair depends on it), exactly as before the
-        // map existed.
+        // shift-distinct chords distinct, exactly as before the map
+        // existed.
         let Some(member) = member else {
             return Vec::new();
         };
@@ -231,8 +234,10 @@ impl Stroke {
     /// Builds a stroke from a delivered key event (the adapter's
     /// conversion, D6/D18): the same normalization `parse` applies —
     /// named keys keep shift as a modifier, bare printables fold it
-    /// into the (case-carrying) character, chorded printables keep
-    /// it. `None` for modifier-only/control events (rejected).
+    /// into the (case-carrying) character, chorded letters normalize
+    /// onto the binding identity (the chorded-letter case law, J3
+    /// R-6: an uppercase glyph *is* shift evidence). `None` for
+    /// modifier-only/control events (rejected).
     #[allow(clippy::fn_params_excessive_bools)] // mirrors KeyboardModifiers verbatim
     #[must_use]
     pub fn from_event(key: char, ctrl: bool, alt: bool, shift: bool, meta: bool) -> Option<Self> {
@@ -255,6 +260,7 @@ impl Stroke {
         }
         let chorded = ctrl || alt || meta;
         if chorded {
+            let (key, shift) = normalize_chorded_case(key, shift);
             Some(Self {
                 key,
                 ctrl,
@@ -334,6 +340,22 @@ fn fold_shift(c: char) -> char {
     }
 }
 
+/// The chorded-letter binding identity (J3 R-6): for a chorded
+/// single-scalar letter the key folds to lowercase and the uppercase
+/// glyph counts as shift evidence — `parse("Ctrl+T")` ≡
+/// `parse("Ctrl+Shift+t")` ≡ `from_event('t', ctrl, shift=false, …)`,
+/// while the shift bit itself survives (`Ctrl+Shift+z` ≠ `Ctrl+z`;
+/// no modern OS delivers Ctrl+uppercase without Shift, so there is
+/// no third reading). Mirrors `fold_shift`'s conservatism:
+/// multi-scalar case mappings (`İ`, `ẛ`) keep the character.
+fn normalize_chorded_case(c: char, shift: bool) -> (char, bool) {
+    let mut lower = c.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(single), None) if single != c => (single, true),
+        _ => (c, shift),
+    }
+}
+
 /// Parses one stroke spelling (D6 grammar). Pure and total: every
 /// malformed input maps to a typed [`StrokeParseError`], nothing
 /// panics on user input.
@@ -396,12 +418,16 @@ pub fn parse(spelling: &str) -> Result<Stroke, StrokeParseError> {
     }
     // Shift-folding (D6): a *bare* printable carries shift in the
     // character (`"Shift+a"` ≡ `"A"` — Slint delivers printables
-    // case-carrying). Inside a chord (`Ctrl`/`Alt`/`Meta`), shift is a
-    // real modifier — `Ctrl+Shift+Z` must stay distinct from
-    // `Ctrl+Z`, exactly as the backend delivers the two events.
+    // case-carrying). Inside a chord (`Ctrl`/`Alt`/`Meta`) a letter
+    // normalizes onto the binding identity (J3 R-6): the key folds to
+    // lowercase and the uppercase glyph arms the shift bit —
+    // `Ctrl+T` ≡ `Ctrl+Shift+t`, both distinct from `Ctrl+t`, so the
+    // canonical spellings on preset rows and the event deliveries
+    // meet at one identity. Non-letters and multi-scalar case
+    // mappings keep the character and the raw shift flag.
     let chorded = ctrl || alt || meta;
     let (key, shift) = if chorded {
-        (c, shift)
+        normalize_chorded_case(c, shift)
     } else {
         (if shift { fold_shift(c) } else { c }, false)
     };
@@ -461,8 +487,9 @@ mod tests {
 
     /// Shift-folding (D6): *bare* printables carry shift in the
     /// character; named keys keep a real shift modifier; chorded
-    /// printables keep shift so `Ctrl+Shift+Z` ≠ `Ctrl+Z` (the
-    /// undo/redo pair in the standard preset depends on it).
+    /// letters normalize onto the binding identity (J3 R-6) while the
+    /// shift bit itself survives — `Ctrl+Shift+z` ≠ `Ctrl+z` (the
+    /// undo pair in the standard preset depends on it).
     #[test]
     fn shift_folds_for_bare_printables_but_not_named_or_chorded_keys() {
         let folded = ok("Shift+a");
@@ -488,13 +515,63 @@ mod tests {
         assert_ne!(named, ok("Up"));
         assert_eq!(named.to_string(), "Shift+Up");
 
-        let undo = ok("Ctrl+Z");
-        let redo = ok("Ctrl+Shift+Z");
-        assert_ne!(undo, redo);
-        assert!(!undo.shift);
-        assert!(redo.shift);
-        assert_eq!(redo.to_string(), "Ctrl+Shift+Z");
-        assert_eq!(undo.to_string(), "Ctrl+Z");
+        // The shift bit survives the case law: the shifted and
+        // unshifted chorded readings are distinct identities.
+        let shifted = ok("Ctrl+Shift+z");
+        let unshifted = ok("Ctrl+z");
+        assert_ne!(shifted, unshifted);
+        assert!(shifted.shift);
+        assert!(!unshifted.shift);
+        assert_eq!(shifted.to_string(), "Ctrl+Shift+z");
+        assert_eq!(unshifted.to_string(), "Ctrl+z");
+    }
+
+    /// The chorded-letter binding identity (J3 R-6, US-3/S1): both
+    /// spellings — and the real Ctrl+T press — mint the same stroke,
+    /// while the shift-less spelling stays a distinct binding.
+    /// Bare printables and named keys are untouched by the law.
+    #[test]
+    fn us3_s1_chorded_letter_spellings_share_one_binding_identity() {
+        // `Ctrl+T` ≡ `Ctrl+Shift+t`.
+        assert_eq!(ok("Ctrl+T"), ok("Ctrl+Shift+t"));
+        // … and both differ from `Ctrl+t`.
+        assert_ne!(ok("Ctrl+T"), ok("Ctrl+t"));
+        // The real press delivers the lower glyph with Shift held.
+        assert_eq!(
+            Stroke::from_event('t', true, false, true, false),
+            Some(ok("Ctrl+Shift+t"))
+        );
+        // … and the upper-glyph delivery (a layout that composes the
+        // capital) is the same identity.
+        assert_eq!(
+            Stroke::from_event('T', true, false, true, false),
+            Some(ok("Ctrl+Shift+t"))
+        );
+        // The unshifted delivery is the distinct `Ctrl+t` binding.
+        assert_eq!(
+            Stroke::from_event('t', true, false, false, false),
+            Some(ok("Ctrl+t"))
+        );
+        // The same law on the undo chord: `Ctrl+Z` ≡ `Ctrl+Shift+z`
+        // ≠ `Ctrl+z`; the shifted delivery mints the shifted
+        // identity, the shift-less delivery the distinct bare one.
+        assert_eq!(ok("Ctrl+Z"), ok("Ctrl+Shift+z"));
+        assert_ne!(ok("Ctrl+Z"), ok("Ctrl+z"));
+        assert_eq!(
+            Stroke::from_event('z', true, false, true, false),
+            Some(ok("Ctrl+Shift+z"))
+        );
+        assert_eq!(
+            Stroke::from_event('z', true, false, false, false),
+            Some(ok("Ctrl+z"))
+        );
+        // Bare printables and named keys: untouched.
+        assert_eq!(ok("J").key, 'J');
+        assert_eq!(
+            Stroke::from_event('j', false, false, false, false),
+            Some(ok("j"))
+        );
+        assert_eq!(ok("Ctrl+Return"), ok("Ctrl+Return"));
     }
 
     /// The event-side conversion (D18): named keys are control chars
@@ -569,9 +646,11 @@ mod tests {
         let named = parse("Ctrl+Return").expect("named chord");
         assert_eq!(named.chord_shift_partners(), Vec::new());
         // Shift-distinct chords stay distinct: letters have no
-        // partner even with Shift held (undo/redo).
-        let redo = parse("Ctrl+Shift+z").expect("redo chord");
-        assert_eq!(redo.chord_shift_partners(), Vec::new());
+        // partner even with Shift held (the shifted-z undo identity —
+        // the case law heals the case mismatch at minting, so the
+        // letter needs no partner pass).
+        let undo = parse("Ctrl+Shift+z").expect("the undo chord");
+        assert_eq!(undo.chord_shift_partners(), Vec::new());
     }
 
     #[test]
@@ -597,7 +676,10 @@ mod tests {
     }
 
     // T5: parse ∘ Display ∘ parse is the identity over every
-    // generatable stroke spelling (canonical forms included).
+    // generatable stroke spelling (canonical forms included). The
+    // printable strokes are minted through `from_event` — the trust
+    // boundary — so the case law (an uppercase chorded glyph arms the
+    // shift bit) is applied before the display round trip.
     proptest! {
         #[test]
         fn parse_display_parse_is_idempotent(
@@ -608,7 +690,9 @@ mod tests {
             printable in "[a-zA-Z0-9]",
         ) {
             let named_stroke = Stroke { key: NAMED_KEYS[named].1, ctrl, alt, shift: true, meta };
-            let printable_stroke = Stroke { key: printable.chars().next().expect("one char"), ctrl, alt, shift: false, meta };
+            let letter = printable.chars().next().expect("one char");
+            let printable_stroke = Stroke::from_event(letter, ctrl, alt, letter.is_ascii_uppercase(), meta)
+                .expect("printable converts");
             for stroke in [named_stroke, printable_stroke] {
                 let displayed = stroke.to_string();
                 prop_assert_eq!(parse(&displayed).expect("canonical display reparses"), stroke);

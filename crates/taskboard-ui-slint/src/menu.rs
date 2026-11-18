@@ -685,7 +685,7 @@ mod tests {
                 label: "Quit taskboard",
                 description: "Quits the application; local state is already saved.",
                 enabled: true,
-                hint: vec!["Ctrl+Q".to_owned()],
+                hint: vec!["Ctrl+Shift+q".to_owned()],
                 submenu: None,
             },
             "Quit pinned last"
@@ -1030,7 +1030,7 @@ mod tests {
         assert!(search.enabled, "the search row dispatches for real");
         assert_eq!(
             search.hint,
-            vec!["Ctrl+F".to_owned()],
+            vec!["Ctrl+Shift+f".to_owned()],
             "the enabled row keeps its binding hint"
         );
 

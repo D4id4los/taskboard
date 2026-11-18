@@ -537,7 +537,7 @@ dependency hierarchies.
    subjectless cross-board today surface — the *desktop default start
    view*; kiosk keeps Board via =UiSettings.kiosk=), =ContextId::{Today,
    Palette}=, =Flow::{Capture, Palette}=, the compositions
-   =today-view.slint= / =capture-overlay.slint= (the Ctrl+K quick
+   =today-view.slint= / =capture-overlay.slint= (the Ctrl+Shift+k quick
    capture) / =search-palette.slint= (the jump-to palette) /
    =rule-list.slint= (the task editor's reminder-rule list), the flat
    cross-board move ring (=board › stack= hints), the toolbar inbox
