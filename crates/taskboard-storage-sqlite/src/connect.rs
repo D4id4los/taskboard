@@ -201,7 +201,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 26, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 27, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
