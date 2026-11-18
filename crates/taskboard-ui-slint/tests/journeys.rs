@@ -24228,3 +24228,44 @@ fn us2_ac2_menu_series_convert_arm_arms_the_confirm_strip() {
         },
     );
 }
+
+/// US-2/S1 (AC-1, the habit twin): the row activation mints the
+/// section's focus fact, and the menu-routed `HabitConvertArm` arms
+/// the row's strip — the window's armed-row echo carries the row
+/// index, nothing dispatches (the staging grammar). Pre-fix the
+/// effect arm dropped the dispatch unconditionally (the series
+/// reproduction's twin).
+#[test]
+fn us2_ac1_menu_convert_arm_arms_the_row_strip() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            // The row activation mints the focus fact (the new seam;
+            // a stale index absorbs silently).
+            window.invoke_habits_row_activated(0);
+            harness.driver.advance_time(0);
+
+            // The menu route arms the row's strip.
+            harness.handle.dispatch_action(ActionId::HabitConvertArm);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                window.get_habits_convert_armed_row(),
+                0,
+                "the menu-routed arm arms the row's strip"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the arm stages the grammar; the confirm dispatches"
+            );
+        },
+    );
+}

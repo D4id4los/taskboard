@@ -473,6 +473,13 @@ pub(crate) struct Adapter {
     /// route from it (the one-shot target pattern).
     plan_target: Option<TaskId>,
     habit_target: Option<taskboard_domain::HabitId>,
+    /// The habit section's focus fact (cross-surface friction plan
+    /// D-2, #832): the row the menu verbs address — the keyboard twin
+    /// of the pointer seams' index resolution. Minted by the row's
+    /// activation seam and refreshed by every row affordance click
+    /// (click ≡ key composes both directions); a stale index is
+    /// absorbed by the minting seam, never by this field's readers.
+    focused_habit: Option<taskboard_domain::HabitId>,
     /// The −1 recovery's resolved `(habit, current window, current
     /// count)` (UX R-2 D-3, #786): from the same row source the
     /// section renders; consumed by the next `habit.unlog` dispatch,
@@ -3907,7 +3914,44 @@ impl Adapter {
                 }
                 Vec::new()
             }
-            (_, UiEffect::HabitConvertArm | UiEffect::SeriesConvertArm) => Vec::new(),
+            // The menu-routed conversion arms (cross-surface friction
+            // plan D-2/D-3, #832): they route the real arming seams,
+            // subject-resolved — the habit twin through the section's
+            // focus fact, the series twin through the viewed subject.
+            // A subjectless dispatch surfaces the typed refusal on the
+            // status-notice lane (the T-19 twin; the verbs' global
+            // silent `NoTarget` arm is unchanged — the plan's backlog).
+            // The kiosk dispatch is structurally inert (the
+            // entries-overlay precedent: the arming flags are desktop
+            // strips a menu-routed arm must never flip invisibly).
+            (_, UiEffect::HabitConvertArm | UiEffect::SeriesConvertArm) if self.kiosk => Vec::new(),
+            (_, UiEffect::HabitConvertArm) => {
+                let armed = match self.focused_habit {
+                    Some(habit) => self.arm_habit_convert(window, habit),
+                    None => false,
+                };
+                if !armed {
+                    self.arm_no_target_notice(ActionId::HabitConvertArm);
+                }
+                self.push_notice(window);
+                // The strip's echo rides adapter-owned flags outside
+                // the state Arc — the unchanged-refresh guard would
+                // eat the pass (the armed-create-form precedent).
+                self.refresh_forced(window);
+                Vec::new()
+            }
+            (_, UiEffect::SeriesConvertArm) => {
+                let armed = match self.view_state.subject_task() {
+                    Some(task) => self.arm_series_convert(task),
+                    None => false,
+                };
+                if !armed {
+                    self.arm_no_target_notice(ActionId::SeriesConvertArm);
+                }
+                self.push_notice(window);
+                self.refresh_forced(window);
+                Vec::new()
+            }
             // The create form's toggle (round-7 D-7.2): kiosk stays
             // inert (the action gate, D-T16 — the affordance never
             // mounts there), and opening requires an active board —
@@ -5506,6 +5550,67 @@ impl Adapter {
             text: crate::presentation::disabled_menu_notice_phrase(description),
             until: chrono::Utc::now() + crate::presentation::MENU_NOTICE_HORIZON,
         });
+    }
+
+    /// The menu-invoked arm's typed refusal (cross-surface friction
+    /// plan D-3, #832): the conversion arms' T-19 twin — the
+    /// subjectless/no-target dispatch surfaces on the status-notice
+    /// lane from the action's registry description. Structural fact
+    /// only (`notice.is_some()`); the phrase is never asserted.
+    fn arm_no_target_notice(&mut self, id: ActionId) {
+        self.notice = Some(Notice {
+            text: crate::presentation::no_target_notice_phrase(
+                crate::actions::entry(id).description,
+            ),
+            until: chrono::Utc::now() + crate::presentation::MENU_NOTICE_HORIZON,
+        });
+    }
+
+    /// The habit conversion strip's ONE arming site (cross-surface
+    /// friction plan D-2, #832, AC-1's identicality guarantee): the
+    /// row seam and the menu-routed effect arm converge here — the
+    /// strip flags and the window echo are written in exactly one
+    /// place. `false` on a dead habit or an unresolvable row index
+    /// (the caller surfaces the typed refusal; the pointer seam stays
+    /// silent — its stale-index posture is unchanged).
+    fn arm_habit_convert(&mut self, window: &AppWindow, habit: taskboard_domain::HabitId) -> bool {
+        let target = {
+            let state = self.state.load();
+            let Some(row) = state.habits.habits.get(&habit) else {
+                return false;
+            };
+            if !row.is_live() {
+                return false;
+            }
+            row.target
+        };
+        let Some(index) = self.tables.habits.iter().position(|&row| row == habit) else {
+            return false; // the strip needs the row index; absent = NoTarget
+        };
+        self.focused_habit = Some(habit);
+        self.habit_convert_armed = Some(index);
+        self.habit_convert_target = Some(habit);
+        self.pattern_draft = Some(crate::presentation::convert_pattern_default(target));
+        window.set_habits_convert_armed_row(i32::try_from(index).unwrap_or(i32::MAX));
+        true
+    }
+
+    /// The series conversion strip's ONE arming site (the habit
+    /// twin's pair): the recur row's seam and the menu-routed effect
+    /// arm converge here. `false` without a live recur rule (the
+    /// caller surfaces the typed refusal).
+    fn arm_series_convert(&mut self, task: TaskId) -> bool {
+        let pattern = {
+            let state = self.state.load();
+            let Some(rule) = state.tasks.get(&task).and_then(|t| t.recur.as_ref()) else {
+                return false;
+            };
+            crate::presentation::convert_target_default(&rule.pattern)
+        };
+        self.series_target = Some(task);
+        self.convert_target = Some(pattern);
+        self.recur_confirm_armed = true;
+        true
     }
 
     /// A root-panel row's invocation (round-1 D6): identical to
@@ -8907,6 +9012,7 @@ pub(crate) fn install(
         track_target: None,
         plan_target: None,
         habit_target: None,
+        focused_habit: None,
         habit_undo: None,
         habit_move: None,
         habit_repair: None,
@@ -9212,14 +9318,39 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         return; // the affordance armed against stale state
     };
     a.habit_repair = Some((habit, target_window, count));
+    // The row click refreshes the focus fact (cross-surface friction
+    // plan D-2, #832): click ≡ key composes both directions.
+    a.focused_habit = Some(habit);
     drop(state);
     a.route(&window, ActionId::HabitRepair);
+
+    });
+
+    // The habit row's focus fact (cross-surface friction plan D-2,
+    // #832): the row activation mints `focused_habit` from the id
+    // tables — the menu verbs' subject. Stale index absorbed (the
+    // notification-row guard shape); no dispatch, no pass.
+    install_seam!(window: window.on_habits_row_activated, adapter: adapter;
+    bind mut (a, window), args (index), {        let _ = &window; // the fact mutates no window bit
+        if let Some(&habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+    {
+        a.focused_habit = Some(habit);
+    }
 
     });
 
     // The conversion flow: arm shows the consequence strip; Confirm
     // routes the domain verb with the D-2 default pattern.
     install_seam!(window: window.on_habits_convert_armed, adapter: adapter;
+    // The arming is the shared helper (cross-surface friction plan
+    // D-2, #832): the strip flags and the window echo live in exactly
+    // one place — the menu-routed effect arm writes the same cells.
+    // The stale-index posture is unchanged: a dead habit or an
+    // unresolvable row degrades to a silent no-op here (the typed
+    // notice is the menu route's surfacing only).
     bind mut (a, window), args (index), {        let Some(&habit) = a
         .tables
         .habits
@@ -9227,13 +9358,9 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return;
     };
-    let Some(target) = a.state.load().habits.habits.get(&habit).cloned() else {
+    if !a.arm_habit_convert(&window, habit) {
         return;
-    };
-    a.habit_convert_armed = Some(usize::try_from(index.max(0)).unwrap_or(usize::MAX));
-    a.habit_convert_target = Some(habit);
-    a.pattern_draft = Some(crate::presentation::convert_pattern_default(target.target));
-    window.set_habits_convert_armed_row(index);
+    }
     a.route(&window, ActionId::HabitConvertArm);
 
     });
@@ -9245,6 +9372,7 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return;
     };
+    a.focused_habit = Some(habit);
     a.habit_convert_target = Some(habit);
     a.habit_convert_armed = None;
     window.set_habits_convert_armed_row(-1);
@@ -9294,19 +9422,14 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     install_seam!(window: window.on_task_recur_convert_asked, adapter: adapter;
+    // The arming is the shared helper (cross-surface friction plan
+    // D-2, #832) — identicality with the menu-routed effect arm.
     bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
         return;
     };
-    let pattern = {
-        let state = a.state.load();
-        let Some(rule) = state.tasks.get(&task).and_then(|t| t.recur.as_ref()) else {
-            return;
-        };
-        crate::presentation::convert_target_default(&rule.pattern)
-    };
-    a.series_target = Some(task);
-    a.convert_target = Some(pattern);
-    a.recur_confirm_armed = true;
+    if !a.arm_series_convert(task) {
+        return;
+    }
     a.route(&window, ActionId::SeriesConvertArm);
 
     });
@@ -9588,6 +9711,9 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         return; // a stale index degrades to a no-op
     };
     a.habit_target = Some(habit);
+    // The row click refreshes the focus fact (cross-surface friction
+    // plan D-2, #832): click ≡ key composes both directions.
+    a.focused_habit = Some(habit);
     a.route(&window, ActionId::HabitLog);
 
     });
@@ -9606,6 +9732,9 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         return; // a stale index degrades to a no-op
     };
     a.habit_undo = habit_undo_target(&a, habit);
+    // The row click refreshes the focus fact (cross-surface friction
+    // plan D-2, #832): click ≡ key composes both directions.
+    a.focused_habit = Some(habit);
     if a.habit_undo.is_some() {
         a.route(&window, ActionId::HabitUndoLog);
     }
@@ -14258,6 +14387,24 @@ pub(crate) fn paint_files_sync_chip(window: &AppWindow, chip: &crate::presentati
     window.set_files_sync_text(SharedString::from(
         crate::presentation::files_sync_chip_caption(chip.state),
     ));
+}
+
+/// The stage-2 seam tests' typed read-outs (cross-surface friction
+/// plan #832/#763): the adapter's private flags, exposed as facts —
+/// never as mutable seams.
+#[cfg(test)]
+impl Adapter {
+    pub(crate) fn test_notice_armed(&self) -> bool {
+        self.notice.is_some()
+    }
+
+    pub(crate) fn test_habit_convert_armed(&self) -> Option<usize> {
+        self.habit_convert_armed
+    }
+
+    pub(crate) fn test_series_confirm_armed(&self) -> bool {
+        self.recur_confirm_armed
+    }
 }
 
 #[cfg(test)]

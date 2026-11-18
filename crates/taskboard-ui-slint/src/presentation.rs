@@ -2400,6 +2400,15 @@ pub fn disabled_menu_notice_phrase(description: &str) -> String {
     format!("That action is unavailable right now — {description}")
 }
 
+/// The menu-invoked arm's typed refusal phrase (cross-surface
+/// friction plan D-3, #832): the disabled-row notice's shape over a
+/// `NoTarget` dispatch — the status-notice lane names the miss, the
+/// phrase is never asserted (AGENTS §5).
+#[must_use]
+pub fn no_target_notice_phrase(description: &str) -> String {
+    format!("Nothing is selected for that — {description}")
+}
+
 /// The curated health flags in declaration order (T-15, #798): the
 /// flag chips' fixed row source — the delta never carries the parked
 /// extra names (the write paths never park; the domain's posture).
