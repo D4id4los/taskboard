@@ -166,6 +166,13 @@ pub fn add_reflection(
     attributes: taskboard_domain::ReflectionAttributes,
     now: chrono::DateTime<chrono::Utc>,
 ) -> taskboard_domain::ReflectionId {
+    // Deliberately NOT `harness_calendar()` (#884, plan
+    // 2026-11-18-journey-fixture-seams-plan §D1.5): these 4:00 review
+    // windows are entry *content* whose boundaries the green suite
+    // already pins — changing the start would shift window boundaries
+    // and re-anchor walk expectations. The divergence #884 names is
+    // about the day-vocabulary derivations, not this helper's
+    // explicit 4:00 review windows.
     let calendar = taskboard_domain::DayCalendar {
         day_start_time: chrono::NaiveTime::from_hms_opt(4, 0, 0).expect("4:00"),
         offset: chrono::FixedOffset::east_opt(0).expect("utc"),
@@ -341,6 +348,28 @@ pub fn deliver_task_notification(
         });
 }
 
+/// The harness's day vocabulary (#884): *the* `DayCalendar` every
+/// fixture-side day derivation must use — derived from the same two
+/// sources the mounted adapter's calendar derives from, so fixture
+/// and adapter read one calendar by construction, not by two
+/// hand-maintained constants drifting apart (the parallel
+/// hand-maintenance the issue names). The adapter's calendar is
+/// `AppState::settings.day_calendar(boot_offset)` (`Adapter::calendar`
+/// → `SettingsSnapshot::day_calendar`); the fixture harness mounts
+/// `AppState::default()` (whose settings are
+/// `SettingsSnapshot::default()` — the settings surface exposes no
+/// `day_start_time`) with `UiSettings::default().boot_offset`, so
+/// those exact defaults are read here. A default change on either
+/// side flows into this constructor automatically; a harness that
+/// overrides a mount value must pass the override here too.
+#[must_use]
+pub fn harness_calendar() -> taskboard_domain::DayCalendar {
+    taskboard_domain::DayCalendar {
+        day_start_time: taskboard_domain::SettingsSnapshot::default().day_start_time,
+        offset: taskboard_ui_slint::UiSettings::default().boot_offset,
+    }
+}
+
 /// The journey fixture (§5.1): one board, two stacks ("a" with tasks
 /// 0 and 1, 1 overdue; "b" with task 2), sync `Offline` with two
 /// pending ops — the step-9 status read's subject.
@@ -366,10 +395,7 @@ pub fn journey_state_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppStat
     // UTC `· HH:MM` suffix for non-midnight instants — a wall-clock
     // stamp would make the goldens run-dependent. Midnight renders
     // exactly the date-only shape the goldens pin.
-    let calendar = taskboard_domain::DayCalendar {
-        day_start_time: chrono::NaiveTime::MIN,
-        offset: chrono::FixedOffset::east_opt(0).expect("utc"),
-    };
+    let calendar = harness_calendar();
     let yesterday = calendar.today(now).pred_opt().expect("yesterday");
     overdue.duedate = Some(yesterday.and_hms_opt(0, 0, 0).expect("midnight").and_utc());
     state.tasks.insert(fixture.task1, overdue);
@@ -458,10 +484,7 @@ pub fn golden_state_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppState
     // The review-card pin (#638): the latest closed Day window is
     // already recorded, so the derived card never leaks into a
     // golden (see `golden_state`'s doc).
-    let calendar = taskboard_domain::DayCalendar {
-        day_start_time: chrono::NaiveTime::MIN,
-        offset: chrono::FixedOffset::east_opt(0).expect("utc"),
-    };
+    let calendar = harness_calendar();
     let yesterday = calendar.today(now).pred_opt().expect("yesterday");
     let window =
         taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
@@ -602,10 +625,7 @@ pub fn today_overdue_state_at(
     now: chrono::DateTime<chrono::Utc>,
 ) -> (TwoBoardFixture, AppState, [TaskId; 2]) {
     let (fixture, mut state) = two_board_state();
-    let calendar = taskboard_domain::DayCalendar {
-        day_start_time: chrono::NaiveTime::MIN,
-        offset: chrono::FixedOffset::east_opt(0).expect("utc"),
-    };
+    let calendar = harness_calendar();
     let yesterday = calendar.today(now).pred_opt().expect("yesterday");
     let window =
         taskboard_domain::review_window(taskboard_domain::ReviewCadence::Day, yesterday, calendar);
@@ -627,9 +647,14 @@ pub fn today_overdue_state_at(
     // relative stamp flips its caption bucket across minute
     // boundaries — midnight renders the date-only shape, stable for
     // the run's lifetime and identical across runs.
-    let overdue_stamp = now
-        .date_naive()
-        .checked_sub_signed(chrono::TimeDelta::try_days(1).unwrap())
+    // Routed through the shared day vocabulary (#884): the raw
+    // `now.date_naive() − 1` read bypassed the calendar, so on a
+    // non-UTC device "which day is yesterday" differed between
+    // fixture and adapter. At the harness calendar (MIN + UTC) the
+    // result is identical to the old read by construction.
+    let overdue_stamp = calendar
+        .today(now)
+        .pred_opt()
         .expect("yesterday exists")
         .and_hms_opt(0, 0, 0)
         .expect("midnight")
