@@ -268,8 +268,8 @@ pub enum DaemonCmd {
 #[derive(Debug, Subcommand)]
 pub enum BoardsCmd {
     /// Move a Deck board onto the files tier (resumable: rerun after any
-    /// interruption). `--to-deck` is a typed refusal; `--undo` restores
-    /// the Deck binding until the files binding commits.
+    /// interruption). `--undo` restores the Deck binding until the
+    /// files binding commits; `--to-connection` rebinds Deck-to-Deck.
     #[command(group(clap::ArgGroup::new("move_direction").required(true)))]
     Move {
         /// The local board (uuid).
@@ -278,9 +278,6 @@ pub enum BoardsCmd {
         /// Run the ceremony towards the files tier.
         #[arg(long, group = "move_direction")]
         to_files: bool,
-        /// Refused: the files-to-Deck direction is fenced.
-        #[arg(long, group = "move_direction")]
-        to_deck: bool,
         /// Undo a move that has not committed.
         #[arg(long, group = "move_direction")]
         undo: bool,
@@ -527,18 +524,41 @@ fn parse_board_id(raw: &str) -> Result<taskboard_domain::BoardId, String> {
 
 #[test]
 fn boards_move_demands_exactly_one_direction() {
+    // The collapsed grammar (D-1 of the cli-verb-grammar-hygiene
+    // plan): exactly one of `--to-files` / `--undo` /
+    // `--to-connection <name>`; every pairing is a typed clap
+    // conflict; `--to-deck` no longer exists (it never admitted a
+    // working invocation, so no deprecation shim).
     use clap::Parser as _;
+    use clap::error::ErrorKind;
     const BOARD: &str = "0193b400-0000-7c89-ab01-2345abcdef01";
     let parse = |flags: &[&str]| {
         let mut argv = vec!["taskboard", "boards", "move", BOARD];
         argv.extend_from_slice(flags);
         Cli::try_parse_from(argv)
     };
-    assert!(parse(&["--to-files"]).is_ok());
-    assert!(parse(&["--to-deck"]).is_ok());
-    assert!(parse(&["--undo"]).is_ok());
-    assert!(parse(&[]).is_err());
-    assert!(parse(&["--to-files", "--undo"]).is_err());
+    for ok in [
+        vec!["--to-files"],
+        vec!["--undo"],
+        vec!["--to-connection", "alpha"],
+    ] {
+        assert!(parse(&ok).is_ok(), "{ok:?} must parse");
+    }
+    assert!(parse(&[]).is_err(), "the group is required");
+    for conflict in [
+        vec!["--to-files", "--undo"],
+        vec!["--to-files", "--to-connection", "alpha"],
+        vec!["--undo", "--to-connection", "alpha"],
+    ] {
+        let err = parse(&conflict).expect_err("two directions refuse");
+        assert!(
+            matches!(err.kind(), ErrorKind::ArgumentConflict),
+            "{conflict:?}: {:?}",
+            err.kind()
+        );
+    }
+    let dead = parse(&["--to-deck"]).expect_err("the flag was deleted");
+    assert!(matches!(dead.kind(), ErrorKind::UnknownArgument));
 }
 
 #[test]
@@ -590,6 +610,13 @@ pub enum DueSpec {
 /// literal `none`. Due dates are stored and displayed in UTC only;
 /// offset-less timestamps are refused. A malformed value is a clap
 /// usage error (exit 2).
+///
+/// Deliberate leniency boundary: chrono's `%Y-%m-%d` parser accepts
+/// non-padded day/month fields, so `2026-2-3` parses as the same
+/// [`chrono::NaiveDate`] as `2026-02-03` — the bare date is committed
+/// in its canonical padded form. Non-padded input is neither refused
+/// nor echoed verbatim (the D-4 decision of the cli-verb-grammar-hygiene
+/// plan; the same documented leniency as the GUI `due_edit` grammar).
 fn parse_due(raw: &str) -> Result<DueSpec, String> {
     if raw == "none" {
         return Ok(DueSpec::Clear);

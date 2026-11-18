@@ -105,6 +105,14 @@ impl DatePickerKey {
 
 /// `Ok(Some(instant))` = commit; `Err` = refuse.
 ///
+/// Deliberate leniency boundary (D-4 of the cli-verb-grammar-hygiene
+/// plan): the two absolute forms (r2 D25) are accepted with
+/// non-padded day/month fields — chrono's `%Y-%m-%d` parser reads
+/// `2030-1-3` as the same [`chrono::NaiveDate`] as `2030-01-03` — and
+/// canonicalize to the padded stored form; every echo (`format`)
+/// renders padded by construction. Non-padded input is neither
+/// refused nor echoed verbatim.
+///
 /// # Errors
 ///
 /// [`DueParseError`] when the entry matches neither grammar form —
@@ -175,6 +183,13 @@ fn parse_relative(text: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
 /// The day facts arrive as data (`day` — the injected
 /// [`taskboard_domain::days::DayCalendar`]): no environment read, the
 /// D-F6 consumers contract.
+///
+/// Deliberate leniency boundary (D-4 of the cli-verb-grammar-hygiene
+/// plan): as [`parse`]'s documented leniency — non-padded day/month
+/// fields parse and canonicalize. The bare-date re-check below is
+/// padded-only via `NaiveDate::FromStr`, so a non-padded date-only
+/// entry commits as the parse instant (midnight of the canonical
+/// date) rather than the day-window end — refused by neither path.
 ///
 /// # Errors
 ///
@@ -744,6 +759,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn non_padded_dates_parse_and_canonicalize() {
+        // The D-4 matrix (cli-verb-grammar-hygiene plan): non-padded
+        // day/month fields parse as the canonical padded date; every
+        // commit is the canonical `NaiveDate`'s midnight (UTC).
+        let midnight = |d: u32| Some(Utc.with_ymd_and_hms(2030, 1, d, 0, 0, 0).unwrap());
+        let canonical = NaiveDate::from_ymd_opt(2030, 1, 3).unwrap();
+        for text in ["2030-01-3", "2030-1-03", "2030-1-3", "2030-01-03"] {
+            assert_eq!(
+                parse(text, now(), &chrono::Utc).expect(text),
+                midnight(3),
+                "{text} canonicalizes to {canonical}"
+            );
+        }
+        // The partial prefix stays junk.
+        assert!(parse("2030-01-", now(), &chrono::Utc).is_err());
+        // Through `parse_stamp`: the bare re-check is padded-only, so
+        // the non-padded date-only entry commits as the parse instant
+        // (the canonical date's midnight) — date-only, no time.
+        let day = calendar(0);
+        assert_eq!(
+            parse_stamp("2030-1-3", now(), &day).expect("non-padded bare date"),
+            midnight(3)
+        );
+    }
+
     // ---- parse_stamp (the N-4 stamping law, task-detail-editor UX
     // ---- plan US-1/D-3) ---------------------------------------------
 
@@ -1284,10 +1325,12 @@ mod tests {
             None,
             "a partial prefix is junk"
         );
-        // Recorded: chrono's strptime accepts non-padded fields, so
-        // `2030-01-3` parses (as day 3) — pre-existing grammar
-        // leniency, not the sync's concern; the seed then matches
-        // what a Return would commit.
+        // Recorded (rewritten per D-4 of the cli-verb-grammar-hygiene
+        // plan, superseding the old "pre-existing leniency" note):
+        // chrono's strptime accepts non-padded fields, so `2030-01-3`
+        // parses (as day 3) — this is the grammar's documented
+        // leniency (D-4): non-padded fields parse and canonicalize;
+        // the seed then matches what a Return would commit.
     }
 
     #[test]

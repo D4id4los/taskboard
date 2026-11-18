@@ -763,8 +763,12 @@ dependency hierarchies.
    ceremony (=boards move --to-files=, D-BF11: final Deck pull,
    publish the subtree floor, retire the Deck binding, then the
    create-once commit record whose write closes the undo window and
-   licenses other devices' fold-first adoption; =--to-deck= is a
-   typed refusal, ruling Q4). The ceremony's steps, the undo window,
+   licenses other devices' fold-first adoption; there is no
+   files-to-Deck move verb (grammar absence, ruling Q4 superseded by
+   D-2 of the cli-verb-grammar-hygiene plan — Deck-to-Deck moves go
+   through the rebind ceremony, =boards move --to-connection=, whose
+   pre-IO refusals cover what the former fence stood in for). The
+   ceremony's steps, the undo window,
    the adoption behavior, and the server-side Deck-board retirement
    are documented in =docs/boards-move-runbook.org=.
 
