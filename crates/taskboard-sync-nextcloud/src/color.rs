@@ -26,13 +26,17 @@ pub struct ParseColorError;
 
 impl DeckColor {
     /// Validates a six-digit hex color (`#` rejected, case-insensitive,
-    /// stored lowercase).
+    /// stored lowercase). The grammar is [`taskboard_domain::Color::parse`]'s
+    /// — the domain owns the six-hex shape; this type is the sync-API
+    /// wrapper (issue #937).
     ///
     /// # Errors
     ///
     /// Returns [`ParseColorError`] for anything but exactly six hex digits.
     pub fn from_hex(input: &str) -> Result<Self, ParseColorError> {
-        Self::validate(input).map(Self)
+        taskboard_domain::Color::parse(input)
+            .map(|c| Self(c.as_str().to_owned()))
+            .map_err(|_| ParseColorError)
     }
 
     /// Wraps a color string read from the server without validation.
@@ -44,17 +48,6 @@ impl DeckColor {
     #[must_use]
     pub(crate) fn from_server(input: String) -> Self {
         Self(input)
-    }
-
-    fn validate(input: &str) -> Result<String, ParseColorError> {
-        if input.len() == 6
-            && input.bytes().all(|b| b.is_ascii_hexdigit())
-            && !input.starts_with('#')
-        {
-            Ok(input.to_ascii_lowercase())
-        } else {
-            Err(ParseColorError)
-        }
     }
 
     /// The normalized (lowercase) six-hex-digit value.
