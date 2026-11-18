@@ -1022,24 +1022,25 @@ export component AppWindow inherits Window {
             // The panel rides centered (the labels overlay owns no
             // anchor button; the modal reads over the whole detail
             // surface).
+            // M6 (overlay migration): the labels overlay on the
+            // ModalDialogHost base — the hand backdrops/centering are
+            // the host's now, both mounts share the one host wiring.
+            // The D-3 flip-by-inner-state law: the add/edit form open
+            // makes the dialog `edit` (an outside click routes the
+            // form-commit seam, validity-gated adapter-side); form
+            // closed makes it `confirm` (an outside click dismisses).
             if (root.current-view == View.task-detail
-                    && root.task-model.labels-open): labels-backdrop := TouchArea {
-                width: 100%;
-                height: 100%;
-                clicked => root.labels-overlay-dismiss-requested();
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down
-                            && event.button == PointerEventButton.right) {
-                        root.labels-overlay-dismiss-requested();
-                    }
-                }
-            }
-            if (root.current-view == View.task-detail
-                    && root.task-model.labels-open): LabelsPanel {
-                width: min(root.width - 2 * Theme.space-2,
-                           360px * Theme.base-scale);
-                x: (parent.width - self.width) / 2;
-                y: max(Theme.space-2, (parent.height - self.height) / 2);
+                    && root.task-model.labels-open): ModalDialogHost {
+                open: true;
+                title: "Labels";
+                kind: root.label-overlay-form-open
+                    ? DialogKind.edit : DialogKind.confirm;
+                body-preferred-width: 360px * Theme.base-scale;
+                walk-stops: 1;
+                viewport-floor: status.y;
+                accepted => root.labels-overlay-form-commit-requested();
+                dismissed => root.labels-overlay-dismiss-requested();
+                LabelsPanel {
                 rows: root.label-overlay-rows;
                 form-open: root.label-overlay-form-open;
                 form-title: root.label-overlay-form-title;
@@ -1061,6 +1062,7 @@ export component AppWindow inherits Window {
                 form-cancelled() => root.labels-overlay-form-cancelled();
                 delete-clicked(index) => root.labels-overlay-delete-clicked(index);
                 delete-cancelled() => root.labels-overlay-delete-cancelled();
+                }
             }
             // The roster-only board mount (tag-color plan D-4, US-2):
             // the window-level overlay grammar's sibling conditional —
@@ -1070,23 +1072,17 @@ export component AppWindow inherits Window {
             // menu's invoker) is the focus-restore container anchor
             // (the standing focus contract).
             if (root.current-view == View.board
-                    && root.label-overlay-open): labels-board-backdrop := TouchArea {
-                width: 100%;
-                height: 100%;
-                clicked => root.labels-overlay-dismiss-requested();
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down
-                            && event.button == PointerEventButton.right) {
-                        root.labels-overlay-dismiss-requested();
-                    }
-                }
-            }
-            if (root.current-view == View.board
-                    && root.label-overlay-open): LabelsPanel {
-                width: min(root.width - 2 * Theme.space-2,
-                           360px * Theme.base-scale);
-                x: (parent.width - self.width) / 2;
-                y: max(Theme.space-2, (parent.height - self.height) / 2);
+                    && root.label-overlay-open): ModalDialogHost {
+                open: true;
+                title: "Labels";
+                kind: root.label-overlay-form-open
+                    ? DialogKind.edit : DialogKind.confirm;
+                body-preferred-width: 360px * Theme.base-scale;
+                walk-stops: 1;
+                viewport-floor: status.y;
+                accepted => root.labels-overlay-form-commit-requested();
+                dismissed => root.labels-overlay-dismiss-requested();
+                LabelsPanel {
                 rows: root.label-overlay-rows;
                 form-open: root.label-overlay-form-open;
                 form-title: root.label-overlay-form-title;
@@ -1108,6 +1104,7 @@ export component AppWindow inherits Window {
                 form-cancelled() => root.labels-overlay-form-cancelled();
                 delete-clicked(index) => root.labels-overlay-delete-clicked(index);
                 delete-cancelled() => root.labels-overlay-delete-cancelled();
+                }
             }
 
 

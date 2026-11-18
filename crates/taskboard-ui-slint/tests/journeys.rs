@@ -25169,3 +25169,56 @@ fn om_us1_s1_recur_scrim_click_commits_a_valid_draft_and_nothing_else() {
         },
     );
 }
+
+/// `om_us1_s1_labels` (the M6 lifecycle journey over the modal-host
+/// mount, with the D-6 settle arm): assign, then delete with the
+/// staged-confirm grammar, then `settle` — the D-6 `DeleteLabel` arm
+/// folds the command into the state snapshot so the subsequent
+/// roster read sees the refreshed model exactly like the other
+/// lifecycle journeys (fixture continuity, never an oracle).
+#[test]
+fn om_us1_s1_labels_assign_delete_settle_journey() {
+    let (_fx, state, _green, red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            assert!(window.get_task_model().labels_open);
+
+            // Assign: the unassigned row's toggle routes the pair.
+            window.invoke_labels_overlay_row_toggled(1);
+            harness.driver.advance_time(0);
+            assert!(matches!(
+                &harness.engine.drain()[..],
+                [taskboard_domain::StateCommand::AssignLabel { label, .. }] if *label == red
+            ));
+
+            // Delete: the staged-confirm grammar dispatches the exact
+            // DeleteLabel (row 0 = the green fixture label).
+            window.invoke_labels_overlay_delete_clicked(0);
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_delete_clicked(window.get_label_overlay_armed_index());
+            harness.driver.advance_time(0);
+            assert!(matches!(
+                &harness.engine.drain()[..],
+                [taskboard_domain::StateCommand::DeleteLabel { id }] if *id != red
+            ));
+
+            // The D-6 settle arm: the roster reflects the deletion on
+            // the refreshed model (one live row remains).
+            harness.engine.settle(&harness.handle);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                window.get_label_overlay_rows().row_count(),
+                1,
+                "the settle folded the delete; the roster reads the refreshed model"
+            );
+        },
+    );
+}

@@ -203,6 +203,14 @@ impl FakeEngine {
                 StateCommand::DeleteBreakRule { id } => {
                     state.reminders.break_rules.remove(&id);
                 }
+                // The labels overlay's delete (D-6, #881): terminal-by
+                // -removal (the `DeleteBreakRule` law) — the roster's
+                // subsequent reads see the refreshed model, nothing
+                // else. Fixture continuity, not an oracle (the file's
+                // contract comment).
+                StateCommand::DeleteLabel { id } => {
+                    state.labels.remove(&id);
+                }
                 // The journal verbs (T-15, #798): the edit applies the
                 // exact change mask (the planner's contract — the
                 // engine re-mints the ratings); the delete is the
