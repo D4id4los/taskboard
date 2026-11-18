@@ -1509,18 +1509,12 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
             NotUndoableReason::HabitSurface
         ))
     ));
-    // Restore class (`DeleteStack` left the family in #356's D-1
-    // reclassification — its undo is the composite restore; the
-    // remaining restore-class verbs still refuse).
-    let label = h.label(board);
-    h.exec(&StateCommand::DeleteLabel { id: label })
-        .expect("deleted");
-    assert!(matches!(
-        h.exec(&StateCommand::Undo),
-        Err(CommandError::TargetNotUndoable(
-            NotUndoableReason::RestoreClass
-        ))
-    ));
+    // (`DeleteStack` left the restore-class family in #356's D-1
+    // reclassification; #901 moved `DeleteLabel`/`DeleteTimeEntry`/
+    // `DeleteHabit` to `PreImages` too — their heads now undo through
+    // the restore machinery, pinned by the restore-family tests. The
+    // retired `RestoreClass` reason's decode path is pinned by
+    // `a_retired_restore_class_reason_still_refuses_with_its_recorded_reason`.)
     // The head never moved through all the refusals.
     assert_eq!(
         h.journal.head,
@@ -1889,6 +1883,9 @@ fn every_arm_journals_entry_or_nothing() {
         .expect("alarm");
         *h.disk.reminders.alarms.keys().next().expect("alarm row")
     };
+    // The entry payload for the restore row below, captured before the
+    // vec (the entry is hard-deleted mid-list by `DeleteTimeEntry`).
+    let entry_payload = h.disk.tracking.entries[&entry_id].clone();
     let commands: Vec<StateCommand> = vec![
         StateCommand::CreateTask {
             title: "n".into(),
@@ -2039,6 +2036,15 @@ fn every_arm_journals_entry_or_nothing() {
         StateCommand::RestoreTask {
             id: task,
             resurrect: Box::new(h.disk.tasks[&task].clone()),
+        },
+        // The #901 restore-family rows: the three deletes journaled
+        // PreImages above; the restore verbs (each a journaled PreImages
+        // entry of its own write) ride here, after the earlier arms made
+        // their targets tombstoned/absent.
+        StateCommand::RestoreLabel { id: label },
+        StateCommand::RestoreHabit { id: habit_id },
+        StateCommand::RestoreTimeEntry {
+            entry: Box::new(entry_payload),
         },
         // The destructive ceremonies go last: they hard-remove the rows
         // the earlier arms read fixtures from.
@@ -3580,6 +3586,35 @@ proptest! {
 
 // ---- the restore family (#913 + #900 + #901) -------------------------------
 
+/// Fixture: one reminder rule on a task (the legacy due-offset shape).
+fn rule_for(h: &mut Harness, task: crate::ids::TaskId) -> crate::reminders::ReminderRule {
+    h.exec(&StateCommand::AddReminderRule {
+        task,
+        offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
+            .expect("valid"),
+        at: None,
+        insistence: crate::reminders::Insistence::Normal,
+    })
+    .expect("rule");
+    h.disk
+        .reminders
+        .rules
+        .values()
+        .next()
+        .cloned()
+        .expect("rule row")
+}
+
+/// Fixture: flips every journal entry past the push boundary (the
+/// `the_pushed_flag_keeps_the_inverse_ops_and_drops_the_retraction`
+/// precedent) so an undo's inverse enqueues survive the retraction.
+fn mark_journal_pushed(h: &mut Harness) {
+    for entry in &mut h.journal.entries {
+        entry.pushed = true;
+    }
+    h.disk.journal = h.journal.clone();
+}
+
 #[test]
 fn undo_of_restore_task_re_deletes_through_delete_task() {
     let mut h = Harness::new();
@@ -3694,37 +3729,6 @@ fn undo_of_restore_task_refuses_when_re_tombstoned_since() {
     ));
 }
 
-// ---- the rule-resurrect machinery (#900) -----------------------------------
-
-/// Fixture: one reminder rule on a task (the legacy due-offset shape).
-fn rule_for(h: &mut Harness, task: crate::ids::TaskId) -> crate::reminders::ReminderRule {
-    h.exec(&StateCommand::AddReminderRule {
-        task,
-        offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
-            .expect("valid"),
-        at: None,
-        insistence: crate::reminders::Insistence::Normal,
-    })
-    .expect("rule");
-    h.disk
-        .reminders
-        .rules
-        .values()
-        .next()
-        .cloned()
-        .expect("rule row")
-}
-
-/// Fixture: flips every journal entry past the push boundary (the
-/// `the_pushed_flag_keeps_the_inverse_ops_and_drops_the_retraction`
-/// precedent) so an undo's inverse enqueues survive the retraction.
-fn mark_journal_pushed(h: &mut Harness) {
-    for entry in &mut h.journal.entries {
-        entry.pushed = true;
-    }
-    h.disk.journal = h.journal.clone();
-}
-
 #[test]
 fn undo_of_delete_stack_resurrects_the_cascaded_reminder_rules() {
     let mut h = Harness::new();
@@ -3803,8 +3807,587 @@ fn undo_of_delete_task_resurrects_its_rules_and_a_rule_readded_since_is_skipped(
     );
 }
 
+#[test]
+fn delete_label_journals_pre_images_and_undo_restores_label_and_memberships() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task_a = h.task(stack, "a");
+    let task_b = h.task(stack, "b");
+    let label = h.label(board);
+    h.exec(&StateCommand::AssignLabel {
+        task: task_a,
+        label,
+    })
+    .expect("assigned");
+    let plan = h
+        .exec_plan(&StateCommand::DeleteLabel { id: label })
+        .expect("deleted");
+    // The delete journals the full cascade pre-images (label + stamped
+    // membership removals).
+    let Some(PersistenceAction::RecordJournal(entry)) = plan.actions.last() else {
+        panic!("RecordJournal rides last");
+    };
+    assert!(matches!(entry.facts, UndoFacts::PreImages { .. }));
+    assert!(h.disk.labels[&label].deleted);
+    assert!(!matches!(
+        h.disk.tasks[&task_a].label_memberships.get(&label),
+        Some(crate::entities::MembershipState::Added { .. })
+    ));
+    h.exec(&StateCommand::Undo).expect("undone");
+    // The label is live again…
+    assert!(!h.disk.labels[&label].deleted);
+    // …and the member task's membership re-Added through the inverse.
+    assert!(matches!(
+        h.disk.tasks[&task_a].label_memberships.get(&label),
+        Some(crate::entities::MembershipState::Added { .. })
+    ));
+    // The unassigned member stays unassigned (the entry's own facts).
+    assert!(!matches!(
+        h.disk.tasks[&task_b].label_memberships.get(&label),
+        Some(crate::entities::MembershipState::Added { .. })
+    ));
+}
+
+#[test]
+fn undo_of_delete_label_refuses_when_a_member_membership_diverged() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    let checked = h.label(board);
+    let unrelated = {
+        h.exec(&StateCommand::CreateLabel {
+            board,
+            title: "unrelated".into(),
+            color: crate::entities::Color::new("ff00ff"),
+        })
+        .expect("created");
+        *h.disk.labels.keys().last().expect("label row")
+    };
+    for label in [checked, unrelated] {
+        h.exec(&StateCommand::AssignLabel { task, label })
+            .expect("assigned");
+    }
+    h.exec(&StateCommand::DeleteLabel { id: checked })
+        .expect("deleted");
+    // An unrelated label's membership edit must not refuse (the
+    // covered-field discipline — only the deleted label's own
+    // membership stamp is checked).
+    h.exec(&StateCommand::UnassignLabel {
+        task,
+        label: unrelated,
+    })
+    .expect("unassigned unrelated");
+    // Two retreats: past the unrelated edit, then the label restore.
+    h.exec(&StateCommand::Undo)
+        .expect("undone the unrelated edit");
+    h.exec(&StateCommand::Undo).expect("restored the label");
+    assert!(!h.disk.labels[&checked].deleted);
+    // A fresh delete + a direct edit to the *checked* membership does
+    // refuse, field-named.
+    h.exec(&StateCommand::DeleteLabel { id: checked })
+        .expect("re-deleted");
+    let mut diverged = h.disk.tasks[&task].clone();
+    diverged.label_memberships.insert(
+        checked,
+        crate::entities::MembershipState::Added { at: ts(5) },
+    );
+    h.disk.tasks.insert(task, diverged);
+    h.sync();
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNoLongerInvertible {
+            field: UndoField::Membership,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn restore_label_on_a_live_label_is_the_accepted_noop() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let label = h.label(board);
+    let plan = h
+        .exec_plan(&StateCommand::RestoreLabel { id: label })
+        .expect("planned");
+    assert_eq!(plan.actions, Vec::new());
+    assert!(matches!(plan.outcome, CommandOutcome::NoOp));
+}
+
+#[test]
+fn restore_label_of_an_unknown_id_is_typed() {
+    let mut h = Harness::new();
+    let stranger = crate::ids::LabelId::from(uuid::Uuid::from_u128(7_777));
+    let err = h.exec(&StateCommand::RestoreLabel { id: stranger });
+    assert!(matches!(err, Err(CommandError::UnknownLabel(_))));
+}
+
+#[test]
+fn restore_label_then_undo_re_deletes_and_redo_re_restores() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let label = h.label(board);
+    h.exec(&StateCommand::DeleteLabel { id: label })
+        .expect("deleted");
+    let outcome = h
+        .exec(&StateCommand::RestoreLabel { id: label })
+        .expect("restored");
+    assert!(matches!(outcome, CommandOutcome::LabelRestored { .. }));
+    assert!(!h.disk.labels[&label].deleted);
+    // Undo the restore: the label is tombstoned again through the
+    // ordinary DeleteLabel.
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(h.disk.labels[&label].deleted);
+    // Redo re-plans the forward intent: live again.
+    h.exec(&StateCommand::Redo).expect("redone");
+    assert!(!h.disk.labels[&label].deleted);
+}
+
+#[test]
+fn delete_time_entry_journals_pre_images_and_undo_restores_the_row_verbatim() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry row");
+    let row_before = h.disk.tracking.entries[&entry_id].clone();
+    h.exec(&StateCommand::DeleteTimeEntry { id: entry_id })
+        .expect("deleted");
+    assert!(!h.disk.tracking.entries.contains_key(&entry_id));
+    mark_journal_pushed(&mut h);
+    h.exec(&StateCommand::Undo).expect("undone");
+    // The row returns byte-identical (id, task, start/end, description,
+    // both stamps — the pre-image payload is the resurrect source).
+    assert_eq!(h.disk.tracking.entries.get(&entry_id), Some(&row_before));
+    // The flush trigger enqueued (the delete's own UpdateAppData shape).
+    assert!(
+        h.disk.outbox.iter().any(
+            |pending| matches!(pending.op, crate::outbox::LocalOp::UpdateAppData(t) if t == task)
+        ),
+        "the restore enqueued the document-lane flush trigger"
+    );
+}
+
+#[test]
+fn undo_of_delete_time_entry_refuses_when_a_row_reappeared() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry row");
+    let mut forged = h.disk.tracking.entries[&entry_id].clone();
+    h.exec(&StateCommand::DeleteTimeEntry { id: entry_id })
+        .expect("deleted");
+    // A present same-id row with different content is divergence (ids
+    // are minted once): refuse, never clobber.
+    forged.start = ts(405);
+    h.disk.tracking.entries.insert(entry_id, forged);
+    h.sync();
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNoLongerInvertible {
+            field: UndoField::Deleted,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn restore_time_entry_round_trips_and_conflicts_typed() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry row");
+    let payload = h.disk.tracking.entries[&entry_id].clone();
+    h.exec(&StateCommand::DeleteTimeEntry { id: entry_id })
+        .expect("deleted");
+    // The forward verb restores a journaled payload verbatim.
+    let outcome = h
+        .exec(&StateCommand::RestoreTimeEntry {
+            entry: Box::new(payload.clone()),
+        })
+        .expect("restored");
+    assert!(matches!(outcome, CommandOutcome::EntryRestored { .. }));
+    assert_eq!(h.disk.tracking.entries.get(&entry_id), Some(&payload));
+    // A direct dispatch onto a present different row refuses typed.
+    let mut mutant = payload.clone();
+    mutant.start = ts(405);
+    let err = h.exec(&StateCommand::RestoreTimeEntry {
+        entry: Box::new(mutant),
+    });
+    assert!(matches!(err, Err(CommandError::TimeEntryAlreadyPresent(_))));
+    // A gone owner task is a typed rejection.
+    let mut orphan = payload.clone();
+    orphan.task = crate::ids::TaskId::from_uuid(h.ids.new_task_id().as_uuid());
+    let err = h.exec(&StateCommand::RestoreTimeEntry {
+        entry: Box::new(orphan),
+    });
+    assert!(matches!(err, Err(CommandError::UnknownTask(_))));
+}
+
+#[test]
+fn delete_habit_journals_pre_images_and_undo_restores_the_tombstone_target() {
+    let mut h = Harness::new();
+    let board = h.board();
+    h.exec(&StateCommand::CreateHabit {
+        board,
+        title: "habit".into(),
+        target: habit_target(),
+    })
+    .expect("created");
+    let habit_id = *h.disk.habits.habits.keys().next().expect("habit row");
+    let habit_before = h.disk.habits.habits[&habit_id].clone();
+    h.exec(&StateCommand::LogHabit { habit: habit_id })
+        .expect("logged");
+    let log_before = h.disk.habits.log.clone();
+    h.exec(&StateCommand::DeleteHabit { habit: habit_id })
+        .expect("deleted");
+    assert!(h.disk.habits.habits[&habit_id].deleted);
+    h.exec(&StateCommand::Undo).expect("undone");
+    // The habit is live again on its pre-tombstone values with a fresh
+    // deleted clock; the log map is untouched (D26 — history outlives
+    // the tracker, pinned as structural map equality).
+    let after = &h.disk.habits.habits[&habit_id];
+    assert!(!after.deleted);
+    assert_eq!(after.title, habit_before.title);
+    assert_eq!(after.target, habit_before.target);
+    assert_eq!(after.order, habit_before.order);
+    assert_eq!(after.clocks.title, habit_before.clocks.title);
+    assert_eq!(after.clocks.target, habit_before.clocks.target);
+    assert_eq!(after.clocks.order, habit_before.clocks.order);
+    assert_eq!(h.disk.habits.log, log_before);
+}
+
+#[test]
+fn restore_habit_on_a_live_habit_is_the_accepted_noop() {
+    let mut h = Harness::new();
+    let board = h.board();
+    h.exec(&StateCommand::CreateHabit {
+        board,
+        title: "habit".into(),
+        target: habit_target(),
+    })
+    .expect("created");
+    let habit_id = *h.disk.habits.habits.keys().next().expect("habit row");
+    let plan = h
+        .exec_plan(&StateCommand::RestoreHabit { id: habit_id })
+        .expect("planned");
+    assert_eq!(plan.actions, Vec::new());
+    assert!(matches!(plan.outcome, CommandOutcome::NoOp));
+}
+
+#[test]
+fn restore_habit_then_undo_re_deletes_through_delete_habit() {
+    let mut h = Harness::new();
+    let board = h.board();
+    h.exec(&StateCommand::CreateHabit {
+        board,
+        title: "habit".into(),
+        target: habit_target(),
+    })
+    .expect("created");
+    let habit_id = *h.disk.habits.habits.keys().next().expect("habit row");
+    h.exec(&StateCommand::DeleteHabit { habit: habit_id })
+        .expect("deleted");
+    let outcome = h
+        .exec(&StateCommand::RestoreHabit { id: habit_id })
+        .expect("restored");
+    assert!(matches!(outcome, CommandOutcome::HabitRestored { .. }));
+    assert!(!h.disk.habits.habits[&habit_id].deleted);
+    // Undo the restore: tombstoned again through the ordinary
+    // DeleteHabit.
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(h.disk.habits.habits[&habit_id].deleted);
+    // Redo re-plans the forward intent: live again.
+    h.exec(&StateCommand::Redo).expect("redone");
+    assert!(!h.disk.habits.habits[&habit_id].deleted);
+}
+
+#[test]
+fn label_habit_and_time_entry_restore_entries_carry_the_board_tag() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    let label = h.label(board);
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry row");
+    let payload = h.disk.tracking.entries[&entry_id].clone();
+    h.exec(&StateCommand::CreateHabit {
+        board,
+        title: "habit".into(),
+        target: habit_target(),
+    })
+    .expect("created");
+    let habit_id = *h.disk.habits.habits.keys().next().expect("habit row");
+    h.exec(&StateCommand::DeleteLabel { id: label })
+        .expect("label deleted");
+    h.exec(&StateCommand::RestoreLabel { id: label })
+        .expect("label restored");
+    h.exec(&StateCommand::DeleteTimeEntry { id: entry_id })
+        .expect("entry deleted");
+    h.exec(&StateCommand::RestoreTimeEntry {
+        entry: Box::new(payload),
+    })
+    .expect("entry restored");
+    h.exec(&StateCommand::DeleteHabit { habit: habit_id })
+        .expect("habit deleted");
+    h.exec(&StateCommand::RestoreHabit { id: habit_id })
+        .expect("habit restored");
+    for entry in &h.journal.entries {
+        match entry.command {
+            StateCommand::DeleteLabel { .. }
+            | StateCommand::RestoreLabel { .. }
+            | StateCommand::DeleteTimeEntry { .. }
+            | StateCommand::RestoreTimeEntry { .. }
+            | StateCommand::DeleteHabit { .. }
+            | StateCommand::RestoreHabit { .. } => {
+                assert_eq!(entry.board, Some(board), "tag for {entry:?}");
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn a_retired_restore_class_reason_still_refuses_with_its_recorded_reason() {
+    // Persisted-journal compatibility (D-7): a pre-#901 entry carrying
+    // the retired `RestoreClass` reason decodes unchanged and keeps
+    // refusing with that reason.
+    let ids = CountingIds::new();
+    let entry = JournalEntry {
+        id: ids.new_journal_id(),
+        parent: None,
+        command: StateCommand::RequestSync,
+        facts: UndoFacts::NotUndoable(NotUndoableReason::RestoreClass),
+        ops: Vec::new(),
+        pushed: false,
+        board: None,
+        created_at: ts(100),
+    };
+    let journal = JournalState {
+        entries: vec![entry],
+        head: None,
+    };
+    let head = journal.entries[0].id;
+    let journal = JournalState {
+        head: Some(head),
+        ..journal
+    };
+    let err = plan_undo(
+        &Harness::new().app(),
+        &[],
+        &journal,
+        UndoScope::Global,
+        &ids,
+        &crate::reminders::ReminderDefaults::default(),
+        Harness::day(),
+        ts(200),
+        None,
+    )
+    .expect_err("refuses");
+    assert!(matches!(
+        err,
+        CommandError::TargetNotUndoable(NotUndoableReason::RestoreClass)
+    ));
+}
+
+#[test]
+fn the_restore_family_new_shapes_round_trip_serde() {
+    let ids = CountingIds::new();
+    let rule = crate::reminders::ReminderRule {
+        id: crate::ids::ReminderRuleId::from(uuid::Uuid::from_u128(7_101)),
+        task: crate::ids::TaskId::from(uuid::Uuid::from_u128(7_102)),
+        kind: crate::reminders::ReminderKind::DueOffset(
+            crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
+                .expect("valid"),
+        ),
+        insistence: crate::reminders::Insistence::Normal,
+        created_at: ts(100),
+        updated_at: ts(100),
+        by: None,
+    };
+    let payload = crate::tracking::TimeEntry {
+        id: crate::ids::TimeEntryId::from(uuid::Uuid::from_u128(7_103)),
+        task: crate::ids::TaskId::from(uuid::Uuid::from_u128(7_102)),
+        task_title: "t".into(),
+        start: ts(400),
+        end: Some(ts(500)),
+        created_at: ts(400),
+        updated_at: ts(400),
+        kind: crate::tracking::TimeEntryKind::Work,
+        by: None,
+    };
+    let entry = JournalEntry {
+        id: ids.new_journal_id(),
+        parent: None,
+        command: StateCommand::RestoreTimeEntry {
+            entry: Box::new(payload.clone()),
+        },
+        facts: UndoFacts::PreImages {
+            images: vec![
+                PreImage::ReminderRule {
+                    id: rule.id,
+                    before: Some(Box::new(rule.clone())),
+                },
+                PreImage::TimeEntry {
+                    id: payload.id,
+                    before: None,
+                },
+            ],
+            watermark: UndoWatermark::default(),
+        },
+        ops: Vec::new(),
+        pushed: false,
+        board: None,
+        created_at: ts(100),
+    };
+    let json = serde_json::to_string(&entry).expect("serializes");
+    let back: JournalEntry = serde_json::from_str(&json).expect("decodes");
+    assert_eq!(back, entry);
+    // The three new arms decode byte-stably.
+    for command in [
+        StateCommand::RestoreLabel {
+            id: crate::ids::LabelId::from(uuid::Uuid::from_u128(7_104)),
+        },
+        StateCommand::RestoreTimeEntry {
+            entry: Box::new(payload),
+        },
+        StateCommand::RestoreHabit {
+            id: crate::ids::HabitId::from(uuid::Uuid::from_u128(7_105)),
+        },
+    ] {
+        let json = serde_json::to_string(&command).expect("serializes");
+        let back: StateCommand = serde_json::from_str(&json).expect("decodes");
+        assert_eq!(back, command);
+    }
+    // The retired reason decodes unchanged (serde stability).
+    let json = serde_json::to_string(&NotUndoableReason::RestoreClass).unwrap();
+    let back: NotUndoableReason = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, NotUndoableReason::RestoreClass);
+}
+
+// ---- the restore-family proptests ------------------------------------------
+
+fn label_fixture(h: &mut Harness, board: crate::ids::BoardId) -> crate::ids::LabelId {
+    h.label(board)
+}
+
+fn habit_fixture(h: &mut Harness, board: crate::ids::BoardId) -> crate::ids::HabitId {
+    h.exec(&StateCommand::CreateHabit {
+        board,
+        title: "habit".into(),
+        target: habit_target(),
+    })
+    .expect("created");
+    *h.disk.habits.habits.keys().next().expect("habit row")
+}
+
+fn entry_fixture(h: &mut Harness, task: crate::ids::TaskId) -> crate::ids::TimeEntryId {
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("logged");
+    *h.disk.tracking.entries.keys().next().expect("entry row")
+}
+
 proptest! {
     #![proptest_config(proptest_config(16))]
+
+    /// P1 (the C8 P2 shape generalized): for a generated task, label
+    /// (with a member), habit, and time entry, delete → undo (the
+    /// restore) leaves every content field at its pre-delete value
+    /// modulo the documented fresh-clock fields. (The restore-entry
+    /// re-delete/redo legs ride the forward restore verbs — covered by
+    /// the dedicated round-trip tests above; the head-move line makes
+    /// undo-of-delete itself the restore step here.)
+    #[test]
+    fn restore_undo_round_trips_never_lose_fields(n in 1usize..=3) {
+        let mut h = Harness::new();
+        let board = h.board();
+        let (_stack, tasks) = seeded_stack(&mut h, board, n);
+        let label = label_fixture(&mut h, board);
+        let habit = habit_fixture(&mut h, board);
+        h.exec(&StateCommand::AssignLabel { task: tasks[0], label })
+            .expect("assigned");
+        let entry = entry_fixture(&mut h, tasks[0]);
+        let pre_task = h.disk.tasks[&tasks[0]].clone();
+        let pre_label = h.disk.labels[&label].clone();
+        let pre_habit = h.disk.habits.habits[&habit].clone();
+        let pre_entry = h.disk.tracking.entries[&entry].clone();
+
+        // Task: delete → undo → every content field at its pre value.
+        h.exec(&StateCommand::DeleteTask { id: tasks[0] }).expect("deleted");
+        h.exec(&StateCommand::Undo).expect("restored");
+        let after = &h.disk.tasks[&tasks[0]];
+        prop_assert!(!after.deleted);
+        prop_assert_eq!(&after.title, &pre_task.title);
+        prop_assert_eq!(after.stack, pre_task.stack);
+        prop_assert_eq!(after.order, pre_task.order);
+        prop_assert_eq!(after.duedate, pre_task.duedate);
+        prop_assert_eq!(after.done, pre_task.done);
+        prop_assert_eq!(after.clocks.title, pre_task.clocks.title);
+        prop_assert_eq!(after.clocks.position, pre_task.clocks.position);
+
+        // Label: delete → undo → live again, title verbatim, the member
+        // task's membership re-Added through the composite inverse.
+        h.exec(&StateCommand::DeleteLabel { id: label }).expect("deleted");
+        h.exec(&StateCommand::Undo).expect("restored");
+        prop_assert!(!h.disk.labels[&label].deleted);
+        prop_assert_eq!(&h.disk.labels[&label].title, &pre_label.title);
+        let membership_added = matches!(
+            h.disk.tasks[&tasks[0]].label_memberships.get(&label),
+            Some(crate::entities::MembershipState::Added { .. })
+        );
+        prop_assert!(membership_added);
+
+        // Habit: delete → undo → live again, title/target verbatim.
+        h.exec(&StateCommand::DeleteHabit { habit }).expect("deleted");
+        h.exec(&StateCommand::Undo).expect("restored");
+        prop_assert!(!h.disk.habits.habits[&habit].deleted);
+        prop_assert_eq!(&h.disk.habits.habits[&habit].title, &pre_habit.title);
+        prop_assert_eq!(h.disk.habits.habits[&habit].target, pre_habit.target);
+
+        // Time entry: delete → undo → the row returns verbatim.
+        h.exec(&StateCommand::DeleteTimeEntry { id: entry }).expect("deleted");
+        h.exec(&StateCommand::Undo).expect("restored");
+        prop_assert_eq!(h.disk.tracking.entries.get(&entry), Some(&pre_entry));
+    }
 
     /// P2: over a generated stack with N tasks × M rules, undo of the
     /// delete leaves exactly the rules the cascade removed — no more,
@@ -3842,5 +4425,66 @@ proptest! {
         mark_journal_pushed(&mut h);
         h.exec(&StateCommand::Undo).expect("undone");
         prop_assert_eq!(h.disk.reminders.rules, rules_before);
+    }
+}
+
+/// P3 (the D-6 fence property, re-proven over the migrated table): the
+/// ceremony, reminder-surface, and reflection families never journal
+/// `PreImages` — the #901 reclassification moved exactly three rows.
+#[test]
+fn ceremony_and_surface_fences_hold() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    let reminder_surface = [
+        StateCommand::SnoozeReminder {
+            reminder: crate::reminders::ReminderRef::Default(task),
+            occurrence: ts(500),
+            postpone: chrono::TimeDelta::minutes(5),
+        },
+        StateCommand::SetTaskRemindersMuted { task, muted: true },
+        StateCommand::AddReminderRule {
+            task,
+            offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
+                .expect("valid"),
+            at: None,
+            insistence: crate::reminders::Insistence::Normal,
+        },
+        StateCommand::ClearReminderRules { task },
+    ];
+    let reflection_surface = [StateCommand::RecordReflection {
+        cadence: crate::reflection::ReviewCadence::Day,
+        day: chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap(),
+        window: (ts(100), ts(200)),
+        text: "review".into(),
+        mood: None,
+        energy: None,
+        flags: std::collections::BTreeSet::default(),
+    }];
+    let ceremonies = [
+        StateCommand::RenameBoard {
+            board,
+            title: "renamed".into(),
+        },
+        StateCommand::ResetBoard { board },
+    ];
+    for command in reminder_surface
+        .into_iter()
+        .chain(reflection_surface)
+        .chain(ceremonies)
+    {
+        if let Ok(plan) = h.exec_plan(&command) {
+            if plan.actions.is_empty() {
+                continue;
+            }
+            let Some(PersistenceAction::RecordJournal(entry)) = plan.actions.last() else {
+                panic!("RecordJournal rides last for {command:?}");
+            };
+            assert!(
+                !matches!(entry.facts, UndoFacts::PreImages { .. }),
+                "a fenced family journaled PreImages for {command:?}"
+            );
+        }
     }
 }

@@ -671,6 +671,44 @@ pub enum StateCommand {
         /// The tombstoned stack to resurrect.
         id: StackId,
     },
+    /// Resurrect one tombstoned label (the #901 restore-family verb,
+    /// `RestoreStack`'s label-shaped sibling). The three-case planner
+    /// mirrors `RestoreTask` verbatim: a pending `DeleteLabel` op
+    /// retracts (`FailOp`, no new op); a pushed/bound label re-POSTs as
+    /// a `CreateLabel` op (identity churn is the honest price, D-U2);
+    /// otherwise a local resurrect. The resurrected label keeps its
+    /// pre-tombstone values verbatim with a fresh tombstone clock. The
+    /// entity-death-dominance membership removals stay removed — each
+    /// membership's recovery surface is the ordinary `AssignLabel`
+    /// verb. A live target is the accepted no-op; an unknown id is a
+    /// typed rejection.
+    RestoreLabel {
+        /// The tombstoned label to resurrect.
+        id: LabelId,
+    },
+    /// Re-materialize one hard-deleted time entry from a verbatim
+    /// payload (the #901 restore-family verb; payload-carrying because
+    /// the row is gone — the `RestoreTask { id, resurrect }`
+    /// precedent). The planner stamps nothing and restores the payload
+    /// verbatim; a present *different* row with the same id is a typed
+    /// refusal (ids are minted once — a same-id row is divergence,
+    /// never clobbered); a gone owner task is a typed rejection.
+    RestoreTimeEntry {
+        /// The deleted entry to restore, verbatim.
+        entry: Box<crate::tracking::TimeEntry>,
+    },
+    /// Resurrect one tombstoned habit (the #901 restore-family verb).
+    /// Tombstone-only delete means an id-only verb: the habit flips
+    /// live with pre-tombstone values verbatim and a fresh tombstone
+    /// clock; the log is never touched (D26 — history outlives the
+    /// tracker). No pending/pushed split: the delete roams the board
+    /// flush (D-H9), so the restore is `UpsertHabit` + board flush. A
+    /// live target is the accepted no-op; an unknown id is a typed
+    /// rejection.
+    RestoreHabit {
+        /// The tombstoned habit to resurrect.
+        id: HabitId,
+    },
 }
 
 /// Sparse task edit: `None` = untouched, `Some(_)` = set. Stamp the

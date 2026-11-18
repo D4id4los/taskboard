@@ -208,6 +208,18 @@ fn record_entry(
         // inverse is the ordinary `DeleteStack` cascade (D-5).
         | StateCommand::DeleteStack { .. }
         | StateCommand::RestoreStack { .. }
+        // The #901 restore-family reclassification (D-2): the three
+        // deletes journal their cascade pre-images (label + stamped
+        // membership removals / the entry row / the habit tombstone —
+        // the arm-agnostic capture gets them for free), and the three
+        // restore verbs journal `PreImages` of their own writes, so
+        // undoing a restore re-deletes (D-1/D-5).
+        | StateCommand::DeleteLabel { .. }
+        | StateCommand::DeleteTimeEntry { .. }
+        | StateCommand::DeleteHabit { .. }
+        | StateCommand::RestoreLabel { .. }
+        | StateCommand::RestoreTimeEntry { .. }
+        | StateCommand::RestoreHabit { .. }
         // The pause is a one-field task edit under the recur clock
         // (issue #506): the recur pre-image inverts it exactly (the
         // UpdateTask class restores the whole rule verbatim).
@@ -216,9 +228,6 @@ fn record_entry(
             watermark: watermark_of(actions),
         },
         // ---- the typed families (§3 rows; the lockstep's other half)
-        StateCommand::DeleteLabel { .. } => {
-            UndoFacts::NotUndoable(NotUndoableReason::RestoreClass)
-        }
         StateCommand::CreateBoard { .. }
         | StateCommand::BindBoard { .. }
         | StateCommand::RebindBoard { .. }
@@ -317,11 +326,6 @@ fn record_entry(
             // that. Also dismissal side effects (D-T5).
             UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
         }
-        StateCommand::DeleteTimeEntry { .. } => {
-            // No un-delete verb exists (`LogTime` mints fresh ids);
-            // restore-class shape (#356 family).
-            UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
-        }
         StateCommand::LogHabit { .. } => {
             // Lossy to invert: a pre-log absent window would become an
             // explicit count-0 row — a different stored fact; no
@@ -336,10 +340,6 @@ fn record_entry(
             // resurrect with a minted-then-inverted clock; the family's
             // own verbs are the recovery surface.
             UndoFacts::NotUndoable(NotUndoableReason::ReflectionSurface)
-        }
-        StateCommand::DeleteHabit { .. } => {
-            // No `RestoreHabit` verb; tombstone-only delete.
-            UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
         }
         StateCommand::ConvertSeriesToHabit { .. }
         | StateCommand::ConvertHabitToSeries { .. } => {
@@ -427,14 +427,18 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         | StateCommand::DeleteStack { id }
         | StateCommand::RestoreStack { id }
         | StateCommand::MoveStack { id, .. } => app.stacks.get(id).map(|s| s.board),
-        StateCommand::UpdateLabel { id, .. } | StateCommand::DeleteLabel { id } => {
-            app.labels.get(id).map(|l| l.board)
-        }
+        StateCommand::UpdateLabel { id, .. }
+        | StateCommand::DeleteLabel { id }
+        | StateCommand::RestoreLabel { id } => app.labels.get(id).map(|l| l.board),
         StateCommand::AdjustTimeEntry { id, .. } | StateCommand::DeleteTimeEntry { id } => app
             .tracking
             .entries
             .get(id)
             .and_then(|entry| task_board(entry.task)),
+        // The restore rides the payload (the row is absent — that is
+        // the point); entry → task → stack → board, best-effort `None`
+        // when the chain is gone (the C9 D-3 honesty).
+        StateCommand::RestoreTimeEntry { entry } => task_board(entry.task),
         StateCommand::CreateHabit { board, .. } => Some(*board),
         StateCommand::ConvertSeriesToHabit { head, .. } => task_board(*head),
         StateCommand::ConvertHabitToSeries { habit, .. } => {
@@ -461,7 +465,8 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         | StateCommand::MoveHabit { habit, .. }
         | StateCommand::LogHabit { habit }
         | StateCommand::AdjustHabitLog { habit, .. }
-        | StateCommand::DeleteHabit { habit } => app.habits.habits.get(habit).map(|h| h.board),
+        | StateCommand::DeleteHabit { habit }
+        | StateCommand::RestoreHabit { id: habit } => app.habits.habits.get(habit).map(|h| h.board),
         StateCommand::RestoreTask { id, .. } => task_board(*id),
         StateCommand::Undo
         | StateCommand::Redo
@@ -493,6 +498,16 @@ pub fn pre_images(app: &AppState, actions: &[PersistenceAction]) -> Vec<PreImage
                 PreImage::ReminderRule {
                     id: *rule_id,
                     before: app.reminders.rules.get(rule_id).cloned().map(Box::new),
+                },
+            ),
+            // The hard row delete carries no upsert to walk — the
+            // pre-image reads the row off the delete action itself (the
+            // `DeleteReminderRule` shape; the #901 restore source).
+            PersistenceAction::DeleteTimeEntry(id) => (
+                JournalEntity::TimeEntry(*id),
+                PreImage::TimeEntry {
+                    id: *id,
+                    before: app.tracking.entries.get(id).cloned().map(Box::new),
                 },
             ),
             PersistenceAction::UpsertBoard(entity) => (
@@ -710,10 +725,35 @@ pub fn plan_undo(
     // rejections, no-op semantics, bound/unbound splits, cascades, op
     // enqueue, nudge — all inherited. All plan against the pre-state
     // (the batch applies in emission order, the `DeleteStack` cascade's
-    // own shape); the merged batch is one undo.
+    // own shape); the merged batch is one undo. The one exception
+    // (recorded deviation, D-5): the membership re-adds of a
+    // `DeletedLabel` undo (`AssignLabel` inverses riding a `RestoreLabel`
+    // in the same batch) plan against a forward planning view with the
+    // restored label marked live — the one-pass catalogue would refuse
+    // them `LabelDeleted` against the pre-state, while the applied batch
+    // runs in emission order (label first), so the applied result is
+    // identical to planning against the post-restore state.
+    let restored_labels: BTreeSet<crate::ids::LabelId> = inverses
+        .iter()
+        .filter_map(|inverse| match inverse {
+            StateCommand::RestoreLabel { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
     let mut actions = Vec::new();
     for inverse in &inverses {
-        let plan = plan_command(app, outbox, inverse, ids, defaults, day, now, author)?;
+        let plan = match inverse {
+            StateCommand::AssignLabel { label, .. } | StateCommand::UnassignLabel { label, .. }
+                if restored_labels.contains(label) =>
+            {
+                let mut view = app.clone();
+                if let Some(row) = view.labels.get_mut(label) {
+                    row.deleted = false;
+                }
+                plan_command(&view, outbox, inverse, ids, defaults, day, now, author)?
+            }
+            _ => plan_command(app, outbox, inverse, ids, defaults, day, now, author)?,
+        };
         actions.extend(plan.actions);
     }
     // 5b. The #900 rule resurrect (D-3): the entry's own
@@ -741,11 +781,11 @@ pub fn plan_undo(
             continue;
         }
         actions.push(PersistenceAction::UpsertReminderRule(rule.as_ref().clone()));
-        actions.push(PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
-            op_id: ids.new_op_id(),
-            op: crate::outbox::LocalOp::UpdateAppData(rule.task),
-            queued_at: now,
-        }));
+        actions.push(crate::command::enqueue(
+            crate::outbox::LocalOp::UpdateAppData(rule.task),
+            ids,
+            now,
+        ));
     }
     // 6. The pushed-edit rule (D-U2), two behaviours per entry.
     if !entry.pushed {
@@ -875,6 +915,32 @@ enum InverseClass {
     /// ordinary `DeleteTask` (no occupancy guard — the task's own
     /// rules/tracking closes are the honest content of the undo).
     RestoredTask,
+    /// `DeleteLabel` (#901, D-5): the label row must still stand
+    /// tombstoned on the recorded `deleted` stamp, and each membership
+    /// the delete stamped `Removed` must still carry that stamp
+    /// (covered-field: only the deleted label's own membership entry);
+    /// the inverse is `RestoreLabel` + N × `AssignLabel` (label first).
+    DeletedLabel,
+    /// `DeleteTimeEntry` (#901, D-5): the row must still be absent (a
+    /// present same-id row is divergence — ids mint once); the
+    /// pre-image payload is the resurrect source; the inverse is
+    /// `RestoreTimeEntry { entry }`.
+    DeletedTimeEntry,
+    /// `DeleteHabit` (#901, D-5): the habit row must still stand
+    /// tombstoned on the recorded `deleted` stamp; the inverse is
+    /// `RestoreHabit { id }`.
+    DeletedHabit,
+    /// `RestoreLabel` (#901, D-5): the restored label must still stand
+    /// live on the title/color stamps; the inverse is `DeleteLabel`.
+    RestoredLabel,
+    /// `RestoreTimeEntry` (#901, D-5): the restored row must still be
+    /// present on the recorded `updated_at` stamp; the inverse is
+    /// `DeleteTimeEntry`.
+    RestoredTimeEntry,
+    /// `RestoreHabit` (#901, D-5): the restored habit must still stand
+    /// live on the title/target/order stamps; the inverse is
+    /// `DeleteHabit`.
+    RestoredHabit,
     /// `RenameStack`: the title clock.
     RenameStack,
     /// `MoveStack`: the order clock.
@@ -940,12 +1006,18 @@ impl JournalEntry {
             StateCommand::UpdateHabit { .. } => Ok(InverseClass::UpdateHabit),
             StateCommand::MoveHabit { .. } => Ok(InverseClass::MoveHabit),
             StateCommand::AdjustHabitLog { .. } => Ok(InverseClass::AdjustHabitLog),
+            // The #901 restore-family rows (D-5's table).
+            StateCommand::DeleteLabel { .. } => Ok(InverseClass::DeletedLabel),
+            StateCommand::DeleteTimeEntry { .. } => Ok(InverseClass::DeletedTimeEntry),
+            StateCommand::DeleteHabit { .. } => Ok(InverseClass::DeletedHabit),
+            StateCommand::RestoreLabel { .. } => Ok(InverseClass::RestoredLabel),
+            StateCommand::RestoreTimeEntry { .. } => Ok(InverseClass::RestoredTimeEntry),
+            StateCommand::RestoreHabit { .. } => Ok(InverseClass::RestoredHabit),
             // NotUndoable heads refuse before the class is consulted;
             // every other arm is unreachable here (the wrapper only
             // journals the arms above). The engine-routed/no-op arms
             // are carried for the lockstep: one arm, one row.
-            StateCommand::DeleteLabel { .. }
-            | StateCommand::CreateBoard { .. }
+            StateCommand::CreateBoard { .. }
             | StateCommand::BindBoard { .. }
             | StateCommand::RebindBoard { .. }
             | StateCommand::RenameBoard { .. }
@@ -967,9 +1039,7 @@ impl JournalEntry {
             | StateCommand::DeleteBreakRule { .. }
             | StateCommand::StartTracking { .. }
             | StateCommand::StopTracking
-            | StateCommand::DeleteTimeEntry { .. }
             | StateCommand::LogHabit { .. }
-            | StateCommand::DeleteHabit { .. }
             | StateCommand::RecordReflection { .. }
             | StateCommand::UpdateReflection { .. }
             | StateCommand::DeleteReflection { .. }
@@ -1343,6 +1413,217 @@ fn synthesize_undo(
                 }
             }
             Ok(vec![StateCommand::DeleteTask { id }])
+        }
+        InverseClass::DeletedLabel => {
+            // The composite label restore (D-5): the label row must
+            // still stand tombstoned on the recorded `deleted` stamp;
+            // then, per member task in pre-image order whose
+            // pre-image membership was `Added` for this label, that
+            // task's watermark membership entry **for this label
+            // only** is compared against current (covered-field
+            // discipline — an unrelated membership edit must not
+            // refuse). The inverse is `RestoreLabel` + N ×
+            // `AssignLabel`, label first.
+            let Some(pre) = images.iter().find_map(|image| match image {
+                PreImage::Label {
+                    before: Some(label),
+                    ..
+                } => Some(label.as_ref()),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let id = pre.id;
+            let entity = JournalEntity::Label(id);
+            let Some(EntityStamps::Label(clocks)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::Deleted));
+            };
+            let Some(current) = app.labels.get(&id) else {
+                return Err(refuse(entity, UndoField::Deleted));
+            };
+            if !current.deleted || current.clocks.deleted != clocks.deleted {
+                return Err(refuse(entity, UndoField::Deleted));
+            }
+            let mut inverses = vec![StateCommand::RestoreLabel { id }];
+            for image in images {
+                let PreImage::Task {
+                    id: task_id,
+                    before: Some(pre_task),
+                    ..
+                } = image
+                else {
+                    continue;
+                };
+                if !matches!(
+                    pre_task.label_memberships.get(&id),
+                    Some(crate::entities::MembershipState::Added { .. })
+                ) {
+                    continue;
+                }
+                let task_entity = JournalEntity::Task(*task_id);
+                let Some(EntityStamps::Task { memberships, .. }) = watermark.0.get(&task_entity)
+                else {
+                    return Err(refuse(task_entity, UndoField::Membership));
+                };
+                let Some(recorded) = memberships.get(&id) else {
+                    return Err(refuse(task_entity, UndoField::Membership));
+                };
+                let Some(current_task) = app.tasks.get(task_id) else {
+                    return Err(refuse(task_entity, UndoField::Membership));
+                };
+                if current_task.label_memberships.get(&id) != Some(recorded) {
+                    return Err(refuse(task_entity, UndoField::Membership));
+                }
+                inverses.push(StateCommand::AssignLabel {
+                    task: *task_id,
+                    label: id,
+                });
+            }
+            Ok(inverses)
+        }
+        InverseClass::DeletedTimeEntry => {
+            // The pre-image payload is the resurrect source (the row
+            // is hard-deleted — nothing else holds the facts). The
+            // guard: the row absent — a present same-id row is
+            // divergence (ids are minted once); refuse, never clobber.
+            let Some(pre) = images.iter().find_map(|image| match image {
+                PreImage::TimeEntry {
+                    before: Some(entry),
+                    ..
+                } => Some(entry.as_ref()),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            if app.tracking.entries.contains_key(&pre.id) {
+                return Err(refuse(JournalEntity::TimeEntry(pre.id), UndoField::Deleted));
+            }
+            Ok(vec![StateCommand::RestoreTimeEntry {
+                entry: Box::new(pre.clone()),
+            }])
+        }
+        InverseClass::DeletedHabit => {
+            // The tombstone must still stand on the recorded stamp; the
+            // inverse is the id-only `RestoreHabit` (the log is never
+            // touched — D26, history outlives the tracker).
+            let Some(pre) = images.iter().find_map(|image| match image {
+                PreImage::Habit {
+                    before: Some(habit),
+                    ..
+                } => Some(habit.as_ref()),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::Habit(pre.id);
+            let Some(EntityStamps::Habit(clocks)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::Deleted));
+            };
+            let Some(current) = app.habits.habits.get(&pre.id) else {
+                return Err(refuse(entity, UndoField::Deleted));
+            };
+            if !current.deleted || current.clocks.deleted != clocks.deleted {
+                return Err(refuse(entity, UndoField::Deleted));
+            }
+            Ok(vec![StateCommand::RestoreHabit { id: pre.id }])
+        }
+        InverseClass::RestoredLabel => {
+            // Undoing a restore re-deletes the label through the
+            // ordinary `DeleteLabel`; the checked scope is the
+            // CreatedLabel-style title+color stamps on the restored
+            // row, plus the restore still standing (the
+            // `RestoredStack` scope shape).
+            let Some(id) = images.iter().find_map(|image| match image {
+                PreImage::Label {
+                    id,
+                    before: Some(_),
+                    ..
+                } => Some(*id),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::Label(id);
+            let Some(EntityStamps::Label(clocks)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::Title));
+            };
+            let Some(current) = app.labels.get(&id) else {
+                return Err(refuse(entity, UndoField::Title));
+            };
+            if current.deleted {
+                return Err(refuse(entity, UndoField::Deleted));
+            }
+            if current.clocks.title != clocks.title {
+                return Err(refuse(entity, UndoField::Title));
+            }
+            if current.clocks.color != clocks.color {
+                return Err(refuse(entity, UndoField::Color));
+            }
+            Ok(vec![StateCommand::DeleteLabel { id }])
+        }
+        InverseClass::RestoredTimeEntry => {
+            // Undoing a restore re-deletes the entry through the
+            // ordinary `DeleteTimeEntry`; the checked scope: the row
+            // present and its `updated_at` stamp == the entry's
+            // watermark stamp (the `CreatedTimeEntry` scope).
+            let Some(id) = images.iter().find_map(|image| match image {
+                PreImage::TimeEntry {
+                    id,
+                    before: Some(_),
+                    ..
+                } => Some(*id),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::TimeEntry(id);
+            let Some(EntityStamps::TimeEntry(recorded)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            };
+            let Some(current) = app.tracking.entries.get(&id) else {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            };
+            if current.updated_at != *recorded {
+                return Err(refuse(entity, UndoField::UpdatedAt));
+            }
+            Ok(vec![StateCommand::DeleteTimeEntry { id }])
+        }
+        InverseClass::RestoredHabit => {
+            // Undoing a restore re-tombstones the habit through the
+            // ordinary `DeleteHabit`; the checked scope: still live +
+            // the title/target/order stamps (the `CreatedHabit` scope
+            // shape, `deleted`/`anchor_time` excluded).
+            let Some(id) = images.iter().find_map(|image| match image {
+                PreImage::Habit {
+                    id,
+                    before: Some(_),
+                    ..
+                } => Some(*id),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::Habit(id);
+            let Some(EntityStamps::Habit(clocks)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::Title));
+            };
+            let Some(current) = app.habits.habits.get(&id) else {
+                return Err(refuse(entity, UndoField::Title));
+            };
+            if current.deleted {
+                return Err(refuse(entity, UndoField::Deleted));
+            }
+            let content = [
+                (clocks.title, current.clocks.title, UndoField::Title),
+                (clocks.target, current.clocks.target, UndoField::HabitTarget),
+                (clocks.order, current.clocks.order, UndoField::Order),
+            ];
+            for (recorded, now_clock, field) in content {
+                if recorded != now_clock {
+                    return Err(refuse(entity, field));
+                }
+            }
+            Ok(vec![StateCommand::DeleteHabit { habit: id }])
         }
         InverseClass::RenameStack => {
             let Some(pre) = images.iter().find_map(|image| match image {
