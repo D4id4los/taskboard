@@ -3920,7 +3920,7 @@ impl Adapter {
                 if !matches!(self.view_state.flow(), Flow::None) {
                     self.arm_overlay_replacement_notice(window);
                 }
-                self.view_state.begin_capture()
+                self.view_state.begin_capture(&state)
             }
             // -- the concentration overlay's toggle (#496): the
             //    matrix settles any foreign flow first (R3
@@ -5046,7 +5046,7 @@ impl Adapter {
                 // adds only the announcement).
                 self.arm_overlay_replacement_notice(window);
                 let was_drag = matches!(flow, Flow::DragMove { .. });
-                let outcomes = self.view_state.begin_capture();
+                let outcomes = self.view_state.begin_capture(state);
                 self.width_drag = None;
                 self.scale_drag = None;
                 self.apply_outcomes(window, &outcomes);

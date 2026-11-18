@@ -24375,3 +24375,64 @@ fn us3_ac1_leaving_settings_disarms_the_strip() {
         },
     );
 }
+
+// -- cross-surface friction UX plan US-6 (#712): capture's Replace
+// -- pre-pass folds the flow chain innermost-first, TEXT-masked; the
+// -- child-fold's lowest layer lives in the view_state unit tests.
+
+/// US-6/S1 (AC-1, the composition): capture fired over a live review
+/// walk closes the walk commandlessly and mounts the capture overlay
+/// (the pre-pass fold); the escape ladder's tail (AC-3) restores the
+/// walk's parent view with zero flow levels and no phantom walk.
+#[test]
+fn us6_ac1_capture_over_a_walk_child_closes_the_walk() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.set_window_size(1000, 900);
+            open_walk(&mut harness);
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness), "the walk is live");
+
+            // The capture fire-drill over the live walk.
+            harness.handle.dispatch_action(ActionId::CaptureQuick);
+            harness.driver.advance_time(0);
+            assert!(
+                !walk_open(&harness),
+                "the pre-pass closed the walk (commandlessly)"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the walk's close dispatches nothing"
+            );
+            assert!(
+                harness.handle.window().get_capture_open(),
+                "the capture overlay mounts over the folded chain"
+            );
+
+            // AC-3: the dismiss restores the parent view — the root
+            // is unchanged, zero flow levels, no phantom walk.
+            let root_before = harness.handle.window().get_current_view();
+            // The proven dismiss path (the outside-click seam).
+            harness.driver.right_press_at(990.0, 890.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_capture_open(),
+                "the dismiss closes the capture"
+            );
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                root_before,
+                "the parent view is restored exactly"
+            );
+            assert!(
+                !walk_open(&harness),
+                "no phantom walk re-mounts after the dismiss"
+            );
+        },
+    );
+}
