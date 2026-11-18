@@ -39,6 +39,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "labels_overlay_add_requested",
     "labels_overlay_edit_requested",
     "labels_overlay_title_edited",
+    "labels_overlay_colour_edited",
     "labels_overlay_swatch_clicked",
     "labels_overlay_form_commit_requested",
     "labels_overlay_form_cancelled",

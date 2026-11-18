@@ -20509,6 +20509,185 @@ fn us1_ac2_invalid_colour_renders_the_typed_echo_and_commits_nothing() {
     );
 }
 
+// -- tag-color UX plan (US-2/W-2, #839): the roster-only board mount --
+
+/// US-2/AC-1 (tag-color plan W-2): the board menu row — and its
+/// Ctrl+L key — opens the labels overlay in roster-only mode over the
+/// selected board: the live roster renders and the assignment
+/// toggles are absent (the shows-assignment flag down, every row's
+/// assigned bit false — structural, the row-set composition).
+#[test]
+fn us2_ac1_board_menu_opens_the_roster_only_overlay() {
+    let (_fx, state, _green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let window = harness.handle.window();
+            assert_eq!(window.get_current_view(), View::Board);
+            // The click leg: the menu row routes the same action (click
+            // == key — the seam's own grammar).
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            assert!(
+                window.get_label_overlay_open(),
+                "the roster-only mount opens over the board surface"
+            );
+            assert_eq!(
+                window.get_label_overlay_rows().row_count(),
+                2,
+                "the board's live roster renders"
+            );
+            assert!(
+                !window.get_label_overlay_shows_assignment(),
+                "the roster-only mount shows no assignment toggles"
+            );
+            for i in 0..2 {
+                let row = window.get_label_overlay_rows().row_data(i).expect("row");
+                assert!(!row.assigned, "board-mount rows carry no assignment");
+            }
+            // Escape closes (the ladder's last rung; nothing dispatches).
+            harness
+                .handle
+                .dispatch_action(ActionId::LabelOverlayDismiss);
+            harness.driver.advance_time(0);
+            assert!(!harness.handle.window().get_label_overlay_open());
+            harness.assert_commands(&[]);
+
+            // The key leg: the preset's own Ctrl+L binding in the Board
+            // context opens the same mount.
+            press_preset(
+                &mut harness,
+                taskboard_ui_slint::keymap::Preset::Standard,
+                ActionId::LabelManage,
+            );
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_label_overlay_open(),
+                "the preset key opens the roster-only mount"
+            );
+        },
+    );
+}
+
+/// US-2/AC-2 (tag-color plan W-2): the roster-only mount's forms
+/// commit the exact label commands with the board subject — create
+/// (the selected board IS the create subject), the sparse edit, and
+/// the staged delete (the #840 armed-identity grammar composing).
+#[test]
+fn us2_ac2_roster_only_commits_the_exact_label_commands() {
+    let (_fx, state, green, red) = label_journey_state();
+    let board = state
+        .stacks
+        .get(&state.tasks.values().next().expect("task").stack)
+        .expect("stack")
+        .board;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+
+            // Create: the roster-only mount's create form.
+            window.invoke_labels_overlay_add_requested();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_title_edited(slint::SharedString::from("board-made"));
+            window.invoke_labels_overlay_swatch_clicked(3);
+            assert!(window.invoke_labels_overlay_form_commit_requested());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::CreateLabel { board: b, title, color }]
+                    if *b == board && title == "board-made"
+                        && color.as_str() == taskboard_ui_slint::presentation::SWATCHES[3]
+            ));
+
+            // Edit: the seeded form over the board roster.
+            window.invoke_labels_overlay_edit_requested(1);
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_title_edited(slint::SharedString::from("rouge"));
+            assert!(window.invoke_labels_overlay_form_commit_requested());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::UpdateLabel {
+                    id,
+                    changes: taskboard_domain::LabelChanges {
+                        title: Some(_),
+                        color: None,
+                    },
+                }] if *id == red
+            ));
+
+            // The staged delete (US-2/S2): arm dispatches nothing, the
+            // confirm dispatches the exact DeleteLabel.
+            window.invoke_labels_overlay_delete_clicked(0);
+            harness.driver.advance_time(0);
+            assert!(window.get_label_overlay_armed_index() >= 0);
+            assert_eq!(harness.engine.drain().len(), 0, "arming dispatches nothing");
+            window.invoke_labels_overlay_delete_clicked(window.get_label_overlay_armed_index());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(matches!(
+                &drained[..],
+                [taskboard_domain::StateCommand::DeleteLabel { id }] if *id == green
+            ));
+        },
+    );
+}
+
+/// US-2/AC-3 (tag-color plan W-2): the Escape ladder per the r3
+/// grammar over the roster-only mount — the armed delete's Escape
+/// disarms first, the next rung closes the overlay (the #840 cleared
+/// identity composing; nothing dispatches anywhere).
+#[test]
+fn us2_ac3_roster_only_escape_ladders() {
+    let (_fx, state, _green, _red) = label_journey_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let window = harness.handle.window();
+            window.invoke_labels_manage_asked();
+            harness.driver.advance_time(0);
+            window.invoke_labels_overlay_delete_clicked(0);
+            harness.driver.advance_time(0);
+            assert!(window.get_label_overlay_armed_index() >= 0, "armed");
+
+            // Rung one: the dismissal action disarms the strip.
+            harness
+                .handle
+                .dispatch_action(ActionId::LabelOverlayDismiss);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            assert!(window.get_label_overlay_open(), "the overlay stays");
+            assert!(
+                window.get_label_overlay_armed_index() < 0,
+                "the armed strip disarmed"
+            );
+
+            // Rung two: the overlay closes.
+            harness
+                .handle
+                .dispatch_action(ActionId::LabelOverlayDismiss);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            assert!(!window.get_label_overlay_open());
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
 // -- UX remediation chunk 4 (UX R-4 D-1/D-4/D-5, #791/#794/#795) --
 
 /// US-12/S1 (UX R-4 D-1, #791): the opener arms the swatch strip over

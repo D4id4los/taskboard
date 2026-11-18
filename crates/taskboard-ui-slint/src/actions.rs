@@ -1281,11 +1281,14 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::LabelManage,
         label: "Manage labels",
-        contexts: &[ContextId::TaskDetail],
+        // Tag-color plan D-7 widens the contexts to the Board surface
+        // (the roster-only mount; the TaskDetail mount stands — one
+        // action, two subjects).
+        contexts: &[ContextId::TaskDetail, ContextId::Board],
         category: Category::Task,
         enabled: true,
         menu_rank: 78,
-        description: "Opens the labels overlay for the viewed task: assign, create, edit, delete.",
+        description: "Opens the labels overlay: from the board surface the roster-only manager, from the task detail the assignment toggles too.",
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {

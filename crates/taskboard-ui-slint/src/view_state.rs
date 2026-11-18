@@ -395,8 +395,22 @@ pub enum Flow {
     /// (subject-affine mount; `reconcile` drops it when the view
     /// leaves the task detail or the subject dies). Create/edit/
     /// delete live in its rows; assign/unassign are one click from
-    /// the detail chips.
-    Labels { task: TaskId },
+    /// the detail chips. Tag-color plan D-3 widens the payload to a
+    /// subject enum — one flow, two mounts (the roster-only board
+    /// mount carries no assignment toggles).
+    Labels { subject: LabelOverlaySubject },
+}
+
+/// The labels overlay's subject (tag-color plan D-3, US-2): the
+/// detail view's task (the assignment-toggles mount) or a board
+/// surface's roster-only mount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelOverlaySubject {
+    /// The detail mount over the viewed task.
+    Task(TaskId),
+    /// The roster-only mount over the selected board (no toggles —
+    /// the tag-color plan R-2's letter made visible).
+    Board(BoardId),
 }
 
 /// The armed delete's subject (UX R-2 D-2, #784): the resolved target
@@ -2658,9 +2672,60 @@ impl ViewState {
     /// *adapter's* gate (dispatch-time gating — the entries
     /// overlay's D-TS8 shape); this arm opens whenever asked. A held
     /// foreign flow settles first (the resolver's overlay class).
-    pub fn open_labels(&mut self, task: TaskId) -> Vec<FlowOutcome> {
-        self.write_flow(Flow::Labels { task });
+    pub fn open_labels(&mut self, subject: LabelOverlaySubject) -> Vec<FlowOutcome> {
+        self.write_flow(Flow::Labels { subject });
         vec![FlowOutcome::RefreshNow]
+    }
+
+    /// `label.manage` from the board surface (tag-color plan D-3,
+    /// US-2): the roster-only mount over the *selected* board — the
+    /// same source the board context menu's other rows address
+    /// (`normalize_board` + `self.board`, the `begin_board_color`
+    /// shape). Inert without a board.
+    pub fn open_labels_board(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        self.open_labels(LabelOverlaySubject::Board(board))
+    }
+
+    /// The overlay's mount facts (tag-color plan D-4): the flow's
+    /// subject addresses the current surface — the detail mount
+    /// matches the viewed task, the board mount the selected board (a
+    /// dead subject renders closed; the reconcile pass drops the flow
+    /// anyway).
+    #[must_use]
+    pub fn labels_mount_open(&self) -> bool {
+        match self.flow() {
+            Flow::Labels { subject } => match subject {
+                LabelOverlaySubject::Task(task) => self.subject_task() == Some(*task),
+                LabelOverlaySubject::Board(board) => self.board == Some(*board),
+            },
+            _ => false,
+        }
+    }
+
+    /// The board-mount half only (tag-color plan D-4): the roster-only
+    /// mount over the selected board — the board surface's mount
+    /// condition.
+    #[must_use]
+    pub fn labels_board_mount_open(&self) -> bool {
+        matches!(
+            self.flow(),
+            Flow::Labels { subject: LabelOverlaySubject::Board(board) }
+                if self.board == Some(*board)
+        )
+    }
+
+    /// The flow's subject, when the labels overlay holds (tag-color
+    /// plan D-8): the roster/rows/id-table passes read it.
+    #[must_use]
+    pub fn labels_subject(&self) -> Option<LabelOverlaySubject> {
+        match self.flow() {
+            Flow::Labels { subject } => Some(*subject),
+            _ => None,
+        }
     }
 
     /// Every overlay exit that means close-without-effect: the
@@ -3917,10 +3982,25 @@ impl ViewState {
                     Some(Flow::TrackEntries { task } | Flow::TrackEntryForm { task, .. }) => {
                         !is_live(*task)
                     }
-                    Some(Flow::Labels { task }) => !is_live(*task),
+                    Some(Flow::Labels {
+                        subject: LabelOverlaySubject::Task(task),
+                    }) => !is_live(*task),
+                    Some(Flow::Labels {
+                        subject: LabelOverlaySubject::Board(board),
+                    }) => state.boards.get(board).is_none_or(|b| b.deleted),
                     _ => false,
                 };
-                dead || self.view() != ViewId::TaskDetail
+                // The view-leave rule, subject-affine (tag-color plan
+                // D-4): the detail mount dies when the view leaves the
+                // task detail; the roster-only board mount dies when
+                // the view leaves the board surface.
+                let view_left = match self.surfaces.above_levels()[*index].flow() {
+                    Some(Flow::Labels {
+                        subject: LabelOverlaySubject::Board(_),
+                    }) => self.view() != ViewId::Board,
+                    _ => self.view() != ViewId::TaskDetail,
+                };
+                dead || view_left
             })
         {
             let dropped = self.surfaces.truncate_to(index + 1);

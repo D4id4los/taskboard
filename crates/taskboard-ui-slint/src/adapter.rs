@@ -2433,12 +2433,18 @@ impl Adapter {
         {
             self.label_delete_armed = None;
         }
-        let subject_board = self
-            .view_state
-            .subject_task()
-            .and_then(|t| state.tasks.get(&t))
-            .and_then(|t| state.stacks.get(&t.stack))
-            .map(|stack| stack.board);
+        // The overlay roster's board (tag-color plan D-8): the board
+        // mount names its subject directly; the detail mount derives
+        // the subject task's board.
+        let subject_board = match self.view_state.labels_subject() {
+            Some(crate::view_state::LabelOverlaySubject::Board(board)) => Some(board),
+            _ => self
+                .view_state
+                .subject_task()
+                .and_then(|t| state.tasks.get(&t))
+                .and_then(|t| state.stacks.get(&t.stack))
+                .map(|stack| stack.board),
+        };
         let label_armed_index = self
             .label_delete_armed
             .and_then(|id| {
@@ -3859,11 +3865,22 @@ impl Adapter {
             (_, UiEffect::LabelsOpen) => {
                 // The pickers are flow-free siblings: opening the
                 // overlay settles an open quick-list (the
-                // exclusivity's shape).
+                // exclusivity's shape). The subject resolution is
+                // adapter-side (tag-color plan D-4): the detail view's
+                // task takes the assignment-toggles mount; otherwise
+                // the selected board takes the roster-only mount
+                // (inert without one — the no-subject refusal lives
+                // in the arm, the arm doc's own precedent).
                 if let Some(task) = self.view_state.subject_task() {
                     Self::dismiss_tooltip(window);
                     self.priority_open = None;
-                    let outcomes = self.view_state.open_labels(task);
+                    let outcomes = self
+                        .view_state
+                        .open_labels(crate::view_state::LabelOverlaySubject::Task(task));
+                    self.apply_outcomes(window, &outcomes);
+                    self.finish_mutation(window);
+                } else if !self.view_state.labels_board_mount_open() {
+                    let outcomes = self.view_state.open_labels_board(&self.state.load());
                     self.apply_outcomes(window, &outcomes);
                     self.finish_mutation(window);
                 }
@@ -11433,17 +11450,26 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let Ok(color) = taskboard_domain::Color::parse(&form.color) else {
             return false;
         };
-        let Some(task) = a.view_state.subject_task() else {
-            return false;
-        };
         let state = a.state.load_full();
-        let Some(task) = state.tasks.get(&task) else {
-            return false;
-        };
-        // Labels are board-scoped: the create board IS the subject's
-        // board (D-2 — the overlay's roster is the board's live set).
-        let Some(board) = state.stacks.get(&task.stack).map(|stack| stack.board) else {
-            return false;
+        // Labels are board-scoped (D-2/D-6, tag-color plan): the
+        // create board is the flow subject's — the task mount derives
+        // the subject task's board; the roster-only mount names its
+        // board directly (no task subject needed).
+        let board = if let Some(crate::view_state::LabelOverlaySubject::Board(board)) =
+            a.view_state.labels_subject()
+        {
+            board
+        } else {
+            let Some(task) = a.view_state.subject_task() else {
+                return false;
+            };
+            let Some(task) = state.tasks.get(&task) else {
+                return false;
+            };
+            let Some(board) = state.stacks.get(&task.stack).map(|stack| stack.board) else {
+                return false;
+            };
+            board
         };
         let command = match form.seed {
             None => StateCommand::CreateLabel {

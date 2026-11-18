@@ -558,7 +558,9 @@ mod tests {
                 stage: WalkStage::Prompts,
                 cursor: 0,
             },
-            FlowTag::Labels => Flow::Labels { task: TASK },
+            FlowTag::Labels => Flow::Labels {
+                subject: crate::view_state::LabelOverlaySubject::Task(TASK),
+            },
             FlowTag::EntryDatePicker => Flow::EntryDatePicker,
             FlowTag::WalkFilePick => Flow::WalkFilePick { armed: Some(STACK) },
             FlowTag::WalkDatePick => Flow::WalkDatePick,

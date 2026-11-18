@@ -2339,9 +2339,20 @@ fn push_task_detail(
     tables.task_labels = subject
         .map(|t| t.live_labels().into_iter().collect())
         .unwrap_or_default();
-    tables.label_ids = subject
-        .and_then(|t| state.stacks.get(&t.stack))
-        .map(|stack| stack.board)
+    // The labels roster's board (tag-color plan D-8): the detail
+    // mount derives the subject task's board; the roster-only board
+    // mount reads the subject board directly. The canonical order
+    // stands (the engine's BTreeMap id order — no new ordering).
+    let roster_board = match vs.labels_subject() {
+        Some(crate::view_state::LabelOverlaySubject::Task(task)) => state
+            .tasks
+            .get(&task)
+            .and_then(|t| state.stacks.get(&t.stack))
+            .map(|stack| stack.board),
+        Some(crate::view_state::LabelOverlaySubject::Board(board)) => Some(board),
+        None => None,
+    };
+    tables.label_ids = roster_board
         .map(|board| {
             state
                 .labels
@@ -2580,10 +2591,7 @@ fn push_task_detail(
         // flow whose task stopped being the viewed subject renders
         // closed (the track-entries push-side belt; reconcile drops
         // it anyway).
-        labels_open: match vs.flow() {
-            Flow::Labels { task } => vs.subject_task() == Some(*task),
-            _ => false,
-        },
+        labels_open: vs.labels_mount_open(),
         date_validity: match due.date_valid {
             None => crate::FieldValidity::Neutral,
             Some(true) => crate::FieldValidity::Valid,
@@ -2603,8 +2611,10 @@ fn push_task_detail(
     // board's live labels with the subject's assignment bit — the
     // fresh-VecModel-per-pass shape (the track-entries rows' rule;
     // ids ride `tables.label_ids`, the rows carry display parts).
-    let overlay_rows: Vec<crate::LabelRowModel> = match vs.flow() {
-        Flow::Labels { task } if vs.subject_task() == Some(*task) => {
+    let overlay_rows: Vec<crate::LabelRowModel> = match vs.labels_subject() {
+        Some(crate::view_state::LabelOverlaySubject::Task(task))
+            if vs.subject_task() == Some(task) =>
+        {
             let assigned: std::collections::BTreeSet<_> = subject
                 .map(taskboard_domain::Task::live_labels)
                 .unwrap_or_default();
@@ -2619,6 +2629,20 @@ fn push_task_detail(
                 })
                 .collect()
         }
+        // The roster-only mount (tag-color plan D-3): the board's live
+        // roster, no assignment bit (there is no subject — R-2's
+        // letter; the panel's toggle affordance rides the
+        // shows-assignment flag).
+        Some(crate::view_state::LabelOverlaySubject::Board(_)) => state
+            .labels
+            .values()
+            .filter(|label| !label.deleted && roster_board == Some(label.board))
+            .map(|label| crate::LabelRowModel {
+                title: SharedString::from(label.title.clone()),
+                color: swatch_hex(&label.color),
+                assigned: false,
+            })
+            .collect(),
         _ => Vec::new(),
     };
     window.set_label_overlay_rows(ModelRc::new(slint::VecModel::from(overlay_rows)));
@@ -2668,6 +2692,15 @@ fn push_task_detail(
             .map_or(-1, |p| i32::try_from(p).unwrap_or(i32::MAX)),
     );
     window.set_label_overlay_armed_index(label_armed_index);
+    // The board mount's open flag (tag-color plan D-4) + the
+    // assignment-toggles' shown half (D-3): the roster-only mount
+    // renders no toggle affordance (R-2's letter — the row-set
+    // composition is the visible ruling).
+    window.set_label_overlay_open(vs.labels_board_mount_open());
+    window.set_label_overlay_shows_assignment(matches!(
+        vs.labels_subject(),
+        Some(crate::view_state::LabelOverlaySubject::Task(_))
+    ));
     mutations
 }
 
