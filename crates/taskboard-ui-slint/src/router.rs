@@ -547,9 +547,17 @@ pub struct DispatchCtx {
     pub rule_add_when: Option<crate::presentation::RuleWhen>,
     /// The today day window (chunk 10 D4), set by the adapter per
     /// dispatch from its held `(day_start_time, offset)` pair — state-
-    /// derived, never consumed; `task.due-today` re-commits to its end
-    /// (`NoTarget` without focus or window).
+    /// derived, never consumed; routes the today verbs' focus/window
+    /// gate (`NoTarget` without focus or window).
     pub day_window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    /// The today window's last covered instant (#893, the chunk plan
+    /// D3.2): set by the adapter per dispatch from
+    /// `days::last_covered_instant(day_window.1)` — the window-derived
+    /// stamp fact, never `±24h` arithmetic and never the raw
+    /// exclusive end; `task.due-today` and `task.schedule-today`
+    /// commit it (`NoTarget` without it, the `day_window` backstop
+    /// shape).
+    pub today_last_instant: Option<chrono::DateTime<chrono::Utc>>,
     /// The next day window's end (UX-R8 chunk-5 D-3, US-1/S2): set by
     /// the adapter per dispatch from `days::next_day_window` — the
     /// landed day law, never `+24h` arithmetic;
@@ -1323,36 +1331,47 @@ impl ActionRouter {
             ActionId::NavFirstItem => DispatchOutcome::UiEffect(UiEffect::FocusFirst),
             ActionId::NavLastItem => DispatchOutcome::UiEffect(UiEffect::FocusLast),
             // The today re-commit (chunk 10, D-V4 rider): a fresh
-            // `Some(Some(window_end))` write, confirmation-free;
-            // `NoTarget` without focus *or* window (the design's exact
-            // wording).
-            ActionId::TaskDueToday => match (ctx.focused_task, ctx.day_window) {
-                (Some(id), Some((_, end))) => DispatchOutcome::Command(StateCommand::UpdateTask {
-                    id,
-                    changes: taskboard_domain::TaskChanges {
-                        duedate: Some(Some(end)),
-                        ..taskboard_domain::TaskChanges::default()
-                    },
-                }),
-                _ => DispatchOutcome::NoTarget,
-            },
+            // `Some(Some(today_last_instant))` write, confirmation-
+            // free; `NoTarget` without focus *or* window (the design's
+            // exact wording). The stamp is the day's last covered
+            // instant (#893) — the raw exclusive end is excluded by
+            // the very `[now, end)` membership it would be judged by.
+            ActionId::TaskDueToday => {
+                match (ctx.focused_task, ctx.day_window, ctx.today_last_instant) {
+                    (Some(id), Some(_), Some(stamp)) => {
+                        DispatchOutcome::Command(StateCommand::UpdateTask {
+                            id,
+                            changes: taskboard_domain::TaskChanges {
+                                duedate: Some(Some(stamp)),
+                                ..taskboard_domain::TaskChanges::default()
+                            },
+                        })
+                    }
+                    _ => DispatchOutcome::NoTarget,
+                }
+            }
             // The scheduled field's quick verbs (UX-R8 chunk-5 D-3,
             // US-1/S1–S3): the exact sparse `scheduled` mask — today's
-            // end rides the same window instant `task.due-today`
-            // re-commits (the uniform day-boundary law), tomorrow's is
-            // the additive window fact, unschedule is the `Some(None)`
-            // clear twin. Inapplicable subjects are withheld upstream
-            // (D-4); the NoTarget arm is the stale-absorb backstop.
-            ActionId::TaskScheduleToday => match (ctx.focused_task, ctx.day_window) {
-                (Some(id), Some((_, end))) => DispatchOutcome::Command(StateCommand::UpdateTask {
-                    id,
-                    changes: taskboard_domain::TaskChanges {
-                        scheduled: Some(Some(end)),
-                        ..taskboard_domain::TaskChanges::default()
-                    },
-                }),
-                _ => DispatchOutcome::NoTarget,
-            },
+            // last covered instant rides the same stamp `task.due-today`
+            // re-commits (the uniform day-boundary law, #893),
+            // tomorrow's is the additive window fact, unschedule is
+            // the `Some(None)` clear twin. Inapplicable subjects are
+            // withheld upstream (D-4); the NoTarget arm is the
+            // stale-absorb backstop.
+            ActionId::TaskScheduleToday => {
+                match (ctx.focused_task, ctx.day_window, ctx.today_last_instant) {
+                    (Some(id), Some(_), Some(stamp)) => {
+                        DispatchOutcome::Command(StateCommand::UpdateTask {
+                            id,
+                            changes: taskboard_domain::TaskChanges {
+                                scheduled: Some(Some(stamp)),
+                                ..taskboard_domain::TaskChanges::default()
+                            },
+                        })
+                    }
+                    _ => DispatchOutcome::NoTarget,
+                }
+            }
             ActionId::TaskScheduleTomorrow => match (ctx.focused_task, ctx.tomorrow_window_end) {
                 (Some(id), Some(end)) => DispatchOutcome::Command(StateCommand::UpdateTask {
                     id,
@@ -1537,6 +1556,7 @@ mod tests {
             recur_edit_target: None,
             recur_draft_rule: None,
             day_window: None,
+            today_last_instant: None,
             tomorrow_window_end: None,
             focused_task_done: false,
             focused_task_tracker: false,
@@ -1553,16 +1573,17 @@ mod tests {
     }
 
     /// UX-R8 chunk-5 D-3 (US-1/S1–S3) — the scheduled field's quick
-    /// verbs route the exact sparse `scheduled` mask: today's window
-    /// end, tomorrow's window end, the `Some(None)` clear twin; every
-    /// other mask stays `None`. The backstops: no focus → `NoTarget`
-    /// for all three; unschedule on an unscheduled subject →
-    /// `NoTarget` (the stale-absorb posture).
+    /// verbs route the exact sparse `scheduled` mask: today's last
+    /// covered instant (#893), tomorrow's window end, the `Some(None)`
+    /// clear twin; every other mask stays `None`. The backstops: no
+    /// focus → `NoTarget` for all three; unschedule on an unscheduled
+    /// subject → `NoTarget` (the stale-absorb posture).
     #[test]
     fn the_schedule_trio_routes_the_exact_sparse_masks() {
         let end = chrono::Utc::now();
         let mut scheduled = ctx(true);
         scheduled.day_window = Some((end, end));
+        scheduled.today_last_instant = Some(end);
         scheduled.tomorrow_window_end = Some(end);
         scheduled.focused_task_scheduled = true;
         let expected = |end: chrono::DateTime<chrono::Utc>| {
@@ -1577,7 +1598,7 @@ mod tests {
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskScheduleToday, &scheduled),
             expected(end),
-            "today commits the day window's end"
+            "today commits the day's last covered instant"
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::TaskScheduleTomorrow, &scheduled),
@@ -1615,6 +1636,18 @@ mod tests {
             ActionRouter::dispatch(ActionId::TaskUnschedule, &ctx(true)),
             DispatchOutcome::NoTarget
         );
+        // #893's backstop shape: a window without the stamp fact
+        // refuses too — the today verbs route from the unified mint,
+        // never from the raw window end.
+        let mut windowless_stamp = ctx(true);
+        windowless_stamp.day_window = Some((end, end));
+        for id in [ActionId::TaskDueToday, ActionId::TaskScheduleToday] {
+            assert_eq!(
+                ActionRouter::dispatch(id, &windowless_stamp),
+                DispatchOutcome::NoTarget,
+                "{id} without the last-covered-instant fact is NoTarget"
+            );
+        }
     }
 
     /// DR-3/3 — the timer verbs route exact typed commands from their

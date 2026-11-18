@@ -145,6 +145,7 @@ impl KeymapShell {
             recur_edit_target: None,
             recur_draft_rule: None,
             day_window: None,
+            today_last_instant: None,
             tomorrow_window_end: None,
             focused_task_done: self.focused_task_done,
             focused_task_tracker: self.focused_task_tracker,
