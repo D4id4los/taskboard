@@ -252,11 +252,8 @@ const SEAM_INVENTORY: &[&str] = &[
     // #838, 2026-11-17): the inline editor's open/mirror/commit/
     // clear/cancel and the focus-loss settle (the date-editor buffer
     // pattern over adapter state).
-    "task_effort_edit_opened",
     "task_effort_edited",
     "task_effort_committed",
-    "task_effort_cleared",
-    "task_effort_cancelled",
     "task_effort_focus_lost",
     "task_date_quick_typed",
     "task_date_time_accepted",

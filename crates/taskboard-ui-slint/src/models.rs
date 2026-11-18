@@ -671,12 +671,11 @@ pub struct LabelFormPush {
     pub color: String,
 }
 
-/// The effort row's editor push (task-detail-editor UX plan US-3/D-8,
-/// #838): the inline editor's open flag and buffer mirror (`open` is
-/// the editor armed; the chip echo derives from the task's stored
-/// effort, never the buffer).
+/// The effort row's push (the overlay migration, M9): the always-on
+/// field's text seed — the armed buffer when the user typed, the
+/// subject's stored text form otherwise. There is no open flag any
+/// more.
 pub struct EffortEditorPush<'a> {
-    pub open: bool,
     pub buffer: &'a str,
 }
 
@@ -2590,17 +2589,10 @@ fn push_task_detail(
                 .and_then(|t| t.importance)
                 .map_or(String::new(), |level| level.text_form().to_owned()),
         ),
-        // The effort row's halves (task-detail-editor UX plan US-3/D-8,
-        // #838): the chip echo is the domain text form (the walk
-        // placement's twin), the open flag and buffer mirror ride the
-        // adapter's editor state.
-        effort_echo: SharedString::from(
-            subject
-                .and_then(|t| t.effort)
-                .map_or(String::new(), |effort| effort.text_form().clone()),
-        ),
-        effort_open: effort.is_some(),
-        effort_text: SharedString::from(effort.map_or(String::new(), |e| e.buffer.to_string())),
+        // The effort row's half (the overlay migration, M9): the
+        // always-on field's seed (the adapter computes the armed-
+        // buffer-or-stored-form rule).
+        effort_text: SharedString::from(effort.map_or("", |e| e.buffer).to_owned()),
         urgency_echo: SharedString::from(
             subject
                 .and_then(|t| t.urgency)

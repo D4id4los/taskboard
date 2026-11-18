@@ -156,13 +156,9 @@ export struct TaskDetailModel {
     importance-open: bool,
     urgency-open: bool,
     priority-slots: [PrioritySlotRow],
-    // The effort row's pushed halves (task-detail-editor UX plan
-    // US-3/D-8, #838): the chip echo (the domain text form — the
-    // walk placement's twin), the inline editor's open flag (the
-    // adapter-owned one-editor-at-a-time state), and the editor's
-    // buffer mirror.
-    effort-echo: string,
-    effort-open: bool,
+    // The effort row's pushed half (the overlay migration, M9): the
+    // always-on field's seed — the armed buffer when the user typed,
+    // the stored value's text form otherwise.
     effort-text: string,
     // The labels section's pushed halves (UX R-3 D-2, #789): the
     // mount flag (desktop + subject present — the detail view's own
@@ -217,22 +213,13 @@ export component TaskView inherits FocusScope {
     // viewed task (click ≡ key, §7.1).
     callback importance-edit-asked();
     callback urgency-edit-asked();
-    // The effort row's seams (task-detail-editor UX plan US-3/D-8,
-    // #838), forwarded to the window: the edit affordance opens the
-    // inline editor (the date-editor buffer pattern), the buffer
-    // mirrors, the commit parses and dispatches the sparse
-    // UpdateTask effort mask, the clear affordance commits the clear
-    // twin, the cancel discards.
-    // slint: task-effort-edit-opened
-    callback effort-edit-opened();
+    // The effort row's seams (the overlay migration, M9): the
+    // always-on field's mirror, and the commit (Return + focus loss —
+    // the D-5 guard makes unchanged values dispatch nothing).
     // slint: task-effort-edited
     callback effort-edited(string);
     // slint: task-effort-committed
     callback effort-committed();
-    // slint: task-effort-cleared
-    callback effort-cleared();
-    // slint: task-effort-cancelled
-    callback effort-cancelled();
     // slint: task-effort-focus-lost
     callback effort-focus-lost();
     // The labels section's seams (UX R-3 D-2, #789): the chip ×
@@ -909,51 +896,41 @@ export component TaskView inherits FocusScope {
                 }
             }
 
-            // The effort row (task-detail-editor UX plan US-3/D-8,
-            // #838): the chip beside the priority rows (the r3 D-1
-            // metadata-block grammar; the detail view is the owning
-            // surface, R-2), the edit affordance opening the inline
-            // editor, and the x-clear mirroring the date fields'
-            // clear (empty commit = Some(None) — the walk placement's
-            // posture).
-            effort-row := VerticalLayout {
+            // The effort row (the overlay migration, M9; US-3/S2's
+            // always-on one-line row): the caption and the field on
+            // one line, the field always mounted, the commit on
+            // Return and on focus loss (R-9 — no explicit save step;
+            // the D-5 guard dispatches nothing for unchanged values).
+            // The clear is the field's empty commit (= Some(None) —
+            // the walk placement's posture, unchanged).
+            effort-row := HorizontalLayout {
+                spacing: Theme.space-2;
                 RoleText {
                     role: Typography.caption;
                     text-color: Theme.text-secondary;
-                    text: "Effort";
+                    text: "Effort Estimate";
+                    vertical-alignment: center;
                 }
-                if (!root.task.effort-open): HorizontalLayout {
-                    spacing: Theme.space-1;
-                    RoleText {
-                        role: Typography.mono;
-                        text-color: Theme.text-secondary;
-                        text: root.task.effort-echo == "" ? "—" : root.task.effort-echo;
-                        vertical-alignment: center;
-                    }
-                    IconButton {
-                        icon: IconKind.pencil;
-                        tone: Tone.neutral;
-                        label: "Edit effort";
-                        description: "Opens the effort editor: minutes, or s/m/h components.";
-                        clicked => root.effort-edit-opened();
-                    }
-                    if (root.task.effort-echo != ""): IconButton {
-                        icon: IconKind.remove;
-                        tone: Tone.neutral;
-                        label: "Clear effort";
-                        description: "Clears the task's effort estimate.";
-                        clicked => root.effort-cleared();
-                    }
-                }
-                if (root.task.effort-open): TextField {
-                    label: "Effort";
+                effort-field := TextField {
+                    horizontal-stretch: 1;
                     placeholder: "30 or 1h30m";
+                    label: "Effort Estimate";
                     description: "The effort estimate: bare digits are minutes, s/m/h components compose.";
                     initial-text: root.task.effort-text;
-                    autofocus: true;
                     edited(t) => root.effort-edited(t);
                     accepted(t) => root.effort-committed();
                     focus-lost() => root.effort-focus-lost();
+                }
+                // The push re-seed (the DueEditor idiom): the
+                // adapter's seed wins whenever it differs from the
+                // field's own text — a subject switch or an external
+                // effort change rewrites the field; the typed echo is
+                // a no-op.
+                property <string> effort-seed: root.task.effort-text;
+                changed effort-seed => {
+                    if (effort-field.text != root.task.effort-text) {
+                        effort-field.text = root.task.effort-text;
+                    }
                 }
             }
 

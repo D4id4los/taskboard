@@ -148,6 +148,11 @@ enum Resolve {
 pub(crate) struct EffortEditorState {
     pub(crate) task: TaskId,
     pub(crate) buffer: String,
+    /// The last committed value's trimmed text (D-5's guard): a
+    /// commit of an unchanged value dispatches nothing — the
+    /// always-on row's focus-loss fires on every blur, and the
+    /// Return/blur pair must not double-dispatch.
+    pub(crate) last_committed: String,
 }
 
 /// The effort row's parse predicate (US-3/D-8): the domain
@@ -2608,13 +2613,23 @@ impl Adapter {
                 title: form.title.clone(),
                 color: form.color.clone(),
             });
-        let effort_editor =
-            self.effort_editor
+        // M9: the always-on effort row's seed — the armed buffer when
+        // the user typed (the lazy editor exists), the subject's
+        // stored text form otherwise (empty when unset). The field is
+        // always mounted; there is no open flag any more.
+        let effort_stored = self
+            .view_state
+            .subject_task()
+            .and_then(|id| state.tasks.get(&id))
+            .and_then(|t| t.effort.as_ref())
+            .map(|e| e.text_form())
+            .unwrap_or_default();
+        let effort_editor = Some(crate::models::EffortEditorPush {
+            buffer: self
+                .effort_editor
                 .as_ref()
-                .map(|editor| crate::models::EffortEditorPush {
-                    open: true,
-                    buffer: editor.buffer.as_str(),
-                });
+                .map_or(effort_stored.as_str(), |editor| editor.buffer.as_str()),
+        });
         // The armed strip's mirror (the track-entries armed-index
         // rule): the armed row's canonical roster position, or none.
         // US-6 pass-side clear (#840, task-detail-editor UX plan
@@ -11992,31 +12007,33 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // from the effort's domain text form (empty = the clear seed),
     // refresh. Both fronts land here — the row affordance's seam and
     // nothing else (pointer-grade row verb, the rule-row posture).
-    // slint: task-effort-edit-opened
-    install_seam!(window: window.on_task_effort_edit_opened, adapter: adapter;
-    bind mut (a, window), args (), {        settle_date_editor(&mut a, &window);
-    let Some(task) = a.view_state.subject_task() else {
-        return; // the subjectless detail: the typed inert
-    };
-    let state = a.state.load_full();
-    let buffer = state
-        .tasks
-        .get(&task)
-        .and_then(|t| t.effort)
-        .map(taskboard_domain::Effort::text_form)
-        .unwrap_or_default();
-    a.effort_editor = Some(EffortEditorState { task, buffer });
-    a.refresh_forced(&window);
-
-    });
-
     // The buffer mirror (the date-editor buffer pattern verbatim).
     // slint: task-effort-edited
     install_seam!(window: window.on_task_effort_edited, adapter: adapter;
-    bind mut (a, window), args (text), {        if let Some(editor) = a.effort_editor.as_mut() {
-        editor.buffer = text.to_string();
-    }
-    a.refresh_forced(&window);
+    bind mut (a, window), args (text), {        // The lazy editor (M9): the always-on row has no open seam —
+        // the first keystroke arms the buffer over the subject, the
+        // seed being the stored value (the D-5 guard's baseline).
+        if a.effort_editor.is_none() {
+            let Some(task) = a.view_state.subject_task() else {
+                return; // the subjectless detail: the typed inert
+            };
+            let state = a.state.load_full();
+            let seed = state
+                .tasks
+                .get(&task)
+                .and_then(|t| t.effort.as_ref())
+                .map(|e| e.text_form())
+                .unwrap_or_default();
+            a.effort_editor = Some(EffortEditorState {
+                task,
+                buffer: seed.clone(),
+                last_committed: seed,
+            });
+        }
+        if let Some(editor) = a.effort_editor.as_mut() {
+            editor.buffer = text.to_string();
+        }
+        a.refresh_forced(&window);
 
     });
 
@@ -12034,53 +12051,16 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     // The x-clear (the date fields' clear affordance): commits the
     // clear twin over the subject directly.
-    // slint: task-effort-cleared
-    install_seam!(window: window.on_task_effort_cleared, adapter: adapter;
-    bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
-        return;
-    };
-    if a
-        .commands
-        .try_send(StateCommand::UpdateTask {
-            id: task,
-            changes: taskboard_domain::TaskChanges {
-                effort: Some(None),
-                ..taskboard_domain::TaskChanges::default()
-            },
-        })
-        .is_err()
-    {
-        tracing::warn!("effort clear dropped: command channel full or closed");
-        return;
-    }
-    a.effort_editor = None;
-    a.finish_mutation(&window);
-    a.refresh_forced(&window);
-
-    });
-
-    // The cancel: the draft dies, nothing dispatches.
-    // slint: task-effort-cancelled
-    install_seam!(window: window.on_task_effort_cancelled, adapter: adapter;
-    bind mut (a, window), args (), {        if a.effort_editor.take().is_some() {
-        a.refresh_forced(&window);
-    }
-
-    });
-
     // The focus-loss settle (the shared rule: parseable commits,
     // empty/junk discards — the prior value survives, the editor
     // collapses).
     install_seam!(window: window.on_task_effort_focus_lost, adapter: adapter;
-    bind mut (a, window), args (), {        let parses = a
-        .effort_editor
-        .as_ref()
-        .is_some_and(|editor| parse_effort_row(&editor.buffer).is_some());
-    if parses {
+    bind mut (a, window), args (), {        // The D-5 law: the focus-loss IS the commit — the guard makes a
+        // blur of an unchanged value dispatch nothing, so Return +
+        // blur never double-dispatch. An unparseable buffer
+        // dispatches nothing (the refusal posture; the typed text
+        // stays in the field for the user to fix).
         commit_effort_editor(&mut a, &window);
-    } else if a.effort_editor.take().is_some() {
-        a.refresh_forced(&window);
-    }
 
     });
 
@@ -12787,6 +12767,12 @@ fn commit_effort_editor(a: &mut Adapter, window: &AppWindow) {
         return;
     };
     let trimmed = editor.buffer.trim().to_owned();
+    // The D-5 guard: a commit of an unchanged value dispatches
+    // nothing (the always-on row blurs constantly; nothing ever
+    // consumed the editor, so the buffer stays).
+    if trimmed == editor.last_committed {
+        return;
+    }
     let effort_change = if trimmed.is_empty() {
         Some(None)
     } else if let Some(effort) = parse_effort_row(&trimmed) {
@@ -12811,7 +12797,11 @@ fn commit_effort_editor(a: &mut Adapter, window: &AppWindow) {
         tracing::warn!("effort commit dropped: command channel full or closed");
         return;
     }
-    a.effort_editor = None;
+    // The row stays armed (always-on): the baseline moves to the
+    // committed value, so the Return+blur pair never double-dispatches.
+    if let Some(editor) = a.effort_editor.as_mut() {
+        editor.last_committed = trimmed;
+    }
     a.finish_mutation(window);
     a.refresh_forced(window);
 }
