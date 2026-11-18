@@ -37,6 +37,9 @@ async fn forwarder(
         store: forbidden_store(),
         control: app.connector_control(),
         engine: app.engine.clone(),
+        // The suite's own identity home (#751); no ceremony path in
+        // this suite, but the workspace is a plain value.
+        device_json: tempdir().keep().join("device.json"),
     };
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let _join = spawn_ui_request_forwarder(rx, app.engine.shared_state(), workspace);

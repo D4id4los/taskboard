@@ -557,6 +557,7 @@ pub async fn run_on(
     store: &Arc<dyn CredentialStore>,
     board: BoardId,
     direction: MoveDirection,
+    device_json: &std::path::Path,
     timeout: Duration,
 ) -> Result<MoveReceipt, CommandError> {
     run_until(
@@ -565,10 +566,28 @@ pub async fn run_on(
         store,
         board,
         direction,
+        device_json,
         MoveStage::Committed,
         timeout,
     )
     .await
+}
+
+/// The platform-default identity home `<data>/taskboard/device.json`;
+/// `FilesSyncDisabled`-mapped when the platform has no data dir — the
+/// same typed outcome `app_world` produced pre-injection (#751). The
+/// default-path callers (CLI verb, the UI lifecycle constructors) pass
+/// this; tests inject a tempdir path instead.
+///
+/// # Errors
+///
+/// [`MoveError::FilesSyncDisabled`] when the platform exposes no data
+/// directory.
+pub fn default_device_json() -> Result<std::path::PathBuf, CommandError> {
+    dirs::data_dir()
+        .ok_or(MoveError::FilesSyncDisabled)
+        .map(|dir| dir.join("taskboard").join("device.json"))
+        .map_err(CommandError::from)
 }
 
 /// [`run_on`] with an explicit stop stage (the live journey's undo leg
@@ -577,17 +596,19 @@ pub async fn run_on(
 /// # Errors
 ///
 /// As [`run_on`].
+#[allow(clippy::too_many_arguments)] // the injection seam's positional mirror of run_on
 pub async fn run_until(
     engine: &EngineHandle,
     config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
     board: BoardId,
     direction: MoveDirection,
+    device_json: &std::path::Path,
     stop_after: MoveStage,
     timeout: Duration,
 ) -> Result<MoveReceipt, CommandError> {
     let board = crate::commands::resolve_board(engine, Some(board))?;
-    let mut world = app_world(engine, config, store, board, timeout).await?;
+    let mut world = app_world(engine, config, store, board, device_json, timeout).await?;
     let (stage, steps) = match direction {
         MoveDirection::Undo => {
             let steps = undo(&mut world).await?;
@@ -607,6 +628,7 @@ async fn app_world<'a>(
     config: &'a AppConfig,
     store: &Arc<dyn CredentialStore>,
     board: BoardId,
+    device_json: &std::path::Path,
     timeout: Duration,
 ) -> Result<AppWorld<'a>, CommandError> {
     let spec =
@@ -615,12 +637,8 @@ async fn app_world<'a>(
     let transport = WebDavFilesTransport::new(&spec.server_url, &spec.username, password.expose())
         .map_err(MoveError::PublishFailed)?;
     let clock: Arc<dyn taskboard_domain::Clock> = Arc::new(taskboard_domain::SystemClock);
-    let device_json = dirs::data_dir()
-        .ok_or(MoveError::FilesSyncDisabled)?
-        .join("taskboard")
-        .join("device.json");
     let identity =
-        taskboard_sync_files_nextcloud::device::load_or_create(&device_json, clock.as_ref())
+        taskboard_sync_files_nextcloud::device::load_or_create(device_json, clock.as_ref())
             .await
             .map_err(|_| MoveError::FilesSyncDisabled)?;
     let context = SyncContext {

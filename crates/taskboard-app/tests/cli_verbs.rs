@@ -1791,6 +1791,7 @@ async fn boards_move_refuses_unknown_boards() {
         &store,
         unknown,
         MoveDirection::ToFiles,
+        std::path::Path::new("unused"),
         budget,
     )
     .await

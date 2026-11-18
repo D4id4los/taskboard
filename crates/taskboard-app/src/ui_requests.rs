@@ -86,6 +86,13 @@ pub struct ConnectionWorkspace {
     /// The engine handle — the boot-pull settle reads it
     /// (`wait_for_boot_pull(&EngineHandle, ..)`).
     pub engine: EngineHandle,
+    /// The move ceremony's injection point (#751): the identity file
+    /// the arms pass through to `board_move_ceremony::run_on`, so
+    /// tests own their identity home. `None` — a platform with no
+    /// data directory — stays a typed `FilesSyncDisabled` refusal at
+    /// the arms (the pre-injection `app_world` outcome): bootstrap
+    /// degrades authorless there, so this is not a boot invariant.
+    pub device_json: Option<PathBuf>,
 }
 
 /// Spawns the UI request forwarder: width snapshots merge into the
@@ -1674,6 +1681,12 @@ async fn move_board_to_files(
     if crate::bootstrap::files_sync_spawn_decision(&raw).is_none() {
         return Err(SettingsError::FilesSyncDisabled);
     }
+    // The identity home: `None` (no platform data dir) is the same
+    // typed refusal, decided pre-IO with the guards above.
+    let device_json = workspace
+        .device_json
+        .as_deref()
+        .ok_or(SettingsError::FilesSyncDisabled)?;
     let state = workspace.engine.shared_state().load();
     let row = state
         .boards
@@ -1696,6 +1709,7 @@ async fn move_board_to_files(
         &workspace.store,
         board,
         crate::board_move_ceremony::MoveDirection::ToFiles,
+        device_json,
         crate::board_move_ceremony::DEFAULT_MOVE_TIMEOUT,
     )
     .await
@@ -1782,12 +1796,19 @@ async fn undo_board_move(
         .ok_or(SettingsError::Gone)?;
     drop(state);
     let raw = ensure_migrated(workspace)?;
+    // The undo leg's identity home: same `None` → typed refusal as the
+    // move arm.
+    let device_json = workspace
+        .device_json
+        .as_deref()
+        .ok_or(SettingsError::FilesSyncDisabled)?;
     crate::board_move_ceremony::run_on(
         &workspace.engine,
         &raw,
         &workspace.store,
         board,
         crate::board_move_ceremony::MoveDirection::Undo,
+        device_json,
         crate::board_move_ceremony::DEFAULT_MOVE_TIMEOUT,
     )
     .await
@@ -2003,6 +2024,14 @@ mod tests {
             store: Arc::new(RefusingStore),
             control: app.connector_control(),
             engine: app.engine.clone(),
+            // The suite's own identity home: the ceremony's create arm
+            // mints there, never the platform default (#751).
+            device_json: Some(
+                tempfile::tempdir()
+                    .expect("tempdir")
+                    .keep()
+                    .join("device.json"),
+            ),
         };
         (workspace, app)
     }

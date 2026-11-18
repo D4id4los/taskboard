@@ -86,6 +86,13 @@ async fn booted_workspace(
         store,
         control: app.connector_control(),
         engine: app.engine.clone(),
+        // The suite's own identity home: the ceremony's create arm
+        // mints here, never the platform default (#751). `keep` — the
+        // ceremony mints after this function returns.
+        device_json: tempfile::tempdir()
+            .expect("tempdir")
+            .keep()
+            .join("device.json"),
     };
     (app, workspace)
 }
