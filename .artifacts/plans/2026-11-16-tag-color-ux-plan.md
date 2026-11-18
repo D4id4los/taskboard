@@ -204,9 +204,9 @@ flowchart TD
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/compositions/labels-overlay.slint, src/adapter.rs | the free-form colour field (+ preview) | — | the form's draft funnel parses via the domain constructor (`// slint:` per the #782 fold) | — (the forms' existing commit seams) | StateCommand::CreateLabel; StateCommand::UpdateLabel | the form's board/label ids via `a.tables.label_ids` | US-1/S1–S2 | journeys.rs::us1_ac1_the_form_commits_the_exact_parsed_colour |
+| W-1 | ui/compositions/labels-overlay.slint, src/adapter.rs | the free-form colour field (+ preview) | — | the form's draft funnel parses via the domain constructor (`// slint:` per the #782 fold) | — | StateCommand::CreateLabel; StateCommand::UpdateLabel | the form's board/label ids via `a.tables.label_ids` | US-1/S1–S2 (the forms' existing commit seams — no new action) | journeys.rs::us1_ac1_the_form_commits_the_exact_parsed_colour |
 | W-2 | src/menu.rs, src/actions.rs, src/keymap/presets.rs, ui/views/board-view.slint + ui/app-window.slint, src/adapter.rs | the board menu row + the roster-only mount | — | the overlay's board-surface mount (subject = the selected board; `// slint:`) | ActionId::LabelManage | StateCommand::CreateLabel; StateCommand::UpdateLabel; StateCommand::DeleteLabel | the selected board via the id-table pass | US-2/S1–S3 | journeys.rs::us2_ac1_board_menu_opens_the_roster_only_overlay |
-| W-3 | ui/widgets/task-card.slint, src/models.rs, src/presentation.rs | the card label chips | — | — (display only — the chips derive from `Task::live_labels` per refresh) | — | — (reason: pure display state) | the card's decoration model | US-3/S1–S3 | presentation.rs::us3_ac1_the_card_carries_one_chip_per_live_label |
+| W-3 | ui/widgets/task-card.slint, src/models.rs, src/presentation.rs | the card label chips | — | — (display only — the chips derive from `Task::live_labels` per refresh) | — | — | the card's decoration model | US-3/S1 (reason: pure display state) | presentation.rs::us3_ac1_the_card_carries_one_chip_per_live_label |
 
 ## 7. Command-contract delta
 

@@ -45,6 +45,33 @@ impl std::fmt::Display for Color {
     }
 }
 
+/// A colour value failed the six-hex mint (the tag-color UX plan US-1,
+/// #839): the user-input trust boundary's typed refusal.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("expected exactly six hex digits (no '#')")]
+pub struct InvalidColor;
+
+impl Color {
+    /// Mints a colour from user input at a trust boundary: exactly six
+    /// ASCII hex digits, any case, normalized to lowercase. The
+    /// user-input minting constructor (the A1 pattern,
+    /// `docs/coding_guidelines.org` §2.1) — the CLI's `parse_color`
+    /// grammar promoted to the domain so the GUI commits through the
+    /// same fn (one behavior, one implementation). The lenient
+    /// [`Color::new`] stays for wire/storage echoes (sync adoption of
+    /// remote content); parse at input, never re-validate after.
+    ///
+    /// # Errors
+    /// [`InvalidColor`] unless `raw` is exactly six ASCII hex digits.
+    pub fn parse(raw: &str) -> Result<Self, InvalidColor> {
+        let lower = raw.to_lowercase();
+        if lower.len() == 6 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(Self(lower));
+        }
+        Err(InvalidColor)
+    }
+}
+
 /// Estimated effort in whole seconds; `None` on a [`Task`] = unestimated.
 /// Unsigned by construction (negative effort is unrepresentable); the
 /// storage codec rejects values beyond `i64::MAX` at its boundary.
@@ -858,6 +885,43 @@ mod tests {
     use crate::test_support;
     use proptest::prelude::*;
     use std::collections::BTreeSet;
+
+    // The `Color::parse` corpus (the tag-color UX plan US-1/D-1): the
+    // CLI's six-hex grammar verbatim — the contract moved here with
+    // the grammar (the CLI's corpus tests were deleted, not
+    // duplicated — one behavior, one test, lowest layer).
+    #[test]
+    fn color_parse_accepts_six_hex_digits_and_normalizes_case() {
+        for (raw, normalized) in [
+            ("31CC7C", "31cc7c"),
+            ("AbCdEf", "abcdef"),
+            ("31cc7c", "31cc7c"),
+        ] {
+            assert_eq!(Color::parse(raw), Ok(Color::new(normalized)), "{raw}");
+        }
+        assert_eq!(Color::parse("31CC7C").unwrap().as_str(), "31cc7c");
+    }
+
+    #[test]
+    fn color_parse_rejects_everything_else() {
+        for bad in ["#fff", "fff", "ffffff0", "zzzzzz", "31cc7", ""] {
+            assert_eq!(
+                Color::parse(bad),
+                Err(InvalidColor),
+                "{bad} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn color_new_stays_lenient_while_parse_is_the_input_gate() {
+        // The two constructors' contract split: the lenient `new`
+        // accepts anything (wire/storage echoes), the user-input mint
+        // refuses what parse refuses.
+        let lenient = Color::new("#fff nope");
+        assert_eq!(lenient.as_str(), "#fff nope");
+        assert_eq!(Color::parse("#fff nope"), Err(InvalidColor));
+    }
 
     #[test]
     fn remote_baseline_text_form_is_the_serde_json_and_round_trips() {

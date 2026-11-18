@@ -102,8 +102,8 @@ pub use command::{
 };
 pub use days::{DayCalendar, day_window, trailing_days_window, window_start};
 pub use entities::{
-    Board, BoardClocks, Color, Effort, Importance, Label, LabelClocks, Stack, StackClocks, Task,
-    TaskClocks, Urgency,
+    Board, BoardClocks, Color, Effort, Importance, InvalidColor, Label, LabelClocks, Stack,
+    StackClocks, Task, TaskClocks, Urgency,
 };
 pub use find::{MatchQuality, SearchHit, SearchTarget, find};
 pub use habit::{

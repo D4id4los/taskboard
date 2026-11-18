@@ -495,16 +495,20 @@ pub enum StacksCmd {
 /// applies it when `--color` is omitted.
 pub const DEFAULT_LABEL_COLOR: &str = "31cc7c";
 
-/// Six lowercase hex digits or a usage error — labels and boards (an
-/// invalid color is a permanent push rejection; the lenient domain
-/// value stays for adopted remote content, new input gets this boundary
-/// validation).
+/// The clap value-parser wrapper over the domain's six-hex mint
+/// (tag-color UX plan US-1/D-2, #839): the grammar lives in
+/// `taskboard_domain::Color::parse` (one behavior, one
+/// implementation — the GUI commits through the same fn); this arm
+/// only maps the typed refusal onto a clap usage error. Labels and
+/// boards (an invalid color is a permanent push rejection; the lenient
+/// domain value stays for adopted remote content, new input gets this
+/// boundary validation).
 fn parse_color(raw: &str) -> Result<String, String> {
-    let lower = raw.to_lowercase();
-    if lower.len() == 6 && lower.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Ok(lower);
-    }
-    Err("expected exactly six hex digits (e.g. 31cc7c, no '#')".to_owned())
+    taskboard_domain::Color::parse(raw)
+        .map(|color| color.as_str().to_owned())
+        .map_err(|taskboard_domain::InvalidColor| {
+            "expected exactly six hex digits (e.g. 31cc7c, no '#')".to_owned()
+        })
 }
 
 /// A local board uuid or a usage error — the `--board` flag of the
@@ -546,17 +550,15 @@ fn parse_board_id_accepts_uuids_and_rejects_garbage() {
     }
 }
 
+// The `Color::parse` corpus lives in the domain (the contract moved
+// with the grammar — one behavior, one test, lowest layer); the CLI
+// keeps only the wrapper's mapping (tag-color plan D-2).
 #[test]
-fn parse_color_normalizes_six_hex_digits() {
+fn parse_color_maps_the_domain_mint_onto_usage_errors() {
+    // One accepted case: the wrapper unwraps the minted, normalized hex.
     assert_eq!(parse_color("31CC7C"), Ok("31cc7c".to_owned()));
-    assert_eq!(parse_color("AbCdEf"), Ok("abcdef".to_owned()));
-}
-
-#[test]
-fn parse_color_rejects_everything_else() {
-    for bad in ["#fff", "fff", "ffffff0", "zzzzzz", "31cc7", ""] {
-        assert!(parse_color(bad).is_err(), "{bad} must be rejected");
-    }
+    // The typed domain refusal maps onto the clap usage error.
+    assert!(parse_color("#fff").is_err());
 }
 
 /// `--due` grammar: set (RFC-3339 with an explicit offset, normalized
