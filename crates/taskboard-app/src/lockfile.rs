@@ -193,3 +193,61 @@ fn read_holder_pid(path: &Path) -> Option<u32> {
 pub fn holder_pid(db_path: &Path) -> Option<u32> {
     read_holder_pid(&lock_path(db_path))
 }
+
+/// Non-mutating probe: is `<db_path>.lock`'s OS lock currently held
+/// exclusively? Attempts a *shared* read lock on the sidecar —
+/// `WouldBlock` means an exclusive holder is alive. The flock is the
+/// truth (issue #886): unlike [`holder_pid`], it cannot be stale, and
+/// a failed read attempt mutates nothing (no pid overwrite —
+/// [`InstanceLock::acquire`]'s create-without-truncate subtlety is
+/// untouched). A missing or unopenable sidecar reads as free: the next
+/// boot recreates it.
+#[must_use]
+pub fn lock_is_held(db_path: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(lock_path(db_path)) else {
+        return false;
+    };
+    match RwLock::new(file).try_read() {
+        Ok(_guard) => false,
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => true,
+        // Any other probe failure reads as free: the next boot either
+        // recreates the sidecar or fails typed on its own acquire.
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InstanceLock, lock_is_held};
+
+    /// The probe's truth is the flock, not the recorded pid: a live
+    /// [`InstanceLock`] in this process reads as held.
+    #[test]
+    fn a_live_instance_lock_reads_as_held() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("held.db");
+        let _lock = InstanceLock::acquire(&db).expect("acquire");
+        assert!(lock_is_held(&db));
+    }
+
+    /// Dropping the lock releases the OS lock — the probe reads free,
+    /// which is the #886 invariant's lock-free half.
+    #[test]
+    fn a_dropped_instance_lock_reads_as_free() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("dropped.db");
+        let lock = InstanceLock::acquire(&db).expect("acquire");
+        assert!(lock_is_held(&db));
+        drop(lock);
+        assert!(!lock_is_held(&db));
+    }
+
+    /// No sidecar at all (fresh database) reads as free — never an
+    /// error, so the fallback gate stays a pure predicate.
+    #[test]
+    fn a_missing_lock_sidecar_reads_as_free() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("absent.db");
+        assert!(!lock_is_held(&db));
+    }
+}

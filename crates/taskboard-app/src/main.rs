@@ -91,6 +91,22 @@ fn main() -> color_eyre::Result<()> {
     Ok(())
 }
 
+/// The #886 drain-window fallback gate (never returns): the artifact is
+/// present and the lock probe says a daemon is draining or wedged — an
+/// in-process boot would fail typed `instance-locked` after a doomed
+/// bootstrap. Report the same typed failure (the recorded holder pid is
+/// diagnostic, exactly like `bootstrap`'s own `InstanceLocked`) instead
+/// of booting into a lock another instance holds.
+fn exit_blocked_fallback(json: bool, db_path: &std::path::Path) -> ! {
+    let err = CommandError::Bootstrap(Box::new(
+        taskboard_app::bootstrap::BootstrapError::InstanceLocked {
+            db: db_path.to_path_buf(),
+            holder_pid: taskboard_app::lockfile::holder_pid(db_path),
+        },
+    ));
+    std::process::exit(i32::from(report(json, &err)));
+}
+
 async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
     // Subcommand arms are lib code (`commands::dispatch`); the process
     // exits with the returned code (0 success / 1 runtime failure).
@@ -146,21 +162,31 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
                 cancel = install_for(&command);
                 let json = cli.json;
                 let transport = async {
-                    if let Ok(config) = AppConfig::load(cli.config.clone())
-                        && let Some(conn) = client::try_connect(config.db_path()).await
-                    {
-                        let read_budget = client::client_read_budget(
-                            verb_timeout_secs(&command),
-                            config.ipc.client_read_timeout_secs,
-                        );
-                        match conn.exec(&raw_argv, read_budget).await {
-                            Ok(outcome) => relay(&outcome),
-                            // Mid-request death: the daemon holds the lock,
-                            // so in-process fallback would only re-report
-                            // `instance-locked`; the typed failure is the
-                            // honest signal.
-                            Err(err) => std::process::exit(i32::from(report(json, &err))),
+                    if let Ok(config) = AppConfig::load(cli.config.clone()) {
+                        if let Some(conn) = client::try_connect(config.db_path()).await {
+                            let read_budget = client::client_read_budget(
+                                verb_timeout_secs(&command),
+                                config.ipc.client_read_timeout_secs,
+                            );
+                            match conn.exec(&raw_argv, read_budget).await {
+                                Ok(outcome) => relay(&outcome),
+                                // Mid-request death: the daemon holds the lock,
+                                // so in-process fallback would only re-report
+                                // `instance-locked`; the typed failure is the
+                                // honest signal.
+                                Err(err) => std::process::exit(i32::from(report(json, &err))),
+                            }
+                        } else if client::fallback_blocked_by_lock(config.db_path()) {
+                            // The #886 drain window: the artifact is
+                            // still present and the draining daemon
+                            // still holds the instance lock — report
+                            // the typed failure instead of booting
+                            // into it.
+                            exit_blocked_fallback(json, config.db_path());
                         }
+                        // Genuinely unserved (artifact absent, lock
+                        // free): fall through to the in-process
+                        // dispatch below — the lock is provably free.
                     }
                 };
                 selected(json, cancel.as_mut(), transport).await;
@@ -618,24 +644,29 @@ async fn drain_and_shutdown(
 ) -> color_eyre::Result<()> {
     let shutdown_timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs);
     // Phase A: the bounded server drains. An escalation landing here
-    // finds `app` still owned: full salvage.
-    let (ipc_hit, web_hit) = tokio::select! {
+    // finds `app` still owned: full salvage. The IPC artifact rides
+    // out of the join untouched — it is removed only after Phase B has
+    // released the instance lock (issue #886).
+    let (ipc_hit, web_hit, socket_artifact) = tokio::select! {
         hits = async {
             // Bounded: past the budget the servers abort their tasks (a
             // wedged peer must never hold the daemon's shutdown hostage)
             // and the refcount is released either way. The dashboard's
             // drain rides the same budget as the IPC socket's.
-            let ipc_hit = match server {
-                Some(server) => server.join(shutdown_timeout).await,
+            let (ipc_hit, artifact) = match server {
+                Some(server) => {
+                    let outcome = server.join(shutdown_timeout).await;
+                    (outcome.budget_hit, outcome.socket_artifact)
+                }
                 // An absent server contributes no degraded hit — the
                 // literal shape the web arm has one line below.
-                None => false,
+                None => (false, None),
             };
             let web_hit = match web {
                 Some(web) => web.join(shutdown_timeout).await,
                 None => false,
             };
-            (ipc_hit, web_hit)
+            (ipc_hit, web_hit, artifact)
         } => hits,
         () = taskboard_app::signals::changed_or_never(&mut signals.escalate) =>
             escalate_exit(&app, &mut signals.escalate).await,
@@ -657,6 +688,14 @@ async fn drain_and_shutdown(
         () = taskboard_app::signals::changed_or_never(&mut signals.escalate) =>
             forced_exit(&mut signals.escalate),
     };
+    // The owned shutdown consumed the `App` — the instance lock went
+    // with it — so the socket artifact can now become the
+    // client-visible `daemon:false` signal (issue #886: artifact
+    // absent ⇒ lock free ⇒ in-process fallback boot is safe). The
+    // `forced_exit` arm above skips this deliberately: escalation
+    // leaves the stale artifact for the next boot's recovery (see
+    // `remove_socket_artifact`).
+    taskboard_app::ipc::remove_socket_artifact(socket_artifact.as_deref()).await;
     // The drain resolved: de-arm, so the exit epilogue cannot flip a
     // clean 0 into a forced code (§10 Q9; the escape stays armed for
     // genuinely fresh signals — §10 Q10).

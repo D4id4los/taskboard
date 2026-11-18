@@ -28,7 +28,8 @@ use std::path::Path;
 /// The unix socket sidecar path: `<db-dir>/<stem>.sock`
 /// (`taskboard.db` → `taskboard.sock`), the `<db>.lock` naming rule
 /// verbatim. Also the artifact `spawn_server` recovers (stale file from
-/// a crashed daemon) and removes on graceful shutdown.
+/// a crashed daemon) and the shutdown tail removes after the instance
+/// lock releases (issue #886).
 #[cfg(unix)]
 #[must_use]
 pub fn socket_sidecar(db_path: &Path) -> std::path::PathBuf {
@@ -74,6 +75,27 @@ pub fn socket_name(db_path: &Path) -> std::io::Result<interprocess::local_socket
     #[cfg(not(unix))]
     {
         namespaced_name_shape(db_path).to_ns_name::<GenericNamespaced>()
+    }
+}
+
+/// Best-effort removal of the daemon's socket artifact, run by the
+/// shutdown tail *after* the owned shutdown has consumed the `App` —
+/// and with it the instance lock (issue #886: artifact absent ⇒ lock
+/// free ⇒ in-process fallback boot is safe). `None` (Windows, or an
+/// artifact-less server) is a no-op.
+///
+/// An escalated exit (`process::exit` in the shutdown ladder) skips
+/// this deliberately: escalation means the drain misbehaved, and a
+/// stale artifact beside a dead process is exactly the crash shape
+/// `bind_with_recovery` heals on the next boot — the fallback lock
+/// probe stays correct either way, because process death frees the
+/// lock.
+pub async fn remove_socket_artifact(artifact: Option<&Path>) {
+    let Some(artifact) = artifact else {
+        return;
+    };
+    if tokio::fs::remove_file(artifact).await.is_ok() {
+        tracing::debug!(socket = %artifact.display(), "ipc socket removed");
     }
 }
 
