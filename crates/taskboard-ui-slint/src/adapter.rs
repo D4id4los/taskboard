@@ -2372,7 +2372,16 @@ impl Adapter {
                 .as_ref()
                 .is_none_or(|picker| picker.time().is_none())
         {
-            editor.time_open_seed = Some(chrono::Local::now().time());
+            // The clock seam's jurisdiction includes the seed capture
+            // (#921): under a mount's frozen clock the seed derives
+            // from the frozen instant, so an exact-artifact test reads
+            // one oracle instead of racing the capture's wall clock.
+            // Production is unchanged — every production hand-over
+            // passes `None` (`UiSettings::clock`'s contract).
+            editor.time_open_seed = Some(match self.frozen_now {
+                Some(now) => now.with_timezone(&chrono::Local).time(),
+                None => chrono::Local::now().time(),
+            });
         }
         let editor = self.view_state.date_editor();
         let time_text = editor.map_or("--:--", |e| e.time_text.as_str());
