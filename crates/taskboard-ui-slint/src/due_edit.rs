@@ -783,16 +783,17 @@ mod tests {
         // Through `parse_stamp`: `NaiveDate::FromStr` carries the same
         // non-padded leniency (verified, not assumed — the initial
         // padded-only expectation failed against the pinned chrono),
-        // so the non-padded date-only entry commits the day-window
-        // end of its canonical date — full date-only stamp semantics.
+        // so the non-padded date-only entry commits the last covered
+        // instant of its canonical date — full date-only stamp
+        // semantics (#893, 2026-11-19: the mint is the last covered
+        // instant; the raw-window-end oracle predates the rebased-in
+        // leniency test's awareness of the superseded mint).
         let day = calendar(0);
         let date = NaiveDate::from_ymd_opt(2030, 1, 3).unwrap();
         assert_eq!(
             parse_stamp("2030-1-3", now(), &day).expect("non-padded bare date"),
-            Some(taskboard_domain::days::day_window_end(
-                date,
-                day.day_start_time,
-                day.offset
+            Some(taskboard_domain::days::last_covered_instant(
+                taskboard_domain::days::day_window_end(date, day.day_start_time, day.offset)
             ))
         );
     }
