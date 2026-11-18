@@ -1258,90 +1258,57 @@ export component AppWindow inherits Window {
             }
         }
     }
-    if (TimeFieldFacts.open): time-field-backdrop := TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => {
+    // M3 (overlay migration): the time-field quick-list flyout's ONE
+    // host mount — the four site twins' hand clamp/flip expressions
+    // and the site backdrop are the host's now. `site` discriminates
+    // the panel contents (rows + seams per surface); the geometry
+    // rides the class facts global (the widget's click-time push +
+    // keep-alives). The realized panel rect mirrors into the facts
+    // here — the panel's own mirror would read the host-local zero
+    // (the mount site owns the window-space observation seam).
+    flyout-host := AnchoredOverlayHost {
+        open: TimeFieldFacts.open;
+        anchor-x: TimeFieldFacts.anchor-x;
+        anchor-y: TimeFieldFacts.anchor-y;
+        anchor-width: TimeFieldFacts.anchor-width;
+        anchor-height: TimeFieldFacts.anchor-height;
+        viewport-width: root.width;
+        viewport-floor: status.y;
+        panel-preferred-width: TimeFieldFacts.anchor-width;
+        walk-stops: 1;
+        dismissed => {
             TimeFieldFacts.open = false;
         }
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down
-                    && event.button == PointerEventButton.right) {
-                TimeFieldFacts.open = false;
-            }
+        changed panel-y => { TimeFieldFacts.panel-y = self.panel-y; }
+        changed panel-x => { TimeFieldFacts.panel-x = self.panel-x; }
+        if (TimeFieldFacts.site == 0): QuickListFlyout {
+            rows: root.task-model.date-time-slots;
+            nearest-row: root.task-model.date-time-nearest-row;
+            focus-nonce: root.date-quick-nonce;
+            picked(m) => root.task-date-time-picked(m);
+            typed(t) => root.task-date-quick-typed(t);
         }
-    }
-    if (TimeFieldFacts.open && TimeFieldFacts.site == 0): QuickListFlyout {
-        x: max(Theme.space-2,
-               min(TimeFieldFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
-                        + Theme.space-1 + self.height <= status.y
-                    ? TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
-                        + Theme.space-1
-                    : TimeFieldFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
-        width: TimeFieldFacts.anchor-width;
-        rows: root.task-model.date-time-slots;
-        nearest-row: root.task-model.date-time-nearest-row;
-        focus-nonce: root.date-quick-nonce;
-        picked(m) => root.task-date-time-picked(m);
-        typed(t) => root.task-date-quick-typed(t);
-    }
-    if (TimeFieldFacts.open && TimeFieldFacts.site == 1): QuickListFlyout {
-        x: max(Theme.space-2,
-               min(TimeFieldFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
-                        + Theme.space-1 + self.height <= status.y
-                    ? TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
-                        + Theme.space-1
-                    : TimeFieldFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
-        width: TimeFieldFacts.anchor-width;
-        rows: root.timer-setter-time-slots;
-        nearest-row: root.timer-setter-time-nearest-row;
-        focus-nonce: root.timer-setter-quick-nonce;
-        picked(m) => root.timer-setter-time-picked(m);
-        typed(t) => root.timer-setter-quick-typed(t);
-    }
-    if (TimeFieldFacts.open && TimeFieldFacts.site == 2): QuickListFlyout {
-        x: max(Theme.space-2,
-               min(TimeFieldFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
-                        + Theme.space-1 + self.height <= status.y
-                    ? TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
-                        + Theme.space-1
-                    : TimeFieldFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
-        width: TimeFieldFacts.anchor-width;
-        rows: root.track-form-start-slots;
-        nearest-row: root.track-form-start-nearest-row;
-        focus-nonce: root.track-form-quick-nonce;
-        picked(m) => root.track-form-start-picked(m);
-        typed(t) => root.track-form-start-quick-typed(t);
-    }
-    if (TimeFieldFacts.open && TimeFieldFacts.site == 3): QuickListFlyout {
-        x: max(Theme.space-2,
-               min(TimeFieldFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
-                        + Theme.space-1 + self.height <= status.y
-                    ? TimeFieldFacts.anchor-y + TimeFieldFacts.anchor-height
-                        + Theme.space-1
-                    : TimeFieldFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
-        width: TimeFieldFacts.anchor-width;
-        rows: root.track-form-end-slots;
-        nearest-row: root.track-form-end-nearest-row;
-        focus-nonce: root.track-form-quick-nonce;
-        picked(m) => root.track-form-end-picked(m);
-        typed(t) => root.track-form-end-quick-typed(t);
+        if (TimeFieldFacts.site == 1): QuickListFlyout {
+            rows: root.timer-setter-time-slots;
+            nearest-row: root.timer-setter-time-nearest-row;
+            focus-nonce: root.timer-setter-quick-nonce;
+            picked(m) => root.timer-setter-time-picked(m);
+            typed(t) => root.timer-setter-quick-typed(t);
+        }
+        if (TimeFieldFacts.site == 2): QuickListFlyout {
+            rows: root.track-form-start-slots;
+            nearest-row: root.track-form-start-nearest-row;
+            focus-nonce: root.track-form-quick-nonce;
+            picked(m) => root.track-form-start-picked(m);
+            typed(t) => root.track-form-start-quick-typed(t);
+        }
+        if (TimeFieldFacts.site == 3): QuickListFlyout {
+            rows: root.track-form-end-slots;
+            nearest-row: root.track-form-end-nearest-row;
+            focus-nonce: root.track-form-quick-nonce;
+            picked(m) => root.track-form-end-picked(m);
+            typed(t) => root.track-form-end-quick-typed(t);
+        }
     }
 
         // The D2 outside-click dismissal layer (round 1): a full-window
