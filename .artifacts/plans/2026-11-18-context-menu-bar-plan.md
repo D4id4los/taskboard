@@ -105,8 +105,42 @@ unexpected args, instrument via the existing seam inventory test.
 **H-5 (rank 5, eliminated by ruling)**: stale pre-#933 build —
 operator-confirmed post-#933 (J5 R-2). Not re-tested.
 
-**Resolution record**: stage-2 fills in the confirmed hypothesis + the
-elimination results here before opening the PR.
+**Resolution record**: CONFIRMED — H-1, with H-2/H-3 eliminated by
+baseline evidence and the repro verified red pre-fix (stage-2,
+2026-11-18):
+
+- **Baseline**: the pre-existing
+  `journeys::us1_s1_schedule_today_commits_the_exact_mask` (fresh card,
+  no selection) PASSES on `main` @ 36caae97 — the slint-side mount
+  (H-2) and the adapter push (H-3) render the bar correctly whenever the
+  single-card path fires. H-5 was ruling-eliminated (R-2).
+- **Repro**: `us1_s1_the_selection_covered_card_menu_carries_the_quick_bar`
+  (ctrl-click card → right-click it) FAILS on the pre-fix tree
+  (multi arm passes `Vec::new()` → empty bar; verified by temporarily
+  reverting the fix, FAIL reproduced, restored) and PASSES with it.
+- **Mechanism**: the selection branch's `selection_covers` guard
+  (adapter.rs, `open_task_context_menu`) is the only barless path a
+  card right-click can take — and a member right-click is the common
+  selection-covered posture (D-11 keeps the selection across the
+  context funnel).
+- **Fix**: the multi bar (§5) IS the H-1 fix, per J5 R-3: the multi arm
+  composes `menu::multi_quick_bar` over the selection's aggregate
+  facts; the schedule trio routes per member through the selection-verb
+  intercept. Deviation from the plan's §5 signature: `multi_quick_bar`
+  takes `(count, any_scheduled, tracked_members, tracking_elsewhere)` —
+  the recorded `(count, uniformly_tracked_here, tracking_elsewhere)`
+  cannot distinguish uniform-untracked from mixed, and the C-4
+  unschedule rule needs the any-scheduled fact.
+- Golden re-baseline: no menu goldens exist (`tests/goldens/` carries
+  board/today/task-view/review only); the chevron renders only inside
+  open menus, so no golden moves — §7's re-baseline is vacuous. The
+  chevron's proof is the structural probe (`us3_s1`).
+- #927's disarm predicate is soft-delete aware (`deleted` bit), not
+  map-presence: the engine keeps deleted tasks in `state.tasks` (the
+  FakeEngine settle and the first red run both caught this).
+- Journeys appended to `tests/journeys.rs` (the harness is
+  journeys-local — the plan's separate `menus_remainder_journeys.rs`
+  would have duplicated the ~300-line Harness).
 
 ## 4. The bar-presence test design (TDD)
 
