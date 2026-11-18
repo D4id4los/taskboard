@@ -3539,7 +3539,11 @@ mod tests {
         .await;
         let snapshot = reply_rx.await.expect("alive").expect("lands");
         assert!(snapshot.files_sync_enabled, "the reply echoes the file");
-        let written = AppConfig::extract_raw(Some(&path)).expect("decodes");
+        // File-layer validity only (#897): the ambient-composing
+        // `extract_raw` exposed this leg to `TASKBOARD_*` env; the
+        // assertion is a fact about the written file, so read the
+        // file layer alone.
+        let written = AppConfig::extract_file_only(Some(&path)).expect("decodes");
         assert!(written.files_sync.enabled);
         assert_eq!(written.files_sync.poll_secs, Some(7), "poll_secs survives");
         assert_eq!(
@@ -3606,7 +3610,11 @@ mod tests {
             Some("home"),
             "the reply echoes the resolved anchor"
         );
-        let written = AppConfig::extract_raw(Some(&path)).expect("decodes");
+        // File-layer validity only (#897): the ambient-composing
+        // `extract_raw` exposed this leg to `TASKBOARD_*` env; the
+        // assertion is a fact about the written file, so read the
+        // file layer alone.
+        let written = AppConfig::extract_file_only(Some(&path)).expect("decodes");
         assert!(written.files_sync.enabled);
         assert_eq!(written.files_sync.anchor.as_deref(), Some("home"));
     }
