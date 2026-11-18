@@ -1368,7 +1368,12 @@ impl Adapter {
                 self.apply_outcomes(window, &outcomes);
             }
             ActionId::TaskScheduleToday => {
-                let end = self.day_ctx().window.1;
+                // The batch twin of the router's today stamp (#893):
+                // the day's last covered instant over the same frozen
+                // day facts — the raw exclusive end is excluded by the
+                // `[now, end)` membership the stamped rows are judged
+                // by. The domain mint, never a local `end − ε` (#884).
+                let end = taskboard_domain::days::last_covered_instant(self.day_ctx().window.1);
                 self.schedule_selection(&state, end);
             }
             ActionId::TaskScheduleTomorrow => {

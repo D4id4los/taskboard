@@ -24427,7 +24427,11 @@ fn us2_s1_the_multi_bar_routes_per_member() {
             harness.handle.window().invoke_menu_quick_bar_invoked(0);
             harness.driver.advance_time(0);
             let today = chrono::Utc::now().with_timezone(&offset).date_naive();
-            let end = taskboard_domain::days::day_window_end(today, day_start, offset);
+            // #893 (2026-11-18): the multi-select batch twin stamps the
+            // day's last covered instant, not the raw exclusive end.
+            let end = taskboard_domain::days::last_covered_instant(
+                taskboard_domain::days::day_window_end(today, day_start, offset),
+            );
             let mask = taskboard_domain::TaskChanges {
                 scheduled: Some(Some(end)),
                 ..taskboard_domain::TaskChanges::default()
