@@ -4290,6 +4290,11 @@ impl Adapter {
                 if self.view_state.view() == crate::view_state::ViewId::Settings {
                     {
                         let mut outcomes = self.view_state.close_settings();
+                        // The armed strip dies with the surface
+                        // (cross-surface friction plan D-4, #836):
+                        // leaving settings disarms, the strip is only
+                        // visible while mounted.
+                        self.settings_disarm_item();
                         // US-5 (#706): the restore's subject-liveness
                         // guard runs before the context sync, so the
                         // focus-restore funnel lands on the fallback.
@@ -8809,6 +8814,11 @@ impl Adapter {
     /// canonical live echo. (The connection draft persists by design;
     /// only the scale buffer's lifetime is bound to its surface.)
     pub(crate) fn settings_view_mounted(&mut self, window: &AppWindow) {
+        // The armed strip is surface-bound state (cross-surface
+        // friction plan D-4, #836): the mount clears any identity a
+        // missed close path left behind — the strip is only visible
+        // while mounted (the scale_draft lifetime precedent, r3 D20a).
+        self.settings_disarm_item();
         self.settings.scale_draft = None;
         // The general drafts share the scale buffer's lifetime: bound
         // to the surface, never surviving the unmount.
@@ -10812,6 +10822,9 @@ fn install_settings_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     install_seam!(window: window.on_settings_back_clicked, adapter: adapter;
     bind mut (a, window), args (), {        Adapter::dismiss_tooltip(&window);
     let mut outcomes = a.view_state.close_settings();
+    // The armed strip dies with the surface (cross-surface friction
+    // plan D-4, #836): leaving settings disarms.
+    a.settings_disarm_item();
     // US-5 (#706): the restore's subject-liveness guard (see the
     // OpenSettings close arm).
     {
