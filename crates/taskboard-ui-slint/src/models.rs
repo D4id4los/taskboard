@@ -29,13 +29,13 @@ use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel, BreakRuleRowModel,
     Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
     FilesSyncChipState as SlintFilesSyncChipState, FilesSyncChipTone as SlintFilesSyncChipTone,
-    FlowHintModel, HabitRowModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
+    FlowHintModel, HabitCardModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
     ReflectionRowModel, ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel,
     RuleRowModel, SettingsAdoptionPhase as SlintSettingsAdoptionPhase,
     SettingsPublishPhase as SlintSettingsPublishPhase, StackColumnModel, StackDetailModel,
     StatBarModel, SyncBadgeModel, SyncPhaseUi, TaskCardModel, TaskDecoration, TaskDetailModel,
-    Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackEntryRowModel,
-    TrackedTodayRowModel, TrackingSectionModel, View,
+    Theme, TimerRowModel, TodayModel, TodayRowModel, TodaySectionModel, Tone, TrackCardState,
+    TrackEntryRowModel, TrackedTodayRowModel, TrackingSectionModel, View,
 };
 
 /// The layout cap of the banner slot (D12): the truth is the row
@@ -302,7 +302,7 @@ pub struct PushModels {
     break_rules: MirroredRows<BreakRuleRowModel>,
     /// The habits section's persistent row handle (DR-6/6): the same
     /// diff pattern.
-    habits: MirroredRows<HabitRowModel>, // generated from compositions/habits.slint
+    habits: MirroredRows<HabitCardModel>, // generated from compositions/habits.slint
     /// The palette's persistent row handle (chunk 9): diffed per
     /// keystroke — a fresh `VecModel` per push would regress the
     /// stable-identity invariant (r2 D9).
@@ -823,10 +823,59 @@ fn push_timers(
         )
 }
 
-/// The habits section (DR-6/6, §4.6): the active board's tracker rows.
-/// No kiosk model gate (D-P13): the rows render on the appliance —
-/// only the section's actions disable (`habits-editing-enabled`). Returns
-/// the diff's mutation count.
+/// The habit card's `TaskCard` substrate model (H2 D2): the habit fills
+/// the title and done slots (the done slot IS the +1 log control —
+/// `done: false` always, surplus logs are first-class), the
+/// scheduled slot carries the time/day chips, the progress and
+/// streak ride the typed decoration row (`DecorationKind::Habit` —
+/// no `DueKind` semantics theft), and every task-only slot is empty.
+/// Pure — the fold/property tests read it without a window.
+#[must_use]
+pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
+    let mut decorations = std::vec::Vec::with_capacity(2);
+    decorations.push(TaskDecoration {
+        kind: DecorationKind::Habit,
+        label: SharedString::from(presentation::habit_progress_phrase(row)),
+        tone: if row.met {
+            Tone::Success
+        } else {
+            Tone::Neutral
+        },
+    });
+    if row.streak > 0 {
+        decorations.push(TaskDecoration {
+            kind: DecorationKind::Habit,
+            label: SharedString::from(format!("\u{1F525}{}", row.streak)),
+            tone: Tone::Success,
+        });
+    }
+    TaskCardModel {
+        title: SharedString::from(row.title.clone()),
+        due_phrase: SharedString::from(String::new()),
+        scheduled_phrase: SharedString::from(presentation::habit_scheduled_phrase(
+            row.chip,
+            row.anchor_day,
+        )),
+        effort_phrase: SharedString::from(String::new()),
+        due_kind: SlintDueKind::None,
+        done: false,
+        can_done: true,
+        emphasis: false,
+        dragging_source: false,
+        selected: false,
+        anchor: false,
+        track_state: TrackCardState::None,
+        decorations: ModelRc::new(VecModel::from(decorations)),
+        label_chips: ModelRc::new(VecModel::from(std::vec::Vec::new())),
+        label_chips_overflow: 0,
+    }
+}
+
+/// The habits section (DR-6/6, §4.6; H2 card-ified): the active
+/// board's tracker rows on the task-card substrate. No kiosk model
+/// gate (D-P13): the rows render on the appliance — only the
+/// section's actions disable (`habits-editing-enabled`). Returns the
+/// diff's mutation count.
 #[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
 fn push_habits(
     window: &AppWindow,
@@ -842,16 +891,13 @@ fn push_habits(
         .map(|board| presentation::habit_rows(state, board, now, calendar))
         .unwrap_or_default();
     tables.habits = rows.iter().map(|row| row.habit).collect();
-    let shown: Vec<HabitRowModel> = rows
+    let shown: Vec<HabitCardModel> = rows
         .iter()
-        .map(|row| HabitRowModel {
-            title: SharedString::from(row.title.clone()),
-            progress: SharedString::from(presentation::habit_progress_phrase(row)),
-            streak: i32::try_from(row.streak).unwrap_or(i32::MAX),
-            chip: SharedString::from(row.chip.map_or(String::new(), |chip| chip.to_string())),
-            met: row.met,
+        .map(|row| HabitCardModel {
+            card: habit_card(row),
             repair: row.repair,
             repair_undoable: row.repair_undoable,
+            met: row.met,
         })
         .collect();
     window.set_habits_editing_enabled(presentation::habit_editing_enabled(kiosk));
@@ -5965,5 +6011,96 @@ mod tests {
                 "the surviving row is the new energy-rated entry"
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod habit_card_tests {
+    use super::*;
+    use crate::presentation::HabitRow;
+    use proptest::prelude::*;
+
+    fn row(
+        count: u32,
+        quota: u32,
+        streak: u32,
+        chip: Option<chrono::NaiveTime>,
+        anchor_day: Option<taskboard_domain::AnchorDay>,
+    ) -> HabitRow {
+        HabitRow {
+            habit: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+            title: "water".into(),
+            target_phrase: "3/day".into(),
+            count,
+            quota,
+            streak,
+            chip,
+            anchor_day,
+            repair: false,
+            repair_undoable: false,
+            met: count >= quota,
+        }
+    }
+
+    /// H2 A4/D2 — the card-slot fold: the habit fills title/done/
+    /// scheduled and the decoration row; every task-only slot stays
+    /// empty/hidden; the done slot never flips (surplus logs are
+    /// first-class, D-P14).
+    #[test]
+    fn us1_s1_the_habit_card_fills_only_the_habit_slots() {
+        let time = chrono::NaiveTime::from_hms_opt(7, 5, 0).unwrap();
+        let model = habit_card(&row(3, 3, 2, Some(time), None));
+        assert_eq!(model.title.as_str(), "water");
+        assert!(!model.done, "surplus logs are first-class: no done bit");
+        assert!(model.can_done, "the done slot IS the +1 log control");
+        assert_eq!(model.due_phrase, "", "habits have no due");
+        assert_eq!(model.effort_phrase, "");
+        assert_eq!(model.scheduled_phrase, "07:05", "the time chip");
+        assert_eq!(model.track_state, TrackCardState::None);
+        let decorations: Vec<_> = model.decorations.iter().collect();
+        assert_eq!(decorations.len(), 2, "progress + streak");
+        assert_eq!(decorations[0].label, "3/3");
+        assert_eq!(decorations[0].tone, Tone::Success, "met restyles only");
+        assert_eq!(decorations[1].label, "\u{1F525}2");
+        assert!(!model.selected && !model.anchor && !model.dragging_source);
+        // Under quota: neutral progress tone; no streak: one chip only.
+        let model = habit_card(&row(1, 3, 0, None, None));
+        let decorations: Vec<_> = model.decorations.iter().collect();
+        assert_eq!(decorations.len(), 1);
+        assert_eq!(decorations[0].tone, Tone::Neutral);
+        assert_eq!(model.scheduled_phrase, "", "no chip facts, no chip");
+    }
+
+    // H2 A4 — the property: for any `(count, quota, streak, chip,
+    // day)` the card carries EXACTLY the decoration set and slot
+    // state the facts imply (pure domain→presentation derivation).
+    proptest! {
+        #[test]
+        fn the_card_carries_exactly_the_facts_implied_decoration_set(
+            count in 0u32..12,
+            quota in 1u32..12,
+            streak in 0u32..30,
+            has_chip in proptest::bool::ANY,
+            has_day in proptest::bool::ANY,
+        ) {
+            let chip = has_chip
+                .then(|| chrono::NaiveTime::from_hms_opt(9, 30, 0).unwrap());
+            let day = has_day.then_some(taskboard_domain::AnchorDay::Weekday(chrono::Weekday::Thu));
+            let model = habit_card(&row(count, quota, streak, chip, day));
+            // The done slot: always the log control, never done.
+            prop_assert!(model.can_done);
+            prop_assert!(!model.done);
+            // The scheduled slot: present iff any chip fact is.
+            prop_assert_eq!(model.scheduled_phrase.is_empty(), !has_chip && !has_day);
+            // The decoration set: progress always, streak iff > 0.
+            let decorations: Vec<_> = model.decorations.iter().collect();
+            prop_assert_eq!(decorations.len(), 1 + usize::from(streak > 0));
+            prop_assert_eq!(decorations[0].label.as_str(), format!("{count}/{quota}"));
+            prop_assert_eq!(decorations[0].tone == Tone::Success, count >= quota);
+            // The task-only slots never fill.
+            prop_assert_eq!(model.due_phrase, "");
+            prop_assert_eq!(model.effort_phrase, "");
+            prop_assert_eq!(model.track_state, TrackCardState::None);
+        }
     }
 }

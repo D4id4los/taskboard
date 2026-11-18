@@ -119,6 +119,8 @@ impl KeymapShell {
             focused_task: self.focused_task,
             focused_stack: self.focused_stack,
             habit_create_draft: None,
+            habit_move_up: None,
+            habit_move_down: None,
             plan_target: None,
             create_target: None,
             reminder_target: None,
@@ -282,6 +284,7 @@ impl KeymapShell {
             | UiEffect::TrackEntryDismiss
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
+            | UiEffect::HabitConvertCancel
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
             // The recur editor's intents are adapter-interpreted view

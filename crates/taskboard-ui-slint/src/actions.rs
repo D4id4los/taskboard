@@ -397,6 +397,19 @@ pub enum ActionId {
     /// recorded posture.
     HabitUndoLog,
     HabitMove,
+    /// The habit menu's reorder pair (H2 D4, the menu stopgap until
+    /// H3's drag/keys reorder): the direction rides the routing id —
+    /// a single `HabitMove` id cannot carry the drop slot through the
+    /// one-shot grammar — each id routes `MoveHabit` with the floor
+    /// midpoint of its slot's free interval (the row seam's exact
+    /// arithmetic, computed at menu open).
+    HabitMoveUp,
+    HabitMoveDown,
+    /// The armed conversion's cancel step (H2 D4, O-7 Q3): disarms
+    /// the habit → series armed confirm INSIDE the open menu (the
+    /// re-projected page greys the confirm again). Internal verb —
+    /// the armed submenu's only affordance.
+    HabitConvertCancel,
     /// The create form's opener (round-7 D-7.2): toggles the armed
     /// inline form under the Today section's header — open when
     /// closed, discard-and-close when armed. Opening requires an
@@ -645,6 +658,9 @@ impl ActionId {
             Self::HabitLog => "habit.log",
             Self::HabitUndoLog => "habit.unlog",
             Self::HabitMove => "habit.move",
+            Self::HabitMoveUp => "habit.move-up",
+            Self::HabitMoveDown => "habit.move-down",
+            Self::HabitConvertCancel => "habit.convert-cancel",
             Self::HabitCreate => "habit.create",
             Self::HabitCreateCommit => "habit.create-commit",
             Self::HabitRepair => "habit.repair",
@@ -1739,7 +1755,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 200,
+        menu_rank: 191,
         description: "−1 the addressed tracker's current window (the mis-click recovery; count 0 refuses typed as NoTarget).",
         // Section-scoped (the HabitLog R-11 ruling's exact twin):
         // the row's own affordance is the only invocation.
@@ -1776,7 +1792,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 200,
+        menu_rank: 192,
         description: "Adds the make-up +1 into the previous window while its overflow grace is open.",
         // Section-scoped (see HabitLog): the row's own affordance is
         // the only invocation.
@@ -1801,6 +1817,38 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_rank: 220,
         description: "Routes the confirmed habit-to-series conversion with the quota's default pattern.",
         menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitMoveUp,
+        label: "Move habit up",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 193,
+        description: "Moves the habit one slot up its section (the floor-midpoint order law; the menu stopgap until drag/keyboard reorder).",
+        // Internal dispatch verb (see HabitLog): the menu row is its
+        // only affordance until H3 replaces it.
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitMoveDown,
+        label: "Move habit down",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 194,
+        description: "Moves the habit one slot down its section (the floor-midpoint order law; the menu stopgap until drag/keyboard reorder).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitConvertCancel,
+        label: "Cancel conversion",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 221,
+        description: "Disarms the armed habit-to-series conversion confirm; nothing was dispatched.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::SeriesPause,

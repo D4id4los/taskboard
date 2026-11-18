@@ -439,6 +439,102 @@ pub fn context_entries(keymap: &Keymap, chain: &[ContextId]) -> Vec<MenuEntry> {
 /// the named-const-slice pattern, never a re-pasted row block.
 pub const TASK_CONTEXT_MULTI: &[ActionId] = &[ActionId::TaskComplete, ActionId::TaskDelete];
 
+/// The habit row context menu's curated core (H2 D4): the top-level
+/// rows in declared order — log, undo, the make-up valve, the
+/// reorder pair (the menu stopgap until H3's drag/keys reorder), the
+/// Convert arm. The Convert confirm rides the submenu (the existing
+/// `TaskMenuGroup::Convert` machinery, reused not duplicated); the
+/// edit/delete rows are ABSENT — reserved verbs of H4 (`HabitEdit`
+/// has no dead rows; #944's staged confirm lands there), so the
+/// destructive-last law has no delete row to pin yet.
+pub const HABIT_CONTEXT: &[ActionId] = &[
+    ActionId::HabitLog,
+    ActionId::HabitUndoLog,
+    ActionId::HabitRepair,
+    ActionId::HabitMoveUp,
+    ActionId::HabitMoveDown,
+    ActionId::HabitConvertArm,
+];
+
+/// The habit row context menu's page (H2 D4, US-2): the curated core
+/// rows in declared order over the one object-menu chain, then the
+/// Convert ▸ parent row (the empty-page cascade — a non-habit
+/// subject renders none). Deviations from the plan's spelling,
+/// recorded: (1) the armed-confirm state rides the `states` map —
+/// `states[HabitConvertToSeries] == true` IS "armed", the
+/// `SeriesPauseCommit` flow-grey precedent — instead of a separate
+/// `armed: bool`; (2) the armed cancel step is a `HabitConvertCancel`
+/// child row appended to the Convert page while armed, and the
+/// reorder pair mints its slot through the direction-bearing
+/// `HabitMoveUp`/`HabitMoveDown` ids (a single `HabitMove` id cannot
+/// carry the direction through the one-shot grammar). The `subject`
+/// facts come from `task_menu_subject` widened over `RowSubject`
+/// (D1): `is_habit` gates the Convert family exactly as the task
+/// page's family loop does.
+#[must_use]
+pub fn habit_context_page(
+    keymap: &Keymap,
+    chain: &[ContextId],
+    subject: TaskMenuSubject,
+    states: &std::collections::BTreeMap<ActionId, bool>,
+) -> Vec<MenuEntry> {
+    let mut rows: Vec<(u16, usize, MenuEntry)> = Vec::new();
+    for (index, entry) in chain_visible(chain) {
+        let id = entry.id;
+        if !HABIT_CONTEXT.contains(&id) {
+            continue;
+        }
+        let projected = row(keymap, chain, states, entry);
+        rows.push((entry.menu_rank, index, projected));
+    }
+    rows.sort_by_key(|(rank, index, _)| (*rank, *index));
+    let mut page: Vec<MenuEntry> = rows.into_iter().map(|(_, _, entry)| entry).collect();
+    // The Convert ▸ parent (the empty-page cascade): its children are
+    // the existing habit Convert family plus — while armed — the
+    // cancel step (the armed-confirm lives INSIDE the menu, O-7 Q3).
+    if !habit_convert_children(keymap, chain, subject, states, TaskMenuGroup::Convert).is_empty() {
+        page.push(MenuEntry {
+            action: None,
+            label: TaskMenuGroup::Convert.label(),
+            description: "Opens this group of actions.",
+            enabled: true,
+            hint: Vec::new(),
+            submenu: Some(Submenu::Task(TaskMenuGroup::Convert)),
+        });
+    }
+    page
+}
+
+/// One habit menu family's children (H2 D4): the Convert family is
+/// the existing habit arm through `task_submenu_page` (the machinery
+/// reused, not duplicated), plus the armed cancel step while the
+/// states map carries the armed verdict. Any other family falls
+/// through to the shared projection (empty for habit subjects).
+#[must_use]
+pub fn habit_convert_children(
+    keymap: &Keymap,
+    chain: &[ContextId],
+    subject: TaskMenuSubject,
+    states: &std::collections::BTreeMap<ActionId, bool>,
+    family: TaskMenuGroup,
+) -> Vec<MenuEntry> {
+    if family != TaskMenuGroup::Convert {
+        return task_submenu_page(keymap, chain, subject, states, family);
+    }
+    let mut children = task_submenu_page(keymap, chain, subject, states, family);
+    if states
+        .get(&ActionId::HabitConvertToSeries)
+        .copied()
+        .unwrap_or(false)
+        && let Some(entry) = REGISTRY
+            .iter()
+            .find(|entry| entry.id == ActionId::HabitConvertCancel)
+    {
+        children.push(row(keymap, chain, states, entry));
+    }
+    children
+}
+
 /// The task context menu's action list (round-2 D21): the Task
 /// group's rows in rank order.
 pub const TASK_CONTEXT: &[ActionId] = &[
@@ -1601,5 +1697,105 @@ mod tests {
                 assert_ne!(row.description, "");
             }
         }
+    }
+
+    /// H2 A1/D4 — the habit context page: the curated core in
+    /// declared order, then the Convert parent; the task page over a
+    /// `RowSubject::Task` subject is untouched (the delta pin rides
+    /// the existing task tests plus the union's pure half).
+    #[test]
+    fn us2_s1_the_habit_context_page_projects_the_curated_core() {
+        let keymap = standard_keymap();
+        let chain = board_chain();
+        let subject = TaskMenuSubject {
+            is_habit: true,
+            ..TaskMenuSubject::default()
+        };
+        let page = habit_context_page(&keymap, &chain, subject, &BTreeMap::new());
+        // The core rows in declared order, then the one parent row.
+        let mut expected: Vec<Option<ActionId>> =
+            HABIT_CONTEXT.iter().map(|&id| Some(id)).collect();
+        expected.push(None);
+        assert_eq!(ids(&page), expected, "declared order + the Convert parent");
+        assert!(
+            page.last().is_some_and(|e| e.submenu.is_some()),
+            "the parent last"
+        );
+    }
+
+    /// H2 A3 — the armed-confirm grammar at the projection: the
+    /// unarmed states map greys the confirm row and renders no cancel
+    /// step; the armed map enables the confirm and joins the cancel
+    /// child (the flip the adapter's re-projection drives).
+    #[test]
+    fn us2_s2_the_armed_states_flip_the_convert_children() {
+        let keymap = standard_keymap();
+        let chain = board_chain();
+        let subject = TaskMenuSubject {
+            is_habit: true,
+            ..TaskMenuSubject::default()
+        };
+        let children = |states: &BTreeMap<ActionId, bool>| {
+            habit_convert_children(&keymap, &chain, subject, states, TaskMenuGroup::Convert)
+        };
+        let unarmed = BTreeMap::from([(ActionId::HabitConvertToSeries, false)]);
+        let rows = children(&unarmed);
+        let confirm = rows
+            .iter()
+            .find(|e| e.action == Some(ActionId::HabitConvertToSeries))
+            .expect("the confirm child renders");
+        assert!(!confirm.enabled, "unarmed: the confirm greys");
+        assert!(
+            rows.iter()
+                .all(|e| e.action != Some(ActionId::HabitConvertCancel)),
+            "unarmed: no cancel step"
+        );
+        let armed = BTreeMap::from([(ActionId::HabitConvertToSeries, true)]);
+        let rows = children(&armed);
+        let confirm = rows
+            .iter()
+            .find(|e| e.action == Some(ActionId::HabitConvertToSeries))
+            .expect("the confirm child renders");
+        assert!(confirm.enabled, "armed: the confirm enables");
+        assert!(
+            rows.iter()
+                .any(|e| e.action == Some(ActionId::HabitConvertCancel)),
+            "armed: the cancel child joins"
+        );
+    }
+
+    /// H2 D4 — the `MenuKind` spelling deviation holds: the habit menu
+    /// is an anchored Object-menu projection (`MenuKind` stays
+    /// `{Main, Object}`); the page is the habit one, the task page's
+    /// row set for the same chain is the task one.
+    #[test]
+    fn the_habit_page_never_leaks_task_rows_and_vice_versa() {
+        let keymap = standard_keymap();
+        let chain = board_chain();
+        let habit_subject = TaskMenuSubject {
+            is_habit: true,
+            ..TaskMenuSubject::default()
+        };
+        let page = habit_context_page(&keymap, &chain, habit_subject, &BTreeMap::new());
+        assert!(
+            page.iter()
+                .all(|e| e.action.is_none_or(|id| HABIT_CONTEXT.contains(&id))),
+            "only the curated core (parents excluded)"
+        );
+        // A task subject through the task page derives no Convert
+        // parent (the empty-page cascade — the union's false arm).
+        let (_, task_page) = task_context_page(
+            &keymap,
+            &chain,
+            TaskMenuSubject::default(),
+            &BTreeMap::new(),
+            &[],
+        );
+        assert!(
+            task_page
+                .iter()
+                .all(|e| e.submenu != Some(Submenu::Task(TaskMenuGroup::Convert))),
+            "a task subject renders no habit Convert parent"
+        );
     }
 }

@@ -1,77 +1,71 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The habits section (DR-6/6, §4.6): the today view's trackers — one
-// progress row per live habit ("water 3/8"), a +1 affordance, and the
-// row's reorder pair (the keyboard/affordance fallback of the drag
-// plan: both dispatch the same `MoveHabit` midpoint law; the drop
-// slot's free interval is computed Rust-side from the row source).
+// The habits section (DR-6/6, §4.6; H2 reworked): the today view's
+// trackers render on the task-card substrate (US-1 — one set of
+// instincts covers both; the card's done slot IS the +1 log control,
+// surplus logs are first-class D-P14) with a horizontal action strip
+// under each card at a task row's entry height (US-1/AC-1: +1, −1,
+// the conditional make-up valve). Reorder and conversion moved to the
+// row's context menu (H2 D3/D4 — the vertical stack and the armed
+// strip retire; the menu keeps the consequence-first armed confirm,
+// O-7 Q3).
 // Renders on kiosk too (D-P13: passive progress visibility IS the
 // section's point) — the actions are gated by enablement, not mount
-// (remediated 2026-11-15 per UX R-1 D-2, the T-7 visible-gating
-// grammar, #790: `editing-enabled` is false on kiosk and the
-// +1/reorder/repair/convert/create affordances render the DISABLED
-// tone, never unmounted — a greyed control reads "exists, not for
-// this device"; the create editor flow stays unmountable from a
-// disabled trigger).
+// (the T-7 visible-gating grammar, #790: `editing-enabled` is false
+// on kiosk and the log/strip affordances render the DISABLED tone,
+// never unmounted — a greyed control reads "exists, not for this
+// device"; the create editor flow stays unmountable from a disabled
+// trigger).
 
 import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
-import { ListRow } from "../widgets/list-row.slint";
+import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { FieldValidity, TextField } from "../widgets/text-field.slint";
 
-// One tracker row: the progress phrase is a presentation-side
-// derivation from `count`/`quota`; `met` restyles only — the +1
-// never disables at/after quota (surplus logs are first-class).
-export struct HabitRowModel {
-    title: string,
-    progress: string,
-    streak: int,
-    chip: string,
-    met: bool,
+// One tracker row on the card substrate (H2 D2): the card slots are
+// the model derivation's (models::habit_card); the strip facts ride
+// beside it — the make-up affordance's mount flag (issue #506) and
+// its typed undo side (T-23, #806), plus the met restyle.
+export struct HabitCardModel {
+    card: TaskCardModel,
     // The make-up affordance's mount flag (issue #506): the previous
     // window is under quota and inside its overflow grace.
     repair: bool,
     // The repair's undo side (T-23, #806): true when the target
     // window already holds a log row (the adjustment inverts
-    // exactly); false when the make-up CREATES the window's row
-    // (the engine's lossy-inverse rationale — the repair cannot be
-    // undone). The caption splits on it.
+    // exactly); false when the make-up CREATES the window's row. The
+    // caption splits on it.
     repair-undoable: bool,
+    met: bool,
 }
 
 export component HabitsSection inherits Rectangle {
-    in property <[HabitRowModel]> habits;
+    in property <[HabitCardModel]> habits;
     // The edit affordances' enablement (D-P13 remediated per UX R-1
     // D-2, #790): false on kiosk — the rows render AND so do the
     // actions, disabled (the greyed affordance posture).
     in property <bool> editing-enabled;
     // The row's focus fact (cross-surface friction plan D-2, #832):
-    // activating the row mints the adapter's `focused_habit` — the
+    // activating the card mints the adapter's `focused_habit` — the
     // menu verbs' subject (click ≡ key composes both directions).
     // slint: habit-row-activated
     callback row-activated(int);
-    callback plus-clicked(int);
+    // The done slot's log dispatch (US-1/S2): the card's done control
+    // routes `habit.log` — clicking complete logs the habit.
+    callback log-clicked(int);
     // The row's "−1" recovery affordance (UX R-2 D-3, #786): the
     // mis-click class recovers through the audited AdjustHabitLog
     // valve — the row's current window, count n−1. No quota floor,
     // never quota-enforced (D-P14 symmetrically); count 0 dispatches
     // nothing (NoTarget). Same editing-enabled gating as the +.
     callback undo-log-clicked(int);
-    // The reorder's drop slot (row, slot): Rust computes the floor
-    // midpoint of the slot's free interval and dispatches MoveHabit.
-    callback reorder-asked(int, int);
     // The make-up +1 (issue #506): Rust resolves the exact
     // `(window, count)` from the same row source and dispatches
     // AdjustHabitLog — what you click is what increments.
     callback repair-clicked(int);
-    // The conversion flow (issue #506): the first click arms the
-    // row's confirm strip (consequence first); Confirm routes the
-    // domain verb, Cancel disarms. One row armed at a time
-    // (`convert-armed-row`, -1 = none).
-    callback convert-armed(int);
-    callback convert-confirmed(int);
-    callback convert-cancelled();
-    in property <int> convert-armed-row: -1;
+    // The right-click context request (H2 D4): pointer coords in
+    // window coordinates — the same seam the task cards speak.
+    callback context-requested(int, float, float);
 
     // The create flow (round-7 D-7.2): the header affordance asks,
     // the adapter arms (`create-open` — adapter-owned, pushed), the
@@ -214,42 +208,34 @@ export component HabitsSection inherits Rectangle {
             }
         }
 
-        for row[row-index] in root.habits: HorizontalLayout {
-            spacing: Theme.space-2;
+        // One habit = one card + its horizontal action strip (H2 D3):
+        // the strip keeps the row's entry height (a task row's — no
+        // fixed px, the card's own min-height governs) and the +1
+        // stays an explicit affordance beside the done slot.
+        for row[row-index] in root.habits: VerticalLayout {
+            spacing: Theme.space-1;
 
-            list := ListRow {
-                horizontal-stretch: 1;
-                text: row.title;
-                meta: row.progress
-                    + (row.chip != "" ? "  @" + row.chip : "")
-                    + (row.streak > 0 ? "  🔥" + row.streak : "");
-                tone: row.met ? Tone.success : Tone.neutral;
-
-                // The activation overlay (cross-surface friction plan
-                // D-2, #832): the row's body mints the focus fact —
-                // the sibling buttons stay on top of their own hits.
-                // slint: habit-row-activated
-                TouchArea {
-                    clicked => {
-                        root.row-activated(row-index);
-                    }
+            habit-card := TaskCard {
+                model: row.card;
+                hint-keys: [];
+                activated => {
+                    root.row-activated(row-index);
+                }
+                clicked => {
+                    root.row-activated(row-index);
+                }
+                // The done slot IS the +1 log control (H2 D2): the
+                // card's done toggle routes the habit log — surplus
+                // logs are first-class, so `done` never flips.
+                done-toggled => {
+                    root.log-clicked(row-index);
+                }
+                context-requested(x, y) => {
+                    root.context-requested(row-index, x, y);
                 }
             }
-            VerticalLayout {
-                IconButton {
-                    icon: IconKind.chevron-left;
-                    tone: Tone.neutral;
-                    label: "Move habit up";
-                    enabled: root.editing-enabled;
-                    clicked => root.reorder-asked(row-index, row-index - 1);
-                }
-                IconButton {
-                    icon: IconKind.chevron-right;
-                    tone: Tone.neutral;
-                    label: "Move habit down";
-                    enabled: root.editing-enabled;
-                    clicked => root.reorder-asked(row-index, row-index + 1);
-                }
+            HorizontalLayout {
+                spacing: Theme.space-2;
                 IconButton {
                     icon: IconKind.plus;
                     tone: Tone.success;
@@ -257,8 +243,8 @@ export component HabitsSection inherits Rectangle {
                     enabled: root.editing-enabled;
                     // Surplus logs are first-class: the button never
                     // disables at/after quota (D-P14); `met` restyled
-                    // the row instead.
-                    clicked => root.plus-clicked(row-index);
+                    // the card's progress chip instead.
+                    clicked => root.log-clicked(row-index);
                 }
                 // The −1 recovery (UX R-2 D-3): symmetric with the
                 // +1's risk profile — one click, no armed strip (the
@@ -287,41 +273,6 @@ export component HabitsSection inherits Rectangle {
                         : "Add make-up +1 to yesterday (creates the window's first log row; cannot be undone)";
                     enabled: root.editing-enabled;
                     clicked => root.repair-clicked(row-index);
-                }
-                if (root.convert-armed-row != row-index): IconButton {
-                    icon: IconKind.calendar;
-                    tone: Tone.neutral;
-                    label: "Convert to repeating task: the habit retires, its history links to the new series";
-                    enabled: root.editing-enabled;
-                    clicked => root.convert-armed(row-index);
-                }
-            }
-            // The armed confirm strip (issue #506, plan D-8): the
-            // consequence names the mapping before anything dispatches.
-            // Under the editing enablement with its arm button: a
-            // kiosk flip mid-flow unmounts the strip (the arm itself
-            // is a refused verb on kiosk — the disabled trigger — and
-            // the adapter keeps the armed flag, the strip remounts if
-            // editing returns).
-            if (root.editing-enabled && root.convert-armed-row == row-index): HorizontalLayout {
-                spacing: Theme.space-2;
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: "Converts to a daily repeating task; the quota has no series analog — each member is one completion.";
-                    vertical-alignment: center;
-                }
-                IconButton {
-                    icon: IconKind.check;
-                    tone: Tone.success;
-                    label: "Confirm conversion";
-                    clicked => root.convert-confirmed(row-index);
-                }
-                IconButton {
-                    icon: IconKind.remove;
-                    tone: Tone.neutral;
-                    label: "Cancel conversion";
-                    clicked => root.convert-cancelled();
                 }
             }
         }

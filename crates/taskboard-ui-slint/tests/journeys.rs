@@ -9723,7 +9723,7 @@ fn a_habit_log_routes_and_sets_the_status_notice() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.press(ActionId::ViewToday);
-            harness.handle.window().invoke_habits_plus_clicked(0);
+            harness.handle.window().invoke_habits_log_clicked(0);
             harness.driver.advance_time(0);
             match harness.engine.drain().as_slice() {
                 [StateCommand::LogHabit { .. }] => {}
@@ -24588,14 +24588,13 @@ fn us2_ac2_menu_series_convert_arm_arms_the_confirm_strip() {
     );
 }
 
-/// US-2/S1 (AC-1, the habit twin): the row activation mints the
-/// section's focus fact, and the menu-routed `HabitConvertArm` arms
-/// the row's strip — the window's armed-row echo carries the row
-/// index, nothing dispatches (the staging grammar). Pre-fix the
-/// effect arm dropped the dispatch unconditionally (the series
-/// reproduction's twin).
+/// US-2/S2 (H2 D4, O-7 Q3): the habit menu's arm routes INSIDE the
+/// open menu — the re-projected page flips the confirm row from
+/// greyed to enabled (and greys the arm row), nothing dispatches at
+/// the arm step (the consequence-first staging grammar; the row-strip
+/// echo this journey pinned before retires with the strip itself).
 #[test]
-fn us2_ac1_menu_convert_arm_arms_the_row_strip() {
+fn us2_s2_menu_arm_enables_the_confirm_inside_the_menu() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
@@ -24608,22 +24607,87 @@ fn us2_ac1_menu_convert_arm_arms_the_row_strip() {
             harness.driver.advance_time(0);
             let window = harness.handle.window();
 
-            // The row activation mints the focus fact (the new seam;
-            // a stale index absorbs silently).
-            window.invoke_habits_row_activated(0);
+            // The right-click opens the habit menu (the row's focus
+            // fact mints inside the opener).
+            window.invoke_habits_context_requested(0, 120.0, 120.0);
             harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open(), "the menu opened");
+            let entries = keyboard(&harness).get_menu_entries();
+            let confirm = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .find(|r| r.action == "habit.convert-to-series")
+                .expect("the confirm row renders");
+            assert!(
+                !confirm.enabled,
+                "the confirm greys while unarmed (consequence first)"
+            );
 
-            // The menu route arms the row's strip.
+            // The arm routes: the re-projection flips the confirm on
+            // INSIDE the open menu; nothing dispatched.
             harness.handle.dispatch_action(ActionId::HabitConvertArm);
             harness.driver.advance_time(0);
-            assert_eq!(
-                window.get_habits_convert_armed_row(),
-                0,
-                "the menu-routed arm arms the row's strip"
+            let entries = keyboard(&harness).get_menu_entries();
+            let confirm = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .find(|r| r.action == "habit.convert-to-series")
+                .expect("the confirm row still renders");
+            assert!(
+                confirm.enabled,
+                "the re-projection enables the armed confirm inside the menu"
             );
+            let cancel = (0..entries.row_count())
+                .map(|i| {
+                    keyboard(&harness)
+                        .get_menu_entries()
+                        .row_data(i)
+                        .expect("row")
+                })
+                .find(|r| r.action == "habit.convert-cancel");
+            assert!(cancel.is_some(), "the cancel step joins while armed");
             assert!(
                 harness.engine.drain().is_empty(),
                 "the arm stages the grammar; the confirm dispatches"
+            );
+        },
+    );
+}
+
+/// US-2/S2 (the disarm side, H2 D4): the cancel step disarms INSIDE
+/// the menu — the re-projected confirm greys again and nothing ever
+/// reached the boundary.
+#[test]
+fn us2_s2_menu_cancel_disarms_and_greys_the_confirm() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            window.invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitConvertArm);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitConvertCancel);
+            harness.driver.advance_time(0);
+
+            let entries = keyboard(&harness).get_menu_entries();
+            let confirm = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .find(|r| r.action == "habit.convert-to-series")
+                .expect("the confirm row renders");
+            assert!(
+                !confirm.enabled,
+                "the cancel disarms: the confirm greys again inside the menu"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "cancel and disarm dispatch nothing"
             );
         },
     );
@@ -24635,7 +24699,8 @@ fn us2_ac1_menu_convert_arm_arms_the_row_strip() {
 /// already consumed the pattern draft; the confirm dispatches
 /// `NoTarget`-silently. Post-fix the confirm routes
 /// `ConvertHabitToSeries` with the armed pattern — an interleaved
-/// dispatch cannot eat the target.
+/// dispatch cannot eat the target. (H2: the arm rides the menu flow —
+/// the strip's row seam retired with the strip.)
 #[test]
 fn us5_ac1_interleaved_dispatch_spares_the_confirm_target() {
     let (_fx, mut state) = fixture::golden_state();
@@ -24650,19 +24715,22 @@ fn us5_ac1_interleaved_dispatch_spares_the_confirm_target() {
             harness.driver.advance_time(0);
             let window = harness.handle.window();
 
-            // The row seam arms the strip (the focus fact mints too).
-            window.invoke_habits_row_activated(0);
-            window.invoke_habits_convert_armed(0);
+            // The menu route arms (the focus fact mints in the
+            // opener).
+            window.invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.handle.dispatch_action(ActionId::HabitConvertArm);
             harness.driver.advance_time(0);
 
             // The interleaved unrelated dispatch (a focused task's
-            // completion — consumes nothing of the strip's grammar).
+            // completion — consumes nothing of the menu's grammar).
             harness.handle.dispatch_action(ActionId::NavNextItem);
             harness.handle.dispatch_action(ActionId::TaskComplete);
             harness.driver.advance_time(0);
 
             // The confirm routes the conversion with the armed target.
-            window.invoke_habits_convert_confirmed(0);
+            harness
+                .handle
+                .dispatch_action(ActionId::HabitConvertToSeries);
             harness.driver.advance_time(0);
             let drained = harness.engine.drain();
             assert!(
@@ -25353,6 +25421,347 @@ fn om_us3_s2_effort_commits_once_on_focus_loss_and_never_twice() {
                 harness.engine.drain().is_empty(),
                 "the blur after the Return dispatches nothing"
             );
+        },
+    );
+}
+// ---- The habit row rework (H2, round 9 chunk 6; J1 US-1/US-2) ----
+
+/// US-1/S1 (AC-1): the habit rows render on the task-card substrate
+/// with the horizontal action strip — the section model carries real
+/// `TaskCardModel`s (the same substrate the task rows speak), the
+/// card's accessible label is the title (the D16 address), and the
+/// strip's log affordance renders at a task row's entry height (no
+/// fixed px: the card's own min-height governs).
+#[test]
+fn us1_s1_habit_rows_render_on_the_task_card_substrate() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            let model = window.get_habits_model();
+            assert_eq!(model.row_count(), 1, "the row renders");
+            let row = model.row_data(0).expect("row");
+            assert_eq!(
+                row.card.title.as_str(),
+                "water",
+                "the card substrate carries the habit"
+            );
+            assert!(
+                harness.driver.find_by_label("water").is_some(),
+                "the card's accessible address is the habit title"
+            );
+            assert!(
+                harness.driver.find_by_label("Log habit").is_some(),
+                "the horizontal strip renders the +1 affordance"
+            );
+            assert!(
+                harness
+                    .driver
+                    .find_by_label("Take one habit log back")
+                    .is_some(),
+                "the strip renders the −1 affordance"
+            );
+        },
+    );
+}
+
+/// US-1/S2 (AC-1): the done slot IS the +1 log control — clicking
+/// complete routes `StateCommand::LogHabit` and the domain row moves
+/// (the count grows through the engine apply, never a done bit).
+#[test]
+fn us1_s2_clicking_the_done_slot_logs_the_habit() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            // The card model's done slot: the log control's contract
+            // (can-done, never done).
+            let row = harness
+                .handle
+                .window()
+                .get_habits_model()
+                .row_data(0)
+                .expect("row");
+            assert!(row.card.can_done && !row.card.done);
+            // The shared seam (done slot ≡ strip +1): the LogHabit
+            // command reaches the boundary.
+            harness.handle.window().invoke_habits_log_clicked(0);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::LogHabit { .. }] => {}
+                other => panic!("the done slot routes the log, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// US-2/S1 (AC-1): the right-click opens the habit context menu —
+/// the task-parity grammar (pointer-anchored object menu over the
+/// one chain) with the habit-specific verbs and the Convert parent;
+/// no task-only row leaks in.
+#[test]
+fn us2_s1_right_click_opens_the_habit_context_menu() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            window.invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open(), "the menu opened");
+            assert!(
+                keyboard(&harness).get_menu_pointer_anchored(),
+                "anchored at the pointer (the object-menu grammar)"
+            );
+            let entries = keyboard(&harness).get_menu_entries();
+            let actions: Vec<String> = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row").action.to_string())
+                .collect();
+            for verb in [
+                "habit.log",
+                "habit.unlog",
+                "habit.move-up",
+                "habit.move-down",
+                "habit.convert-arm",
+            ] {
+                assert!(
+                    actions.contains(&verb.to_string()),
+                    "the habit verb renders: {verb} in {actions:?}"
+                );
+            }
+            assert!(
+                actions.iter().all(|a| !a.starts_with("task.")),
+                "no task-only row leaks into the habit page"
+            );
+            let rows: Vec<_> = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .collect();
+            assert!(
+                rows.last().is_some_and(|r| r.submenu),
+                "the Convert parent closes the page (destructive-last law)"
+            );
+        },
+    );
+}
+
+/// H2 B6 — the task-card regression pin through the widened
+/// `RowSubject` seam: a board card's right-click yields today's exact
+/// task page (core rows + the three task families, zero habit rows)
+/// — the D1 insertion point's blast radius is zero for tasks.
+#[test]
+fn b6_the_task_menu_through_the_widened_subject_is_byte_identical() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_context_requested(0, 1, 300.0, 300.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            let entries = keyboard(&harness).get_menu_entries();
+            let rows: Vec<_> = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .collect();
+            let actions: Vec<String> = rows
+                .iter()
+                .filter(|r| !r.action.is_empty())
+                .map(|r| r.action.to_string())
+                .collect();
+            assert!(
+                actions.iter().all(|a| !a.starts_with("habit.")),
+                "no habit row leaks into a task menu: {actions:?}"
+            );
+            let parents: Vec<_> = rows
+                .iter()
+                .filter(|r| r.submenu)
+                .map(|r| r.label.to_string())
+                .collect();
+            assert_eq!(
+                parents,
+                ["Reminders", "Timers", "Entries"],
+                "the task page's exact family set (Convert withheld on a plain task)"
+            );
+        },
+    );
+}
+
+/// H2 B5/D6 (HAB-14): on kiosk the habit menu still OPENS (reading a
+/// menu is passive) and every habit verb row greys from the states
+/// map — disabled, never withheld.
+#[test]
+fn us2_s1_the_kiosk_habit_menu_opens_with_every_verb_greyed() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                taskboard_ui_slint::UiSettings {
+                    kiosk: true,
+                    ..taskboard_ui_slint::UiSettings::default()
+                },
+            );
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            harness
+                .handle
+                .window()
+                .invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_menu_open(),
+                "reading a menu is passive"
+            );
+            let entries = keyboard(&harness).get_menu_entries();
+            let rows: Vec<_> = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .collect();
+            for row in rows.iter().filter(|r| !r.action.is_empty()) {
+                assert!(
+                    !row.enabled,
+                    "every habit verb greys on kiosk: {:?}",
+                    row.action
+                );
+            }
+            assert!(!rows.is_empty(), "the rows render, greyed — never withheld");
+        },
+    );
+}
+
+/// H2 B2: the menu-routed `habit.log` resolves the row source's
+/// habit — the focus fact the opener minted is the subject, the
+/// `LogHabit` command reaches the boundary (click ≡ key composes:
+/// the menu row routes the same id the strip does).
+#[test]
+fn us1_s2_the_menu_log_row_routes_the_row_source_habit() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            harness
+                .handle
+                .window()
+                .invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitLog);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::LogHabit { .. }] => {}
+                other => panic!("the menu row routes the log, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// H2 B4: the menu's reorder pair routes `MoveHabit` with the floor
+/// midpoint of the correct free interval — the row seam's exact
+/// arithmetic, minted at menu open from the section's live order.
+#[test]
+fn us2_s1_the_menu_reorder_rows_mint_the_floor_midpoint_slots() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    // Two habits: stored orders 0 and 10.
+    state_habit(&mut state, board);
+    let mut second = {
+        let mut h = taskboard_domain::habit::Habit {
+            id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+            board,
+            title: "stretch".into(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(1).unwrap(),
+            ),
+            order: 10,
+            anchor_time: None,
+            anchor_day: None,
+            clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
+            continued_from: None,
+            deleted: false,
+            by: None,
+        };
+        let _ = &mut h;
+        h
+    };
+    let _ = &mut second;
+    state.habits.habits.insert(second.id, second);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.press(ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            // The FIRST row's menu: move-down targets the gap between
+            // orders 0 and 10 → floor midpoint 5; move-up has no slot
+            // above (refuses typed as NoTarget).
+            harness
+                .handle
+                .window()
+                .invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitMoveDown);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::MoveHabit { order, .. }] => {
+                    assert_eq!(*order, 5, "the floor midpoint of (0, 10)");
+                }
+                other => panic!("the reorder routed, got {other:?}"),
+            }
+            // The LAST row's menu: move-up targets the same gap.
+            harness
+                .handle
+                .window()
+                .invoke_habits_context_requested(1, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitMoveUp);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::MoveHabit { order, .. }] => {
+                    assert_eq!(*order, 5, "the floor midpoint from below");
+                }
+                other => panic!("the reorder routed, got {other:?}"),
+            }
         },
     );
 }

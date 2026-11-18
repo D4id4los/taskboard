@@ -289,6 +289,7 @@ fn key_of(effect: &UiEffect) -> EK {
         // subject — no flow moves, no command routes.
         UiEffect::SeriesPauseOpen
         | UiEffect::HabitConvertArm
+        | UiEffect::HabitConvertCancel
         | UiEffect::HabitCreateToggle
         | UiEffect::SeriesConvertArm => EK::RecurIntent,
         // The recur editor's intents (round-7 D-7.1): the opener and
@@ -2736,6 +2737,7 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BoardRename
         | UiEffect::BoardColorEdit
         | UiEffect::BoardDefaultPreset
+        | UiEffect::HabitConvertCancel
         | UiEffect::OpenBoardBarFlyout => DismissClass::Survive,
     }
 }

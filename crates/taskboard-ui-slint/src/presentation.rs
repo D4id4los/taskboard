@@ -1095,6 +1095,19 @@ pub fn tracking_chip(state: &AppState) -> Option<TrackingChip> {
     })
 }
 
+/// The UI-layer row subject (round-9 O-2, H2 D1): which entity a
+/// card/menu/verb addresses. Never a domain type — habits stay a
+/// sibling entity (the research §3.2 law); this is the presentation
+/// grammar's union only. A1 rung: plain enum over already-minted
+/// typed ids — no new minting, no derive crates (policy §2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowSubject {
+    /// A task row (every existing surface).
+    Task(TaskId),
+    /// A habit row (the habit context menu's subject).
+    Habit(taskboard_domain::HabitId),
+}
+
 /// The task context menu's per-subject facts (UX-R8 chunk-5 D-4,
 /// US-2): derived from the loaded state at open — the state/kind
 /// inputs the withheld-vs-greyed verdicts read. `has_armed_timer`
@@ -1106,36 +1119,76 @@ pub fn tracking_chip(state: &AppState) -> Option<TrackingChip> {
 #[must_use]
 pub fn task_menu_subject(
     state: &AppState,
-    subject: Option<TaskId>,
+    subject: Option<RowSubject>,
 ) -> crate::menu::TaskMenuSubject {
-    let tracked_here = tracking_open_task(state).is_some_and(|open| Some(open) == subject);
+    let task = subject.and_then(|subject| match subject {
+        RowSubject::Task(task) => Some(task),
+        RowSubject::Habit(_) => None,
+    });
+    let tracked_here = tracking_open_task(state).is_some_and(|open| Some(open) == task);
     crate::menu::TaskMenuSubject {
         tracked_here,
         tracking_elsewhere: tracking_open_task(state).is_some() && !tracked_here,
-        has_reminder_rules: subject.is_some_and(|subject| {
+        has_reminder_rules: task.is_some_and(|subject| {
             state
                 .reminders
                 .rules
                 .values()
                 .any(|rule| rule.task == subject)
         }),
-        is_series: subject
+        is_series: task
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.recur.is_some()),
-        // The habit kind lives in `HabitState`, not `TaskKind` (the
-        // domain's habits are separate entities): no task-level habit
-        // kind exists, so `is_habit` derives `false` — the habit verbs'
-        // dispatch targets are habit rows and the rows withheld here
-        // routed `NoTarget` from this menu anyway (the recorded
-        // deviation from the plan's `kind == Habit` spelling).
-        is_habit: false,
-        is_tracker: subject
+        // The habit kind rides the union's `Habit` arm (the O-2
+        // widening, H2 D1): the `is_habit: false` hardcode (the
+        // 2026-11-13 recorded deviation) is retired — a task subject
+        // derives `false` exactly as before, a habit subject derives
+        // `true` and the habit Convert family renders through the
+        // existing submenu machinery. No domain `TaskKind` exists
+        // for this (the O-2 law).
+        is_habit: matches!(subject, Some(RowSubject::Habit(_))),
+        is_tracker: task
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.kind == taskboard_domain::entities::TaskKind::Tracker),
         has_armed_timer: false,
-        scheduled: subject
+        scheduled: task
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.scheduled.is_some()),
+    }
+}
+
+/// The time chip's phrase (HAB-11, H2 D2): `HH:MM`, the first-class
+/// mono chip — the row meta-string's `"@" + chip` composition
+/// retires with this derivation.
+#[must_use]
+pub fn habit_time_phrase(chip: chrono::NaiveTime) -> String {
+    chip.format("%H:%M").to_string()
+}
+
+/// The anchor-day chip's phrase (chunk 4's field, H2 D2 — display
+/// only, the O-1 option-b law): the weekday's short name for a
+/// `PerWeek` habit, the bare day-of-month for a `PerMonth` habit.
+#[must_use]
+pub fn habit_day_phrase(day: taskboard_domain::AnchorDay) -> String {
+    match day {
+        taskboard_domain::AnchorDay::Weekday(weekday) => weekday.to_string(),
+        taskboard_domain::AnchorDay::MonthDay(day) => day.get().to_string(),
+    }
+}
+
+/// The habit card's scheduled-slot phrase (H2 D2): the time chip,
+/// the day chip joining it when the field is set — one mono slot,
+/// empty string = absent (the due-phrase pattern).
+#[must_use]
+pub fn habit_scheduled_phrase(
+    chip: Option<chrono::NaiveTime>,
+    day: Option<taskboard_domain::AnchorDay>,
+) -> String {
+    match (chip, day) {
+        (None, None) => String::new(),
+        (Some(time), None) => habit_time_phrase(time),
+        (None, Some(day)) => habit_day_phrase(day),
+        (Some(time), Some(day)) => format!("{} {}", habit_time_phrase(time), habit_day_phrase(day)),
     }
 }
 
@@ -7527,6 +7580,10 @@ pub struct HabitRow {
     pub streak: u32,
     /// The display chip; in no ordering path anywhere (D-C13).
     pub chip: Option<chrono::NaiveTime>,
+    /// The optional display/nudge anchor day (chunk 4's field, H2 D2
+    /// — display only, the O-1 option-b law): the day chip joins the
+    /// time chip in the card's scheduled slot.
+    pub anchor_day: Option<taskboard_domain::AnchorDay>,
     /// The make-up affordance's mount flag (issue #506, plan D-7):
     /// `habit_repair_target` answered `Some` — the button mounts (in
     /// the edit cluster's gate), the dispatch carries the tuple.
@@ -7587,6 +7644,7 @@ pub fn habit_rows(
                     day,
                 ),
                 chip: habit.anchor_time,
+                anchor_day: habit.anchor_day,
                 repair: repair_target.is_some(),
                 // The typed invert-condition bit (T-23, #806): the
                 // target window's own log row — present ⇒ the exact
@@ -7837,6 +7895,24 @@ mod habit_section_tests {
         }
     }
 
+    fn task_clocks() -> taskboard_domain::entities::TaskClocks {
+        taskboard_domain::entities::TaskClocks {
+            title: ts(100),
+            description: ts(100),
+            duedate: ts(100),
+            scheduled: ts(100),
+            done: ts(100),
+            position: ts(100),
+            effort: ts(100),
+            importance: ts(100),
+            urgency: ts(100),
+            recur: ts(100),
+            kind: ts(100),
+            archived: ts(100),
+            deleted: ts(100),
+        }
+    }
+
     fn habit(raw: u128, board: u128, order: i64, chip: Option<chrono::NaiveTime>) -> Habit {
         Habit {
             id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(raw)),
@@ -7963,6 +8039,100 @@ mod habit_section_tests {
     fn habit_editing_flag_disables_not_hides_on_kiosk() {
         assert!(habit_editing_enabled(false));
         assert!(!habit_editing_enabled(true));
+    }
+
+    /// H2 A2/D1: the widened `task_menu_subject` — a `RowSubject::Habit`
+    /// subject derives `is_habit: true` with every task fact false
+    /// (the hardcode's deletion is behavior-covered), and a
+    /// `RowSubject::Task` subject derives exactly the old facts.
+    #[test]
+    fn us2_s1_the_row_subject_union_derives_the_menu_facts() {
+        let mut state = AppState::default();
+        let h = habit(1, 2, 0, None);
+        let task = taskboard_domain::TaskId::from(uuid::Uuid::from_u128(9));
+        let stack = taskboard_domain::StackId::from(uuid::Uuid::from_u128(8));
+        let series = taskboard_domain::entities::Task {
+            id: task,
+            remote: None,
+            title: "series".into(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack,
+            order: 0,
+            label_memberships: std::collections::BTreeMap::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: Some(taskboard_domain::recur::RecurRule {
+                series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(7)),
+                anchor: chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+                pattern: taskboard_domain::recur::RecurPattern::Daily {
+                    every: taskboard_domain::EveryDays::new(1).unwrap(),
+                },
+                bound: taskboard_domain::recur::RecurBound::None,
+                continued_from: None,
+                paused_until: None,
+            }),
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: task_clocks(),
+            authors: taskboard_domain::entities::TaskAuthors::default(),
+            remote_seen: None,
+            remote_baseline: None,
+        };
+        state.habits.habits.insert(h.id, h.clone());
+        state.tasks.insert(series.id, series);
+        let habit_facts = task_menu_subject(&state, Some(RowSubject::Habit(h.id)));
+        assert!(habit_facts.is_habit, "the habit arm derives is_habit");
+        assert!(!habit_facts.is_series);
+        assert!(!habit_facts.is_tracker);
+        assert!(!habit_facts.scheduled);
+        assert!(!habit_facts.has_reminder_rules);
+        assert!(!habit_facts.tracked_here);
+        // The task arm derives the old facts verbatim — the widening
+        // is behavior-identical for tasks (the B6 blast-radius pin's
+        // pure half).
+        let task_facts = task_menu_subject(&state, Some(RowSubject::Task(task)));
+        assert!(!task_facts.is_habit);
+        assert!(task_facts.is_series, "the series fact survives the union");
+    }
+
+    /// H2 D2 (HAB-11 + chunk 4's field): the chip phrases — `HH:MM`
+    /// for the time, the short weekday / day-of-month for the anchor
+    /// day, the joined form when both set, empty when neither.
+    #[test]
+    fn the_habit_chip_phrases_compose_the_scheduled_slot() {
+        let time = chrono::NaiveTime::from_hms_opt(7, 5, 0).unwrap();
+        assert_eq!(habit_time_phrase(time), "07:05");
+        assert_eq!(
+            habit_day_phrase(taskboard_domain::AnchorDay::Weekday(chrono::Weekday::Wed)),
+            "Wed"
+        );
+        assert_eq!(
+            habit_day_phrase(taskboard_domain::AnchorDay::MonthDay(
+                taskboard_domain::MonthDay::new(21).expect("fits"),
+            )),
+            "21"
+        );
+        assert_eq!(habit_scheduled_phrase(Some(time), None), "07:05");
+        assert_eq!(
+            habit_scheduled_phrase(
+                None,
+                Some(taskboard_domain::AnchorDay::Weekday(chrono::Weekday::Mon))
+            ),
+            "Mon"
+        );
+        assert_eq!(
+            habit_scheduled_phrase(
+                Some(time),
+                Some(taskboard_domain::AnchorDay::Weekday(chrono::Weekday::Wed)),
+            ),
+            "07:05 Wed"
+        );
+        assert_eq!(habit_scheduled_phrase(None, None), "");
     }
 
     /// T-18 (continued): count/quota/streak/met derive from the domain
