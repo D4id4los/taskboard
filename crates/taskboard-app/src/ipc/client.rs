@@ -159,6 +159,29 @@ pub async fn try_connect(db_path: &Path) -> Option<Connection> {
     }
 }
 
+/// The fallback gate (issue #886): should a `try_connect` miss fall
+/// through to the in-process boot? Only when the socket artifact is
+/// absent — artifact absent ⇒ the instance lock is provably free (the
+/// #886 invariant, pinned in `tests/ipc.rs`) — or present beside a
+/// genuinely free lock (the stale post-crash shape; the flock probe,
+/// not the diagnostic pid, decides). An artifact beside a held lock
+/// means a daemon is draining or wedged: booting there collides with
+/// the live lock holder, so the caller reports typed
+/// `instance-locked` instead of a doomed bootstrap.
+#[cfg(unix)]
+#[must_use]
+pub fn fallback_blocked_by_lock(db_path: &Path) -> bool {
+    crate::ipc::socket_sidecar(db_path).exists() && crate::lockfile::lock_is_held(db_path)
+}
+
+/// Non-unix: namespaced pipe names have no filesystem artifact, so
+/// there is no `daemon:false` signal to gate on — never blocked.
+#[cfg(not(unix))]
+#[must_use]
+pub fn fallback_blocked_by_lock(_db_path: &Path) -> bool {
+    false
+}
+
 impl Connection {
     /// Sends one request and reads the answer, mapping every transport
     /// failure to [`CommandError::IpcTransport`] and a version mismatch
@@ -347,7 +370,7 @@ mod tests {
     use super::validate_response;
     use super::{
         CONNECT_BUDGET, DEFAULT_READ_BUDGET_SECS, READ_BUDGET_MARGIN_SECS, client_read_budget,
-        try_connect,
+        fallback_blocked_by_lock, try_connect,
     };
     use crate::cli::Command;
     use crate::commands::{CommandError, verb_timeout_secs};
@@ -589,7 +612,7 @@ mod tests {
     /// is retried until the budget expires, then answers `None` — the
     /// caller falls through to the in-process path, never hangs.
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn an_ambiguous_socket_name_falls_through_within_the_budget() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("budget.db");
@@ -644,7 +667,7 @@ mod tests {
     /// falls through bounded — the caller reaches the in-process path
     /// within the connect budget, never hangs on a dead artifact.
     #[cfg(unix)]
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_refused_socket_falls_through_within_the_budget() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = dir.path().join("refused-throughout.db");
@@ -663,5 +686,42 @@ mod tests {
             elapsed < CONNECT_BUDGET + std::time::Duration::from_secs(5),
             "the budget bounds the wait, took {elapsed:?}"
         );
+    }
+
+    /// The fallback gate (issue #886): artifact present + lock held —
+    /// a draining or wedged daemon — blocks the in-process boot (the
+    /// caller reports typed `instance-locked` instead).
+    #[cfg(unix)]
+    #[test]
+    fn an_artifact_beside_a_held_lock_blocks_the_fallback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("blocked.db");
+        let _lock = crate::lockfile::InstanceLock::acquire(&db).expect("acquire");
+        std::fs::write(socket_sidecar(&db), b"").expect("artifact");
+        assert!(fallback_blocked_by_lock(&db));
+    }
+
+    /// Artifact absent: the gate short-circuits free without probing
+    /// the lock file at all — the #886 invariant's client-side half.
+    #[cfg(unix)]
+    #[test]
+    fn an_absent_artifact_never_blocks_the_fallback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("absent.db");
+        // Even a live lock does not block: no artifact, no probe.
+        let _lock = crate::lockfile::InstanceLock::acquire(&db).expect("acquire");
+        assert!(!fallback_blocked_by_lock(&db));
+    }
+
+    /// Artifact present + lock free: the stale post-crash shape — the
+    /// fallback boots and `bind_with_recovery` heals the artifact on
+    /// the next daemon boot (plan D-6).
+    #[cfg(unix)]
+    #[test]
+    fn an_artifact_beside_a_free_lock_leaves_the_fallback_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("stale.db");
+        std::fs::write(socket_sidecar(&db), b"").expect("artifact");
+        assert!(!fallback_blocked_by_lock(&db));
     }
 }

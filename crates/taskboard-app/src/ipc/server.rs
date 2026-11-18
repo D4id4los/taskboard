@@ -9,9 +9,11 @@
 //! artifact from a crashed daemon), spawns the accept loop and the
 //! dispatcher, and returns an [`IpcServerHandle`]. A `Shutdown` request
 //! (or [`IpcServerHandle::request_shutdown`]) stops the accept loop;
-//! [`IpcServerHandle::join`] waits for the in-flight work and removes
-//! the socket file. One request per connection — connect, frame,
-//! response frame, close (keep-alive is a protocol-v2 concern).
+//! [`IpcServerHandle::join`] waits for the in-flight work and hands the
+//! socket artifact back for the shutdown tail to remove after the
+//! instance lock releases (issue #886). One request per connection —
+//! connect, frame, response frame, close (keep-alive is a protocol-v2
+//! concern).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,6 +57,29 @@ pub enum IpcBindError {
     AddrInUse,
 }
 
+/// The typed result of a graceful server drain: whether the budget was
+/// hit (the drain aborted — the degraded-drain exit fact) and the
+/// socket artifact *not yet removed* (unix; `None` on Windows).
+///
+/// The artifact deliberately outlives the drain: `daemon:false` becomes
+/// client-visible only when the artifact disappears, so the removal
+/// must follow the instance-lock release (issue #886 — artifact absent
+/// ⇒ lock free ⇒ in-process fallback boot is safe). The caller (the
+/// shutdown tail in `main.rs`) removes it via
+/// [`crate::ipc::remove_socket_artifact`] after the owned shutdown has
+/// consumed the `App` — and with it the lock.
+#[derive(Debug)]
+pub struct JoinOutcome {
+    /// The drain aborted at its budget (in-flight connections were
+    /// dropped) — the degraded-drain fact the exit decision aggregates
+    /// (design D-6: a drain that dropped in-flight work is not clean).
+    pub budget_hit: bool,
+    /// The unix socket artifact to remove once the instance lock is
+    /// released; `None` on Windows (namespaced names have no
+    /// filesystem artifact) or when the server never had a sidecar.
+    pub socket_artifact: Option<PathBuf>,
+}
+
 /// Handle over the running IPC server: the graceful-shutdown control
 /// surface of the daemon lifecycle.
 pub struct IpcServerHandle {
@@ -62,8 +87,9 @@ pub struct IpcServerHandle {
     stop_rx: watch::Receiver<bool>,
     accept: tokio::task::JoinHandle<()>,
     dispatcher: tokio::task::JoinHandle<()>,
-    /// The unix sidecar artifact to remove at join; `None` on Windows
-    /// (namespaced names have no filesystem artifact).
+    /// The unix sidecar artifact handed back by [`Self::join`] for the
+    /// shutdown tail to remove; `None` on Windows (namespaced names
+    /// have no filesystem artifact).
     sidecar: Option<PathBuf>,
 }
 
@@ -110,17 +136,19 @@ impl IpcServerHandle {
     /// released either way. The daemon's shutdown must never depend on
     /// a peer's behavior.
     ///
-    /// Returns whether the budget was hit (the drain aborted) — the
-    /// two-state fact the degraded-drain exit decision aggregates
-    /// (design D-6: a drain that dropped in-flight work is not clean).
+    /// Returns the typed [`JoinOutcome`] — the budget-hit fact the
+    /// degraded-drain exit decision aggregates (design D-6: a drain
+    /// that dropped in-flight work is not clean) plus the socket
+    /// artifact for the caller to remove *after* the instance lock
+    /// releases (issue #886; see the struct docs).
     ///
     /// # Panics
     ///
     /// Never on the happy path; an internal task panicking (a bug)
     /// surfaces here as a join error, logged and swallowed — the
     /// daemon's own shutdown must proceed regardless.
-    #[must_use = "a budget hit is the degraded-drain fact the tail must surface"]
-    pub async fn join(self, drain_budget: Duration) -> bool {
+    #[must_use = "the drain outcome is the degraded-drain fact and the #886 artifact handoff"]
+    pub async fn join(self, drain_budget: Duration) -> JoinOutcome {
         // Stop accepting (idempotent — a `Shutdown` request may have
         // fired already); then drain what was accepted.
         self.request_shutdown();
@@ -137,6 +165,17 @@ impl IpcServerHandle {
             tracing::warn!("ipc drain did not finish in time; dropping in-flight connections");
             accept.abort();
             dispatcher.abort();
+            // Mutation-equivalence note (issue #917; C7 mutants report
+            // §2 cluster D): both handles are `abort()`ed above, so the
+            // `is_finished` guards below only decide *whether an
+            // already-completed handle is re-polled* — an inverted or
+            // skipped guard either polls a completed handle (a join
+            // error, swallowed) or skips reaping an already-cancelled
+            // task. No observable state differs, which is why the
+            // guard is mutation-surviving by construction: any test
+            // that kills it would have to assert an internal completion
+            // order the guard does not expose (racy instrumentation).
+            // The reaping is a courtesy poll, never behavior.
             // Await only the handles the timed-out drain did *not*
             // consume: a JoinHandle polled past its completion panics.
             if !accept.is_finished() {
@@ -146,12 +185,16 @@ impl IpcServerHandle {
                 let _ = dispatcher.await;
             }
         }
-        if let Some(sidecar) = &self.sidecar
-            && tokio::fs::remove_file(sidecar).await.is_ok()
-        {
-            tracing::debug!(socket = %sidecar.display(), "ipc socket removed");
+        // No removal here (issue #886): the artifact is the
+        // client-visible `daemon:false` signal, and removing it before
+        // the instance lock releases exposes a `daemon:false`-but-
+        // locked window a fallback verb would boot into. `join` hands
+        // it back; the shutdown tail removes it after
+        // `shutdown_from_arc` consumed the lock.
+        JoinOutcome {
+            budget_hit,
+            socket_artifact: self.sidecar.clone(),
         }
-        budget_hit
     }
 }
 
@@ -214,6 +257,17 @@ async fn bind_with_recovery(
 ) -> Result<Listener, IpcBindError> {
     match ListenerOptions::new().name(name.clone()).create_tokio() {
         Ok(listener) => {
+            // The artifact's lifetime is ours (issue #886): the
+            // interprocess reclaim guard would unlink the socket the
+            // moment the listener drops — at the end of the drain,
+            // *before* the instance lock releases — making
+            // `daemon:false` client-visible while a fallback verb
+            // would still collide with the live lock holder. Disarm
+            // it; the shutdown tail removes the artifact explicitly
+            // after the lock release (and a crashed daemon's leftover
+            // is healed by the stale recovery below on the next boot).
+            let mut listener = listener;
+            listener.do_not_reclaim_name_on_drop();
             harden(sidecar);
             Ok(listener)
         }
@@ -239,6 +293,8 @@ async fn bind_with_recovery(
             }
             match ListenerOptions::new().name(name).create_tokio() {
                 Ok(listener) => {
+                    let mut listener = listener;
+                    listener.do_not_reclaim_name_on_drop();
                     harden(sidecar);
                     Ok(listener)
                 }
@@ -745,13 +801,17 @@ mod drain_tests {
             dispatcher: tokio::spawn(std::future::pending::<()>()),
             sidecar: None,
         };
-        let budget_hit = tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             Duration::from_secs(2),
             handle.join(Duration::from_millis(100)),
         )
         .await
         .expect("join completes although the dispatcher never does");
-        assert!(budget_hit, "the aborted drain is the budget-hit fact");
+        assert!(
+            outcome.budget_hit,
+            "the aborted drain is the budget-hit fact"
+        );
+        assert_eq!(outcome.socket_artifact, None);
     }
 
     /// T8's completing arm: a drain inside the budget is clean —
@@ -767,8 +827,9 @@ mod drain_tests {
             dispatcher: tokio::spawn(async {}),
             sidecar: None,
         };
-        let budget_hit = handle.join(Duration::from_secs(5)).await;
-        assert!(!budget_hit);
+        let outcome = handle.join(Duration::from_secs(5)).await;
+        assert!(!outcome.budget_hit);
+        assert_eq!(outcome.socket_artifact, None);
     }
 }
 

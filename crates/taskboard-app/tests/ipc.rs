@@ -307,9 +307,10 @@ async fn ip6_status_answers_live_without_triggering_a_cycle() {
     .await;
 }
 
-/// IP7: the `Shutdown` request acks, the drain completes, the join
-/// finishes, and the unix socket artifact is removed. (Unix-only: the
-/// socket *artifact* is a unix concept — Windows named pipes have no
+/// IP7: the `Shutdown` request acks, the drain completes, and the
+/// shutdown tail's artifact removal (post-#886: after the join, not
+/// inside it) leaves no socket artifact. (Unix-only: the socket
+/// *artifact* is a unix concept — Windows named pipes have no
 /// filesystem sidecar to assert on.)
 #[cfg(unix)]
 #[tokio::test]
@@ -325,7 +326,12 @@ async fn ip7_shutdown_acks_drains_and_removes_the_socket() {
         tokio::time::timeout(common::LIVE_DEADLINE, handle.stopped())
             .await
             .expect("stopped resolves");
-        let _ = handle.join(DRAIN_BUDGET).await;
+        let outcome = handle.join(DRAIN_BUDGET).await;
+        assert!(
+            sidecar.exists(),
+            "the artifact outlives the drain (#886) — the tail removes it"
+        );
+        taskboard_app::ipc::remove_socket_artifact(outcome.socket_artifact.as_deref()).await;
         assert!(
             !sidecar.exists(),
             "graceful shutdown removes the socket artifact"
@@ -387,7 +393,10 @@ async fn ip9_stale_socket_artifacts_are_recovered_at_bind() {
         let outcome = exec_once(&db, &argv("boards create Personal")).await;
         assert_eq!(outcome.code, 0);
 
-        let _ = handle.join(DRAIN_BUDGET).await;
+        let outcome = handle.join(DRAIN_BUDGET).await;
+        // The removal moved past the join (#886): the tail's helper
+        // clears the (freshly bound, now listener-less) artifact.
+        taskboard_app::ipc::remove_socket_artifact(outcome.socket_artifact.as_deref()).await;
         assert!(!sidecar.exists());
     })
     .await;
@@ -477,6 +486,7 @@ async fn ip12_a_silent_connection_cannot_wedge_the_drain() {
     bounded(async {
         let dir = tempdir();
         let (handle, db) = served(dir.path(), "ip12.db").await;
+        let db_for_assert = db.clone();
 
         let name = taskboard_app::ipc::socket_name(&db).expect("socket name");
         let _silent = interprocess::local_socket::tokio::Stream::connect(name)
@@ -487,15 +497,21 @@ async fn ip12_a_silent_connection_cannot_wedge_the_drain() {
 
         // A budget far under the journey deadline: the join must make
         // it anyway.
-        tokio::time::timeout(
+        let outcome = tokio::time::timeout(
             common::LIVE_DEADLINE,
             handle.join(std::time::Duration::from_millis(300)),
         )
         .await
         .expect("join completes despite a silent connection");
+        assert_eq!(
+            outcome.socket_artifact,
+            Some(taskboard_app::ipc::socket_sidecar(&db_for_assert)),
+            "the artifact outlives the drain (#886), aborted path included"
+        );
 
         // The server is gone, but a fresh boot on the same db still
-        // binds (the artifact was removed even on the aborted path).
+        // binds: the artifact outlives the drain now (#886), and
+        // `bind_with_recovery` heals the stale (listener-less) shape.
         let (reborn, db) = served(dir.path(), "ip12.db").await;
         let outcome = exec_once(&db, &argv("boards create Personal")).await;
         assert_eq!(outcome.code, 0);
@@ -1063,6 +1079,68 @@ async fn ip20_the_shutdown_tail_takes_exclusive_ownership_after_the_drain() {
     .await;
 }
 
+/// The #886 ordering pin (issue #886, plan D-1/D-3): the socket
+/// artifact — the `daemon:false` signal `try_connect` keys on — must
+/// outlive the drain until the instance lock is released. The pinned
+/// invariant is structural: artifact absent ⇒ lock free ⇒ in-process
+/// fallback boot is safe. Under the old order `join` removed the
+/// artifact while the draining daemon still held the lock, so the
+/// whole owned-shutdown phase B exposed a `daemon:false`-but-locked
+/// window a fallback verb would boot into (typed `instance-locked`,
+/// a doomed bootstrap).
+#[cfg(unix)]
+#[tokio::test]
+async fn the_socket_artifact_outlives_the_drain_until_the_lock_releases() {
+    bounded(async {
+        let dir = tempdir();
+        let (handle, app, db) = served_with_core(dir.path(), "ordering.db").await;
+        let sidecar = taskboard_app::ipc::socket_sidecar(&db);
+
+        let outcome = handle.join(DRAIN_BUDGET).await;
+        assert!(
+            !outcome.budget_hit,
+            "an idle server drains inside the budget"
+        );
+        assert_eq!(
+            outcome.socket_artifact.as_deref(),
+            Some(sidecar.as_path()),
+            "join hands the artifact back instead of removing it"
+        );
+        assert!(
+            sidecar.exists(),
+            "the artifact outlives the drain: daemon:false must wait for the lock release"
+        );
+        // The window's truth, asserted in the very state a fallback
+        // verb would probe: the lock is still held while the artifact
+        // is present.
+        assert!(
+            taskboard_app::lockfile::lock_is_held(&db),
+            "the draining instance still holds the lock"
+        );
+
+        // The tail: the owned shutdown consumes the `App` — and with
+        // it the lock — and only then is the artifact removed.
+        let shutdown = taskboard_app::bootstrap::shutdown_from_arc(app).await;
+        assert_eq!(
+            shutdown,
+            Ok(taskboard_app::bootstrap::ShutdownOutcome {
+                actor_aborted: false,
+                budget_hit: false,
+            })
+        );
+        taskboard_app::ipc::remove_socket_artifact(Some(sidecar.as_path())).await;
+        assert!(
+            !sidecar.exists(),
+            "the artifact is removed only after the lock release"
+        );
+        assert!(
+            !taskboard_app::lockfile::lock_is_held(&db),
+            "the lock is free once the artifact is gone"
+        );
+    })
+    .await;
+}
+
 // ---------------------------------------------------------------------
 // The shutdown control lane (ADR 0012, amended): F12's fix
 // ---------------------------------------------------------------------
@@ -1134,10 +1212,17 @@ async fn j1_daemon_stop_answers_while_a_verb_is_in_flight() {
             .expect("the stop answers promptly, not behind A");
         stop.expect("shutdown ack");
 
-        let _ = handle.join(Duration::from_secs(1)).await;
+        let drain = handle.join(Duration::from_secs(1)).await;
+        assert!(
+            drain.budget_hit,
+            "the stalled listing drives the drain to its budget"
+        );
+        // The artifact outlives the drain (#886); the shutdown tail's
+        // removal helper clears it.
+        taskboard_app::ipc::remove_socket_artifact(drain.socket_artifact.as_deref()).await;
         assert!(
             !sidecar.exists(),
-            "the drain completed and removed the socket artifact"
+            "the shutdown tail removed the socket artifact"
         );
 
         // A's wait ends in the drain abort: typed transport failure,
