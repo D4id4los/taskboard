@@ -13568,6 +13568,24 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.refresh_forced(&window);
 
     });
+    // The date-grid overlay's light-dismiss (the overlay migration,
+    // M4): the same close half the toggle's close arm rides — the
+    // child ends `Cancelled`, the form and its mirrors stay, the
+    // refresh unmounts the grid.
+    // slint: track-form-grid-dismiss-requested
+    install_seam!(window: window.on_track_form_grid_dismiss_requested, adapter: adapter;
+    bind mut (a, window), args (), {        if a.view_state.picker().is_some() {
+        let state = a.state.load();
+        let outcomes = a.view_state.close_entry_date_picker(&state);
+        a.apply_outcomes(&window, &outcomes);
+        a.finish_mutation(&window);
+        // The drop is pure presentation (no command): the flag's
+        // unmount is the forced pass's derive — the date-picker
+        // dismissal's shape.
+        a.refresh_forced(&window);
+    }
+
+    });
     install_seam!(window: window.on_track_form_grid_key, adapter: adapter;
     bind mut (a, window), args (code), {        use crate::due_edit::DatePickerKey as K;
         let Some(key) = crate::due_edit::DatePickerKey::from_code(code) else {

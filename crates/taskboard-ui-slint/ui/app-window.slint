@@ -977,6 +977,43 @@ export component AppWindow inherits Window {
         commit-requested() => root.track-form-commit-requested();
     }
 
+        // M4 (overlay migration): the track form's date grid as a
+        // window-level overlay on the host — the panel-embedded grid
+        // mount is dead (it grew the form's layout on open, the
+        // track-entries sibling of the M1 shift law). The anchor is
+        // the form's date row (the click-time push + keep-alives in
+        // the composition); a light-dismiss outside click drops the
+        // grid only — the form and its mirrors stay. Mounted AFTER
+        // the track-entries panel, so the grid's underlay receives
+        // exactly the clicks the grid panel does not absorb.
+        if (root.current-view == View.task-detail
+                && root.task-model.track-entries-open
+                && root.track-form-grid-open): track-grid-host := AnchoredOverlayHost {
+            open: true;
+            anchor-x: TrackPanelFacts.form-grid-anchor-x;
+            anchor-y: TrackPanelFacts.form-grid-anchor-y;
+            anchor-width: TrackPanelFacts.form-grid-anchor-width;
+            anchor-height: TrackPanelFacts.form-grid-anchor-height;
+            viewport-width: root.width;
+            viewport-floor: status.y;
+            panel-preferred-width: 280px * Theme.base-scale;
+            walk-stops: 1;
+            dismissed => root.track-form-grid-dismiss-requested();
+            DatePicker {
+                show-time: false;
+                caption: "";
+                grid: root.track-form-grid;
+                focus-on-mount: root.track-form-grid-focus;
+                picker-key(k) => root.track-form-grid-key(k);
+                day-clicked(c) => root.track-form-day-clicked(c);
+                // Date-only mount (show-time: false): the TimeField
+                // never mounts, so the intra-picker click arm is
+                // structurally dead here — the forward is the
+                // mount-inventory's totality law, never a live path.
+                time-field-armed() => { }
+            }
+        }
+
             // The labels overlay's window-level mount (UX R-3 D-2,
             // #789): the track-entries overlay's pattern — the
             // dismissal layer first, the anchored panel after, both
@@ -2111,6 +2148,9 @@ export component AppWindow inherits Window {
     pure callback track-form-date-edited(string);
     pure callback track-form-grid-toggled();
     pure callback track-form-grid-key(int);
+    // The date-grid overlay's light-dismiss (the overlay migration,
+    // M4): drops the grid only — the form and its mirrors stay.
+    pure callback track-form-grid-dismiss-requested();
     pure callback track-form-day-clicked(int);
     pure callback track-form-start-edited(string);
     pure callback track-form-start-stepped(int);
