@@ -87,6 +87,8 @@ Fixture flow omitted (fixture).
 ## 8. Verification plan
 
 - **Journey tests** (step-ID-named): us1_s1, us1_s2, us2_s1 (tree/tests).
+- **Bound tests** (retro cohort mapping, #768):
+  bound-test: US-1/S2 -> fixture_journeys.rs::us1_s2_toast_shown
 
 ## 9. Definition of done
 

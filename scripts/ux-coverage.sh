@@ -7,13 +7,25 @@
 #   - wiring-inventory rows: the slint callback exists in a .slint file
 #     AND is handled in an adapter.rs (on_<callback> / install_seam!);
 #     each command / ActionId token exists in messages.rs / requests.rs /
-#     actions.rs as the plan's command-contract delta Kind selects;
+#     actions.rs as the plan's command-contract delta Kind selects; a
+#     resolved callback must additionally be listed in
+#     seam_inventory.rs (the adapter's structural manifest) — an
+#     unlisted callback is INVENTORY-MISS (#760);
 #   - journey steps: the snake_case step token (US-1/S2 -> us1_s2)
-#     appears in a test-function name under the plan's Test-root
-#     (default crates/taskboard-ui-slint/tests/);
+#     resolves against the plan's own nominations (#920). The §6 Test
+#     column nominates the per-plan evidence file
+#     (<file>.rs::<token-or-name>); a token named in no Test cell can
+#     never be credited from the shared tree (an ambient hit is
+#     AMBIGUOUS — triage, never FOUND). Retro plans map pre-existing
+#     descriptively-named tests with `bound-test:` lines (#768);
 #   - capability-matrix cells citing a story: that story's §4 table
 #     exists and every one of its steps is covered;
 #   - rulings: every ruling row carries a non-empty reason.
+#
+# Verdict states (docs/ux_planning.org §2.3): FOUND (file:line) and
+# BOUND (file:line) pass; MISSING, AMBIGUOUS (k candidates: …) and
+# INVENTORY-MISS (slint:line, adapter:line) are open rows. The
+# naming/binding law lives in docs/ux_planning.org §2.3.
 #
 # HONEST LIMITS: this gate proves wiring exists and is claimed-tested —
 # not that the UX is good. Quality is the walkthrough protocol's job
@@ -26,9 +38,9 @@
 # 2, `PARSE-ERROR: <section>: <what>`), never a silently skipped check.
 # Cells may be empty or `—`; emptiness is data, not malformation.
 #
-# Exit codes: 0 = all rows FOUND (or plain informational run); 1 = a
-# well-formed plan has MISSING rows and --gate was given; 2 = parse
-# error; 64 = usage error.
+# Exit codes: 0 = all rows FOUND/BOUND (or plain informational run);
+# 1 = a well-formed plan has MISSING/AMBIGUOUS/INVENTORY-MISS rows and
+# --gate was given; 2 = parse error; 64 = usage error.
 #
 # Usage:
 #   scripts/ux-coverage.sh <plan.md> [--gate] [--root <dir>]
@@ -51,16 +63,17 @@ usage: scripts/ux-coverage.sh <plan.md> [--gate] [--root <dir>]
        scripts/ux-coverage.sh --self-test
 
   <plan.md>      UX journey plan written from the template
-  --gate         exit 1 when any row is MISSING (a plain run prints the
-                 same table but exits 0 — the report is informational)
+  --gate         exit 1 when any row is MISSING, AMBIGUOUS or
+                 INVENTORY-MISS (a plain run prints the same table but
+                 exits 0 — the report is informational)
   --root <dir>   repository root for evidence greps (default: the git
                  toplevel of the script's location)
-  --self-test    exercise the bundled fixture's PASS and MISSING paths
-                 plus a malformed-table variant; asserts exit codes and
-                 row counts only
+  --self-test    exercise the bundled fixture's PASS, BOUND, AMBIGUOUS,
+                 INVENTORY-MISS and MISSING paths plus a malformed-table
+                 variant; asserts exit codes and row counts only
 
-exit codes: 0 all FOUND / informational; 1 MISSING under --gate;
-            2 PARSE-ERROR; 64 usage
+exit codes: 0 all FOUND/BOUND / informational; 1 open rows under
+            --gate; 2 PARSE-ERROR; 64 usage
 EOF
 }
 
@@ -252,8 +265,24 @@ adapter_match() { # adapter_match <callback> <adapter-file>...
   return 1
 }
 
+# Boundary fn-name match: `fn <name>` not followed by another name
+# character — `fn us1_s1` must not match `fn us1_s1_settings_cards`.
+# Emits `file:line` lines; returns 0 iff at least one hit.
+fn_boundary_matches() { # fn_boundary_matches <name> <file>...
+  local name=$1 f
+  shift
+  for f in "$@"; do
+    [[ -f $f ]] || continue
+    grep -nE -- "fn ${name}(_|\\()" "$f" 2>/dev/null | sed "s|^|${f}:|" || true
+  done
+  return 0
+}
+
 n_found=0
 n_missing=0
+n_ambiguous=0
+n_bound=0
+n_invmiss=0
 
 emit_found() {
   echo "$1 → FOUND ($FOUND_EV)"
@@ -263,17 +292,37 @@ emit_found_in_plan() {
   echo "$1 → FOUND ($2)"
   n_found=$((n_found + 1))
 }
+emit_bound() {
+  echo "$1 → BOUND ($FOUND_EV)"
+  n_bound=$((n_bound + 1))
+}
 emit_missing() {
   echo "$1 → MISSING"
   n_missing=$((n_missing + 1))
 }
+emit_ambiguous() { # emit_ambiguous <label> <candidates...>
+  local label=$1 k=0 shown=() c
+  shift
+  for c in "$@"; do
+    k=$((k + 1))
+    if (( ${#shown[@]} < 5 )); then shown+=("$c"); fi
+  done
+  echo "$label → AMBIGUOUS (${k} candidates: ${shown[*]})"
+  n_ambiguous=$((n_ambiguous + 1))
+}
+emit_inventory_miss() { # emit_inventory_miss <label> <slint-ev> <adapter-ev>
+  echo "$1 → INVENTORY-MISS ($2, $3)"
+  n_invmiss=$((n_invmiss + 1))
+}
 
 is_absent() { [[ -z $1 || $1 == "—" || $1 == "-" ]]; }
+
+is_bare_token() { [[ $1 =~ ^us[0-9]+_s[0-9]+$ ]]; }
 
 # ---------------------------------------------------------------------------
 # Self-test: exit codes and row counts only — never output-text
 # assertions (the no-text-assertion rule applies to the tool's own
-# tests; FOUND/MISSING row labels are structure, not prose).
+# tests; FOUND/MISSING/AMBIGUOUS row labels are structure, not prose).
 # ---------------------------------------------------------------------------
 self_test() {
   local script_dir fx tmp code n rc=0
@@ -281,16 +330,20 @@ self_test() {
   fx="${script_dir}/fixtures/ux-coverage-fixture"
   tmp="$(mktemp -d)"
 
+  # 1. PASS fixture: every step nominated (Test column + one bound-test
+  #    line), wiring resolved and listed in the fixture inventory.
   bash "${BASH_SOURCE[0]}" "$fx/plan.md" --gate --root "$fx/tree" \
     >"$tmp/pass.out" 2>&1 && code=0 || code=$?
-  if [[ $code -eq 0 ]]; then
-    echo "self-test 1 (PASS fixture --gate exits 0): PASS"
+  n=$(grep -c ' BOUND (' "$tmp/pass.out" || true)
+  if [[ $code -eq 0 && $n -eq 1 ]]; then
+    echo "self-test 1 (PASS fixture --gate exits 0, exactly 1 BOUND row): PASS"
   else
-    echo "self-test 1 (PASS fixture --gate exits 0): FAIL (exit $code)"
+    echo "self-test 1 (PASS fixture --gate exits 0, exactly 1 BOUND row): FAIL (exit $code, $n BOUND rows)"
     sed 's/^/    /' "$tmp/pass.out"
     rc=1
   fi
 
+  # 2. MISSING fixture: exactly the three deliberate holes, exit 1.
   bash "${BASH_SOURCE[0]}" "$fx/plan-missing.md" --gate --root "$fx/tree" \
     >"$tmp/miss.out" 2>&1 && code=0 || code=$?
   n=$(grep -c 'MISSING$' "$tmp/miss.out" || true)
@@ -302,14 +355,42 @@ self_test() {
     rc=1
   fi
 
+  # 3. AMBIGUOUS fixture: the plan nominates nothing, so every bare
+  #    token hit in the shared tree is unattributable (#920) —
+  #    triage state, never a credit.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-ambiguous.md" --gate --root "$fx/tree" \
+    >"$tmp/amb.out" 2>&1 && code=0 || code=$?
+  n=$(grep -c 'AMBIGUOUS (' "$tmp/amb.out" || true)
+  if [[ $code -eq 1 && $n -eq 3 ]]; then
+    echo "self-test 3 (AMBIGUOUS fixture --gate exits 1, exactly 3 AMBIGUOUS rows): PASS"
+  else
+    echo "self-test 3 (AMBIGUOUS fixture --gate exits 1, exactly 3 AMBIGUOUS rows): FAIL (exit $code, $n AMBIGUOUS rows)"
+    sed 's/^/    /' "$tmp/amb.out"
+    rc=1
+  fi
+
+  # 4. INVENTORY-MISS fixture (#760): wiring resolves but the callback
+  #    has no SEAM_INVENTORY entry — triage state, gate-failing.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-inventmiss.md" --gate --root "$fx/tree" \
+    >"$tmp/inv.out" 2>&1 && code=0 || code=$?
+  n=$(grep -c 'INVENTORY-MISS (' "$tmp/inv.out" || true)
+  if [[ $code -eq 1 && $n -eq 1 ]]; then
+    echo "self-test 4 (INVENTORY-MISS fixture --gate exits 1, exactly 1 INVENTORY-MISS row): PASS"
+  else
+    echo "self-test 4 (INVENTORY-MISS fixture --gate exits 1, exactly 1 INVENTORY-MISS row): FAIL (exit $code, $n INVENTORY-MISS rows)"
+    sed 's/^/    /' "$tmp/inv.out"
+    rc=1
+  fi
+
+  # 5. Malformed header: hard parse error.
   sed 's/| ID | Surface file |/| Id | Surface file |/' "$fx/plan.md" \
     >"$tmp/plan-broken.md"
   bash "${BASH_SOURCE[0]}" "$tmp/plan-broken.md" --gate --root "$fx/tree" \
     >"$tmp/broken.out" 2>&1 && code=0 || code=$?
   if [[ $code -eq 2 ]]; then
-    echo "self-test 3 (malformed header exits 2): PASS"
+    echo "self-test 5 (malformed header exits 2): PASS"
   else
-    echo "self-test 3 (malformed header exits 2): FAIL (exit $code)"
+    echo "self-test 5 (malformed header exits 2): FAIL (exit $code)"
     sed 's/^/    /' "$tmp/broken.out"
     rc=1
   fi
@@ -358,12 +439,13 @@ main() {
 
   # Evidence file universe (find by name so --root trees of any shape work).
   local -a slint_files=() adapter_files=() messages_files=() \
-        requests_files=() actions_files=() test_files=()
+        requests_files=() actions_files=() test_files=() all_rs_files=()
   mapfile -t slint_files < <(find "$root" -type f -name '*.slint' 2>/dev/null)
   mapfile -t adapter_files < <(find "$root" -type f -name 'adapter.rs' 2>/dev/null)
   mapfile -t messages_files < <(find "$root" -type f -name 'messages.rs' 2>/dev/null)
   mapfile -t requests_files < <(find "$root" -type f -name 'requests.rs' 2>/dev/null)
   mapfile -t actions_files < <(find "$root" -type f -name 'actions.rs' 2>/dev/null)
+  mapfile -t all_rs_files < <(find "$root" -type f -name '*.rs' 2>/dev/null)
 
   local test_root
   test_root=$(grep -m1 '^Test-root:' "$plan" | sed 's/^Test-root:[[:space:]]*//' || true)
@@ -372,8 +454,15 @@ main() {
   fi
   mapfile -t test_files < <(find "${root}/${test_root}" -type f -name '*.rs' 2>/dev/null)
 
+  # seam_inventory.rs (the adapter's structural manifest) — located once
+  # by the same name-based universe. Absence (e.g. the miniature fixture
+  # tree) skips the #760 cross-check for that run; it is a fixture-shape
+  # fact, not a finding.
+  local inv_file=""
+  inv_file=$(find "$root" -type f -name 'seam_inventory.rs' 2>/dev/null | head -n 1)
+
   # Parse records into parallel per-table arrays.
-  local -a cap_rows=() rul_rows=() jrn_stories=() jrn_rows=() \
+  local -a cap_rows=() rul_rows=() jrn_stories=() jrn_steps=() jrn_rows=() \
         wir_rows=() del_rows=()
   local rec kind extra rest cells
   while IFS= read -r rec; do
@@ -402,18 +491,151 @@ main() {
     fi
   done
 
+  # --- Step nominations (#920, plan §3 D1). The plan nominates its own
+  #     evidence in the §6 Test column; the gate trusts nothing ambient.
+  #     exact_nom:  fn-name -> comma-list of nominated file sides
+  #     scoped_nom: bare us<n>_s<k> token -> nominated file side
+  local -A exact_nom=() scoped_nom=()
+  local w_test nom_side nom_name
+  for cells in "${wir_rows[@]}"; do
+    IFS=$'\x1f' read -r _ _ _ _ _ _ _ _ _ w_test <<<"$cells"
+    while IFS= read -r nom_pair; do
+      [[ -n $nom_pair ]] || continue
+      nom_side=${nom_pair%%::*}
+      nom_name=${nom_pair##*::}
+      if is_bare_token "$nom_name"; then
+        scoped_nom[$nom_name]=$nom_side
+      else
+        exact_nom[$nom_name]="${exact_nom[$nom_name]:-}${exact_nom[$nom_name]:+,}${nom_side}"
+      fi
+    done < <(grep -oE '[A-Za-z0-9_/.-]+\.rs::[A-Za-z0-9_]+' <<<"${w_test:-}" || true)
+  done
+
+  # --- Bound-test mapping (#768, plan §3 D4). Retro plans carry
+  #     `bound-test: US-<n>/S<k> -> <file>.rs::<fn_name>` lines anywhere
+  #     in the body. A line naming a step the plan does not declare in
+  #     §4 is a hard parse error — fail loudly, never silently ignore.
+  local -A bound_nom=() declared_steps=()
+  local idx step step_id
+  for idx in "${!jrn_rows[@]}"; do
+    IFS=$'\x1f' read -r step _ _ _ _ _ <<<"${jrn_rows[$idx]}"
+    # canonical form US-<n>/S<k>; accept the D4 grammar's `S-<k>` by
+    # normalizing only the step-half hyphen (never the US- one)
+    step_id=${step/\/S-/\/S}
+    declared_steps[$step_id]=1
+    jrn_steps[$idx]=$step
+  done
+  local b_line b_step b_name
+  while IFS= read -r b_line; do
+    b_line=$(sed 's/^[[:space:]]*//' <<<"$b_line")
+    [[ $b_line =~ ^bound-test:[[:space:]]*(US-[0-9]+/S-?[0-9]+)[[:space:]]*-\>[[:space:]]*([A-Za-z0-9_/.-]+\.rs)::([A-Za-z0-9_]+)[[:space:]]*$ ]] || {
+      echo "PARSE-ERROR: bound-tests: malformed line: $b_line" >&2
+      exit 2
+    }
+    b_step=${BASH_REMATCH[1]}
+    b_name=${BASH_REMATCH[3]}
+    b_step=${b_step/\/S-/\/S}
+    if [[ -z ${declared_steps[$b_step]:-} ]]; then
+      echo "PARSE-ERROR: bound-tests: unknown step id: ${BASH_REMATCH[1]}" >&2
+      exit 2
+    fi
+    bound_nom[$b_step]=$b_name
+  # (leading indentation tolerated — plans list mappings under a
+  # bullet in §8; the grammar binds the line shape, not its margin)
+  done < <(grep -E '^[[:space:]]*bound-test:' "$plan" || true)
+
+  # Resolve a nomination file side to a path: sides containing `/` are
+  # root-relative; bare names live under the Test-root, falling back to
+  # a by-name search (src unit-test files like lib.rs).
+  nom_file() { # nom_file <file-side> -> path
+    local f=$1
+    if [[ $f == */* ]]; then
+      echo "${root}/${f}"
+    elif [[ -f "${root}/${test_root}/${f}" ]]; then
+      echo "${root}/${test_root}/${f}"
+    else
+      find "$root" -type f -name "$f" 2>/dev/null | head -n 1
+    fi
+  }
+
+  # --- Journey-step resolution (plan §3 D2). Priority: exact-name
+  #     nomination > file-scoped token nomination > bound-test >
+  #     unscoped (ambient hits are AMBIGUOUS, never a credit).
+  #     Sets: verdict_ok=1 when the step is covered (FOUND/BOUND).
+  resolve_step() { # resolve_step <label> <step-id> <token>
+    local label=$1 sid=$2 token=$3
+    local name files f path
+    local -a hits=()
+
+    # 1. Exact-name nomination covering the token.
+    for name in "${!exact_nom[@]}"; do
+      [[ $name == "$token" || $name == "${token}_"* ]] || continue
+      IFS=',' read -ra files <<<"${exact_nom[$name]}"
+      for f in "${files[@]}"; do
+        path=$(nom_file "$f")
+        [[ -n $path && -f $path ]] || continue
+        mapfile -t hits < <(fn_boundary_matches "$name" "$path")
+        if (( ${#hits[@]} > 0 )); then
+          FOUND_EV="${hits[0]}"
+          emit_found "$label"
+          return 0
+        fi
+      done
+      # Nominated, but the named test does not exist — a lie, not a pass.
+      emit_missing "$label"
+      return 1
+    done
+
+    # 2. File-scoped token nomination.
+    if [[ -n ${scoped_nom[$token]:-} ]]; then
+      path=$(nom_file "${scoped_nom[$token]}")
+      if [[ -n $path && -f $path ]]; then
+        mapfile -t hits < <(fn_boundary_matches "$token" "$path")
+      else
+        hits=()
+      fi
+      case ${#hits[@]} in
+        0) emit_missing "$label"; return 1 ;;
+        1) FOUND_EV="${hits[0]}"; emit_found "$label"; return 0 ;;
+        *) emit_ambiguous "$label" "${hits[@]}"; return 1 ;;
+      esac
+    fi
+
+    # 3. Bound-test mapping (retro cohort).
+    if [[ -n ${bound_nom[$sid]:-} ]]; then
+      name=${bound_nom[$sid]}
+      mapfile -t hits < <(grep -rnE --include='*.rs' "fn ${name}(_|\\()" "$root" 2>/dev/null | head -n 1 || true)
+      if (( ${#hits[@]} > 0 )); then
+        FOUND_EV="${hits[0]}"
+        emit_bound "$label"
+        return 0
+      fi
+      emit_missing "$label"
+      return 1
+    fi
+
+    # 4. Unscoped: any hit in the shared tree is unattributable — that
+    #     attribution failure *is* #920.
+    mapfile -t hits < <(fn_boundary_matches "$token" "${test_files[@]}")
+    if (( ${#hits[@]} == 0 )); then
+      emit_missing "$label"
+      return 1
+    fi
+    emit_ambiguous "$label" "${hits[@]}"
+    return 1
+  }
+
   # --- Journey-step checks first (capability cells compose their results).
   local -A story_exists=() story_bad=()
   local idx story step token
   for idx in "${!jrn_rows[@]}"; do
-    IFS=$'\x1f' read -r step _ _ _ _ _ <<<"${jrn_rows[$idx]}"
+    step=${jrn_steps[$idx]}
     story=${jrn_stories[$idx]}
     story_exists[$story]=1
     token=$(tr 'A-Z/' 'a-z_' <<<"$step" | tr -d '-')
-    if first_match "fn ${token}" "${test_files[@]}"; then
-      emit_found "${step} journey test"
+    if resolve_step "${step} journey test" "$step" "$token"; then
+      story_bad[$story]=${story_bad[$story]:-0}
     else
-      emit_missing "${step} journey test"
       story_bad[$story]=1
     fi
   done
@@ -430,7 +652,8 @@ main() {
   done
 
   # --- Capability-matrix cells: every US-n citation must resolve to a
-  #     story whose every step is covered.
+  #     story whose every step is covered (AMBIGUOUS poisons the
+  #     citation — never a silent credit).
   local capability cell ref
   for cells in "${cap_rows[@]}"; do
     IFS=$'\x1f' read -r capability _ _ _ _ _ _ _ <<<"$cells"
@@ -448,15 +671,31 @@ main() {
 
   # --- Wiring-inventory checks.
   local w_id w_cb w_action w_cmds w_steps tok kind
+  local slint_ev adapter_ev
   local -a files_sel=()
   for cells in "${wir_rows[@]}"; do
     IFS=$'\x1f' read -r w_id _ _ w_cb _ w_action w_cmds _ w_steps _ <<<"$cells"
     [[ -n $w_id ]] || continue
 
     if ! is_absent "$w_cb"; then
-      if first_match "$w_cb" "${slint_files[@]}" \
-         && adapter_match "$w_cb" "${adapter_files[@]}"; then
-        emit_found "${w_id} callback ${w_cb}"
+      if first_match "$w_cb" "${slint_files[@]}"; then
+        slint_ev=$FOUND_EV
+        if adapter_match "$w_cb" "${adapter_files[@]}"; then
+          adapter_ev=$FOUND_EV
+          # #760 cross-check: a resolved callback must be listed in the
+          # adapter's structural manifest. Callbacks that already MISS
+          # keep MISSING — this is an additional honesty pass on
+          # resolved wiring, not a substitute.
+          if [[ -n $inv_file ]] \
+             && ! grep -qF -- "\"${w_cb}\"" "$inv_file"; then
+            emit_inventory_miss "${w_id} callback ${w_cb}" "$slint_ev" "$adapter_ev"
+          else
+            FOUND_EV=$slint_ev
+            emit_found "${w_id} callback ${w_cb}"
+          fi
+        else
+          emit_missing "${w_id} callback ${w_cb}"
+        fi
       else
         emit_missing "${w_id} callback ${w_cb}"
       fi
@@ -511,8 +750,8 @@ main() {
   done
 
   echo "---"
-  echo "checks: $((n_found + n_missing)), FOUND: ${n_found}, MISSING: ${n_missing}"
-  if [[ $gate -eq 1 && $n_missing -gt 0 ]]; then
+  echo "checks: $((n_found + n_missing + n_ambiguous + n_bound + n_invmiss)), FOUND: ${n_found}, MISSING: ${n_missing}, AMBIGUOUS: ${n_ambiguous}, BOUND: ${n_bound}, INVENTORY-MISS: ${n_invmiss}"
+  if [[ $gate -eq 1 && $((n_missing + n_ambiguous + n_invmiss)) -gt 0 ]]; then
     return 1
   fi
   return 0
