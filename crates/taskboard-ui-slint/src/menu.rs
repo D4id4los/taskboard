@@ -603,6 +603,71 @@ pub fn task_quick_bar(
     bar
 }
 
+/// The multi-selection context menu's quick bar (J5 US-2 over R-3's
+/// multi-sensibility ruling): schedule today/tomorrow apply to every
+/// member; unschedule shows when at least one member is scheduled
+/// (the C-4 rule over aggregate facts); the tracking twin shows only
+/// on a uniform selection (`tracked_members == count` → Stop;
+/// `tracked_members == 0` → Start, greyed while another task tracks;
+/// a mixed selection withholds the twin entirely — it is not
+/// multi-sensible there). `count == 1` degenerates to the single-card
+/// rule. No Complete/Delete icons — those stay menu rows
+/// (`TASK_CONTEXT_MULTI`); the bar is quick-verbs only.
+#[must_use]
+pub fn multi_quick_bar(
+    count: usize,
+    any_scheduled: bool,
+    tracked_members: usize,
+    tracking_elsewhere: bool,
+) -> Vec<QuickBarEntry> {
+    let tracked_members = tracked_members.min(count);
+    let uniform_tracked = tracked_members == count;
+    let uniform_untracked = tracked_members == 0;
+    let mut bar = vec![
+        QuickBarEntry {
+            action: ActionId::TaskScheduleToday,
+            icon: QuickBarIcon::Calendar,
+            enabled: true,
+            visible: true,
+        },
+        QuickBarEntry {
+            action: ActionId::TaskScheduleTomorrow,
+            icon: QuickBarIcon::CalendarPlus,
+            enabled: true,
+            visible: true,
+        },
+        QuickBarEntry {
+            action: ActionId::TaskUnschedule,
+            icon: QuickBarIcon::CalendarMinus,
+            enabled: true,
+            visible: any_scheduled,
+        },
+    ];
+    let (start_visible, stop_visible) = if uniform_tracked {
+        (false, true)
+    } else if uniform_untracked {
+        (true, false)
+    } else {
+        (false, false) // mixed: the twin is withheld, not greyed
+    };
+    bar.push(QuickBarEntry {
+        action: ActionId::TaskTrackStart,
+        icon: QuickBarIcon::Play,
+        // The singleton precondition rides over the aggregate: a
+        // uniform-untracked selection still greys Start while another
+        // task tracks.
+        enabled: !tracking_elsewhere,
+        visible: start_visible,
+    });
+    bar.push(QuickBarEntry {
+        action: ActionId::TaskTrackStop,
+        icon: QuickBarIcon::Stop,
+        enabled: true,
+        visible: stop_visible,
+    });
+    bar
+}
+
 /// One object context menu (round-2 D21): the named actions
 /// projected through the same `row()` as every page — binding hints
 /// included. Over `[Board, Global]` (the one chain every object menu
@@ -1244,6 +1309,86 @@ mod tests {
             .find(|e| e.action == ActionId::TaskTrackStart)
             .expect("start shown");
         assert!(start.visible && !start.enabled, "elsewhere greys start");
+    }
+
+    /// J5 US-2 (R-3's multi-sensibility) — the multi bar's shown
+    /// matrix over aggregate facts: the schedule pair always shown;
+    /// unschedule rides any-scheduled; the twin only on uniform
+    /// selections (uniform-tracked → stop, uniform-untracked → start
+    /// greyed by elsewhere, mixed → withheld); `count == 1`
+    /// degenerates to the single-card rule. No Complete/Delete icons.
+    #[test]
+    fn the_multi_quick_bar_composes_per_aggregate() {
+        let shown = |bar: &[QuickBarEntry]| -> Vec<ActionId> {
+            bar.iter().filter(|e| e.visible).map(|e| e.action).collect()
+        };
+
+        // Two untracked, unscheduled members: the schedule pair +
+        // start, unschedule/stop withheld.
+        let bar = multi_quick_bar(2, false, 0, false);
+        assert_eq!(
+            shown(&bar),
+            vec![
+                ActionId::TaskScheduleToday,
+                ActionId::TaskScheduleTomorrow,
+                ActionId::TaskTrackStart,
+            ],
+            "the plain selection's shown half"
+        );
+
+        // One of three scheduled: unschedule joins (the C-4 rule
+        // over aggregate facts).
+        let bar = multi_quick_bar(3, true, 0, false);
+        assert!(
+            shown(&bar).contains(&ActionId::TaskUnschedule),
+            "any-scheduled shows unschedule"
+        );
+
+        // Uniformly tracked selection: stop shown, start withheld.
+        let bar = multi_quick_bar(2, false, 2, false);
+        assert!(shown(&bar).contains(&ActionId::TaskTrackStop));
+        assert!(!shown(&bar).contains(&ActionId::TaskTrackStart));
+
+        // Mixed tracking: the twin withheld entirely — not
+        // multi-sensible.
+        let bar = multi_quick_bar(3, false, 1, false);
+        assert!(
+            !shown(&bar).contains(&ActionId::TaskTrackStart)
+                && !shown(&bar).contains(&ActionId::TaskTrackStop),
+            "the mixed selection withholds the twin"
+        );
+
+        // Uniform-untracked while another task tracks: start greyed.
+        let bar = multi_quick_bar(2, false, 0, true);
+        let start = bar
+            .iter()
+            .find(|e| e.action == ActionId::TaskTrackStart)
+            .expect("start shown");
+        assert!(
+            start.visible && !start.enabled,
+            "elsewhere greys the multi start"
+        );
+
+        // `count == 1` degenerates to the single-card rule (tracked
+        // here → stop; the schedule trio unchanged).
+        let single = multi_quick_bar(1, false, 1, false);
+        assert_eq!(
+            shown(&single),
+            vec![
+                ActionId::TaskScheduleToday,
+                ActionId::TaskScheduleTomorrow,
+                ActionId::TaskTrackStop,
+            ],
+            "the singleton degeneration"
+        );
+
+        // The bar stays quick-verbs only: no Complete/Delete icons.
+        let bar = multi_quick_bar(2, true, 2, false);
+        assert!(
+            bar.iter()
+                .all(|e| e.action != ActionId::TaskComplete && e.action != ActionId::TaskDelete),
+            "the multi bar carries no row verbs"
+        );
     }
 
     /// UX-R8 chunk-5 D-4 (US-2/AC-1–2) — the withheld matrix, typed
