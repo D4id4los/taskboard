@@ -10,7 +10,9 @@
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use taskboard_sync_files_nextcloud::status::{BoardMoveFinding, CycleOutcome, FilesSyncStatus};
+use taskboard_sync_files_nextcloud::status::{
+    BoardMoveFinding, CycleOutcome, FilesSyncStatus, LaneOutcome,
+};
 use taskboard_ui_slint::presentation::{
     FilesBoardAdoption, FilesBoardState, FilesSyncChip, FilesSyncChipState,
 };
@@ -20,43 +22,57 @@ use taskboard_ui_slint::presentation::{
 /// (loudest), a park is informational, a failed cycle is transient.
 /// Peer journal rows the last cycle could not import ride the Parked
 /// rung: held aside and relayed like a parked file, same remedy.
-/// Empty/default status maps to `Ok`.
+/// A failing board lane (#941's honesty leg) rides the `CycleFailed`
+/// rung too: the per-board data path is broken this tick, and the
+/// chip must never read neutral Ok while it is. Empty/default status
+/// maps to `Ok`.
 #[must_use]
 pub fn files_sync_chip(status: &FilesSyncStatus) -> FilesSyncChip {
+    let lane_failed = status
+        .lanes
+        .values()
+        .any(|outcome| matches!(outcome, LaneOutcome::Failed(_)));
     let state = if !status.forked_paths.is_empty() {
         FilesSyncChipState::Forked
     } else if !status.diverged_from.is_empty() {
         FilesSyncChipState::Diverged
     } else if !status.parked.is_empty() || rejected_rows(status) > 0 {
         FilesSyncChipState::Parked
-    } else if matches!(status.last_cycle, Some(CycleOutcome::Failed)) {
+    } else if matches!(status.last_cycle, Some(CycleOutcome::Failed)) || lane_failed {
         FilesSyncChipState::CycleFailed
     } else {
         FilesSyncChipState::Ok
     };
+    let mut board_states: std::collections::BTreeMap<uuid::Uuid, FilesBoardState> = status
+        .moved_boards
+        .iter()
+        .map(|(uuid, finding)| {
+            let adoption = match finding {
+                BoardMoveFinding::Adopting { .. } => FilesBoardAdoption::Adopting,
+                BoardMoveFinding::Adopted { .. } => FilesBoardAdoption::Adopted,
+                BoardMoveFinding::Refused(_) => FilesBoardAdoption::Refused,
+            };
+            (
+                *uuid,
+                FilesBoardState {
+                    lane: taskboard_ui_slint::presentation::FilesBoardLane::Idle,
+                    adoption,
+                },
+            )
+        })
+        .collect();
+    // The lanes' typed outcomes fold onto the same per-board rows
+    // (US-2 AC-3, D-3): a failed lane renders `Failed` on its board —
+    // the adoption fact (if any) is orthogonal and survives.
+    for (uuid, outcome) in &status.lanes {
+        let entry = board_states.entry(*uuid).or_default();
+        if matches!(outcome, LaneOutcome::Failed(_)) {
+            entry.lane = taskboard_ui_slint::presentation::FilesBoardLane::Failed;
+        }
+    }
     FilesSyncChip {
         state,
-        // The per-board states map (US-8, D-8): the moved boards'
-        // adoption phase, 1:1 over the typed findings; the lane rides
-        // the failed cycle (per-board pending composes engine-side).
-        board_states: status
-            .moved_boards
-            .iter()
-            .map(|(uuid, finding)| {
-                let adoption = match finding {
-                    BoardMoveFinding::Adopting { .. } => FilesBoardAdoption::Adopting,
-                    BoardMoveFinding::Adopted { .. } => FilesBoardAdoption::Adopted,
-                    BoardMoveFinding::Refused(_) => FilesBoardAdoption::Refused,
-                };
-                (
-                    *uuid,
-                    FilesBoardState {
-                        lane: taskboard_ui_slint::presentation::FilesBoardLane::Idle,
-                        adoption,
-                    },
-                )
-            })
-            .collect(),
+        board_states,
     }
 }
 
@@ -196,6 +212,37 @@ mod tests {
         assert_eq!(
             files_sync_chip(&status(true, false, false, rejected(2))).state,
             S::Forked
+        );
+    }
+
+    /// A failing board lane (#941's honesty leg): the chip leaves the
+    /// neutral `Ok` rung (it rides `CycleFailed` — the per-board data
+    /// path is broken this tick), the board's own row renders `Failed`,
+    /// and a lane that succeeded the next tick clears both.
+    #[test]
+    fn a_failing_lane_never_reads_neutral_ok() {
+        use FilesSyncChipState as S;
+        use taskboard_sync_files_nextcloud::status::{LaneFailure, LaneOutcome};
+        let board_uuid = uuid::uuid!("00000000-0000-0000-0000-0000000b0a1d");
+        let lane = |outcome: LaneOutcome| {
+            let mut status = status(false, false, false, None);
+            status.lanes.insert(board_uuid, outcome);
+            status
+        };
+        let failed = files_sync_chip(&lane(LaneOutcome::Failed(LaneFailure::NotFound)));
+        assert_eq!(failed.state, S::CycleFailed, "a failing lane is not Ok");
+        assert_eq!(
+            failed
+                .board_states
+                .get(&board_uuid)
+                .expect("the board's row exists")
+                .lane,
+            taskboard_ui_slint::presentation::FilesBoardLane::Failed,
+        );
+        assert_eq!(
+            files_sync_chip(&lane(LaneOutcome::Ok)).state,
+            S::Ok,
+            "a lane that ran to completion is neutral again"
         );
     }
 

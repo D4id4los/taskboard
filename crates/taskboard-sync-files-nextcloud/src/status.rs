@@ -12,6 +12,8 @@ use chrono::{DateTime, Utc};
 
 use taskboard_sync_files::ids::DeviceId;
 
+use crate::error::TransportError;
+
 /// A peer device's latest decoded heartbeat — the freshness inputs
 /// (design Part F's "synced as of N min ago" consumer). Presence
 /// facts only; the divergence comparison consumes `info.json`'s
@@ -77,10 +79,68 @@ pub enum BoardMoveFinding {
     Refused(BoardMoveRefusal),
 }
 
+/// A board lane's typed failure class (the transport outcome's
+/// status-table projection, `#941`): the lane retries next tick, and
+/// this fact is what keeps the status surfaces honest — a failing
+/// lane must never read neutral Ok. Deliberately narrower than
+/// [`TransportError`] (whose network variant cannot be `Eq`); no
+/// message text survives the projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneFailure {
+    Transport,
+    Unauthorized,
+    Forbidden,
+    NotFound,
+    BadRequest,
+    Conflict,
+    PreconditionFailed,
+    RateLimited,
+    /// A document the lane produced or read did not decode.
+    Payload,
+    Server(u16),
+    Unavailable,
+}
+
+impl From<&TransportError> for LaneFailure {
+    fn from(err: &TransportError) -> Self {
+        match err {
+            TransportError::Transport(_) => Self::Transport,
+            TransportError::Json(_) | TransportError::PropfindListing(_) => Self::Payload,
+            TransportError::Unauthorized => Self::Unauthorized,
+            TransportError::Forbidden => Self::Forbidden,
+            TransportError::NotFound => Self::NotFound,
+            // The invalid base URL and the 400 are the same class for
+            // a lane: this build's request was wrong before the wire.
+            TransportError::InvalidBaseUrl | TransportError::BadRequest => Self::BadRequest,
+            TransportError::Conflict => Self::Conflict,
+            TransportError::PreconditionFailed => Self::PreconditionFailed,
+            TransportError::RateLimited { .. } => Self::RateLimited,
+            TransportError::Server(status) => Self::Server(*status),
+            TransportError::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+/// One board lane's last-tick outcome (typed, per bound board).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneOutcome {
+    /// The lane ran to completion this tick.
+    Ok,
+    /// The lane failed; the typed transport projection; retried next
+    /// tick.
+    Failed(LaneFailure),
+}
+
 /// The latest files-sync state a consumer can observe.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FilesSyncStatus {
     pub last_cycle: Option<CycleOutcome>,
+    /// The board lanes' last-tick outcomes, keyed by the board's files
+    /// identity — only boards the lanes currently serve appear; a lane
+    /// that succeeded this tick carries [`LaneOutcome::Ok`] (the map
+    /// is the whole truth of the last tick, not an accumulating
+    /// alarm). Empty means no files-bound boards ran yet.
+    pub lanes: BTreeMap<uuid::Uuid, LaneOutcome>,
     /// The live stop-write set (the fork alarm's paths).
     pub forked_paths: BTreeSet<String>,
     /// Peer files parked (not folded) and why.

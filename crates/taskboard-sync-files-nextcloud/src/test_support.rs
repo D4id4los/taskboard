@@ -228,6 +228,19 @@ impl FakeFilesTransport {
     fn take_effect(state: &mut FakeState) -> Option<Effect> {
         state.effects.pop_front()
     }
+
+    /// The real server (Sabre/DAV) answers a PUT whose parent
+    /// collection does not exist with 404 — the fake models it
+    /// (`#941`: the old asymmetry let a chunk land in a never-created
+    /// `ops/` and the whole drain journey exercised a shape the real
+    /// server refuses).
+    fn ensure_parent(state: &FakeState, path: &str) -> Result<(), TransportError> {
+        let parent = path.rsplit_once('/').map(|(p, _)| p);
+        if parent.is_some_and(|p| !state.dirs.contains_key(p)) {
+            return Err(TransportError::NotFound);
+        }
+        Ok(())
+    }
 }
 
 fn etag_of(rev: u64) -> Etag {
@@ -427,6 +440,7 @@ impl FilesTransport for FakeFilesTransport {
             // `If-None-Match: *` against an existing file: 412 (F3).
             return Err(TransportError::PreconditionFailed);
         }
+        Self::ensure_parent(&state, path)?;
         let rev = state
             .files
             .insert(path.to_owned(), (body.to_vec(), 1))
@@ -463,6 +477,7 @@ impl FilesTransport for FakeFilesTransport {
             // vanish scenarios decide the file's fate around it).
             return Err(TransportError::PreconditionFailed);
         }
+        Self::ensure_parent(&state, path)?;
         let Some((_, served_rev)) = state.files.get_mut(path) else {
             return Err(TransportError::NotFound);
         };

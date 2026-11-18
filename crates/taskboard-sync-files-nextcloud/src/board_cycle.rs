@@ -115,6 +115,13 @@ pub struct Lanes {
     discovered: std::collections::BTreeSet<uuid::Uuid>,
     /// Boards moved here from Deck, surfaced on the status watch.
     pub moved: BTreeMap<uuid::Uuid, BoardMoveFinding>,
+    /// The lanes' last-tick outcomes, keyed by the board's files
+    /// identity — rebuilt every tick over the boards the lanes serve
+    /// (a success clears a previous tick's failure; the watch is the
+    /// whole truth of the last tick, not an accumulating alarm).
+    /// Surfaced so a failing lane never reads neutral Ok (#941's
+    /// honesty leg).
+    pub outcomes: BTreeMap<uuid::Uuid, crate::status::LaneOutcome>,
 }
 
 /// The one board-cycle tick: every files-owned board's lane, in
@@ -146,15 +153,21 @@ pub async fn run_board_lanes<T: FilesTransport>(
         })
         .collect();
     let mut completed = 0usize;
+    let mut outcomes = BTreeMap::new();
     for (board, remote) in owned {
         let lane = lanes.boards.entry(board).or_default();
         match run_lane(transport, ctx, lane, board, remote, &persisted).await {
-            Ok(()) => completed += 1,
+            Ok(()) => {
+                completed += 1;
+                outcomes.insert(remote, crate::status::LaneOutcome::Ok);
+            }
             Err(err) => {
                 tracing::warn!(?err, board = ?board, "board lane failed; retried next tick");
+                outcomes.insert(remote, crate::status::LaneOutcome::Failed((&err).into()));
             }
         }
     }
+    lanes.outcomes = outcomes;
     completed += discover_subtrees(transport, ctx, lanes, &persisted).await;
     completed
 }
@@ -546,6 +559,12 @@ async fn attach_board<T: FilesTransport>(
     crate::cycle::mkcol_exists_ok(transport, &devices_dir).await?;
     let self_dir = format!("{devices_dir}/{}", device_dir_name(ctx.identity.device_id));
     crate::cycle::mkcol_exists_ok(transport, &self_dir).await?;
+    // The drain's create-once chunk PUT needs its parent collection
+    // (#941): a real Sabre/DAV server 404s a PUT into a missing
+    // `ops/`, which stranded every queued op forever — the ladder
+    // owns the directory, the drain owns only the file.
+    let ops_dir = format!("{self_dir}/{}", layout::OPS_DIR_NAME);
+    crate::cycle::mkcol_exists_ok(transport, &ops_dir).await?;
 
     let identity_path = crate::cycle::rooted(&board_identity_path(BoardId::from_uuid(remote)));
     let identity = BoardIdentity {
@@ -1658,11 +1677,11 @@ mod tests {
         let fake = FakeFilesTransport::new();
         fake.seed_dirs(&["taskboard"]);
         // The staged verdicts land in call order: the attach ladder
-        // (4 MKCOL + 1 create-once identity) and the pull's listings
-        // (the devices dir, the self device dir) pass through to the
-        // model; the drain's chunk PUT answers 503 — nothing
-        // publishes, nothing reports Applied.
-        for _ in 0..7 {
+        // (5 MKCOL + 1 create-once identity) and the pull's listings
+        // (the devices dir, the self device dir, its ops dir) pass
+        // through to the model; the drain's chunk PUT answers 503 —
+        // nothing publishes, nothing reports Applied.
+        for _ in 0..9 {
             fake.stage(crate::test_support::Effect::Pass);
         }
         fake.stage(crate::test_support::Effect::Status(503));
@@ -1685,6 +1704,86 @@ mod tests {
             1,
         ));
         assert!(fake.file(&ops_path).is_none(), "nothing published");
+    }
+
+    /// The incident scenario (#941): a fresh device adopting a former
+    /// install's subtree (the identity PUT answers 412) — the old tree
+    /// has no `ops/` under this device, yet the first tick's drain
+    /// must land its chunk: the attach ladder owns the drain's parent
+    /// collection, so the lane cannot 404 forever.
+    #[tokio::test]
+    async fn a_fresh_device_on_an_adopted_subtree_drains_successfully() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&[
+            "taskboard",
+            "taskboard/boards",
+            &format!("taskboard/boards/{BOARD_UUID}"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices"),
+        ]);
+        let identity_path =
+            crate::cycle::rooted(&taskboard_sync_files::layout::board_identity_path(board()));
+        fake.seed_file(
+            &identity_path,
+            br#"{"board_id":"00000000-0000-0000-0000-0000000b0a1d","format_version":1,"created_at":"2026-11-08T00:00:00Z"}"#.to_vec(),
+        );
+        let state = Arc::new(FixedState(state_with(vec![queued_update(
+            0xE1,
+            TaskId::from_uuid(TASK_UUID),
+        )])));
+        let context = ctx(Arc::clone(&state), mpsc::channel(8).0);
+        let mut lanes = Lanes::default();
+
+        let ran = run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(ran, 1, "the adopted board's lane ran");
+        let ops_path = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            device(),
+            1,
+        ));
+        assert!(
+            fake.file(&ops_path).is_some(),
+            "the drain published despite the adopted (ops-less) tree"
+        );
+    }
+
+    /// The ladder-completeness pin (#941): after a full tick (attach,
+    /// pull, drain, snapshot) every collection any PUT wrote into was
+    /// MKCOL'd in that same tick's ladder — a future path addition
+    /// that skips its parent fails here against the fake's missing-
+    /// parent posture, not on the real server's 404.
+    #[tokio::test]
+    async fn the_attach_ladder_mkcols_every_collection_the_puts_need() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let state = Arc::new(FixedState(state_with(vec![queued_update(
+            0xE1,
+            TaskId::from_uuid(TASK_UUID),
+        )])));
+        let context = ctx(Arc::clone(&state), mpsc::channel(8).0);
+        let mut lanes = Lanes::default();
+        let ran = run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(ran, 1, "the lane ran to completion");
+
+        let mkcols: BTreeSet<String> = fake
+            .requests()
+            .iter()
+            .filter(|req| req.method == "MKCOL")
+            .map(|req| req.path.clone())
+            .collect();
+        for put in fake.requests().iter().filter(|req| req.method == "PUT") {
+            let mut dir = put.path.as_str();
+            while let Some((parent, _)) = dir.rsplit_once('/') {
+                dir = parent;
+                if dir == "taskboard" || dir.is_empty() {
+                    break; // the per-user ladder owns the root
+                }
+                assert!(
+                    mkcols.contains(dir),
+                    "PUT {}/ has no MKCOL for its ancestor {dir}/",
+                    put.path
+                );
+            }
+        }
     }
 
     /// The ref-delete pin, re-authored to the N-19 repair's contract
