@@ -812,6 +812,7 @@ fn journal_entity_id(entity: taskboard_domain::JournalEntity) -> String {
         E::Habit(id) => id.as_uuid().to_string(),
         E::TimeEntry(id) => id.as_uuid().to_string(),
         E::HabitLog(key) => key.wire_form(),
+        E::ReminderRule(id) => id.as_uuid().to_string(),
     }
 }
 

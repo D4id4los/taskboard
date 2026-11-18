@@ -25,9 +25,12 @@ use crate::entities::{
     Board, BoardClocks, Label, LabelClocks, MembershipState, Stack, StackClocks, Task, TaskClocks,
 };
 use crate::habit::{Habit, HabitClocks};
-use crate::ids::{BoardId, HabitId, JournalId, LabelId, StackId, TaskId, TimeEntryId};
+use crate::ids::{
+    BoardId, HabitId, JournalId, LabelId, ReminderRuleId, StackId, TaskId, TimeEntryId,
+};
 use crate::messages::StateCommand;
 use crate::outbox::OpId;
+use crate::reminders::ReminderRule;
 use crate::tracking::TimeEntry;
 
 /// The retention cap (R-U11): the journal evicts oldest-first **leaf**
@@ -168,6 +171,18 @@ pub enum PreImage {
         key: crate::habit::HabitLogKey,
         before: Option<crate::habit::HabitLogEntry>,
     },
+    /// One reminder rule the batch hard-deleted (the #900 cascade
+    /// capture — `DeleteTask`/`DeleteStack`/`DeleteBoard` cascades and
+    /// the rule-remove verbs). `before: None` is unreachable for a
+    /// real cascade (the rule existed) but kept for the enum's
+    /// `before` convention (the [`PreImage::HabitLogRow`] precedent).
+    /// No watermark: rule deletes carry no clock stamps (D19 — the row
+    /// is removed, not tombstoned); the resurrect's divergence guard
+    /// is the owning task's own watermark (rules ride the task).
+    ReminderRule {
+        id: ReminderRuleId,
+        before: Option<Box<ReminderRule>>,
+    },
 }
 
 /// The invertibility watermark (R-U7): per touched entity, the post-write
@@ -203,6 +218,10 @@ pub enum JournalEntity {
     /// One habit-log window row (appended last — `Ord` is declaration
     /// order; a new kind never reshuffles existing keys).
     HabitLog(crate::habit::HabitLogKey),
+    /// One reminder rule (appended last — #900's capture key; no
+    /// `EntityStamps` variant exists: rule deletes carry no clock
+    /// stamps, D19).
+    ReminderRule(ReminderRuleId),
 }
 
 /// The post-write clock set of one touched entity (full structs, D8;

@@ -476,15 +476,25 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
 /// upserts, with the entity's state *before* the batch (`before: None`
 /// = a create). Walks the plan's `Upsert*` actions against the
 /// pre-state — arm-agnostic, so cascades are captured for free (D19:
-/// `RecordReminderDismissal` rows and deletes carry no pre-image; a
+/// `RecordReminderDismissal` rows carry no pre-image; a
 /// `RecordHabitLog` row does since the undo v2 widening #555 — the log
-/// map lives outside the habit entity).
+/// map lives outside the habit entity; a `DeleteReminderRule` does
+/// since #900 — the capture reads the rule row from the same
+/// pre-state snapshot the cascade planned from, so the image cannot
+/// diverge from what the cascade actually deletes).
 #[must_use]
 pub fn pre_images(app: &AppState, actions: &[PersistenceAction]) -> Vec<PreImage> {
     let mut seen = BTreeSet::new();
     let mut images = Vec::new();
     for action in actions {
         let (key, image) = match action {
+            PersistenceAction::DeleteReminderRule(rule_id) => (
+                JournalEntity::ReminderRule(*rule_id),
+                PreImage::ReminderRule {
+                    id: *rule_id,
+                    before: app.reminders.rules.get(rule_id).cloned().map(Box::new),
+                },
+            ),
             PersistenceAction::UpsertBoard(entity) => (
                 JournalEntity::Board(entity.id),
                 PreImage::Board {
@@ -705,6 +715,37 @@ pub fn plan_undo(
     for inverse in &inverses {
         let plan = plan_command(app, outbox, inverse, ids, defaults, day, now, author)?;
         actions.extend(plan.actions);
+    }
+    // 5b. The #900 rule resurrect (D-3): the entry's own
+    // `PreImage::ReminderRule` rows ride the batch action-level — rule
+    // resurrection is not a user intent (no surface verb exists), so it
+    // is not a `StateCommand`. The payload is verbatim (same id, same
+    // `created_at`, same stamps — `AddReminderRule` would mint a fresh
+    // id and re-stamp, forging a different stored fact); a present
+    // same-id row is skipped, not refused (only a prior resurrect can
+    // have placed it — the head-move idempotency the redo path needs).
+    // The flush trigger mirrors the delete's own enqueue (rules ride the
+    // document lane). Placement before the pushed-edit rule is
+    // deliberate: an unpushed entry's retraction drops these enqueues
+    // (the server never knew the delete, so its document still holds the
+    // rules), while a pushed entry's flush restores the document.
+    for image in images {
+        let PreImage::ReminderRule {
+            id: rule_id,
+            before: Some(rule),
+        } = image
+        else {
+            continue;
+        };
+        if app.reminders.rules.contains_key(rule_id) {
+            continue;
+        }
+        actions.push(PersistenceAction::UpsertReminderRule(rule.as_ref().clone()));
+        actions.push(PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
+            op_id: ids.new_op_id(),
+            op: crate::outbox::LocalOp::UpdateAppData(rule.task),
+            queued_at: now,
+        }));
     }
     // 6. The pushed-edit rule (D-U2), two behaviours per entry.
     if !entry.pushed {
