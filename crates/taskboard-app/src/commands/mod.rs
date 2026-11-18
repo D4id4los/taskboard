@@ -1766,9 +1766,11 @@ async fn sync_command(
 ///
 /// `DueSpec::Date` mints here — the execution seam, where
 /// `resolved_day_calendar()` is reachable (the `habits`/`reflection`
-/// precedent): the bare date's instant is `day.day_end(date)`, the N-4
-/// stamping law's CLI face (task-detail-editor UX plan US-1/D-5) — the
-/// identical instant the GUI funnel's `parse_stamp` produces.
+/// precedent): the bare date's instant is `day.day_last_instant(date)`,
+/// the N-4 stamping law's CLI face (task-detail-editor UX plan
+/// US-1/D-5; #893 supersedes the mint) — the identical instant the GUI
+/// funnel's `parse_stamp` produces, and one that survives the
+/// `[now, end)` today membership the raw window end does not.
 fn task_changes(
     flags: &crate::cli::TaskEditFlags,
     day: &taskboard_domain::days::DayCalendar,
@@ -1790,12 +1792,12 @@ fn task_changes(
         description: description.clone(),
         duedate: due.clone().map(|spec| match spec {
             crate::cli::DueSpec::Set(dt) => Some(dt),
-            crate::cli::DueSpec::Date(date) => Some(day.day_end(date)),
+            crate::cli::DueSpec::Date(date) => Some(day.day_last_instant(date)),
             crate::cli::DueSpec::Clear => None,
         }),
         scheduled: scheduled.clone().map(|spec| match spec {
             crate::cli::DueSpec::Set(dt) => Some(dt),
-            crate::cli::DueSpec::Date(date) => Some(day.day_end(date)),
+            crate::cli::DueSpec::Date(date) => Some(day.day_last_instant(date)),
             crate::cli::DueSpec::Clear => None,
         }),
         // The spec enums share `DueSpec`'s shape: `Clear` becomes
@@ -2987,9 +2989,10 @@ mod task_field_mapping_tests {
     /// US-1/S3 (task-detail-editor UX plan D-5, W-2): the CLI's bare
     /// date mints the same instant the GUI funnel's `parse_stamp`
     /// produces — both fronts compose the one domain law
-    /// (`days::day_window_end` over the same day facts), so the parity
-    /// triangle closes: GUI asserted == law (`due_edit` tests), CLI
-    /// asserted == law (here) ⇒ GUI == CLI.
+    /// (`days::day_last_instant` over the same day facts, #893's
+    /// unified mint), so the parity triangle closes: GUI asserted ==
+    /// law (`due_edit` tests), CLI asserted == law (here) ⇒ GUI ==
+    /// CLI.
     #[test]
     fn us1_s3_cli_bare_date_matches_the_gui_instant() {
         let day = taskboard_domain::days::DayCalendar {
@@ -3005,7 +3008,7 @@ mod task_field_mapping_tests {
             },
             &day,
         );
-        let mint = taskboard_domain::days::day_window_end(date, day.day_start_time, day.offset);
+        let mint = day.day_last_instant(date);
         assert_eq!(changes.duedate, Some(Some(mint)));
         assert_eq!(changes.scheduled, Some(Some(mint)));
     }

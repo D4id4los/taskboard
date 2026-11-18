@@ -333,18 +333,19 @@ fn local_wall(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> chrono::DateTime<chro
         .with_timezone(&chrono::Utc)
 }
 
-/// The local midnight convenience.
 /// The N-4 stamping law's mint over the harness's injected day facts
-/// (00:00 start, UTC boot offset) — the instant the commit funnels now
+/// (00:00 start, UTC boot offset) — the instant the commit funnels
 /// produce for a bare date (US-1/D-3, task-detail-editor UX plan,
-/// 2026-11-17). The pins that predate the law assert this, not the
-/// old local midnight.
+/// 2026-11-17; superseded by #893, 2026-11-18: the mint is the
+/// **last covered instant**, `window_end − 1ms`, not the raw window
+/// end — the stamp survives the `[now, end)` today membership). The
+/// pins that predate the law assert this, not the old local midnight.
 fn window_end_utc(y: i32, mo: u32, d: u32) -> chrono::DateTime<chrono::Utc> {
-    taskboard_domain::days::day_window_end(
+    taskboard_domain::days::last_covered_instant(taskboard_domain::days::day_window_end(
         chrono::NaiveDate::from_ymd_opt(y, mo, d).expect("fixture date"),
         chrono::NaiveTime::MIN,
         chrono::FixedOffset::east_opt(0).expect("zero"),
-    )
+    ))
 }
 
 fn local_midnight(y: i32, mo: u32, d: u32) -> chrono::DateTime<chrono::Utc> {
@@ -8480,18 +8481,22 @@ fn a_foreign_field_steal_settles_the_due_per_the_rule() {
             harness.driver.click_by_label("Edit description");
             harness.driver.advance_time(0);
             // Consciously updated with US-1/D-3 (task-detail-editor UX
-            // plan, 2026-11-17): the settle funnel's commit mint is the
-            // N-4 stamping law — a bare date stamps the named date's
-            // day-window end over the injected day facts (the harness's
-            // boot facts: 00:00 start, UTC offset), never the old
-            // local midnight.
+            // plan, 2026-11-17) and superseded by #893 (2026-11-18):
+            // the settle funnel's commit mint is the N-4 stamping law —
+            // a bare date stamps the named date's last covered instant
+            // over the injected day facts (the harness's boot facts:
+            // 00:00 start, UTC offset), never the old local midnight
+            // and never the raw window end (excluded by its own
+            // `[now, end)` membership).
             harness.assert_commands(&[StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {
-                    duedate: Some(Some(taskboard_domain::days::day_window_end(
-                        chrono::NaiveDate::from_ymd_opt(2030, 3, 1).expect("fixture date"),
-                        chrono::NaiveTime::MIN,
-                        chrono::FixedOffset::east_opt(0).expect("zero"),
+                    duedate: Some(Some(taskboard_domain::days::last_covered_instant(
+                        taskboard_domain::days::day_window_end(
+                            chrono::NaiveDate::from_ymd_opt(2030, 3, 1).expect("fixture date"),
+                            chrono::NaiveTime::MIN,
+                            chrono::FixedOffset::east_opt(0).expect("zero"),
+                        ),
                     ))),
                     ..taskboard_domain::TaskChanges::default()
                 },
@@ -20992,42 +20997,91 @@ fn us2_s4_target_free_board_select_opens_flyout_and_return_selects() {
 #[test]
 fn us6_s2_today_row_menu_and_preset_key_recommit() {
     // `today_overdue_state`, not `journey_state` (#843, C2 stage-2
-    // diagnosis 2026-11-17): the journey context-requests row (0,0)
-    // *after* its own re-commit, and `TaskDueToday` writes the today
-    // window's exclusive end — the recommitted row legitimately
-    // leaves the matrix, so with `journey_state`'s single overdue row
-    // the post-commit request is a stale-index no-op and the menu
-    // never opens. The two-overdue-row fixture keeps a surviving row;
-    // the pre-commit Today-nonempty precondition of `journey_state`
-    // is separately pinned by the contract test below.
-    let (_fixture, state, _walked) = fixture::today_overdue_state();
+    // diagnosis 2026-11-17): the journey drives the re-commit and then
+    // context-requests both the *re-committed* row and a surviving
+    // control row. Re-anchored 2026-11-18 (#893, the chunk plan D5 —
+    // strengthening, never weakening): under the last-covered-instant
+    // mint the re-committed row no longer leaves the matrix — it moves
+    // overdue → due-today — so the menu is now asserted on the
+    // re-committed row itself (section 1, row 0), not on an unrelated
+    // surviving row; the second overdue row stays as the control that
+    // proves the matrix geometry.
+    let now = fixture::PINNED_NOW;
+    let (_fixture, state, _walked) = fixture::today_overdue_state_at(now);
     support::driver::run(
         support::driver::DriverOptions {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    clock: Some(now),
+                    ..UiSettings::default()
+                },
+            );
             // The today surface (the verb binds ContextId::Today only).
             harness.press(ActionId::ViewToday);
+            assert_eq!(
+                today_section_counts(&harness),
+                vec![2, 0, 0, 0],
+                "the two overdue control rows open the matrix"
+            );
             // Focus a today row (the click seam: click ≡ key's focus
             // half — section 0 is the overdue section, row 0 the
-            // fixture's overdue task).
+            // fixture's first overdue task).
             harness.handle.window().invoke_today_row_clicked(0, 0);
             // The preset key route: the exact due write (S1's
             // assertion shape, driven through the today surface's
-            // focused row).
+            // focused row) — pinned structurally to the fixture's own
+            // frozen day facts (no wall clock anywhere).
             let before = harness.engine.drain().len();
             harness.press(ActionId::TaskDueToday);
             let drained = harness.engine.drain();
             assert_eq!(drained.len(), before + 1);
-            assert!(matches!(
-                &drained[before],
-                taskboard_domain::StateCommand::UpdateTask { .. }
-            ));
+            let calendar = fixture::harness_calendar();
+            let window =
+                taskboard_domain::days::day_window(now, calendar.day_start_time, calendar.offset);
+            let stamp = taskboard_domain::days::last_covered_instant(window.1);
+            assert!(
+                matches!(
+                    &drained[before],
+                    taskboard_domain::StateCommand::UpdateTask {
+                        changes: taskboard_domain::TaskChanges {
+                            duedate: Some(Some(stamped)),
+                            ..
+                        },
+                        ..
+                    } if *stamped == stamp
+                ),
+                "the re-commit stamps the day's last covered instant"
+            );
             harness.engine.settle(&harness.handle);
-            // The today-row context menu carries the re-commit row
-            // (the today-only extension; the card menus' negative is
-            // the adapter composition pin).
+            assert_eq!(
+                today_section_counts(&harness),
+                vec![1, 0, 1, 0],
+                "the re-committed row moved within Today, the control stayed overdue"
+            );
+            // The today-row context menu carries the re-commit row at
+            // its *new* position — section 1 (due-today), row 0 (the
+            // today-only extension; the card menus' negative is the
+            // adapter composition pin).
+            harness
+                .handle
+                .window()
+                .invoke_today_row_context_requested(1, 0, 10.0, 10.0);
+            let entries = keyboard(&harness).get_menu_entries();
+            let ids: Vec<String> = (0..entries.row_count())
+                .filter_map(|i| entries.row_data(i))
+                .map(|row| row.action.to_string())
+                .collect();
+            assert!(
+                ids.iter().any(|id| id == "task.due-today"),
+                "the re-committed row's menu offers the re-commit"
+            );
+            // The control row (overdue section 0, row 0) still
+            // resolves its own menu request — the geometry witness.
             harness
                 .handle
                 .window()
@@ -21039,7 +21093,7 @@ fn us6_s2_today_row_menu_and_preset_key_recommit() {
                 .collect();
             assert!(
                 ids.iter().any(|id| id == "task.due-today"),
-                "the today row's menu offers the re-commit"
+                "the control row's menu still resolves"
             );
         },
     );
@@ -21073,6 +21127,75 @@ fn open_detail_first_card(harness: &mut Harness, preset: taskboard_ui_slint::key
         harness.handle.window().get_current_view(),
         View::TaskDetail,
         "the detail is open"
+    );
+}
+
+/// #893 (the chunk plan D6, the issue's instrumented repro): the
+/// today re-commit on the fixture's single overdue row keeps the row
+/// *in* Today — it moves within the matrix (overdue → due-today),
+/// never out of it. Red under the exclusive-end write (the matrix
+/// rebuilt `[0, 0, 0, 0]`: the stamp equalled the window's excluded
+/// end), green under the last-covered-instant mint. Typed structural
+/// facts only: the drained `UpdateTask` stamp is pinned against the
+/// fixture's own frozen day window (the mount clock is frozen at
+/// `PINNED_NOW` — no wall clock anywhere), and the section counts are
+/// row counts, not phrases.
+#[test]
+fn us6_s2_recommit_keeps_the_row_in_today() {
+    let now = fixture::PINNED_NOW;
+    let (_fixture, state) = fixture::journey_state_at(now);
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    clock: Some(now),
+                    ..UiSettings::default()
+                },
+            );
+            harness.press(ActionId::ViewToday);
+            assert_eq!(
+                today_section_counts(&harness),
+                vec![1, 0, 0, 0],
+                "the fixture's single overdue row opens the matrix"
+            );
+            // Focus the overdue row (section 0, row 0) and re-commit.
+            harness.handle.window().invoke_today_row_clicked(0, 0);
+            let before = harness.engine.drain().len();
+            harness.press(ActionId::TaskDueToday);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), before + 1);
+            // The stamp oracle is the fixture's own day facts: the
+            // frozen window's last covered instant, computed through
+            // the same domain vocabulary the adapter reads.
+            let calendar = fixture::harness_calendar();
+            let window =
+                taskboard_domain::days::day_window(now, calendar.day_start_time, calendar.offset);
+            let stamp = taskboard_domain::days::last_covered_instant(window.1);
+            assert!(
+                matches!(
+                    &drained[before],
+                    taskboard_domain::StateCommand::UpdateTask {
+                        changes: taskboard_domain::TaskChanges {
+                            duedate: Some(Some(stamped)),
+                            ..
+                        },
+                        ..
+                    } if *stamped == stamp
+                ),
+                "the re-commit stamps the day's last covered instant"
+            );
+            harness.engine.settle(&harness.handle);
+            assert_eq!(
+                today_section_counts(&harness),
+                vec![0, 0, 1, 0],
+                "the row moved within Today (overdue 0, due-today 1), not out of it"
+            );
+        },
     );
 }
 
@@ -22276,15 +22399,18 @@ fn the_journey_fixture_is_today_nonempty_by_construction() {
 }
 
 // -- task-detail-editor UX plan US-1 (dispatch chunk 3): the N-4
-// -- stamping law — date-only due entries commit the day-window end.
+// -- stamping law — date-only due entries commit the day's last
+// -- covered instant (#893, 2026-11-18: not the raw window end, which
+// -- the `[now, end)` today membership excludes).
 
 /// US-1/S1: a bare `YYYY-MM-DD` typed into the due field and committed
-/// dispatches the day-window-end instant (the whole configured day
-/// counts) — the fixture's default boundary (`00:00`, boot offset UTC)
-/// makes the law's mint the named date's next local midnight, never
-/// 00:00 of the named date.
+/// dispatches the day's last covered instant (the whole configured
+/// day counts) — the fixture's default boundary (`00:00`, boot offset
+/// UTC) makes the law's mint the named date's literal
+/// `23:59:59.999` local, never 00:00 of the named date and never the
+/// excluded window end.
 #[test]
-fn us1_s1_bare_date_commits_the_window_end() {
+fn us1_s1_bare_date_commits_the_last_covered_instant() {
     let (_fx, state) = fixture::golden_state();
     support::driver::run(
         DriverOptions {
@@ -22298,10 +22424,15 @@ fn us1_s1_bare_date_commits_the_window_end() {
             harness.driver.advance_time(0);
             window.invoke_task_date_accepted(slint::SharedString::from("2030-02-28"));
             harness.driver.advance_time(0);
-            let expected = taskboard_domain::days::day_window_end(
-                chrono::NaiveDate::from_ymd_opt(2030, 2, 28).expect("fixture date"),
-                chrono::NaiveTime::MIN,
-                chrono::FixedOffset::east_opt(0).expect("zero"),
+            // #893 (2026-11-18): the mint is the last covered instant —
+            // the raw window end is excluded by its own `[now, end)`
+            // membership.
+            let expected = taskboard_domain::days::last_covered_instant(
+                taskboard_domain::days::day_window_end(
+                    chrono::NaiveDate::from_ymd_opt(2030, 2, 28).expect("fixture date"),
+                    chrono::NaiveTime::MIN,
+                    chrono::FixedOffset::east_opt(0).expect("zero"),
+                ),
             );
             let drained = harness.engine.drain();
             assert!(matches!(
@@ -22354,11 +22485,12 @@ fn us1_s2_explicit_time_commits_the_typed_time() {
     );
 }
 
-/// US-1/S5 (AC-5's quick-set forms, the chunk plan D-3 mapping): the
-/// picker's day click — the date-only commit path — stamps the law
-/// (window end), while the same picker holding a time (a quick-list
-/// pick) commits the picked time verbatim: the law applies exactly
-/// when no time component exists anywhere in the entry path.
+/// US-1/S5 (AC-5's quick-set forms, the chunk plan D-3 mapping; #893
+/// supersedes the mint): the picker's day click — the date-only commit
+/// path — stamps the law (the last covered instant), while the same
+/// picker holding a time (a quick-list pick) commits the picked time
+/// verbatim: the law applies exactly when no time component exists
+/// anywhere in the entry path.
 #[test]
 fn us1_s5_quick_set_forms_follow_the_law() {
     let (_fx, state) = fixture::golden_state();
@@ -22374,10 +22506,12 @@ fn us1_s5_quick_set_forms_follow_the_law() {
             // February 2030: Feb 1 is a Friday — Monday-first index 4,
             // so day 28 sits at grid cell 4 + 27 = 31.
             let cell = 31_i32;
-            let expected_end = taskboard_domain::days::day_window_end(
-                date,
-                chrono::NaiveTime::MIN,
-                chrono::FixedOffset::east_opt(0).expect("zero"),
+            let expected_end = taskboard_domain::days::last_covered_instant(
+                taskboard_domain::days::day_window_end(
+                    date,
+                    chrono::NaiveTime::MIN,
+                    chrono::FixedOffset::east_opt(0).expect("zero"),
+                ),
             );
             // Arm the editor and type the date: the Buffer-source sync
             // seeds the picker's cursor onto the typed date (date-only).
@@ -22399,11 +22533,11 @@ fn us1_s5_quick_set_forms_follow_the_law() {
                     ..
                 }] if *instant == expected_end
             ));
-            // Re-open: the stored window-end stamp is local midnight
-            // under the default boundary, so the picker re-seeds
-            // date-only. Typing the date again re-aims the cursor
-            // (the Buffer-source sync), keeping the contrast arm's
-            // grid address the same cell.
+            // Re-open: the stored mint is `23:59:59.999` local (#893),
+            // so the seeded buffer carries `· 23:59` — the D3.3 suffix
+            // consequence. Typing the bare date again re-aims the
+            // cursor date-only (the Buffer-source sync), keeping the
+            // contrast arm's grid address the same cell.
             window.invoke_task_due_edit_opened();
             harness.driver.advance_time(0);
             window.invoke_task_date_edited(slint::SharedString::from("2030-02-28"));
@@ -23734,7 +23868,11 @@ fn us1_s1_schedule_today_commits_the_exact_mask() {
             // default hand-over) — the capture matches the oracle's
             // zone (the clock-discipline law's single-read capture).
             let today = chrono::Utc::now().with_timezone(&offset).date_naive();
-            let end = taskboard_domain::days::day_window_end(today, day_start, offset);
+            // #893: the today verb commits the day's last covered
+            // instant, not the window's exclusive end.
+            let end = taskboard_domain::days::last_covered_instant(
+                taskboard_domain::days::day_window_end(today, day_start, offset),
+            );
             harness.driver.click_by_label("Schedule today");
             harness.driver.advance_time(0);
             harness.assert_commands(&[StateCommand::UpdateTask {
@@ -23908,7 +24046,11 @@ fn us1_ac5_bar_key_and_click_route_identically() {
             // default hand-over) — the capture matches the oracle's
             // zone (the clock-discipline law's single-read capture).
             let today = chrono::Utc::now().with_timezone(&offset).date_naive();
-            let end = taskboard_domain::days::day_window_end(today, day_start, offset);
+            // #893: the today verb commits the day's last covered
+            // instant, not the window's exclusive end.
+            let end = taskboard_domain::days::last_covered_instant(
+                taskboard_domain::days::day_window_end(today, day_start, offset),
+            );
             let expect = || StateCommand::UpdateTask {
                 id: fixture.task1,
                 changes: taskboard_domain::TaskChanges {

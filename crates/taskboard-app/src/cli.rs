@@ -595,9 +595,10 @@ pub enum DueSpec {
     /// Set the due date (an explicit-offset instant, normalized to UTC).
     Set(chrono::DateTime<chrono::Utc>),
     /// A bare `YYYY-MM-DD` date — the date-only form of the N-4
-    /// stamping law (task-detail-editor UX plan US-1/D-5). clap's
-    /// value parser is pure (no config access), so the *mint* happens
-    /// at the `tasks edit` execution seam: `day.day_end(date)` over
+    /// stamping law (task-detail-editor UX plan US-1/D-5; #893
+    /// supersedes the mint). clap's value parser is pure (no config
+    /// access), so the *mint* happens at the `tasks edit` execution
+    /// seam: `day.day_last_instant(date)` over
     /// `AppConfig::resolved_day_calendar()` — the identical instant
     /// the GUI funnel's `parse_stamp` produces (one law, two fronts).
     Date(chrono::NaiveDate),

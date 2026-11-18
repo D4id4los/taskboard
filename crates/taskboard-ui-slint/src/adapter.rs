@@ -1541,6 +1541,13 @@ impl Adapter {
         // The today window rides every dispatch (chunk 10 D4): state-
         // derived from the held pair, never consumed.
         ctx.day_window = Some(self.day_ctx().window);
+        // The today re-commit stamps' fact (#893, the chunk plan
+        // D3.2): the window's last covered instant over the same
+        // frozen day facts — the domain-owned mint, never a local
+        // `end − ε` re-derivation (the #884 rule).
+        ctx.today_last_instant = Some(taskboard_domain::days::last_covered_instant(
+            self.day_ctx().window.1,
+        ));
         // The tomorrow window's end (UX-R8 chunk-5 D-3): the additive
         // day fact, `days::next_day_window` — never `+24h` arithmetic.
         ctx.tomorrow_window_end = Some(
@@ -12451,11 +12458,13 @@ fn install_due_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         .time();
     // The commit mint: a timed picker carries the picked/stepped time
     // (round-3 D9 — the typed time is data); a date-only picker stamps
-    // the law (task-detail-editor UX plan US-1/D-3): the clicked day's
-    // day-window end over the injected day facts. The law applies
-    // exactly when no time component exists anywhere in the entry path.
+    // the law (task-detail-editor UX plan US-1/D-3; #893 supersedes
+    // the mint): the clicked day's last covered instant over the
+    // injected day facts — the stamp survives the `[now, end)` today
+    // membership the raw window end does not. The law applies exactly
+    // when no time component exists anywhere in the entry path.
     let instant = if picker_time.is_none() {
-        Some(a.calendar().day_end(date))
+        Some(a.calendar().day_last_instant(date))
     } else {
         editor
             .picker
