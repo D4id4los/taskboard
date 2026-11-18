@@ -1383,7 +1383,7 @@ export component AppWindow inherits Window {
             compact: Responsive.current-breakpoint == Breakpoint.compact;
             invoke-entry(index) => root.menu-entry-invoked(index);
             invoke-submenu-entry(index) => root.menu-submenu-entry-invoked(index);
-            // slint: menu-quick-bar-invoked
+            // slint: menu-quick-bar-invoked (the Rust seam on_menu_quick_bar_invoked)
             invoke-quick-bar(index) => root.menu-quick-bar-invoked(index);
             level-back() => root.menu-level-back();
         }
