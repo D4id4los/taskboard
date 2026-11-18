@@ -39,7 +39,7 @@ fn run_probe(job: impl FnOnce(&ActionMenuBarProbeWindow) + Send + 'static) {
 #[test]
 fn us1_s1_the_quick_bar_row_mounts_over_a_populated_model() {
     run_probe(|window| {
-        let rows = find_all_by_id_on(window, "quick-bar-row");
+        let rows = find_all_by_id_on(window, "ActionMenu::quick-bar-row");
         assert_eq!(rows.len(), 1, "one bar row over the populated model");
         let row = &rows[0];
         assert!(
@@ -47,7 +47,7 @@ fn us1_s1_the_quick_bar_row_mounts_over_a_populated_model() {
             "the bar row owns real pixels (no squeeze to zero)"
         );
 
-        let buttons = find_all_by_id_on(window, "quick-bar-button");
+        let buttons = find_all_by_id_on(window, "ActionMenu::quick-bar-button");
         assert_eq!(buttons.len(), 5, "the model's five rows mount");
         for button in &buttons {
             assert!(
@@ -71,12 +71,13 @@ fn us1_s1_the_quick_bar_row_mounts_over_a_populated_model() {
 fn the_bar_button_routes_by_index() {
     run_probe(|window| {
         assert_eq!(window.get_bar_invoked(), -1, "no fire at mount");
-        let buttons = find_all_by_id_on(window, "quick-bar-button");
-        let third = &buttons[2];
-        assert!(
-            third.is_accessible_button(),
-            "the bar button is an a11y button"
-        );
+        // The third bar row's a11y button (the FocusScope overlay
+        // carries the role one level under the `quick-bar-button`
+        // Rectangle; its default action is the same callback the
+        // TouchArea's click reaches — §7.1's equivalence). The label
+        // is the element's address.
+        let third = support::driver::find_by_label_on(window, "Unschedule")
+            .expect("the third bar button's a11y surface is present");
         third.invoke_default_action();
         assert_eq!(
             window.get_bar_invoked(),
@@ -93,7 +94,7 @@ fn the_bar_button_routes_by_index() {
 #[test]
 fn us3_s1_the_submenu_chevron_renders_iff_the_row_is_a_parent() {
     run_probe(|window| {
-        let chevrons = find_all_by_id_on(window, "submenu-chevron");
+        let chevrons = find_all_by_id_on(window, "ActionMenu::submenu-chevron");
         assert_eq!(
             chevrons.len(),
             1,
