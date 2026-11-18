@@ -269,3 +269,46 @@ fn om_us2_s1_picker_flips_above_near_the_floor_still_clear() {
         );
     });
 }
+
+/// `om_us3_s1` (J2 US-3/S1, the M8 stretch fix): the description
+/// section keeps its realized height across the display/edit mounts —
+/// the section is the view's flexible element, the editor fills it
+/// (`height: 100%` in the edit mount; the old swap collapsed the
+/// editor to its natural single-line height and re-flowed the
+/// section). The section's typed rect seam is the oracle (the
+/// conditional remount's element geometry is unreliable in the
+/// testing backend).
+#[test]
+fn om_us3_s1_description_section_keeps_its_height_across_the_edit_mount() {
+    run_probe(|window| {
+        window.set_task(subject_model(false));
+        settle_geometry(window);
+        let display_h = window.get_description_height();
+        assert!(
+            display_h > 100.0,
+            "the display mount realized the flexible section (h={display_h})"
+        );
+
+        window.set_task(TaskDetailModel {
+            description_edit_open: true,
+            description_initial: "A body".into(),
+            ..subject_model(false)
+        });
+        settle_geometry(window);
+        let edit_h = window.get_description_height();
+        assert!(
+            (edit_h - display_h).abs() <= 1.0,
+            "the edit mount keeps the section's height \
+             (edit={edit_h} display={display_h})"
+        );
+
+        // And the mount swap back is symmetric.
+        window.set_task(subject_model(false));
+        settle_geometry(window);
+        assert_eq!(
+            window.get_description_height(),
+            display_h,
+            "closing the edit flow restores the display geometry"
+        );
+    });
+}

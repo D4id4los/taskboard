@@ -417,6 +417,15 @@ pub fn find_by_label_on<C: slint::ComponentHandle>(component: &C, label: &str) -
         .map(|handle| Element { handle })
 }
 
+/// Every element addressing `label` (the om probe's shared-label
+/// disambiguation: the caption and the editor both address
+/// "Description" — the test picks by geometry).
+pub fn find_all_by_label_on<C: slint::ComponentHandle>(component: &C, label: &str) -> Vec<Element> {
+    ElementHandle::find_by_accessible_label(component, label)
+        .map(|handle| Element { handle })
+        .collect()
+}
+
 /// Advances the mock clock for the platform the process registered
 /// through [`run`] (the probes instantiate their own components but
 /// share the one registered testing backend).
