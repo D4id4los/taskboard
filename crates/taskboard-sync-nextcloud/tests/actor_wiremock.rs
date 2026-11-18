@@ -3021,15 +3021,17 @@ async fn a34b_the_1_19_1_listing_shape_confirms_the_anchor() {
     assert_eq!(sidecar::download_hits(&server).await, 1);
 }
 
-/// The equal-validator sidecar skip trusts the cache only inside the
-/// #868 freshness band (stage-1 plan D2b): identical Deck metadata
-/// answers from the cache while the entry's age is
-/// `actor::SKEW_BAND_SECS`; once the age reaches the band, the next
-/// scheduled cycle re-fetches the content (and restamps
-/// `fetched_at`). Request-count oracles on the wiremock journal;
-/// time control through the injected `SettableClock` — the same
-/// single-constant band the Deck actor runs in production (the #133
-/// named tolerance, never a second constant).
+/// The equal-validator sidecar skip trusts the cache only inside its
+/// #885 revalidation window: identical Deck metadata answers from the
+/// cache while the entry's age is below
+/// `actor::SIDECAR_REVALIDATE_SECS - actor::SKEW_BAND_SECS` (the due
+/// point pulled forward by the #133 skew margin); once the age
+/// reaches the adjusted boundary, the next scheduled cycle re-fetches
+/// the content and restamps `fetched_at`, which re-arms a fresh
+/// window. Request-count oracles on the wiremock journal; time
+/// control through the injected `SettableClock` — the same cadence
+/// band the Deck actor runs in production, anchored to both named
+/// constants (never literals).
 #[tokio::test(start_paused = true)]
 async fn a34c_the_sidecar_skip_trusts_the_cache_only_inside_the_freshness_band() {
     let server = start_server().await;
@@ -3060,10 +3062,15 @@ async fn a34c_the_sidecar_skip_trusts_the_cache_only_inside_the_freshness_band()
     };
     assert_eq!(sidecar::download_hits(&server).await, 1);
 
-    // Cycle 2, age inside the band (band − 1): the skip stays silent —
-    // identical metadata, still no download.
+    // Cycle 2, age inside the window (adjusted boundary − 1): the skip
+    // stays silent — identical metadata, still no download.
     clock.set(
-        stamped() + chrono::TimeDelta::seconds(taskboard_sync_nextcloud::actor::SKEW_BAND_SECS - 1),
+        stamped()
+            + chrono::TimeDelta::seconds(
+                taskboard_sync_nextcloud::actor::SIDECAR_REVALIDATE_SECS
+                    - taskboard_sync_nextcloud::actor::SKEW_BAND_SECS
+                    - 1,
+            ),
     );
     let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { .. } = report else {
@@ -3075,10 +3082,14 @@ async fn a34c_the_sidecar_skip_trusts_the_cache_only_inside_the_freshness_band()
         "an entry inside the band answers from the cache"
     );
 
-    // Cycle 3, age at the band: the guard fires — the content is
-    // re-fetched once and the entry restamped.
+    // Cycle 3, age at the adjusted boundary: the guard fires — the
+    // content is re-fetched once and the entry restamped.
     clock.set(
-        stamped() + chrono::TimeDelta::seconds(taskboard_sync_nextcloud::actor::SKEW_BAND_SECS),
+        stamped()
+            + chrono::TimeDelta::seconds(
+                taskboard_sync_nextcloud::actor::SIDECAR_REVALIDATE_SECS
+                    - taskboard_sync_nextcloud::actor::SKEW_BAND_SECS,
+            ),
     );
     let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed { app_data, .. } = report else {
@@ -3090,7 +3101,28 @@ async fn a34c_the_sidecar_skip_trusts_the_cache_only_inside_the_freshness_band()
     assert_eq!(
         sidecar::download_hits(&server).await,
         2,
-        "an entry past the band re-fetches on the next scheduled cycle"
+        "an entry past the window re-fetches on the next scheduled cycle"
+    );
+
+    // Cycle 4, a fresh full window minus 1 since the restamp (cycle 3's
+    // fetch): the restamp re-arms the window — the guard is
+    // per-window, not per-entry-lifetime, so still no download.
+    clock.set(
+        stamped()
+            + chrono::TimeDelta::seconds(
+                2 * taskboard_sync_nextcloud::actor::SIDECAR_REVALIDATE_SECS
+                    - 2 * taskboard_sync_nextcloud::actor::SKEW_BAND_SECS
+                    - 1,
+            ),
+    );
+    let report = nudge_and_report(&mut actor).await;
+    let SyncReport::Completed { .. } = report else {
+        panic!("expected a Completed report");
+    };
+    assert_eq!(
+        sidecar::download_hits(&server).await,
+        2,
+        "the restamp grants a fresh revalidation window"
     );
 }
 

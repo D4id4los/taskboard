@@ -204,25 +204,31 @@ struct LoopState {
     evicted: std::collections::BTreeMap<RemoteBoardId, taskboard_domain::AppDataSections>,
 }
 
-/// The freshness trust window for the equal-validator sidecar skip
-/// (issue #868): a cache entry younger than the band may answer from
-/// the cache on unchanged Deck metadata; once its age reaches the
-/// band, the next scheduled cycle re-fetches the content. The value is
-/// the #133 named tolerance, twinned into this crate (the files crate
-/// carries its own twin; per the skew plan §4 the constant is
-/// module-scope, twinned-per-crate — this is the Deck crate's twin,
-/// not a second constant).
-///
-/// The band is deliberately aggressive in production: a Deck sidecar
-/// older than 2 s re-fetches once per scheduled cycle. The cost is
-/// bounded — one attachment GET per board cycle, the same request the
-/// un-equal-metadata path already makes — and a single named constant
-/// is the only shape this guard admits; a cadence-style band
-/// (re-fetch near a revalidation due point) would need a second
-/// constant and is recorded as backlog debt.
+/// The skew margin for time-derived conclusions, at any time boundary
+/// (issue #133's named tolerance, twinned into this crate; the files
+/// crate carries its own twin; per the skew plan §4 the constant is
+/// module-scope, twinned-per-crate — this is the Deck crate's twin).
+/// A time-derived conclusion ("this cache entry is still inside its
+/// window") is never trusted within this many seconds of its
+/// boundary: the freshness guard reads the margin into its due point
+/// so the skip never fires *late*. Consumed — not replaced — by
+/// [`SIDECAR_REVALIDATE_SECS`]'s guard (issue #885).
 /// Public so the wiremock harness's band test can anchor its age
-/// advances to the one named constant instead of a literal.
+/// advances to the named constant instead of a literal.
 pub const SKEW_BAND_SECS: i64 = 2;
+
+/// The sidecar cache's revalidation cadence (issue #885): a Deck
+/// sidecar cache entry is trusted — answers from the cache on
+/// unchanged Deck metadata — until its revalidation due point,
+/// `fetched_at + SIDECAR_REVALIDATE_SECS`, pulled forward by
+/// [`SKEW_BAND_SECS`]. Replaces the round-8 single-constant band
+/// (issue #868), whose two-second window re-fetched the sidecar once
+/// per scheduled cycle; at the default poll cadence the skip now
+/// costs one attachment GET per board per ~300 s. A Deck-crate
+/// cadence constant, not a twin of anything — the files crate has no
+/// sidecar. Public so the wiremock harness's band test can anchor its
+/// age advances to the named constant instead of a literal.
+pub const SIDECAR_REVALIDATE_SECS: i64 = 300;
 
 /// One board's last successful document ingest (D11). Only a
 /// `Document`-class evidence inserts or refreshes an entry; every
@@ -1078,15 +1084,17 @@ async fn sidecar_evidence(
     if let Some(cached) = st.documents.get(&target)
         && cached.last_modified == candidate.last_modified
         && cached.filesize == candidate.filesize
-        && clock.now().timestamp() - cached.fetched_at < SKEW_BAND_SECS
+        && clock.now().timestamp() - cached.fetched_at < SIDECAR_REVALIDATE_SECS - SKEW_BAND_SECS
     {
-        // Metadata equal AND inside the freshness band ⇒ skip the
+        // Metadata equal AND inside the revalidation window ⇒ skip the
         // content GET; re-folding the cached document is idempotent
         // (chunk 4's guarantee). Row-5 verdict (chunk-E plan §3): Deck
         // revisions churn on write, so equal metadata ⇒ equal content.
-        // #868 bounds the trust — past [`SKEW_BAND_SECS`] the
-        // fall-through re-fetches once per scheduled cycle; the
-        // cadence-band alternative is backlog debt.
+        // #885's cadence band: the skip is honored until the due point
+        // (`fetched_at + SIDECAR_REVALIDATE_SECS`), pulled forward by
+        // [`SKEW_BAND_SECS`] so a time-derived conclusion is never
+        // trusted within the skew margin of the boundary — past the
+        // adjusted boundary the fall-through re-fetches and restamps.
         return Ok((
             AppDataEvidence::Document(Box::new(cached.document.clone())),
             discovery,
