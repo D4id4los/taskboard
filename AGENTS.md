@@ -263,7 +263,8 @@ implementation specs into the root directory or source folders.
   `.artifacts/reports/2026-10-18-agent-worktree-disk-usage-report.md`).
   Any agent creating (or recreating) a worktree first runs
   `scripts/worktree-doctor.sh` from the main checkout — a nonzero exit
-  means free disk is below the floor: STOP and report. The agent that
+  means a resource floor is breached (free disk or MemAvailable, the
+  memory gate added with #889): STOP and report. The agent that
   hands off at PR-green removes its worktree:
   `git worktree remove --force ../<project-root>-WT-<branch-name>`
   (everything precious is pushed; `--force` only discards regenerable
@@ -375,6 +376,15 @@ nextest run --workspace`) for one-off heavy runs, and `--status` shows
 who holds the lock. A holder that dies (OOM kill included) releases the
 lock automatically — there are no stale locks. CI never needs the
 wrapper (one suite per runner).
+
+For expected-heavy single builds (anything over ~a minute — clippy,
+a release build, a mutants shard), route through
+`scripts/memory-gate.sh <command>` instead of running the command
+bare: the gate checks `MemAvailable` against the box's floor, holds a
+shared lock while memory is tight, and redirects TMPDIR off tmpfs.
+The pre-commit hooks already wrap clippy this way; apply the same
+routing to any agent-launched build of that class (the #906/#931
+incident law: concurrent unguarded heavy builds swap-thrash the box).
 
 The coverage gate is the CI-identical three-command sequence (not the
 monolithic `cargo llvm-cov --workspace`): the quarantine step drops torn
