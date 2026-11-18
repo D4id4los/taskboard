@@ -25086,3 +25086,86 @@ fn om_us1_s1_track_form_grid_opens_without_form_growth() {
         },
     );
 }
+
+// -- round-9 chunk 5: the recur editor on the modal host (J2 US-1/S1,
+// -- US-1/S4; the R-4 dismissal-role flip is the chunk's one
+// -- deliberate behavior change) --
+
+/// `om_us1_s1_recur` (the M5 anatomy + the D-3 edit-kind routing pair
+/// through the real mount): the editor's scrim click routes the
+/// COMMIT seam — a valid draft commits (the autosave law), an invalid
+/// one dispatches nothing and the editor stays open (the validity
+/// gate applies at the seam).
+#[test]
+fn om_us1_s1_recur_scrim_click_commits_a_valid_draft_and_nothing_else() {
+    let (fx, mut state) = fixture::golden_state();
+    let pattern = taskboard_domain::RecurPattern::Daily {
+        every: taskboard_domain::EveryDays::new(2).expect("valid interval"),
+    };
+    if let Some(task) = state.tasks.get_mut(&fx.task0) {
+        task.recur = Some(taskboard_domain::RecurRule {
+            series: taskboard_domain::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(42)),
+            anchor: chrono::NaiveDate::from_ymd_opt(2026, 10, 5).expect("fixture date"),
+            pattern,
+            bound: taskboard_domain::RecurBound::None,
+            continued_from: None,
+            paused_until: None,
+        });
+    }
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            harness.handle.dispatch_action(ActionId::SeriesEdit);
+            harness.driver.advance_time(0);
+            assert!(window.get_recur_editor_open());
+
+            // The scrim corner (the modal's outside region): the
+            // edit-kind law routes the commit seam.
+            harness.driver.click_at(6.0, 6.0);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(
+                matches!(
+                    &drained[..],
+                    [taskboard_domain::StateCommand::UpdateTask {
+                        changes: taskboard_domain::TaskChanges {
+                            recur: Some(Some(_)),
+                            ..
+                        },
+                        ..
+                    }]
+                ),
+                "the outside click committed the valid draft (R-4's edit kind)"
+            );
+            assert!(
+                !window.get_recur_editor_open(),
+                "the commit consumed the flow"
+            );
+
+            // The invalid-draft gate: arm the editor, corrupt the
+            // interval through its own seam, and the outside click
+            // dispatches nothing — the editor stays open.
+            harness.handle.dispatch_action(ActionId::SeriesEdit);
+            harness.driver.advance_time(0);
+            assert!(window.get_recur_editor_open());
+            window.invoke_recur_every_days_edited("junk".into());
+            harness.driver.advance_time(0);
+            harness.driver.click_at(6.0, 6.0);
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert!(
+                drained.is_empty(),
+                "an invalid draft's outside click dispatches nothing"
+            );
+            assert!(
+                window.get_recur_editor_open(),
+                "the invalid draft keeps the editor open (the gate applies)"
+            );
+        },
+    );
+}
