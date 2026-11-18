@@ -703,11 +703,8 @@ export component AppWindow inherits Window {
                 priority-dismiss-requested() => root.priority-dismiss-requested();
                 chip-unassign-clicked(i) => root.chip-unassign-clicked(i);
                 labels-manage-asked() => root.labels-manage-asked();
-                effort-edit-opened() => root.task-effort-edit-opened();
                 effort-edited(t) => root.task-effort-edited(t);
                 effort-committed() => root.task-effort-committed();
-                effort-cleared() => root.task-effort-cleared();
-                effort-cancelled() => root.task-effort-cancelled();
                 effort-focus-lost() => root.task-effort-focus-lost();
             }
 
@@ -1890,14 +1887,11 @@ export component AppWindow inherits Window {
     // focus-lost settle skips once — an intra-picker focus move never
     // settles the flow). slint: task-date-time-field-armed
     pure callback task-date-time-field-armed();
-    // The effort row's seams (task-detail-editor UX plan US-3/D-8,
-    // #838): the inline editor's open/mirror/commit/clear/cancel and
-    // the focus-loss settle (the date-editor buffer pattern).
-    pure callback task-effort-edit-opened();
+    // The effort row's seams (the overlay migration, M9): the
+    // always-on field's mirror/commit/focus-loss commit (the D-5
+    // guard).
     pure callback task-effort-edited(string);
     pure callback task-effort-committed();
-    pure callback task-effort-cleared();
-    pure callback task-effort-cancelled();
     pure callback task-effort-focus-lost();
     pure callback timer-setter-quick-toggled();
     pure callback track-form-start-quick-toggled();

@@ -23413,8 +23413,9 @@ fn us2_s2_quick_options_open_on_the_current_slot() {
 // -- effort mask; the parse predicate is the walk placement's own.
 
 /// US-3/S1 (AC-1): the editor commits the exact sparse mask — a valid
-/// non-empty buffer dispatches `UpdateTask { effort: Some(Some(e)) }`
-/// and closes; the empty buffer commits the clear twin `Some(None)`.
+/// non-empty buffer dispatches `UpdateTask { effort: Some(Some(e)) }`;
+/// the empty buffer commits the clear twin `Some(None)` (the
+/// always-on row's commit funnel, the overlay migration's M9 shape).
 #[test]
 fn us3_s1_effort_commit_routes_the_sparse_mask() {
     let (_fx, state) = fixture::golden_state();
@@ -23426,9 +23427,6 @@ fn us3_s1_effort_commit_routes_the_sparse_mask() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             label_journey_mount(&mut harness);
             let window = harness.handle.window();
-            window.invoke_task_effort_edit_opened();
-            harness.driver.advance_time(0);
-            assert!(window.get_task_model().effort_open);
             window.invoke_task_effort_edited(slint::SharedString::from("1h30m"));
             window.invoke_task_effort_committed();
             harness.driver.advance_time(0);
@@ -23443,13 +23441,9 @@ fn us3_s1_effort_commit_routes_the_sparse_mask() {
                     ..
                 }] if *effort == taskboard_domain::Effort::new(5400)
             ));
-            assert!(
-                !window.get_task_model().effort_open,
-                "the commit's consume is the editor's close"
-            );
-            // The clear twin: a re-opened empty buffer commits Some(None).
-            window.invoke_task_effort_edit_opened();
-            harness.driver.advance_time(0);
+            // The clear twin: the emptied field commits Some(None)
+            // (the walk placement's posture, unchanged — the clear is
+            // the field's own empty commit now).
             window.invoke_task_effort_edited(slint::SharedString::from(""));
             window.invoke_task_effort_committed();
             harness.driver.advance_time(0);
@@ -23483,8 +23477,6 @@ fn us3_s2_invalid_effort_keeps_the_buffer() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             label_journey_mount(&mut harness);
             let window = harness.handle.window();
-            window.invoke_task_effort_edit_opened();
-            harness.driver.advance_time(0);
             window.invoke_task_effort_edited(slint::SharedString::from("junk"));
             window.invoke_task_effort_committed();
             harness.driver.advance_time(0);
@@ -23492,10 +23484,6 @@ fn us3_s2_invalid_effort_keeps_the_buffer() {
                 harness.engine.drain().len(),
                 0,
                 "the refusal dispatches nothing"
-            );
-            assert!(
-                window.get_task_model().effort_open,
-                "the buffer is kept (the editor stays open)"
             );
             assert_eq!(
                 window.get_task_model().effort_text.as_str(),
@@ -25269,6 +25257,91 @@ fn om_us1_s2_s3_palette_inside_click_never_closes_scrim_dismisses() {
             assert!(
                 !window.get_palette_open(),
                 "the scrim click dismissed the palette"
+            );
+        },
+    );
+}
+
+// -- round-9 chunk 5: the always-on Effort Estimate row (J2 US-3/S2,
+// -- R-9's commit-on-focus-loss; the D-5 no-double-dispatch guard) --
+
+/// `om_us3_s2` (the M9 commit-on-focus-loss law through the real
+/// adapter): type + blur dispatches exactly ONE `UpdateTask`; a
+/// focus + blur without an edit dispatches nothing; Return + blur
+/// never double-dispatches (the last-committed guard); a dirty field
+/// settles exactly once when the flow's focus loss fires.
+#[test]
+fn om_us3_s2_effort_commits_once_on_focus_loss_and_never_twice() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+
+            // Focus + blur without an edit: zero dispatches (the lazy
+            // editor never arms).
+            window.invoke_task_effort_focus_lost();
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "a blur of an untouched field dispatches nothing"
+            );
+
+            // Type + blur: exactly one UpdateTask.
+            window.invoke_task_effort_edited(slint::SharedString::from("45"));
+            window.invoke_task_effort_focus_lost();
+            harness.driver.advance_time(0);
+            assert!(
+                matches!(
+                    &harness.engine.drain()[..],
+                    [taskboard_domain::StateCommand::UpdateTask {
+                        changes: taskboard_domain::TaskChanges {
+                            effort: Some(Some(effort)),
+                            ..
+                        },
+                        ..
+                    }] if *effort == taskboard_domain::Effort::new(2700)
+                ),
+                "the blur committed the typed value exactly once"
+            );
+
+            // Return + blur with no further edit: the guard makes the
+            // pair dispatch nothing (no double-dispatch).
+            window.invoke_task_effort_committed();
+            window.invoke_task_effort_focus_lost();
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "an unchanged value's Return + blur dispatches nothing"
+            );
+
+            // A fresh edit + Return, then blur: still exactly the one
+            // Return commit (the baseline moved with it).
+            window.invoke_task_effort_edited(slint::SharedString::from("1h"));
+            window.invoke_task_effort_committed();
+            harness.driver.advance_time(0);
+            assert!(
+                matches!(
+                    &harness.engine.drain()[..],
+                    [taskboard_domain::StateCommand::UpdateTask {
+                        changes: taskboard_domain::TaskChanges {
+                            effort: Some(Some(effort)),
+                            ..
+                        },
+                        ..
+                    }] if *effort == taskboard_domain::Effort::new(3600)
+                ),
+                "the Return committed the new value"
+            );
+            window.invoke_task_effort_focus_lost();
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the blur after the Return dispatches nothing"
             );
         },
     );
