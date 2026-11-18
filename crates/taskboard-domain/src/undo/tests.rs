@@ -3604,3 +3604,119 @@ proptest! {
         }
     }
 }
+
+// ---- the restore family (#913 + #900 + #901) -------------------------------
+
+#[test]
+fn undo_of_restore_task_re_deletes_through_delete_task() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let resurrect = h.disk.tasks[&task].clone();
+    h.exec(&StateCommand::DeleteTask { id: task })
+        .expect("deleted");
+    // The restore step is the journaled forward verb (the #913 entry
+    // shape): undoing *it* is the bug's scenario.
+    h.exec(&StateCommand::RestoreTask {
+        id: task,
+        resurrect: Box::new(resurrect),
+    })
+    .expect("restored");
+    assert!(!h.disk.tasks[&task].deleted);
+    // The #913 scenario: undoing the restore re-deletes through the
+    // ordinary DeleteTask cascade — NOT NothingToUndo.
+    h.exec(&StateCommand::Undo)
+        .expect("undo the restore: task re-deleted");
+    assert!(h.disk.tasks[&task].deleted);
+    // The restore entry journaled PreImages of its own writes.
+    let restore_entry = h
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::RestoreTask { .. }))
+        .expect("restore entry journaled");
+    assert!(matches!(restore_entry.facts, UndoFacts::PreImages { .. }));
+    // The head moved back past the restore entry.
+    assert_eq!(h.journal.head, restore_entry.parent);
+}
+
+#[test]
+fn undo_of_restore_task_refuses_field_named_when_edited_since() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let resurrect = h.disk.tasks[&task].clone();
+    h.exec(&StateCommand::DeleteTask { id: task })
+        .expect("deleted");
+    h.exec(&StateCommand::RestoreTask {
+        id: task,
+        resurrect: Box::new(resurrect),
+    })
+    .expect("restored");
+    h.exec(&StateCommand::UpdateTask {
+        id: task,
+        changes: crate::messages::TaskChanges {
+            title: Some("edited since".into()),
+            ..Default::default()
+        },
+    })
+    .expect("edited");
+    // Retreat past the edit entry so the restore entry is the head.
+    h.exec(&StateCommand::Undo).expect("undone the edit");
+    let state_after_edit_undo = h.disk.tasks[&task].clone();
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNoLongerInvertible {
+            field: UndoField::Title,
+            ..
+        })
+    ));
+    // Zero actions: the refusal leaves the state byte-identical.
+    assert_eq!(h.disk.tasks[&task], state_after_edit_undo);
+}
+
+#[test]
+fn undo_of_restore_task_refuses_when_re_tombstoned_since() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let resurrect = h.disk.tasks[&task].clone();
+    h.exec(&StateCommand::DeleteTask { id: task })
+        .expect("deleted");
+    h.exec(&StateCommand::RestoreTask {
+        id: task,
+        resurrect: Box::new(resurrect),
+    })
+    .expect("restored");
+    // Reach the restore entry as the head, then tombstone the task
+    // externally (an ordinary re-delete journals its own entry, so a
+    // *standing* re-tombstone under a restore head is divergence — the
+    // `undo_of_delete_stack_refuses_when_the_stack_row_gone` precedent).
+    h.exec(&StateCommand::DeleteTask { id: task })
+        .expect("re-tombstoned");
+    h.exec(&StateCommand::Undo).expect("undone the re-delete");
+    let mut diverged = h.disk.tasks[&task].clone();
+    diverged.deleted = true;
+    diverged.clocks.deleted = ts(5);
+    h.disk.tasks.insert(task, diverged);
+    h.sync();
+    let err = h.exec(&StateCommand::Undo);
+    assert!(matches!(
+        err,
+        Err(CommandError::TargetNoLongerInvertible {
+            field: UndoField::Deleted,
+            ..
+        })
+    ));
+    // The guard is the tombstone stamp, not the DeleteStack-shaped
+    // occupancy guard: a dependents refusal is structurally impossible
+    // for a DeleteTask inverse.
+    assert!(!matches!(
+        err,
+        Err(CommandError::UndoTargetHasDependents { .. })
+    ));
+}

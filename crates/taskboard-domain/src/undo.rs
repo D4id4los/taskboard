@@ -807,8 +807,8 @@ pub fn plan_redo(
 /// payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InverseClass {
-    /// `CreateTask`/`CaptureTask`/`RestoreTask`: undo deletes the created
-    /// task; the checked scope is the created task's content stamps.
+    /// `CreateTask`/`CaptureTask`: undo deletes the created task; the
+    /// checked scope is the created task's content stamps.
     CreatedTask,
     /// `UpdateTask`: inverse changeset from the pre-image diff.
     UpdateTask,
@@ -829,6 +829,11 @@ enum InverseClass {
     /// on the recorded title/order stamps; the inverse is the ordinary
     /// `DeleteStack` cascade with the same occupancy guard (D-2/D-5).
     RestoredStack,
+    /// `RestoreTask` (the #913 fix, D-1): the restored task must still
+    /// stand live on the full content-stamp array; the inverse is the
+    /// ordinary `DeleteTask` (no occupancy guard — the task's own
+    /// rules/tracking closes are the honest content of the undo).
+    RestoredTask,
     /// `RenameStack`: the title clock.
     RenameStack,
     /// `MoveStack`: the order clock.
@@ -866,9 +871,10 @@ impl JournalEntry {
     #[allow(clippy::match_same_arms)] // the classification table reads per §3 row
     fn command_class(&self) -> Result<InverseClass, CommandError> {
         match self.command {
-            StateCommand::CreateTask { .. }
-            | StateCommand::CaptureTask { .. }
-            | StateCommand::RestoreTask { .. } => Ok(InverseClass::CreatedTask),
+            StateCommand::CreateTask { .. } | StateCommand::CaptureTask { .. } => {
+                Ok(InverseClass::CreatedTask)
+            }
+            StateCommand::RestoreTask { .. } => Ok(InverseClass::RestoredTask),
             StateCommand::UpdateTask { .. }
             // The pause inverts through the recur pre-image (issue
             // #506): undoing it restores the pre-pause rule
@@ -1222,6 +1228,80 @@ fn synthesize_undo(
             // The occupancy guard runs in `plan_undo` (the inverse is
             // the `DeleteStack` cascade; presence, not clocks).
             Ok(vec![StateCommand::DeleteStack { id }])
+        }
+        InverseClass::RestoredTask => {
+            // Undoing a restore re-deletes the task through the
+            // ordinary `DeleteTask` (D-1 — the #913 fix; the
+            // `RestoredStack` precedent generalized; NOT a new refusal).
+            // The checked scope: the restore still standing (a
+            // re-tombstone since refuses, field-named), then the full
+            // content-stamp array against the entry's own watermark
+            // (the `CreatedTask` array verbatim); any later edit
+            // refuses field-named, whole-line, zero actions. The push
+            // echo's remote/remote_seen adoption never refuses (never
+            // watermarked, D-U3). No occupancy guard — `DeleteTask`
+            // cascades only the task's own rules/tracking closes,
+            // which is the honest content of the undo.
+            let Some(id) = images.iter().find_map(|image| match image {
+                PreImage::Task {
+                    id,
+                    before: Some(_),
+                    ..
+                } => Some(*id),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::Task(id);
+            let Some(EntityStamps::Task { clocks, .. }) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::Deleted));
+            };
+            let Some(current) = app.tasks.get(&id) else {
+                return Err(refuse(entity, UndoField::Deleted));
+            };
+            if current.deleted {
+                return Err(refuse(entity, UndoField::Deleted));
+            }
+            let content = [
+                (clocks.title, current.clocks.title, UndoField::Title),
+                (
+                    clocks.description,
+                    current.clocks.description,
+                    UndoField::Description,
+                ),
+                (clocks.duedate, current.clocks.duedate, UndoField::Duedate),
+                (
+                    clocks.scheduled,
+                    current.clocks.scheduled,
+                    UndoField::Scheduled,
+                ),
+                (clocks.done, current.clocks.done, UndoField::Done),
+                (
+                    clocks.position,
+                    current.clocks.position,
+                    UndoField::Position,
+                ),
+                (clocks.effort, current.clocks.effort, UndoField::Effort),
+                (
+                    clocks.importance,
+                    current.clocks.importance,
+                    UndoField::Importance,
+                ),
+                (clocks.urgency, current.clocks.urgency, UndoField::Urgency),
+                (clocks.recur, current.clocks.recur, UndoField::Recur),
+                (clocks.kind, current.clocks.kind, UndoField::Kind),
+                (
+                    clocks.archived,
+                    current.clocks.archived,
+                    UndoField::Archived,
+                ),
+            ];
+            for (recorded, now_clock, field) in content {
+                if recorded != now_clock {
+                    return Err(refuse(entity, field));
+                }
+            }
+            Ok(vec![StateCommand::DeleteTask { id }])
         }
         InverseClass::RenameStack => {
             let Some(pre) = images.iter().find_map(|image| match image {

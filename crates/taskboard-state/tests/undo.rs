@@ -1063,3 +1063,70 @@ async fn engine_scoped_undo_flips_the_published_state_and_the_persisted_journal(
         "the head sits on the oldest entry"
     );
 }
+
+// ---- the restore family (#913 + #900) through the engine -------------------
+
+#[tokio::test]
+async fn engine_undo_of_restore_task_flips_the_published_state_and_the_persisted_journal() {
+    let mut rig = Rig::start().await;
+    let board = rig
+        .state()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("seed board");
+    let stack = expect_created_stack(
+        rig.run(StateCommand::CreateStack {
+            board,
+            title: "stack".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    let task = expect_created_task(
+        rig.run(StateCommand::CreateTask {
+            title: "t".into(),
+            stack,
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    rig.run(StateCommand::DeleteTask { id: task })
+        .await
+        .expect("accepted");
+    // The forward restore verb dispatch (the #913 entry shape); the
+    // resurrect payload rides from the published state.
+    let resurrect = rig.state().tasks[&task].clone();
+    rig.run(StateCommand::RestoreTask {
+        id: task,
+        resurrect: Box::new(resurrect),
+    })
+    .await
+    .expect("accepted");
+    // Undo the restore: the task is tombstoned again through the
+    // ordinary DeleteTask — the published projection and the persisted
+    // journal agree.
+    let outcome = rig.run(StateCommand::Undo).await.expect("accepted");
+    assert!(matches!(outcome, CommandOutcome::Undone { .. }));
+    let app = rig.state();
+    assert!(app.tasks[&task].deleted, "the restore undone");
+    let persisted = rig.repo.snapshot();
+    assert!(persisted.tasks[&task].deleted, "memory ≡ disk");
+    let restore_entry = persisted
+        .journal
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.command, StateCommand::RestoreTask { .. }))
+        .expect("the restore is journaled");
+    assert_eq!(
+        persisted.journal.head, restore_entry.parent,
+        "the head sits on the restore entry's parent"
+    );
+    // Redo re-plans the forward intent: the task lives again.
+    rig.run(StateCommand::Redo).await.expect("accepted");
+    let app = rig.state();
+    assert!(!app.tasks[&task].deleted, "redo re-restores");
+}
