@@ -24179,3 +24179,52 @@ fn us1_s4_bar_tracking_twin_routes_the_shown_half() {
         },
     );
 }
+
+// -- cross-surface friction UX plan US-2 (#832): the menu-routed
+// -- conversion arms route the real arming seams, subject-resolved.
+// -- The reproduction: pre-fix the adapter's effect-interpret arm is
+// -- an unconditional `Vec::new()` — the menu row arms nothing and
+// -- says nothing.
+
+/// US-2/S1 (AC-2, the series twin): a focused recurring task's menu
+/// invocation of `SeriesConvertArm` arms the confirm strip — the
+/// window's recur-confirm fact flips and nothing dispatches yet (the
+/// strip is consequence-first). Pre-fix this fails: the effect arm
+/// drops the dispatch unconditionally.
+#[test]
+fn us2_ac2_menu_series_convert_arm_arms_the_confirm_strip() {
+    let (fx, mut state) = fixture::golden_state();
+    let rule = taskboard_domain::RecurRule {
+        series: taskboard_domain::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(7)),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 11, 2).expect("fixture date"),
+        pattern: taskboard_domain::RecurPattern::Daily {
+            every: taskboard_domain::EveryDays::new(3).expect("valid interval"),
+        },
+        bound: taskboard_domain::RecurBound::None,
+        continued_from: None,
+        paused_until: None,
+    };
+    if let Some(task) = state.tasks.get_mut(&fx.task0) {
+        task.recur = Some(rule);
+    }
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            harness.handle.dispatch_action(ActionId::SeriesConvertArm);
+            harness.driver.advance_time(0);
+            assert!(
+                window.get_task_model().recur_confirm_open,
+                "the menu-routed arm arms the conversion strip"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the arm stages the grammar; the confirm dispatches"
+            );
+        },
+    );
+}
