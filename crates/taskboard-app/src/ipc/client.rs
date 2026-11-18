@@ -24,7 +24,7 @@
 //! [`CommandError::IpcTimeout`] — never transport garbage.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use interprocess::local_socket::{tokio::Stream, traits::tokio::Stream as _};
 
@@ -131,7 +131,9 @@ pub struct Connection {
 #[must_use]
 pub async fn try_connect(db_path: &Path) -> Option<Connection> {
     let name = socket_name(db_path).ok()?;
-    let deadline = Instant::now() + CONNECT_BUDGET;
+    // Pauseable clock (issue #902): `tokio::time::Instant` — identical
+    // real-time semantics, deterministic under `start_paused` tests.
+    let deadline = tokio::time::Instant::now() + CONNECT_BUDGET;
     loop {
         match Stream::connect(name.clone()).await {
             Ok(stream) => {
@@ -149,7 +151,7 @@ pub async fn try_connect(db_path: &Path) -> Option<Connection> {
                 return None;
             }
             Err(err) => {
-                if Instant::now() >= deadline {
+                if tokio::time::Instant::now() >= deadline {
                     tracing::debug!(?err, "ipc connect budget expired");
                     return None;
                 }
@@ -369,8 +371,8 @@ impl Connection {
 mod tests {
     use super::validate_response;
     use super::{
-        CONNECT_BUDGET, DEFAULT_READ_BUDGET_SECS, READ_BUDGET_MARGIN_SECS, client_read_budget,
-        fallback_blocked_by_lock, try_connect,
+        CONNECT_BUDGET, CONNECT_RETRY, DEFAULT_READ_BUDGET_SECS, READ_BUDGET_MARGIN_SECS,
+        client_read_budget, fallback_blocked_by_lock, try_connect,
     };
     use crate::cli::Command;
     use crate::commands::{CommandError, verb_timeout_secs};
@@ -619,18 +621,23 @@ mod tests {
         let sidecar = socket_sidecar(&db);
         std::os::unix::fs::symlink(&sidecar, &sidecar).expect("symlink loop");
 
-        let started = std::time::Instant::now();
-        let outcome = try_connect(&db).await;
+        let db_for_task = db.clone();
+        let task = tokio::spawn(async move { try_connect(&db_for_task).await });
+        // Driven, exact (issue #902): just short of the budget the
+        // retries are still running; at the deadline the answer is
+        // `None`. The old wall-clock floor+ceiling range becomes a
+        // deterministic fact — no flake window, and a faster fallback
+        // (less budget consumed) would now fail this test.
+        tokio::time::advance(
+            CONNECT_BUDGET
+                .checked_sub(CONNECT_RETRY)
+                .expect("retry under budget"),
+        )
+        .await;
+        assert!(!task.is_finished(), "ambiguous failures consume the budget");
+        tokio::time::advance(CONNECT_RETRY).await;
+        let outcome = task.await.expect("try_connect task joins");
         assert!(outcome.is_none(), "nothing can answer on a junk file");
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed >= CONNECT_BUDGET,
-            "ambiguous failures must consume the budget, took {elapsed:?}"
-        );
-        assert!(
-            elapsed < CONNECT_BUDGET + std::time::Duration::from_secs(5),
-            "the budget bounds the wait, took {elapsed:?}"
-        );
     }
 
     /// A `ConnectionRefused` answer is no longer an immediate fallback
@@ -674,18 +681,50 @@ mod tests {
         let sidecar = socket_sidecar(&db);
         std::fs::write(&sidecar, b"").expect("placeholder artifact");
 
-        let started = std::time::Instant::now();
-        let outcome = try_connect(&db).await;
+        let db_for_task = db.clone();
+        let task = tokio::spawn(async move { try_connect(&db_for_task).await });
+        // Driven, exact (issue #902): retries still running just short
+        // of the budget, `None` at the deadline — the #570 semantics
+        // pinned without a wall clock.
+        tokio::time::advance(
+            CONNECT_BUDGET
+                .checked_sub(CONNECT_RETRY)
+                .expect("retry under budget"),
+        )
+        .await;
+        assert!(!task.is_finished(), "refused failures consume the budget");
+        tokio::time::advance(CONNECT_RETRY).await;
+        let outcome = task.await.expect("try_connect task joins");
         assert!(outcome.is_none(), "nothing accepts on the dead artifact");
-        let elapsed = started.elapsed();
+    }
+
+    /// The #902 killer: with no artifact at all, the *first* connect
+    /// attempt answers ENOENT and `try_connect` must fall through
+    /// without arming a single retry sleep. Under the guard's mutant
+    /// (every error class retrying), the task parks on the 50 ms retry
+    /// sleep against the paused clock and never finishes — the
+    /// assertion kills it by the zero-retry *behavior*, not the
+    /// guard's syntax.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_missing_socket_falls_through_without_consuming_the_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("absent.db");
+
+        let task = tokio::spawn(async move { try_connect(&db).await });
+        // A handful of yields on the current-thread runtime let the
+        // spawned task run; the first connect is a real immediate
+        // ENOENT — no timer is involved, and the paused clock never
+        // auto-advances while the test task keeps yielding.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
         assert!(
-            elapsed >= CONNECT_BUDGET,
-            "refused connections must consume the budget, took {elapsed:?}"
+            task.is_finished(),
+            "a missing socket falls through immediately, without retries"
         );
-        assert!(
-            elapsed < CONNECT_BUDGET + std::time::Duration::from_secs(5),
-            "the budget bounds the wait, took {elapsed:?}"
-        );
+        let outcome = task.await.expect("try_connect task joins");
+        assert!(outcome.is_none());
     }
 
     /// The fallback gate (issue #886): artifact present + lock held —
