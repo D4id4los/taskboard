@@ -25222,3 +25222,54 @@ fn om_us1_s1_labels_assign_delete_settle_journey() {
         },
     );
 }
+
+/// `om_us1_s2_s3_palette` (the M7 containment pair through the real
+/// modal-host mount): an inside click on the palette's dead space
+/// never closes it (the host's absorbing panel root), and the scrim
+/// click dismisses (the confirm kind — the R-5 trap needs no draft).
+/// The Tab containment rides the walk suite (`focus_coverage.rs`'s
+/// `SearchPalette` walk stays inside).
+#[test]
+fn om_us1_s2_s3_palette_inside_click_never_closes_scrim_dismisses() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            harness.handle.dispatch_action(ActionId::PaletteSearch);
+            harness.driver.advance_time(0);
+            assert!(window.get_palette_open());
+
+            // Inside: the query row's band above the field (the
+            // absorbing panel root's body — no interactive child).
+            let field = harness
+                .driver
+                .find_all_by_label("Search")
+                .into_iter()
+                .next()
+                .expect("the query field is mounted");
+            let pos = field.absolute_position();
+            let size = field.size();
+            harness
+                .driver
+                .click_at(pos.x + size.width / 2.0, pos.y - 4.0);
+            harness.driver.advance_time(0);
+            assert!(
+                window.get_palette_open(),
+                "an inside click never closes the palette"
+            );
+
+            // The scrim corner dismisses (the confirm kind).
+            harness.driver.click_at(6.0, 6.0);
+            harness.driver.advance_time(0);
+            assert!(
+                !window.get_palette_open(),
+                "the scrim click dismissed the palette"
+            );
+        },
+    );
+}

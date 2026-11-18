@@ -113,10 +113,6 @@ const EXEMPT: &[(&str, &str)] = &[
         "modal dismissal surface; the menu closes on Escape",
     ),
     (
-        "TouchArea:AppWindow::palette-backdrop",
-        "modal dismissal surface; the palette closes on Escape",
-    ),
-    (
         "TouchArea:ModalDialogHost::dismissal",
         "the modal host's scrim dismissal layer (round-9 W1): the \
          capture dialog closes on Escape — the layer is the host's, \
@@ -1646,7 +1642,7 @@ fn palette_has_no_pointer_only_controls() {
         assert_modal_scan(
             &mounted,
             "SearchPalette",
-            &["TouchArea:AppWindow::palette-backdrop"],
+            &["TouchArea:ModalDialogHost::dismissal"],
         );
     });
 }
