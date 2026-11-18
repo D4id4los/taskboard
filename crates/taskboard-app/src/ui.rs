@@ -810,6 +810,10 @@ pub async fn run_desktop(
             ),
             control: app.connector_control(),
             engine: app.engine.clone(),
+            // The platform default identity home; `None` — no data
+            // dir — degrades to the arms' typed refusal (bootstrap
+            // boots authorless there, plan D-2).
+            device_json: crate::board_move_ceremony::default_device_json().ok(),
         },
     );
 

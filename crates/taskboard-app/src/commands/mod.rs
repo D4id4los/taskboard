@@ -1183,12 +1183,14 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 move |config, store| async move {
                     let sink = crate::bootstrap::resolve_notifier_sink(&config);
                     let app = crate::bootstrap::bootstrap(config.clone(), Arc::clone(&store), sink).await?;
+                    let device_json = crate::board_move_ceremony::default_device_json()?;
                     let result = crate::board_move_ceremony::run_on(
                         &app.engine,
                         &config,
                         &store,
                         board,
                         direction,
+                        &device_json,
                         Duration::from_secs(timeout_secs),
                     )
                     .await;
@@ -2168,19 +2170,26 @@ async fn boards_line(
                 } else {
                     crate::board_move_ceremony::MoveDirection::ToFiles
                 };
-                emit_result(
-                    io,
-                    crate::board_move_ceremony::run_on(
-                        &app.engine,
-                        session.session_config(),
-                        session.session_store(),
-                        board,
-                        direction,
-                        Duration::from_secs(timeout_secs),
-                    )
-                    .await,
-                    crate::board_move_ceremony::render_text,
-                )
+                // The default-path identity home: the typed
+                // `FilesSyncDisabled` mapping rides the helper's error
+                // (the injection seam, #751), rendered like any verb
+                // refusal.
+                let outcome = match crate::board_move_ceremony::default_device_json() {
+                    Ok(device_json) => {
+                        crate::board_move_ceremony::run_on(
+                            &app.engine,
+                            session.session_config(),
+                            session.session_store(),
+                            board,
+                            direction,
+                            &device_json,
+                            Duration::from_secs(timeout_secs),
+                        )
+                        .await
+                    }
+                    Err(err) => Err(err),
+                };
+                emit_result(io, outcome, crate::board_move_ceremony::render_text)
             }
         }
         BoardsCmd::Unbind { board, confirm } => emit_result(

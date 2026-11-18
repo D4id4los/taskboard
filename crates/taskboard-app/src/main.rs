@@ -859,6 +859,10 @@ async fn run_kiosk(
                     ),
                     control: app.connector_control(),
                     engine: app.engine.clone(),
+                    // The platform default identity home; `None` — no
+                    // data dir — degrades to the arms' typed refusal
+                    // (bootstrap boots authorless there, plan D-2).
+                    device_json: taskboard_app::board_move_ceremony::default_device_json().ok(),
                 },
             );
 
