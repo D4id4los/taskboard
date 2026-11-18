@@ -121,6 +121,8 @@ const SEAM_INVENTORY: &[&str] = &[
     "board_task_context_requested",
     "board_task_done_toggled",
     "capture_accepted",
+    // The slint twin is the ModalDialogHost mount's scrim dismissal
+    // seam (round-9 W1): callback "capture-dismiss-requested".
     "capture_dismiss_requested",
     "capture_text_edited",
     "date_editor_focus_lost",
