@@ -1266,9 +1266,9 @@ pub struct HabitFoldChanges {
 /// The sidecar document fold for the board-level `habits` section
 /// (DR-6 §4.5, recipe step 8 — the [`fold_time_entries`] shape). Keyed
 /// by the habit UUID; per-row LWW on the **effective clock** (the
-/// `max` of the five embedded clocks, the union's competition clock):
+/// `max` of the seven embedded clocks, the union's competition clock):
 ///
-/// - A live `Live` row adopts **wholesale** (all fields, all five
+/// - A live `Live` row adopts **wholesale** (all fields, all seven
 ///   clocks) iff its effective clock is strictly newer than local's;
 ///   equal/older leaves local standing. Adoption **resurrects** a
 ///   locally-deleted habit — the wire emits `Live` only for a live
@@ -1372,7 +1372,7 @@ pub fn fold_habits(
 }
 
 /// A habit's competition clock — the same effective clock the union
-/// competes rows on (`max` of the five embedded clocks; the tombstone
+/// competes rows on (`max` of the seven embedded clocks; the tombstone
 /// slot is one of them, so a tombstoned local's delete time defends).
 fn effective_clock(habit: &crate::habit::Habit) -> chrono::DateTime<chrono::Utc> {
     effective_clock_of(&habit.clocks)

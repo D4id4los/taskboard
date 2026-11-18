@@ -1674,7 +1674,7 @@ fn union_time_entries(
 }
 
 /// Per-row effective-clock LWW over the `habits` section (DR-6 §4.5):
-/// a `Live` row competes on the `max` of its five embedded clocks, a
+/// a `Live` row competes on the `max` of its seven embedded clocks, a
 /// tombstone on its own clock — a delete after any edit wins, a newer
 /// edit resurrects. Deliberately the [`union_time_entries`] flavor
 /// (D-T11): **equal clocks resolve to the overlay** — the flush's
