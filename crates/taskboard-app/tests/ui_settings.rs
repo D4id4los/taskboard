@@ -89,10 +89,12 @@ async fn booted_workspace(
         // The suite's own identity home: the ceremony's create arm
         // mints here, never the platform default (#751). `keep` — the
         // ceremony mints after this function returns.
-        device_json: tempfile::tempdir()
-            .expect("tempdir")
-            .keep()
-            .join("device.json"),
+        device_json: Some(
+            tempfile::tempdir()
+                .expect("tempdir")
+                .keep()
+                .join("device.json"),
+        ),
     };
     (app, workspace)
 }
@@ -2103,6 +2105,211 @@ async fn move_refuses_when_files_sync_is_disabled() {
     );
     assert!(
         bound_connector_of(&app, board).is_some_and(|(_, remote)| remote.as_deck() == Some(5)),
+        "the Deck binding survived"
+    );
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+// ---- the hermetic ceremony tests (#751, the recorded r6 fallbacks) ---
+
+/// An in-memory DAV substrate over wiremock: the ceremony's PUTs land
+/// in one shared map and its GETs serve exactly what was written — a
+/// real round-trip, not canned bodies. Entries are keyed by their
+/// substrate-relative path (after the DAV home's `taskboard/` root).
+#[derive(Clone, Default)]
+struct DavMemory(Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>>);
+
+fn substrate_of(request: &wiremock::Request) -> String {
+    request
+        .url
+        .path()
+        .rsplit_once("taskboard/")
+        .map(|(_, rest)| rest.trim_end_matches('/').to_owned())
+        .unwrap_or_default()
+}
+
+async fn mount_dav_memory(server: &wiremock::MockServer, mem: DavMemory) {
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, ResponseTemplate};
+
+    // The Deck endpoints are absolute (`/index.php/...`), the DAV home
+    // sits under `/remote.php/dav/files/` — the prefixes are disjoint.
+    const DAV_HOME: &str = "/remote.php/dav/files/";
+    Mock::given(method("MKCOL"))
+        .and(path_regex(format!("^{DAV_HOME}.*")))
+        .respond_with(|_: &wiremock::Request| ResponseTemplate::new(201))
+        .mount(server)
+        .await;
+    let put = mem.clone();
+    Mock::given(method("PUT"))
+        .and(path_regex(format!("^{DAV_HOME}.*")))
+        .respond_with(move |request: &wiremock::Request| {
+            put.0
+                .lock()
+                .expect("dav map")
+                .insert(substrate_of(request), request.body.clone());
+            ResponseTemplate::new(201).insert_header("ETag", "\"dav-put\"")
+        })
+        .mount(server)
+        .await;
+    let get = mem.clone();
+    Mock::given(method("GET"))
+        .and(path_regex(format!("^{DAV_HOME}.*")))
+        .respond_with(move |request: &wiremock::Request| {
+            get.0
+                .lock()
+                .expect("dav map")
+                .get(&substrate_of(request))
+                .cloned()
+                .map_or_else(
+                    || ResponseTemplate::new(404),
+                    |body| {
+                        ResponseTemplate::new(200)
+                            .set_body_bytes(body)
+                            .insert_header("ETag", "\"dav-put\"")
+                    },
+                )
+        })
+        .mount(server)
+        .await;
+}
+
+/// The ceremony mounts the Deck server (`mount_standard_pull`) and the
+/// `WebDAV` mounts for the ceremony's probe/put/confirm steps; the
+/// request replies `Ok`, the snapshot row names the `files-sync`
+/// binding, the engine state carries the files binding and Idle phase.
+/// Terminal-state assertions only — the reply implies settlement.
+#[tokio::test]
+async fn move_commits_a_deck_board_onto_files() {
+    let server = wiremock::MockServer::start().await;
+    // The WebDAV substrate: an in-memory filesystem over wiremock so
+    // the ceremony's GETs serve exactly what its own PUTs wrote (a
+    // real round-trip; identity.json's moved_from is read back off the
+    // ceremony's own write). No env, no shared dir — the identity file
+    // is the workspace's injected tempdir path.
+    let dav = DavMemory::default();
+    mount_dav_memory(&server, dav).await;
+    // The stacks listing (wiremock serves the first-mounted match; this
+    // shadows mount_standard_pull's listing): an empty stack list makes
+    // `write_move_marker` a typed no-op — no anchor card to create —
+    // and the pull folds an empty subtree, which it reports as a
+    // success.
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(format!(
+            "/index.php/apps/deck/api/v1.0/boards/{}/stacks",
+            common::BOARD
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    // The attach arm's create POST (the Publish section's grammar):
+    // the mock's body match *is* the title/color assertion.
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(common::board_json()))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_files_config(dir.path(), &server.uri());
+    let store = Arc::new(FakeCredentialStore::with(&server.uri(), "old-user", "pw"));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "move me").await;
+    send_attach(&tx, board, "work", common::BOARD)
+        .await
+        .expect("reply lane alive")
+        .expect("attach succeeded");
+
+    let outcome = send_move(&tx, board)
+        .await
+        .expect("reply lane alive")
+        .expect("the move committed");
+    let row = outcome
+        .boards
+        .iter()
+        .find(|b| b.id == board.as_uuid())
+        .expect("the board row is in the reply");
+    assert_eq!(row.bound_connector.as_deref(), Some("files-sync"));
+    let (_, remote) = bound_connector_of(&app, board).expect("bound");
+    assert!(
+        remote.as_files().is_some(),
+        "the engine holds the files binding"
+    );
+    let phase = app
+        .engine
+        .shared_state()
+        .load()
+        .sync
+        .get(board)
+        .map(|r| r.phase);
+    assert_eq!(phase, Some(taskboard_domain::SyncPhase::Idle));
+
+    drop(tx);
+    forwarder.await.expect("forwarder joins cleanly");
+}
+
+/// Deck-bound board with a queued op: the ceremony's quiescence guard
+/// fires typed (`OutboxNotQuiescent`) before the floor publish, the
+/// binding stays Deck. The queued op rides the board-flush trigger
+/// (D-H9, the habit write) whose flush verdict is `Idle` against this
+/// remote (no appdata anchor ladder) — the op stays queued and the
+/// pull's cycle still completes, deterministically.
+#[tokio::test]
+async fn move_reports_a_queued_outbox_typed() {
+    let server = wiremock::MockServer::start().await;
+    // Only the Deck-pull endpoints: the quiescence guard fires before
+    // the floor publish, so no WebDAV grammar is mounted.
+    common::mount_standard_pull(&server, serde_json::json!([])).await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(BOARDS_PATH))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(common::board_json()))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = seed_files_config(dir.path(), &server.uri());
+    let store = Arc::new(FakeCredentialStore::with(&server.uri(), "old-user", "pw"));
+    let (app, workspace) = booted_workspace(config.clone(), store).await;
+    let (tx, rx) = ui_request_channel();
+    let forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
+        rx,
+        app.engine.shared_state(),
+        workspace,
+    );
+    let board = create_board(&app, "queued").await;
+    send_attach(&tx, board, "work", common::BOARD)
+        .await
+        .expect("reply lane alive")
+        .expect("attach succeeded");
+    app.engine
+        .execute(taskboard_domain::StateCommand::CreateHabit {
+            board,
+            title: "drill".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(1).expect("nonzero"),
+            ),
+        })
+        .await
+        .expect("the habit write is accepted");
+
+    let outcome = send_move(&tx, board)
+        .await
+        .expect("reply lane alive")
+        .expect_err("the outbox is not quiet");
+    assert!(
+        matches!(outcome, SettingsError::OutboxNotQuiescent),
+        "typed outbox refusal, got {outcome:?}"
+    );
+    assert_eq!(
+        bound_connector_of(&app, board).map(|(_, remote)| remote),
+        Some(RemoteBoardId::deck(common::BOARD)),
         "the Deck binding survived"
     );
 
