@@ -12,7 +12,7 @@
 import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
-import { TextField } from "../widgets/text-field.slint";
+import { TextField, FieldValidity } from "../widgets/text-field.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
 
 // One roster row: display parts plus the subject's assignment state
@@ -35,6 +35,15 @@ export component LabelsPanel inherits Rectangle {
     // due-editor's rule).
     in property <bool> form-open: false;
     in property <string> form-title: "";
+    // The colour field's pushed halves (tag-color UX plan D-5, #839):
+    // the user's draft (the field reads it on mount and on a swatch
+    // click — never push-ward while typing, the title's
+    // mount-only-read rule), the draft's typed validity (the invalid
+    // echo), and the preview echo (transparent when invalid — the
+    // `swatch_hex` hygiene, never re-derived).
+    in property <string> form-colour: "";
+    in property <bool> colour-valid: true;
+    in property <color> colour-preview;
     in property <[color]> swatches;
     in property <int> swatch-selected: -1;
     // The armed delete's pushed mirror (the track-entries armed-index
@@ -53,6 +62,10 @@ export component LabelsPanel inherits Rectangle {
     callback add-requested();
     callback edit-requested(int);
     callback title-edited(string);
+    // slint: colour-edited — the free-form colour draft (tag-color
+    // plan D-5; the `title-edited` twin, the SC-W-N2 naming — the
+    // field's edits flow adapter-ward, never push-ward).
+    callback colour-edited(string);
     callback swatch-clicked(int);
     callback form-commit-requested() -> bool;
     callback form-cancelled();
@@ -80,7 +93,7 @@ export component LabelsPanel inherits Rectangle {
     // conditional mounts consume their own indices from inside their
     // scopes; the root consumes the ever-mounted set and publishes
     // the extent/cursor the walk arithmetic reads.
-    property <int> watch-extent: root.form-open ? 5 : 3;
+    property <int> watch-extent: root.form-open ? 6 : 3;
     init => {
         MaskWalkFacts.extent = self.watch-extent;
         MaskWalkFacts.cursor = 0;
@@ -174,15 +187,17 @@ export component LabelsPanel inherits Rectangle {
             // commit on the field's Return or the check button.
             if (root.form-open): VerticalLayout {
                 spacing: Theme.space-2;
-                // The form's mask indices (US-2/W-2): the field, then
-                // the commit/discard pair — consumed inside the mount
-                // (the conditional's ids are scope-local).
+                // The form's mask indices (US-2/W-2): the title field,
+                // the colour field, then the commit/discard pair —
+                // consumed inside the mount (the conditional's ids are
+                // scope-local).
                 property <int> watch-mask-nonce: MaskWalkFacts.nonce;
                 changed watch-mask-nonce => {
                     if (MaskWalkFacts.armed) {
                         if (MaskWalkFacts.focus-index == 1) { title-field.grab-focus(); }
-                        else if (MaskWalkFacts.focus-index == 2) { commit-btn.grab(); }
-                        else if (MaskWalkFacts.focus-index == 3) { discard-btn.grab(); }
+                        else if (MaskWalkFacts.focus-index == 2) { colour-field.grab-focus(); }
+                        else if (MaskWalkFacts.focus-index == 3) { commit-btn.grab(); }
+                        else if (MaskWalkFacts.focus-index == 4) { discard-btn.grab(); }
                     }
                 }
                 title-field := TextField {
@@ -196,6 +211,50 @@ export component LabelsPanel inherits Rectangle {
                         root.form-commit-requested();
                     }
                     edited(text) => root.title-edited(text);
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    colour-field := TextField {
+                        // The free-form colour draft (tag-color plan
+                        // D-5): mount-only read of `form-colour` — the
+                        // push never re-seeds a field the user is
+                        // typing in; a swatch click re-seeds the exact
+                        // value below (AC-4's letter).
+                        placeholder: "Colour (six hex digits)";
+                        label: "Label colour";
+                        description: "Six hex digits, e.g. 31cc7c — or pick a swatch.";
+                        commit-affordance: true;
+                        initial-text: root.form-colour;
+                        // The typed invalid echo (US-1/AC-2): the
+                        // field's border carries the draft's validity
+                        // — no hint text, the typed fact only.
+                        validity: root.colour-valid
+                            ? FieldValidity.valid
+                            : FieldValidity.invalid;
+                        accepted(text) => {
+                            root.colour-edited(text);
+                            root.form-commit-requested();
+                        }
+                        edited(text) => root.colour-edited(text);
+                        // The swatch re-seed (D-5): the swatch arm's
+                        // forced refresh lands here — the field's text
+                        // takes the swatch's exact value (AC-4).
+                        property <int> watch-swatch-selected: root.swatch-selected;
+                        changed watch-swatch-selected => {
+                            self.text = root.form-colour;
+                        }
+                    }
+                    // The draft's preview echo (D-5): transparent when
+                    // the draft is invalid (the `swatch_hex` hygiene).
+                    Rectangle {
+                        width: Theme.space-4;
+                        height: Theme.space-4;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: Theme.radius-small;
+                        background: root.colour-preview;
+                        border-width: Theme.hairline-width;
+                        border-color: Theme.border;
+                    }
                 }
                 HorizontalLayout {
                     spacing: Theme.space-2;

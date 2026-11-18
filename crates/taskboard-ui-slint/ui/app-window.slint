@@ -990,6 +990,9 @@ export component AppWindow inherits Window {
                 rows: root.label-overlay-rows;
                 form-open: root.label-overlay-form-open;
                 form-title: root.label-overlay-form-title;
+                form-colour: root.label-overlay-form-colour;
+                colour-valid: root.label-overlay-colour-valid;
+                colour-preview: root.label-overlay-colour-preview;
                 swatches: root.label-overlay-swatches;
                 swatch-selected: root.label-overlay-swatch-selected;
                 armed-index: root.label-overlay-armed-index;
@@ -998,6 +1001,7 @@ export component AppWindow inherits Window {
                 add-requested() => root.labels-overlay-add-requested();
                 edit-requested(index) => root.labels-overlay-edit-requested(index);
                 title-edited(t) => root.labels-overlay-title-edited(t);
+                colour-edited(c) => root.labels-overlay-colour-edited(c);
                 swatch-clicked(i) => root.labels-overlay-swatch-clicked(i);
                 form-commit-requested() => root.labels-overlay-form-commit-requested();
                 form-cancelled() => root.labels-overlay-form-cancelled();
@@ -2044,6 +2048,10 @@ export component AppWindow inherits Window {
     // The form surface's pushed halves (UX R-3 D-2) + intents (§5.1).
     in property <bool> label-overlay-form-open;
     in property <string> label-overlay-form-title;
+    // The colour field's pushed halves (tag-color UX plan D-5, #839).
+    in property <string> label-overlay-form-colour;
+    in property <bool> label-overlay-colour-valid;
+    in property <color> label-overlay-colour-preview;
     in property <[color]> label-overlay-swatches;
     in property <int> label-overlay-swatch-selected;
     // The armed delete's pushed mirror (the track-entries armed-index
@@ -2056,6 +2064,8 @@ export component AppWindow inherits Window {
     pure callback labels-overlay-add-requested();
     pure callback labels-overlay-edit-requested(int);
     pure callback labels-overlay-title-edited(string);
+    // slint: colour-edited (tag-color plan D-5).
+    pure callback labels-overlay-colour-edited(string);
     pure callback labels-overlay-swatch-clicked(int);
     pure callback labels-overlay-form-commit-requested() -> bool;
     pure callback labels-overlay-form-cancelled();

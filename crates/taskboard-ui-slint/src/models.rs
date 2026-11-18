@@ -2636,6 +2636,27 @@ fn push_task_detail(
             .as_ref()
             .map_or(String::new(), |f| f.title.clone()),
     ));
+    // The colour field's pushed halves (tag-color plan D-5, #839):
+    // the draft string (mount-only read — never push-ward while
+    // typing), its typed validity, and the preview echo (invalid →
+    // transparent, the `swatch_hex` hygiene at draft time).
+    window.set_label_overlay_form_colour(SharedString::from(
+        label_form
+            .as_ref()
+            .map_or(String::new(), |f| f.color.clone()),
+    ));
+    window.set_label_overlay_colour_valid(
+        label_form
+            .as_ref()
+            .is_some_and(|f| taskboard_domain::Color::parse(&f.color).is_ok()),
+    );
+    window.set_label_overlay_colour_preview(
+        label_form
+            .as_ref()
+            .map_or(swatch_hex(&taskboard_domain::Color::new("")), |f| {
+                swatch_hex(&taskboard_domain::Color::new(f.color.clone()))
+            }),
+    );
     window.set_label_overlay_swatch_selected(
         label_form
             .as_ref()
