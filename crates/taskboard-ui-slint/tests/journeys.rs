@@ -23225,7 +23225,11 @@ fn us2_s1_time_field_click_focuses_and_stays_open() {
 
 /// US-2/S2 (N-6, D-7): the quick options list opens focused on the
 /// current-time slot — when the picker holds no time, the nearest-row
-/// seed is the device now's local time-of-day (never the list head).
+/// seed is the open instant's local time-of-day (never the list head).
+/// The oracle is the mount's frozen clock (`fixture::PINNED_NOW`,
+/// #921): the adapter captures the seed from the same frozen instant,
+/// so the expectation derives from the constant — no wall-clock read
+/// remains on either side.
 #[test]
 fn us2_s2_quick_options_open_on_the_current_slot() {
     let (_fx, state) = fixture::golden_state();
@@ -23234,18 +23238,23 @@ fn us2_s2_quick_options_open_on_the_current_slot() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let settings = UiSettings {
+                clock: Some(fixture::PINNED_NOW),
+                ..UiSettings::default()
+            };
+            let mut harness = Harness::mount_with_settings(SlintDriver::default(), state, settings);
             label_journey_mount(&mut harness);
             let window = harness.handle.window();
             window.invoke_task_due_edit_opened();
             harness.driver.advance_time(0);
-            // Single-read capture of the seed: the adapter derives the
-            // focused slot from the device now's local time-of-day
-            // over the unfiltered quarter-hour grid (the picker holds
-            // no time on a fresh open).
+            // Single-read by construction (#921): the adapter reads
+            // only the frozen clock; the expectation reads only the
+            // pinned constant's local time-of-day over the unfiltered
+            // quarter-hour grid (the picker holds no time on a fresh
+            // open).
             let expected = taskboard_ui_slint::due_edit::nearest_slot(
                 &taskboard_ui_slint::due_edit::quarter_slots(),
-                Some(chrono::Local::now().time()),
+                Some(fixture::PINNED_NOW.with_timezone(&chrono::Local).time()),
             );
             let pushed = i32::try_from(expected).unwrap_or(0);
             assert_eq!(
