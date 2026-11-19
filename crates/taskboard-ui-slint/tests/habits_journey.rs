@@ -96,15 +96,21 @@ fn keyboard(harness: &Harness) -> KeyboardState<'_> {
 /// The journeys' habit fixture (the lib fixture's twin): one live
 /// daily habit on the fixture board.
 fn state_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
+    state_habit_at(state, board, 0, "water");
+}
+
+/// The habit fixture's order/titled generalization (chunk 8): the
+/// reorder journeys need a multi-row list in stored order.
+fn state_habit_at(state: &mut AppState, board: taskboard_domain::BoardId, order: i64, title: &str) {
     let habit = taskboard_domain::habit::Habit {
         id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
         board,
-        title: "water".into(),
+        title: title.to_owned(),
         description: String::new(),
         target: taskboard_domain::HabitTarget::PerDay(
             taskboard_domain::NonZeroCount::new(2).unwrap(),
         ),
-        order: 0,
+        order,
         anchor_time: None,
         anchor_day: None,
         clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
@@ -439,4 +445,269 @@ fn the_kiosk_habit_menu_opens_with_every_verb_greyed() {
             assert!(!rows.is_empty(), "the rows render, greyed — never withheld");
         },
     );
+}
+
+// -- chunk 8: keyboard parity + drag (J1 US-3/US-4, #934/#935) --------
+
+/// The chunk-8 fixture: the golden state plus two live habits on the
+/// fixture board in stored order — a two-row list makes reorder
+/// arithmetic observable at both ends.
+fn state_two_habits(state: &mut AppState, board: taskboard_domain::BoardId) {
+    state_habit_at(state, board, 0, "water");
+    state_habit_at(state, board, 10, "stretch");
+}
+
+/// US-3/S1 (J1 AC-1, #934's traversal half): the walk enters and
+/// leaves the habit section on the SAME keys as the task rows — the
+/// landing paints the card emphasis ring (the walk cursor's render
+/// fact), the cursor halves stay exclusive, and stepping back out
+/// hands the emphasis to a task row again.
+#[test]
+fn us3_s1_the_walk_enters_and_leaves_habit_rows_with_the_task_keys() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_two_habits(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+
+            // Jump to the walk's last row: the LAST HABIT (the
+            // widened domain's tail — tasks lead, habits follow).
+            harness.handle.dispatch_action(ActionId::NavLastItem);
+            harness.driver.advance_time(0);
+            let emphasis = |harness: &Harness| -> Vec<bool> {
+                let model = harness.handle.window().get_habits_model();
+                (0..model.row_count())
+                    .map(|i| model.row_data(i).expect("row").card.emphasis)
+                    .collect()
+            };
+            assert_eq!(
+                emphasis(&harness),
+                vec![false, true],
+                "the walk's landing paints the last habit's ring"
+            );
+
+            // The same walk keys step back through the section and
+            // OUT of it — the emphasis leaves the habits entirely.
+            harness.handle.dispatch_action(ActionId::NavPrevItem);
+            harness.driver.advance_time(0);
+            assert_eq!(emphasis(&harness), vec![true, false]);
+            harness.handle.dispatch_action(ActionId::NavPrevItem);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                emphasis(&harness),
+                vec![false, false],
+                "the walk left the habit section on the task keys"
+            );
+        },
+    );
+}
+
+/// US-3/S2 (J1 AC-1): the habit verbs resolve under the focused habit
+/// — `Space` (the task row's complete stroke) routes the habit log
+/// through the D3 translation, and the Shift+Up preset (the D4/D7
+/// keyboard reorder) mints the shared floor-midpoint order — the
+/// SAME order the menu row's one-shot mint produces for the same
+/// row. Click ≡ key at the command boundary.
+#[test]
+fn us3_s2_the_task_complete_stroke_and_shift_up_route_the_habit_verbs() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_two_habits(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+
+            // The walk lands on the last habit (the second row).
+            harness.handle.dispatch_action(ActionId::NavLastItem);
+            harness.driver.advance_time(0);
+
+            // The task row's complete stroke routes the habit log.
+            harness.handle.dispatch_action(ActionId::TaskComplete);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::LogHabit { .. }] => {}
+                other => panic!("the complete stroke routes the log, got {other:?}"),
+            }
+
+            // Shift+Up on the focused habit: the walk's landing mints
+            // the reorder one-shot through the shared arithmetic —
+            // the up slot sits between the head (0) and the row's own
+            // order (10), so the floor midpoint is 5.
+            harness.handle.dispatch_action(ActionId::HabitMoveUp);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::MoveHabit { order: 5, .. }] => {}
+                other => panic!("the up slot mints the floor midpoint, got {other:?}"),
+            }
+
+            // The menu open over the same row re-mints the pair
+            // through the SAME shared helper — the equivalence probe:
+            // the boundary records commands without reordering the
+            // fixture, so the down slot's free interval is (10, None)
+            // → 11, and the mint sites agree by construction.
+            harness
+                .handle
+                .window()
+                .invoke_habits_context_requested(1, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            assert!(
+                keyboard(&harness).get_menu_open(),
+                "the habit menu opened over the row"
+            );
+            harness.handle.dispatch_action(ActionId::HabitMoveDown);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::MoveHabit { order: 11, .. }] => {}
+                other => panic!("the tail slot mints the appended order, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// US-3/S2 (the kiosk gate, HAB-14): the reorder binding stays
+/// visible but the dispatch refuses typed — the `NoTarget` arm surfaces
+/// the status-notice refusal and nothing reaches the boundary.
+#[test]
+fn the_reorder_pair_refuses_typed_on_kiosk() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_two_habits(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+            );
+            harness.driver.advance_time(0);
+
+            // The walk still enters the habit row (traversal renders
+            // on kiosk — D-P13); the reorder dispatch refuses.
+            harness.handle.dispatch_action(ActionId::NavLastItem);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitMoveUp);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_notice_visible(),
+                "the typed refusal surfaced on the notice lane"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the kiosk reorder dispatches nothing"
+            );
+        },
+    );
+}
+
+/// Chunk 8 D6 (#935 / O-7 Q5): the uniform typed refusal — a
+/// target-less habit dispatch surfaces the status-notice from the
+/// action's registry description and routes no command; the Disabled
+/// posture is the registry arm's, untouched here.
+#[test]
+fn the_targetless_habit_dispatch_surfaces_the_typed_refusal() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_two_habits(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+
+            // No walk has entered and no row was clicked: the habit
+            // verb has no subject — the typed NoTarget.
+            harness.handle.dispatch_action(ActionId::HabitUndoLog);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_notice_visible(),
+                "the refusal surfaced"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "a subjectless dispatch routes nothing"
+            );
+        },
+    );
+}
+
+/// US-4/S1 (J1 AC-1): the #918 gap-drop over the flat habit list —
+/// a drop at the head gap mints the list's leading order, a drop
+/// past the end clamps to the append slot (the board's clamp law),
+/// and kiosk absorbs the pointer seam silently.
+#[test]
+fn us4_s1_the_gap_drop_reorders_across_the_habit_list() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_two_habits(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            // The second row drops into the head gap: the slot's free
+            // interval is (None, 0) — the floor midpoint −1.
+            window.invoke_habits_drop_asked(1, 0);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::MoveHabit { order: -1, .. }] => {}
+                other => panic!("the head gap mints the leading order, got {other:?}"),
+            }
+
+            // A gap past the end clamps to the append slot: the row
+            // source's tail order + 1.
+            window.invoke_habits_drop_asked(0, 99);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::MoveHabit { order: 11, .. }] => {}
+                other => panic!("the over-run gap clamps to the append slot, got {other:?}"),
+            }
+
+            // The kiosk pointer seam absorbs silently (the D5 gate).
+            let mut kiosk = Harness::mount_with_settings(
+                SlintDriver::default(),
+                golden_state_with_habits(),
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+            );
+            kiosk.driver.advance_time(0);
+            kiosk.handle.window().invoke_habits_drop_asked(1, 0);
+            kiosk.driver.advance_time(0);
+            assert!(
+                kiosk.engine.drain().is_empty(),
+                "the kiosk drop dispatches nothing"
+            );
+        },
+    );
+}
+
+/// The kiosk drop leg's state source (the closure-borrow shape): the
+/// fixture rebuilt with the two-habit list.
+fn golden_state_with_habits() -> AppState {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_two_habits(&mut state, board);
+    state
 }
