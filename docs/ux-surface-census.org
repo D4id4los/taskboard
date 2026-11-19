@@ -747,10 +747,12 @@ The walk's commits ride shared task capabilities whose full rows live
 in their home slices (=task.move= Board slice, =task.scheduled_edit=
 Task detail slice) under the same capability name; their Review cells
 are the home slices' business (consolidation, chunk-2 plan D-11.5).
-The planner's commit funnel hands off through
-=FlowOutcome::PlannerHandoff= (`adapter.rs:2214-2216` comment) — one
-scheduled/effort edit per placement, atomic, one undo step
-(`actions.rs:1495-1503`).
+The planner's commit funnel is one scheduled/effort edit per
+placement, atomic, one undo step (`actions.rs` `PlanCommitPlace`).
+(Superseded 2026-11-19, J4 chunk 7: the shape-B
+=FlowOutcome::PlannerHandoff= return channel is retired — the planner
+is the review walk's embedded step (`review.planner_embed`); the
+standalone surface is unchanged.)
 
 Named absence sweeps cited by the register below (all at this
 slice's baseline): *Sweep-B* = `board-view.slint`, `stack-view.slint`,
