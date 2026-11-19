@@ -18507,12 +18507,10 @@ use taskboard_domain::{Board, BoardClocks, BoardId, Color, Stack, StackClocks, S
 /// inside yesterday's window (a carry row). Returns the fixture ids
 /// and the state.
 #[allow(clippy::too_many_lines)] // one fixture builder, kept flat
-fn walk_fixture_state() -> (fixture::Fixture, AppState, StackId, Vec<TaskId>) {
-    let (fixture, mut state) = fixture::golden_state();
-    // The golden state pins the review card away (wall-clock text in
-    // goldens is the forbidden class); the walk journeys need the due
-    // state — clear the pin.
-    state.reflection.entries.clear();
+/// The walk fixtures' global Inbox board plus its triage stack,
+/// inserted into `state` — the shared substrate of `walk_fixture_state`
+/// and `walk_empty_carry_state`. Returns `(board, stack)` ids.
+fn insert_inbox_board_and_stack(state: &mut AppState) -> (BoardId, StackId) {
     let inbox = BoardId::from_uuid(uuid::Uuid::new_v4());
     state.boards.insert(
         inbox,
@@ -18553,54 +18551,67 @@ fn walk_fixture_state() -> (fixture::Fixture, AppState, StackId, Vec<TaskId>) {
             remote_seen: None,
         },
     );
-    let mk = |title: &str, scheduled: Option<chrono::DateTime<chrono::Utc>>| {
-        let mut task = Task {
-            id: TaskId::from_uuid(uuid::Uuid::now_v7()),
-            remote: None,
-            label_memberships: std::collections::BTreeMap::new(),
-            title: title.to_owned(),
-            description: String::new(),
-            duedate: None,
-            scheduled,
-            done: None,
-            stack: inbox_stack,
-            order: 0,
-            effort: None,
-            importance: None,
-            urgency: None,
-            recur: None,
-            kind: taskboard_domain::entities::TaskKind::Standard,
-            archived: false,
-            deleted: false,
-            clocks: taskboard_domain::TaskClocks {
-                title: BoardClocks::epoch(),
-                description: BoardClocks::epoch(),
-                duedate: BoardClocks::epoch(),
-                scheduled: BoardClocks::epoch(),
-                done: BoardClocks::epoch(),
-                position: BoardClocks::epoch(),
-                effort: BoardClocks::epoch(),
-                importance: BoardClocks::epoch(),
-                urgency: BoardClocks::epoch(),
-                recur: BoardClocks::epoch(),
-                kind: BoardClocks::epoch(),
-                archived: BoardClocks::epoch(),
-                deleted: BoardClocks::epoch(),
-            },
-            authors: taskboard_domain::entities::TaskAuthors::default(),
-            remote_seen: None,
-            remote_baseline: None,
-        };
-        if let Some(instant) = scheduled {
-            task.scheduled = Some(instant);
-        }
-        (task.id, task)
-    };
+    (inbox, inbox_stack)
+}
+
+/// A fresh triage row on `stack` — the shared task literal of the
+/// walk fixtures' `mk` closures.
+fn walk_new_task(
+    stack: StackId,
+    title: &str,
+    scheduled: Option<chrono::DateTime<chrono::Utc>>,
+) -> Task {
+    Task {
+        id: TaskId::from_uuid(uuid::Uuid::now_v7()),
+        remote: None,
+        label_memberships: std::collections::BTreeMap::new(),
+        title: title.to_owned(),
+        description: String::new(),
+        duedate: None,
+        scheduled,
+        done: None,
+        stack,
+        order: 0,
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::TaskClocks {
+            title: BoardClocks::epoch(),
+            description: BoardClocks::epoch(),
+            duedate: BoardClocks::epoch(),
+            scheduled: BoardClocks::epoch(),
+            done: BoardClocks::epoch(),
+            position: BoardClocks::epoch(),
+            effort: BoardClocks::epoch(),
+            importance: BoardClocks::epoch(),
+            urgency: BoardClocks::epoch(),
+            recur: BoardClocks::epoch(),
+            kind: BoardClocks::epoch(),
+            archived: BoardClocks::epoch(),
+            deleted: BoardClocks::epoch(),
+        },
+        authors: taskboard_domain::entities::TaskAuthors::default(),
+        remote_seen: None,
+        remote_baseline: None,
+    }
+}
+
+fn walk_fixture_state() -> (fixture::Fixture, AppState, StackId, Vec<TaskId>) {
+    let (fixture, mut state) = fixture::golden_state();
+    // The golden state pins the review card away (wall-clock text in
+    // goldens is the forbidden class); the walk journeys need the due
+    // state — clear the pin.
+    state.reflection.entries.clear();
+    let (_inbox, inbox_stack) = insert_inbox_board_and_stack(&mut state);
     let mut inbox_ids = Vec::new();
     for title in ["triage-me", "triage-me-too"] {
-        let (id, task) = mk(title, None);
-        state.tasks.insert(id, task);
-        inbox_ids.push(id);
+        let task = walk_new_task(inbox_stack, title, None);
+        inbox_ids.push(task.id);
+        state.tasks.insert(task.id, task);
     }
     // task0 carries a scheduled anchor inside yesterday's window (the
     // midnight-aligned convention: the journey harness's wall-clock
@@ -18667,6 +18678,22 @@ fn walk_stage(harness: &Harness) -> i32 {
 
 fn walk_rows(harness: &Harness) -> usize {
     harness.handle.window().get_walk_model().rows.row_count()
+}
+
+/// The day-review journeys' shared preamble: mount `state` and open
+/// the walk modal over the action route (dispatch + settle tick).
+fn mount_open_walk(state: AppState) -> Harness {
+    let mut harness = Harness::mount(SlintDriver::default(), state);
+    harness.handle.dispatch_action(ActionId::ReviewOpen);
+    harness.driver.advance_time(0);
+    harness
+}
+
+/// One dispatched walk verb plus its settle tick — the journeys'
+/// step rhythm (dispatch, then `advance_time(0)`).
+fn walk_step(harness: &mut Harness, action: ActionId) {
+    harness.handle.dispatch_action(action);
+    harness.driver.advance_time(0);
 }
 
 /// J1 — unreviewed closed day → the Today card; the click opens the
@@ -19570,19 +19597,14 @@ fn us3_s1_planner_embeds_and_back_returns_to_carry() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
             assert!(walk_open(&harness));
             // Entry → Inbox → Carry.
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             assert_eq!(walk_stage(&harness), 1, "the walk is at Carry");
             // The planner choice mounts the embedded step.
-            harness.handle.dispatch_action(ActionId::ReviewWalkPlanner);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkPlanner);
             assert_eq!(
                 walk_stage(&harness),
                 3,
@@ -19595,8 +19617,7 @@ fn us3_s1_planner_embeds_and_back_returns_to_carry() {
                 "no view swap: the planner is embedded, never a navigation"
             );
             // Back ends the child Cancelled: back to Carry.
-            harness.handle.dispatch_action(ActionId::ReviewWalkPrev);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkPrev);
             assert_eq!(walk_stage(&harness), 1, "back returns to Carry");
             assert!(walk_open(&harness), "the walk never closed");
         },
@@ -19614,19 +19635,13 @@ fn us3_s2_planner_complete_advances_to_prompts() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkPlanner);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
+            walk_step(&mut harness, ActionId::ReviewWalkPlanner);
             assert_eq!(walk_stage(&harness), 3);
             // Done planning: the Next control ends the child Completed.
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             assert_eq!(
                 walk_stage(&harness),
                 2,
@@ -19652,15 +19667,10 @@ fn us3_s2_the_planner_leg_places_then_advances_to_prompts() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkPlanner);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
+            walk_step(&mut harness, ActionId::ReviewWalkPlanner);
             assert_eq!(walk_stage(&harness), 3);
             // Place task0 from the pool: the placement form's funnel,
             // mounted inside the walk dialog.
@@ -19683,8 +19693,7 @@ fn us3_s2_the_planner_leg_places_then_advances_to_prompts() {
             );
             // Done planning: the child's Completed exit advances to
             // Prompts; the walk stays open over the placed state.
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             assert!(walk_open(&harness));
             assert_eq!(walk_stage(&harness), 2);
         },
@@ -19695,90 +19704,12 @@ fn us3_s2_the_planner_leg_places_then_advances_to_prompts() {
 /// with `n` triage rows and NO carry anchor — the skip-law journeys'
 /// row source.
 fn walk_empty_carry_state(inbox_n: usize) -> AppState {
-    use taskboard_domain::{Board, BoardClocks, BoardId, Color, Stack, StackClocks, StackId, Task};
     let (_fixture, mut state) = fixture::golden_state();
     state.reflection.entries.clear();
-    let inbox = BoardId::from_uuid(uuid::Uuid::new_v4());
-    state.boards.insert(
-        inbox,
-        Board {
-            id: inbox,
-            remote: None,
-            title: "Inbox".to_owned(),
-            color: Color::new(""),
-            archived: false,
-            deleted: false,
-            clocks: BoardClocks {
-                title: BoardClocks::epoch(),
-                color: BoardClocks::epoch(),
-                archived: BoardClocks::epoch(),
-                deleted: BoardClocks::epoch(),
-            },
-            authors: taskboard_domain::entities::BoardAuthors::default(),
-            remote_seen: None,
-        },
-    );
-    let inbox_stack = StackId::from_uuid(uuid::Uuid::new_v4());
-    state.stacks.insert(
-        inbox_stack,
-        Stack {
-            id: inbox_stack,
-            remote: None,
-            board: inbox,
-            title: "Inbox".to_owned(),
-            order: 0,
-            archived: false,
-            deleted: false,
-            clocks: StackClocks {
-                title: BoardClocks::epoch(),
-                order: BoardClocks::epoch(),
-                deleted: BoardClocks::epoch(),
-            },
-            authors: taskboard_domain::entities::StackAuthors::default(),
-            remote_seen: None,
-        },
-    );
+    let (_inbox, inbox_stack) = insert_inbox_board_and_stack(&mut state);
     for index in 0..inbox_n {
-        let id = TaskId::from_uuid(uuid::Uuid::now_v7());
-        let mut task = Task {
-            id,
-            remote: None,
-            label_memberships: std::collections::BTreeMap::new(),
-            title: format!("triage-{index}"),
-            description: String::new(),
-            duedate: None,
-            scheduled: None,
-            done: None,
-            stack: inbox_stack,
-            order: 0,
-            effort: None,
-            importance: None,
-            urgency: None,
-            recur: None,
-            kind: taskboard_domain::entities::TaskKind::Standard,
-            archived: false,
-            deleted: false,
-            remote_seen: None,
-            clocks: taskboard_domain::TaskClocks {
-                title: BoardClocks::epoch(),
-                description: BoardClocks::epoch(),
-                duedate: BoardClocks::epoch(),
-                scheduled: BoardClocks::epoch(),
-                done: BoardClocks::epoch(),
-                position: BoardClocks::epoch(),
-                effort: BoardClocks::epoch(),
-                importance: BoardClocks::epoch(),
-                urgency: BoardClocks::epoch(),
-                recur: BoardClocks::epoch(),
-                kind: BoardClocks::epoch(),
-                archived: BoardClocks::epoch(),
-                deleted: BoardClocks::epoch(),
-            },
-            authors: taskboard_domain::entities::TaskAuthors::default(),
-            remote_baseline: None,
-        };
-        task.stack = inbox_stack;
-        state.tasks.insert(id, task);
+        let task = walk_new_task(inbox_stack, &format!("triage-{index}"), None);
+        state.tasks.insert(task.id, task);
     }
     // The scheduled anchors (the golden fixture's carry sources) are
     // cleared: the carry reading is empty by construction.
@@ -19799,9 +19730,7 @@ fn us1_s1_entry_opens_and_steps_forward() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
             assert!(walk_open(&harness), "the modal is open");
             assert_eq!(walk_stage(&harness), 4, "the walk opens at Entry");
             assert!(
@@ -19813,8 +19742,7 @@ fn us1_s1_entry_opens_and_steps_forward() {
                     .is_empty(),
                 "the stage position rides the model (D-9)"
             );
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             assert_eq!(walk_stage(&harness), 0, "Entry's Next lands on Inbox");
             harness.engine.drain();
         },
@@ -19831,20 +19759,16 @@ fn us1_s2_stage_next_prev_roundtrip() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
             // Forward: Entry → Inbox → Carry → Prompts.
             for expected in [0, 1, 2] {
-                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-                harness.driver.advance_time(0);
+                walk_step(&mut harness, ActionId::ReviewWalkAdvance);
                 assert_eq!(walk_stage(&harness), expected);
             }
             // Back: Prompts → Carry → Inbox → Entry; the walk stays
             // open at every rung (the close is the abort/exit law).
             for expected in [1, 0, 4] {
-                harness.handle.dispatch_action(ActionId::ReviewWalkPrev);
-                harness.driver.advance_time(0);
+                walk_step(&mut harness, ActionId::ReviewWalkPrev);
                 assert_eq!(walk_stage(&harness), expected);
                 assert!(walk_open(&harness));
             }
@@ -19863,17 +19787,13 @@ fn us1_s3_complete_closes_and_restores_focus() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
             for _ in 0..3 {
-                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-                harness.driver.advance_time(0);
+                walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             }
             assert_eq!(walk_stage(&harness), 2);
             // The guilt-free exit lands on the summary, recorded: no.
-            harness.handle.dispatch_action(ActionId::ReviewFinish);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewFinish);
             assert_eq!(walk_stage(&harness), 5, "Finish lands on Complete");
             assert!(
                 walk_open(&harness),
@@ -19884,8 +19804,7 @@ fn us1_s3_complete_closes_and_restores_focus() {
                 "recorded: no is presented honestly (P12)"
             );
             // The summary's single exit closes and restores.
-            harness.handle.dispatch_action(ActionId::ReviewWalkComplete);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkComplete);
             assert!(!walk_open(&harness), "the exit closes the walk");
             assert_eq!(
                 harness.handle.window().get_current_view(),
@@ -19908,16 +19827,12 @@ fn us2_s1_empty_carry_stage_auto_skips() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             assert_eq!(walk_stage(&harness), 0);
             // The row verb passes the last row; the skip law lands on
             // Prompts — the carry stage never renders empty.
-            harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewInboxKeep);
             assert_eq!(
                 walk_stage(&harness),
                 2,
@@ -19939,18 +19854,13 @@ fn us2_s1_empty_everything_reaches_completion() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
             assert_eq!(walk_stage(&harness), 4, "Entry is never skipped");
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             assert_eq!(walk_stage(&harness), 2, "both stages empty land on Prompts");
-            harness.handle.dispatch_action(ActionId::ReviewFinish);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewFinish);
             assert_eq!(walk_stage(&harness), 5);
-            harness.handle.dispatch_action(ActionId::ReviewWalkComplete);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewWalkComplete);
             assert!(!walk_open(&harness), "the whole walk completed");
             harness.engine.drain();
         },
@@ -19969,11 +19879,8 @@ fn us4_s1_modal_containment() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             assert_eq!(walk_stage(&harness), 0);
             // Tab strokes stay contained: the walk stays open.
             harness.stroke(parse("Tab").expect("Tab"));
@@ -19990,8 +19897,7 @@ fn us4_s1_modal_containment() {
             );
             assert!(walk_open(&harness));
             // Dismiss: the confirm closes, the walk stays verbatim.
-            harness.handle.dispatch_action(ActionId::ReviewAbortDismiss);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewAbortDismiss);
             assert!(
                 !harness.handle.window().get_walk_model().abort_confirm,
                 "the confirm closed"
@@ -20017,26 +19923,19 @@ fn us4_s1_abort_confirm_keeps_decisions() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
             // The Entry silent exit: nothing decided, nothing typed.
-            harness.handle.dispatch_action(ActionId::ReviewAbortArm);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewAbortArm);
             assert!(
                 !walk_open(&harness),
                 "Entry closes without a confirm (the one silent exit)"
             );
             // Reopen: decide something (file the cursor row), then
             // abort.
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewInboxFile);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewFileCommit);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewOpen);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
+            walk_step(&mut harness, ActionId::ReviewInboxFile);
+            walk_step(&mut harness, ActionId::ReviewFileCommit);
             // The commit's drained boundary carries exactly the
             // filed row's MoveTask — the decision already made.
             let drained_decision = harness.engine.drain();
@@ -20059,8 +19958,7 @@ fn us4_s1_abort_confirm_keeps_decisions() {
                 harness.handle.window().get_walk_model().abort_confirm,
                 "the abort confirm is armed"
             );
-            harness.handle.dispatch_action(ActionId::ReviewAbortAccept);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewAbortAccept);
             assert!(!walk_open(&harness), "the accept ends the walk");
             // The accept dispatches nothing new: the decision above
             // is the journal's truth — the abort undid nothing.
@@ -20085,18 +19983,12 @@ fn carry_tomorrow_never_dispatches_without_cursor() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            let mut harness = mount_open_walk(state);
+            walk_step(&mut harness, ActionId::ReviewWalkAdvance);
             // At the Inbox (the carry verb is stage-typed inert here —
             // and the carry stage itself is unreachable with zero
             // rows): the dispatch must produce no command.
-            harness
-                .handle
-                .dispatch_action(ActionId::ReviewCarryTomorrow);
-            harness.driver.advance_time(0);
+            walk_step(&mut harness, ActionId::ReviewCarryTomorrow);
             assert!(
                 harness.engine.drain().is_empty(),
                 "the None-cursor carry dispatches nothing"
@@ -20115,9 +20007,7 @@ fn the_walk_overlay_mount_is_flow_gated_window_level() {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
+            let harness = mount_open_walk(state);
             let window = harness.handle.window();
             assert!(window.get_walk_model().open);
             // The overlay is NOT a view: the cycle selector stays on
