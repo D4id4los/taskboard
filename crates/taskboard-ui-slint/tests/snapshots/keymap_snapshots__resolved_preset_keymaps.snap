@@ -97,16 +97,22 @@ expression: rows
           action: task.delete
         - sequence:
             - Up
-          action: nav.prev-item
+          action: nav.focus-up
         - sequence:
             - Shift+Up
           action: habit.move-up
         - sequence:
             - Down
-          action: nav.next-item
+          action: nav.focus-down
         - sequence:
             - Shift+Down
           action: habit.move-down
+        - sequence:
+            - Left
+          action: nav.focus-left
+        - sequence:
+            - Right
+          action: nav.focus-right
         - sequence:
             - F9
           action: task.track-start
@@ -192,16 +198,28 @@ expression: rows
           action: board.delete
         - sequence:
             - Up
-          action: nav.prev-item
+          action: nav.focus-up
+        - sequence:
+            - Shift+Up
+          action: nav.extend-prev
         - sequence:
             - Down
-          action: nav.next-item
+          action: nav.focus-down
+        - sequence:
+            - Shift+Down
+          action: nav.extend-next
+        - sequence:
+            - Left
+          action: nav.focus-left
         - sequence:
             - Ctrl+Left
           action: stack.narrower
         - sequence:
             - Ctrl+Shift+Left
           action: stack.prev
+        - sequence:
+            - Right
+          action: nav.focus-right
         - sequence:
             - Ctrl+Right
           action: stack.wider
@@ -251,10 +269,16 @@ expression: rows
           action: task.create
         - sequence:
             - Up
-          action: nav.prev-item
+          action: nav.focus-up
         - sequence:
             - Down
-          action: nav.next-item
+          action: nav.focus-down
+        - sequence:
+            - Left
+          action: nav.focus-left
+        - sequence:
+            - Right
+          action: nav.focus-right
         - sequence:
             - F11
           action: task.schedule-today
@@ -290,6 +314,18 @@ expression: rows
         - sequence:
             - Ctrl+Shift+r
           action: series.edit
+        - sequence:
+            - Up
+          action: nav.focus-up
+        - sequence:
+            - Down
+          action: nav.focus-down
+        - sequence:
+            - Left
+          action: nav.focus-left
+        - sequence:
+            - Right
+          action: nav.focus-right
         - sequence:
             - F2
           action: task.title-edit
@@ -354,6 +390,12 @@ expression: rows
         - sequence:
             - Escape
           action: view.plan-next-day
+        - sequence:
+            - Left
+          action: nav.focus-left
+        - sequence:
+            - Right
+          action: nav.focus-right
     - context: menu
       bindings:
         - sequence:
@@ -604,7 +646,7 @@ expression: rows
           action: nav.last-item
         - sequence:
             - Ctrl+b
-          action: nav.prev-control
+          action: nav.focus-left
         - sequence:
             - Ctrl+c
             - Ctrl+i
@@ -645,16 +687,16 @@ expression: rows
           action: task.delete
         - sequence:
             - Ctrl+f
-          action: nav.next-control
+          action: nav.focus-right
         - sequence:
             - Ctrl+Shift+h
           action: habit.create
         - sequence:
             - Ctrl+n
-          action: nav.next-item
+          action: nav.focus-down
         - sequence:
             - Ctrl+p
-          action: nav.prev-item
+          action: nav.focus-up
         - sequence:
             - Ctrl+Shift+u
           action: habit.unlog
@@ -689,7 +731,7 @@ expression: rows
           action: board.next
         - sequence:
             - Ctrl+b
-          action: stack.prev
+          action: nav.focus-left
         - sequence:
             - Ctrl+c
             - Ctrl+Space
@@ -759,7 +801,7 @@ expression: rows
           action: task.delete
         - sequence:
             - Ctrl+f
-          action: stack.next
+          action: nav.focus-right
         - sequence:
             - Ctrl+g
           action: task.move.cancel
@@ -768,13 +810,19 @@ expression: rows
           action: label.manage
         - sequence:
             - Ctrl+n
-          action: nav.next-item
+          action: nav.focus-down
+        - sequence:
+            - Ctrl+Shift+n
+          action: nav.extend-next
         - sequence:
             - Ctrl+o
           action: task.create
         - sequence:
             - Ctrl+p
-          action: nav.prev-item
+          action: nav.focus-up
+        - sequence:
+            - Ctrl+Shift+p
+          action: nav.extend-prev
         - sequence:
             - Alt+v
           action: view.scroll-up
@@ -797,7 +845,7 @@ expression: rows
           action: nav.last-item
         - sequence:
             - Ctrl+b
-          action: nav.prev-control
+          action: nav.focus-left
         - sequence:
             - Ctrl+c
             - Ctrl+n
@@ -812,16 +860,16 @@ expression: rows
           action: task.schedule-today
         - sequence:
             - Ctrl+f
-          action: nav.next-control
+          action: nav.focus-right
         - sequence:
             - Ctrl+n
-          action: nav.next-item
+          action: nav.focus-down
         - sequence:
             - Ctrl+o
           action: task.create
         - sequence:
             - Ctrl+p
-          action: nav.prev-item
+          action: nav.focus-up
         - sequence:
             - Alt+v
           action: view.scroll-up
@@ -835,7 +883,7 @@ expression: rows
           action: task.title-edit
         - sequence:
             - Ctrl+b
-          action: nav.prev-control
+          action: nav.focus-left
         - sequence:
             - Ctrl+c
             - "'"
@@ -878,10 +926,16 @@ expression: rows
           action: task.schedule-today
         - sequence:
             - Ctrl+f
-          action: nav.next-control
+          action: nav.focus-right
         - sequence:
             - Ctrl+Shift+l
           action: label.manage
+        - sequence:
+            - Ctrl+n
+          action: nav.focus-down
+        - sequence:
+            - Ctrl+p
+          action: nav.focus-up
         - sequence:
             - Alt+v
           action: view.scroll-up
@@ -901,22 +955,30 @@ expression: rows
           action: app.settings
         - sequence:
             - Ctrl+b
-          action: nav.prev-control
+          action: nav.focus-left
         - sequence:
             - Ctrl+f
-          action: nav.next-control
+          action: nav.focus-right
         - sequence:
             - Ctrl+n
-          action: nav.next-control
+          action: nav.focus-down
         - sequence:
             - Ctrl+p
-          action: nav.prev-control
+          action: nav.focus-up
         - sequence:
             - Alt+v
           action: view.scroll-up
         - sequence:
             - Ctrl+v
           action: view.scroll-down
+    - context: plan-next-day
+      bindings:
+        - sequence:
+            - Ctrl+b
+          action: nav.focus-left
+        - sequence:
+            - Ctrl+f
+          action: nav.focus-right
     - context: menu
       bindings:
         - sequence:
@@ -1158,6 +1220,12 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - J
+          action: nav.extend-next
+        - sequence:
+            - K
+          action: nav.extend-prev
         - sequence:
             - X
           action: task.unschedule
@@ -1420,14 +1488,20 @@ expression: rows
             - w
           action: review.open
         - sequence:
+            - h
+          action: nav.focus-left
+        - sequence:
             - i
           action: mode.insert
         - sequence:
             - j
-          action: nav.next-item
+          action: nav.focus-down
         - sequence:
             - k
-          action: nav.prev-item
+          action: nav.focus-up
+        - sequence:
+            - l
+          action: nav.focus-right
         - sequence:
             - m
           action: reminder.mute

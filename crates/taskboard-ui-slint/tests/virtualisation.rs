@@ -539,7 +539,7 @@ fn an_adjacent_step_leaves_the_view_resting() {
                 .expect("the head card renders");
             let rest = first.absolute_position();
 
-            handle.dispatch_action(ActionId::NavNextItem);
+            handle.dispatch_action(ActionId::NavFocusDown);
             driver.advance_time(0);
 
             let first = driver
@@ -797,7 +797,7 @@ fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
             // pin below. bench_label(87) is overdue position 26, live
             // mid-window — the pin's resting witness row.)
             for _ in 0..30 {
-                handle.dispatch_action(ActionId::NavNextItem);
+                handle.dispatch_action(ActionId::NavFocusDown);
                 driver.advance_time(0);
             }
 
@@ -905,7 +905,7 @@ fn an_insertion_above_the_today_viewport_reflows_less_than_one_extent() {
             // section head behind. bench_label(87) (position 26) is a
             // live mid-window anchor row.
             for _ in 0..30 {
-                handle.dispatch_action(ActionId::NavNextItem);
+                handle.dispatch_action(ActionId::NavFocusDown);
                 driver.advance_time(0);
             }
 
@@ -1010,7 +1010,7 @@ fn a_true_removal_above_the_today_viewport_is_pixel_still() {
             // section head, so the removal is entirely above the
             // viewport.
             for _ in 0..30 {
-                handle.dispatch_action(ActionId::NavNextItem);
+                handle.dispatch_action(ActionId::NavFocusDown);
                 driver.advance_time(0);
             }
 
@@ -1094,7 +1094,7 @@ fn a_removal_within_the_today_viewport_closes_the_rows_below_without_scrolling()
             // fixture-done, not a row) are live, so the close-up is
             // measurable on both sides.
             for _ in 0..30 {
-                handle.dispatch_action(ActionId::NavNextItem);
+                handle.dispatch_action(ActionId::NavFocusDown);
                 driver.advance_time(0);
             }
 
@@ -1180,9 +1180,9 @@ fn a_compact_stack_switch_remounts_the_viewport_cleanly() {
                 "the selected stack's head card renders"
             );
 
-            handle.dispatch_action(ActionId::NavPrevItem);
+            handle.dispatch_action(ActionId::NavFocusUp);
             driver.advance_time(0);
-            handle.dispatch_action(ActionId::NavPrevItem);
+            handle.dispatch_action(ActionId::NavFocusUp);
             driver.advance_time(0);
 
             let card = driver

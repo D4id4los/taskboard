@@ -5375,11 +5375,10 @@ impl Adapter {
         match self.view_state.view() {
             // Today/StackDetail: left/right are the control walk
             // first cut (R-4); up/down are the item walks (the
-            // `interpret_directional` outcomes own them).
+            // `interpret_directional` outcomes own them — `None`
+            // here, the tail must not inject a traversal step).
             crate::view_state::ViewId::Today | crate::view_state::ViewId::StackDetail => {
-                backwards.then_some(true).or_else(|| {
-                    matches!(direction, Direction::Right | Direction::Down).then_some(false)
-                })
+                matches!(direction, Direction::Left | Direction::Right).then_some(backwards)
             }
             // TaskDetail/Settings: every direction is the control
             // walk — the stop ladder is linear today (the recorded
