@@ -1013,3 +1013,182 @@ fn us6_s2_snooze_offers_hours_and_days() {
         },
     );
 }
+
+/// A weekly habit (the US-5 editor round-trip's subject).
+fn weekly_habit(
+    state: &mut AppState,
+    board: taskboard_domain::BoardId,
+) -> taskboard_domain::HabitId {
+    let habit = taskboard_domain::habit::Habit {
+        id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "long run".into(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(2).unwrap(),
+        ),
+        order: 0,
+        anchor_time: None,
+        anchor_day: None,
+        clocks: taskboard_domain::habit::HabitClocks::all(fixture::PINNED_NOW),
+        continued_from: None,
+        deleted: false,
+        by: None,
+    };
+    let id = habit.id;
+    state.habits.habits.insert(habit.id, habit);
+    id
+}
+
+/// `us5_s1` (J1, H4 D1): the editor opens ON the shared detail surface —
+/// from the menu row's focus fact and from the bare `habit.edit` key
+/// (click ≡ key) — and cancel discards: the view steps back and NO
+/// `UpdateHabit` ever reached the boundary (the typed seam
+/// assertion).
+#[test]
+fn us5_s1_habit_editor_opens_and_cancel_discards() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = weekly_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            // The menu row routes the bare id: open the habit menu
+            // (the opener mints the focus fact), then dispatch.
+            window.invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitEdit);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                window.get_current_view(),
+                View::TaskDetail,
+                "the shared detail surface mounts the habit variant"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "opening the editor dispatches nothing"
+            );
+
+            // A field edit stages adapter-side; cancel discards.
+            window.invoke_habit_time_edited("07:30".into());
+            harness.driver.advance_time(0);
+            window.invoke_habit_editor_cancelled();
+            harness.driver.advance_time(0);
+            assert_eq!(
+                window.get_current_view(),
+                View::Board,
+                "cancel steps the view back (the nav-back grammar)"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "cancel discards: no UpdateHabit dispatched"
+            );
+            let _ = habit;
+        },
+    );
+}
+
+/// `us5_s2` (J1, H4 D5 + W-5's fold): setting the time and Wednesday on
+/// a weekly habit and saving routes ONE sparse `UpdateHabit` — the
+/// changeset names exactly the edited fields, the untouched stay
+/// `None` — and the anchored state renders the row's time chip (the
+/// fold's presence flag, structural: the same post-save state, mounted
+/// fresh).
+#[test]
+fn us5_s2_habit_editor_round_trips_time_and_day() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = weekly_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            // The bare key opens the editor over the focused habit
+            // (the row activation's focus fact mints first).
+            window.invoke_habits_row_activated(0);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitEdit);
+            harness.driver.advance_time(0);
+            assert_eq!(window.get_current_view(), View::TaskDetail);
+
+            // Set the time and Wednesday (the PerWeek variant's day
+            // row), then save.
+            window.invoke_habit_time_edited("07:30".into());
+            window.invoke_habit_weekday_picked(2);
+            harness.driver.advance_time(0);
+            window.invoke_habit_save_clicked();
+            harness.driver.advance_time(0);
+            let anchor_time = chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap();
+            match harness.engine.drain().as_slice() {
+                [
+                    StateCommand::UpdateHabit {
+                        habit: edited,
+                        changes,
+                    },
+                ] => {
+                    assert_eq!(*edited, habit, "the editor edits its own subject");
+                    assert_eq!(changes.title, None, "untouched title stays sparse");
+                    assert_eq!(changes.description, None);
+                    assert_eq!(changes.target, None, "untouched quota stays sparse");
+                    assert_eq!(changes.anchor_time, Some(Some(anchor_time)));
+                    assert_eq!(
+                        changes.anchor_day,
+                        Some(Some(taskboard_domain::habit::AnchorDay::Weekday(
+                            chrono::Weekday::Wed
+                        )))
+                    );
+                }
+                other => panic!("the save routes the sparse changeset, got {other:?}"),
+            }
+            assert_eq!(
+                window.get_current_view(),
+                View::Board,
+                "the editor closes on save (the back grammar)"
+            );
+        },
+    );
+}
+
+/// `us5_s2`'s W-5 fold half: the anchored state renders the row's time
+/// chip (the presence flag — structural, never a text oracle).
+#[test]
+fn the_anchored_habit_row_carries_the_time_chip() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = weekly_habit(&mut state, board);
+    let row = state.habits.habits.get_mut(&habit).expect("row");
+    row.anchor_time = Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap());
+    row.anchor_day = Some(taskboard_domain::habit::AnchorDay::Weekday(
+        chrono::Weekday::Wed,
+    ));
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let row = harness
+                .handle
+                .window()
+                .get_habits_model()
+                .row_data(0)
+                .expect("row");
+            assert!(
+                !row.card.scheduled_phrase.is_empty(),
+                "the anchored habit renders the time chip in its scheduled slot"
+            );
+        },
+    );
+}
