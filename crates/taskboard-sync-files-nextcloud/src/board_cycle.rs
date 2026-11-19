@@ -22,10 +22,26 @@
 //!   publishes nothing until its first pull folded (publish-after-
 //!   import, the DR-8 journal precedent).
 //!
-//! GC duty note: [`taskboard_sync_files::board_gc::gc_eligible`] names
-//! the owner's deletable chunk seqs, but the transport's closed verb
-//! set carries no DELETE yet — the deletion rides the verb's backlog
-//! issue, the watermarks and snapshot floor are already GC-shaped.
+//! GC duty note: the owner's post-snapshot GC pass runs inside
+//! [`snapshot_duty`]'s publish-success arm — the just-published
+//! snapshot's `seq` **is** the GC watermark. Publish-first is the only
+//! safe order: a snapshot subsumes chunks `≤` its seq, so the floor
+//! must exist on the server before any chunk goes. The pass re-derives
+//! the own-chunk seq set from one `propfind_tree` over this device's
+//! own `ops/` directory every cadence (no persistent seq set — a
+//! restart loses in-memory state, and the module doc forbids
+//! correctness load on in-memory cursors), feeds it plus the watermark
+//! into [`taskboard_sync_files::board_gc::gc_eligible`], and deletes
+//! each eligible file. Owner scope is structural: the listing root is
+//! hard-pinned to the device dir built from the context identity — no
+//! foreign device's path is ever constructed, let alone deleted (the
+//! D-BF7 owner leg; test-pinned). Tombstones are forever: GC removes
+//! whole ops files at/below the watermark only — tombstone *fields*
+//! live on in the snapshots. The unbind retirement (the operator's
+//! GC-on-unbind decision, as amended 2026-11-19: device-scoped — only
+//! THIS device's files under the remote board go; the board's shared
+//! subtree stays because another client may still be connected) is the
+//! delete verb's only other caller.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -41,14 +57,16 @@ use taskboard_domain::push::{EntityTables, PushTarget, plan_pushes};
 use taskboard_domain::remote::{FilesBoardSnapshot, PushOutcome, PushResult};
 use taskboard_sync_files::board_chunk::BoardChunk;
 use taskboard_sync_files::board_fold::{fold_board, fold_sections};
-use taskboard_sync_files::board_gc::{BOARD_CHUNK_FORMAT, next_chunk_range, snapshot_due};
+use taskboard_sync_files::board_gc::{
+    BOARD_CHUNK_FORMAT, gc_eligible, next_chunk_range, snapshot_due,
+};
 use taskboard_sync_files::board_identity::BoardIdentity;
 use taskboard_sync_files::board_payload::{EntityEntry, EntityKind, MaterializedEntity};
 use taskboard_sync_files::board_snapshot::{BoardSnapshot, SnapshotState};
 use taskboard_sync_files::ids::DeviceId;
 use taskboard_sync_files::layout::{
-    self, BOARDS_DIR_NAME, DEVICES_DIR_NAME, TREE_FORMAT_VERSION, board_identity_path,
-    board_ops_path, board_snapshot_path, classify, device_dir_name,
+    self, BOARDS_DIR_NAME, DEVICES_DIR_NAME, OPS_DIR_NAME, TREE_FORMAT_VERSION,
+    board_identity_path, board_ops_path, board_snapshot_path, classify, device_dir_name,
 };
 
 use taskboard_sync_files::board_move::{MoveRecord, MoveRecordError, MovedFrom};
@@ -57,7 +75,7 @@ use crate::cycle::SyncContext;
 use crate::error::TransportError;
 use crate::etag::Etag;
 use crate::status::{BoardMoveFinding, BoardMoveRefusal};
-use crate::transport::{FilesTransport, PutOutcome};
+use crate::transport::{DeleteOutcome, FilesTransport, PutOutcome};
 
 /// One board lane's cycle-bookkeeping (in-memory; a restart re-reads
 /// honestly once — the fold is idempotent, the cursor is an
@@ -86,6 +104,11 @@ pub struct Lane {
     /// Per-peer device-dir etag (the F6 filter one level up: the
     /// per-device subtree is re-listed only when its dir changed).
     device_dir_etags: BTreeMap<DeviceId, Etag>,
+    /// The board's files identity last seen while bound. Unbind is
+    /// instantaneous at the state level and erases the binding, but
+    /// the retirement duty still needs the remote uuid to address
+    /// this device's own files — the last-seen value rides the lane.
+    pub remote_uuid: Option<uuid::Uuid>,
 }
 
 impl Default for Lane {
@@ -100,6 +123,7 @@ impl Default for Lane {
             member_etags: BTreeMap::new(),
             snapshot_etag: None,
             device_dir_etags: BTreeMap::new(),
+            remote_uuid: None,
         }
     }
 }
@@ -154,8 +178,10 @@ pub async fn run_board_lanes<T: FilesTransport>(
         .collect();
     let mut completed = 0usize;
     let mut outcomes = BTreeMap::new();
+    let owned_ids: BTreeSet<BoardId> = owned.iter().map(|(board, _)| *board).collect();
     for (board, remote) in owned {
         let lane = lanes.boards.entry(board).or_default();
+        lane.remote_uuid = Some(remote);
         match run_lane(transport, ctx, lane, board, remote, &persisted).await {
             Ok(()) => {
                 completed += 1;
@@ -167,9 +193,89 @@ pub async fn run_board_lanes<T: FilesTransport>(
             }
         }
     }
+    retire_unbound_lanes(transport, ctx, lanes, &owned_ids, &mut outcomes).await;
     lanes.outcomes = outcomes;
     completed += discover_subtrees(transport, ctx, lanes, &persisted).await;
     completed
+}
+
+/// The unbind retirement's typed outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetireOutcome {
+    /// This device's files were deleted this tick.
+    Retired,
+    /// They were already gone (the delete raced a previous tick's
+    /// success, or a crash landed between the delete and the prune).
+    AlreadyRetired,
+}
+
+/// The unbind trigger (leg 2, the operator's GC-on-unbind decision as
+/// amended 2026-11-19 — **device-scoped**): a lane whose board stopped
+/// being files-bound is retiring. The actor owns the transport and
+/// remembers the remote uuid on the lane, so the retirement runs per
+/// tick until complete: delete THIS device's own directory under the
+/// remote board (`boards/<remote>/devices/<own>/`) — never the board's
+/// shared subtree, because a different client may still be connected
+/// to that board. On completion the lane and its discovery entry are
+/// pruned (the stale-lane leak, §3 of the chunk plan); on a transport
+/// error the retirement is deferred and surfaces typed on the outcomes
+/// watch — never silent. The engine's `UnbindBoard` is untouched:
+/// unbind is instantaneous at the state level, and this cleanup
+/// finding never blocks or refuses it.
+async fn retire_unbound_lanes<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    lanes: &mut Lanes,
+    owned: &BTreeSet<BoardId>,
+    outcomes: &mut BTreeMap<uuid::Uuid, crate::status::LaneOutcome>,
+) {
+    let retiring: Vec<(BoardId, uuid::Uuid)> = lanes
+        .boards
+        .iter()
+        .filter(|(board, _)| !owned.contains(board))
+        .filter_map(|(board, lane)| lane.remote_uuid.map(|remote| (*board, remote)))
+        .collect();
+    for (board, remote) in retiring {
+        match retire_own_device_files(transport, ctx, remote).await {
+            Ok(RetireOutcome::Retired | RetireOutcome::AlreadyRetired) => {
+                tracing::info!(?remote, "unbind retirement complete; lane pruned");
+                lanes.boards.remove(&board);
+                lanes.discovered.remove(&remote);
+                outcomes.insert(remote, crate::status::LaneOutcome::Ok);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    ?remote,
+                    "unbind retirement deferred; retried next tick"
+                );
+                outcomes.insert(remote, crate::status::LaneOutcome::Failed((&err).into()));
+            }
+        }
+    }
+}
+
+/// Deletes this device's own directory under the remote board — one
+/// collection DELETE, recursive per RFC 4918 Depth semantics. The
+/// target is derived entirely from `ctx.identity.device_id`
+/// (device-scoped by construction): the board's shared bytes
+/// (`identity.json`, `move.json`) and any other device's directory are
+/// never constructed here, let alone deleted. Idempotent: the
+/// already-absent mapping covers the crash-between-delete-and-prune
+/// window.
+async fn retire_own_device_files<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    remote: uuid::Uuid,
+) -> Result<RetireOutcome, TransportError> {
+    let device_dir = crate::cycle::rooted(&format!(
+        "{BOARDS_DIR_NAME}/{remote}/{DEVICES_DIR_NAME}/{}",
+        device_dir_name(ctx.identity.device_id)
+    ));
+    match transport.delete(&device_dir).await? {
+        DeleteOutcome::Deleted => Ok(RetireOutcome::Retired),
+        DeleteOutcome::AlreadyAbsent => Ok(RetireOutcome::AlreadyRetired),
+    }
 }
 
 /// Discovery door 2 (D-SF13's board lane): a foreign
@@ -1177,6 +1283,19 @@ async fn snapshot_duty<T: FilesTransport>(
             lane.pending_boot_snapshot = false;
             lane.chunks_since_snapshot = 0;
             tracing::debug!(board = ?board, seq, "board snapshot published");
+            // The owner's GC pass (D-BF7), strictly after publish
+            // success: the snapshot just published IS the watermark —
+            // publish-first is the only safe order (a snapshot
+            // subsumes chunks ≤ its seq, so the floor must exist on
+            // the server before any chunk goes). The 412 arm skips the
+            // pass entirely: no published snapshot ⇒ no watermark
+            // advance ⇒ nothing is GC-eligible.
+            if let Err(err) = gc_own_chunks(transport, ctx, remote, seq).await {
+                tracing::warn!(
+                    ?err, board = ?board, seq,
+                    "post-snapshot GC skipped; eligibility is recomputed next cadence"
+                );
+            }
         }
         Err(TransportError::PreconditionFailed) => {
             // The lost-update guard: our snapshot token is stale — the
@@ -1186,6 +1305,55 @@ async fn snapshot_duty<T: FilesTransport>(
             lane.snapshot_etag = None;
         }
         Err(err) => return Err(err),
+    }
+    Ok(())
+}
+
+/// The owner's post-snapshot GC pass: one PROPFIND over this device's
+/// own `ops/` directory (the listing root is hard-pinned to the device
+/// dir built from the context identity — owner scope is structural),
+/// the seq parsed out of each `NNNNNN.json` member name (non-parsing
+/// names are skipped — a foreign name is not ours to read), then
+/// `gc_eligible` against the just-published watermark and one DELETE
+/// per eligible file. A per-file delete failure logs at warn and
+/// continues; the pass never fails the lane (eligibility is recomputed
+/// from the listing next cadence and the leftover file is retried
+/// then). A transport-class error on the PROPFIND aborts the pass
+/// silently-for-this-cadence (same retry story).
+async fn gc_own_chunks<T: FilesTransport>(
+    transport: &T,
+    ctx: &SyncContext,
+    remote: uuid::Uuid,
+    watermark: u64,
+) -> Result<(), TransportError> {
+    let device = ctx.identity.device_id;
+    let ops_dir = crate::cycle::rooted(&format!(
+        "{BOARDS_DIR_NAME}/{remote}/{DEVICES_DIR_NAME}/{}/{OPS_DIR_NAME}",
+        device_dir_name(device)
+    ));
+    let listing = match transport.propfind_tree(&ops_dir).await {
+        Ok(listing) => listing,
+        // No ops dir (yet/anymore): nothing to GC.
+        Err(TransportError::NotFound) => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let own_seqs: BTreeSet<u64> = listing
+        .members
+        .iter()
+        .filter_map(|member| {
+            let name = member.href.trim_end_matches('/').rsplit('/').next()?;
+            name.strip_suffix(".json")?.parse().ok()
+        })
+        .collect();
+    for seq in gc_eligible(&own_seqs, Some(watermark)) {
+        let path = crate::cycle::rooted(&board_ops_path(BoardId::from_uuid(remote), device, seq));
+        match transport.delete(&path).await {
+            // Both outcomes are the idempotent re-run's success.
+            Ok(DeleteOutcome::Deleted | DeleteOutcome::AlreadyAbsent) => {}
+            Err(err) => {
+                tracing::warn!(?seq, ?err, "chunk delete failed; retried next cadence");
+            }
+        }
     }
     Ok(())
 }
@@ -1582,6 +1750,21 @@ mod tests {
         }
     }
 
+    /// The last PUT's body recorded for `path`. After the owner's
+    /// post-snapshot GC pass an own chunk at/below the snapshot's seq
+    /// no longer lingers as a model file — the request log is the
+    /// durable observable of what was published (never a transient
+    /// intermediate).
+    fn last_put_body(fake: &FakeFilesTransport, path: &str) -> Vec<u8> {
+        fake.requests()
+            .iter()
+            .rev()
+            .find(|req| req.method == "PUT" && req.path == path)
+            .unwrap_or_else(|| panic!("no PUT recorded for {path}"))
+            .body
+            .clone()
+    }
+
     /// The drain journey: attach (ladder + identity), one chunk
     /// published create-once at `ops/000001.json`, the op reported
     /// `Applied { echo: None }` AFTER the PUT (the honesty pin: a
@@ -1605,7 +1788,7 @@ mod tests {
             device(),
             1,
         ));
-        let chunk_bytes = fake.file(&ops_path).expect("the chunk published");
+        let chunk_bytes = last_put_body(&fake, &ops_path);
         let chunk: BoardChunk = serde_json::from_slice(&chunk_bytes).expect("a valid chunk");
         assert_eq!(chunk.device_id, device());
         assert_eq!(chunk.first_seq, 1);
@@ -1635,9 +1818,12 @@ mod tests {
         let (board_tx, mut board_rx) = mpsc::channel(8);
         let context2 = ctx(Arc::clone(&state), board_tx);
         // Tick 2 over FRESH lane state — the crash-window model: the
-        // device forgot its seq cursor and re-pushes seq 1. The
+        // device forgot its seq cursor and re-pushes seq 1. The chunk
+        // file is seeded back (the crash happened after the chunk
+        // publish but before the snapshot cadence GC'd it), so the
         // create-once 412 reconciles to the own-device chunk and the
         // op reports Applied exactly once (the idempotence pin).
+        fake.seed_file(&ops_path, chunk_bytes.clone());
         let mut lanes2 = Lanes::default();
         let _ = run_board_lanes(&fake, &context2, &mut lanes2).await;
         let report = board_rx.recv().await.expect("the pull report");
@@ -1664,7 +1850,7 @@ mod tests {
             2,
         ));
         assert!(
-            fake.file(&seq2).is_some(),
+            fake.count("PUT", Some(&seq2)) >= 1,
             "the still-queued op drains again at the next seq"
         );
     }
@@ -1741,7 +1927,7 @@ mod tests {
             1,
         ));
         assert!(
-            fake.file(&ops_path).is_some(),
+            fake.count("PUT", Some(&ops_path)) >= 1,
             "the drain published despite the adopted (ops-less) tree"
         );
     }
@@ -1828,7 +2014,7 @@ mod tests {
             device(),
             1,
         ));
-        let bytes = fake.file(&ops_path).expect("the tombstone chunk published");
+        let bytes = last_put_body(&fake, &ops_path);
         let chunk: BoardChunk = serde_json::from_slice(&bytes).expect("a valid chunk");
         let tombstone = chunk
             .entities
@@ -1986,6 +2172,272 @@ mod tests {
             .filter(|entry| matches!(entry, EntityEntry::Modeled(_)))
             .count();
         assert!(modeled >= 2, "the board's own rows fold in: {modeled}");
+    }
+
+    // ---- The owner's post-snapshot GC pass (D-BF7) -------------------
+    //
+    // The eligibility law, enforced by construction and pinned here:
+    // watermark-bounded (the just-published snapshot's seq), owner-
+    // scoped (only paths derived from ctx.identity.device_id), and
+    // tombstones-are-forever (whole ops files go; the tombstone fields
+    // ride the snapshots).
+
+    fn own_ops_path(seq: u64) -> String {
+        crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            device(),
+            seq,
+        ))
+    }
+
+    fn gc_ctx() -> crate::cycle::SyncContext {
+        ctx(Arc::new(FixedState(state_with(vec![]))), mpsc::channel(1).0)
+    }
+
+    /// The watermark bound, lane-level: chunk 1 published on tick 1 is
+    /// subsumed by the boot snapshot (seq 1) and GC'd; the chunk
+    /// published on tick 2 (after the snapshot, no cadence due) is
+    /// still a live ops file — a test asserting its survival passes,
+    /// deleting it would be the bug.
+    #[tokio::test]
+    async fn the_gc_pass_deletes_watermark_bounded_chunks_and_spares_unpublished_ones() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let state = Arc::new(FixedState(state_with(vec![queued_update(
+            0xE1,
+            TaskId::from_uuid(TASK_UUID),
+        )])));
+        let context = ctx(Arc::clone(&state), mpsc::channel(8).0);
+        let mut lanes = Lanes::default();
+        run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(
+            fake.count("DELETE", Some(&own_ops_path(1))),
+            1,
+            "chunk 1 is GC'd behind the snapshot that subsumes it"
+        );
+        assert!(fake.file(&own_ops_path(1)).is_none());
+
+        // Tick 2 over the same lane: the still-queued op drains at
+        // seq 2; one chunk since the snapshot ⇒ no snapshot due ⇒ no
+        // watermark ⇒ nothing eligible.
+        run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(
+            fake.count("DELETE", Some(&own_ops_path(2))),
+            0,
+            "the chunk published after the snapshot survives"
+        );
+        assert!(
+            fake.file(&own_ops_path(2)).is_some(),
+            "the unpublished chunk is still a live ops file"
+        );
+    }
+
+    /// Owner scope, lane-level: a foreign device's chunk in its own
+    /// device dir is never deleted, across cadences — and every DELETE
+    /// request this device ever issues sits under its own ops dir
+    /// prefix (the structural scope pin: no foreign path is ever
+    /// constructed).
+    #[tokio::test]
+    async fn the_gc_pass_never_touches_a_foreign_device_dir() {
+        let peer = DeviceId::parse("0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b6b").expect("parses");
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let peer_chunk = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            peer,
+            1,
+        ));
+        fake.seed_file(&peer_chunk, b"peer bytes".to_vec());
+
+        let state = Arc::new(FixedState(state_with(vec![queued_update(
+            0xE1,
+            TaskId::from_uuid(TASK_UUID),
+        )])));
+        let context = ctx(Arc::clone(&state), mpsc::channel(8).0);
+        let mut lanes = Lanes::default();
+        run_board_lanes(&fake, &context, &mut lanes).await;
+        run_board_lanes(&fake, &context, &mut lanes).await;
+
+        assert!(
+            fake.file(&peer_chunk).is_some(),
+            "the foreign device's chunk is never deleted"
+        );
+        let own_prefix = crate::cycle::rooted(&format!(
+            "boards/{BOARD_UUID}/devices/{}/ops/",
+            device_dir_name(device())
+        ));
+        let foreign_deletes = fake
+            .requests()
+            .iter()
+            .filter(|req| req.method == "DELETE" && !req.path.starts_with(&own_prefix))
+            .count();
+        assert_eq!(foreign_deletes, 0, "every DELETE is owner-scoped");
+        assert_eq!(
+            fake.count("DELETE", Some(&own_prefix)),
+            1,
+            "only own chunk 1 was eligible"
+        );
+    }
+
+    /// The `None`-watermark leg at the lane level: a snapshot cadence
+    /// that never publishes (the PUT fails typed) runs no GC pass —
+    /// zero DELETE requests, exactly the pinned `gc_eligible(.., None)`
+    /// law (nothing is subsumed, so nothing may go).
+    #[tokio::test]
+    async fn a_snapshot_cadence_that_never_publishes_records_no_deletes() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        // The staged verdicts land in call order: the attach ladder
+        // (5 MKCOL + 1 create-once identity) and the pull's listings
+        // (the devices dir, the self device dir, its ops dir) plus the
+        // drain's chunk PUT pass through; the snapshot PUT answers 500.
+        for _ in 0..10 {
+            fake.stage(crate::test_support::Effect::Pass);
+        }
+        fake.stage(crate::test_support::Effect::Status(500));
+        let state = Arc::new(FixedState(state_with(vec![queued_update(
+            0xE1,
+            TaskId::from_uuid(TASK_UUID),
+        )])));
+        let context = ctx(Arc::clone(&state), mpsc::channel(8).0);
+        let mut lanes = Lanes::default();
+        let _ = run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(
+            fake.count("DELETE", None),
+            0,
+            "no published snapshot ⇒ no GC watermark ⇒ no deletions"
+        );
+    }
+
+    /// The tombstone law's whole-file leg: a chunk whose payload
+    /// carries `deleted` fields is GC'd exactly like any other ops
+    /// file behind its subsuming snapshot (the tombstone *fields*
+    /// live on in the snapshot payload). The inverse pin — a test
+    /// asserting the tombstone chunk survives — fails by
+    /// construction; that is the documented D-BF7 semantics, not a
+    /// bug.
+    #[tokio::test]
+    async fn a_tombstone_bearing_chunk_is_gcd_like_any_other() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let op = PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(0xE3)),
+            op: taskboard_domain::LocalOp::DeleteRemoteCard {
+                board: board(),
+                card: taskboard_domain::ids::RemoteCardRef {
+                    board: RemoteBoardId::files(BOARD_UUID),
+                    stack: taskboard_domain::ids::RemoteStackId::files(STACK_UUID),
+                    card: taskboard_domain::ids::RemoteCardId::files(TASK_UUID),
+                },
+            },
+            queued_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        };
+        let state = Arc::new(FixedState(state_with(vec![op])));
+        let context = ctx(Arc::clone(&state), mpsc::channel(8).0);
+        let mut lanes = Lanes::default();
+        run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(
+            fake.count("DELETE", Some(&own_ops_path(1))),
+            1,
+            "the tombstone-bearing chunk is GC'd behind its snapshot"
+        );
+    }
+
+    // The GC pass in isolation (deterministic sequencing, no lane
+    // cadence): per-file failure semantics and the idempotent re-run.
+
+    /// A per-file delete failure (typed) leaves the file in place, the
+    /// pass continues to the next seq, and the lane stays Ok; the next
+    /// cadence's pass retries the leftover (two-cadence sequence).
+    #[tokio::test]
+    async fn a_failed_chunk_delete_continues_and_retries_next_cadence() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&[
+            "taskboard",
+            "taskboard/boards",
+            &format!("taskboard/boards/{BOARD_UUID}"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices/{SELF}"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices/{SELF}/ops"),
+        ]);
+        fake.seed_file(&own_ops_path(1), b"chunk one".to_vec());
+        fake.seed_file(&own_ops_path(2), b"chunk two".to_vec());
+        // The staged verdicts land in call order: the listing passes
+        // through, the first chunk DELETE answers 503 (the injection
+        // targets the first per-file delete, not the listing).
+        fake.stage(crate::test_support::Effect::Pass);
+        fake.stage(crate::test_support::Effect::Status(503));
+
+        let outcome = gc_own_chunks(&fake, &gc_ctx(), BOARD_UUID, 2).await;
+        assert!(outcome.is_ok(), "a per-file failure never fails the pass");
+        assert!(
+            fake.file(&own_ops_path(1)).is_some(),
+            "the failed delete leaves the file in place"
+        );
+        assert!(
+            fake.file(&own_ops_path(2)).is_none(),
+            "the pass continued to the next seq"
+        );
+
+        // The next cadence: eligibility recomputed from the listing,
+        // the leftover retried — the idempotent re-run converges.
+        let outcome = gc_own_chunks(&fake, &gc_ctx(), BOARD_UUID, 2).await;
+        assert!(outcome.is_ok());
+        assert!(fake.file(&own_ops_path(1)).is_none());
+    }
+
+    /// Already-absent: a listing naming a file the model no longer
+    /// holds (the crash-between-publish-and-GC analog) deletes as the
+    /// idempotent no-op and the pass stays Ok.
+    #[tokio::test]
+    async fn an_already_absent_chunk_deletes_as_the_idempotent_noop() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&[
+            "taskboard",
+            "taskboard/boards",
+            &format!("taskboard/boards/{BOARD_UUID}"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices/{SELF}"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices/{SELF}/ops"),
+        ]);
+        fake.stage(crate::test_support::Effect::Listing(vec![
+            crate::transport::PropfindMember {
+                href: format!("taskboard/boards/{BOARD_UUID}/devices/{SELF}/ops/000001.json"),
+                etag: None,
+            },
+        ]));
+        let outcome = gc_own_chunks(&fake, &gc_ctx(), BOARD_UUID, 1).await;
+        assert!(outcome.is_ok(), "already-absent is a no-op, not an error");
+        assert_eq!(fake.count("DELETE", Some(&own_ops_path(1))), 1);
+    }
+
+    /// A transport-class error on the listing aborts the pass
+    /// silently-for-this-cadence: no DELETE is ever issued on a failed
+    /// listing (the retry story is next cadence's re-derivation).
+    #[tokio::test]
+    async fn a_failed_listing_aborts_the_pass_without_deleting() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&[
+            "taskboard",
+            "taskboard/boards",
+            &format!("taskboard/boards/{BOARD_UUID}"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices/{SELF}"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices/{SELF}/ops"),
+        ]);
+        fake.seed_file(&own_ops_path(1), b"chunk one".to_vec());
+        fake.stage(crate::test_support::Effect::Status(503));
+        let outcome = gc_own_chunks(&fake, &gc_ctx(), BOARD_UUID, 1).await;
+        assert!(outcome.is_err(), "the listing failure aborts the pass");
+        assert_eq!(
+            fake.count("DELETE", None),
+            0,
+            "no deletion on an aborted listing"
+        );
+        assert!(
+            fake.file(&own_ops_path(1)).is_some(),
+            "the chunk survives the aborted cadence"
+        );
     }
 
     const DECK_ORIGIN: &str = "https://cloud.example";
@@ -2413,5 +2865,172 @@ mod tests {
         let lanes = tick(&fake, persisted, tx).await;
         assert!(rx.try_recv().is_err());
         assert!(!lanes.discovered.contains(&target));
+    }
+
+    // ---- The unbind retirement (leg 2, the operator's GC-on-unbind
+    // decision as amended 2026-11-19: device-scoped) -------------------
+
+    const PEER_DEVICE: &str = "0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b6b";
+
+    fn peer_id() -> DeviceId {
+        DeviceId::parse(PEER_DEVICE).expect("parses")
+    }
+
+    /// A bound subtree with this device's chunk + snapshot-bearing
+    /// device dir, another device's chunk, and the board's shared
+    /// identity — everything the retirement's scope law can be
+    /// asserted against.
+    fn seed_bound_subtree(fake: &FakeFilesTransport) -> (String, String, String) {
+        let self_dir = format!(
+            "taskboard/boards/{BOARD_UUID}/devices/{}",
+            device_dir_name(device())
+        );
+        let peer_dir = format!(
+            "taskboard/boards/{BOARD_UUID}/devices/{}",
+            device_dir_name(peer_id())
+        );
+        fake.seed_dirs(&[
+            "taskboard",
+            "taskboard/boards",
+            &format!("taskboard/boards/{BOARD_UUID}"),
+            &format!("taskboard/boards/{BOARD_UUID}/devices"),
+            &self_dir,
+            &format!("{self_dir}/ops"),
+            &peer_dir,
+            &format!("{peer_dir}/ops"),
+        ]);
+        let identity_path =
+            crate::cycle::rooted(&taskboard_sync_files::layout::board_identity_path(board()));
+        fake.seed_file(
+            &identity_path,
+            br#"{"board_id":"00000000-0000-0000-0000-0000000b0a1d","format_version":1,"created_at":"2026-11-08T00:00:00Z"}"#.to_vec(),
+        );
+        let own_chunk = own_ops_path(1);
+        fake.seed_file(&own_chunk, b"own chunk".to_vec());
+        let peer_chunk = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            peer_id(),
+            1,
+        ));
+        fake.seed_file(&peer_chunk, b"peer chunk".to_vec());
+        (identity_path, own_chunk, peer_chunk)
+    }
+
+    fn unbound_state() -> PersistedState {
+        let mut state = state_with(vec![]);
+        let mut row = files_bound_board();
+        row.remote = None;
+        state.boards.insert(board(), row);
+        state
+    }
+
+    /// The amended device-scope law (fail by construction): the
+    /// retirement deletes exactly this device's own directory under
+    /// the remote board and nothing else — a foreign device's chunk
+    /// and the board's shared identity.json survive, every recorded
+    /// DELETE sits under this device's device-dir prefix, and the
+    /// assertion set fails on any whole-subtree (Option A unamended)
+    /// implementation.
+    #[tokio::test]
+    async fn an_unbind_retires_only_this_devices_files_under_the_remote_board() {
+        let fake = FakeFilesTransport::new();
+        let (identity_path, own_chunk, peer_chunk) = seed_bound_subtree(&fake);
+        let context = ctx(Arc::new(FixedState(state_with(vec![]))), mpsc::channel(8).0);
+        let mut lanes = Lanes::default();
+        // Tick 1 while bound: the lane runs and remembers the remote
+        // uuid (the boot snapshot's seq-0 watermark leaves the seeded
+        // chunk 1 alone — nothing is subsumed yet).
+        run_board_lanes(&fake, &context, &mut lanes).await;
+        assert!(
+            fake.file(&own_chunk).is_some(),
+            "precondition: nothing GC'd at watermark 0"
+        );
+
+        // Tick 2 after the state-level unbind: the lane is retiring.
+        let context = ctx(Arc::new(FixedState(unbound_state())), mpsc::channel(8).0);
+        run_board_lanes(&fake, &context, &mut lanes).await;
+
+        assert!(
+            fake.file(&own_chunk).is_none(),
+            "this device's files are gone"
+        );
+        assert!(
+            fake.file(&identity_path).is_some(),
+            "the board's shared subtree is never touched (another client may still be connected)"
+        );
+        assert!(
+            fake.file(&peer_chunk).is_some(),
+            "another device's files are never touched"
+        );
+        let own_prefix = crate::cycle::rooted(&format!(
+            "boards/{BOARD_UUID}/devices/{}",
+            device_dir_name(device())
+        ));
+        let deletes: Vec<String> = fake
+            .requests()
+            .into_iter()
+            .filter(|req| req.method == "DELETE")
+            .map(|req| req.path)
+            .collect();
+        assert_eq!(deletes.len(), 1, "one collection delete, device-scoped");
+        assert!(
+            deletes[0].starts_with(&own_prefix),
+            "the delete target is this device's own directory: {:?}",
+            deletes[0]
+        );
+        // The stale-lane leak fix: the lane and its discovery entry
+        // are pruned, and the retirement is visible as Ok, not silent.
+        assert!(lanes.boards.is_empty(), "the retiring lane is pruned");
+        assert!(!lanes.discovered.contains(&BOARD_UUID));
+        assert_eq!(
+            lanes.outcomes.get(&BOARD_UUID),
+            Some(&crate::status::LaneOutcome::Ok)
+        );
+    }
+
+    /// A transport failure defers the retirement: the files stay, the
+    /// lane stays, the outcome is a typed failure on the watch (never
+    /// silent, never blocking the engine's unbind) — and the next
+    /// tick's retry completes idempotently.
+    #[tokio::test]
+    async fn a_deferred_retirement_stays_visible_and_completes_next_tick() {
+        let fake = FakeFilesTransport::new();
+        let (identity_path, own_chunk, peer_chunk) = seed_bound_subtree(&fake);
+        let context = ctx(Arc::new(FixedState(state_with(vec![]))), mpsc::channel(8).0);
+        let mut lanes = Lanes::default();
+        run_board_lanes(&fake, &context, &mut lanes).await;
+
+        // Tick 2: the retirement DELETE (the tick's first request)
+        // answers 503 — deferred.
+        fake.stage(crate::test_support::Effect::Status(503));
+        let context = ctx(Arc::new(FixedState(unbound_state())), mpsc::channel(8).0);
+        run_board_lanes(&fake, &context, &mut lanes).await;
+        assert!(
+            fake.file(&own_chunk).is_some(),
+            "the failed delete left the files"
+        );
+        assert!(
+            lanes.boards.contains_key(&board()),
+            "the lane stays for the retry"
+        );
+        assert!(fake.file(&identity_path).is_some());
+        assert!(fake.file(&peer_chunk).is_some());
+        assert_eq!(
+            lanes.outcomes.get(&BOARD_UUID),
+            Some(&crate::status::LaneOutcome::Failed(
+                crate::status::LaneFailure::Unavailable
+            )),
+            "the stuck retirement is visible, never silent"
+        );
+
+        // Tick 3: the retry completes.
+        run_board_lanes(&fake, &context, &mut lanes).await;
+        assert!(fake.file(&own_chunk).is_none());
+        assert!(lanes.boards.is_empty());
+        assert_eq!(
+            lanes.outcomes.get(&BOARD_UUID),
+            Some(&crate::status::LaneOutcome::Ok)
+        );
+        assert!(fake.file(&peer_chunk).is_some());
     }
 }
