@@ -908,3 +908,108 @@ fn h4_kiosk_editor_gate() {
         },
     );
 }
+
+/// A daily habit anchored at the pinned clock's time-of-day plus the
+/// delivered receipt: one active tracker-nudge row (the notification
+/// surface's derivation re-derives the engine occurrence — the
+/// receipt must key exactly what the engine derives at the pinned
+/// `now`).
+fn anchored_habit_with_fired_nudge(state: &mut AppState, board: taskboard_domain::BoardId) {
+    use taskboard_domain::{ReminderDelivery, ReminderRef};
+
+    let habit = taskboard_domain::habit::Habit {
+        id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "water".into(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerDay(
+            taskboard_domain::NonZeroCount::new(1).unwrap(),
+        ),
+        order: 0,
+        anchor_time: Some(chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap()),
+        anchor_day: None,
+        clocks: taskboard_domain::habit::HabitClocks::all(fixture::PINNED_NOW),
+        continued_from: None,
+        deleted: false,
+        by: None,
+    };
+    let habit_id = habit.id;
+    state.habits.habits.insert(habit.id, habit);
+    // The delivered receipt: the occurrence keys exactly the anchor
+    // reading the engine derives at the pinned `now` (12:00 today).
+    state.reminders.deliveries.insert(ReminderDelivery {
+        reminder: ReminderRef::Tracker(habit_id),
+        occurrence: fixture::PINNED_NOW,
+        delivered_at: fixture::PINNED_NOW,
+    });
+}
+
+/// `us6_s2` (J1, H4 D3): the fired tracker nudge's snooze control opens
+/// the choice flyout — hours AND days — and picking the day span
+/// routes `SnoozeReminder` with `TimeDelta::days(1)` (the typed
+/// delta; the engine moves the occurrence via the injected clock on
+/// the state side). The flyout is walk-reachable pointer grammar; no
+/// new chord rides the key grammar.
+#[test]
+fn us6_s2_snooze_offers_hours_and_days() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    anchored_habit_with_fired_nudge(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    clock: Some(fixture::PINNED_NOW),
+                    ..UiSettings::default()
+                },
+            );
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            // The fired nudge row renders on the surface.
+            assert!(
+                harness.driver.find_by_label("Snooze reminder").is_some(),
+                "the fired tracker nudge renders with its snooze control"
+            );
+
+            // The control opens the span choice (hours AND days).
+            harness
+                .driver
+                .find_by_label("Snooze reminder")
+                .expect("snooze control")
+                .invoke_default_action();
+            harness.driver.advance_time(0);
+            for span in [
+                "Snooze 1 hour",
+                "Snooze 4 hours",
+                "Snooze 1 day",
+                "Snooze 3 days",
+            ] {
+                assert!(
+                    harness.driver.find_by_label(span).is_some(),
+                    "the flyout offers {span}"
+                );
+            }
+
+            // Picking the day span routes the typed delta.
+            harness
+                .driver
+                .find_by_label("Snooze 1 day")
+                .expect("the day span")
+                .invoke_default_action();
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::SnoozeReminder { postpone, .. }] => {
+                    assert_eq!(*postpone, chrono::TimeDelta::days(1));
+                }
+                other => panic!("the day span routes the typed delta, got {other:?}"),
+            }
+            let _ = window;
+        },
+    );
+}

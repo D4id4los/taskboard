@@ -956,14 +956,28 @@ fn push_notifications(
             // decision projected per row — task rows keep all four
             // task-shaped affordances, alarm rows Dismiss/Snooze/
             // Cancel.
+            // The anchor rides the ref's own family (the H4 fix):
+            // break and tracker rows carry no task — mapping them to
+            // the Task anchor by Adhoc-ness alone panicked the
+            // projection on the first mounted tracker nudge (the
+            // `us6_s2` journey's find).
             let anchor = match row.reminder {
                 taskboard_domain::ReminderRef::Adhoc(alarm) => {
                     taskboard_domain::ReminderAnchor::Alarm(alarm)
                 }
-                _ => taskboard_domain::ReminderAnchor::Task(
-                    row.task
-                        .expect("a non-adhoc notification row carries its task"),
-                ),
+                taskboard_domain::ReminderRef::Break(id) => {
+                    taskboard_domain::ReminderAnchor::Break(id)
+                }
+                taskboard_domain::ReminderRef::Tracker(id) => {
+                    taskboard_domain::ReminderAnchor::Tracker(id)
+                }
+                taskboard_domain::ReminderRef::Rule(_)
+                | taskboard_domain::ReminderRef::Default(_) => {
+                    taskboard_domain::ReminderAnchor::Task(
+                        row.task
+                            .expect("a rule/default notification row carries its task"),
+                    )
+                }
             };
             let buttons = presentation::awaiting_row_buttons(anchor);
             // The tracker suppression (issue #492): a tracker task's

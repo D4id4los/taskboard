@@ -747,7 +747,7 @@ export component AppWindow inherits Window {
                 notification-overflow: root.notification-overflow;
                 dismiss-clicked(i) => root.notification-dismiss-clicked(i);
                 done-clicked(i) => root.notification-done-clicked(i);
-                snooze-clicked(i) => root.notification-snooze-clicked(i);
+                snooze-span-picked(row, span) => root.notification-snooze-span-picked(row, span);
                 mute-clicked(i) => root.notification-mute-clicked(i);
                 cancel-clicked(i) => root.notification-cancel-clicked(i);
                 track-start-clicked(i) => root.notification-track-start-clicked(i);
@@ -2050,7 +2050,7 @@ export component AppWindow inherits Window {
     // same-batch dismissal means the UI sends StartTracking alone.
     pure callback notification-dismiss-clicked(int);
     pure callback notification-done-clicked(int);
-    pure callback notification-snooze-clicked(int);
+    pure callback notification-snooze-span-picked(int, int);
     pure callback notification-mute-clicked(int);
     pure callback notification-cancel-clicked(int);
     pure callback notification-track-start-clicked(int);

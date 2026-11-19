@@ -3497,7 +3497,10 @@ mod view_component_tests {
                 }
             );
 
-            handle.window.invoke_notification_snooze_clicked(0);
+            // The H4 D3 flyout: the pointer snooze routes the chosen
+            // span (index 0 = the 1-hour hop — this row's pick, the
+            // spans' first entry).
+            handle.window.invoke_notification_snooze_span_picked(0, 0);
             match commands.try_recv().expect("the snooze command arrived") {
                 StateCommand::SnoozeReminder {
                     reminder,

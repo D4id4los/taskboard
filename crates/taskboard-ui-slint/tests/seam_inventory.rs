@@ -188,7 +188,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "notification_done_clicked",
     "notification_mute_clicked",
     "notification_row_open_requested",
-    "notification_snooze_clicked",
+    "notification_snooze_span_picked",
     "notification_track_start_clicked",
     "plan_box_activated",
     "plan_box_earlier",

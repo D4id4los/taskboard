@@ -38,9 +38,24 @@ export component NotificationSurface inherits Rectangle {
     // row's focused look (the board card's emphasis twin); -1 = no
     // selection (disengaged).
     in property <int> selected-index: -1;
+    // The open snooze-choice row (H4 D3): -1 = closed. Purely
+    // presentation state — the pick is the only dispatch.
+    property <int> snooze-open-row: -1;
+    // The O-1 span set (H4 D3): hours first, days after, ascending.
+    property <[string]> snooze-spans: [
+        "Snooze 1 hour",
+        "Snooze 4 hours",
+        "Snooze 1 day",
+        "Snooze 3 days",
+    ];
     callback dismiss-clicked(int);
     callback done-clicked(int);
-    callback snooze-clicked(int);
+    // The snooze choice flyout (H4 D3, US-6/S2): the snooze control
+    // opens a span choice (hours AND days, spans ascending); the
+    // pick routes `SnoozeReminder` with the chosen delta. The fixed
+    // 1-hour hop stays the keyboard verb's span (the key grammar
+    // gains no chord — the walk reaches the flyout's buttons).
+    callback snooze-span-picked(int, int);
     callback mute-clicked(int);
     callback cancel-clicked(int);
     callback track-start-clicked(int);
@@ -60,85 +75,106 @@ export component NotificationSurface inherits Rectangle {
         padding-bottom: Theme.space-1;
         spacing: Theme.space-1;
 
-        for row[row-index] in root.notifications: HorizontalLayout {
-            spacing: Theme.space-2;
+        for row[row-index] in root.notifications: VerticalLayout {
+            spacing: Theme.space-1;
+            HorizontalLayout {
+                spacing: Theme.space-2;
 
-            // D-6.1 (round 6): the interactive carrier — the ListRow
-            // keeps its layout slot (the carrier inherits the
-            // horizontal stretch); the TouchArea advertises (hover)
-            // and accepts the double-click only on task-anchored rows.
-            row-box := Rectangle {
-                horizontal-stretch: 1;
-                background: row-touch.has-hover && row.can-open
-                    ? Theme.surface-hover
-                    : transparent;
-                // The walk highlight (US-6/W-6): the selected row's
-                // ring — the house focus token, the card's emphasis
-                // twin (no theme work).
-                border-width: root.selected-index == row-index
-                    ? Theme.focus-ring-width : 0;
-                border-color: Semantic.focus-ring;
-                border-radius: Theme.radius-small;
-                row-info := ListRow {
-                    text: row.title;
-                    meta: row.fired-phrase;
-                    tone: Tone.info;
+                // D-6.1 (round 6): the interactive carrier — the ListRow
+                // keeps its layout slot (the carrier inherits the
+                // horizontal stretch); the TouchArea advertises (hover)
+                // and accepts the double-click only on task-anchored rows.
+                row-box := Rectangle {
+                    horizontal-stretch: 1;
+                    background: row-touch.has-hover && row.can-open
+                        ? Theme.surface-hover
+                        : transparent;
+                    // The walk highlight (US-6/W-6): the selected row's
+                    // ring — the house focus token, the card's emphasis
+                    // twin (no theme work).
+                    border-width: root.selected-index == row-index
+                        ? Theme.focus-ring-width : 0;
+                    border-color: Semantic.focus-ring;
+                    border-radius: Theme.radius-small;
+                    row-info := ListRow {
+                        text: row.title;
+                        meta: row.fired-phrase;
+                        tone: Tone.info;
+                    }
+                    row-touch := TouchArea {
+                        enabled: row.can-open;
+                        double-clicked => {
+                            root.row-open-requested(row-index);
+                        }
+                    }
                 }
-                row-touch := TouchArea {
-                    enabled: row.can-open;
-                    double-clicked => {
-                        root.row-open-requested(row-index);
+                VerticalLayout {
+                    IconButton {
+                        // r4 D11 (F1): the dismiss affordance is the
+                        // circled x — no longer done's check glyph.
+                        icon: IconKind.dismiss;
+                        tone: Tone.info;
+                        label: "Dismiss notification";
+                        clicked => root.dismiss-clicked(row-index);
+                    }
+                }
+                if (row.can-done): VerticalLayout {
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.info;
+                        label: "Mark task done";
+                        clicked => root.done-clicked(row-index);
+                    }
+                }
+                if (row.can-track-start): VerticalLayout {
+                    IconButton {
+                        icon: IconKind.play;
+                        tone: Tone.info;
+                        label: "Start task";
+                        clicked => root.track-start-clicked(row-index);
+                    }
+                }
+                VerticalLayout {
+                    IconButton {
+                        icon: IconKind.snooze;
+                        tone: Tone.info;
+                        label: "Snooze reminder";
+                        clicked => {
+                            root.snooze-open-row = root.snooze-open-row == row-index
+                                ? -1 : row-index;
+                        }
+                    }
+                }
+                if (row.can-mute): VerticalLayout {
+                    IconButton {
+                        icon: IconKind.mute;
+                        tone: Tone.info;
+                        label: "Mute reminders";
+                        clicked => root.mute-clicked(row-index);
+                    }
+                }
+                if (row.can-cancel): VerticalLayout {
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.info;
+                        label: "Cancel timer";
+                        clicked => root.cancel-clicked(row-index);
                     }
                 }
             }
-            VerticalLayout {
-                IconButton {
-                    // r4 D11 (F1): the dismiss affordance is the
-                    // circled x — no longer done's check glyph.
-                    icon: IconKind.dismiss;
-                    tone: Tone.info;
-                    label: "Dismiss notification";
-                    clicked => root.dismiss-clicked(row-index);
-                }
-            }
-            if (row.can-done): VerticalLayout {
-                IconButton {
-                    icon: IconKind.check;
-                    tone: Tone.info;
-                    label: "Mark task done";
-                    clicked => root.done-clicked(row-index);
-                }
-            }
-            if (row.can-track-start): VerticalLayout {
-                IconButton {
-                    icon: IconKind.play;
-                    tone: Tone.info;
-                    label: "Start task";
-                    clicked => root.track-start-clicked(row-index);
-                }
-            }
-            VerticalLayout {
-                IconButton {
+            // The snooze choice flyout (H4 D3): opens under the
+            // picked row; every choice routes the typed span.
+            if (root.snooze-open-row == row-index): HorizontalLayout {
+                padding-left: Theme.space-6;
+                spacing: Theme.space-2;
+                for span[span-index] in root.snooze-spans: IconButton {
                     icon: IconKind.snooze;
                     tone: Tone.info;
-                    label: "Snooze reminder";
-                    clicked => root.snooze-clicked(row-index);
-                }
-            }
-            if (row.can-mute): VerticalLayout {
-                IconButton {
-                    icon: IconKind.mute;
-                    tone: Tone.info;
-                    label: "Mute reminders";
-                    clicked => root.mute-clicked(row-index);
-                }
-            }
-            if (row.can-cancel): VerticalLayout {
-                IconButton {
-                    icon: IconKind.remove;
-                    tone: Tone.info;
-                    label: "Cancel timer";
-                    clicked => root.cancel-clicked(row-index);
+                    label: span;
+                    clicked => {
+                        root.snooze-open-row = -1;
+                        root.snooze-span-picked(row-index, span-index);
+                    }
                 }
             }
         }
