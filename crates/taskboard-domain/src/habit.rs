@@ -233,12 +233,25 @@ pub struct HabitClocks {
     pub anchor_time: DateTime<Utc>,
     /// Description write clock (the plain-`String` task precedent —
     /// contested content, it roams and competes).
+    ///
+    /// Deliberate decode leniency: journals written before H1 carry no
+    /// `description` stamp; the default is the epoch (never-written),
+    /// the same semantics the habits-table load COALESCE applies.
+    #[serde(default = "epoch_clock")]
     pub description: DateTime<Utc>,
     /// Anchor-day write clock (the optional display/nudge day —
     /// contested content, it roams and competes).
+    ///
+    /// Deliberate decode leniency: see `description`.
+    #[serde(default = "epoch_clock")]
     pub anchor_day: DateTime<Utc>,
     /// Tombstone clock.
     pub deleted: DateTime<Utc>,
+}
+
+/// The serde default for roamed clock slots: the epoch (never written).
+fn epoch_clock() -> DateTime<Utc> {
+    DateTime::<Utc>::UNIX_EPOCH
 }
 
 impl HabitClocks {
@@ -724,6 +737,37 @@ mod tests {
             deleted: false,
             by: None,
         }
+    }
+
+    #[test]
+    fn habit_clocks_decode_legacy_payloads_without_the_roamed_fields() {
+        // Pre-H1 journal rows (written before `description`/`anchor_day`
+        // gained clock slots) carry only the five original stamps. The
+        // decode defaults the roamed fields to the epoch — the same
+        // never-written semantics the habits-table load COALESCE uses —
+        // instead of failing the whole journal hydration.
+        let legacy = serde_json::json!({
+            "title": "2026-11-18T01:44:56.618026998Z",
+            "target": "2026-11-18T01:44:56.618026998Z",
+            "order": "2026-11-18T01:44:56.618026998Z",
+            "anchor_time": "2026-11-18T01:44:56.618026998Z",
+            "deleted": "2026-11-18T01:44:56.618026998Z",
+        });
+        let clocks: HabitClocks = serde_json::from_value(legacy).expect("legacy shape decodes");
+        assert!(
+            clocks.title > Utc.timestamp_opt(0, 0).unwrap(),
+            "the five original stamps decode verbatim"
+        );
+        assert_eq!(
+            clocks.description,
+            Utc.timestamp_opt(0, 0).unwrap(),
+            "the roamed description clock defaults to the epoch (never written)"
+        );
+        assert_eq!(
+            clocks.anchor_day,
+            Utc.timestamp_opt(0, 0).unwrap(),
+            "the roamed anchor-day clock defaults to the epoch (never written)"
+        );
     }
 
     #[test]
