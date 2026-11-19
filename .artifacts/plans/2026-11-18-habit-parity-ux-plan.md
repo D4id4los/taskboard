@@ -249,3 +249,33 @@ US-1/S1 carries no wiring row of its own, so the #768 mapping binds
 the substrate journey to its landing file:
 
 bound-test: US-1/S1 -> habits_journey.rs::us1_s1_habit_rows_render_on_the_task_card_substrate
+
+## 9. Stage-landing deviations (2026-11-19, chunk 10 H4 — recorded)
+
+The habit-editing chunk (round 9 chunk 10, plan
+`.artifacts/plans/2026-11-19-habit-editing-plan.md`) lands journeys
+whose step IDs postdate this plan's ACCEPTED token list (its §4
+journey specs predate O-7 Q6's scope join that brought GUI habit
+remove into the round). Per the H2 precedent (§8) the steps bind here:
+
+- `US-5/S1` lands as `us5_s1_habit_editor_opens_and_cancel_discards`
+  (the editor surface opens from the habit menu row and the
+  `habit.edit` key; cancel discards — no `UpdateHabit` dispatched).
+- `US-5/S2` lands as `us5_s2_habit_editor_round_trips_time_and_day`
+  (set time + day, save; the row shows the time chip — W-5's fold —
+  and `UpdateHabit` carried the sparse changeset).
+- `US-6/S2`'s journey half lands as
+  `us6_s2_snooze_offers_hours_and_days` (the snooze flyout spans
+  hours AND days; the engine nudge arms per the day gate).
+- The remove grammar's two steps are new rows for the §4 US-5 table:
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| h4_remove_s1 | habit context menu | click remove (arm) | — (adapter staging) | confirm flips enabled inside the open menu; another subject's menu disarms | Esc dismisses |
+| h4_remove_s2 | armed menu | click confirm | StateCommand::DeleteHabit | row leaves the section; the log survives | — |
+
+bound-test: US-5/S1 -> habits_journey.rs::us5_s1_habit_editor_opens_and_cancel_discards
+bound-test: US-5/S2 -> habits_journey.rs::us5_s2_habit_editor_round_trips_time_and_day
+bound-test: US-6/S2 -> habits_journey.rs::us6_s2_snooze_offers_hours_and_days
+bound-test: h4_remove_s1 -> habits_journey.rs::h4_remove_s1_remove_arms_and_the_confirm_flips
+bound-test: h4_remove_s2 -> habits_journey.rs::h4_remove_s2_confirm_tombstones_and_closes
