@@ -1672,7 +1672,20 @@ impl Adapter {
                 }
             }
             DispatchOutcome::UiEffect(effect) => self.apply_effect(window, effect),
-            DispatchOutcome::Disabled | DispatchOutcome::NoTarget => {}
+            // The typed refusal's uniform law (chunk 8 D6, #935 /
+            // O-7 Q5): a target-less dispatch surfaces on the
+            // status-notice lane from the action's registry
+            // description — one law at one place, not per-verb spot
+            // fixes (the subjectless habit verb, the stale one-shot,
+            // the un-armed convert, and a Shift+Up on a task row are
+            // covered by construction). `Disabled` keeps its posture:
+            // the disabled-row notice is already armed at the
+            // registry arm (invoke_entry's T-19 twin).
+            DispatchOutcome::Disabled => {}
+            DispatchOutcome::NoTarget => {
+                self.arm_no_target_notice(id);
+                self.push_notice(window);
+            }
         }
         self.finish_mutation(window);
     }
@@ -4264,7 +4277,8 @@ impl Adapter {
             // focus fact, the series twin through the viewed subject.
             // A subjectless dispatch surfaces the typed refusal on the
             // status-notice lane (the T-19 twin; the verbs' global
-            // silent `NoTarget` arm is unchanged — the plan's backlog).
+            // silent `NoTarget` arm is the uniform law — chunk 8 D6,
+            // #935's one-place pass).
             // The kiosk dispatch is structurally inert (the
             // entries-overlay precedent: the arming flags are desktop
             // strips a menu-routed arm must never flip invisibly).
