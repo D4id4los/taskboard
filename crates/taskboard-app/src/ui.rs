@@ -956,8 +956,9 @@ mod tests {
         assert_eq!(snapshot.focus_long_break_every, 6);
         assert!(!snapshot.focus_notify);
 
-        // The apply map rides the registry (the verdicts test below).
-        assert_eq!(snapshot.applies.len(), 18);
+        // The apply map rides the registry (the verdicts test below;
+        // the size tracks the registry — #1051 added files_sync.poll_secs).
+        assert_eq!(snapshot.applies.len(), 19);
 
         // The env set: no env overrides over the empty fixture file.
         assert!(snapshot.env_overridden.is_empty());
