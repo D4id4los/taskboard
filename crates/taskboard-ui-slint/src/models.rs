@@ -3867,6 +3867,7 @@ fn push_plan_next_day(
             boxes: ModelRc::new(VecModel::from(Vec::new())),
             pool: ModelRc::new(VecModel::from(Vec::new())),
             placing: false,
+            focus_pane: 0,
         });
         return 0;
     }
@@ -3939,6 +3940,9 @@ fn push_plan_next_day(
         boxes: ModelRc::from(boxes_handle.clone()),
         pool: ModelRc::from(pool_handle.clone()),
         placing: matches!(vs.flow(), crate::view_state::Flow::PlanPlace { .. }),
+        // The focused pane (J3 R-5, round 9 chunk 9): the
+        // directional pane switch's mirror (0 = boxes, 1 = pool).
+        focus_pane: i32::try_from(vs.plan_focus_pane()).unwrap_or(0),
     });
     mutations
 }

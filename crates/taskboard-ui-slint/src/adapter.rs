@@ -37,7 +37,9 @@ use crate::requests::{
     UiRequest,
 };
 use crate::resolver::{KeymapResolver, Resolution};
-use crate::router::{ActionRouter, DispatchOutcome, EffectClass, Mode, UiEffect, WalkIntent};
+use crate::router::{
+    ActionRouter, Direction, DispatchOutcome, EffectClass, Mode, UiEffect, WalkIntent,
+};
 use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
 use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState, WalkStage, WalkStep};
@@ -4113,7 +4115,16 @@ impl Adapter {
         let mut flow = self.responding_flow();
         let focus_walk = matches!(
             effect,
-            UiEffect::FocusNext | UiEffect::FocusPrev | UiEffect::FocusFirst | UiEffect::FocusLast
+            UiEffect::FocusNext
+                | UiEffect::FocusPrev
+                // The directional steps ride the walk's hint/hand-off
+                // halves (J3 US-1): up/down land on rows like
+                // FocusNext does.
+                | UiEffect::FocusDirectional(_)
+                | UiEffect::ExtendSelectionNext
+                | UiEffect::ExtendSelectionPrev
+                | UiEffect::FocusFirst
+                | UiEffect::FocusLast
         );
         // The show-task retarget arms the hint with the same
         // before/after discipline (round-3 D23 §3.3): `before` reads
@@ -4189,12 +4200,27 @@ impl Adapter {
                 drag_teardown = true;
                 outcomes
             }
-            (Flow::DragMove { .. }, UiEffect::FocusNext | UiEffect::FocusPrev) => Vec::new(),
-            // -- the move flows (D8/D9; round 2 adds the stack move) --
+            (
+                Flow::DragMove { .. },
+                UiEffect::FocusNext | UiEffect::FocusPrev | UiEffect::FocusDirectional(_),
+            ) => Vec::new(),
+            // The selection-extend twin (#875) has no kept arms under
+            // a live flow: the move/drag flows own the selection
+            // semantics, and the Nav settle would cancel the flow
+            // (the exact settle-matrix bug class US-2 fixes) — the
+            // named inert.
+            (
+                Flow::Move { .. } | Flow::MoveStack { .. } | Flow::DragMove { .. },
+                UiEffect::ExtendSelectionNext | UiEffect::ExtendSelectionPrev,
+            ) => Vec::new(),
+            // -- the move flows (D8/D9; round 2 adds the stack move;
+            //    round 9 chunk 9 adds the directional kept arms — the
+            //    same keys move the drop target mid-move, US-2) --
             (
                 flow @ (Flow::Move { .. } | Flow::MoveStack { .. }),
                 effect @ (UiEffect::FocusNext
                 | UiEffect::FocusPrev
+                | UiEffect::FocusDirectional(_)
                 | UiEffect::Activate
                 | UiEffect::RequestMove
                 | UiEffect::CancelMove
@@ -4659,6 +4685,39 @@ impl Adapter {
                 self.view_state
                     .retreat_focus(&state, compact, self.kiosk, &day)
             }
+            // The directional-focus table (J3 US-1, round 9 chunk 9):
+            // one declarative home for the per-view reading — the
+            // `push_scroll_page_hint` precedent. The control-walk
+            // views return no outcomes here: the post-table tail runs
+            // the traversal injection for them (one walk
+            // implementation, two dispatch fronts — the D-2
+            // route-level rule). Every audited view carries a row or
+            // an explicit exclusion comment in
+            // [`Self::interpret_directional`].
+            (Flow::None, UiEffect::FocusDirectional(direction)) => {
+                let day = self.day_ctx();
+                self.interpret_directional(&state, direction, compact, &day)
+            }
+            // The selection-extend route front (#875 RIDER): the same
+            // guard the intercept branch carries — Board only, the
+            // typed no-op elsewhere (the vi rows must not leak
+            // selection semantics into other views through the
+            // router).
+            (
+                Flow::None,
+                effect @ (UiEffect::ExtendSelectionNext | UiEffect::ExtendSelectionPrev),
+            ) => {
+                if self.view_state.view() == crate::view_state::ViewId::Board {
+                    let direction = if effect == UiEffect::ExtendSelectionNext {
+                        1
+                    } else {
+                        -1
+                    };
+                    self.view_state.extend_selection_walk(&state, direction)
+                } else {
+                    Vec::new()
+                }
+            }
             (Flow::None, UiEffect::NextView) => self.view_state.next_view(&state),
             (Flow::None, UiEffect::PrevView) => self.view_state.prev_view(&state),
             (Flow::None, UiEffect::FocusBoard) => self.view_state.focus_board(),
@@ -4948,8 +5007,16 @@ impl Adapter {
         // masked site the walk clamps instead (US-2/W-2, D-W2): the
         // cursor steps within the host's extent and wraps at the mask
         // receive focus. The degenerate extent (≤ 1) stays on 0.
-        if matches!(effect, UiEffect::ControlNext | UiEffect::ControlPrev) {
-            let backwards = effect == UiEffect::ControlPrev;
+        // J3 R-4 (round 9 chunk 9): the directional table's
+        // control-walk views ride the same injection — Left/Up walk
+        // backwards, Right/Down forwards, decided in
+        // [`Self::directional_control_step`].
+        if matches!(effect, UiEffect::ControlNext | UiEffect::ControlPrev)
+            || self.directional_control_step(effect).is_some()
+        {
+            let backwards = self
+                .directional_control_step(effect)
+                .unwrap_or_else(|| effect == UiEffect::ControlPrev);
             if self.mask_armed(window) {
                 let facts = window.global::<crate::MaskWalkFacts>();
                 let extent = facts.get_extent();
@@ -5293,6 +5360,94 @@ impl Adapter {
         }
     }
 
+    /// The directional control-walk decision (J3 R-4 first cut, the
+    /// per-view table's horizontal rows): `Some(backwards)` when the
+    /// (view, direction) pair reads as a control step, `None` when
+    /// the view's direction has outcomes of its own (the item walks,
+    /// the board's stack step, the planner's pane switch) or the
+    /// effect is not directional. Pure — the interpret table's
+    /// [`Flow::None`] arm and the post-table tail both read it.
+    fn directional_control_step(&self, effect: UiEffect) -> Option<bool> {
+        let UiEffect::FocusDirectional(direction) = effect else {
+            return None;
+        };
+        let backwards = matches!(direction, Direction::Left | Direction::Up);
+        match self.view_state.view() {
+            // Today/StackDetail: left/right are the control walk
+            // first cut (R-4); up/down are the item walks (the
+            // `interpret_directional` outcomes own them).
+            crate::view_state::ViewId::Today | crate::view_state::ViewId::StackDetail => {
+                backwards.then_some(true).or_else(|| {
+                    matches!(direction, Direction::Right | Direction::Down).then_some(false)
+                })
+            }
+            // TaskDetail/Settings: every direction is the control
+            // walk — the stop ladder is linear today (the recorded
+            // degenerate horizontal: up/down ride the same ladder).
+            crate::view_state::ViewId::TaskDetail | crate::view_state::ViewId::Settings => {
+                Some(backwards)
+            }
+            _ => None,
+        }
+    }
+
+    /// The directional-focus per-view table (J3 US-1, round 9 chunk
+    /// 9): the one declarative home for what a direction means on
+    /// each surface — focus movement, never task selection. Every
+    /// audited view carries a row or an explicit exclusion comment.
+    /// The control-walk views return no outcomes (the post-table
+    /// tail injects the traversal — see
+    /// [`Self::directional_control_step`]).
+    #[allow(clippy::match_same_arms)] // one arm per table decision, comments included
+    fn interpret_directional(
+        &mut self,
+        state: &taskboard_domain::AppState,
+        direction: Direction,
+        compact: bool,
+        day: &crate::view_state::DayCtx,
+    ) -> Vec<FlowOutcome> {
+        use crate::view_state::ViewId;
+        match (self.view_state.view(), direction) {
+            // Board: left/right step the stack walk (the
+            // `UiEffect::StackNext/Prev` bodies); up/down walk the
+            // task cards.
+            (ViewId::Board, Direction::Left | Direction::Right) => {
+                let step = i32::from(direction == Direction::Right) * 2 - 1;
+                self.view_state.step_stack(state, step)
+            }
+            // The item walks (Board/Today/StackDetail up/down — the
+            // FocusNext/Prev bodies; habit rows ride the Today
+            // substrate).
+            (ViewId::Board | ViewId::Today | ViewId::StackDetail, Direction::Down) => self
+                .view_state
+                .advance_focus(state, compact, self.kiosk, day),
+            (ViewId::Board | ViewId::Today | ViewId::StackDetail, Direction::Up) => self
+                .view_state
+                .retreat_focus(state, compact, self.kiosk, day),
+            // Today/StackDetail left/right: the control walk first cut
+            // (R-4) — the tail owns it, no outcomes here.
+            (ViewId::Today | ViewId::StackDetail, Direction::Left | Direction::Right) => Vec::new(),
+            // TaskDetail/Settings: the control walk along the stop
+            // ladder — NEVER the subject walk (J3 R-3: the viewed task
+            // does not change from the detail at all). The ladder is
+            // linear, so the horizontal degenerates onto it (the
+            // recorded geometry; AC-1 accepts the per-geometry
+            // reading) and both axes at Settings walk (r4 D19
+            // behavior kept). The tail owns the rows.
+            (ViewId::TaskDetail | ViewId::Settings, _) => Vec::new(),
+            // The planner (J3 R-5): left/right switch the pane
+            // (boxes ↔ pool); up/down are the recorded inert until an
+            // in-pane cursor seam exists (backlog follow-up).
+            (ViewId::PlanNextDay, Direction::Left) => self.view_state.switch_plan_pane(-1),
+            (ViewId::PlanNextDay, Direction::Right) => self.view_state.switch_plan_pane(1),
+            (ViewId::PlanNextDay, Direction::Up | Direction::Down) => Vec::new(),
+            // Review: no `NavFocus*` preset rows are bound in its
+            // context (the CONTROL_NAV set excludes it) — the
+            // explicit exclusion; the surface keeps its own cursors.
+            (ViewId::Review, _) => Vec::new(),
+        }
+    }
+
     /// The move flows' arms (D8/D9; the round-2 stack move joins),
     /// factored out of the table.
     fn interpret_move(
@@ -5308,9 +5463,19 @@ impl Adapter {
             // / emacs C-g —, the toggle re-request, and
             // SetMode(Normal), which no longer falls through to the
             // inert default leaving the flow intact) ends the flow
-            // without dispatching (D16/F-E2).
-            (_, UiEffect::FocusNext | UiEffect::FocusPrev) => {
-                let direction = if effect == UiEffect::FocusNext { 1 } else { -1 };
+            // without dispatching (D16/F-E2). The directional
+            // up/down kept arm (J3 US-2, round 9 chunk 9) rides the
+            // same ring byte-identically.
+            (
+                _,
+                effect @ (UiEffect::FocusNext
+                | UiEffect::FocusPrev
+                | UiEffect::FocusDirectional(Direction::Up | Direction::Down)),
+            ) => {
+                let direction = match effect {
+                    UiEffect::FocusNext | UiEffect::FocusDirectional(Direction::Down) => 1,
+                    _ => -1,
+                };
                 let outcomes = match flow {
                     Flow::Move { .. } => self.view_state.cycle_move_target(state, direction),
                     _ => self.view_state.cycle_move_stack_target(state, direction),
@@ -5321,6 +5486,28 @@ impl Adapter {
                 // clamp row (`min(gap, len-1)`), nonce re-edge. The
                 // hint filters per-ListView (both legs read it); no
                 // new hint family.
+                if !outcomes.is_empty() {
+                    self.push_move_scroll_hint(window, state);
+                }
+                outcomes
+            }
+            // The directional left/right kept arms (J3 US-2): during
+            // a card move the horizontal keys hop the drop *column*
+            // (`cycle_move_stack_column` — the row index survives,
+            // clamped); during a stack move they hop the insertion
+            // slot (the same ring the FocusNext/Prev kept arm runs —
+            // the slot domain is horizontal there). The move survives
+            // every hop (US-2/AC-1).
+            (_, effect @ UiEffect::FocusDirectional(Direction::Left | Direction::Right)) => {
+                let direction = if effect == UiEffect::FocusDirectional(Direction::Right) {
+                    1
+                } else {
+                    -1
+                };
+                let outcomes = match flow {
+                    Flow::Move { .. } => self.view_state.cycle_move_stack_column(state, direction),
+                    _ => self.view_state.cycle_move_stack_target(state, direction),
+                };
                 if !outcomes.is_empty() {
                     self.push_move_scroll_hint(window, state);
                 }
@@ -5629,7 +5816,16 @@ impl Adapter {
         // change keep the tail call.
         let focus_walk = matches!(
             effect,
-            UiEffect::FocusNext | UiEffect::FocusPrev | UiEffect::FocusFirst | UiEffect::FocusLast
+            UiEffect::FocusNext
+                | UiEffect::FocusPrev
+                // The directional steps ride the walk's hint/hand-off
+                // halves (J3 US-1): up/down land on rows like
+                // FocusNext does.
+                | UiEffect::FocusDirectional(_)
+                | UiEffect::ExtendSelectionNext
+                | UiEffect::ExtendSelectionPrev
+                | UiEffect::FocusFirst
+                | UiEffect::FocusLast
         );
         match effect {
             UiEffect::Exit => {
@@ -5837,6 +6033,12 @@ impl Adapter {
             | UiEffect::BoardDefaultPreset
             | UiEffect::FocusFirst
             | UiEffect::FocusLast
+            // The directional-focus family (J3 US-1, round 9 chunk 9)
+            // and its extend twin (#875) interpret like every view
+            // intent — the per-view readings live in the table.
+            | UiEffect::FocusDirectional(_)
+            | UiEffect::ExtendSelectionNext
+            | UiEffect::ExtendSelectionPrev
             // Chunk 10: the today/inbox jumps and capture route
             // through the same interpretation table. The focus
             // overlay's toggle joins them (#496) — the kiosk no-op
