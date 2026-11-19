@@ -15,7 +15,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
@@ -1808,6 +1807,10 @@ impl AppConfig {
                 .expect("backoff_initial_secs validated"),
             backoff_max_secs: TickSecs::new(self.sync.backoff_max_secs)
                 .expect("backoff_max_secs validated"),
+            files_sync_poll_secs: self
+                .files_sync
+                .poll_secs
+                .map(|secs| TickSecs::new(secs).expect("poll_secs validated")),
             due_soon_days: DueSoonDays::new(self.ui.due_soon_days)
                 .expect("due_soon_days validated"),
             focus_enabled: self.focus.enabled,
@@ -1890,10 +1893,12 @@ impl AppConfig {
     }
 
     /// The `[files_sync]` table mapped onto the transport crate's
-    /// actor knobs (DR-8 decision D-FT9): the poll override or the
-    /// `[sync]` cadence, the same `[sync]` backoff knobs (one cadence
-    /// family), the system clock, and the binary's version for the
-    /// heartbeat. Call after [`AppConfig::validate`].
+    /// actor knobs (DR-8 decision D-FT9): the system clock and the
+    /// binary's version for the heartbeat. The cadence no longer
+    /// travels here — the actor reads it live through the settings
+    /// snapshot (`settings_snapshot`'s `files_sync_poll_secs` override
+    /// over the `[sync]` triple), one cadence rule shared by boot and
+    /// live reads (#673). Call after [`AppConfig::validate`].
     #[must_use]
     pub fn files_sync_config(&self) -> taskboard_sync_files_nextcloud::actor::FilesSyncConfig {
         taskboard_sync_files_nextcloud::actor::FilesSyncConfig {
@@ -1902,13 +1907,6 @@ impl AppConfig {
             // pure config builder self-contained (the gate overwrites
             // it from the spec).
             connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
-            poll_interval: Duration::from_secs(
-                self.files_sync
-                    .poll_secs
-                    .unwrap_or(self.sync.poll_interval_secs),
-            ),
-            backoff_initial: Duration::from_secs(self.sync.backoff_initial_secs),
-            backoff_max: Duration::from_secs(self.sync.backoff_max_secs),
             // Stateless: the transport reads one wall source (the
             // sync_actor_config precedent).
             clock: std::sync::Arc::new(taskboard_domain::SystemClock),
@@ -2134,6 +2132,7 @@ pub(crate) fn write_config_atomic(path: &Path, contents: &str) -> std::io::Resul
 mod tests {
     use super::*;
     use figment::value::Dict;
+    use std::time::Duration;
 
     // -- the env-override diff (W-10/W-11, GUI settings editor) ----
 
@@ -3047,23 +3046,34 @@ mod tests {
         }
     }
 
+    /// The cadence travels in the snapshot, not the actor config: the
+    /// `[files_sync] poll_secs` override mints as
+    /// `files_sync_poll_secs` (the actor's `unwrap_or` rule applies it
+    /// over `[sync] poll_interval_secs`); absent means `None` — the
+    /// `[sync]` fallback.
     #[test]
-    fn files_sync_mint_inherits_the_sync_knobs_and_honors_the_override() {
+    fn files_sync_poll_override_maps_into_the_snapshot() {
         let mut config = decode(
             "[sync]\npoll_interval_secs = 90\nbackoff_initial_secs = 3\nbackoff_max_secs = 60\n\n[nextcloud]\nserver_url = 'https://nc.example'\nusername = 'alice'\n\n[files_sync]\nenabled = true\n",
         )
         .expect("decodes");
         config.storage.db_path = Some(std::path::PathBuf::from("/tmp/t.db"));
         config.validate().expect("valid world");
-        let minted = config.files_sync_config();
-        assert_eq!(minted.poll_interval, Duration::from_secs(90));
-        assert_eq!(minted.backoff_initial, Duration::from_secs(3));
-        assert_eq!(minted.backoff_max, Duration::from_secs(60));
-        // The override wins over the `[sync]` cadence.
+        // No override: `None` — the snapshot's `unwrap_or` rule falls
+        // back to the `[sync]` cadence.
+        assert_eq!(config.settings_snapshot().files_sync_poll_secs, None);
+        // The override mints typed over the `[sync]` cadence.
         config.files_sync.poll_secs = Some(7);
         assert_eq!(
-            config.files_sync_config().poll_interval,
-            Duration::from_secs(7)
+            config.settings_snapshot().files_sync_poll_secs,
+            Some(taskboard_domain::TickSecs::new(7).expect("7 secs"))
+        );
+        // The actor config carries no cadence fields anymore (the
+        // read is authoritative).
+        assert_eq!(
+            config.settings_snapshot().poll_interval_secs.get(),
+            90,
+            "the `[sync]` fallback survives in the snapshot"
         );
     }
 

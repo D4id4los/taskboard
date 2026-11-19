@@ -237,6 +237,12 @@ pub struct SettingsSnapshot {
     pub backoff_initial_secs: TickSecs,
     /// `[sync] backoff_max_secs`.
     pub backoff_max_secs: TickSecs,
+    /// `[files_sync] poll_secs` — this actor's override over
+    /// `[sync] poll_interval_secs` (the boot mint's `unwrap_or` rule,
+    /// carried live so boot and live reads share one cadence rule:
+    /// `files_sync_poll_secs.unwrap_or(poll_interval_secs)`). `None`
+    /// means "no override — fall back to the `[sync]` cadence".
+    pub files_sync_poll_secs: Option<TickSecs>,
     /// `[ui] due_soon_days`.
     pub due_soon_days: DueSoonDays,
     /// `[focus] enabled`.
@@ -268,6 +274,7 @@ impl Default for SettingsSnapshot {
             poll_interval_secs: TickSecs::default(),
             backoff_initial_secs: TickSecs(DEFAULT_BACKOFF_INITIAL_SECS),
             backoff_max_secs: TickSecs(DEFAULT_BACKOFF_MAX_SECS),
+            files_sync_poll_secs: None,
             due_soon_days: DueSoonDays::default(),
             focus_enabled: false,
             focus: None,
@@ -773,6 +780,7 @@ mod tests {
             poll_interval_secs: TickSecs::new(11).unwrap(),
             backoff_initial_secs: TickSecs::new(3).unwrap(),
             backoff_max_secs: TickSecs::new(9).unwrap(),
+            files_sync_poll_secs: Some(TickSecs::new(5).unwrap()),
             due_soon_days: DueSoonDays::new(3).unwrap(),
             focus_enabled: true,
             focus: Some(timing()),

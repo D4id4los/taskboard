@@ -45,6 +45,19 @@ use taskboard_sync_files_nextcloud::transport::{
 /// fires it whenever the runtime idles).
 const POLL: Duration = Duration::from_secs(1);
 
+/// The engine-seed snapshot with the files-sync cadence the removed
+/// `FilesSyncConfig` fields used to carry (whole-second backoff knobs
+/// — `TickSecs` is seconds — close enough inside the convergence
+/// horizons).
+fn cadence_snapshot() -> taskboard_domain::SettingsSnapshot {
+    taskboard_domain::SettingsSnapshot {
+        poll_interval_secs: taskboard_domain::TickSecs::new(POLL.as_secs()).expect("POLL secs"),
+        backoff_initial_secs: taskboard_domain::TickSecs::new(1).expect("1 sec"),
+        backoff_max_secs: taskboard_domain::TickSecs::new(4).expect("4 secs"),
+        ..taskboard_domain::SettingsSnapshot::default()
+    }
+}
+
 /// The shared logical instant of the concurrent-edit step.
 const T5: i64 = 5_000;
 
@@ -180,7 +193,10 @@ async fn spawn_side(
         system.clone(),
         system_rx,
         notifier,
-        taskboard_domain::SettingsSnapshot::default(),
+        // The cadence travels in the live settings now (#673): the old
+        // boot capture (POLL interval, small backoff knobs) seeds the
+        // engine's snapshot so the convergence behavior is unchanged.
+        cadence_snapshot(),
         DayRollConfig::disabled(),
         Some(author),
     )
@@ -311,9 +327,6 @@ impl Side {
             self.system.clone(),
             FilesSyncConfig {
                 connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
-                poll_interval: POLL,
-                backoff_initial: Duration::from_millis(50),
-                backoff_max: Duration::from_millis(200),
                 clock: Arc::new(StepClock(1_793_800_000.into())),
                 app_version: "convergence-journey".into(),
                 deck_origins: std::collections::BTreeMap::from([(
