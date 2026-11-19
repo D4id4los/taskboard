@@ -510,8 +510,13 @@ mod tests {
             ActionId::AppMenu,
             ActionId::AppExit,
             ActionId::CaptureQuick,
-            ActionId::NavNextItem,
-            ActionId::NavPrevItem,
+            // The retune (J3 US-1, round 9 chunk 9): the item walk's
+            // core carrier is nav.focus-down/up (the walk semantics
+            // unchanged — the interpretation table's up/down bodies
+            // are the FocusNext/Prev arms); the first/last jumps keep
+            // their ids.
+            ActionId::NavFocusDown,
+            ActionId::NavFocusUp,
             ActionId::NavNextView,
             ActionId::NavPrevView,
             ActionId::BoardNext,
@@ -536,8 +541,13 @@ mod tests {
             // (the R3 no-second-class-preset gate).
             ActionId::TaskMoveCancel,
             ActionId::TaskReopen,
-            ActionId::StackNext,
-            ActionId::StackPrev,
+            // The stack step's carrier (J3 US-1, round 9 chunk 9):
+            // nav.focus-right/left are the board's horizontal walk in
+            // every preset (emacs' directional re-point; standard's
+            // arrows; vi's h/l) — the StackNext/Prev ids stay bound
+            // in standard/vi and menu-reachable everywhere.
+            ActionId::NavFocusRight,
+            ActionId::NavFocusLeft,
             ActionId::StackDelete,
             ActionId::StackRename,
             ActionId::StackMove,
@@ -728,9 +738,18 @@ mod tests {
         let chain = [ContextId::Board, ContextId::ViNormal, ContextId::Global];
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let keymap = Keymap::from_preset(preset);
+            // The stack STEP's carrier is per preset (J3 US-1,
+            // round 9 chunk 9): emacs' directional rows carry it
+            // (nav.focus-right/left — the board's horizontal body is
+            // the step_stack walk); standard/vi keep the ids. The
+            // lifecycle verbs stay uniform.
+            let (step_next, step_prev) = match preset {
+                Preset::Emacs => (ActionId::NavFocusRight, ActionId::NavFocusLeft),
+                _ => (ActionId::StackNext, ActionId::StackPrev),
+            };
             for verb in [
-                ActionId::StackNext,
-                ActionId::StackPrev,
+                step_next,
+                step_prev,
                 ActionId::StackDelete,
                 ActionId::StackRename,
                 ActionId::StackMove,
@@ -799,16 +818,15 @@ mod tests {
         );
     }
 
-    /// Round 3 (D25) extended by r4 chunk 6 (D19), reshaped by J3 R-3
-    /// (round 9 chunk 9, 2026-11-19): the detail's item walk is
-    /// RETIRED (the census-dated D-2 supersession) — C-n/C-p carry
-    /// nothing on the detail chain until the retune re-points them
-    /// onto nav.focus-down/up; C-f/C-b walk controls there (the
-    /// isearch pair, untouched); the board keeps its live task/stack
-    /// walk on C-n/C-p and its isearch chords on C-f/C-b;
-    /// Today/StackDetail keep the item walk (excluded — not
-    /// conflict-clean); Settings resolves the control walk on both
-    /// chord pairs.
+    /// The retune (J3 US-1, round 9 chunk 9, 2026-11-19): all four
+    /// emacs directional chords carry nav.focus-* in every view
+    /// context — the board's up/down stay the card walk, the board's
+    /// left/right stay the stack step, the non-board horizontals and
+    /// Settings' full set read as the control walk, the detail's keys
+    /// never touch the subject (J3 R-3, the census-dated
+    /// supersession). The up/down semantics are the old item walks
+    /// under the new ids (the interpretation table's bodies are the
+    /// FocusNext/Prev arms).
     #[test]
     fn emacs_four_chords_walk_controls_on_the_detail_chain() {
         let keymap = Keymap::from_preset(Preset::Emacs);
@@ -825,37 +843,35 @@ mod tests {
             ContextId::Global,
         ];
         let settings_chain = [ContextId::Settings, ContextId::ViNormal, ContextId::Global];
-        let chords = [
-            ("Ctrl+f", ActionId::NavNextControl),
-            ("Ctrl+b", ActionId::NavPrevControl),
+        // The detail chain: all four chords are the nav.focus ids
+        // (the control walk — the subject never moves).
+        let detail_rows = [
+            ("Ctrl+f", ActionId::NavFocusRight),
+            ("Ctrl+b", ActionId::NavFocusLeft),
+            ("Ctrl+n", ActionId::NavFocusDown),
+            ("Ctrl+p", ActionId::NavFocusUp),
         ];
-        for (spelling, walk) in chords {
-            let stroke = stroke::parse(spelling).expect("the chord parses");
-            assert_eq!(
-                keymap.resolve(&detail_chain, &[stroke]),
-                Some(walk),
-                "{spelling} walks controls on the detail chain"
-            );
-        }
-        // The retired detail item walk (J3 R-3): the removed member
-        // rows leave C-n/C-p unbound on the detail chain (the typed
-        // unbound no-op until the retune's nav.focus rows land).
-        for spelling in ["Ctrl+n", "Ctrl+p"] {
-            let stroke = stroke::parse(spelling).expect("the chord parses");
-            assert_eq!(
-                keymap.resolve(&detail_chain, &[stroke]),
-                None,
-                "{spelling} carries no detail binding (the item walk is retired)"
-            );
-        }
-        // The board keeps its live task/stack walk: C-n/C-p stay item
-        // nav, C-f/C-b stay stack next/prev.
+        // The board chain: up/down stay the card walk, left/right the
+        // stack step — under the nav.focus ids.
         let board_rows = [
-            ("Ctrl+n", ActionId::NavNextItem),
-            ("Ctrl+p", ActionId::NavPrevItem),
-            ("Ctrl+f", ActionId::StackNext),
-            ("Ctrl+b", ActionId::StackPrev),
+            ("Ctrl+n", ActionId::NavFocusDown),
+            ("Ctrl+p", ActionId::NavFocusUp),
+            ("Ctrl+f", ActionId::NavFocusRight),
+            ("Ctrl+b", ActionId::NavFocusLeft),
         ];
+        // Today/StackDetail: the item walks under nav.focus-down/up.
+        let walk_rows = [
+            ("Ctrl+n", ActionId::NavFocusDown),
+            ("Ctrl+p", ActionId::NavFocusUp),
+        ];
+        for (spelling, action) in detail_rows {
+            let stroke = stroke::parse(spelling).expect("the chord parses");
+            assert_eq!(
+                keymap.resolve(&detail_chain, &[stroke]),
+                Some(action),
+                "{spelling} carries the detail's nav.focus row"
+            );
+        }
         for (spelling, action) in board_rows {
             let stroke = stroke::parse(spelling).expect("the chord parses");
             assert_eq!(
@@ -864,12 +880,7 @@ mod tests {
                 "{spelling} keeps the board's live walk"
             );
         }
-        // The excluded contexts keep the item walk on C-n/C-p.
-        let item_rows = [
-            ("Ctrl+n", ActionId::NavNextItem),
-            ("Ctrl+p", ActionId::NavPrevItem),
-        ];
-        for (spelling, action) in item_rows {
+        for (spelling, action) in walk_rows {
             let stroke = stroke::parse(spelling).expect("the chord parses");
             assert_eq!(
                 keymap.resolve(&today_chain, &[stroke]),
@@ -887,10 +898,10 @@ mod tests {
         // TaskDetail-scoped; the US-1 AC-2 Settings evidence rides
         // these rows).
         let settings_rows = [
-            ("Ctrl+f", ActionId::NavNextControl),
-            ("Ctrl+b", ActionId::NavPrevControl),
-            ("Ctrl+n", ActionId::NavNextControl),
-            ("Ctrl+p", ActionId::NavPrevControl),
+            ("Ctrl+f", ActionId::NavFocusRight),
+            ("Ctrl+b", ActionId::NavFocusLeft),
+            ("Ctrl+n", ActionId::NavFocusDown),
+            ("Ctrl+p", ActionId::NavFocusUp),
         ];
         for (spelling, walk) in settings_rows {
             let stroke = stroke::parse(spelling).expect("the chord parses");

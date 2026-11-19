@@ -287,6 +287,12 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::PlanNextDay,
         &["Escape"],
     ),
+    // The planner's pane-switch grammar (J3 R-5, round 9 chunk 9):
+    // left/right flip the boxes ↔ pool focus; the arrows are free in
+    // this context (the settings slider's raw-arrow ownership does
+    // not reach the planner).
+    (ActionId::NavFocusLeft, ContextId::PlanNextDay, &["Left"]),
+    (ActionId::NavFocusRight, ContextId::PlanNextDay, &["Right"]),
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+PageDown"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+PageUp"]),
     (ActionId::NavFocusBoard, ContextId::Global, &["Alt+1"]),
@@ -306,8 +312,21 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // reachable everywhere the Board context is absent).
     (ActionId::TaskMoveCancel, ContextId::Global, &["Escape"]),
     // Board
-    (ActionId::NavNextItem, ContextId::Board, &["Down"]),
-    (ActionId::NavPrevItem, ContextId::Board, &["Up"]),
+    // The directional rows (J3 US-1, round 9 chunk 9): the arrows
+    // ARE this preset's directional-focus keys (R-1); up/down
+    // re-point the item walk (the same walk at Board — the table's
+    // up/down body is FocusNext/Prev's), left/right are new (stack
+    // step). Shift+Down/Up are the explicit extend rows (#875): the
+    // named-key intercept stays as the fallback front for
+    // base-glyph-delivering layouts — the route-level rows win
+    // (the intercept returns before route, so exactly one front
+    // fires; the seam test pins it).
+    (ActionId::NavFocusLeft, ContextId::Board, &["Left"]),
+    (ActionId::NavFocusRight, ContextId::Board, &["Right"]),
+    (ActionId::NavFocusUp, ContextId::Board, &["Up"]),
+    (ActionId::NavFocusDown, ContextId::Board, &["Down"]),
+    (ActionId::NavExtendNext, ContextId::Board, &["Shift+Down"]),
+    (ActionId::NavExtendPrev, ContextId::Board, &["Shift+Up"]),
     (ActionId::NavFirstItem, ContextId::Board, &["Ctrl+Home"]),
     (ActionId::NavLastItem, ContextId::Board, &["Ctrl+End"]),
     (ActionId::TaskComplete, ContextId::Board, &["Space"]),
@@ -320,8 +339,13 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Chunk 10 (D3/D11): the today view carries the same item walk and
     // task-verb strokes as the board (the D3 registry widenings made
     // them available; these rows make them resolvable).
-    (ActionId::NavNextItem, ContextId::Today, &["Down"]),
-    (ActionId::NavPrevItem, ContextId::Today, &["Up"]),
+    // The directional rows (J3 US-1, round 9 chunk 9): up/down
+    // re-point the today item walk (the same walk); left/right are
+    // the control-walk first cut (R-4).
+    (ActionId::NavFocusLeft, ContextId::Today, &["Left"]),
+    (ActionId::NavFocusRight, ContextId::Today, &["Right"]),
+    (ActionId::NavFocusUp, ContextId::Today, &["Up"]),
+    (ActionId::NavFocusDown, ContextId::Today, &["Down"]),
     (ActionId::NavFirstItem, ContextId::Today, &["Ctrl+Home"]),
     (ActionId::NavLastItem, ContextId::Today, &["Ctrl+End"]),
     (ActionId::TaskComplete, ContextId::Today, &["Space"]),
@@ -389,9 +413,12 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Ctrl+arrows in the Board context.
     (ActionId::StackWider, ContextId::Board, &["Ctrl+Right"]),
     (ActionId::StackNarrower, ContextId::Board, &["Ctrl+Left"]),
-    // StackDetail
-    (ActionId::NavNextItem, ContextId::StackDetail, &["Down"]),
-    (ActionId::NavPrevItem, ContextId::StackDetail, &["Up"]),
+    // StackDetail: the directional rows (J3 US-1, round 9 chunk 9) —
+    // up/down re-point the item walk; left/right are the control walk.
+    (ActionId::NavFocusLeft, ContextId::StackDetail, &["Left"]),
+    (ActionId::NavFocusRight, ContextId::StackDetail, &["Right"]),
+    (ActionId::NavFocusUp, ContextId::StackDetail, &["Up"]),
+    (ActionId::NavFocusDown, ContextId::StackDetail, &["Down"]),
     (
         ActionId::NavFirstItem,
         ContextId::StackDetail,
@@ -403,6 +430,14 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // 2026-11-19 — the subject walk is gone, census-dated; the
     // directional NavFocus* rows own the detail's keys from the
     // retune commit). The title re-arm keeps its F2.
+    // TaskDetail: the directional rows (J3 US-1, round 9 chunk 9) —
+    // the detail's keys are the CONTROL walk now (the item walk is
+    // retired, J3 R-3; the degenerate ladder geometry is the
+    // interpretation table's recorded reading).
+    (ActionId::NavFocusLeft, ContextId::TaskDetail, &["Left"]),
+    (ActionId::NavFocusRight, ContextId::TaskDetail, &["Right"]),
+    (ActionId::NavFocusUp, ContextId::TaskDetail, &["Up"]),
+    (ActionId::NavFocusDown, ContextId::TaskDetail, &["Down"]),
     // Round 3 (W-SM-d, F26): the title re-arm — F2, the CUA rename
     // convention, matching this preset's own `StackRename = F2`.
     (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["F2"]),
@@ -543,6 +578,14 @@ static STANDARD_S1: &[(ActionId, ContextId, &[&str])] = &[
     // Round-1 chunk 3 (D28b): Escape closes the settings surface
     // (dialog semantics; the opener is the global Ctrl+, route).
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
+    // The Settings directional rows are DELIBERATELY ABSENT in this
+    // preset (J3 US-1 deviation, recorded 2026-11-19): the settings
+    // pane's slider owns the raw arrows as its keyboard step
+    // (the_slider_steps journey — a pointer-parity affordance the
+    // arrows-as-directional plan did not anticipate); the settings
+    // directional grammar rides emacs' chord rows, and the routed
+    // NavFocus* ids still interpret as the control walk (the table's
+    // Settings row stands).
     // Round 3 (D25): the control walk — Tab/Shift+Tab are the CUA
     // convention and were unbound in every context; the five view
     // contexts only (under insert the chain masks them and Tab stays
@@ -668,9 +711,16 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Global,
         &["Ctrl+c", "Ctrl+b"],
     ),
-    // Board
-    (ActionId::NavNextItem, ContextId::Board, &["Ctrl+n"]),
-    (ActionId::NavPrevItem, ContextId::Board, &["Ctrl+p"]),
+    // Board (J3 US-1 retune, round 9 chunk 9): C-n/C-p carry
+    // nav.focus-down/up — the same card walk (the table's up/down
+    // body is FocusNext/Prev's). The extend twin rides
+    // Ctrl+Shift+n/p (#875: the explicit Shift rows — the chorded
+    // case law makes the delivered event resolve them; both free in
+    // this preset's Board).
+    (ActionId::NavFocusDown, ContextId::Board, &["Ctrl+n"]),
+    (ActionId::NavFocusUp, ContextId::Board, &["Ctrl+p"]),
+    (ActionId::NavExtendNext, ContextId::Board, &["Ctrl+Shift+n"]),
+    (ActionId::NavExtendPrev, ContextId::Board, &["Ctrl+Shift+p"]),
     (ActionId::NavFirstItem, ContextId::Board, &["Alt+<"]),
     (ActionId::NavLastItem, ContextId::Board, &["Alt+>"]),
     (
@@ -682,9 +732,11 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskEdit, ContextId::Board, &["Return"]),
     (ActionId::TaskMove, ContextId::Board, &["Ctrl+c", "Ctrl+w"]),
     (ActionId::TaskDelete, ContextId::Board, &["Ctrl+d"]),
-    // Chunk 10 (D3/D11): the today mirror of the board rows.
-    (ActionId::NavNextItem, ContextId::Today, &["Ctrl+n"]),
-    (ActionId::NavPrevItem, ContextId::Today, &["Ctrl+p"]),
+    // Chunk 10 (D3/D11): the today mirror of the board rows — the
+    // retune re-points C-n/C-p onto nav.focus-down/up (J3 US-1,
+    // round 9 chunk 9; the same today walk).
+    (ActionId::NavFocusDown, ContextId::Today, &["Ctrl+n"]),
+    (ActionId::NavFocusUp, ContextId::Today, &["Ctrl+p"]),
     (ActionId::NavFirstItem, ContextId::Today, &["Alt+<"]),
     (ActionId::NavLastItem, ContextId::Today, &["Alt+>"]),
     (
@@ -885,10 +937,15 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
 static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     // Round 2 (D16): the board-view C-g alternate for move-cancel.
     (ActionId::TaskMoveCancel, ContextId::Board, &["Ctrl+g"]),
-    // Round 2 (D17): emacs' isearch/read-args chords — Ctrl+f/Ctrl+b
-    // free in the Board context (PaletteSearch is Global Ctrl+s).
-    (ActionId::StackNext, ContextId::Board, &["Ctrl+f"]),
-    (ActionId::StackPrev, ContextId::Board, &["Ctrl+b"]),
+    // The retune re-points C-f/C-b onto nav.focus-right/left (J3
+    // US-1, round 9 chunk 9) — the same stack step at Board (the
+    // table's horizontal body is StackNext/Prev's). StackNext/Prev
+    // keep their alternate rows in the other presets (vi g l/g h,
+    // Standard Ctrl+Shift+Left/Right); mid-move the directional keys
+    // are the kept arms that hop the drop column (US-2 — the
+    // settle-matrix fix).
+    (ActionId::NavFocusRight, ContextId::Board, &["Ctrl+f"]),
+    (ActionId::NavFocusLeft, ContextId::Board, &["Ctrl+b"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     // The switcher flyout's opener (UX R-4 D-4, #794): the C-c
@@ -941,9 +998,10 @@ static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     // the pair shares the CUA strokes (the design's recorded rule).
     (ActionId::StackWider, ContextId::Board, &["Ctrl+Right"]),
     (ActionId::StackNarrower, ContextId::Board, &["Ctrl+Left"]),
-    // StackDetail
-    (ActionId::NavNextItem, ContextId::StackDetail, &["Ctrl+n"]),
-    (ActionId::NavPrevItem, ContextId::StackDetail, &["Ctrl+p"]),
+    // StackDetail (the retune): C-n/C-p carry nav.focus-down/up —
+    // the same item walk.
+    (ActionId::NavFocusDown, ContextId::StackDetail, &["Ctrl+n"]),
+    (ActionId::NavFocusUp, ContextId::StackDetail, &["Ctrl+p"]),
     (ActionId::NavFirstItem, ContextId::StackDetail, &["Alt+<"]),
     (ActionId::NavLastItem, ContextId::StackDetail, &["Alt+>"]),
     (ActionId::TaskCreate, ContextId::StackDetail, &["Ctrl+o"]),
@@ -982,32 +1040,32 @@ static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
-    // Round 3 (D25): the control walk — the isearch chords C-f/C-b,
-    // free in the four non-board view contexts (the Board context
-    // keeps them for stack.next/stack.prev, the recorded emacs
-    // preservation; the board's controls keep native Tab: unbound →
+    // The planner's pane-switch grammar (J3 R-5, round 9 chunk 9):
+    // C-f/C-b flip the boxes ↔ pool focus (free in this context —
+    // the palette's isearch shadow does not reach the planner).
+    (ActionId::NavFocusRight, ContextId::PlanNextDay, &["Ctrl+f"]),
+    (ActionId::NavFocusLeft, ContextId::PlanNextDay, &["Ctrl+b"]),
+    // chords carry nav.focus-* in every view context — the
+    // horizontal pair reads as the control walk in the non-board
+    // view contexts (R-4's first cut; the isearch C-f/C-b
+    // *semantics* — the control step — survive under the new ids),
+    // and C-n/C-p read as the control walk at Settings (r4 D19
+    // kept). The board's controls keep native Tab (unbound →
     // Unhandled → traversal).
-    (ActionId::NavNextControl, ContextId::Today, &["Ctrl+f"]),
-    (ActionId::NavPrevControl, ContextId::Today, &["Ctrl+b"]),
-    (
-        ActionId::NavNextControl,
-        ContextId::StackDetail,
-        &["Ctrl+f"],
-    ),
-    (
-        ActionId::NavPrevControl,
-        ContextId::StackDetail,
-        &["Ctrl+b"],
-    ),
-    (ActionId::NavNextControl, ContextId::TaskDetail, &["Ctrl+f"]),
-    (ActionId::NavPrevControl, ContextId::TaskDetail, &["Ctrl+b"]),
-    (ActionId::NavNextControl, ContextId::Settings, &["Ctrl+f"]),
-    (ActionId::NavPrevControl, ContextId::Settings, &["Ctrl+b"]),
-    // r4 D19: C-n/C-p join the walk in Settings (conflict-contract
-    // clean — the rows were unbound there; the Board keeps its live
-    // task/stack walk, the recorded exclusion for Today/StackDetail).
-    (ActionId::NavNextControl, ContextId::Settings, &["Ctrl+n"]),
-    (ActionId::NavPrevControl, ContextId::Settings, &["Ctrl+p"]),
+    (ActionId::NavFocusRight, ContextId::Today, &["Ctrl+f"]),
+    (ActionId::NavFocusLeft, ContextId::Today, &["Ctrl+b"]),
+    (ActionId::NavFocusRight, ContextId::StackDetail, &["Ctrl+f"]),
+    (ActionId::NavFocusLeft, ContextId::StackDetail, &["Ctrl+b"]),
+    (ActionId::NavFocusRight, ContextId::TaskDetail, &["Ctrl+f"]),
+    (ActionId::NavFocusLeft, ContextId::TaskDetail, &["Ctrl+b"]),
+    // The detail's vertical pair (J3 R-3's successor rows): the
+    // control walk up the stop ladder — never the subject walk.
+    (ActionId::NavFocusDown, ContextId::TaskDetail, &["Ctrl+n"]),
+    (ActionId::NavFocusUp, ContextId::TaskDetail, &["Ctrl+p"]),
+    (ActionId::NavFocusRight, ContextId::Settings, &["Ctrl+f"]),
+    (ActionId::NavFocusLeft, ContextId::Settings, &["Ctrl+b"]),
+    (ActionId::NavFocusDown, ContextId::Settings, &["Ctrl+n"]),
+    (ActionId::NavFocusUp, ContextId::Settings, &["Ctrl+p"]),
     // Round 3 (D26): the scroll actions — C-v/M-v, emacs'
     // scroll-up/down commands, in the five view contexts.
     (ActionId::ViewScrollDown, ContextId::Today, &["Ctrl+v"]),
@@ -1091,9 +1149,21 @@ static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
 /// reproduces vim's operator-waits-for-motion behaviour), `ViInsert`
 /// binds only Escape.
 static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
-    // ViNormal carries everything; Global is empty.
-    (ActionId::NavNextItem, ContextId::ViNormal, &["j"]),
-    (ActionId::NavPrevItem, ContextId::ViNormal, &["k"]),
+    // ViNormal carries everything; Global is empty. The motion keys
+    // are the directional-focus keys (J3 US-1 retune, R-1 — round 9
+    // chunk 9): j/k carry nav.focus-down/up (the same walk they
+    // carried as NavNextItem/PrevItem), h/l join (free in ViNormal —
+    // the g-family rows are prefixes, not conflicts). The extend
+    // twin (#875): J/K are the explicit Board-context rows — a
+    // Shift+j press folds the shift into the glyph (the D6 law) and
+    // delivers `J` exactly; the named-key arrow intercept stays the
+    // fallback front.
+    (ActionId::NavFocusDown, ContextId::ViNormal, &["j"]),
+    (ActionId::NavFocusUp, ContextId::ViNormal, &["k"]),
+    (ActionId::NavFocusLeft, ContextId::ViNormal, &["h"]),
+    (ActionId::NavFocusRight, ContextId::ViNormal, &["l"]),
+    (ActionId::NavExtendNext, ContextId::Board, &["J"]),
+    (ActionId::NavExtendPrev, ContextId::Board, &["K"]),
     (ActionId::NavNextView, ContextId::ViNormal, &["g", "t"]),
     (ActionId::NavPrevView, ContextId::ViNormal, &["g", "T"]),
     (ActionId::NavFocusBoard, ContextId::ViNormal, &["g", "g"]),

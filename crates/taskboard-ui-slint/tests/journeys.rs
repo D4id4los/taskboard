@@ -377,19 +377,19 @@ fn the_ten_step_keyboard_session() {
             harness.assert_commands(&[]);
 
             // -- step 2: navigate items and views ------------------------
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(
                 harness.emphasized_card(),
                 Some((0, 0)),
                 "the first walk step lands on the first card"
             );
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(
                 harness.emphasized_card(),
                 Some((0, 1)),
                 "the second task of the first stack takes the emphasis"
             );
-            harness.press(ActionId::NavPrevItem);
+            harness.press(ActionId::NavFocusUp);
             assert_eq!(harness.emphasized_card(), Some((0, 0)));
             harness.assert_commands(&[]); // navigation dispatches nothing
 
@@ -1238,7 +1238,7 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
 
             // The edit flow's Escape leaves a stable TaskDetail (no dead
             // end): focus-board still works afterwards.
-            harness.press(ActionId::NavNextItem); // seed the focus walk
+            harness.press(ActionId::NavFocusDown); // seed the focus walk
             harness.press(ActionId::TaskEdit);
             assert_eq!(current_view(&harness), View::TaskDetail);
             harness.stroke(parse("Escape").expect("Escape"));
@@ -1269,18 +1269,18 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
             );
             // Retreat hands the card focus back to the switcher level
             // (D8's selection-follows-focus entry point).
-            harness.press(ActionId::NavPrevItem);
+            harness.press(ActionId::NavFocusUp);
             assert_eq!(harness.emphasized_card(), None, "the switcher leads");
             // From the switcher, Down selects stack a and lands its first
             // task; the next Down walks that stack's cards.
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(
                 harness.handle.window().get_board_model().selected_stack,
                 0,
                 "the switcher step selects stack a"
             );
             assert_eq!(harness.emphasized_card(), Some((0, 0)));
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(
                 harness.handle.window().get_board_model().selected_stack,
                 0,
@@ -1290,10 +1290,10 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
             // Retreating past the first card hands focus back to the
             // switcher; the next step from there advances the selection
             // (wrap) to stack b and lands its first task.
-            harness.press(ActionId::NavPrevItem);
-            harness.press(ActionId::NavPrevItem);
+            harness.press(ActionId::NavFocusUp);
+            harness.press(ActionId::NavFocusUp);
             assert_eq!(harness.emphasized_card(), None, "back at the switcher");
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(
                 harness.handle.window().get_board_model().selected_stack,
                 1,
@@ -1305,8 +1305,8 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
                 "the emphasis sits on stack b's first card (its own column)"
             );
             // And one more switcher round wraps back to stack a.
-            harness.press(ActionId::NavPrevItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusUp);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(
                 harness.handle.window().get_board_model().selected_stack,
                 0,
@@ -1317,7 +1317,7 @@ fn the_view_graph_walks_from_a_cold_start_without_dead_ends() {
             // Back at the regular width, the full board is keyboard-alive.
             harness.driver.set_window_size(1000, 800);
             assert!(!harness.handle.window().get_compact_active());
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(
                 harness.emphasized_card(),
                 Some((0, 1)),
@@ -1339,7 +1339,7 @@ fn the_back_button_returns_to_the_board() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             // Recorded decision (round-3 chunk 1, plan §6 — F26):
             // task.edit never auto-arms; the editor arms via the
@@ -1674,7 +1674,7 @@ fn the_task_view_header_and_summary_elements_arm_their_tooltips() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.driver.set_window_size(1000, 900);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
 
@@ -1731,7 +1731,7 @@ fn every_task_view_cell_and_chip_carries_its_info_tip() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.driver.set_window_size(1000, 900);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             harness.driver.advance_time(0);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
@@ -1844,7 +1844,7 @@ fn every_task_view_field_editor_carries_its_info_tip() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.driver.set_window_size(1000, 900);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             harness.driver.advance_time(0);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
@@ -1885,7 +1885,7 @@ fn every_task_view_field_editor_carries_its_info_tip() {
             move |_driver| {
                 let mut harness = Harness::mount(SlintDriver::default(), state);
                 harness.driver.set_window_size(1000, 900);
-                harness.press(ActionId::NavNextItem);
+                harness.press(ActionId::NavFocusDown);
                 harness.press(ActionId::TaskEdit);
                 harness.driver.advance_time(0);
                 if !cell.is_empty() {
@@ -2005,7 +2005,7 @@ fn a_field_tip_hover_leaves_the_caret_intact() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.driver.set_window_size(1000, 900);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             harness.driver.advance_time(0);
             click_field_centre(&mut harness, "Custom reminder offset");
@@ -2720,7 +2720,7 @@ fn consecutive_refreshes_keep_the_board_model_identity() {
             // One changed refresh (a retitled card, applied by the
             // fake engine's settle + the commit's refresh) keeps the
             // handle and lands the new title through a row update.
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             // Recorded decision (round-3 chunk 1, plan §6 — F26):
             // task.edit opens the detail display and never auto-arms;
@@ -4777,8 +4777,8 @@ fn rule_rows_present_per_kind_and_unmute_round_trips() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
@@ -4891,8 +4891,8 @@ fn the_rule_list_journeys_reach_the_boundary() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             // Walk to task1's detail: two item steps land on (0, 1) —
             // the fixture's second task — then two view steps.
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(harness.emphasized_card(), Some((0, 1)));
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
@@ -5882,7 +5882,7 @@ fn emacs_double_c_g_cancels_from_the_today_chain() {
                 },
             );
             harness.stroke(parse("Ctrl+T").expect("Ctrl+T"));
-            press_preset(&mut harness, preset, ActionId::NavNextItem); // seed a today row
+            press_preset(&mut harness, preset, ActionId::NavFocusDown); // seed a today row
             press_preset(&mut harness, preset, ActionId::TaskMove);
             harness.driver.advance_time(0);
             assert!(
@@ -6512,7 +6512,7 @@ fn the_commit_affordance_click_equals_return_on_the_title_field() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             // Into the title editor: the field mounts focused with its
             // seed selected.
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             // Recorded decision (round-3 chunk 1, plan §6 — F26):
             // task.edit never auto-arms; the editor arms via the
@@ -6557,7 +6557,7 @@ fn the_commit_affordance_is_inert_on_an_empty_buffer() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             // Recorded decision (round-3 chunk 1, plan §6 — F26):
             // task.edit never auto-arms; the editor arms via the
@@ -6623,8 +6623,8 @@ fn a_parse_missed_custom_offset_clears_its_buffer() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
@@ -6692,6 +6692,18 @@ fn walk_stop(harness: &Harness) -> i32 {
         .get_stop_id()
 }
 
+/// Presses one control-walk step through the preset's own row: the
+/// retune (J3 US-1, round 9 chunk 9) re-pointed emacs' C-f onto
+/// nav.focus-right (the same control walk in the non-board view
+/// contexts); the other presets keep the Tab row.
+fn press_control_next(harness: &mut Harness, preset: taskboard_ui_slint::keymap::Preset) {
+    let step = match preset {
+        taskboard_ui_slint::keymap::Preset::Emacs => ActionId::NavFocusRight,
+        _ => ActionId::NavNextControl,
+    };
+    press_preset(harness, preset, step);
+}
+
 /// Walks `steps` control steps, returning the stop fact observed after
 /// each (the reading-order inventory).
 fn walk_steps(harness: &mut Harness, steps: usize) -> Vec<i32> {
@@ -6732,7 +6744,7 @@ fn the_task_view_stop_inventory_walks_in_reading_order() {
             press_preset(
                 &mut harness,
                 taskboard_ui_slint::keymap::Preset::Standard,
-                ActionId::NavNextItem,
+                ActionId::NavFocusDown,
             );
             press_preset(
                 &mut harness,
@@ -6900,7 +6912,7 @@ fn the_focused_cell_activates_on_return_and_space_under_any_preset() {
                         ..UiSettings::default()
                     },
                 );
-                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::NavFocusDown);
                 press_preset(&mut harness, preset, ActionId::TaskEdit);
                 harness.driver.advance_time(0);
                 let mut guard = 0;
@@ -6915,7 +6927,7 @@ fn the_focused_cell_activates_on_return_and_space_under_any_preset() {
                         harness.handle.dispatch_action(ActionId::ModeNormal);
                         harness.driver.advance_time(0);
                     }
-                    press_preset(&mut harness, preset, ActionId::NavNextControl);
+                    press_control_next(&mut harness, preset);
                     harness.driver.advance_time(0);
                     guard += 1;
                 }
@@ -6980,12 +6992,12 @@ fn the_focused_cell_activates_on_return_and_space_under_any_preset() {
                     ..UiSettings::default()
                 },
             );
-            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
             press_preset(&mut harness, preset, ActionId::TaskEdit);
             harness.driver.advance_time(0);
             let mut guard = 0;
             while walk_stop(&harness) != 2 && guard < 20 {
-                press_preset(&mut harness, preset, ActionId::NavNextControl);
+                press_control_next(&mut harness, preset);
                 harness.driver.advance_time(0);
                 guard += 1;
             }
@@ -7017,12 +7029,12 @@ fn the_focused_cell_activates_on_return_and_space_under_any_preset() {
                     ..UiSettings::default()
                 },
             );
-            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
             press_preset(&mut harness, preset, ActionId::TaskEdit);
             harness.driver.advance_time(0);
             let mut guard = 0;
             while walk_stop(&harness) != 5 && guard < 20 {
-                press_preset(&mut harness, preset, ActionId::NavNextControl);
+                press_control_next(&mut harness, preset);
                 harness.driver.advance_time(0);
                 guard += 1;
             }
@@ -7099,7 +7111,7 @@ fn return_never_hijacks_on_a_focused_field_under_any_preset() {
             move |_driver| {
                 let mut harness =
                     Harness::mount_with_settings(SlintDriver::default(), state, settings());
-                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::NavFocusDown);
                 press_preset(&mut harness, preset, ActionId::TaskEdit);
                 harness.driver.advance_time(0);
                 click_field_centre(&mut harness, "Custom reminder offset");
@@ -7138,7 +7150,7 @@ fn return_never_hijacks_on_a_focused_field_under_any_preset() {
             move |_driver| {
                 let mut harness =
                     Harness::mount_with_settings(SlintDriver::default(), state, settings());
-                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::NavFocusDown);
                 press_preset(&mut harness, preset, ActionId::TaskEdit);
                 harness.driver.advance_time(0);
                 harness.driver.click_by_label("Edit title");
@@ -7167,7 +7179,7 @@ fn return_never_hijacks_on_a_focused_field_under_any_preset() {
             move |_driver| {
                 let mut harness =
                     Harness::mount_with_settings(SlintDriver::default(), state, settings());
-                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::NavFocusDown);
                 press_preset(&mut harness, preset, ActionId::TaskEdit);
                 harness.driver.advance_time(0);
                 harness.driver.click_by_label("Edit description");
@@ -7324,7 +7336,7 @@ fn focus_alone_engages_and_reserves_the_field_strokes() {
                     ..UiSettings::default()
                 },
             );
-            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
             press_preset(&mut harness, preset, ActionId::TaskEdit);
             harness.driver.advance_time(0);
 
@@ -7387,7 +7399,7 @@ fn the_editing_facts_count_lifecycle_tracks_focus() {
                     ..UiSettings::default()
                 },
             );
-            press_preset(&mut harness, preset, ActionId::NavNextItem);
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
             press_preset(&mut harness, preset, ActionId::TaskEdit);
             harness.driver.advance_time(0);
 
@@ -7458,8 +7470,8 @@ fn the_preset_chips_hold_their_token_floor() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.advance_time(0);
@@ -7506,8 +7518,8 @@ fn the_custom_offset_field_stretches_into_the_presets_row() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.driver.set_window_size(1000, 800);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.advance_time(0);
@@ -7551,7 +7563,7 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -7703,7 +7715,7 @@ fn scroll_actions_page_the_focused_area() {
 
             // -- board: the focused task's column pages --
             harness.press(ActionId::NavFocusBoard);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::ViewScrollDown);
             harness.driver.advance_time(0);
             let h = scroll_hint!(harness);
@@ -7751,7 +7763,7 @@ fn the_menu_curates_itself() {
                 };
             }
 
-            harness.press(ActionId::NavNextItem); // seed a focus
+            harness.press(ActionId::NavFocusDown); // seed a focus
             harness.press(ActionId::AppMenu);
             harness.driver.advance_time(0);
 
@@ -7902,8 +7914,8 @@ fn the_typed_due_entries_reach_the_boundary() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             // One walk into task1's detail; the editor re-opens by
             // its cell after every commit (the view stays put).
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             let open_editor = |harness: &mut Harness| {
@@ -8026,8 +8038,8 @@ fn the_scheduled_editor_reaches_the_boundary_with_parity() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit start date");
@@ -8083,8 +8095,8 @@ fn steppers_seed_and_step_from_empty() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -8154,8 +8166,8 @@ fn click_away_commits_parseable_and_discards_junk() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             // (a) Junk: the click-away discards — no command, the
@@ -8273,8 +8285,8 @@ fn the_date_field_validity_flips_with_the_parse() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -8315,8 +8327,8 @@ fn the_offset_and_timer_fields_flip_validity_with_their_grammars() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
 
@@ -8445,8 +8457,8 @@ fn a_foreign_field_steal_settles_the_due_per_the_rule() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
 
@@ -8542,8 +8554,8 @@ fn the_combobox_is_the_only_time_path() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -8663,8 +8675,8 @@ fn the_quick_time_button_opens_the_menu_without_closing_the_picker() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -8729,8 +8741,8 @@ fn the_quick_list_narrows_per_keystroke_after_an_open_with_a_set_time() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -8780,8 +8792,8 @@ fn the_due_picker_journeys_reach_the_boundary() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -8993,8 +9005,8 @@ fn the_picker_overlay_dismisses_without_disturbing_the_editor() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -9054,8 +9066,8 @@ fn the_description_edits_in_place() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit description");
@@ -9124,8 +9136,8 @@ fn the_multiline_buffer_commits_verbatim() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit description");
@@ -9161,8 +9173,8 @@ fn the_description_display_mounts_the_editor() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             let display = harness
@@ -9214,7 +9226,7 @@ fn the_today_view_walks_completes_and_recommits() {
             // The walk takes `today_tasks` display order: board one's
             // overdue row, then board two's (order, id) — with the
             // emphasis following.
-            harness.press(taskboard_ui_slint::actions::ActionId::NavNextItem);
+            harness.press(taskboard_ui_slint::actions::ActionId::NavFocusDown);
             let today = harness.handle.window().get_today_model();
             let overdue = today.sections.row_data(0).expect("overdue section");
             assert_eq!(overdue.count, 2, "both overdue rows render");
@@ -9228,7 +9240,7 @@ fn the_today_view_walks_completes_and_recommits() {
                 "selection-follows-focus stays on board one"
             );
 
-            harness.press(taskboard_ui_slint::actions::ActionId::NavNextItem);
+            harness.press(taskboard_ui_slint::actions::ActionId::NavFocusDown);
             assert!(
                 overdue.rows.row_data(1).expect("row").card.emphasis,
                 "the emphasis follows the walk"
@@ -9240,7 +9252,7 @@ fn the_today_view_walks_completes_and_recommits() {
             );
 
             // Back to the first row; complete it (the exact command).
-            harness.press(taskboard_ui_slint::actions::ActionId::NavPrevItem);
+            harness.press(taskboard_ui_slint::actions::ActionId::NavFocusUp);
             harness.press(taskboard_ui_slint::actions::ActionId::TaskComplete);
             harness.assert_commands(&[StateCommand::SetTaskDone {
                 id: board_one_task,
@@ -9315,7 +9327,7 @@ fn the_inbox_triage_moves_across_the_board_edge() {
                 .dispatch_action(taskboard_ui_slint::actions::ActionId::ViewInbox);
             assert_eq!(current_view(&harness), View::StackDetail);
 
-            harness.press(taskboard_ui_slint::actions::ActionId::NavNextItem);
+            harness.press(taskboard_ui_slint::actions::ActionId::NavFocusDown);
             // The move ring: cycle once — across the board edge onto
             // board two's stack "c" (the deliberate behavior change).
             // task.move has no StackDetail stroke (the preset table's
@@ -9329,8 +9341,8 @@ fn the_inbox_triage_moves_across_the_board_edge() {
             // the task's own gap+1 in the Inbox stack, so two backward
             // strokes walk past the stack's gap 0 onto board two
             // (the cross-board edge, the deliberate behavior change).
-            harness.press(taskboard_ui_slint::actions::ActionId::NavPrevItem);
-            harness.press(taskboard_ui_slint::actions::ActionId::NavPrevItem);
+            harness.press(taskboard_ui_slint::actions::ActionId::NavFocusUp);
+            harness.press(taskboard_ui_slint::actions::ActionId::NavFocusUp);
             let hint = harness.handle.window().get_flow_hint_model().text;
             assert!(
                 hint.contains('\u{203a}') && hint.contains("board two"),
@@ -13499,7 +13511,7 @@ fn the_title_edits_clicks_arms_and_re_arms() {
             // Entry (the standard preset's Return on the focused
             // card) shows the display: no field, no flow, Normal
             // mode.
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
             assert!(!edit_open(&harness), "entry never arms (plan §6)");
@@ -14782,7 +14794,7 @@ fn the_detail_button_carries_one_verb_per_subject() {
 
             // The tracked subject: Stop only.
             harness.press(ActionId::NavFocusBoard);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(
                 harness.emphasized_card(),
                 Some((0, 1)),
@@ -14975,7 +14987,7 @@ fn a_right_press_outside_dismisses_the_date_picker() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -15325,7 +15337,7 @@ fn a_tooltip_does_not_survive_activating_the_hovered_task() {
                 "the tip went visible"
             );
 
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             harness.driver.advance_time(0);
             assert_eq!(
@@ -15568,8 +15580,8 @@ fn the_task_view_hides_the_header_checkbox_for_a_tracker() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             // Walk to task1's detail: two item steps, two view steps.
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
@@ -15920,7 +15932,7 @@ fn the_entries_overlay_walks_rows_and_the_escape_ladder_steps_back() {
             press_preset(
                 &mut harness,
                 taskboard_ui_slint::keymap::Preset::Standard,
-                ActionId::NavNextItem,
+                ActionId::NavFocusDown,
             );
             press_preset(
                 &mut harness,
@@ -16049,7 +16061,7 @@ fn the_time_entries_affordance_opens_the_overlay_through_the_real_mount() {
             press_preset(
                 &mut harness,
                 taskboard_ui_slint::keymap::Preset::Standard,
-                ActionId::NavNextItem,
+                ActionId::NavFocusDown,
             );
             press_preset(
                 &mut harness,
@@ -17723,8 +17735,8 @@ fn the_calendar_toggle_keeps_the_armed_editor_and_refocuses_the_field() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -18142,7 +18154,7 @@ fn the_track_form_quick_lists_open_per_field_and_dismiss() {
             press_preset(
                 &mut harness,
                 taskboard_ui_slint::keymap::Preset::Standard,
-                ActionId::NavNextItem,
+                ActionId::NavFocusDown,
             );
             press_preset(
                 &mut harness,
@@ -20070,8 +20082,8 @@ fn the_picker_shares_chords_while_the_field_keeps_printables() {
                 };
                 let grid_armed = |harness: &Harness| keyboard(harness).get_date_picker_grid();
 
-                press_preset(&mut harness, preset, ActionId::NavNextItem);
-                press_preset(&mut harness, preset, ActionId::NavNextItem);
+                press_preset(&mut harness, preset, ActionId::NavFocusDown);
+                press_preset(&mut harness, preset, ActionId::NavFocusDown);
                 press_preset(&mut harness, preset, ActionId::NavNextView);
                 press_preset(&mut harness, preset, ActionId::NavNextView);
                 harness.driver.click_by_label("Edit due date");
@@ -20225,8 +20237,8 @@ fn the_description_editor_gains_the_preset_command_grammar() {
             };
 
             let emacs = taskboard_ui_slint::keymap::Preset::Emacs;
-            press_preset(&mut harness, emacs, ActionId::NavNextItem);
-            press_preset(&mut harness, emacs, ActionId::NavNextItem);
+            press_preset(&mut harness, emacs, ActionId::NavFocusDown);
+            press_preset(&mut harness, emacs, ActionId::NavFocusDown);
             press_preset(&mut harness, emacs, ActionId::NavNextView);
             press_preset(&mut harness, emacs, ActionId::NavNextView);
 
@@ -20355,8 +20367,8 @@ fn a_pending_prefix_owns_the_printable_that_follows_it() {
                     ..UiSettings::default()
                 },
             );
-            press_preset(&mut harness, emacs, ActionId::NavNextItem);
-            press_preset(&mut harness, emacs, ActionId::NavNextItem);
+            press_preset(&mut harness, emacs, ActionId::NavFocusDown);
+            press_preset(&mut harness, emacs, ActionId::NavFocusDown);
             press_preset(&mut harness, emacs, ActionId::NavNextView);
             press_preset(&mut harness, emacs, ActionId::NavNextView);
 
@@ -20405,8 +20417,8 @@ fn the_vi_editor_keeps_its_printables_and_the_escape_funnel() {
                     ..UiSettings::default()
                 },
             );
-            press_preset(&mut harness, vi, ActionId::NavNextItem);
-            press_preset(&mut harness, vi, ActionId::NavNextItem);
+            press_preset(&mut harness, vi, ActionId::NavFocusDown);
+            press_preset(&mut harness, vi, ActionId::NavFocusDown);
             press_preset(&mut harness, vi, ActionId::NavNextView);
             press_preset(&mut harness, vi, ActionId::NavNextView);
 
@@ -20590,7 +20602,7 @@ fn label_journey_mount(harness: &mut Harness) {
     press_preset(
         harness,
         taskboard_ui_slint::keymap::Preset::Standard,
-        ActionId::NavNextItem,
+        ActionId::NavFocusDown,
     );
     press_preset(
         harness,
@@ -21439,7 +21451,7 @@ fn description_open(harness: &Harness) -> bool {
 /// preset's own rows (the journeys' shared prelude): focus the first
 /// card, activate it into the detail.
 fn open_detail_first_card(harness: &mut Harness, preset: taskboard_ui_slint::keymap::Preset) {
-    press_preset(harness, preset, ActionId::NavNextItem);
+    press_preset(harness, preset, ActionId::NavFocusDown);
     press_preset(harness, preset, ActionId::TaskEdit);
     harness.driver.advance_time(0);
     assert_eq!(
@@ -21554,19 +21566,21 @@ fn us1_ac2_settings_control_walk_rows_step() {
                 View::Settings,
                 "the settings surface is open"
             );
+            // The retune (J3 US-1, round 9 chunk 9): emacs' four
+            // directional chords carry the settings walk (C-f/C-b
+            // read left/right, C-n/C-p down/up — all the control
+            // walk at Settings).
             for action in [
-                ActionId::NavNextControl,
-                ActionId::NavNextControl,
-                ActionId::NavPrevControl,
-                ActionId::NavPrevControl,
+                ActionId::NavFocusRight,
+                ActionId::NavFocusRight,
+                ActionId::NavFocusLeft,
+                ActionId::NavFocusLeft,
+                ActionId::NavFocusDown,
+                ActionId::NavFocusUp,
             ] {
                 press_preset(&mut harness, preset, action);
                 harness.driver.advance_time(0);
             }
-            press_preset(&mut harness, preset, ActionId::NavNextControl);
-            harness.driver.advance_time(0);
-            press_preset(&mut harness, preset, ActionId::NavPrevControl);
-            harness.driver.advance_time(0);
             assert_eq!(
                 harness.handle.window().get_current_view(),
                 View::Settings,
@@ -21922,11 +21936,11 @@ fn us4_s1_cross_board_walk_parks_focus_on_the_row() {
                 let rows = sections.row_data(0).expect("overdue section").rows;
                 (0..rows.row_count()).find(|r| rows.row_data(*r).expect("row").card.emphasis)
             };
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             let before = emphasized_row(&harness).expect("the walk seeded a row");
             // The cross-board step: the walk switches boards, the
             // identity diff fires — and the walked row survives it.
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.driver.advance_time(0);
             let after = emphasized_row(&harness).expect("the walk crossed boards");
             assert_ne!(before, after, "the step crossed to the other board");
@@ -21951,7 +21965,7 @@ fn us1_s1_picker_close_restores_the_invoking_field() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             let facts_before = focus_facts(&harness);
             harness.press(ActionId::TaskImportanceEdit);
@@ -21991,7 +22005,7 @@ fn us1_s1_menu_close_restores_the_origin() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             let emphasized = harness
                 .emphasized_card()
                 .expect("the walk emphasized task0");
@@ -22050,7 +22064,7 @@ fn us1_s1_overlay_escape_restores_the_origin() {
                 "the view scope re-anchored"
             );
             // The capture leg: opened from a walked row.
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             let emphasized = harness
                 .emphasized_card()
                 .expect("the walk emphasized task0");
@@ -22098,7 +22112,7 @@ fn us1_s2_vanished_origin_falls_to_the_container_anchor() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskMove);
             // The anchor dies: the reconcile drops the flow, the site
             // closes, the restore falls to the container anchor.
@@ -22125,7 +22139,7 @@ fn us1_s3_commit_exit_restores_the_row_anchor() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             harness.handle.dispatch_action(ActionId::TaskTitleEdit);
             harness.type_text("z");
@@ -22458,7 +22472,7 @@ fn us5_s1_the_title_and_description_fields_carry_the_focus_flag() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskEdit);
             assert_eq!(
                 detail_flags(&harness),
@@ -22720,7 +22734,7 @@ fn us1_s3_keyboard_reorder_commits_the_exact_move() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             assert_eq!(harness.emphasized_card(), Some((0, 0)), "task0 focused");
 
             // Arm: the slot after task0's own position in stack a.
@@ -22763,7 +22777,7 @@ fn us1_s2_flow_escape_dispatches_nothing() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskMove);
             harness.stroke(parse("Down").expect("Down"));
             assert_ne!(
@@ -23013,7 +23027,7 @@ fn us4_s1_modifier_clicks_build_the_selection() {
             // Shift+walk (the named-key rows with shift): the plain
             // walk moves focus (the selection rides), then the shift
             // stroke extends to the newly focused card.
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.stroke(parse("Shift+Down").expect("Shift+Down"));
             assert_eq!(
                 sel(&harness, 0, 1),
@@ -23252,7 +23266,7 @@ fn us5_s1_the_move_aim_bit_drives_the_badge_state() {
             assert_eq!(badge(&harness, 1), (false, true));
 
             // The keyboard flow's aim: the armed slot's column only.
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::TaskMove);
             harness.stroke(parse("Down").expect("Down"));
             harness.stroke(parse("Down").expect("Down"));
@@ -24737,7 +24751,7 @@ fn us5_ac1_interleaved_dispatch_spares_the_confirm_target() {
 
             // The interleaved unrelated dispatch (a focused task's
             // completion — consumes nothing of the menu's grammar).
-            harness.handle.dispatch_action(ActionId::NavNextItem);
+            harness.handle.dispatch_action(ActionId::NavFocusDown);
             harness.handle.dispatch_action(ActionId::TaskComplete);
             harness.driver.advance_time(0);
 
@@ -25014,7 +25028,7 @@ fn om_us2_s3_time_flyout_never_over_its_field_and_the_mirror_tracks() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             harness.driver.set_window_size(1000, 900);
-            harness.press(ActionId::NavNextItem);
+            harness.press(ActionId::NavFocusDown);
             harness.press(ActionId::NavNextView);
             harness.press(ActionId::NavNextView);
             harness.driver.click_by_label("Edit due date");
@@ -25077,7 +25091,7 @@ fn om_us1_s1_track_form_grid_opens_without_form_growth() {
             press_preset(
                 &mut harness,
                 taskboard_ui_slint::keymap::Preset::Standard,
-                ActionId::NavNextItem,
+                ActionId::NavFocusDown,
             );
             press_preset(
                 &mut harness,
@@ -25587,6 +25601,510 @@ fn the_menu_reorder_rows_mint_the_floor_midpoint_slots() {
                 }
                 other => panic!("the reorder routed, got {other:?}"),
             }
+        },
+    );
+}
+
+// ---- J3 US-1/US-2: the directional-focus journeys (round 9 chunk 9) —
+
+/// The open detail's mounted subject title (the fixture titles are the
+/// journeys' element addresses — identity, never label matching).
+fn detail_title(harness: &Harness) -> String {
+    harness.handle.window().get_task_model().title.to_string()
+}
+
+/// US-1/S1 + AC-2 (J3 W-2, round 9 chunk 9; the retirement note above
+/// is this journey's predecessor) — the `TaskDetail` directional rows
+/// walk the CONTROL ladder: C-n steps down the stop ladder (the
+/// walk-stop fact moves), C-p steps back up, and the viewed subject
+/// NEVER moves (J3 R-3: no viewed-task change from the detail at
+/// all). Zero commands — navigation is view-internal.
+#[test]
+fn us1_s1_taskdetail_directional_rows_walk_the_ladder_subject_pinned() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+            assert_eq!(
+                detail_title(&harness),
+                "task-0",
+                "the detail opens on the first card"
+            );
+
+            // C-n steps the control walk onto a stop (the ladder).
+            let mut guard = 0;
+            while walk_stop(&harness) == 0 && guard < 10 {
+                press_preset(&mut harness, preset, ActionId::NavFocusDown);
+                harness.driver.advance_time(0);
+                guard += 1;
+            }
+            assert_ne!(
+                walk_stop(&harness),
+                0,
+                "C-n steps the detail's control ladder onto a stop"
+            );
+            // C-p steps back; the walk runs both axes (the degenerate
+            // horizontal — the recorded geometry).
+            press_preset(&mut harness, preset, ActionId::NavFocusUp);
+            harness.driver.advance_time(0);
+            // The subject is pinned: the walk never retargets the
+            // detail, and the walk stays in the view.
+            assert_eq!(
+                detail_title(&harness),
+                "task-0",
+                "the directional walk never changes the viewed task (J3 R-3)"
+            );
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::TaskDetail,
+                "the view never moves"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-1/S2 (J3 W-2) — the Today horizontals are the control-walk
+/// first cut (J3 R-4): C-f/C-b (nav.focus-right/left) step the
+/// control walk, the verticals keep the item walk, all four stay in
+/// the view with zero commands.
+#[test]
+fn us1_s1_today_horizontal_is_the_control_walk_first_cut() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, preset, ActionId::ViewToday);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Today,
+                "today is open"
+            );
+            for action in [
+                ActionId::NavFocusRight,
+                ActionId::NavFocusLeft,
+                ActionId::NavFocusDown,
+                ActionId::NavFocusUp,
+            ] {
+                press_preset(&mut harness, preset, action);
+                harness.driver.advance_time(0);
+            }
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Today,
+                "the directional walk stays in the view"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-1/S1 (J3 W-2) — the vi motion keys step the board walks: j/k
+/// walk the cards, h/l step the stacks (the nav.focus carriers), the
+/// focus emphasis follows, and nothing dispatches.
+#[test]
+fn us1_s1_vi_motion_keys_step_the_board_walks() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Vi;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            // l enters the stack walk at the aimed column's head
+            // (the step_stack bodies behind nav.focus-left/right).
+            press_preset(&mut harness, preset, ActionId::NavFocusRight);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 0)),
+                "l lands the stack walk on the aimed column's head"
+            );
+            // j walks the cards within the column; k steps back.
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 1)),
+                "j walks to the next card"
+            );
+            press_preset(&mut harness, preset, ActionId::NavFocusUp);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                harness.emphasized_card(),
+                Some((0, 0)),
+                "k steps back to the first card"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-1/S3 (J3 W-2) — the text-entry guard negatives per preset
+/// family: under an engaged field the directional keys reach the
+/// field (emacs C-n, standard arrows, vi's j under insert); the walk
+/// never runs, the editor stays armed, nothing dispatches. The
+/// guards are the inherited scopes — the test proves the vocabulary
+/// never competes with them.
+#[test]
+fn us1_s3_the_text_entry_guards_own_the_directional_keys() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            // Emacs: C-n inside the title editor reaches the field
+            // (the insert chain masks the view context).
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state.clone(),
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+            press_preset(&mut harness, preset, ActionId::TaskTitleEdit);
+            harness.driver.advance_time(0);
+            assert!(text_focus(&harness) > 0, "the title editor holds focus");
+            // The negative's honest shape: the insert chain masks the
+            // view context (no NavFocusDown row binds there), so the
+            // physical C-n is delivered raw and the editor scope owns
+            // it (the in-field cursor command).
+            harness.stroke(parse("Ctrl+n").expect("Ctrl+n"));
+            harness.driver.advance_time(0);
+            assert!(
+                text_focus(&harness) > 0,
+                "C-n stays in the field (the guard owns it)"
+            );
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::TaskDetail,
+                "the view never moves under the guard"
+            );
+            harness.assert_commands(&[]);
+            drop(harness);
+
+            // Standard: the arrows inside the title editor are the
+            // field's cursor motions.
+            let preset = taskboard_ui_slint::keymap::Preset::Standard;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state.clone(),
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            open_detail_first_card(&mut harness, preset);
+            press_preset(&mut harness, preset, ActionId::TaskTitleEdit);
+            harness.driver.advance_time(0);
+            assert!(text_focus(&harness) > 0, "the title editor holds focus");
+            harness.stroke(parse("Down").expect("Down"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Up").expect("Up"));
+            harness.driver.advance_time(0);
+            assert!(
+                text_focus(&harness) > 0,
+                "the arrows stay in the field (the guard owns them)"
+            );
+            harness.assert_commands(&[]);
+            drop(harness);
+
+            // Vi: j under insert reaches the field (the shadowing-
+            // without-masking law); escaping insert changes nothing.
+            let preset = taskboard_ui_slint::keymap::Preset::Vi;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            // The insert leg arms on the board (the create field's
+            // insert chain — the detail's subject editor arms the
+            // Editor context, a different mask).
+            press_preset(&mut harness, preset, ActionId::ModeInsert);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.chain().contains(&ContextId::ViInsert),
+                "insert mode is armed"
+            );
+            // The negative's honest shape under vi: NavFocusDown has
+            // NO row in the insert chain (the vocabulary never binds
+            // there), so the raw j reaches the field as a printable.
+            harness.stroke(parse("j").expect("j"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.chain().contains(&ContextId::ViInsert),
+                "j under insert stays a printable (no walk, no mode flip)"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// US-2/S1 (J3 W-3, round 9 chunk 9) — the move survives directional
+/// hops: C-c C-w arms the move, C-f/C-b hop the drop column (the
+/// aim badge follows the column), C-n/C-p ride the target ring, and
+/// Return completes the move with exactly one `MoveTask` — the settle
+/// matrix never cancels the flow under the directional keys (the
+/// kept arms; the `StackNext` settle bug class is dead on this path).
+#[test]
+fn us2_s1_the_move_survives_directional_column_hops() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            let aim = |harness: &Harness| -> Option<usize> {
+                let board = harness.handle.window().get_board_model();
+                (0..board.stacks.row_count())
+                    .find(|column| board.stacks.row_data(*column).expect("column").move_aim)
+            };
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            press_preset(&mut harness, preset, ActionId::TaskMove);
+            harness.driver.advance_time(0);
+            assert_eq!(aim(&harness), Some(0), "the move arms on the home column");
+
+            // C-f hops the drop column right; C-b back; the move is
+            // alive and dispatches nothing (the kept arms).
+            press_preset(&mut harness, preset, ActionId::NavFocusRight);
+            harness.driver.advance_time(0);
+            assert_eq!(aim(&harness), Some(1), "C-f hopped the drop column");
+            harness.assert_commands(&[]);
+            press_preset(&mut harness, preset, ActionId::NavFocusLeft);
+            harness.driver.advance_time(0);
+            assert_eq!(aim(&harness), Some(0), "C-b hopped the drop column back");
+            press_preset(&mut harness, preset, ActionId::NavFocusRight);
+            harness.driver.advance_time(0);
+
+            // C-n rides the target ring (the vertical kept arm); the
+            // move survives.
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+
+            // Return completes: exactly one MoveTask at the boundary.
+            press_preset(&mut harness, preset, ActionId::TaskEdit);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::MoveTask { .. }] => {}
+                other => panic!("the move completes after the hops, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// The planner's pane-switch grammar (J3 R-5, round 9 chunk 9): the
+/// directional left/right flip the focused pane (boxes ↔ pool), the
+/// fresh open anchors on the boxes pane, and nothing dispatches (the
+/// pane fact is view-internal; the in-pane walk is the recorded
+/// out-of-scope follow-up).
+#[test]
+fn us1_s1_planner_directional_rows_switch_the_pane() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Standard;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, preset, ActionId::ViewPlanNextDay);
+            harness.driver.advance_time(0);
+            let pane = |harness: &Harness| harness.handle.window().get_plan_model().focus_pane;
+            assert_eq!(pane(&harness), 0, "a fresh open anchors on the boxes pane");
+            press_preset(&mut harness, preset, ActionId::NavFocusRight);
+            harness.driver.advance_time(0);
+            assert_eq!(pane(&harness), 1, "Right lands on the pool pane");
+            press_preset(&mut harness, preset, ActionId::NavFocusLeft);
+            harness.driver.advance_time(0);
+            assert_eq!(pane(&harness), 0, "Left lands back on the boxes pane");
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::PlanNextDay,
+                "the pane switch stays in the planner"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// #875 (round 9 chunk 9) — the extend rows: one press extends the
+/// selection by exactly one member (the double-dispatch seam — the
+/// route-level row wins, the named-key intercept stays the fallback
+/// front and never also fires; the count of selected cards is the
+/// typed oracle). Standard Shift+Down is the explicit row.
+#[test]
+fn us1_s1_the_standard_extend_row_extends_one_member_per_press() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let preset = taskboard_ui_slint::keymap::Preset::Standard;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            let sel = |harness: &Harness, column: usize, row: usize| {
+                let board = harness.handle.window().get_board_model();
+                let column = board.stacks.row_data(column).expect("column");
+                column.tasks.row_data(row).expect("card").selected
+            };
+            // Seed the walk focus on the first card, then anchor it.
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            harness
+                .handle
+                .window()
+                .invoke_board_task_clicked_modifiers(0, 0, true, false);
+            // One Shift+Down: extends to (0,1) and NOTHING else (a
+            // double dispatch would also select (1,0)).
+            harness.stroke(parse("Shift+Down").expect("Shift+Down"));
+            harness.driver.advance_time(0);
+            assert!(sel(&harness, 0, 0), "the anchor holds");
+            assert!(sel(&harness, 0, 1), "the extension member");
+            assert!(
+                !sel(&harness, 1, 0),
+                "exactly one front fired for the press (no double dispatch)"
+            );
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// #875 (round 9 chunk 9) — the vi extend rows: a Shift+j press folds
+/// the shift into the glyph (the D6 law) and `J` extends the
+/// selection; `K` extends backwards. Emacs' Ctrl+Shift+n twin rides
+/// the chorded case law. One front per press (the same typed oracle).
+#[test]
+fn us1_s1_the_vi_and_emacs_extend_rows_extend_one_member_per_press() {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            // Vi: j seeds the walk, J extends, K extends backwards.
+            let preset = taskboard_ui_slint::keymap::Preset::Vi;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state.clone(),
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            let sel = |harness: &Harness, column: usize, row: usize| {
+                let board = harness.handle.window().get_board_model();
+                let column = board.stacks.row_data(column).expect("column");
+                column.tasks.row_data(row).expect("card").selected
+            };
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            harness.stroke(parse("J").expect("J"));
+            harness.driver.advance_time(0);
+            assert!(sel(&harness, 0, 0), "the anchor singleton");
+            assert!(sel(&harness, 0, 1), "J extended to the next card");
+            assert!(!sel(&harness, 1, 0), "exactly one front fired for J");
+            harness.assert_commands(&[]);
+            drop(harness);
+
+            // Emacs: Ctrl+Shift+n extends after seeding the walk.
+            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+                    keymap_preset: preset,
+                    ..UiSettings::default()
+                },
+            );
+            press_preset(&mut harness, preset, ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Ctrl+Shift+n").expect("Ctrl+Shift+n"));
+            harness.driver.advance_time(0);
+            assert!(sel(&harness, 0, 0), "the anchor singleton");
+            assert!(
+                sel(&harness, 0, 1),
+                "Ctrl+Shift+n extended to the next card"
+            );
+            assert!(
+                !sel(&harness, 1, 0),
+                "exactly one front fired for Ctrl+Shift+n"
+            );
+            harness.assert_commands(&[]);
         },
     );
 }

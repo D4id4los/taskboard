@@ -193,19 +193,20 @@ mod tests {
     fn chain_order_first_match_shadows_lower_contexts() {
         let keymap = standard();
         let mut resolver = KeymapResolver::new();
-        // `Down` is bound in Board (nav.next-item) and Menu
-        // (menu.next); the chain head decides.
+        // `Down` is bound in Board (nav.focus-down — the retune's
+        // directional carrier, round 9 chunk 9) and Menu (menu.next);
+        // the chain head decides.
         let down = parse_stroke("Down");
         assert_eq!(
             resolver.feed(down, &[ContextId::Board, ContextId::Global], &keymap),
-            Resolution::Action(ActionId::NavNextItem)
+            Resolution::Action(ActionId::NavFocusDown)
         );
         assert_eq!(
             resolver.feed(down, &[ContextId::Menu], &keymap),
             Resolution::Action(ActionId::MenuNext)
         );
         // Shadowing across contexts (emacs): `Ctrl+n` is bound in
-        // Board (nav.next-item) and in Menu (menu.next); the chain
+        // Board (nav.focus-down) and in Menu (menu.next); the chain
         // head decides which one fires (legitimate context
         // shadowing, D11).
         let keymap = emacs();
@@ -215,7 +216,7 @@ mod tests {
                 &[ContextId::Board, ContextId::Global],
                 &keymap
             ),
-            Resolution::Action(ActionId::NavNextItem)
+            Resolution::Action(ActionId::NavFocusDown)
         );
         assert_eq!(
             resolver.feed(parse_stroke("Ctrl+n"), &[ContextId::Menu], &keymap),
@@ -286,10 +287,11 @@ mod tests {
         );
         let board = vec![ContextId::Board, ContextId::Global];
         // `Ctrl+n` alone would be Unhandled as the second C-x stroke;
-        // after the chain flip it is a fresh board binding.
+        // after the chain flip it is a fresh board binding (the
+        // retune's nav.focus-down carrier, round 9 chunk 9).
         assert_eq!(
             resolver.feed(parse_stroke("Ctrl+n"), &board, &keymap),
-            Resolution::Action(ActionId::NavNextItem)
+            Resolution::Action(ActionId::NavFocusDown)
         );
     }
     // T21 — resolver sequence properties over random stroke streams

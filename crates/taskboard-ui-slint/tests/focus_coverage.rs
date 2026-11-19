@@ -356,7 +356,7 @@ fn task_view_fixture() -> Mounted {
     let mut mounted = mount(state, UiSettings::default(), TALL);
     for action in [
         ActionId::NavFocusBoard,
-        ActionId::NavNextItem,
+        ActionId::NavFocusDown,
         ActionId::TaskEdit,
     ] {
         mounted.handle.dispatch_action(action);
@@ -1489,8 +1489,8 @@ fn board_item_walk_visits_every_card() {
             let count = column_card_count(&mounted.handle, column);
             assert_item_walk_covers(
                 &mut mounted,
-                Step::Action(ActionId::NavNextItem),
-                Step::Action(ActionId::NavPrevItem),
+                Step::Action(ActionId::NavFocusDown),
+                Step::Action(ActionId::NavFocusUp),
                 &selected_card,
                 count,
             );
@@ -1505,8 +1505,8 @@ fn board_compact_item_walk_visits_every_card() {
         let count = column_card_count(&mounted.handle, 0);
         assert_item_walk_covers(
             &mut mounted,
-            Step::Action(ActionId::NavNextItem),
-            Step::Action(ActionId::NavPrevItem),
+            Step::Action(ActionId::NavFocusDown),
+            Step::Action(ActionId::NavFocusUp),
             &selected_card,
             count,
         );
@@ -1542,8 +1542,8 @@ fn today_item_walk_visits_every_row() {
         let count = today_rows(&mounted.handle).len();
         assert_item_walk_covers(
             &mut mounted,
-            Step::Action(ActionId::NavNextItem),
-            Step::Action(ActionId::NavPrevItem),
+            Step::Action(ActionId::NavFocusDown),
+            Step::Action(ActionId::NavFocusUp),
             &selected_today_row,
             count,
         );
@@ -1595,8 +1595,8 @@ fn stack_item_walk_visits_every_card() {
         let count = mounted.handle.window().get_stack_model().tasks.row_count();
         assert_item_walk_covers(
             &mut mounted,
-            Step::Action(ActionId::NavNextItem),
-            Step::Action(ActionId::NavPrevItem),
+            Step::Action(ActionId::NavFocusDown),
+            Step::Action(ActionId::NavFocusUp),
             &selected_stack_card,
             count,
         );
