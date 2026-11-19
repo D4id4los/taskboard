@@ -13,8 +13,9 @@
   `.artifacts/plans/2026-11-17-config-set-propagation-ux-plan.md`
   (rulings R-3/R-4 scoped these two out; this chunk scopes them in).
 - **Issues**: #909 (live-reload watcher), #910 (batch config set).
-- **Status**: stage-1 planning complete — **GATE-PAUSED** (journey
-  gate + `notify` stack addition, one operator gate for both).
+- **Status**: ACCEPTED (operator, 2026-11-19) — journey gate +
+  `notify` stack addition both accepted; stage 2 proceeds per this
+  plan's rulings R-1..R-8 and decisions D-STACK…D-SCOPE.
 
 ## 1. Seams (re-anchored, file:symbol)
 

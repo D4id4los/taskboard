@@ -22,9 +22,9 @@ one journey-gated chunk (tier-2 dispatch plan §6).
   chunked by `.artifacts/plans/2026-11-18-tier2-dispatch-plan.md` §6
   (normative). Format/framework: `docs/ux_planning.org` +
   `.artifacts/templates/ux-journey-plan.md`.
-- **Status**: DRAFT — journey-gated chunk (P6): stage 2 proceeds only
-  on the operator's acceptance of this plan AND the recorded `notify`
-  stack-table addition (one gate, both decisions).
+- **Status**: ACCEPTED (operator, 2026-11-19) — the journey plan AND
+  the recorded `notify` stack-table addition accepted at the P6
+  journey gate (one gate, both decisions); stage 2 proceeds.
 - **Surfaces touched**: `crates/taskboard-app/src/commands/config.rs`
   (the batch parse/guard/atomic-write surface + typed outcomes),
   `crates/taskboard-app/src/cli.rs` (the `config set` pair grammar +
