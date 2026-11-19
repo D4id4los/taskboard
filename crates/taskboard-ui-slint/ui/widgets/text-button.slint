@@ -1,0 +1,214 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The text-button primitive (L1, round-9 W3 O-6, #950): the single
+// copy of the button grammar the inventory found eight times (F-1).
+// It absorbs CtaButton, SettingsButton, VerbButton, CtaButtonArea and
+// the ModalDialog button (the J2 W-1 amend) — every variant renders
+// geometry-identical rects (plan §4: the `max(min-height, content)`
+// height identity; the goldens are the oracle). The grammar is the
+// IconButton's gold-standard shape (§3.1): a full-size FocusScope
+// overlay with `focus-on-tab-navigation`, `AccessibleRole.button`,
+// the modifier-guarded Return/Space activation, and the TouchArea
+// declared after the scope so the scope's keys win hit-testing (the
+// CtaButton order; F-1's drift note).
+//
+// One gate rules all three channels (pointer/keys/AT):
+// `enabled || click-through` — the r2 D34 ceremony is a property, not
+// a variant. VerbButton's tab stop + Return/Space is the sanctioned
+// behavior change B-1 (plan §5; the walk verb row gains keyboard).
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TooltipState } from "tooltip.slint";
+
+// The emphasis axis (plan §3's background/border ladder): `normal`
+// carries the SettingsButton/VerbButton treatments, `cta` the
+// CtaButton/CtaButtonArea/DialogButton one. (The stage-1 plan names
+// the enum `Size`; the builtin `Size` type claims that name in Slint,
+// so the axes are prefixed.)
+export enum TextButtonEmphasis {
+    normal,
+    cta,
+}
+
+// The size axis (R-6 defaults, inventory §4): compact = space-5,
+// regular = space-6.
+export enum TextButtonSize {
+    compact,
+    regular,
+}
+
+export component TextButton inherits Rectangle {
+    // The paint, the a11y name, and the click-by-label seam in one
+    // property (the label is what the accessible tree reads too).
+    in property <string> label;
+    // The accessible-description (the timer commit's fact text).
+    in property <string> description: "";
+    in property <TextButtonEmphasis> emphasis: TextButtonEmphasis.normal;
+    in property <TextButtonSize> size: TextButtonSize.regular;
+    // False renders the disabled affordance — visible, gated. With
+    // `click-through` the click still fires (the adapter renders the
+    // refusal).
+    in property <bool> enabled: true;
+    in property <bool> click-through: false;
+    // Non-empty arms the TooltipState.hover idiom (blanket rule a).
+    in property <string> tooltip-text: "";
+    in property <[string]> hint-keys: [];
+    callback clicked();
+    // The scope's focus read: the DialogButton autofocus seam and the
+    // view-side mirroring (the CtaButtonArea `commit-hovered` idiom's
+    // observation half).
+    out property <bool> focused: scope.has-focus;
+    // The host's grab seam: the FocusScope overlay is widget-internal,
+    // so the mount-focus must ride a named function.
+    public function request-focus() {
+        scope.focus();
+    }
+
+    // The one gate shared by pointer, keys and the AT action.
+    pure function gate() -> bool {
+        root.enabled || root.click-through
+    }
+
+    // -- the emphasis × size ladder (plan §3) --------------------------
+    // normal+regular (SettingsButton): raised; disabled→surface; the
+    // hover-or-focus border. normal+compact (VerbButton): surface;
+    // hover/pressed→surface-hover; the always-on border. cta: raised;
+    // hover→surface-hover; disabled→surface; the always-on border
+    // whose focused lift is the focus-ring colour.
+    pure function background-colour() -> color {
+        if (root.emphasis == TextButtonEmphasis.cta) {
+            !root.enabled ? Theme.surface
+            : touch.has-hover ? Theme.surface-hover : Theme.surface-raised
+        } else if (root.size == TextButtonSize.compact) {
+            touch.pressed || touch.has-hover ? Theme.surface-hover : Theme.surface
+        } else {
+            root.enabled ? Theme.surface-raised : Theme.surface
+        }
+    }
+    pure function border-colour() -> color {
+        if (root.emphasis == TextButtonEmphasis.cta) {
+            scope.has-focus && root.enabled ? Semantic.focus-ring : Theme.border
+        } else {
+            Semantic.focus-ring
+        }
+    }
+    pure function border-thickness() -> length {
+        if (root.emphasis == TextButtonEmphasis.cta) {
+            Theme.focus-ring-width
+        } else if (root.size == TextButtonSize.compact) {
+            Theme.focus-ring-width
+        } else {
+            touch.has-hover || scope.has-focus ? Theme.focus-ring-width : 0px
+        }
+    }
+    // The disabled label law (plan §3/B-2): the cta family greys to
+    // Theme.border (the CtaButtonArea/DialogButton treatment); the
+    // normal family keeps SettingsButton's text-secondary.
+    pure function label-color() -> color {
+        !root.enabled
+            ? (root.emphasis == TextButtonEmphasis.cta ? Theme.border : Theme.text-secondary)
+            : Theme.text-primary
+    }
+
+    // -- the sizing law (plan §4, R-6) ---------------------------------
+    // The height identity: `height: max(min-height, content)` for
+    // every variant — compact keeps VerbButton's fixed space-5
+    // posture (content never exceeds the floor, so the max is a
+    // no-op), cta keeps the fixed space-6, and regular reproduces
+    // SettingsButton's `label.preferred-height + 2·space-2`
+    // content-sized law exactly (the floor term maxed with space-6,
+    // which the body label's content height always exceeds in
+    // practice). cta min-width is 4·space-6; compact preserves
+    // VerbButton's content + 2·space-2; regular's SettingsButton
+    // `space-6` floor was dead in practice (its centered body label
+    // always exceeds it) and is dropped.
+    min-width: root.emphasis == TextButtonEmphasis.cta ? Theme.space-6 * 4
+        : root.size == TextButtonSize.compact
+            ? label-text.preferred-width + 2 * Theme.space-2
+            : label-text.preferred-width;
+    // Slint forbids a simultaneous `min-height` binding, so the floor
+    // term rides the `max()` inside the `height` binding — the
+    // realized law is identical (the height can never drop below the
+    // size floor).
+    pure function min-height-floor() -> length {
+        root.emphasis == TextButtonEmphasis.cta ? Theme.space-6
+        : root.size == TextButtonSize.compact ? Theme.space-5
+        : max(Theme.space-6, label-text.preferred-height + 2 * Theme.space-2)
+    }
+    height: max(self.min-height-floor(), label-text.preferred-height);
+    border-radius: Theme.radius-small;
+    background: background-colour();
+    border-width: border-thickness();
+    border-color: border-colour();
+
+    scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: true;
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.label;
+        accessible-description: root.description;
+        accessible-enabled: root.enabled;
+        accessible-action-default => {
+            if (root.gate()) { root.clicked(); }
+        }
+        key-pressed(event) => {
+            if ((event.text == Key.Return || event.text == " ")
+                    && !event.modifiers.control
+                    && !event.modifiers.alt
+                    && !event.modifiers.shift
+                    && !event.modifiers.meta) {
+                if (root.gate()) {
+                    root.clicked();
+                }
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    // The label fills and centers (the SettingsButton posture): the
+    // role follows the size — caption on compact (VerbButton's
+    // typography), body otherwise.
+    label-text := RoleText {
+        width: 100%;
+        height: 100%;
+        role: root.size == TextButtonSize.compact ? Typography.caption : Typography.body;
+        text: root.label;
+        text-color: label-color();
+        text-halign: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        // The tooltip trigger (usability D3): the derived-property
+        // wrap — `changed` delivers on the wrapper alias, not a
+        // foreign element's binding (the walk probe's recorded
+        // idiom, R-5). Empty tooltip-text keeps the arm off so
+        // defaulting call sites stay unchanged.
+        property <bool> hover-guard: self.has-hover;
+        changed hover-guard => {
+            if (self.hover-guard && root.enabled && root.tooltip-text != "") {
+                TooltipState.hover(
+                    root.label,
+                    root.description,
+                    root.hint-keys,
+                    self.absolute-position.x,
+                    self.absolute-position.y,
+                    self.width,
+                    self.height,
+                );
+            } else {
+                TooltipState.unhover();
+            }
+        }
+        clicked => {
+            TooltipState.unhover();
+            scope.focus();
+            if (root.gate()) {
+                root.clicked();
+            }
+        }
+    }
+}

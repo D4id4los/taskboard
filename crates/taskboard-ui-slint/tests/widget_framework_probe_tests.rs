@@ -565,3 +565,136 @@ fn the_closed_hosts_leave_no_anatomy_behind() {
         assert_eq!(window.get_anchored_dismissed_count(), 0);
     });
 }
+
+// ---- W3: the TextButton catalogue (plan §7 step 1; #950) ----------
+// The button grammar's laws on the primitive: the tab stop + the
+// Return/Space activation (the single keyboard copy), the one gate
+// shared by pointer/keys/AT, the click-through ceremony (r2 D34),
+// and the request-focus forward (the DialogButton autofocus half).
+
+fn button_center(window: &WidgetFrameworkProbeWindow) -> (f32, f32) {
+    (
+        window.get_button_x() + window.get_button_w() / 2.0,
+        window.get_button_y() + window.get_button_h() / 2.0,
+    )
+}
+
+fn press_key(window: &WidgetFrameworkProbeWindow, key: slint::platform::Key) {
+    use slint::platform::WindowEvent;
+    window
+        .window()
+        .dispatch_event(WindowEvent::KeyPressed { text: key.into() });
+    window
+        .window()
+        .dispatch_event(WindowEvent::KeyReleased { text: key.into() });
+    advance_probe_clock(0);
+}
+
+/// The TextButton is a real tab stop: from the fixture opener, one
+/// synthetic Tab reaches the button and Return activates it (the
+/// grammar's keyboard half — every absorbed variant's law, and the
+/// gain B-1 records for VerbButton).
+#[test]
+fn g_button_tab_stop_and_return_activates() {
+    run_probe(|window| {
+        press_tab(window);
+        assert!(
+            window.get_opener_focused(),
+            "precondition: the opener holds focus"
+        );
+        press_tab(window);
+        advance_probe_clock(0);
+        assert!(
+            window.get_button_focused(),
+            "one more tab lands on the TextButton"
+        );
+        let before = window.get_button_clicked_count();
+        press_key(window, slint::platform::Key::Return);
+        assert_eq!(
+            window.get_button_clicked_count() - before,
+            1,
+            "Return activates the focused TextButton"
+        );
+    });
+}
+
+/// A disabled button refuses every channel with one gate: the
+/// pointer click is swallowed and the Return/Space activations are
+/// gated (the AT channel shares the same `enabled || click-through`
+/// gate — the accessible-enabled + gated default-action shape).
+#[test]
+fn g_disabled_swallows_all_three_channels() {
+    run_probe(|window| {
+        window.set_probe_button_enabled(false);
+        advance_probe_clock(0);
+
+        let before = window.get_button_clicked_count();
+        let (x, y) = button_center(window);
+        click(window, x, y);
+        assert_eq!(
+            window.get_button_clicked_count(),
+            before,
+            "the pointer channel refuses while disabled"
+        );
+
+        window.invoke_probe_request_button_focus();
+        advance_probe_clock(0);
+        assert!(
+            window.get_button_focused(),
+            "the disabled button is still addressable"
+        );
+        press_key(window, slint::platform::Key::Return);
+        press_key(window, slint::platform::Key::Space);
+        assert_eq!(
+            window.get_button_clicked_count(),
+            before,
+            "the key channels refuse while disabled"
+        );
+    });
+}
+
+/// The click-through ceremony (r2 D34): with `click-through` the
+/// click fires regardless of enablement — pointer and keys both —
+/// while the disabled affordance still renders.
+#[test]
+fn g_click_through_fires_while_disabled() {
+    run_probe(|window| {
+        window.set_probe_button_enabled(false);
+        window.set_probe_button_click_through(true);
+        advance_probe_clock(0);
+
+        let (x, y) = button_center(window);
+        click(window, x, y);
+        assert_eq!(
+            window.get_button_clicked_count(),
+            1,
+            "the pointer channel fires through"
+        );
+
+        window.invoke_probe_request_button_focus();
+        advance_probe_clock(0);
+        press_key(window, slint::platform::Key::Return);
+        press_key(window, slint::platform::Key::Space);
+        assert_eq!(
+            window.get_button_clicked_count(),
+            3,
+            "the key channels fire through too"
+        );
+    });
+}
+
+/// The autofocus half: `request-focus()` forwards to the internal
+/// scope and the `focused` out property observes it (DialogButton's
+/// mount-focus seam rides this).
+#[test]
+fn g_focus_forwards_to_request_focus() {
+    run_probe(|window| {
+        assert!(!window.get_button_focused());
+        window.invoke_probe_request_button_focus();
+        advance_probe_clock(0);
+        assert!(
+            window.get_button_focused(),
+            "request-focus lands on the internal scope"
+        );
+    });
+}
