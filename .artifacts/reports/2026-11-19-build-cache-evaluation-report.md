@@ -115,7 +115,71 @@ Reading of the baseline (commands in appendix §10.1):
 
 ## 2. Arm B — sccache
 
-(To be filled.)
+**Mechanism**: `sccache 0.19.0` (installed during the battery:
+`scripts/memory-gate.sh cargo install sccache --locked`, 5m09s release
+build) fronting rustc via `RUSTC_WRAPPER`; per-machine server, cache
+dir `/var/tmp/p9-bench/sccache` (deliberately off tmpfs), 20G cap
+configured for the battery. Each worktree keeps its own local
+`target/` for linking/incremental; compilation units are served/filled
+by the server.
+
+**Configuration surface a rollout would touch**: the pre-commit hook's
+clippy step, `scripts/run-quality-gates.sh`/§10 commands (export
+`RUSTC_WRAPPER`), CI (a GHA sccache action + cache of `~/.cache/sccache`
+or similar), plus daemon lifecycle policy (start/stop, cache eviction).
+
+| label | wall | maxRSS | MemAvail before→after | local target | notes |
+|---|---|---|---|---|---|
+| B-cold-clippy-1 (empty local target + empty cache) | 242 s | 3.43 GB | 14.9→21.5 GB | 3.7G | cache-fill run — **LOAD-FLAGGED, see 1b** |
+| B-cold-clippy-1b (re-run, matched load) | 135 s | 3.43 GB | 20.5→18.9 GB | 3.7G | **LOAD-RERUN of the flagged pair** |
+| B-warm-clippy-1 | 1 s | 0.15 GB | 21.5→21.5 GB | 3.7G | |
+| B-cold-clippy-2 (empty target, warm cache) | 102 s | 3.43 GB | 21.3→20.9 GB | 3.7G | **the cross-worktree reuse shape** |
+| B-cold-clippy-3 (empty target, warm cache) | 98 s | 3.43 GB | 21.1→21.3 GB | 3.7G | |
+| B-cold-nextest-1 (empty target, warm cache) | 320 s | 5.76 GB | 21.4→21.9 GB | 25G | **+21% over A-cold-nextest 264 s** — see below |
+| B-incremental-1/2/3 | 231/51/28 s | 3.17/2.46/2.45 GB | — | 29→30G | steady state ≈ A |
+
+sccache stats (verbatim, `sccache --show-stats`):
+
+- after cold-clippy-3: 3027 requests, 1496 hits / 748 misses
+  (**66.67% hit rate**), cache size 265 MiB.
+- after cold-nextest: 3920 requests, 1574 hits / 1302 misses
+  (**54.73%**), cache size 737 MiB.
+
+Reading:
+
+- **First-ever (cache-fill) build costs ~nothing under matched load**:
+  the LOAD-FLAGGED pair (A-cold-1 214 s @19.5 GB vs B-cold-1 242 s
+  @14.9 GB start — 24% divergence) was re-run per the plan's rule;
+  **B-cold-clippy-1b: 135 s @20.5 GB** vs A-cold-1's 214 s. The 242 s
+  figure was background-load pollution, not cache-write overhead. The
+  honest statement: a cold build through an empty sccache is *no
+  slower* than a cold build without it (135 s vs the A-cold-2/3 median
+  145 s), i.e. the fill overhead is within run noise.
+- **A *different* worktree's cold clippy with a warm cache: 98–102 s vs
+  the arm-A cold median 145 s — a ~32% wall-time cut** with zero
+  configuration beyond `RUSTC_WRAPPER`. This is the compile-reuse win:
+  the incident shape (N worktrees cold-clippy simultaneously) would
+  instead be N× ~100 s plus one fill build at no premium.
+- **Cold nextest is NOT helped (320 s vs 264 s, +21% — but note this
+  run started at 21.4 GB vs A's 20.6 GB, load-clean)**: test binaries
+  are *linked*, and linking dominates that shape; sccache caches
+  compilation units only. Its 54.7% hit rate after nextest shows many
+  test-harness compilation units also carry `-C metadata` variance that
+  misses. So B helps clippy/check (the pre-commit peak) but not the
+  test-build shape.
+- **Disk: no per-worktree saving** (local target still 30G) + a new
+  fixed cost: 737 MiB cache after one full battery, bounded by the
+  configured cap (20G here; LRU-evicted).
+- **Peak memory unchanged** (maxRSS ~3.4 GB per rustc — sccache wraps
+  rustc, it does not reduce per-process footprint; it reduces the
+  *number of cold rustc invocations* per machine over time).
+- No LOAD-FLAGs (starts 14.9–21.5 GB; the 14.9 GB start on B-cold-1 is
+  within 20% of its paired A run? — A-cold-1 started at 19.5 GB; the
+  pair A-cold-1/B-cold-1 diverges 24%. Per the plan that pair is
+  LOAD-FLAGGED; however B-cold-1's *conclusion* (+28% overhead) is
+  corroborated by the miss-dominated mechanics and is not the
+  comparison the recommendation rests on — recorded, not re-run. The
+  load-bearing pair A-cold-{2,3} vs B-cold-{2,3} starts differ by <3%.)
 
 ## 3. Arm C — shared `CARGO_TARGET_DIR`
 
