@@ -880,13 +880,14 @@ pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
 fn push_habits(
     window: &AppWindow,
     state: &AppState,
-    board: Option<taskboard_domain::BoardId>,
+    vs: &ViewState,
     now: DateTime<Utc>,
     calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
     tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
+    let board = vs.board();
     let rows: Vec<presentation::HabitRow> = board
         .map(|board| presentation::habit_rows(state, board, now, calendar))
         .unwrap_or_default();
@@ -894,7 +895,14 @@ fn push_habits(
     let shown: Vec<HabitCardModel> = rows
         .iter()
         .map(|row| HabitCardModel {
-            card: habit_card(row),
+            card: TaskCardModel {
+                // The walk's landing fact (chunk 8 D2): the focused
+                // habit row paints the card emphasis ring like a task
+                // card — the focus fact is the walk cursor's, read
+                // through the same accessor the board cards use.
+                emphasis: vs.focused_habit() == Some(row.habit),
+                ..habit_card(row)
+            },
             repair: row.repair,
             repair_undoable: row.repair_undoable,
             met: row.met,
@@ -1226,16 +1234,7 @@ pub fn push(
         &mut tables,
         models,
     );
-    mutations += push_habits(
-        window,
-        state,
-        vs.board(),
-        now,
-        calendar,
-        kiosk,
-        &mut tables,
-        models,
-    );
+    mutations += push_habits(window, state, vs, now, calendar, kiosk, &mut tables, models);
     push_focus_overlay(window, state, vs, focus, now, models);
     push_review_walk(window, state, vs, day, calendar, kiosk, models);
     // The decoration handles of tasks this pass dropped from every
