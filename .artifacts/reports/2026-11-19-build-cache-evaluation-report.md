@@ -232,11 +232,90 @@ Reading:
 
 ## 4. Arm D — per-branch target dirs
 
-(To be filled.)
+**Mechanism**: `CARGO_TARGET_DIR` keyed by branch/site
+(`/var/tmp/p9-bench/branch-targets/bench-a` and `…/bench-b`), external
+to every worktree, off tmpfs. A recreated worktree for the same branch
+reuses its dir; unrelated branches stay isolated.
 
-## 5. Arm E — hybrid (conditional)
+**Configuration surface a rollout would touch**: the same env-var
+plumbing as C (§10 commands, pre-commit hook, gate script), plus a
+naming law (`<branch-slug>` key) and an AGENTS §8 teardown amendment
+(the branch dir survives worktree removal; eviction policy needed).
 
-(To be filled or explicitly not run, with reason.)
+| label | wall | maxRSS | MemAvail before→after | branch dir | notes |
+|---|---|---|---|---|---|
+| D-cold-clippy-1 (branch dir empty) | 135 s | 3.43 GB | 21.4→19.8 GB | 3.7G | fill run; ≈ A cold median 145 s |
+| D-warm-clippy-1 | 5 s | 0.15 GB | 19.8→20.1 GB | 3.7G | |
+| D-resume-clippy-1 | 0 s | 0.15 GB | 20.1→20.1 GB | 3.7G | **the recreate/resume shape: dir external, fully warm — 0 s vs A's 145 s cold** |
+| D-other-branch-cold-1 (bench-b's branch dir) | 165 s | 3.43 GB | 20.1→19.1 GB | 3.7G | other branch: isolated, full rebuild (no reuse, as designed) |
+| D-back-switch-clippy-1 (bench-a's dir again) | 1 s | 0.15 GB | 19.1→19.2 GB | 3.7G | **no ping-pong churn: return to own branch is 1 s (vs C's 106 s)** |
+| D-incremental-1/2/3 | 28/27/28 s | 2.45 GB | 19.2→18.8 GB | 5.6G | **best incremental steady state** (A: 63–69 s; C: 35–56 s) |
+
+Final branch dir sizes: bench-a 5.6G, bench-b 3.7G (9.3G total for two
+branch dirs — each branch pays its own growth, but a *resume* is free).
+
+Reading:
+
+- **The resume win is D's whole story**: the doctor-teardown →
+  re-`worktree add` loop (§1 of the chunk plan, R1's known cost —
+  every recreation today pays a full 145 s cold build into a fresh
+  `target/`) becomes **0 s** when the dir is keyed by branch. D-resume
+  (0 s) vs A-cold median (145 s) is the decisive pair; starts within
+  2% MemAvailable, load-clean.
+- **Cross-branch isolation is genuine**: the other-branch build is a
+  full 165 s cold (≈ baseline — the two dirs share nothing), and
+  switching back costs 1 s, because cargo's fingerprints in *your*
+  branch dir were never touched. This is exactly the failure mode C
+  cannot avoid (C's ping-pong tax was ~106 s per switch, §3).
+- **Incremental steady state is the best of all arms** (28 s vs A's
+  63–69 s, C's 35–56 s): branch-local incremental state accumulates
+  in one stable dir, never churned by a foreign branch's builds.
+- **Disk is per-branch, not per-machine**: 9.3G for two branches vs
+  C's single 31G shared dir — but that total grows with *concurrent
+  branches*, and needs an eviction law (stale branch dirs of landed
+  PRs must be swept; the natural hook is the same doctor pass).
+- No LOAD-FLAGs (starts 19.1–21.4 GB).
+
+## 5. Arm E — hybrid: sccache + per-branch target dirs (conditional — run, and it failed decisively)
+
+The plan ran E only on complementary B/C results; B and C both showed
+partial wins, so the minimal combination (B + D: sccache across all
+worktrees + per-branch target dirs) was measured. **The combination
+does not compose — and the reason is structural, not load.**
+
+sccache stats for the E battery (verbatim, server restarted before E,
+so these are E-only): **2018 compile requests, 1430 Rust misses,
+0.00% Rust hit rate** (the 66 hits are Assembler/C++ units from build
+scripts — 100% hits there). Cache dir 788 MiB, pre-warmed by arm B
+for the *same commits and same compiler*.
+
+| label | wall | maxRSS | MemAvail before→after | branch dir |
+|---|---|---|---|---|
+| E-cold-fill-1 (empty branch dir, warm sccache) | 168 s | 3.43 GB | 13.6→20.1 GB | 3.7G |
+| E-warm-clippy-1 | 35 s | 0.15 GB | 20.1→20.2 GB | 3.7G |
+| E-other-site-cold-1 (second branch dir, warm sccache) | 140 s | 3.43 GB | 20.2→19.1 GB | 3.7G |
+| E-back-switch-1 (first branch dir again) | 1 s | 0.15 GB | 19.2→19.2 GB | 3.7G |
+
+Reading:
+
+- **Why zero Rust hits**: a compilation unit's hash includes rustc's
+  full command line, and `--out-dir` is part of it — a unit built into
+  `branch-targets/bench-a` and the *same* unit requested for
+  `branch-targets/bench-b` (or any other `CARGO_TARGET_DIR`) have
+  different command lines and therefore **miss**. Arm B worked only
+  because every run reused the *same* worktree-local target path;
+  the moment the target dir varies (which is D's whole mechanism),
+  sccache degrades to ~0% Rust hit rate and its wrapper overhead is
+  pure loss (E-cold-fill 168 s ≈ plain cold; E-warm 35 s vs D-warm's
+  5 s — the 35 s is clippy re-running under a wrapper that cached
+  nothing).
+- Consequence for the recommendation: **B and D are mutually
+  exclusive shapes, not stackable layers.** B buys cross-worktree
+  reuse only when the target dir path is stable per machine; D buys
+  per-branch isolation and resume, and gets its cross-worktree reuse
+  (same branch = same dir) from cargo's fingerprints directly, which
+  are stronger than sccache's anyway (75 s in C's cross-worktree run
+  vs B's 98–102 s for the same semantic job). E is eliminated.
 
 ## 6. Concurrency exercise log
 
