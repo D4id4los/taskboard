@@ -162,6 +162,8 @@ views may show them once those exist.
 |---|---|---|---|---|---|
 | US-5/S1 | habit card / menu | open editor | UiRequest::OpenHabitEditor | modal (J2 ModalDialog) with fields | cancel discards |
 | US-5/S2 | editor | set time + save | StateCommand::UpdateHabit(HabitChanges) | row shows time chip; reminder armed | invalid input stays in editor |
+| US-5/S3 | habit context menu | click remove (arm) | — (adapter staging) | confirm flips enabled inside the open menu; another subject's menu disarms | Esc dismisses |
+| US-5/S4 | armed menu | click confirm | StateCommand::DeleteHabit | row leaves the section; the log survives | — |
 
 ### US-6 — Anchor-day windows
 
@@ -189,9 +191,13 @@ flowchart LR
 | W-1 | compositions/habits.slint | TaskCard substrate | habits-log-clicked | RowSubject::Habit router | habit.log | StateCommand::LogHabit | ItemAddr habit row | US-1/S2 | habits_journey.rs::us1_s2 |
 | W-2 | menu.rs | HabitRow context menu | habits-context-requested | MenuKind stays {Main, Object} (D4 deviation) | habit.log | — | — | US-2/S1 | habits_journey.rs::us2_s1 |
 | W-3 | menu.rs | convert submenu | — | — | habit.convert | StateCommand::ConvertHabitToSeries | — | US-2/S2 | habits_journey.rs::us2_s2 |
-| W-4 | habit editor (J2 modal) | fields | on_save | UpdateHabit seam | habit.edit | StateCommand::UpdateHabit | — | US-5/S2 | habits_journey.rs::us5_s2 |
+| W-4 | habit editor (shared task-view variant) | fields | habit-save-clicked | UpdateHabit seam | habit.edit | StateCommand::UpdateHabit | — | US-5/S2 | habits_journey.rs::us5_s2 |
 | W-5 | habit card | time chip | — | presentation | — | — | — | US-5/S2 | fold test |
-| W-6 | adapter.rs | traversal | — | RowSubject walk | nav.focus-* | — | ItemAddr | US-3/S1 | habits_journey.rs::us3_s1 |
+| W-6 | adapter.rs | traversal | — | RowSubject walk | nav.focus-board | — | ItemAddr | US-3/S1 | habits_journey.rs::us3_s1 |
+
+(W-6's action cell spelled the wildcard `nav.focus-*`; chunk 8 landed
+the concrete `nav.focus-board` id — cell corrected 2026-11-19, H4
+review, the gate greps the cell verbatim.)
 
 ## 7. Command-contract delta
 
@@ -267,15 +273,36 @@ remove into the round). Per the H2 precedent (§8) the steps bind here:
 - `US-6/S2`'s journey half lands as
   `us6_s2_snooze_offers_hours_and_days` (the snooze flyout spans
   hours AND days; the engine nudge arms per the day gate).
-- The remove grammar's two steps are new rows for the §4 US-5 table:
+- The remove grammar's two steps join the §4 US-5 table as S3/S4
+  (the gate's step-id grammar is US-conformant; the landing tests
+  keep the plan's h4_remove token names — the names are addresses,
+  the steps are the contract):
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| h4_remove_s1 | habit context menu | click remove (arm) | — (adapter staging) | confirm flips enabled inside the open menu; another subject's menu disarms | Esc dismisses |
-| h4_remove_s2 | armed menu | click confirm | StateCommand::DeleteHabit | row leaves the section; the log survives | — |
+| US-5/S3 | habit context menu | click remove (arm) | — (adapter staging) | confirm flips enabled inside the open menu; another subject's menu disarms | Esc dismisses |
+| US-5/S4 | armed menu | click confirm | StateCommand::DeleteHabit | row leaves the section; the log survives | — |
 
 bound-test: US-5/S1 -> habits_journey.rs::us5_s1_habit_editor_opens_and_cancel_discards
 bound-test: US-5/S2 -> habits_journey.rs::us5_s2_habit_editor_round_trips_time_and_day
 bound-test: US-6/S2 -> habits_journey.rs::us6_s2_snooze_offers_hours_and_days
-bound-test: h4_remove_s1 -> habits_journey.rs::h4_remove_s1_remove_arms_and_the_confirm_flips
-bound-test: h4_remove_s2 -> habits_journey.rs::h4_remove_s2_confirm_tombstones_and_closes
+bound-test: US-5/S3 -> habits_journey.rs::h4_remove_s1_remove_arms_and_the_confirm_flips
+bound-test: US-5/S4 -> habits_journey.rs::h4_remove_s2_confirm_tombstones_and_closes
+bound-test: US-3/S2 -> habits_journey.rs::us3_s2_the_task_complete_stroke_and_shift_up_route_the_habit_verbs
+  (bound 2026-11-19, H4 review: the step's habit-side evidence was
+  unbound, so the gate read AMBIGUOUS over the six task-journey
+  `us3_s2_*` homonyms; chunk 8 landed the test, the binding rides the
+  deviations section it belongs to)
+
+- W-4's callback spelling lands as the seam's real name
+  `habit-save-clicked` (the §6 `on_save` cell named no real callback —
+  the H2 precedent); the editor is NOT a J2 modal: it mounts the
+  shared `task-view.slint` surface with the `is-habit` mount
+  discriminator (stage-1 plan D1, which supersedes this plan's modal
+  sketch — the round plan O-7 Q4's reuse law).
+- The remove grammar's wiring lands as W-9 (stage-1 plan
+  `.artifacts/plans/2026-11-19-habit-editing-plan.md` §3): the menu
+  rows in `menu.rs::HABIT_CONTEXT` (destructive-last), the staging in
+  `adapter.rs` (`habit_remove_armed`, the states-map grammar), the
+  confirm routing `StateCommand::DeleteHabit`; journeys bound above
+  (US-5/S3/S4).

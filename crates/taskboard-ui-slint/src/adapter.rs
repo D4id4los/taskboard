@@ -11770,7 +11770,7 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // row, then the editor closes (the back grammar — the subject
     // dies with the root swap). An empty changeset is unreachable
     // (the gate greys); a stale draft's dead subject reads no row.
-    install_seam!(window: window.on_habit_save_clicked, adapter: adapter;
+    install_seam!(window: window.on_habit_save_clicked, adapter: adapter; // slint callback: habit-save-clicked (H4 W-4)
     bind mut (a, window), args (), {
         let draft = a.habit_edit_draft.clone();
         if let Some(draft) = draft
