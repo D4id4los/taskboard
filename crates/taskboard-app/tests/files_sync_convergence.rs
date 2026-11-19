@@ -38,7 +38,7 @@ use taskboard_sync_files_nextcloud::error::TransportError;
 use taskboard_sync_files_nextcloud::etag::Etag;
 use taskboard_sync_files_nextcloud::test_support::FakeFilesTransport;
 use taskboard_sync_files_nextcloud::transport::{
-    FileContent, FilesTransport, MkcolOutcome, PropfindListing, PutOutcome,
+    DeleteOutcome, FileContent, FilesTransport, MkcolOutcome, PropfindListing, PutOutcome,
 };
 
 /// The poll cadence the actors run at (virtual time; auto-advance
@@ -127,6 +127,10 @@ impl FilesTransport for SharedFake {
         etag: &Etag,
     ) -> Result<PutOutcome, TransportError> {
         self.fake.put_if_match(path, body, etag).await
+    }
+
+    async fn delete(&self, path: &str) -> Result<DeleteOutcome, TransportError> {
+        self.fake.delete(path).await
     }
 }
 

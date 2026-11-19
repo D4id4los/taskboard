@@ -21,7 +21,9 @@ use common::{
 };
 use taskboard_sync_files_nextcloud::error::TransportError;
 use taskboard_sync_files_nextcloud::etag::Etag;
-use taskboard_sync_files_nextcloud::transport::{FilesTransport, MkcolOutcome, PutOutcome};
+use taskboard_sync_files_nextcloud::transport::{
+    DeleteOutcome, FilesTransport, MkcolOutcome, PutOutcome,
+};
 
 /// A unique, never-deleted per-run file path under `devices/`.
 fn run_appdata(id: &str) -> String {
@@ -307,6 +309,45 @@ async fn it_nextcloud_docker_board_subtree_semantics() {
             .put_if_match(&snapshot, b"{\"seq\":2}", &etag)
             .await;
         assert!(fresh.is_ok(), "the fresh etag rewrites: {fresh:?}");
+    })
+    .await
+    .expect("test must finish within the live deadline");
+}
+
+/// The DELETE verb's 404-on-missing pin against the real server (the
+/// GC/retirement duties' idempotence): seed a run-unique file, the
+/// first delete answers `Deleted`, the repeat answers `AlreadyAbsent`,
+/// and a PROPFIND confirms the member is gone.
+#[tokio::test]
+#[ignore = "requires the dockerized Nextcloud tier (scripts/nextcloud_it_setup.sh up)"]
+async fn it_nextcloud_docker_files_delete_idempotence() {
+    let Some(cfg) = live_docker_config() else {
+        return;
+    };
+    with_deadline(async move {
+        let id = run_id();
+        let transport = files_transport(&cfg);
+        let _ = transport.mkcol("taskboard").await;
+        let _ = transport.mkcol(&format!("taskboard/devices/{id}")).await;
+        let path = format!("taskboard/devices/{id}/gc-pin.json");
+        retrying_server_errors(|| async { transport.put_create(&path, b"gc pin").await })
+            .await
+            .expect("seed create");
+        let first = transport.delete(&path).await.expect("first delete");
+        assert_eq!(first, DeleteOutcome::Deleted);
+        let repeat = transport.delete(&path).await.expect("repeat delete");
+        assert_eq!(repeat, DeleteOutcome::AlreadyAbsent);
+        let listing = transport
+            .propfind_tree(&format!("taskboard/devices/{id}"))
+            .await
+            .expect("listing");
+        assert!(
+            !listing
+                .members
+                .iter()
+                .any(|member| member.href.ends_with("gc-pin.json")),
+            "the deleted member is gone from the listing"
+        );
     })
     .await
     .expect("test must finish within the live deadline");

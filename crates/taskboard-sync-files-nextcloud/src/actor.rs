@@ -496,6 +496,12 @@ mod tests {
         ) -> Result<crate::transport::PutOutcome, crate::error::TransportError> {
             self.fake.put_if_match(path, body, etag).await
         }
+        async fn delete(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::DeleteOutcome, crate::error::TransportError> {
+            self.fake.delete(path).await
+        }
     }
 
     const WALL: Duration = Duration::from_secs(10);

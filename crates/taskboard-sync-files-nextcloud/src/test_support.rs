@@ -17,7 +17,8 @@ use std::sync::Mutex;
 use crate::error::TransportError;
 use crate::etag::Etag;
 use crate::transport::{
-    FileContent, FilesTransport, MkcolOutcome, PropfindListing, PropfindMember, PutOutcome,
+    DeleteOutcome, FileContent, FilesTransport, MkcolOutcome, PropfindListing, PropfindMember,
+    PutOutcome,
 };
 
 /// One recorded request (the tests' exact observable).
@@ -491,6 +492,43 @@ impl FilesTransport for FakeFilesTransport {
         Ok(PutOutcome::Updated {
             etag: Some(etag_of(rev)),
         })
+    }
+
+    #[allow(clippy::unused_async_trait_impl)] // the model is synchronous
+    async fn delete(&self, path: &str) -> Result<DeleteOutcome, TransportError> {
+        let mut state = self.state.lock().expect("fake lock");
+        Self::record(
+            &mut state,
+            RecordedRequest {
+                method: "DELETE".into(),
+                path: path.into(),
+                if_match: None,
+                if_none_match_star: false,
+                body: Vec::new(),
+            },
+        );
+        if let Some(Effect::Status(status)) = Self::take_effect(&mut state) {
+            return Err(status_error(status));
+        }
+        // A file delete removes exactly that file; a collection delete
+        // is recursive (RFC 4918 Depth semantics) — the whole subtree
+        // goes with it, matching the real Sabre/DAV server.
+        let prefix = format!("{path}/");
+        let had = state.files.contains_key(path)
+            || state.files.keys().any(|p| p.starts_with(&prefix))
+            || state.dirs.contains_key(path)
+            || state.dirs.keys().any(|p| p.starts_with(&prefix));
+        state
+            .files
+            .retain(|p, _| !(p == path || p.starts_with(&prefix)));
+        state
+            .dirs
+            .retain(|p, _| !(p == path || p.starts_with(&prefix)));
+        if had {
+            Ok(DeleteOutcome::Deleted)
+        } else {
+            Ok(DeleteOutcome::AlreadyAbsent)
+        }
     }
 }
 

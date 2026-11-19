@@ -20,9 +20,11 @@
 //!   `StateHash`; etags only drive PROPFIND change detection and the
 //!   `If-Match` guards.
 //! - **Readers never delete.** The [`FilesTransport`] verb set is
-//!   closed — `MKCOL`, `PROPFIND`, `GET`, conditional `PUT`. No
-//!   `DELETE`, no `MOVE`: no code path can remove or relocate a file
-//!   (the trashbin is the user's recovery, F8).
+//!   closed — `MKCOL`, `PROPFIND`, `GET`, conditional `PUT`, plus one
+//!   destructive verb, `delete`, reserved for the lifecycle duties
+//!   (the owner's post-snapshot GC pass and the unbind retirement;
+//!   owner-scoped paths only). No `MOVE`: no code path can relocate a
+//!   file (the trashbin is the user's recovery, F8).
 //! - **The actor is not a network authority.** It subscribes to the
 //!   system broadcast only for `Shutdown` and publishes nothing on it;
 //!   counting network episodes is `taskboard-app`'s authority's job.
