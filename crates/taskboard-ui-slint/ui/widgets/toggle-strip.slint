@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The toggle-strip primitive (L1, round-9 W3 O-6, #953): a thin
+// composition over the check-glyph IconButton row — the recur
+// editor's seven weekday toggles are the founding consumer. The strip
+// owns no state: the slots render the pushed `checked-mask` (the
+// info/neutral tone flip) and every click reports its index through
+// `picked` — the model push is the single writer, exactly like the
+// CheckBox's state-less grammar.
+
+import { Theme, Tone } from "../theme.slint";
+import { IconButton, IconKind } from "icon-button.slint";
+
+export component ToggleStrip inherits HorizontalLayout {
+    // The slot labels in order (the a11y names — the hover tips).
+    in property <[string]> options;
+    // The model-pushed checked bits, positionally aligned with
+    // `options`.
+    in property <[bool]> checked-mask;
+    // The intent: the clicked slot's index.
+    callback picked(int);
+
+    spacing: Theme.space-1;
+    for label[i] in root.options: IconButton {
+        icon: IconKind.check;
+        tone: root.checked-mask[i] ? Tone.info : Tone.neutral;
+        label: label;
+        clicked => { root.picked(i); }
+    }
+}
