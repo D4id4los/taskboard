@@ -115,6 +115,16 @@ pub enum UiEffect {
     /// adapter disarms the armed habit subject and re-projects the
     /// open menu (the confirm greys again); nothing dispatched.
     HabitConvertCancel,
+    /// The habit editor's opener (H4 D1, US-5): the adapter opens
+    /// the shared task-detail surface over the resolved habit
+    /// subject — the `Activate` shape with a habit one-shot.
+    HabitEdit,
+    /// Arm the staged habit remove (H4 D4, #944): the adapter
+    /// records the armed subject; the dispatch waits for Confirm.
+    HabitRemoveArm,
+    /// The armed remove's cancel step: the adapter disarms and
+    /// re-projects the open menu; nothing dispatched.
+    HabitRemoveCancel,
     /// The create form's open/toggle (round-7 D-7.2): the adapter
     /// flips the armed flag — open when closed, discard-and-close
     /// when armed — only with an active board; kiosk stays inert
@@ -427,6 +437,12 @@ impl UiEffect {
             | Self::SeriesPauseOpen
             | Self::HabitConvertArm
             | Self::HabitConvertCancel
+            | Self::HabitRemoveArm
+            | Self::HabitRemoveCancel
+            // The H4 editor opener joins the view-intent bucket (the
+            // settle-then-open cell: a foreign flow settles first,
+            // then the surface opens over the resolved subject).
+            | Self::HabitEdit
             | Self::HabitCreateToggle
             | Self::SeriesConvertArm
             | Self::SeriesEditorOpen
@@ -670,6 +686,9 @@ pub struct DispatchCtx {
     /// `ConvertHabitToSeries` from it together with the pattern draft
     /// (`NoTarget` without either).
     pub habit_convert_target: Option<taskboard_domain::HabitId>,
+    /// The staged remove's armed subject (H4 D4): the confirm routes
+    /// `DeleteHabit` from it (`None` = unarmed/stale — `NoTarget`).
+    pub habit_remove_target: Option<taskboard_domain::HabitId>,
     /// The create form's one-shot payload (round-7 D-7.2): the exact
     /// `CreateHabit` triple the confirm seam minted (board resolved
     /// fresh at commit, the minted quota target) — `habit.create-commit`
@@ -753,6 +772,11 @@ impl OneShotSet {
     // never share a bit with an earlier field.
     pub(crate) const HABIT_MOVE_UP: u32 = 1 << 25;
     pub(crate) const HABIT_MOVE_DOWN: u32 = 1 << 26;
+    // The H4 remove's armed subject: the first free bit past the H2
+    // additions (every bit 0..=26 is taken; sharing one would
+    // cross-consume the create form's draft — the OR-based pin can't
+    // see it).
+    pub(crate) const HABIT_REMOVE_TARGET: u32 = 1 << 27;
     pub(crate) const PATTERN_DRAFT: u32 = 1 << 19;
     pub(crate) const SERIES_TARGET: u32 = 1 << 20;
     pub(crate) const PAUSE_DRAFT: u32 = 1 << 21;
@@ -827,6 +851,9 @@ impl OneShotSet {
     pub(crate) const fn habit_convert_target(self) -> Self {
         self.set(Self::HABIT_CONVERT_TARGET)
     }
+    pub(crate) const fn habit_remove_target(self) -> Self {
+        self.set(Self::HABIT_REMOVE_TARGET)
+    }
     pub(crate) const fn habit_create_draft(self) -> Self {
         self.set(Self::HABIT_CREATE_DRAFT)
     }
@@ -876,6 +903,7 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::HabitMoveDown => OneShotSet::default().habit_move_down(),
         A::HabitRepair => OneShotSet::default().habit_repair(),
         A::HabitConvertToSeries => OneShotSet::default().habit_convert_target().pattern_draft(),
+        A::HabitRemoveConfirm => OneShotSet::default().habit_remove_target(),
         A::HabitCreateCommit => OneShotSet::default().habit_create_draft(),
         A::SeriesPauseCommit => OneShotSet::default().series_target().pause_draft(),
         A::SeriesResume => OneShotSet::default().series_target(),
@@ -1145,6 +1173,21 @@ impl ActionRouter {
             },
             ActionId::HabitConvertArm => DispatchOutcome::UiEffect(UiEffect::HabitConvertArm),
             ActionId::HabitConvertCancel => DispatchOutcome::UiEffect(UiEffect::HabitConvertCancel),
+            // The H4 editor opener: the TaskEdit shape — the adapter
+            // resolves the one-shot habit subject and opens the
+            // shared surface (subjectless dispatch is the adapter's
+            // typed refusal).
+            ActionId::HabitEdit => DispatchOutcome::UiEffect(UiEffect::HabitEdit),
+            // The staged remove (H4 D4, #944): the arm routes the
+            // adapter's staging effect; the confirm routes the domain
+            // verb from the one-shot armed subject (`NoTarget`
+            // unarmed/stale — the disarmed form commits nothing).
+            ActionId::HabitRemove => DispatchOutcome::UiEffect(UiEffect::HabitRemoveArm),
+            ActionId::HabitRemoveCancel => DispatchOutcome::UiEffect(UiEffect::HabitRemoveCancel),
+            ActionId::HabitRemoveConfirm => match ctx.habit_remove_target {
+                Some(habit) => DispatchOutcome::Command(StateCommand::DeleteHabit { habit }),
+                None => DispatchOutcome::NoTarget,
+            },
             ActionId::HabitConvertToSeries => {
                 match (ctx.habit_convert_target, ctx.pattern_draft.clone()) {
                     (Some(habit), Some(pattern)) => {
@@ -1630,6 +1673,7 @@ mod tests {
             habit_move: None,
             habit_repair: None,
             habit_convert_target: None,
+            habit_remove_target: None,
             habit_create_draft: None,
             pattern_draft: None,
             plan_target: None,
@@ -2583,6 +2627,7 @@ fn one_shot_bits_are_total() {
         .habit_move()
         .habit_repair()
         .habit_convert_target()
+        .habit_remove_target()
         .habit_create_draft()
         .habit_move_up()
         .habit_move_down()
@@ -2609,7 +2654,7 @@ fn one_shot_bits_are_total() {
     // one-shot, no two constants share a bit.
     assert_eq!(
         full.0.count_ones(),
-        27,
+        28,
         "every one-shot field owns a distinct bit"
     );
     // The conversion confirm is the fix's flagship pair: exactly its

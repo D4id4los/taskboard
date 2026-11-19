@@ -618,6 +618,12 @@ pub struct ViewState {
     subject_stack: Option<StackId>,
     /// The `TaskDetail` subject, snapshotted at entry (D7).
     subject_task: Option<TaskId>,
+    /// The habit variant's subject (H4 D1, US-5): the shared
+    /// task-detail surface over a habit — set by
+    /// [`Self::open_habit_editor`], cleared whenever the root leaves
+    /// the detail (the same one-subject law the task subject's
+    /// death pass speaks).
+    subject_habit: Option<taskboard_domain::HabitId>,
     /// The board's focused card (selection, not slint focus).
     focused_task: Option<TaskId>,
     /// The today walk's focused habit row (chunk 8 D2, #934): the
@@ -839,6 +845,7 @@ impl ViewState {
             board: None,
             subject_stack: None,
             subject_task: None,
+            subject_habit: None,
             focused_task: None,
             focused_habit: None,
             selected_stack: None,
@@ -931,6 +938,12 @@ impl ViewState {
     fn replace_root(&mut self, view: ViewId) {
         let dropped = self.surfaces.replace_root(view);
         self.retired.extend(dropped);
+        // The habit editor's subject is a mount fact, not focus
+        // memory (H4 D1): it lives exactly while the detail root
+        // mounts the habit variant.
+        if view != ViewId::TaskDetail {
+            self.subject_habit = None;
+        }
         // UX-R8 D-4's surface-change cell: the selection never
         // survives into another surface. Same-root swaps are the
         // reconciliation's repair hops (a dead subject pops back to
@@ -1340,6 +1353,23 @@ impl ViewState {
         self.subject_task
     }
 
+    /// The habit variant's subject (H4 D1) — `Some` exactly while the
+    /// detail surface mounts the habit editor.
+    #[must_use]
+    pub const fn subject_habit(&self) -> Option<taskboard_domain::HabitId> {
+        self.subject_habit
+    }
+
+    /// The habit editor's open (H4 D1, US-5): the `activate_focused`
+    /// twin — the shared task-detail surface mounts over the habit
+    /// subject (the mount discriminator decides the variant). No flow
+    /// arms; the escape discipline is the surface's own.
+    pub fn open_habit_editor(&mut self, habit: taskboard_domain::HabitId) -> Vec<FlowOutcome> {
+        self.replace_root(ViewId::TaskDetail);
+        self.subject_habit = Some(habit);
+        vec![FlowOutcome::RefreshNow]
+    }
+
     /// Direct view/focus injection (the chunk-2 test seam; real
     /// sessions go through the view cycle and the card clicks).
     pub fn set_view(&mut self, view: ViewId) {
@@ -1474,6 +1504,18 @@ impl ViewState {
     /// focus-restore funnel runs after this swap.
     pub fn repair_restored_root(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         if self.view() == ViewId::TaskDetail {
+            // The habit variant's root is dead without a live habit
+            // subject (the task subject's twin).
+            if let Some(habit) = self.subject_habit
+                && !state
+                    .habits
+                    .habits
+                    .get(&habit)
+                    .is_some_and(taskboard_domain::habit::Habit::is_live)
+            {
+                self.replace_root(ViewId::Board);
+                return vec![FlowOutcome::RefreshNow];
+            }
             let dead = self.subject_task.is_none_or(|id| {
                 !state
                     .tasks
@@ -4260,6 +4302,20 @@ impl ViewState {
             // the root: the only pushed view kinds are Settings and
             // the planner, never a subject view (D8).
             if self.view() == ViewId::StackDetail {
+                self.replace_root(ViewId::Board);
+            }
+        }
+        // The habit variant's subject absorbs when its habit dies
+        // (the same stale-subject law; the editor closes to Board).
+        if let Some(habit) = self.subject_habit
+            && !state
+                .habits
+                .habits
+                .get(&habit)
+                .is_some_and(taskboard_domain::habit::Habit::is_live)
+        {
+            self.subject_habit = None;
+            if self.view() == ViewId::TaskDetail {
                 self.replace_root(ViewId::Board);
             }
         }

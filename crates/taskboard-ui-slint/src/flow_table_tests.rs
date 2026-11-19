@@ -231,6 +231,9 @@ enum EK {
     /// The File-to arm (N3a): the one walk verb that mounts a child
     /// level — its own cell because its post-state is the child.
     WalkFileArm,
+    /// The H4 editor opener (H4 D1): the Nav-class view intent with
+    /// no pair-table overrides — the class cells decide.
+    HabitEditorOpen,
 }
 
 fn key_of(effect: &UiEffect) -> EK {
@@ -298,8 +301,13 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::SeriesPauseOpen
         | UiEffect::HabitConvertArm
         | UiEffect::HabitConvertCancel
+        | UiEffect::HabitRemoveArm
+        | UiEffect::HabitRemoveCancel
         | UiEffect::HabitCreateToggle
         | UiEffect::SeriesConvertArm => EK::RecurIntent,
+        // The H4 editor opener (H4 D1): the settle-then-open view
+        // intent — the Nav class cells, no pair overrides.
+        UiEffect::HabitEdit => EK::HabitEditorOpen,
         // The recur editor's intents (round-7 D-7.1): the opener and
         // the detach strip's symmetric flag flips.
         UiEffect::SeriesEditorOpen => EK::SeriesEditOpen,
@@ -1562,6 +1570,9 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         // intent class as the entries' open.
         UiEffect::SeriesPauseOpen,
         UiEffect::HabitConvertArm,
+        UiEffect::HabitRemoveArm,
+        UiEffect::HabitRemoveCancel,
+        UiEffect::HabitEdit,
         UiEffect::HabitCreateToggle,
         UiEffect::SeriesConvertArm,
         // The recur editor's intents (round-7 D-7.1).
@@ -2758,6 +2769,11 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             // modal takeover, the flags ride the next pass.
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
+            | UiEffect::HabitRemoveArm
+            // The H4 editor opener: the settle-then-open view intent
+            // (the Nav family's class) — no modal takeover beyond the
+            // settle.
+            | UiEffect::HabitEdit
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
             // The recur editor's opener (round-7 D-7.1): a modal
@@ -2822,6 +2838,7 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BoardColorEdit
         | UiEffect::BoardDefaultPreset
         | UiEffect::HabitConvertCancel
+        | UiEffect::HabitRemoveCancel
         | UiEffect::OpenBoardBarFlyout => DismissClass::Survive,
     }
 }
