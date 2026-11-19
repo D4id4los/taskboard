@@ -1,0 +1,15 @@
+# Link with lld instead of the default GNU ld (bfd) on linux x86_64.
+# Why: the workspace links the full dependency graph once per
+# integration-test target (98+ binaries; 70% of incremental
+# --all-targets CPU time is link work) and bfd is the slowest
+# mainstream linker for large statically-linked binaries (#1069).
+# Constraint: `-Clinker-features=+lld` is still unstable on stable
+# rustc (verified on 1.99.0), so the stable spelling is a cc-level
+# link arg. Requires `ld.lld` on PATH (CI: the apt `lld` package, added
+# to the workflow install steps; dev: `sudo apt install lld` once).
+# Scope: rustflags are not profile-scopable in stable cargo, so this
+# applies to every profile on this target — release/linux also links
+# with lld (verified once in the chunk report); windows-msvc and mac
+# are untouched because the section is target-scoped.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-Clink-arg=-fuse-ld=lld"]
