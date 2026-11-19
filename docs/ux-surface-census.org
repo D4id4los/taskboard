@@ -273,7 +273,7 @@ sub-family) and `crates/taskboard-app/src/commands/`.
 | habit.edit | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | — (R-2) | E (pre-existing, =habits update=) |
 | habit.remove | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | X (pre-existing, =habits rm=) |
 | habit.log | — (R-1) | — (R-1) | E (desktop; kiosk: disabled) (habit-family US-1, amended 2026-11-15; H2 card-ified 2026-11-18 — the row seams are `adapter.rs::install_habit_seams` over =on_habits_log_clicked=, the done slot ≡ strip +1 shared seam, =habits_journey.rs::us1_s2=; the line-range refs below are the pre-H2 superseded spellings) — row seams `adapter.rs:7453-7467+`; the mis-click recovery is the row's "−1" sibling affordance (US-6, UX R-2 D-3 2026-11-15, #786) routing `HabitUndoLog` → the audited `AdjustHabitLog` (recorded inside this cell — no new verb row; no command of its own); T-41 remediation (2026-11-15, #824): the +1 also arms the transient status-line notice with the typed surplus fact (the logged count delta) at dispatch (`adapter.rs::arm_outcome_notice`) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing) |
-| habit.reorder | — (R-1) | — (R-1) | E (desktop; kiosk: disabled) (habit-family US-3, amended 2026-11-15; SUPERSEDED 2026-11-18 by H2 round 9 chunk 6 — the row's vertical reorder buttons retire; reorder lives in the habit context menu as the direction-bearing =HabitMoveUp=/=HabitMoveDown= pair (`actions.rs::HabitMoveUp`, `menu.rs::habit_context_page`, slots minted at menu open in `adapter.rs::habit_menu_entries` by the same floor-midpoint law; journey =habits_journey.rs= / =journeys.rs::the_menu_reorder_rows_mint_the_floor_midpoint_slots=; drag/keyboard reorder is H3's replacement) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, =habits update= --order `cli.rs:1314-1358`) |
+| habit.reorder | — (R-1) | — (R-1) | E (desktop; kiosk: disabled) (habit-family US-3, amended 2026-11-15; SUPERSEDED 2026-11-18 by H2 round 9 chunk 6 — the row's vertical reorder buttons retire; reorder lives in the habit context menu as the direction-bearing =HabitMoveUp=/=HabitMoveDown= pair (`actions.rs::HabitMoveUp`, `menu.rs::habit_context_page`, slots minted at menu open in `adapter.rs::habit_menu_entries` by the same floor-midpoint law; journey =habits_journey.rs= / =journeys.rs::the_menu_reorder_rows_mint_the_floor_midpoint_slots=; drag/keyboard reorder is H3's replacement; SUPERSEDED 2026-11-19 by H3 round 9 chunk 8 — the reorder pair is keyboard-bound (=HabitMoveUp= `Shift+Up` / =HabitMoveDown= `Shift+Down` in the Today context of all three preset tables; the walk's habit landing pre-mints the pair through the shared helper `adapter.rs::habit_move_slots`; one floor-midpoint arithmetic (`presentation.rs::habit_drop_order` over the shared live-order enumeration `presentation.rs::live_habits_in_order`) serves all three invocation paths — menu open, keyboard walk, drag gap; journeys =habits_journey.rs::us3_s2=, kiosk refusal typed =habits_journey.rs::the_reorder_pair_refuses_typed_on_kiosk=; the pointer gap-drop rides `// slint: habits-drop-asked= (the #918 board pattern; =habits_journey.rs::us4_s1=)) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, =habits update= --order `cli.rs:1314-1358`) |
 | habit.repair | — (R-1) | — (R-1) | E (desktop; kiosk: disabled) (habit-family US-4, amended 2026-11-15) — make-up repair affordance `adapter.rs:7094-7116`; =HabitRepair= `actions.rs:1334` (→ =AdjustHabitLog= `messages.rs:502`); T-23 remediation (2026-11-15, #806): the row model carries the typed =repair-undoable= bit — the =AdjustHabitLog= invert condition (target window holds a log row ⇒ exact invert; else the repair creates the row, =NotUndoable(HabitSurface)=) — and the affordance caption splits on it (the consequence named BEFORE the stroke; typed test `presentation.rs::the_habit_repair_row_signals_its_undo_side`) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, =habits adjust= `cli.rs:1300`) |
 | habit.convert_to_series | — (R-1) | — (R-1) | E (desktop; kiosk: disabled) (habit-family US-5, amended 2026-11-15; SUPERSEDED 2026-11-18 by H2 round 9 chunk 6, J1 R-3 — the row's armed strip retires; conversion is a context-menu SUBMENU entry whose armed confirm lives INSIDE the menu (O-7 Q3): `menu.rs::habit_context_page` + `habit_convert_children`, the arm flips the confirm via the one sanctioned re-projection `adapter.rs::reproject_habit_menu`, the =HabitConvertCancel= child disarms; journeys =habits_journey.rs::us2_s2=; the pre-H2 spelling) — armed conversion strip `adapter.rs:7122-7154`; =HabitConvertArm/=HabitConvertToSeries= `actions.rs:1346-1356` (→ =ConvertHabitToSeries= `messages.rs:451`); the menu route is wired (US-2, #832, 2026-11-17): the row's activation seam mints the adapter's =focused_habit= fact (=// slint: habit-row-activated=, seam inventory row) and the menu-routed =HabitConvertArm= effect arm routes the same arming helper as the row seam (one arming site — strip flags + window echo); subjectless dispatch surfaces the typed =NoTarget= notice (the T-19 twin); kiosk-inert guard (=journeys.rs::us2_ac1_menu_convert_arm_arms_the_row_strip= / =us2_ac2= / lib =us2_ac3=) | — (R-1) | — (R-1) | — (R-1) | U (HB-4) |
 | habit.state_display | — (R-1) | — (R-1) | D — progress/streak/chip/met row fields `habits.slint:21-30`, streak badge `habits.slint:202`, anchor chip `habits.slint:201`, met restyle `habits.slint:203`, quota error hint `habits.slint:187-191` (SUPERSEDED 2026-11-18 by H2 round 9 chunk 6 — the rows render on the task-card substrate: `models.rs::habit_card` fills the card slots, the time chip is the =HH:MM= mono scheduled slot `presentation.rs::habit_scheduled_phrase` (HAB-11; the meta-string ="@"+chip= retires), progress/streak ride typed =DecorationKind::Habit= chips, the day chip joins per the O-1 option-b law; journey =habits_journey.rs::us1_s1=) | — (R-1) | — (R-1) | — (R-1) | D (pre-existing, =habits list= `cli.rs:1282`) |
@@ -317,6 +317,41 @@ kept verbatim. Kiosk posture (HAB-14) restated for the card strip:
 every affordance renders DISABLED, never unmounted, and the habit
 menu OPENS on kiosk with every verb row greyed from the states map
 (=habits_journey.rs::the_kiosk_habit_menu_opens_with_every_verb_greyed=).
+
+H3 (round 9 chunk 8, 2026-11-19, #934/#935) keyboard-parity deltas,
+all dated to this chunk's PR: the today walk's domain widens from
+tasks-only to the =TodayRow= union (`view_state.rs::TodayRow` — task
+sections then the active board's live habits in stored `(order, id)`
+order, the same derivation `presentation.rs::habit_rows` keys the
+section model from), with the exclusive =focused_habit= cursor
+(`view_state.rs::focused_habit` / `walk_subject`; the landing write
+`focus_today_row` clears the twin; `reconcile` prunes a dead habit
+landing like the task cursor). The habit verbs' subject resolution
+unifies at `adapter.rs::effective_habit` — the walk cursor's landing
+when the walk has entered, the pointer click fact otherwise; a task
+landing resolves to a typed `None`. Keyboard access: =Space= under a
+habit landing routes =HabitLog= through the focused-subject
+translation `presentation.rs::translate_for_subject` (chunk 8 D3;
+=TaskEdit=/=TaskDelete= deliberately untranslated — H4's reserved
+verbs, the strokes fall to the typed refusal); =Shift+Up/=Shift+Down=
+bind =HabitMoveUp=/=HabitMoveDown= and =Ctrl+Shift+c=/=Ctrl+Shift+u=
+bind =HabitConvertArm=/=HabitUndoLog= in the Today context of all
+three preset tables (chunk 8 D4/D7; no round-8 collisions, no
+chunk-1 re-homes touched — the fold test
+`keymap/mod.rs::the_today_context_holds_no_duplicate_strokes_after_the_habit_rows`
+pins one exact stroke sequence per binding). The reorder pair's slot
+mint is one helper (`adapter.rs::habit_move_slots`: menu open,
+keyboard walk pre-mint), the drag gap minting through the same
+floor-midpoint arithmetic (`habit_drop_order` over the shared
+`presentation.rs::live_habits_in_order` enumeration). The habit list gains the #918 gap-drop drag
+(`// slint: habits-drop-asked` — delegate-resolved gap edge,
+`habit_drop_order` midpoint, `MoveHabit` via the menu's own id;
+kiosk absorbs silently). The route arm splits (chunk 8 D6, #935 /
+O-7 Q5): every =DispatchOutcome::NoTarget= surfaces the typed
+status-notice refusal from the action's registry description
+(`adapter.rs::arm_no_target_notice` — the T-19 family's `NoTarget`
+twin at ONE place), =Disabled= keeps its registry-armed posture;
+journey =habits_journey.rs::the_targetless_habit_dispatch_surfaces_the_typed_refusal=.
 | task.due_today | — (R-9; authority: 2026-11-14-task-lifecycle-ux-plan.md §2, 2026-11-14) | — (R-9; authority: 2026-11-14-task-lifecycle-ux-plan.md §2, 2026-11-14) | E — =TaskDueToday= "Due today (re-commit)" `actions.rs`, Today-only context; preset keys in every preset (Standard T, emacs C-c t, vi t) and the today-row context-menu row (remediated 2026-11-15, T-13 #796; CLI cell stays U — T-24's family) | — (R-9; authority: 2026-11-14-task-lifecycle-ux-plan.md §2, 2026-11-14) | — (R-9; authority: 2026-11-14-task-lifecycle-ux-plan.md §2, 2026-11-14) | — (R-9; authority: 2026-11-14-task-lifecycle-ux-plan.md §2, 2026-11-14) | U |
 | task.due_today | — (R-9; authority: 2026-11-14-task-lifecycle-ux-plan.md §2, 2026-11-14) | — (R-9; authority: 2026-11-14-task-lifecycle-ux-plan.md §2, 2026-11-14) | E — =TaskDueToday= "Due today (re-commit)" `actions.rs`, Today-only context; preset keys in every preset (Standard T, emacs C-c t, vi t) and the today-row context-menu row (remediated 2026-11-15, T-13 #796; CLI cell stays U — T-24's family;
 2026-11-18 #893: the re-commit now writes the day's *last covered
