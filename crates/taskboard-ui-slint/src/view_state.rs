@@ -22,6 +22,18 @@ use crate::actions::ContextId;
 use crate::presentation::{live_board, live_boards, stacks_in_board};
 use crate::router::Mode;
 
+/// One row of the today walk's domain (chunk 8 D2, #934): the walk
+/// widens from tasks-only to the task sections **then** the active
+/// board's live habits in stored `(order, id)` order — the same
+/// order `IdTables.habits` keys, so the walk's landing and the
+/// section's rows agree by construction. Habit rows are today-only
+/// (census R-1): no other view's domain carries them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodayRow {
+    Task(TaskId),
+    Habit(taskboard_domain::HabitId),
+}
+
 /// The pass's time bundle (chunk 10 D4): the fresh `now` and the
 /// `day_window` pair the adapter derives from its held
 /// `(day_start_time, offset)` custody — time is data, recomputed on
@@ -532,6 +544,15 @@ pub struct ViewState {
     subject_task: Option<TaskId>,
     /// The board's focused card (selection, not slint focus).
     focused_task: Option<TaskId>,
+    /// The today walk's focused habit row (chunk 8 D2, #934): the
+    /// habit half of the `TodayRow` walk domain's cursor. Mutually
+    /// exclusive with `focused_task` by construction — the today
+    /// stepper clears the twin on every landing — and never set
+    /// outside the today walk (habit rows are today-only, census
+    /// R-1); a task-side focus write elsewhere (board, detail,
+    /// selection) wins at the `walk_subject` read by task
+    /// precedence, so no stale habit ever answers a task stroke.
+    focused_habit: Option<taskboard_domain::HabitId>,
     /// The compact switcher's selected stack.
     selected_stack: Option<StackId>,
     /// The user-set stack column widths (round-1 D16), stored logical
@@ -743,6 +764,7 @@ impl ViewState {
             subject_stack: None,
             subject_task: None,
             focused_task: None,
+            focused_habit: None,
             selected_stack: None,
             stack_widths: BTreeMap::new(),
             retired: Vec::new(),
@@ -1195,6 +1217,29 @@ impl ViewState {
         self.focused_task
     }
 
+    /// The today walk's focused habit row (chunk 8 D2): the cursor's
+    /// habit half; `None` while the walk sits on a task row (the
+    /// stepper's exclusivity law) or nowhere.
+    #[must_use]
+    pub const fn focused_habit(&self) -> Option<taskboard_domain::HabitId> {
+        self.focused_habit
+    }
+
+    /// The walk cursor's subject (chunk 8 D3): the focused task or —
+    /// exclusively, the stepper's law — the focused habit. Task
+    /// precedence is deliberate: a task-side focus write from any
+    /// other surface (board, detail, selection) wins over a stale
+    /// habit landing, so a habit stroke can never answer a task
+    /// focus. `None` when the walk has not entered yet.
+    #[must_use]
+    pub fn walk_subject(&self) -> Option<crate::presentation::RowSubject> {
+        if let Some(task) = self.focused_task {
+            return Some(crate::presentation::RowSubject::Task(task));
+        }
+        self.focused_habit
+            .map(crate::presentation::RowSubject::Habit)
+    }
+
     /// The focused stack, always derived (D7): the focused task's
     /// stack; `None` without focus.
     #[must_use]
@@ -1633,10 +1678,13 @@ impl ViewState {
         day: &DayCtx,
     ) -> Vec<FlowOutcome> {
         // The Today view has no stack level: the flat section walk is
-        // the domain (chunk 10 D7), even in compact.
+        // the domain (chunk 10 D7), even in compact. Chunk 8 (D2,
+        // #934) widens the domain to `TodayRow` — the task sections
+        // then the active board's live habits — so the same keys
+        // traverse the habit section.
         if self.view() == ViewId::Today {
-            let domain = self.today_domain(state, kiosk, day);
-            let outcomes = self.step_flat_domain(direction, compact, &domain);
+            let rows = self.today_rows(state, kiosk, day);
+            let outcomes = self.step_today_rows(direction, compact, &rows);
             self.follow_board(state);
             return outcomes;
         }
@@ -1733,6 +1781,75 @@ impl ViewState {
         }
     }
 
+    /// The today walk's mechanics over the widened `TodayRow` domain
+    /// (chunk 8 D2, #934): the flat-walk rules of `step_flat_domain`
+    /// (no wrap, entry at the first row, compact retreat hands the
+    /// switcher level back) with the cursor split across the
+    /// exclusivity pair — a habit landing clears `focused_task`, a
+    /// task landing clears `focused_habit`.
+    fn step_today_rows(
+        &mut self,
+        direction: i32,
+        compact: bool,
+        rows: &[TodayRow],
+    ) -> Vec<FlowOutcome> {
+        let current = self.walk_subject().and_then(|subject| {
+            rows.iter().position(|row| match (*row, subject) {
+                (TodayRow::Task(task), crate::presentation::RowSubject::Task(focused)) => {
+                    task == focused
+                }
+                (TodayRow::Habit(habit), crate::presentation::RowSubject::Habit(focused)) => {
+                    habit == focused
+                }
+                _ => false,
+            })
+        });
+        let Some(current) = current else {
+            // No focus yet: entering the walk lands on the first row.
+            return match rows.first() {
+                Some(first) => {
+                    self.focus_today_row(*first);
+                    vec![FlowOutcome::RefreshNow]
+                }
+                None => Vec::new(),
+            };
+        };
+        let next = i64::from(direction) + i64::try_from(current).unwrap_or(0);
+        if next < 0 {
+            if compact {
+                // Retreat past the first row hands focus back to the
+                // switcher level (selection-follows-focus, D8).
+                self.focused_task = None;
+                self.focused_habit = None;
+                return vec![FlowOutcome::RefreshNow];
+            }
+            return Vec::new(); // no wrap (D7)
+        }
+        match rows.get(usize::try_from(next).unwrap_or(usize::MAX)) {
+            Some(row) => {
+                self.focus_today_row(*row);
+                vec![FlowOutcome::RefreshNow]
+            }
+            None => Vec::new(), // no wrap (D7): the ends hold
+        }
+    }
+
+    /// The today walk's landing write (chunk 8 D2): the exclusivity
+    /// law in one place — the twin cursor clears on every landing,
+    /// whichever half moves.
+    fn focus_today_row(&mut self, row: TodayRow) {
+        match row {
+            TodayRow::Task(task) => {
+                self.focused_task = Some(task);
+                self.focused_habit = None;
+            }
+            TodayRow::Habit(habit) => {
+                self.focused_habit = Some(habit);
+                self.focused_task = None;
+            }
+        }
+    }
+
     /// The task ids the focus walkers address (round 2, D20 — factored
     /// out of `step_focus` so the first/last jump shares the exact
     /// domain choice, one behaviour one home): compact walks the
@@ -1768,25 +1885,32 @@ impl ViewState {
         kiosk: bool,
         day: &DayCtx,
     ) -> Vec<FlowOutcome> {
-        let domain = if self.view() == ViewId::TaskDetail {
+        let rows = if self.view() == ViewId::TaskDetail {
             self.detail_item_domain(state)
+                .into_iter()
+                .map(TodayRow::Task)
+                .collect::<Vec<_>>()
         } else if self.view() == ViewId::Today {
-            self.today_domain(state, kiosk, day)
+            // The widened today domain (chunk 8 D2): tasks then habits.
+            self.today_rows(state, kiosk, day)
         } else {
             self.focus_domain(state, compact)
+                .into_iter()
+                .map(TodayRow::Task)
+                .collect::<Vec<_>>()
         };
         let target = match edge {
-            FocusEdge::First => domain.first(),
-            FocusEdge::Last => domain.last(),
+            FocusEdge::First => rows.first(),
+            FocusEdge::Last => rows.last(),
         };
         match target {
-            Some(id) => {
-                self.focused_task = Some(*id);
+            Some(row) => {
+                self.focus_today_row(*row);
                 // The detail's visible subject follows the jump (the
                 // D-2 route fix — the same absorption end as the
                 // step walk).
                 if self.view() == ViewId::TaskDetail {
-                    self.subject_task = Some(*id);
+                    self.subject_task = self.focused_task;
                 }
                 self.follow_board(state);
                 vec![FlowOutcome::RefreshNow]
@@ -1845,6 +1969,30 @@ impl ViewState {
         out
     }
 
+    /// The today walk's rows (chunk 8 D2, #934): `today_domain`'s
+    /// task rows in display order, then the active board's live
+    /// habits in stored `(order, id)` order — the section model's own
+    /// derivation (`presentation::live_habits_in_order`), so the
+    /// walk's landing and the rendered rows agree by construction.
+    /// Board-less days carry no habit rows (the section renders
+    /// empty with them).
+    #[must_use]
+    pub fn today_rows(&self, state: &AppState, kiosk: bool, day: &DayCtx) -> Vec<TodayRow> {
+        let mut rows: Vec<TodayRow> = self
+            .today_domain(state, kiosk, day)
+            .into_iter()
+            .map(TodayRow::Task)
+            .collect();
+        if let Some(board) = self.board {
+            rows.extend(
+                crate::presentation::live_habits_in_order(state, board)
+                    .into_iter()
+                    .map(|habit| TodayRow::Habit(habit.id)),
+            );
+        }
+        rows
+    }
+
     /// Selection-follows-focus (chunk 10 D7, D-V3): after each today
     /// focus step the board retargets to the row's board and the
     /// stack selection to the row's stack — keeping `focused_task` (a
@@ -1883,6 +2031,10 @@ impl ViewState {
         task: TaskId,
         stack: StackId,
     ) -> Vec<FlowOutcome> {
+        // The task landing clears the habit cursor (chunk 8 D2's
+        // exclusivity law at the pointer seam too — the walk's own
+        // twin of the stepper's landing write).
+        self.focused_habit = None;
         let outcomes = self.activate_card(task, stack);
         self.follow_board(state);
         outcomes
@@ -2496,6 +2648,7 @@ impl ViewState {
         };
         self.replace_root(mode.view());
         self.focused_task = None;
+        self.focused_habit = None;
         self.selected_stack = self.stack_ids(state).first().copied();
         if !outcomes.contains(&FlowOutcome::RefreshNow) {
             outcomes.push(FlowOutcome::RefreshNow);
@@ -3903,6 +4056,17 @@ impl ViewState {
         };
         if self.focused_task.is_some_and(|t| !is_live(t)) {
             self.focused_task = None;
+        }
+        // The habit cursor prunes like the task cursor (chunk 8 D2):
+        // a dead habit's landing clears on the same pass.
+        if self.focused_habit.is_some_and(|h| {
+            !state
+                .habits
+                .habits
+                .get(&h)
+                .is_some_and(taskboard_domain::Habit::is_live)
+        }) {
+            self.focused_habit = None;
         }
         // UX-R8 D-4's reconcile arm: the selection repairs like the
         // focus — dead members prune against this pass; a dead anchor
@@ -7965,5 +8129,214 @@ mod edit_recur_tests {
         let (vs, _, _) = armed();
         assert_eq!(vs.flow().tag(), crate::surfaces::FlowTag::EditRecur);
         assert_eq!(vs.chain_tags(), vec![crate::surfaces::FlowTag::EditRecur]);
+    }
+
+    // -- the today walk's habit half (chunk 8 D2, #934) ------------------
+
+    use proptest::prelude::*;
+    use taskboard_domain::{Habit, HabitClocks, HabitId, HabitTarget, NonZeroCount};
+
+    fn habit(id: HabitId, board: BoardId, order: i64) -> Habit {
+        Habit {
+            id,
+            board,
+            title: format!("habit-{order}"),
+            description: String::new(),
+            target: HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            order,
+            anchor_time: None,
+            anchor_day: None,
+            clocks: HabitClocks::all(epoch()),
+            continued_from: None,
+            deleted: false,
+            by: None,
+        }
+    }
+
+    /// The first test module's day bundle, re-stated: this module's
+    /// fixtures need the same window the task rows schedule into.
+    fn day() -> DayCtx {
+        use chrono::TimeZone as _;
+        DayCtx {
+            now: Utc.timestamp_opt(1_781_481_600, 0).unwrap(),
+            window: (
+                Utc.timestamp_opt(1_781_481_600, 0).unwrap(),
+                Utc.timestamp_opt(1_781_568_000, 0).unwrap(),
+            ),
+        }
+    }
+
+    /// A today fixture: two tasks scheduled inside the day window
+    /// (the walk's task half) and three live habits on the board at
+    /// orders 10/20/30 (the walk's habit half).
+    fn today_fixture() -> (AppState, BoardId, [TaskId; 2], [HabitId; 3]) {
+        use chrono::TimeZone as _;
+        let (mut state, board, _, [a, b, _c]) = fixture();
+        let window_start = Utc.timestamp_opt(1_781_481_600, 0).unwrap();
+        for (i, id) in [a, b].into_iter().enumerate() {
+            let t = state.tasks.get_mut(&id).expect("fixture task");
+            t.scheduled =
+                Some(window_start + chrono::Duration::hours(i64::try_from(i).unwrap_or(0) + 1));
+        }
+        let habits: [HabitId; 3] =
+            std::array::from_fn(|_| HabitId::from_uuid(uuid::Uuid::now_v7()));
+        for (i, id) in habits.iter().enumerate() {
+            state.habits.habits.insert(
+                *id,
+                habit(*id, board, 10 * (i64::try_from(i).unwrap_or(0) + 1)),
+            );
+        }
+        (state, board, [a, b], habits)
+    }
+
+    /// The today walk mounted the way the shell does: the Today root
+    /// over the fixture board.
+    fn today_walk(state: &AppState, board: BoardId) -> ViewState {
+        let mut vs = ViewState::new_starting(ViewId::Today);
+        vs.reconcile(state);
+        vs.select_board(state, board);
+        vs.focused_task = None; // the walk enters at its own first row
+        vs
+    }
+
+    #[test]
+    fn us3_s1_today_rows_orders_tasks_then_habits_in_stored_order() {
+        let (state, board, [a, b], [h0, h1, h2]) = today_fixture();
+        let vs = today_walk(&state, board);
+        assert_eq!(
+            vs.today_rows(&state, false, &day()),
+            vec![
+                TodayRow::Task(a),
+                TodayRow::Task(b),
+                TodayRow::Habit(h0),
+                TodayRow::Habit(h1),
+                TodayRow::Habit(h2),
+            ],
+            "the task sections lead, the habits follow in (order, id) order"
+        );
+    }
+
+    #[test]
+    fn us3_s1_the_walk_traverses_habit_rows_with_the_task_keys() {
+        let (state, board, [a, b], [h0, h1, h2]) = today_fixture();
+        let mut vs = today_walk(&state, board);
+        // Forward: two task landings then the three habit rows; the
+        // cursor halves stay exclusive on every landing.
+        vs.advance_focus(&state, false, false, &day());
+        assert_eq!(vs.focused_task(), Some(a));
+        assert_eq!(vs.focused_habit(), None);
+        vs.advance_focus(&state, false, false, &day());
+        vs.advance_focus(&state, false, false, &day());
+        assert_eq!(
+            vs.focused_habit(),
+            Some(h0),
+            "the walk crosses into the habit section on the same keys"
+        );
+        assert_eq!(vs.focused_task(), None, "the task cursor cleared");
+        vs.advance_focus(&state, false, false, &day());
+        vs.advance_focus(&state, false, false, &day());
+        assert_eq!(vs.focused_habit(), Some(h2));
+        vs.advance_focus(&state, false, false, &day());
+        assert_eq!(vs.focused_habit(), Some(h2), "no wrap at the end");
+        // Backward: the habit rows replay in reverse, then the tasks.
+        vs.retreat_focus(&state, false, false, &day());
+        vs.retreat_focus(&state, false, false, &day());
+        assert_eq!(vs.focused_habit(), Some(h0));
+        vs.retreat_focus(&state, false, false, &day());
+        assert_eq!(vs.focused_task(), Some(b), "back into the task sections");
+        assert_eq!(vs.focused_habit(), None);
+        let _ = h1;
+    }
+
+    #[test]
+    fn the_walks_cursor_halves_stay_exclusive_across_the_compact_retreat() {
+        let (state, board, _, _) = today_fixture();
+        let mut vs = today_walk(&state, board);
+        // Enter, step onto a habit, retreat twice: the second retreat
+        // hands the switcher level back with BOTH cursor halves clear.
+        vs.advance_focus(&state, true, false, &day());
+        vs.advance_focus(&state, true, false, &day());
+        vs.advance_focus(&state, true, false, &day());
+        assert!(vs.focused_habit().is_some());
+        vs.retreat_focus(&state, true, false, &day());
+        vs.retreat_focus(&state, true, false, &day());
+        vs.retreat_focus(&state, true, false, &day());
+        assert_eq!(vs.focused_task(), None);
+        assert_eq!(vs.focused_habit(), None, "the switcher level holds both");
+    }
+
+    #[test]
+    fn jump_focus_targets_the_widened_domain_ends() {
+        let (state, board, [a, _], [_, _, h2]) = today_fixture();
+        let mut vs = today_walk(&state, board);
+        vs.jump_focus(&state, FocusEdge::Last, false, false, &day());
+        assert_eq!(vs.focused_habit(), Some(h2), "last is the last habit");
+        vs.jump_focus(&state, FocusEdge::First, false, false, &day());
+        assert_eq!(vs.focused_task(), Some(a), "first is the first task");
+        assert_eq!(vs.focused_habit(), None);
+    }
+
+    #[test]
+    fn a_dead_habit_landing_prunes_on_reconcile() {
+        let (mut state, board, _, [h0, _, _]) = today_fixture();
+        let mut vs = today_walk(&state, board);
+        vs.advance_focus(&state, false, false, &day());
+        vs.advance_focus(&state, false, false, &day());
+        vs.advance_focus(&state, false, false, &day());
+        assert_eq!(vs.focused_habit(), Some(h0));
+        let dead = state.habits.habits.get_mut(&h0).expect("habit");
+        dead.deleted = true;
+        vs.reconcile(&state);
+        assert_eq!(vs.focused_habit(), None, "the dead landing cleared");
+        assert_eq!(vs.focused_task(), None);
+    }
+
+    #[test]
+    fn a_today_walk_with_two_tasks_and_three_habits_steps_end_to_end_snapshot() {
+        let (state, board, [a, b], [h0, h1, h2]) = today_fixture();
+        let mut vs = today_walk(&state, board);
+        let mut landings: Vec<Option<crate::presentation::RowSubject>> = vec![vs.walk_subject()];
+        for _ in 0..6 {
+            vs.advance_focus(&state, false, false, &day());
+            landings.push(vs.walk_subject());
+        }
+        let named: Vec<String> = landings
+            .into_iter()
+            .map(|s| match s {
+                Some(crate::presentation::RowSubject::Task(t)) if t == a => "task-a".into(),
+                Some(crate::presentation::RowSubject::Task(t)) if t == b => "task-b".into(),
+                Some(crate::presentation::RowSubject::Habit(h)) if h == h0 => "habit-0".into(),
+                Some(crate::presentation::RowSubject::Habit(h)) if h == h1 => "habit-1".into(),
+                Some(crate::presentation::RowSubject::Habit(h)) if h == h2 => "habit-2".into(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        insta::assert_debug_snapshot!("today_walk_end_to_end", named);
+    }
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+        #[test]
+        fn today_rows_habit_order_is_stable_under_arbitrary_insertion(o0 in 0i64..1000, o1 in 0i64..1000, o2 in 0i64..1000) {
+                let (mut state, board, _, [h0, h1, h2]) = today_fixture();
+                for (id, order) in [(h0, o0), (h1, o1), (h2, o2)] {
+                    state.habits.habits.get_mut(&id).unwrap().order = order;
+                }
+                let vs = today_walk(&state, board);
+                let habit_rows: Vec<HabitId> = vs
+                    .today_rows(&state, false, &day())
+                    .into_iter()
+                    .filter_map(|row| match row {
+                        TodayRow::Habit(id) => Some(id),
+                        TodayRow::Task(_) => None,
+                    })
+                    .collect();
+                let mut expected = habit_rows.clone();
+                expected.sort_by_key(|id| {
+                    let h = state.habits.habits.get(id).unwrap();
+                    (h.order, h.id)
+                });
+            prop_assert_eq!(habit_rows, expected);
+        }
     }
 }

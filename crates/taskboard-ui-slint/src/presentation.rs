@@ -7600,9 +7600,30 @@ pub struct HabitRow {
     pub met: bool,
 }
 
+/// The board's **live** habits in stored manual `(order, id)` order
+/// (D-C13 — the negative `anchor_time` property extends to this
+/// layer). One ordering derivation for every consumer that must agree
+/// with the rendered section — the today view's habit rows, the
+/// today walk's domain (`view_state::today_rows`), and the reorder
+/// mint's board-scoped order — so the walk's landing, the section
+/// model, and the slot arithmetic key the same sequence.
+#[must_use]
+pub(crate) fn live_habits_in_order(
+    state: &taskboard_domain::AppState,
+    board: taskboard_domain::BoardId,
+) -> Vec<&taskboard_domain::Habit> {
+    let mut live: Vec<&taskboard_domain::Habit> = state
+        .habits
+        .habits
+        .values()
+        .filter(|h| h.is_live() && h.board == board)
+        .collect();
+    live.sort_by_key(|h| (h.order, h.id));
+    live
+}
+
 /// The today view's habit rows (pure): the active board's **live**
-/// habits in stored manual `(order, id)` order (D-C13 — the negative
-/// `anchor_time` property extends to this layer), the count read from
+/// habits in stored manual `(order, id)` order, the count read from
 /// the current window's row, the streak the domain walk unioned
 /// through the conversion seam.
 #[must_use]
@@ -7613,13 +7634,7 @@ pub fn habit_rows(
     day: taskboard_domain::DayCalendar,
 ) -> Vec<HabitRow> {
     let today = day.today(now);
-    let mut live: Vec<&taskboard_domain::Habit> = state
-        .habits
-        .habits
-        .values()
-        .filter(|h| h.is_live() && h.board == board)
-        .collect();
-    live.sort_by_key(|h| (h.order, h.id));
+    let live = live_habits_in_order(state, board);
     live.iter()
         .map(|habit| {
             let window = taskboard_domain::WindowStart::of_period(habit.target.kind(), today);
