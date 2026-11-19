@@ -427,13 +427,11 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavLastItem, ContextId::StackDetail, &["Ctrl+End"]),
     (ActionId::TaskCreate, ContextId::StackDetail, &["N"]),
     // TaskDetail: the item-walk member rows are RETIRED (J3 R-3,
-    // 2026-11-19 — the subject walk is gone, census-dated; the
-    // directional NavFocus* rows own the detail's keys from the
-    // retune commit). The title re-arm keeps its F2.
-    // TaskDetail: the directional rows (J3 US-1, round 9 chunk 9) —
-    // the detail's keys are the CONTROL walk now (the item walk is
-    // retired, J3 R-3; the degenerate ladder geometry is the
-    // interpretation table's recorded reading).
+    // 2026-11-19 — the subject walk is gone, census-dated) and the
+    // directional rows (J3 US-1, round 9 chunk 9) take the detail's
+    // keys: the CONTROL walk now (the degenerate ladder geometry is
+    // the interpretation table's recorded reading). The title re-arm
+    // keeps its F2.
     (ActionId::NavFocusLeft, ContextId::TaskDetail, &["Left"]),
     (ActionId::NavFocusRight, ContextId::TaskDetail, &["Right"]),
     (ActionId::NavFocusUp, ContextId::TaskDetail, &["Up"]),
