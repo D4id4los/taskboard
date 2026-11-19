@@ -446,6 +446,58 @@ mod tests {
         }
     }
 
+    /// Chunk 8 (D4/D7, #934): the habit keyboard rows resolve their
+    /// strokes through the full `[Today, Global]` chain in every
+    /// preset — the shifted arrows reach the keymap intact (the
+    /// arrows' shift-fold leniency covers printable rows only), and
+    /// the chorded letters carry the chunk-1 case-law spelling.
+    #[test]
+    fn every_preset_resolves_the_habit_keyboard_rows_in_the_today_chain() {
+        let chain = [ContextId::Today, ContextId::Global];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for verb in [
+                ActionId::HabitMoveUp,
+                ActionId::HabitMoveDown,
+                ActionId::HabitConvertArm,
+                ActionId::HabitUndoLog,
+            ] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} does not resolve {verb} in the today chain"
+                );
+            }
+        }
+    }
+
+    /// Chunk 8 (D7): the four new Today rows introduce no stroke
+    /// collision inside the Today context — one stroke, one binding
+    /// per context is the grammar the translation (D3) composes
+    /// against.
+    #[test]
+    fn the_today_context_holds_no_duplicate_strokes_after_the_habit_rows() {
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let mut seen = std::collections::BTreeMap::new();
+            for (action, context, spellings) in preset.rows() {
+                if context != ContextId::Today {
+                    continue;
+                }
+                // The sequence's full spelling list is the identity —
+                // a shared first key with a longer sequence (the
+                // emacs `Ctrl+c t` family's exact-match-first
+                // prefixing) is the documented leniency, not a
+                // collision.
+                let sequence = spellings.join("\u{1f}");
+                if let Some(first) = seen.insert(sequence.clone(), action) {
+                    assert_eq!(
+                        first, action,
+                        "{preset:?}: {sequence:?} binds both {first} and {action} in Today"
+                    );
+                }
+            }
+        }
+    }
+
     /// T6 — core-verb coverage (D8/D9/D21): every core verb has ≥ 1
     /// binding in every preset, so no preset is a second-class
     /// citizen (Q14). The vi preset additionally carries the mode
@@ -508,6 +560,13 @@ mod tests {
             // bound in every preset (the no-second-class gate now
             // enforces that forever).
             ActionId::HabitCreate,
+            // Chunk 8 (D4/D7, #934): the keyboard reorder pair and
+            // the arm/undo keys join the core set — bound in every
+            // preset (the same no-second-class gate).
+            ActionId::HabitMoveUp,
+            ActionId::HabitMoveDown,
+            ActionId::HabitConvertArm,
+            ActionId::HabitUndoLog,
         ];
         for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
             let bound: std::collections::BTreeSet<ActionId> =

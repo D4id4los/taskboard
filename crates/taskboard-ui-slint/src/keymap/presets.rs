@@ -340,6 +340,21 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // the accessibility ledger's demand, so all three presets carry
     // it (the habit family's deliberate exception).
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
+    // Chunk 8 (D4/D7, #934): keyboard reorder through the chunk-6
+    // one-shot pair — the row-scoped movement grammar; Today's
+    // shifted arrows are free (the board's shift-walk selection
+    // extension is Board-scoped) and the arrows' shift-fold leniency
+    // covers printable rows only, so the shifted arrows reach the
+    // keymap intact. The arm/undo keys are the free chords (the
+    // chunk-1 case-law spelling).
+    (ActionId::HabitMoveUp, ContextId::Today, &["Shift+Up"]),
+    (ActionId::HabitMoveDown, ContextId::Today, &["Shift+Down"]),
+    (
+        ActionId::HabitConvertArm,
+        ContextId::Today,
+        &["Ctrl+Shift+c"],
+    ),
+    (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     // The switcher flyout's opener (UX R-4 D-4, #794): the jump-to
@@ -693,6 +708,21 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Round 7 (D-7.2): the create form's opener — the CUA chord, free
     // in this preset's Today (the accessibility ledger's parity row).
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
+    // Chunk 8 (D4/D7, #934): keyboard reorder through the chunk-6
+    // one-shot pair — the row-scoped movement grammar; Today's
+    // shifted arrows are free (the board's shift-walk selection
+    // extension is Board-scoped) and the arrows' shift-fold leniency
+    // covers printable rows only, so the shifted arrows reach the
+    // keymap intact. The arm/undo keys are the free chords (the
+    // chunk-1 case-law spelling).
+    (ActionId::HabitMoveUp, ContextId::Today, &["Shift+Up"]),
+    (ActionId::HabitMoveDown, ContextId::Today, &["Shift+Down"]),
+    (
+        ActionId::HabitConvertArm,
+        ContextId::Today,
+        &["Ctrl+Shift+c"],
+    ),
+    (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
     // Round 3 (W-SM-d, F26): the title re-arm — Return at detail is
     // unambiguous once task-detail entry no longer auto-arms (emacs
     // binds Return only at Board/Today for `task.edit`).
@@ -1094,6 +1124,21 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     // parity row; the Today context is chain-visible in vi too
     // (the `[Today, ViNormal, Global]` chain shape).
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
+    // Chunk 8 (D4/D7, #934): keyboard reorder through the chunk-6
+    // one-shot pair — the row-scoped movement grammar; Today's
+    // shifted arrows are free (the board's shift-walk selection
+    // extension is Board-scoped) and the arrows' shift-fold leniency
+    // covers printable rows only, so the shifted arrows reach the
+    // keymap intact. The arm/undo keys are the free chords (the
+    // chunk-1 case-law spelling).
+    (ActionId::HabitMoveUp, ContextId::Today, &["Shift+Up"]),
+    (ActionId::HabitMoveDown, ContextId::Today, &["Shift+Down"]),
+    (
+        ActionId::HabitConvertArm,
+        ContextId::Today,
+        &["Ctrl+Shift+c"],
+    ),
+    (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
     // The today re-commit (UX R-4 D-8, #796): the bare mnemonic in
     // the Today context (the HabitCreate row's pattern — the view
     // context resolves before ViNormal); free in both contexts.

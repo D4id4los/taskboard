@@ -84,8 +84,14 @@ expression: rows
             - T
           action: task.due-today
         - sequence:
+            - Ctrl+Shift+c
+          action: habit.convert-arm
+        - sequence:
             - Ctrl+Shift+h
           action: habit.create
+        - sequence:
+            - Ctrl+Shift+u
+          action: habit.unlog
         - sequence:
             - Delete
           action: task.delete
@@ -93,8 +99,14 @@ expression: rows
             - Up
           action: nav.prev-item
         - sequence:
+            - Shift+Up
+          action: habit.move-up
+        - sequence:
             - Down
           action: nav.next-item
+        - sequence:
+            - Shift+Down
+          action: habit.move-down
         - sequence:
             - F9
           action: task.track-start
@@ -638,6 +650,9 @@ expression: rows
             - Ctrl+y
           action: task.schedule-today
         - sequence:
+            - Ctrl+Shift+c
+          action: habit.convert-arm
+        - sequence:
             - Ctrl+d
           action: task.delete
         - sequence:
@@ -653,11 +668,20 @@ expression: rows
             - Ctrl+p
           action: nav.prev-item
         - sequence:
+            - Ctrl+Shift+u
+          action: habit.unlog
+        - sequence:
             - Alt+v
           action: view.scroll-up
         - sequence:
             - Ctrl+v
           action: view.scroll-down
+        - sequence:
+            - Shift+Up
+          action: habit.move-up
+        - sequence:
+            - Shift+Down
+          action: habit.move-down
     - context: board
       bindings:
         - sequence:
@@ -1130,14 +1154,26 @@ expression: rows
             - Y
           action: task.schedule-tomorrow
         - sequence:
+            - Ctrl+Shift+c
+          action: habit.convert-arm
+        - sequence:
             - Ctrl+Shift+h
           action: habit.create
         - sequence:
             - t
           action: task.due-today
         - sequence:
+            - Ctrl+Shift+u
+          action: habit.unlog
+        - sequence:
             - y
           action: task.schedule-today
+        - sequence:
+            - Shift+Up
+          action: habit.move-up
+        - sequence:
+            - Shift+Down
+          action: habit.move-down
     - context: board
       bindings:
         - sequence:
