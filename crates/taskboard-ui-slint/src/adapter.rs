@@ -11463,6 +11463,12 @@ fn settle_pointer_conflict_keeping_selection(
     if matches!(adapter.view_state.flow(), Flow::EditDate { .. }) {
         settle_date_editor(adapter, window);
     }
+    // The M9 dirty-close law: the leaving settle commits the armed
+    // effort draft (R-9's autosave on leaving the field; the guard
+    // makes an unchanged value dispatch nothing). The focus-loss
+    // seam's echo here is the `[try]`-absorbed shape — this direct
+    // call is the commit's owner.
+    commit_effort_editor(adapter, window);
     let state = adapter.state.load_full();
     let selection = adapter.view_state.take_selection();
     adapter.settle_flow(window, &state);
@@ -12049,12 +12055,10 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
-    // The x-clear (the date fields' clear affordance): commits the
-    // clear twin over the subject directly.
-    // The focus-loss settle (the shared rule: parseable commits,
-    // empty/junk discards — the prior value survives, the editor
-    // collapses).
-    install_seam!(window: window.on_task_effort_focus_lost, adapter: adapter;
+    // The focus-loss settle (the M9 always-on row's commit funnel:
+    // parseable buffers commit, unparseable ones refuse in place —
+    // the typed text stays for the user to fix).
+    install_seam!(window: window.on_task_effort_focus_lost, adapter: adapter; [try] // slint callback: task-effort-focus-lost (the always-on row's commit seam, round-9 W-4)
     bind mut (a, window), args (), {        // The D-5 law: the focus-loss IS the commit — the guard makes a
         // blur of an unchanged value dispatch nothing, so Return +
         // blur never double-dispatch. An unparseable buffer
