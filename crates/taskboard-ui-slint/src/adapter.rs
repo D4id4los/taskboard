@@ -598,6 +598,10 @@ pub(crate) struct Adapter {
     /// task-delete/`BreakRuleRemove` grammar verbatim — the arm
     /// stages adapter-side, the confirm routes `DeleteHabit`.
     habit_remove_armed: Option<taskboard_domain::HabitId>,
+    /// The habit editor's staged draft (H4 D5): the field mirrors the
+    /// editor rows push; dies with its subject (the editor's
+    /// escape/cancel discipline — no draft persistence).
+    habit_edit_draft: Option<crate::router::HabitEditDraft>,
     /// The create form's armed flag (round-7 D-7.2): the inline form
     /// mounts below the section header while true — adapter-owned,
     /// pushed per pass (the armed-strip doctrine; no transient UI
@@ -2693,6 +2697,11 @@ impl Adapter {
         }) {
             self.habit_remove_armed = None;
         }
+        // The editor's draft dies with its subject (the editor's
+        // escape/cancel discipline — the buffer-never-outlives rule).
+        if self.view_state.subject_habit().is_none() {
+            self.habit_edit_draft = None;
+        }
         let recur = crate::models::RecurRowPush {
             pause_open: self.recur_pause_open,
             confirm_open: self.recur_confirm_armed,
@@ -2809,6 +2818,7 @@ impl Adapter {
             label_armed_index,
             break_rule_armed_index,
             (self.reflection_active, self.reflection_armed),
+            self.habit_edit_draft.as_ref(),
         );
         // The create-focus handoff's hint half (UX-R8 chunk-5 D-7):
         // the tables are fresh — edge-trigger the FocusScrollHint
@@ -4590,6 +4600,17 @@ impl Adapter {
             (_, UiEffect::HabitEdit) if self.kiosk => Vec::new(),
             (Flow::None, UiEffect::HabitEdit) => {
                 if let Some(habit) = self.habit_edit_subject() {
+                    // The draft seeds from the stored row (the editor
+                    // opens showing the habit as it is); it dies with
+                    // the editor (cancel/escape/close — no draft
+                    // persistence, D1).
+                    self.habit_edit_draft = self
+                        .state
+                        .load()
+                        .habits
+                        .habits
+                        .get(&habit)
+                        .map(crate::router::HabitEditDraft::from_habit);
                     let outcomes = self.view_state.open_habit_editor(habit);
                     self.apply_outcomes(window, &outcomes);
                     self.finish_mutation(window);
@@ -9828,6 +9849,7 @@ pub(crate) fn install(
         walk_abort_armed: false,
         habit_convert_armed: None,
         habit_remove_armed: None,
+        habit_edit_draft: None,
         habit_create_open: false,
         habit_create_draft: None,
         habit_create_quota: String::new(),
@@ -10081,6 +10103,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_habit_seams(window, adapter);
     install_recur_seams(window, adapter);
     install_recur_editor_seams(window, adapter);
+    install_habit_editor_seams(window, adapter);
     install_settings_seams(window, adapter);
 }
 
@@ -11601,6 +11624,176 @@ fn install_task_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_task_back_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::NavFocusBoard);
 
+    });
+}
+
+/// The habit editor's seams (H4 D5): the draft mirrors, the per-kind
+/// day row, and the save/cancel pair. Every mirror mutates only the
+/// adapter-owned draft (no engine state — the commit computes the
+/// sparse changeset); the validity flavours re-parse at the trust
+/// boundary per edit (the count mints through `NonZeroCount`, the
+/// month day through `MonthDay`, the time through the due editor's
+/// lenient parser).
+#[allow(clippy::too_many_lines)] // ten seams, one grammar
+fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    install_seam!(window: window.on_habit_title_edited, adapter: adapter;
+    bind mut (a, window), args (t), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.title = t.to_string();
+        }
+    });
+    install_seam!(window: window.on_habit_description_edited, adapter: adapter;
+    bind mut (a, window), args (t), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.description = t.to_string();
+        }
+    });
+    // The quota row: the kind re-seats the target (a now-mismatched
+    // day is carried inert — the D5 decision), the count mints
+    // per-keystroke (the create form's validity grammar).
+    install_seam!(window: window.on_habit_quota_kind_picked, adapter: adapter;
+    bind mut (a, window), args (index), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            let kind = match index {
+                0 => taskboard_domain::PeriodKind::Day,
+                1 => taskboard_domain::PeriodKind::Week,
+                _ => taskboard_domain::PeriodKind::Month,
+            };
+            if let Some(count) = draft.parsed_count() {
+                draft.target = match kind {
+                    taskboard_domain::PeriodKind::Day => {
+                        taskboard_domain::HabitTarget::PerDay(count)
+                    }
+                    taskboard_domain::PeriodKind::Week => {
+                        taskboard_domain::HabitTarget::PerWeek(count)
+                    }
+                    taskboard_domain::PeriodKind::Month => {
+                        taskboard_domain::HabitTarget::PerMonth(count)
+                    }
+                };
+            }
+        }
+    });
+    install_seam!(window: window.on_habit_quota_count_edited, adapter: adapter;
+    bind mut (a, window), args (t), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.quota_count = t.to_string();
+            draft.quota_valid =
+                draft.parsed_count().is_some() || draft.quota_count.trim().is_empty();
+            // Re-seat the target from the fresh parse when it holds.
+            if let Some(count) = draft.parsed_count() {
+                draft.target = match draft.quota_kind_index() {
+                    0 => taskboard_domain::HabitTarget::PerDay(count),
+                    1 => taskboard_domain::HabitTarget::PerWeek(count),
+                    _ => taskboard_domain::HabitTarget::PerMonth(count),
+                };
+            }
+        }
+    });
+    install_seam!(window: window.on_habit_time_edited, adapter: adapter;
+    bind mut (a, window), args (t), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.time_text = t.to_string();
+            draft.time_edited = true;
+            match crate::due_edit::parse_time_lenient(t.trim()) {
+                Some(time) => {
+                    draft.time_valid = true;
+                    draft.anchor_time = Some(time);
+                    draft.time_set = true;
+                }
+                None => {
+                    draft.time_valid = false;
+                }
+            }
+        }
+    });
+    install_seam!(window: window.on_habit_time_cleared, adapter: adapter;
+    bind mut (a, window), args (), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.time_text.clear();
+            draft.anchor_time = None;
+            draft.time_set = false;
+            draft.time_valid = true;
+            draft.time_edited = true;
+        }
+    });
+    // The 7-slot weekday picker (the PerWeek variant's day row).
+    install_seam!(window: window.on_habit_weekday_picked, adapter: adapter;
+    bind mut (a, window), args (index), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            let wd = match index {
+                0 => chrono::Weekday::Mon,
+                1 => chrono::Weekday::Tue,
+                2 => chrono::Weekday::Wed,
+                3 => chrono::Weekday::Thu,
+                4 => chrono::Weekday::Fri,
+                5 => chrono::Weekday::Sat,
+                _ => chrono::Weekday::Sun,
+            };
+            draft.anchor_day = Some(taskboard_domain::habit::AnchorDay::Weekday(wd));
+            draft.day_edited = true;
+        }
+    });
+    // The 1..=31 day field (the PerMonth variant's row) — the mint
+    // rejects 0 and past 31 (the type's own trust boundary).
+    install_seam!(window: window.on_habit_month_day_edited, adapter: adapter;
+    bind mut (a, window), args (t), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.month_day = t.to_string();
+            draft.day_edited = true;
+            match t
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .and_then(|n| taskboard_domain::habit::MonthDay::new(n).ok())
+            {
+                Some(day) => {
+                    draft.month_valid = true;
+                    draft.anchor_day =
+                        Some(taskboard_domain::habit::AnchorDay::MonthDay(day));
+                }
+                None => {
+                    draft.month_valid = false;
+                }
+            }
+        }
+    });
+    // The save: ONE sparse `UpdateHabit` computed against the stored
+    // row, then the editor closes (the back grammar — the subject
+    // dies with the root swap). An empty changeset is unreachable
+    // (the gate greys); a stale draft's dead subject reads no row.
+    install_seam!(window: window.on_habit_save_clicked, adapter: adapter;
+    bind mut (a, window), args (), {
+        let draft = a.habit_edit_draft.clone();
+        if let Some(draft) = draft
+            && let Some(stored) =
+                a.state.load().habits.habits.get(&draft.habit).cloned()
+            && draft.can_save(&stored)
+        {
+            a.send(taskboard_domain::StateCommand::UpdateHabit {
+                habit: draft.habit,
+                changes: draft.changes(&stored),
+            });
+            a.habit_edit_draft = None;
+            a.route(&window, ActionId::NavFocusBoard);
+            a.finish_mutation(&window);
+        }
+    });
+    // The cancel (the back button's twin): discard-and-close —
+    // nothing dispatches.
+    install_seam!(window: window.on_habit_editor_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {
+        a.habit_edit_draft = None;
+        a.route(&window, ActionId::NavFocusBoard);
+        a.finish_mutation(&window);
     });
 }
 

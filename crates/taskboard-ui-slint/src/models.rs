@@ -1056,6 +1056,9 @@ pub fn push(
         Option<taskboard_domain::ReflectionId>,
         Option<taskboard_domain::ReflectionId>,
     ),
+    // The habit editor's draft (H4 D5): `Some` exactly while the
+    // habit variant mounts (the view_state subject's twin).
+    habit: Option<&crate::router::HabitEditDraft>,
 ) -> IdTables {
     let now = day.now;
     let sets = presentation::due_sets(state, now, due.horizon);
@@ -1196,6 +1199,7 @@ pub fn push(
         effort,
         label_armed_index,
         calendar,
+        habit,
     );
     mutations += push_review(
         window,
@@ -2304,6 +2308,7 @@ fn push_task_detail(
     effort: Option<&crate::models::EffortEditorPush<'_>>,
     label_armed_index: i32,
     calendar: taskboard_domain::DayCalendar,
+    habit: Option<&crate::router::HabitEditDraft>,
 ) -> usize {
     let subject = vs.subject_task().and_then(|t| state.tasks.get(&t));
     // The recur row's display half (issue #506): the pattern echo and
@@ -2701,8 +2706,33 @@ fn push_task_detail(
             Some(false) => crate::FieldValidity::Invalid,
         },
         offset_error_hint: SharedString::from(due.offset_hint),
+        // The habit variant's mount discriminator (H4 D1): the
+        // task-only sections hide behind it in the view.
+        is_habit: habit.is_some(),
     });
     tables.task_rules = task_rules;
+    // The habit editor's pushed half (H4 D5): the draft-backed
+    // fields. Pushed only while the variant mounts (the mount
+    // discriminator's own model).
+    if let Some(draft) = habit {
+        let stored = state.habits.habits.get(&draft.habit);
+        let can_save = stored.is_some_and(|row| draft.can_save(row));
+        window.set_habit_model(crate::HabitDetailModel {
+            title: SharedString::from(draft.title.clone()),
+            description: SharedString::from(draft.description.clone()),
+            quota_kind: i32::try_from(draft.quota_kind_index()).unwrap_or(0),
+            quota_count: SharedString::from(draft.quota_count.clone()),
+            quota_valid: draft.quota_valid,
+            time_text: SharedString::from(draft.time_text.clone()),
+            time_set: draft.time_set,
+            time_valid: draft.time_valid,
+            kind: i32::try_from(draft.quota_kind_index()).unwrap_or(0),
+            weekday: draft.weekday_index(),
+            month_day: SharedString::from(draft.month_day.clone()),
+            month_valid: draft.month_valid,
+            can_save,
+        });
+    }
     // The labels overlay's roster (UX R-3 D-2, #789): the subject
     // board's live labels with the subject's assignment bit — the
     // fresh-VecModel-per-pass shape (the track-entries rows' rule;
@@ -5024,6 +5054,7 @@ mod tests {
                 -1,
                 -1,
                 (None, None),
+                None,
             )
         }
 
