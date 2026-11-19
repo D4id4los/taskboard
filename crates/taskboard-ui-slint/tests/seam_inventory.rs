@@ -189,6 +189,18 @@ const SEAM_INVENTORY: &[&str] = &[
     "notification_mute_clicked",
     "notification_row_open_requested",
     "notification_snooze_span_picked",
+    // The habit editor's seams (H4 D5): the draft mirrors, the
+    // per-kind day row, and the save/cancel pair.
+    "habit_title_edited",
+    "habit_description_edited",
+    "habit_quota_kind_picked",
+    "habit_quota_count_edited",
+    "habit_time_edited",
+    "habit_time_cleared",
+    "habit_weekday_picked",
+    "habit_month_day_edited",
+    "habit_save_clicked",
+    "habit_editor_cancelled",
     "notification_track_start_clicked",
     "plan_box_activated",
     "plan_box_earlier",

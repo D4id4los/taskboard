@@ -34,7 +34,7 @@ import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/bo
 import { StackView, StackDetailModel } from "views/stack-view.slint";
 import { TodayView, TodayModel } from "views/today-view.slint";
 import { PlanNextDayView, PlanModel } from "views/plan-next-day-view.slint";
-import { TaskView, TaskDetailModel } from "views/task-view.slint";
+import { TaskView, TaskDetailModel, HabitDetailModel } from "views/task-view.slint";
 import { ReviewView, ReviewModel, ReflectionFlagChip } from "views/review-view.slint";
 export { ReviewModel }
 export { TimerRowModel, BreakRuleRowModel }
@@ -269,6 +269,9 @@ export component AppWindow inherits Window {
     in-out property <BoardBarModel> board-bar-model;
     in-out property <StackDetailModel> stack-model;
     in-out property <TaskDetailModel> task-model;
+    // The habit editor's pushed half (H4 D5): the sibling model the
+    // variant's rows read (the mount discriminator gates the view).
+    in-out property <HabitDetailModel> habit-model;
     in-out property <SyncBadgeModel> sync-model;
     in-out property <[BannerRowModel]> banner-model;
     in-out property <int> banner-overflow;
@@ -663,6 +666,7 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.task-detail): TaskView {
                 task: root.task-model;
+                habit: root.habit-model;
                 nav-back-hint: root.nav-back-hint;
                 task-done-hint: root.task-done-hint;
                 task-title-edit-hint: root.task-title-edit-hint;
@@ -672,6 +676,16 @@ export component AppWindow inherits Window {
                 title-edit-opened() => root.task-title-edit-activated();
                 text-flow-focus-lost() => root.text-flow-focus-lost();
                 back-clicked() => root.task-back-clicked();
+                habit-title-edited(t) => root.habit-title-edited(t);
+                habit-description-edited(t) => root.habit-description-edited(t);
+                habit-quota-kind-picked(i) => root.habit-quota-kind-picked(i);
+                habit-quota-count-edited(t) => root.habit-quota-count-edited(t);
+                habit-time-edited(t) => root.habit-time-edited(t);
+                habit-time-cleared() => root.habit-time-cleared();
+                habit-weekday-picked(i) => root.habit-weekday-picked(i);
+                habit-month-day-edited(t) => root.habit-month-day-edited(t);
+                habit-save-clicked() => root.habit-save-clicked();
+                habit-editor-cancelled() => root.habit-editor-cancelled();
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
@@ -1920,6 +1934,17 @@ export component AppWindow inherits Window {
     // The back button (round-1 D12): routes nav.focus-board — no new
     // view-state semantics.
     pure callback task-back-clicked();
+    // The habit editor's seams (H4 D5) — forwarded from the view.
+    pure callback habit-title-edited(string);
+    pure callback habit-description-edited(string);
+    pure callback habit-quota-kind-picked(int);
+    pure callback habit-quota-count-edited(string);
+    pure callback habit-time-edited(string);
+    pure callback habit-time-cleared();
+    pure callback habit-weekday-picked(int);
+    pure callback habit-month-day-edited(string);
+    pure callback habit-save-clicked();
+    pure callback habit-editor-cancelled();
     // The scale slider's gesture seams (r2 D29, r4 D38): press seeds
     // the revert point, release commits once (the drag itself is the
     // widget's own).

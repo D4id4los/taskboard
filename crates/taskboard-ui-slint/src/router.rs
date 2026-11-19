@@ -564,6 +564,160 @@ pub struct HabitCreateDraft {
     pub target: taskboard_domain::HabitTarget,
 }
 
+/// The habit editor's staged draft (H4 D5): the field mirrors the
+/// editor rows push, and the parses live at the trust boundary — the
+/// count mints through `NonZeroCount`, the month day through
+/// `MonthDay` (0 and >31 unrepresentable), the time through the due
+/// editor's lenient parser. The commit computes the sparse
+/// `HabitChanges` against the stored row (None = untouched, clocks
+/// preserved).
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // the mirrors' validity/set/edited
+// flavours are the draft's whole contract (the create form's shape)
+pub struct HabitEditDraft {
+    pub habit: taskboard_domain::HabitId,
+    pub title: String,
+    pub description: String,
+    pub target: taskboard_domain::HabitTarget,
+    pub quota_count: String,
+    pub quota_valid: bool,
+    pub time_text: String,
+    pub time_set: bool,
+    pub time_valid: bool,
+    pub time_edited: bool,
+    pub month_day: String,
+    pub month_valid: bool,
+    pub day_edited: bool,
+    pub anchor_time: Option<chrono::NaiveTime>,
+    pub anchor_day: Option<taskboard_domain::habit::AnchorDay>,
+}
+
+impl HabitEditDraft {
+    /// The draft seeded from the stored row (the editor opens
+    /// showing the habit as it is).
+    #[must_use]
+    pub fn from_habit(habit: &taskboard_domain::habit::Habit) -> Self {
+        Self {
+            habit: habit.id,
+            title: habit.title.clone(),
+            description: habit.description.clone(),
+            target: habit.target,
+            quota_count: habit.target.quota().get().to_string(),
+            quota_valid: true,
+            time_text: habit
+                .anchor_time
+                .map_or(String::new(), crate::due_edit::format_time_hm),
+            time_set: habit.anchor_time.is_some(),
+            time_valid: true,
+            time_edited: false,
+            month_day: match habit.anchor_day {
+                Some(taskboard_domain::habit::AnchorDay::MonthDay(day)) => day.get().to_string(),
+                _ => String::new(),
+            },
+            month_valid: true,
+            day_edited: false,
+            anchor_time: habit.anchor_time,
+            anchor_day: habit.anchor_day,
+        }
+    }
+
+    /// The `SegmentedControl` index (0 day / 1 week / 2 month).
+    #[must_use]
+    pub fn quota_kind_index(&self) -> usize {
+        match self.target.kind() {
+            taskboard_domain::PeriodKind::Day => 0,
+            taskboard_domain::PeriodKind::Week => 1,
+            taskboard_domain::PeriodKind::Month => 2,
+        }
+    }
+
+    /// The weekday picker's selected slot (-1 = none set).
+    #[must_use]
+    pub fn weekday_index(&self) -> i32 {
+        match self.anchor_day {
+            Some(taskboard_domain::habit::AnchorDay::Weekday(wd)) => {
+                i32::try_from(wd.num_days_from_monday()).unwrap_or(-1)
+            }
+            _ => -1,
+        }
+    }
+
+    /// The count mint at the trust boundary (the edited text; an
+    /// unparseable or zero count is invalid — the save gate stays
+    /// greyed).
+    #[must_use]
+    pub(crate) fn parsed_count(&self) -> Option<taskboard_domain::NonZeroCount> {
+        self.quota_count
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .and_then(|n| taskboard_domain::NonZeroCount::new(n).ok())
+    }
+
+    /// The target the quota row names (only with a valid count).
+    fn drafted_target(&self) -> Option<taskboard_domain::HabitTarget> {
+        let count = self.parsed_count()?;
+        Some(match self.quota_kind_index() {
+            0 => taskboard_domain::HabitTarget::PerDay(count),
+            1 => taskboard_domain::HabitTarget::PerWeek(count),
+            _ => taskboard_domain::HabitTarget::PerMonth(count),
+        })
+    }
+
+    /// The sparse changeset vs the stored row (D5): every field the
+    /// draft moved names itself, the untouched stay `None` (clocks
+    /// preserved). The quota row carries the kind change with a
+    /// now-mismatched day inert (no silent destructive clearing).
+    #[must_use]
+    pub fn changes(
+        &self,
+        stored: &taskboard_domain::habit::Habit,
+    ) -> taskboard_domain::HabitChanges {
+        let mut changes = taskboard_domain::HabitChanges {
+            continued_from: None,
+            ..taskboard_domain::HabitChanges::default()
+        };
+        if self.title != stored.title {
+            changes.title = Some(self.title.clone());
+        }
+        if self.description != stored.description {
+            changes.description = Some(self.description.clone());
+        }
+        if let Some(target) = self.drafted_target()
+            && target != stored.target
+        {
+            changes.target = Some(target);
+        }
+        if self.time_edited {
+            changes.anchor_time = Some(self.anchor_time);
+        }
+        if self.day_edited {
+            changes.anchor_day = Some(self.anchor_day);
+        }
+        changes
+    }
+
+    /// The save gate (D5's empty-dispatch law): every parse holds AND
+    /// the changeset names at least one field.
+    #[must_use]
+    pub fn can_save(&self, stored: &taskboard_domain::habit::Habit) -> bool {
+        let parses_hold = self.quota_valid
+            && self.time_valid
+            && self.month_valid
+            && (self.quota_count.trim().is_empty() || self.parsed_count().is_some());
+        parses_hold && !self.changes_is_empty(stored)
+    }
+
+    fn changes_is_empty(&self, stored: &taskboard_domain::habit::Habit) -> bool {
+        let changes = self.changes(stored);
+        changes.title.is_none()
+            && changes.description.is_none()
+            && changes.target.is_none()
+            && changes.anchor_time.is_none()
+            && changes.anchor_day.is_none()
+    }
+}
+
 /// The break-rule form's commit payload (T-14, #797): the trust
 /// boundary's minted triple — the roaming board (resolved fresh at
 /// commit from the section's host scope, never cached at arm), the

@@ -10,6 +10,7 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
 import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
+import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { InfoTip } from "../widgets/info-tip.slint";
 import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
 import { DueDayModel } from "../compositions/date-picker.slint";
@@ -168,6 +169,43 @@ export struct TaskDetailModel {
     labels-visible: bool,
     labels: [LabelChipModel],
     labels-open: bool,
+    // The habit variant's mount discriminator (H4 D1): task-only
+    // sections hide behind it (never dead-rendered); the habit
+    // editor block mounts instead, over the sibling `HabitDetailModel`
+    // window property (the draft-backed fields).
+    is-habit: bool,
+}
+
+// The habit editor's pushed half (H4 D5): the draft-backed fields
+// the variant rows read. Title/description ride the draft's mirrors
+// (the task flows are task-typed — the recorded deviation); the
+// validity flavours and the save gate are the adapter's parses.
+export struct HabitDetailModel {
+    title: string,
+    description: string,
+    // The quota row (the habit create form's exact grammar):
+    // SegmentedControl index (0 day / 1 week / 2 month) + the count
+    // field's text and validity.
+    quota-kind: int,
+    quota-count: string,
+    quota-valid: bool,
+    // The anchor time row (the reminder nudge's arm clock): the
+    // HH:MM text, the set bit (the clear affordance mounts armed),
+    // the parse validity.
+    time-text: string,
+    time-set: bool,
+    time-valid: bool,
+    // The kind (mirrors quota-kind) gates the day row: 1 mounts the
+    // 7-slot weekday picker, 2 the 1..=31 day field, 0 none (the
+    // UI-side trust boundary — the UI never mints a kind-mismatched
+    // day).
+    kind: int,
+    weekday: int,
+    month-day: string,
+    month-valid: bool,
+    // The empty-dispatch law (D5): the save affordance greys while
+    // the changeset is empty (no actual edit) or any parse is off.
+    can-save: bool,
 }
 
 export component TaskView inherits FocusScope {
@@ -183,6 +221,9 @@ export component TaskView inherits FocusScope {
     // unbounded on every view, at every scale.
     max-width: Theme.layout-severing-max-width;
     in property <TaskDetailModel> task;
+    // The habit editor's pushed half (H4 D5) — reads only while the
+    // mount discriminator names the variant.
+    in property <HabitDetailModel> habit;
     // The nav.focus-board binding as display strings (round-1 D12; a
     // keymap projection pushed per refresh — never hand-written).
     in property <[string]> nav-back-hint;
@@ -195,6 +236,19 @@ export component TaskView inherits FocusScope {
     // `task.title-edit` action — click ≡ key (§7.1).
     callback title-edit-opened();
     callback back-clicked();
+    // The habit editor's seams (H4 D5): the draft mirrors, the
+    // per-kind day row, and the save/cancel pair (the commit
+    // computes the sparse changeset adapter-side).
+    callback habit-title-edited(string);
+    callback habit-description-edited(string);
+    callback habit-quota-kind-picked(int);
+    callback habit-quota-count-edited(string);
+    callback habit-time-edited(string);
+    callback habit-time-cleared();
+    callback habit-weekday-picked(int);
+    callback habit-month-day-edited(string);
+    callback habit-save-clicked();
+    callback habit-editor-cancelled();
     // The tracking verbs (DR-5/4, D-T16): route the matching action
     // over the focused task (the subject IS the focused task).
     callback task-track-start-clicked();
@@ -396,13 +450,113 @@ export component TaskView inherits FocusScope {
         VerticalLayout {
             spacing: Theme.space-3;
 
-            // The header row (r4 D16a): one content-height row — back
+            // The habit editor (H4 D1/D5/D6): the shared surface's
+            // habit variant — the task-only body hides behind the
+            // mount discriminator below; this block mounts the D5
+            // rows in the existing hand-rolled row grammar (the
+            // create form's exact TextField/SegmentedControl
+            // vocabulary, D6 — no new row widget, W4 absorbs later).
+            if (root.task.is-habit): VerticalLayout {
+                spacing: Theme.space-2;
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    IconButton {
+                        icon: IconKind.chevron-left;
+                        tone: Tone.neutral;
+                        label: "Back";
+                        hint-keys: root.nav-back-hint;
+                        clicked => root.habit-editor-cancelled();
+                    }
+                    TextField {
+                        horizontal-stretch: 1;
+                        label: "Title";
+                        text: root.habit.title;
+                        edited(text) => { root.habit-title-edited(text); }
+                    }
+                }
+                TextField {
+                    label: "Description";
+                    text: root.habit.description;
+                    edited(text) => { root.habit-description-edited(text); }
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    SegmentedControl {
+                        options: ["Per day", "Per week", "Per month"];
+                        selected-index: root.habit.quota-kind;
+                        group-label: "Quota period";
+                        picked(index) => { root.habit-quota-kind-picked(index); }
+                    }
+                    TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "1";
+                        label: "Quota (completions per period)";
+                        text: root.habit.quota-count;
+                        validity: root.habit.quota-valid ? FieldValidity.valid : FieldValidity.invalid;
+                        edited(text) => { root.habit-quota-count-edited(text); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "HH:MM";
+                        label: "Anchor time (arms the reminder nudge)";
+                        text: root.habit.time-text;
+                        validity: root.habit.time-valid ? FieldValidity.valid : FieldValidity.invalid;
+                        edited(text) => { root.habit-time-edited(text); }
+                    }
+                    if (root.habit.time-set): IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Clear anchor time";
+                        clicked => { root.habit-time-cleared(); }
+                    }
+                }
+                // The anchor-day row (D5's variant gating): PerWeek
+                // mounts the 7-slot picker, PerMonth the 1..=31 field,
+                // PerDay none — the UI never mints a mismatched day.
+                if (root.habit.kind == 1): HorizontalLayout {
+                    spacing: Theme.space-1;
+                    for day[day-index] in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]: IconButton {
+                        icon: IconKind.check;
+                        tone: root.habit.weekday == day-index ? Tone.success : Tone.neutral;
+                        label: "Anchor " + day;
+                        clicked => { root.habit-weekday-picked(day-index); }
+                    }
+                }
+                if (root.habit.kind == 2): TextField {
+                    placeholder: "1-31";
+                    label: "Anchor day of month";
+                    text: root.habit.month-day;
+                    validity: root.habit.month-valid ? FieldValidity.valid : FieldValidity.invalid;
+                    edited(text) => { root.habit-month-day-edited(text); }
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.success;
+                        label: "Save habit";
+                        enabled: root.habit.can-save;
+                        clicked => { root.habit-save-clicked(); }
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Cancel";
+                        clicked => { root.habit-editor-cancelled(); }
+                    }
+                }
+            }
+
             // inline with the title (F9), the done checkbox left of
             // it (F15/D16b), tracking at the right end (F11/D16c). No
             // stretch anywhere: the phantom rows of the old back-row +
             // trailing-spacer shape are gone by construction (the
             // description is THE flexible element, D16d).
             HorizontalLayout {
+                visible: !root.task.is-habit;
                 spacing: Theme.space-3;
                 IconButton {
                     icon: IconKind.chevron-left;
@@ -643,6 +797,7 @@ export component TaskView inherits FocusScope {
 
             // The metadata row (tertiary per D17's demotion table).
             HorizontalLayout {
+                visible: !root.task.is-habit;
                 spacing: Theme.space-3;
                 stack-column := VerticalLayout {
                     RoleText {
@@ -845,7 +1000,10 @@ export component TaskView inherits FocusScope {
                     }
                 }
             }
-            if (!root.task.importance-open && !root.task.urgency-open): HorizontalLayout {
+            HorizontalLayout {
+                visible: !root.task.is-habit
+                    && !root.task.importance-open
+                    && !root.task.urgency-open;
                 spacing: Theme.space-3;
                 VerticalLayout {
                     RoleText {
@@ -903,6 +1061,7 @@ export component TaskView inherits FocusScope {
             // The clear is the field's empty commit (= Some(None) —
             // the walk placement's posture, unchanged).
             effort-row := HorizontalLayout {
+                visible: !root.task.is-habit;
                 spacing: Theme.space-2;
                 RoleText {
                     role: Typography.caption;
@@ -998,12 +1157,14 @@ export component TaskView inherits FocusScope {
             }
 
             // The tracked-time summary row (r4 D17): the subject's
+            // (hidden behind the habit variant's mount discriminator)
             // total at second precision, its own full-width row under
             // the facts. Refresh-static while no entry is open — the
             // per-second tick is the adapter's seam (decision 5). The
             // value carries a hover tip (blanket rule a); the row is
             // not itself clickable.
             HorizontalLayout {
+                visible: !root.task.is-habit;
                 spacing: Theme.space-3;
                 RoleText {
                     role: Typography.caption;
@@ -1067,6 +1228,7 @@ export component TaskView inherits FocusScope {
             // after the metadata row — extends the editor surface, no
             // new view family (D-R4).
             RuleList {
+                visible: !root.task.is-habit;
                 rules: root.task.rules;
                 presets: root.task.rule-presets;
                 hint: root.task.rules-hint;
@@ -1218,6 +1380,7 @@ export component TaskView inherits FocusScope {
             // viewport rides its Flickable — the r3 cycle trap stays
             // fenced by the widget's own geometry contract).
             description-section := VerticalLayout {
+                visible: !root.task.is-habit;
                 vertical-stretch: 1;
                 RoleText {
                     role: Typography.caption;

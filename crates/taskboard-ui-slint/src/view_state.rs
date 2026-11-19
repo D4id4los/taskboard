@@ -1615,6 +1615,10 @@ impl ViewState {
                     Some(task) => {
                         self.replace_root(ViewId::TaskDetail);
                         self.subject_task = Some(task);
+                        // The task/habit subjects are mutually
+                        // exclusive mount facts (H4 D1) — same
+                        // retirement as `activate_focused`.
+                        self.subject_habit = None;
                         true
                     }
                     None => false,
@@ -2479,6 +2483,10 @@ impl ViewState {
         };
         self.replace_root(ViewId::TaskDetail);
         self.subject_task = Some(task.id);
+        // A task subject and the habit variant are mutually exclusive
+        // mount facts (H4 D1): the task detail's entry retires any
+        // habit editor the surface carried.
+        self.subject_habit = None;
         vec![FlowOutcome::RefreshNow]
     }
 
