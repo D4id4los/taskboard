@@ -1849,28 +1849,16 @@ impl ViewState {
             self.follow_board(state);
             return outcomes;
         }
-        // The open TaskDetail's item table is the subject's stack list
-        // (keymap-parity plan D-2, the N-2 route fix): the walk's
-        // target follows the visible detail — `subject_task` (the
-        // snapshotted subject the detail renders) moves with
-        // `focused_task`, ending the silent no-op absorb that walked
-        // the hidden board selection under the open view. Route-level,
-        // shared by both fronts: the menu invocation lands on the same
-        // `UiEffect::FocusNext/Prev` arm (`invoke_entry` → `route` →
-        // the same interpret arm), so click ≡ key by construction.
+        // The detail's item walk is RETIRED (J3 R-3, 2026-11-19 — the
+        // round-8 keymap-parity D-2 supersession, census-dated): no
+        // viewed-task change from the detail at all; return-to-board-
+        // and-walk is the grammar. The ids still resolve in the mode
+        // contexts (vi's H/G, the member rows that keep their board
+        // homes), so the guard is the typed no-op — the hidden board
+        // selection never moves under the open detail (the silent
+        // absorb the D-2 fix fought stays dead).
         if self.view() == ViewId::TaskDetail {
-            let domain = self.detail_item_domain(state);
-            // The detail walk's cursor is the visible subject; the
-            // board selection follows it (never leads it). Compact is
-            // not consulted: the detail has no switcher level, so the
-            // retreat-past-first hand-off never applies — the ends
-            // clamp (the walk's bounds stand).
-            self.focused_task = self.subject_task;
-            let outcomes = self.step_flat_domain(direction, false, &domain);
-            if let Some(next) = self.focused_task {
-                self.subject_task = Some(next);
-            }
-            return outcomes;
+            return Vec::new();
         }
         // Switcher level in compact (no card focused): advance/retreat
         // move the stack selection (wrap) and land on the new stack's
@@ -2046,12 +2034,14 @@ impl ViewState {
         kiosk: bool,
         day: &DayCtx,
     ) -> Vec<FlowOutcome> {
-        let rows = if self.view() == ViewId::TaskDetail {
-            self.detail_item_domain(state)
-                .into_iter()
-                .map(TodayRow::Task)
-                .collect::<Vec<_>>()
-        } else if self.view() == ViewId::Today {
+        // The detail's first/last jumps are RETIRED with the step walk
+        // (J3 R-3, 2026-11-19 — the same census-dated supersession):
+        // M-</M-> at the detail are the typed no-op, the subject
+        // pinned.
+        if self.view() == ViewId::TaskDetail {
+            return Vec::new();
+        }
+        let rows = if self.view() == ViewId::Today {
             // The widened today domain (chunk 8 D2): tasks then habits.
             self.today_rows(state, kiosk, day)
         } else {
@@ -2067,36 +2057,11 @@ impl ViewState {
         match target {
             Some(row) => {
                 self.focus_today_row(*row);
-                // The detail's visible subject follows the jump (the
-                // D-2 route fix — the same absorption end as the
-                // step walk).
-                if self.view() == ViewId::TaskDetail {
-                    self.subject_task = self.focused_task;
-                }
                 self.follow_board(state);
                 vec![FlowOutcome::RefreshNow]
             }
             None => Vec::new(),
         }
-    }
-
-    /// The open `TaskDetail`'s item-table domain (keymap-parity plan
-    /// D-2, the N-2 route fix): the subject's stack task list in
-    /// stack order — the detail's own item table, shared by the key
-    /// and the menu invocation (both route the same
-    /// `UiEffect::Focus*` arms). A subjectless or stackless detail is
-    /// the typed empty domain (the walk stays inert, as today).
-    fn detail_item_domain(&self, state: &AppState) -> Vec<TaskId> {
-        self.subject_task
-            .and_then(|id| state.tasks.get(&id))
-            .map(|task| {
-                state
-                    .tasks_in_stack(task.stack)
-                    .into_iter()
-                    .map(|t| t.id)
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// The today walk's domain (chunk 10 D7): the four filtered
@@ -5820,7 +5785,15 @@ mod tests {
         );
     }
 
-    // -- the detail item-table walk (keymap-parity plan D-2, N-2) ------
+    // -- the detail walk RETIRED (J3 R-3, 2026-11-19; the round-8
+    //    keymap-parity D-2 supersession, census-dated) ------------------
+    //
+    //    `detail_step_walk_moves_the_subject_and_syncs_focus`,
+    //    `detail_jump_focus_targets_the_subjects_stack_ends`, and
+    //    `detail_walk_is_inert_without_a_subject_or_an_empty_stack`
+    //    asserted the subject walk's mechanics — the walk is gone (no
+    //    viewed-task change from the detail at all); the guard's pin
+    //    test below replaces them.
 
     /// Opens the detail over `task` the way the shell does: the card
     /// click (focus/selection) then the activation (the detail push).
@@ -5834,57 +5807,22 @@ mod tests {
     }
 
     #[test]
-    fn detail_step_walk_moves_the_subject_and_syncs_focus() {
-        let (state, _, [s0, _], [a, b, _]) = fixture();
+    fn the_detail_guard_pins_the_retired_walk_to_the_typed_no_op() {
+        let (state, _, [s0, _], [a, ..]) = fixture();
         let mut vs = detail_over(a, s0, &state);
         assert_eq!(vs.subject_task(), Some(a));
-        // The walk steps the visible detail: the subject and the board
-        // selection move together.
-        assert_eq!(
-            vs.advance_focus(&state, false, false, &day()),
-            vec![FlowOutcome::RefreshNow]
-        );
-        assert_eq!(vs.subject_task(), Some(b), "the visible detail follows");
-        assert_eq!(vs.focused_task(), Some(b), "the selection stays in sync");
-        // Retreating returns to the first; past the first clamps (no
-        // wrap, no switcher hand-off inside a detail).
-        vs.retreat_focus(&state, false, false, &day());
-        assert_eq!(vs.subject_task(), Some(a));
+        // The step and the jump are the typed no-op: the subject and
+        // the hidden board selection never move (J3 R-3 —
+        // return-to-board-and-walk is the grammar).
+        assert_eq!(vs.advance_focus(&state, false, false, &day()), Vec::new());
         assert_eq!(vs.retreat_focus(&state, false, false, &day()), Vec::new());
-        assert_eq!(vs.subject_task(), Some(a), "the end holds");
-        assert_eq!(vs.view(), ViewId::TaskDetail, "the view never moves");
-    }
-
-    #[test]
-    fn detail_jump_focus_targets_the_subjects_stack_ends() {
-        let (state, _, [s0, _], [a, b, c]) = fixture();
-        // The fixture's third task lives in the other stack: the
-        // detail's domain is the subject's stack only.
-        let mut vs = detail_over(a, s0, &state);
         assert_eq!(
             vs.jump_focus(&state, FocusEdge::Last, false, false, &day()),
-            vec![FlowOutcome::RefreshNow]
+            Vec::new()
         );
-        assert_eq!(vs.subject_task(), Some(b), "last of the subject's stack");
-        assert_eq!(vs.focused_task(), Some(b));
-        vs.jump_focus(&state, FocusEdge::First, false, false, &day());
-        assert_eq!(vs.subject_task(), Some(a));
-        let _ = c;
-    }
-
-    #[test]
-    fn detail_walk_is_inert_without_a_subject_or_an_empty_stack() {
-        let (state, _, [_, s1], [_, _, c]) = fixture();
-        // A subjectless detail is the typed empty domain.
-        let mut vs = ViewState::new_starting(ViewId::TaskDetail);
-        vs.reconcile(&state);
-        assert_eq!(vs.advance_focus(&state, false, false, &day()), Vec::new());
-        assert_eq!(vs.subject_task(), None, "nothing to absorb into");
-        // The domain is the subject's own stack: a stack-less jump out
-        // of the subject's stack never happens.
-        let mut vs = detail_over(c, s1, &state);
-        vs.jump_focus(&state, FocusEdge::Last, false, false, &day());
-        assert_eq!(vs.subject_task(), Some(c), "the end of the subject's stack");
+        assert_eq!(vs.subject_task(), Some(a), "the subject is pinned");
+        assert_eq!(vs.focused_task(), Some(a), "the selection is pinned");
+        assert_eq!(vs.view(), ViewId::TaskDetail, "the view never moves");
     }
 
     // -- the create flow (D8/D9) -------------------------------------------

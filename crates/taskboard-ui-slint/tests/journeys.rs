@@ -21426,12 +21426,6 @@ fn us6_s2_today_row_menu_and_preset_key_recommit() {
 
 // ---- keymap parity (ux-r8 chunk 1; keymap-parity plan §4) --------------
 
-/// The open detail's mounted subject title (the fixture titles are the
-/// journeys' element addresses — identity, never label matching).
-fn detail_title(harness: &Harness) -> String {
-    harness.handle.window().get_task_model().title.to_string()
-}
-
 /// Whether the description editor flow is armed on the mounted detail.
 fn description_open(harness: &Harness) -> bool {
     harness
@@ -21524,111 +21518,12 @@ fn us6_s2_recommit_keeps_the_row_in_today() {
     );
 }
 
-/// US-1/S1 (keymap-parity plan W-1) — the emacs motion rows step the
-/// walks: at the open `TaskDetail` C-n/C-p carry the *item* walk (the
-/// D-2 route fix made the detail's item table live; the subject and
-/// the selection move together, the ends clamp), C-f/C-b still step
-/// the control walk, and the Today rows keep their item walk with
-/// zero commands (navigation is view-internal). Board/Today bounds
-/// are the walk mechanics' own layer (`view_state` unit tests); the
-/// journey pins the rows' resolution and the visible subject.
-#[test]
-fn us1_s1_emacs_motion_rows_step_the_walks() {
-    let (_fixture, state) = fixture::golden_state();
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let preset = taskboard_ui_slint::keymap::Preset::Emacs;
-            let mut harness = Harness::mount_with_settings(
-                SlintDriver::default(),
-                state,
-                UiSettings {
-                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
-                    keymap_preset: preset,
-                    ..UiSettings::default()
-                },
-            );
-            open_detail_first_card(&mut harness, preset);
-            assert_eq!(
-                detail_title(&harness),
-                "task-0",
-                "the detail opens on the first card"
-            );
-
-            // C-n steps the item walk: the visible subject follows.
-            press_preset(&mut harness, preset, ActionId::NavNextItem);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                detail_title(&harness),
-                "task-1",
-                "C-n steps the detail's subject"
-            );
-            assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::TaskDetail,
-                "the view never moves"
-            );
-
-            // C-p retreats; past the first the end clamps (no wrap).
-            press_preset(&mut harness, preset, ActionId::NavPrevItem);
-            harness.driver.advance_time(0);
-            assert_eq!(detail_title(&harness), "task-0", "C-p returns to the first");
-            press_preset(&mut harness, preset, ActionId::NavPrevItem);
-            harness.driver.advance_time(0);
-            assert_eq!(detail_title(&harness), "task-0", "the end holds");
-
-            // The jump pair rides the same route (M-< / M->).
-            press_preset(&mut harness, preset, ActionId::NavLastItem);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                detail_title(&harness),
-                "task-1",
-                "M-> lands on the stack's last"
-            );
-            press_preset(&mut harness, preset, ActionId::NavFirstItem);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                detail_title(&harness),
-                "task-0",
-                "M-< lands on the stack's first"
-            );
-
-            // C-f still steps the control walk (the isearch pair kept
-            // its rows): the walk reaches an activation stop (the
-            // first steps may ride the header buttons — the walk
-            // lands on a reported stop within a few presses).
-            let mut guard = 0;
-            while walk_stop(&harness) == 0 && guard < 10 {
-                press_preset(&mut harness, preset, ActionId::NavNextControl);
-                harness.driver.advance_time(0);
-                guard += 1;
-            }
-            assert_ne!(
-                walk_stop(&harness),
-                0,
-                "C-f steps the detail's control walk onto a stop"
-            );
-
-            // The Today rows keep their item walk, navigation dispatches
-            // nothing (the dumb-client pin at the window boundary).
-            press_preset(&mut harness, preset, ActionId::ViewToday);
-            harness.driver.advance_time(0);
-            press_preset(&mut harness, preset, ActionId::NavNextItem);
-            harness.driver.advance_time(0);
-            press_preset(&mut harness, preset, ActionId::NavPrevItem);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::Today,
-                "the today walk stays in the view"
-            );
-            harness.assert_commands(&[]);
-        },
-    );
-}
-
+// RETIRED (J3 R-3, 2026-11-19, round 9 chunk 9):
+// `us1_s1_emacs_motion_rows_step_the_walks` asserted the detail's *subject*
+// walk — retired by the census-dated round-8 D-2 supersession
+// (docs/ux-surface-census.org `nav.item_walk`, SUPERSEDED 2026-11-19); the
+// replacement journey pins the control walk with the subject and lands with
+// the preset retune commit (the NavFocus* rows bind there).
 /// US-1/AC-2 (keymap-parity plan W-1) — the Settings field walk: all
 /// four emacs chords resolve over the settings chain and step the
 /// control walk with zero commands (the walk is view-internal; the
@@ -21682,101 +21577,10 @@ fn us1_ac2_settings_control_walk_rows_step() {
     );
 }
 
-/// US-2/S1 (keymap-parity plan W-2) — the menu invocation matches the
-/// key route: the first/last jump resolves the *same* subject from
-/// both fronts (the D-2 fix is route-level, so the menu row and the
-/// `Ctrl+Home`/`Ctrl+End` key land on the same item-table resolution —
-/// click ≡ key). The empty item set is the typed `NoTarget` surfaced
-/// by the existing outcome path (the `view_state` inert).
-#[test]
-fn us2_s1_menu_first_last_matches_the_key_route() {
-    let (_fixture, state) = fixture::golden_state();
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let preset = taskboard_ui_slint::keymap::Preset::Standard;
-            let mut harness = Harness::mount_with_settings(
-                SlintDriver::default(),
-                state,
-                UiSettings {
-                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
-                    keymap_preset: preset,
-                    ..UiSettings::default()
-                },
-            );
-            open_detail_first_card(&mut harness, preset);
-
-            // The key front.
-            press_preset(&mut harness, preset, ActionId::NavLastItem);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                detail_title(&harness),
-                "task-1",
-                "the key jump lands on the stack's last"
-            );
-            press_preset(&mut harness, preset, ActionId::NavFirstItem);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                detail_title(&harness),
-                "task-0",
-                "the key jump lands on the stack's first"
-            );
-
-            // The menu front: open the menu, walk to the ViewNav parent
-            // (the fourth of the root page's parents, the D27a
-            // precedent), and invoke the `nav.last-item` row through
-            // the two-tier seam — the adapter closes and re-dispatches
-            // the same action id.
-            harness.press(ActionId::AppMenu);
-            harness.driver.advance_time(0);
-            let mut parent_ordinal = 0;
-            for _ in 0..20 {
-                let k = keyboard(&harness);
-                let entries = k.get_menu_entries();
-                #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel
-                let index = k.get_menu_selected_index().max(0) as usize;
-                let row = entries.row_data(index).expect("row");
-                if row.submenu {
-                    parent_ordinal += 1;
-                    if parent_ordinal == 4 {
-                        break;
-                    }
-                }
-                harness.stroke(parse("Down").expect("Down"));
-                harness.driver.advance_time(0);
-            }
-            assert_eq!(parent_ordinal, 4, "the ViewNav parent is the fourth");
-            harness.stroke(parse("Return").expect("Return"));
-            harness.driver.advance_time(0);
-            let submenu = keyboard(&harness).get_menu_submenu_entries();
-            let index = (0..submenu.row_count())
-                .map(|i| submenu.row_data(i).expect("row"))
-                .position(|row| row.action == "nav.last-item")
-                .unwrap_or_else(|| panic!("the nav.last-item row rides the page"));
-            harness
-                .handle
-                .window()
-                .invoke_menu_submenu_entry_invoked(i32::try_from(index).expect("small index"));
-            harness.driver.advance_time(0);
-
-            // The parity law's letter: the menu invocation resolves the
-            // same subject the key route resolved.
-            assert_eq!(
-                detail_title(&harness),
-                "task-1",
-                "the menu jump lands where the key jump landed"
-            );
-            assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::TaskDetail,
-                "the jump stays in the open detail"
-            );
-        },
-    );
-}
-
+// RETIRED (J3 R-3, 2026-11-19, round 9 chunk 9):
+// `us2_s1_menu_first_last_matches_the_key_route` asserted the detail's
+// first/last subject jumps — retired with the subject walk (the same
+// census-dated supersession; the board's first/last jump journeys remain).
 /// US-3/S1 (keymap-parity plan W-3) — the due/scheduled shortcuts arm
 /// the editor exactly like the row affordance: the same funnel state
 /// (armed window, seeded buffer — empty for the fixture's dateless

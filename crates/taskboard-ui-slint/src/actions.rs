@@ -845,6 +845,12 @@ const VIEW_NAV: &[ContextId] = &[
     ContextId::StackDetail,
     ContextId::TaskDetail,
 ];
+/// The item walk's availability contexts (J3 R-3, 2026-11-19):
+/// `TaskDetail` left the set with the subject-walk retirement (the
+/// census-dated round-8 D-2 supersession) — the detail never offers
+/// the item walk again; the view slice above stays the task-schedule
+/// family's (`TASK_CONTEXTS` aliases it).
+const ITEM_WALK: &[ContextId] = &[ContextId::Today, ContextId::Board, ContextId::StackDetail];
 /// The control-navigation walk's binding/availability contexts
 /// (round-3 D25): the five view contexts, never `Global` — Global is
 /// chain-visible under insert mode, and Tab/PageUp/PageDown are
@@ -1069,7 +1075,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::NavNextItem,
         label: "Focus next item",
-        contexts: VIEW_NAV,
+        contexts: ITEM_WALK,
         category: Category::Navigation,
         enabled: true,
         menu_rank: 120,
@@ -1079,7 +1085,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::NavFirstItem,
         label: "Focus first item",
-        contexts: VIEW_NAV,
+        contexts: ITEM_WALK,
         category: Category::Navigation,
         enabled: true,
         menu_rank: 140,
@@ -1089,7 +1095,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::NavLastItem,
         label: "Focus last item",
-        contexts: VIEW_NAV,
+        contexts: ITEM_WALK,
         category: Category::Navigation,
         enabled: true,
         menu_rank: 150,
@@ -1099,7 +1105,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::NavPrevItem,
         label: "Focus previous item",
-        contexts: VIEW_NAV,
+        contexts: ITEM_WALK,
         category: Category::Navigation,
         enabled: true,
         menu_rank: 130,
@@ -2633,6 +2639,12 @@ mod tests {
             ActionId::ViewScrollDown,
             ActionId::NavNextItem,
             ActionId::NavPrevItem,
+            ActionId::NavFocusLeft,
+            ActionId::NavFocusRight,
+            ActionId::NavFocusUp,
+            ActionId::NavFocusDown,
+            ActionId::NavExtendNext,
+            ActionId::NavExtendPrev,
             ActionId::BoardNext,
             ActionId::BoardPrevious,
             ActionId::BoardSelect,

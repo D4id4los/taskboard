@@ -186,7 +186,6 @@ expression: rows
     - today
     - board
     - stack-detail
-    - task-detail
   category: navigation
   enabled: true
   menu_rank: 120
@@ -198,7 +197,6 @@ expression: rows
     - today
     - board
     - stack-detail
-    - task-detail
   category: navigation
   enabled: true
   menu_rank: 140
@@ -210,7 +208,6 @@ expression: rows
     - today
     - board
     - stack-detail
-    - task-detail
   category: navigation
   enabled: true
   menu_rank: 150
@@ -222,11 +219,80 @@ expression: rows
     - today
     - board
     - stack-detail
-    - task-detail
   category: navigation
   enabled: true
   menu_rank: 130
   description: Moves the focus to the previous card or switcher entry in reading order.
+  menu_group: view-nav
+- id: nav.focus-left
+  label: Focus left
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+    - settings
+  category: navigation
+  enabled: true
+  menu_rank: 121
+  description: "Moves the focus one step left; the direction's meaning is per view (stack step on the board, control walk on the forms)."
+  menu_group: view-nav
+- id: nav.focus-right
+  label: Focus right
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+    - settings
+  category: navigation
+  enabled: true
+  menu_rank: 122
+  description: "Moves the focus one step right; the direction's meaning is per view (stack step on the board, control walk on the forms)."
+  menu_group: view-nav
+- id: nav.focus-up
+  label: Focus up
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+    - settings
+  category: navigation
+  enabled: true
+  menu_rank: 123
+  description: "Moves the focus one step up; the direction's meaning is per view (item walk on the lists, control walk on the forms)."
+  menu_group: view-nav
+- id: nav.focus-down
+  label: Focus down
+  contexts:
+    - today
+    - board
+    - stack-detail
+    - task-detail
+    - settings
+  category: navigation
+  enabled: true
+  menu_rank: 124
+  description: "Moves the focus one step down; the direction's meaning is per view (item walk on the lists, control walk on the forms)."
+  menu_group: view-nav
+- id: nav.extend-next
+  label: Extend selection to next item
+  contexts:
+    - board
+  category: navigation
+  enabled: true
+  menu_rank: 125
+  description: Extends the board selection to the next card in reading order (the shift-walk twin of focus-next-item).
+  menu_group: view-nav
+- id: nav.extend-prev
+  label: Extend selection to previous item
+  contexts:
+    - board
+  category: navigation
+  enabled: true
+  menu_rank: 126
+  description: Extends the board selection to the previous card in reading order (the shift-walk twin of focus-previous-item).
   menu_group: view-nav
 - id: board.next
   label: Next board
