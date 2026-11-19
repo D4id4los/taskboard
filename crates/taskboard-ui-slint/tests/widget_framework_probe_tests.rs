@@ -720,7 +720,11 @@ fn g_check_renders_model_bit_statelessly() {
         assert!(!window.get_check_shows_check(), "precondition: unchecked");
         let (x, y) = check_center(window);
         click(window, x, y);
-        assert_eq!(window.get_check_toggled_count(), 1, "the click emits toggled");
+        assert_eq!(
+            window.get_check_toggled_count(),
+            1,
+            "the click emits toggled"
+        );
         assert!(
             !window.get_check_shows_check(),
             "the render does not move until the model bit does"
@@ -732,7 +736,11 @@ fn g_check_renders_model_bit_statelessly() {
             window.get_check_shows_check(),
             "the model push is the single writer of the render"
         );
-        assert_eq!(window.get_check_toggled_count(), 1, "no intent from a model push");
+        assert_eq!(
+            window.get_check_toggled_count(),
+            1,
+            "no intent from a model push"
+        );
     });
 }
 
@@ -745,7 +753,10 @@ fn g_check_keyboard_and_pointer_toggled() {
         press_tab(window);
         press_tab(window);
         advance_probe_clock(0);
-        assert!(window.get_check_focused(), "three tabs land on the view-side box");
+        assert!(
+            window.get_check_focused(),
+            "three tabs land on the view-side box"
+        );
 
         press_key(window, slint::platform::Key::Return);
         press_key(window, slint::platform::Key::Space);
@@ -753,7 +764,11 @@ fn g_check_keyboard_and_pointer_toggled() {
 
         let (x, y) = check_center(window);
         click(window, x, y);
-        assert_eq!(window.get_check_toggled_count(), 3, "the pointer toggles too");
+        assert_eq!(
+            window.get_check_toggled_count(),
+            3,
+            "the pointer toggles too"
+        );
     });
 }
 
@@ -766,7 +781,10 @@ fn g_unfocusable_variant_is_no_tab_stop() {
         press_tab(window);
         press_tab(window);
         advance_probe_clock(0);
-        assert!(window.get_check_focused(), "precondition: the first box holds focus");
+        assert!(
+            window.get_check_focused(),
+            "precondition: the first box holds focus"
+        );
         press_tab(window);
         advance_probe_clock(0);
         assert!(
@@ -790,16 +808,70 @@ fn g_focus_and_hover_are_observable() {
         assert!(window.get_check_focused(), "focus rides the tab walk");
 
         let (x, y) = check_center(window);
-        window.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {
-            position: slint::LogicalPosition::new(x, y),
-        });
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(x, y),
+            });
         advance_probe_clock(0);
-        assert!(window.get_check_hovered(), "hover is observable on the seam");
+        assert!(
+            window.get_check_hovered(),
+            "hover is observable on the seam"
+        );
 
-        window.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {
-            position: slint::LogicalPosition::new(1.0, 1.0),
-        });
+        window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(1.0, 1.0),
+            });
         advance_probe_clock(0);
         assert!(!window.get_check_hovered(), "leave clears the hover seam");
+    });
+}
+
+// ---- W3: the ToggleStrip catalogue (plan §7 step 5; #953) ---------
+// The strip is a thin composition over the check IconButton row: the
+// slot geometry is the canonical square plus the strip's spacing, and
+// a click reports the picked index while the checked render follows
+// the pushed mask alone.
+
+/// Clicking slot k reports index k — one `picked` intent per click,
+/// the index identifying the slot (the weekday-toggled seam).
+#[test]
+fn g_strip_reports_picked_index() {
+    run_probe(|window| {
+        // The slot square is space-6 (32 px at the probe's base
+        // scale) and the strip's spacing is space-1 (4 px).
+        let slot = 32.0_f32;
+        let spacing = 4.0_f32;
+        for k in 0..3 {
+            // The probe runs at base scale; the small loop index's
+            // f32 conversion is exact by construction.
+            #[allow(clippy::cast_precision_loss)]
+            let x = window.get_strip_x() + (slot + spacing) * k as f32 + slot / 2.0;
+            let y = window.get_strip_y() + slot / 2.0;
+            click(window, x, y);
+            assert_eq!(
+                window.get_strip_picked_count(),
+                k + 1,
+                "one intent per click"
+            );
+            assert_eq!(
+                window.get_strip_picked_index(),
+                k,
+                "the click names its slot"
+            );
+        }
+
+        // The checked render follows the pushed mask alone (the
+        // strip is as stateless as the box): the mask flip re-tones
+        // the slots without any intent.
+        window.set_probe_strip_flip(true);
+        advance_probe_clock(0);
+        assert_eq!(
+            window.get_strip_picked_count(),
+            3,
+            "a mask push emits nothing"
+        );
     });
 }

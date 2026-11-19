@@ -19,6 +19,7 @@ import { ModalDialogHost, DialogButtonModel, DialogButtonRole, DialogKind } from
 import { AnchoredOverlayHost, OverlayPlacement } from "../ui/widgets/anchored-overlay.slint";
 import { TextButton } from "../ui/widgets/text-button.slint";
 import { CheckBox } from "../ui/widgets/check-box.slint";
+import { ToggleStrip } from "../ui/widgets/toggle-strip.slint";
 
 export component WidgetFrameworkProbeWindow inherits Window {
     // The window-default tokens (the token lint forbids literal px
@@ -61,6 +62,8 @@ export component WidgetFrameworkProbeWindow inherits Window {
     // state-less model bit and the card variant's focusable flag.
     in-out property <bool> probe-check-checked: false;
     in-out property <bool> probe-check2-focusable: false;
+    // The ToggleStrip proof mount's controls (round-9 W3, plan §6).
+    in-out property <bool> probe-strip-flip: false;
 
     // ---- Intent counters (read from Rust) ---------------------------
     in-out property <int> accepted-count: 0;
@@ -72,6 +75,8 @@ export component WidgetFrameworkProbeWindow inherits Window {
     in-out property <int> button-clicked-count: 0;
     in-out property <int> check-toggled-count: 0;
     in-out property <int> check2-toggled-count: 0;
+    in-out property <int> strip-picked-count: 0;
+    in-out property <int> strip-picked-index: -1;
 
     // ---- Observation mirrors ----------------------------------------
     // The fake status bar's top edge — the viewport floor.
@@ -116,6 +121,11 @@ export component WidgetFrameworkProbeWindow inherits Window {
     out property <length> check-y: probe-check.y;
     out property <length> check-w: probe-check.width;
     out property <length> check-h: probe-check.height;
+    // The ToggleStrip seams: the realized origin (the slot geometry
+    // is the IconButton square plus the strip's spacing) and the
+    // model-pushed mask witness.
+    out property <length> strip-x: probe-strip.x;
+    out property <length> strip-y: probe-strip.y;
 
     // The opener (the focus-restore target, G-12) and the fixture
     // anchor (G-2..G-5) share the top strip; the sibling witnesses
@@ -192,6 +202,20 @@ export component WidgetFrameworkProbeWindow inherits Window {
         unchecked-label: "Mark probe two done";
         checked-label: "Mark probe two not done";
         toggled => { root.check2-toggled-count += 1; }
+    }
+
+    // ---- The ToggleStrip proof mount (round-9 W3) --------------------
+    // Three slots on the same strip as the boxes; the mask flips from
+    // Rust so the model-pushed checked render is exercised.
+    probe-strip := ToggleStrip {
+        x: Theme.space-15 + Theme.space-6;
+        y: Theme.space-8 + Theme.space-7 + Theme.space-7 + Theme.space-8;
+        options: ["One", "Two", "Three"];
+        checked-mask: [root.probe-strip-flip, !root.probe-strip-flip, false];
+        picked(index) => {
+            root.strip-picked-count += 1;
+            root.strip-picked-index = index;
+        }
     }
 
     // ---- The modal proof mount ---------------------------------------
