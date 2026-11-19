@@ -152,7 +152,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "walk_abort_accept_clicked",
     "walk_abort_arm_requested",
     "walk_abort_dismiss_clicked",
-    "walk_button_invoked",
+    "walk_button_invoked", // the slint spelling: "walk-button-invoked" (J4 W-1)
     "walk_plan_clicked",
     "walk_tomorrow_clicked",
     "focus_switcher_invoked",
