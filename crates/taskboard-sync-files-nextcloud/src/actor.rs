@@ -13,7 +13,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::cycle::{LocalDocument, LoopState, SyncContext};
 use crate::device::{self, DeviceIdentityError};
@@ -25,18 +24,15 @@ use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
 /// Knobs the bootstrap wires from figment's `[files_sync]` + `[sync]`
-/// tables; tests inject tiny/paused values.
+/// tables; tests inject tiny/paused values. The cadence no longer
+/// travels here — the loop reads it live through the settings
+/// snapshot (`SyncStateReader::read_settings`, #673), one cadence
+/// rule shared by boot and live reads.
 #[derive(Clone)]
 pub struct FilesSyncConfig {
     /// This connector's config-minted tag (DF-3): the board lanes'
     /// ownership key (chunk 5).
     pub connector: taskboard_domain::ids::ConnectorId,
-    /// Idle wait between cycles after a success.
-    pub poll_interval: Duration,
-    /// First failure backoff (`initial * 2^(streak-1)`).
-    pub backoff_initial: Duration,
-    /// Backoff saturation.
-    pub backoff_max: Duration,
     /// Wall-clock seam for every stamp the cycle mints. Production
     /// injects `SystemClock`; the hermetic suites a fixed clock.
     pub clock: Arc<dyn taskboard_domain::Clock>,
@@ -50,9 +46,6 @@ impl std::fmt::Debug for FilesSyncConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FilesSyncConfig")
             .field("deck_origins", &self.deck_origins)
-            .field("poll_interval", &self.poll_interval)
-            .field("backoff_initial", &self.backoff_initial)
-            .field("backoff_max", &self.backoff_max)
             .field("clock", &self.clock)
             .field("connector", &self.connector)
             .field("app_version", &self.app_version)
@@ -147,10 +140,15 @@ async fn run<T: FilesTransport>(
         local,
         report_tx,
         connector: cfg.connector.clone(),
-        state_reader,
+        state_reader: state_reader.clone(),
         board_reports,
         deck_origins: cfg.deck_origins.clone(),
     });
+    // The loop-local settings read (D-5.5 item 7 retired, #673): the
+    // cadence comes from the engine's live snapshot every re-arm —
+    // the same `SyncStateReader` facet the Deck connector reads
+    // through (a read, not an engine facet — DR-8's boundary stays).
+    let reader = state_reader;
     let mut st = LoopState::default();
     let mut sys_rx = system.subscribe();
     let mut sys_open = true;
@@ -163,7 +161,7 @@ async fn run<T: FilesTransport>(
 
             () = tokio::time::sleep_until(deadline) => {
                 crate::cycle::run_cycle(&transport, &ctx, &mut st, &status).await;
-                deadline = reschedule(&st, &cfg);
+                deadline = reschedule(&st, &reader.read_settings());
             },
 
             event = sys_rx.recv(), if sys_open => match event {
@@ -171,10 +169,18 @@ async fn run<T: FilesTransport>(
                     tracing::info!("files-sync actor stopping: shutdown event");
                     return;
                 }
+                Ok(SystemEvent::SettingsChanged) => {
+                    // The min rule (the Deck connector's semantics,
+                    // D-5.5 item 6): a shortened cadence applies at
+                    // once, a lengthened one never postpones an armed
+                    // deadline. Through `reschedule` so a failure
+                    // streak keeps its backoff curve instead of
+                    // collapsing to the poll interval.
+                    deadline = deadline.min(reschedule(&st, &reader.read_settings()));
+                }
                 Ok(
                     SystemEvent::StorageFailed
                         | SystemEvent::TaskResurrected(_)
-                        | SystemEvent::SettingsChanged
                         | SystemEvent::NetworkLost
                         | SystemEvent::NetworkRestored
                         | SystemEvent::ConnectorLost(_)
@@ -183,13 +189,6 @@ async fn run<T: FilesTransport>(
                     // The whole network vocabulary belongs to the
                     // app-layer authority — this actor counts nothing
                     // and publishes nothing (the acceptance pin).
-                    // `SettingsChanged` rides the same ignore arm as a
-                    // recorded limitation (round-5 chunk 5, D-5.5 item
-                    // 7): no engine facet to read live settings through
-                    // (not a board connector — DR-8's boundary), so the
-                    // cadence stays the boot capture; the backlog
-                    // follow-up threads a settings reader into the
-                    // files-sync gate (#673).
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     tracing::warn!("system broadcast closed; continuing without shutdown watch");
@@ -203,14 +202,27 @@ async fn run<T: FilesTransport>(
     }
 }
 
-fn reschedule(st: &LoopState, cfg: &FilesSyncConfig) -> tokio::time::Instant {
+/// The next wake-up: the effective poll interval after a success, the
+/// failure backoff after a failure streak — both from the per-cycle
+/// settings read. The effective interval is the snapshot's
+/// `files_sync_poll_secs` override over `[sync] poll_interval_secs`
+/// (the boot mint's `unwrap_or` rule, carried live — one cadence rule,
+/// #673).
+fn reschedule(
+    st: &LoopState,
+    settings: &taskboard_domain::SettingsSnapshot,
+) -> tokio::time::Instant {
+    let poll = settings
+        .files_sync_poll_secs
+        .unwrap_or(settings.poll_interval_secs)
+        .duration();
     let delay = if st.failure_streak == 0 {
-        cfg.poll_interval
+        poll
     } else {
         poll_backoff(
             st.failure_streak,
-            cfg.backoff_initial,
-            cfg.backoff_max,
+            settings.backoff_initial_secs.duration(),
+            settings.backoff_max_secs.duration(),
             st.retry_after_floor,
         )
     };
@@ -222,6 +234,7 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc as StdArc;
+    use std::time::Duration;
 
     use chrono::{DateTime, Utc};
     use serde_json::json;
@@ -290,9 +303,6 @@ mod tests {
     fn cfg() -> FilesSyncConfig {
         FilesSyncConfig {
             connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
-            poll_interval: POLL,
-            backoff_initial: Duration::from_millis(100),
-            backoff_max: Duration::from_millis(400),
             clock: Arc::new(SteppingClock::new(heartbeat_base(), 30)),
             app_version: "test".into(),
             deck_origins: std::collections::BTreeMap::new(),
@@ -377,7 +387,11 @@ mod tests {
         /// The board lanes' state seam: an empty persisted state (no
         /// files-owned boards — the per-user matrix runs lane-free).
         #[allow(dead_code)]
-        state: Arc<dyn taskboard_domain::persistence::SyncStateReader>,
+        state: Arc<EmptyPersistedState>,
+        /// The live-settings seam handle: a test publishes a new
+        /// snapshot here before sending the doorbell (the engine's
+        /// wholesale-replace stand-in).
+        settings: Arc<arc_swap::ArcSwap<taskboard_domain::SettingsSnapshot>>,
         /// The subscription made *before* the spawn: the authority pin
         /// reads it (broadcast receivers are not `Clone`).
         system_rx: (
@@ -422,8 +436,8 @@ mod tests {
     ) -> Harness {
         let (report_tx, report_rx) = lane;
         let (board_tx, board_rx) = mpsc::channel::<SyncReport>(4);
-        let state: Arc<dyn taskboard_domain::persistence::SyncStateReader> =
-            Arc::new(EmptyPersistedState);
+        let state = Arc::new(EmptyPersistedState::new());
+        let settings = state.settings.clone();
         let dir = tempfile::tempdir().expect("temp dir");
         let device_path = dir.path().join("device.json");
         write_device_identity(&device_path);
@@ -445,6 +459,7 @@ mod tests {
             reports: std::cell::RefCell::new(report_rx),
             board_reports: std::cell::RefCell::new(board_rx),
             state,
+            settings,
             system_rx: (system, system_rx),
             _dir: dir,
         }
@@ -1129,7 +1144,7 @@ mod tests {
             FakeHandle { fake: fake.clone() },
             device_path.clone(),
             Arc::new(crate::cycle::EmptyDocument),
-            Arc::new(EmptyPersistedState),
+            Arc::new(EmptyPersistedState::new()),
             report_tx,
             board_tx,
             system,
@@ -1751,10 +1766,478 @@ mod tests {
         );
     }
 
+    // -- the live cadence matrix (#673, D-5.5 item 7 retired) -------
+
+    /// Publishes a snapshot through the engine stand-in (the engine's
+    /// wholesale replace) — the doorbell tests' staging step.
+    fn publish(harness: &Harness, snapshot: taskboard_domain::SettingsSnapshot) {
+        harness.settings.store(Arc::new(snapshot));
+    }
+
+    /// A snapshot carrying a `[files_sync] poll_secs` override over a
+    /// distinct `[sync] poll_interval_secs` (the D2 `unwrap_or` rule's
+    /// two knobs, minted independently).
+    fn snapshot_with(
+        override_secs: Option<u64>,
+        poll_secs: u64,
+    ) -> taskboard_domain::SettingsSnapshot {
+        taskboard_domain::SettingsSnapshot {
+            poll_interval_secs: taskboard_domain::TickSecs::new(poll_secs).expect("poll secs"),
+            files_sync_poll_secs: override_secs
+                .map(|secs| taskboard_domain::TickSecs::new(secs).expect("override secs")),
+            ..taskboard_domain::SettingsSnapshot::default()
+        }
+    }
+
+    /// The engine's doorbell: the same `SettingsChanged` the write lane
+    /// publishes after its validated snapshot replace.
+    fn doorbell(harness: &Harness) {
+        harness
+            .system_rx
+            .0
+            .send(SystemEvent::SettingsChanged)
+            .expect("the system sender outlives the actor");
+    }
+
+    /// How many steady cycles have started: one `propfind_devices`
+    /// per cycle (the cycle's first request — the same typed request
+    /// count the existing matrix pins).
+    fn cycles(fake: &FakeFilesTransport) -> usize {
+        fake.count("PROPFIND", Some("taskboard/devices/"))
+    }
+
+    /// 1 — shorten: a shortened cadence applies at the next wake
+    /// without waiting out the old armed interval.
+    #[tokio::test(start_paused = true)]
+    async fn a_shortened_cadence_applies_at_the_next_wake() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        let harness = spawn_actor(fake);
+        assert!(ok(&next_status(&harness).await));
+        let baseline = cycles(&harness.fake);
+        // Shorten to 5 s (the override knob, as the config mint
+        // carries it) and ring the doorbell.
+        publish(&harness, snapshot_with(Some(5), 3_600));
+        doorbell(&harness);
+        tokio::time::advance(Duration::from_secs(5)).await;
+        // Bounded horizon: the doorbell arms the shortened deadline at
+        // its processing moment (during the advance), so the wake
+        // lands a further 5 s out; 30 s reaches it while the old
+        // 3 600 s deadline stays unreachable.
+        assert!(
+            ok(&next_status_within(&harness, Duration::from_secs(30)).await),
+            "the shortened wake fired a full cycle"
+        );
+        assert_eq!(
+            cycles(&harness.fake),
+            baseline + 1,
+            "exactly one shortened wake: no double-fire"
+        );
+    }
+
+    /// 2 — lengthen: a lengthened cadence never postpones an armed
+    /// deadline (the min rule) — the cycle still fires at the old
+    /// wake.
+    #[tokio::test(start_paused = true)]
+    async fn a_lengthened_cadence_never_postpones_an_armed_deadline() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        let harness = spawn_actor(fake);
+        assert!(ok(&next_status(&harness).await));
+        let baseline = cycles(&harness.fake);
+        publish(&harness, snapshot_with(None, 7_200));
+        doorbell(&harness);
+        tokio::time::advance(POLL).await;
+        // Bounded horizon: the wake fired at the old armed 3 600 s
+        // deadline; a postponement to 7 200 s would miss it.
+        assert!(
+            ok(&next_status_within(&harness, Duration::from_secs(1)).await),
+            "the cycle fired at the previously armed deadline, not the lengthened one"
+        );
+        assert_eq!(cycles(&harness.fake), baseline + 1);
+    }
+
+    /// A transport that parks a steady cycle's first request until the
+    /// test releases it — the "doorbell during a cycle" staging (the
+    /// cycle is in flight while the doorbell arrives). Starts
+    /// disarmed; `arm` stages the next steady cycle's park.
+    struct ParkOnDevices {
+        fake: Arc<FakeFilesTransport>,
+        armed: std::sync::atomic::AtomicBool,
+        parked: std::sync::atomic::AtomicBool,
+        release: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        rx: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    }
+
+    impl ParkOnDevices {
+        fn new(fake: Arc<FakeFilesTransport>) -> Self {
+            Self {
+                fake,
+                armed: std::sync::atomic::AtomicBool::new(false),
+                parked: std::sync::atomic::AtomicBool::new(false),
+                release: std::sync::Mutex::new(None),
+                rx: std::sync::Mutex::new(None),
+            }
+        }
+
+        /// Stage the park: the next steady cycle's first
+        /// `propfind_devices` blocks until `release`.
+        fn arm(&self) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            *self.release.lock().expect("release lock") = Some(tx);
+            // Stash the receiver where `release_parked_cycle` finds it.
+            *self.rx.lock().expect("rx lock") = Some(rx);
+            self.armed.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Waits for the next status change within a bounded paused-time
+    /// horizon (the spin never crosses the horizon: a wake later than
+    /// `horizon` is a failure, not a hang). The new-matrix tests'
+    /// horizon arithmetic depends on this — the unbounded
+    /// [`next_status`] spin accumulates arbitrary paused time.
+    async fn next_status_within(harness: &Harness, horizon: Duration) -> FilesSyncStatus {
+        let mut budget = horizon;
+        while !harness.status.borrow_mut().has_changed().unwrap_or(false) {
+            assert!(
+                budget > Duration::ZERO,
+                "no status change within the paused-time horizon"
+            );
+            let step = Duration::from_millis(10).min(budget);
+            tokio::time::advance(step).await;
+            budget -= step;
+        }
+        harness.status.borrow_mut().borrow_and_update().clone()
+    }
+
+    /// The watch-receiver twin of [`next_status_within`] for the
+    /// manual-spawn (gated-transport) test.
+    async fn watch_status_within(
+        status_rx: &mut watch::Receiver<FilesSyncStatus>,
+        horizon: Duration,
+        what: &str,
+    ) -> FilesSyncStatus {
+        let mut budget = horizon;
+        while !status_rx.has_changed().unwrap_or(false) {
+            assert!(
+                budget > Duration::ZERO,
+                "no status change within the paused-time horizon: {what}"
+            );
+            let step = Duration::from_millis(10).min(budget);
+            tokio::time::advance(step).await;
+            budget -= step;
+        }
+        status_rx.borrow_and_update().clone()
+    }
+
+    /// Waits (wall-clock bounded) until the staged cycle is parked,
+    /// advancing paused time so the actor runs.
+    async fn wait_parked(parked: &std::sync::atomic::AtomicBool) {
+        let deadline = std::time::Instant::now() + WALL;
+        while !parked.load(std::sync::atomic::Ordering::Relaxed) {
+            tokio::time::advance(Duration::from_millis(10)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the staged cycle never parked"
+            );
+        }
+    }
+
+    /// Forwards the gated transport's verbs (the spawn consumes a
+    /// concrete owner; the shared `Arc` is what the test drives).
+    struct ParkHandle {
+        gated: StdArc<ParkOnDevices>,
+    }
+
+    impl FilesTransport for ParkHandle {
+        async fn mkcol(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::MkcolOutcome, crate::error::TransportError> {
+            self.gated.mkcol(path).await
+        }
+        async fn propfind_devices(
+            &self,
+        ) -> Result<crate::transport::PropfindListing, crate::error::TransportError> {
+            self.gated.propfind_devices().await
+        }
+        async fn propfind_tree(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::PropfindListing, crate::error::TransportError> {
+            self.gated.propfind_tree(path).await
+        }
+        async fn get(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::FileContent, crate::error::TransportError> {
+            self.gated.get(path).await
+        }
+        async fn put_create(
+            &self,
+            path: &str,
+            body: &[u8],
+        ) -> Result<crate::transport::PutOutcome, crate::error::TransportError> {
+            self.gated.put_create(path, body).await
+        }
+        async fn put_if_match(
+            &self,
+            path: &str,
+            body: &[u8],
+            etag: &crate::etag::Etag,
+        ) -> Result<crate::transport::PutOutcome, crate::error::TransportError> {
+            self.gated.put_if_match(path, body, etag).await
+        }
+        async fn delete(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::DeleteOutcome, crate::error::TransportError> {
+            self.gated.delete(path).await
+        }
+    }
+
+    impl FilesTransport for ParkOnDevices {
+        async fn mkcol(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::MkcolOutcome, crate::error::TransportError> {
+            self.fake.mkcol(path).await
+        }
+        async fn propfind_devices(
+            &self,
+        ) -> Result<crate::transport::PropfindListing, crate::error::TransportError> {
+            if self.armed.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                self.parked
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                let rx = self.rx.lock().expect("rx lock").take();
+                if let Some(rx) = rx {
+                    let _ = rx.await;
+                }
+                self.parked
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.fake.propfind_devices().await
+        }
+        async fn propfind_tree(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::PropfindListing, crate::error::TransportError> {
+            self.fake.propfind_tree(path).await
+        }
+        async fn get(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::FileContent, crate::error::TransportError> {
+            self.fake.get(path).await
+        }
+        async fn put_create(
+            &self,
+            path: &str,
+            body: &[u8],
+        ) -> Result<crate::transport::PutOutcome, crate::error::TransportError> {
+            self.fake.put_create(path, body).await
+        }
+        async fn put_if_match(
+            &self,
+            path: &str,
+            body: &[u8],
+            etag: &crate::etag::Etag,
+        ) -> Result<crate::transport::PutOutcome, crate::error::TransportError> {
+            self.fake.put_if_match(path, body, etag).await
+        }
+        async fn delete(
+            &self,
+            path: &str,
+        ) -> Result<crate::transport::DeleteOutcome, crate::error::TransportError> {
+            self.fake.delete(path).await
+        }
+    }
+
+    /// 3 — doorbell during a cycle: the in-flight cycle is never
+    /// interrupted, the next wake honors the new value, and exactly
+    /// one timer is armed (request-count arithmetic across the
+    /// shortened horizon).
+    #[tokio::test(start_paused = true)]
+    async fn a_doorbell_during_a_cycle_applies_at_the_next_wake_only() {
+        let fake = Arc::new(FakeFilesTransport::new());
+        seed_peer(&fake, "v1");
+        let gated = StdArc::new(ParkOnDevices::new(Arc::clone(&fake)));
+        // Spawn over the gating wrapper (the harness's concrete-fake
+        // spawner does not fit; the manual spawn mirrors matrix_15's).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let device_path = dir.path().join("device.json");
+        write_device_identity(&device_path);
+        let (system, _system_rx) = broadcast::channel(16);
+        let (report_tx, _report_rx) = mpsc::channel(4);
+        let (board_tx, _board_rx) = mpsc::channel::<SyncReport>(4);
+        let state = Arc::new(EmptyPersistedState::new());
+        let settings = Arc::clone(&state.settings);
+        let (_join, mut status_rx) = spawn_files_sync_actor(
+            ParkHandle {
+                gated: gated.clone(),
+            },
+            device_path,
+            Arc::new(crate::cycle::EmptyDocument),
+            state,
+            report_tx,
+            board_tx,
+            system.clone(),
+            cfg(),
+        );
+        // The attach cycle runs immediately (unarmed) and goes Ok.
+        // Fixture waits (not cadence measurements): generous horizons.
+        let attached =
+            watch_status_within(&mut status_rx, Duration::from_secs(600), "attach").await;
+        assert!(ok(&attached));
+        let baseline = cycles(&fake);
+        // Stage the park, ring the doorbell while the cycle is in
+        // flight, then let the cycle finish.
+        gated.arm();
+        tokio::time::advance(POLL).await;
+        wait_parked(&gated.parked).await;
+        system
+            .send(SystemEvent::SettingsChanged)
+            .expect("doorbell while the steady cycle is parked");
+        settings.store(Arc::new(snapshot_with(Some(5), 3_600)));
+        gated
+            .release
+            .lock()
+            .expect("release lock")
+            .take()
+            .expect("armed release")
+            .send(())
+            .expect("the cycle is parked on the release");
+        // The parked cycle completes; the next wake honors the new
+        // value — exactly one shortened wake, no double-fire. Bounded
+        // horizons throughout: a late wake is a failure, not a hang.
+        let parked_cycle =
+            watch_status_within(&mut status_rx, Duration::from_secs(600), "parked cycle").await;
+        assert!(ok(&parked_cycle));
+        let after_parked = cycles(&fake);
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let shortened =
+            watch_status_within(&mut status_rx, Duration::from_secs(1), "shortened wake").await;
+        assert!(ok(&shortened), "the shortened wake fired a full cycle");
+        let one_wake = cycles(&fake) - after_parked;
+        assert_eq!(
+            after_parked - baseline,
+            1,
+            "the doorbell interrupted nothing: the parked cycle completed alone"
+        );
+        assert_eq!(one_wake, 1, "exactly one shortened wake, no double-fire");
+        // And the shortened cadence holds: the next 5 s wake fires one
+        // more cycle (a stale extra timer would skew this count).
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let second_wake = watch_status_within(
+            &mut status_rx,
+            Duration::from_secs(1),
+            "second shortened wake",
+        )
+        .await;
+        assert!(ok(&second_wake));
+        assert_eq!(cycles(&fake) - after_parked - one_wake, 1);
+    }
+
+    /// 4 — override carried live: the snapshot's `files_sync_poll_secs`
+    /// override wins over a distinct `[sync] poll_interval_secs` — the
+    /// D2 `unwrap_or` rule observed live (boot-vs-live parity).
+    #[tokio::test(start_paused = true)]
+    async fn the_files_sync_override_wins_live_over_the_sync_interval() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        let harness = spawn_actor(fake);
+        assert!(ok(&next_status(&harness).await));
+        let baseline = cycles(&harness.fake);
+        // Boot-shaped snapshot: the override (7 s) over a far longer
+        // `[sync]` interval (3 600 s). A wake at 7 s is only possible
+        // through the override.
+        publish(&harness, snapshot_with(Some(7), 3_600));
+        doorbell(&harness);
+        tokio::time::advance(Duration::from_secs(7)).await;
+        // 30 s budget: the doorbell arms the override deadline at its
+        // processing moment, a further 7 s out; the `[sync]` fallback
+        // (3 600 s) stays unreachable.
+        assert!(
+            ok(&next_status_within(&harness, Duration::from_secs(30)).await),
+            "the override interval, not the `[sync]` interval, armed the wake"
+        );
+        assert_eq!(cycles(&harness.fake), baseline + 1);
+    }
+
+    /// 5 — backoff preserved across a doorbell: after a failed cycle
+    /// (streak ≥ 1) a shortened poll never collapses the wake to the
+    /// raw poll interval — the min rule goes through `reschedule`, so
+    /// the backoff curve bounds the next wake.
+    #[tokio::test(start_paused = true)]
+    async fn a_doorbell_keeps_the_backoff_curve_over_the_raw_poll_interval() {
+        let fake = FakeFilesTransport::new();
+        seed_peer(&fake, "v1");
+        let harness = spawn_actor(fake);
+        assert!(ok(&next_status(&harness).await));
+        // The live snapshot: a 1 s poll override over 4 s/8 s backoff
+        // knobs (the failure curve the streak must keep).
+        publish(
+            &harness,
+            taskboard_domain::SettingsSnapshot {
+                backoff_initial_secs: taskboard_domain::TickSecs::new(4).expect("4 secs"),
+                backoff_max_secs: taskboard_domain::TickSecs::new(8).expect("8 secs"),
+                ..snapshot_with(Some(1), 3_600)
+            },
+        );
+        // Fail the next steady cycle: streak 1, the wake arms at the
+        // 4 s backoff.
+        harness.fake.stage(Effect::Status(503));
+        assert_eq!(
+            next_cycle(&harness).await.last_cycle,
+            Some(CycleOutcome::Failed)
+        );
+        doorbell(&harness);
+        let baseline = cycles(&harness.fake);
+        // At the raw poll interval (1 s): no wake — the backoff holds.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(
+            cycles(&harness.fake),
+            baseline,
+            "the doorbell must not collapse the failure backoff to the poll interval"
+        );
+        // At the backoff deadline (4 s): the wake fires, one cycle.
+        tokio::time::advance(Duration::from_secs(3)).await;
+        assert!(
+            ok(&next_status_within(&harness, Duration::from_secs(1)).await),
+            "the wake fired at the backoff deadline"
+        );
+        assert_eq!(cycles(&harness.fake), baseline + 1);
+    }
+
     /// The board lanes' empty state seam: no boards, no outbox — every
-    /// existing per-user matrix test runs lane-free.
+    /// existing per-user matrix test runs lane-free. The settings read
+    /// publishes a snapshot whose cadence reproduces the old boot
+    /// capture (`poll_interval = POLL`, small backoff knobs) — the
+    /// default harness view is bit-identical to the pre-#673 cadence;
+    /// a test swaps in a new snapshot to drive the live-rearm matrix.
     #[derive(Debug)]
-    struct EmptyPersistedState;
+    struct EmptyPersistedState {
+        settings: Arc<arc_swap::ArcSwap<taskboard_domain::SettingsSnapshot>>,
+    }
+
+    impl EmptyPersistedState {
+        fn new() -> Self {
+            // The old `cfg()` capture: no tick inside the test horizon
+            // except explicit `advance(POLL)`; backoff knobs small enough
+            // to fire inside a `next_status` wait.
+            Self {
+                settings: Arc::new(arc_swap::ArcSwap::from_pointee(
+                    taskboard_domain::SettingsSnapshot {
+                        poll_interval_secs: taskboard_domain::TickSecs::new(POLL.as_secs())
+                            .expect("POLL secs"),
+                        backoff_initial_secs: taskboard_domain::TickSecs::new(1).expect("1 sec"),
+                        backoff_max_secs: taskboard_domain::TickSecs::new(4).expect("4 secs"),
+                        ..taskboard_domain::SettingsSnapshot::default()
+                    },
+                )),
+            }
+        }
+    }
 
     impl taskboard_domain::persistence::SyncStateReader for EmptyPersistedState {
         fn read_state(
@@ -1766,7 +2249,7 @@ mod tests {
             Box::pin(async { Ok(taskboard_domain::PersistedState::default()) })
         }
         fn read_settings(&self) -> taskboard_domain::SettingsSnapshot {
-            taskboard_domain::SettingsSnapshot::default()
+            self.settings.load_full().as_ref().clone()
         }
     }
 }
