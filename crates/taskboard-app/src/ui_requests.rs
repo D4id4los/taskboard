@@ -3407,8 +3407,9 @@ mod tests {
         );
         assert_eq!(
             snapshot.applies.len(),
-            18,
-            "the reply carries the apply map"
+            19,
+            "the reply carries the apply map (size tracks the registry — \
+             #1051 added files_sync.poll_secs)"
         );
         assert!(
             snapshot.env_overridden.is_empty(),
