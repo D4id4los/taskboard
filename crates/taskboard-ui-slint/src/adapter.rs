@@ -313,6 +313,14 @@ struct WalkResume {
     reference: chrono::NaiveDate,
 }
 
+/// The reorder pair's minted one-shot cells (chunk 8 D4): the up and
+/// down `(habit, slot order)` pair, `None` where the slot does not
+/// exist (the typed `NoTarget`'s input).
+type HabitMoveSlots = (
+    Option<(taskboard_domain::HabitId, i64)>,
+    Option<(taskboard_domain::HabitId, i64)>,
+);
+
 #[allow(
     clippy::struct_excessive_bools // one flag per synced gate (the house shape)
 )]
@@ -1456,6 +1464,13 @@ impl Adapter {
     /// One action through the router (design §5 pipeline's last hop).
     #[allow(clippy::too_many_lines)] // the per-bit consumption table reads flat
     pub(crate) fn route(&mut self, window: &AppWindow, id: ActionId) {
+        // The focused-subject key translation (chunk 8 D3, #934): a
+        // task-row verb resolved under a habit-focused walk routes
+        // its habit twin — one stroke, one binding per context (the
+        // preset tables stay the stroke truth; click ≡ key holds in
+        // both directions). The identity for every pointer path and
+        // every task/focusless walk by construction.
+        let id = crate::presentation::translate_for_subject(id, self.view_state.walk_subject());
         // The selection's verb intercept (UX-R8 D-6, US-4/S3–S4): a
         // non-empty selection turns Complete/Delete — and the multi
         // bar's schedule trio (J5 US-2) — into the per-task sequences
@@ -1486,7 +1501,13 @@ impl Adapter {
         // id — the subject resolves HERE from the opener's focus fact
         // when no seam pre-minted the one-shot (the repair seam's
         // exact arithmetic; a subjectless dispatch stays NoTarget).
-        if let Some(habit) = self.focused_habit {
+        // Chunk 8 (D4): the walk's habit landing feeds the same
+        // resolution — the effective subject is the walk cursor's
+        // when the walk has entered (the exclusivity law makes a
+        // task landing a typed `None`), the pointer click fact
+        // otherwise; a stale click fact can never answer a task
+        // walk's stroke.
+        if let Some(habit) = self.effective_habit() {
             match id {
                 ActionId::HabitLog if self.habit_target.is_none() => {
                     self.habit_target = Some(habit);
@@ -1508,6 +1529,23 @@ impl Adapter {
                     if let Some((target_window, count)) = target {
                         self.habit_repair = Some((habit, target_window, count));
                     }
+                }
+                // The keyboard reorder pair (chunk 8 D4, #934): the
+                // walk's landing mints the same one-shots the menu
+                // open mints — the shared slot arithmetic, one
+                // mint site. On kiosk the mint refuses (the pair is
+                // an editing verb, HAB-14): the binding stays
+                // visible, the dispatch takes the typed NoTarget.
+                ActionId::HabitMoveUp | ActionId::HabitMoveDown if self.kiosk => {}
+                ActionId::HabitMoveUp if self.habit_move_up.is_none() => {
+                    let state = self.state.load_full();
+                    let (up, _) = Self::habit_move_slots(&state, habit);
+                    self.habit_move_up = up;
+                }
+                ActionId::HabitMoveDown if self.habit_move_down.is_none() => {
+                    let state = self.state.load_full();
+                    let (_, down) = Self::habit_move_slots(&state, habit);
+                    self.habit_move_down = down;
                 }
                 _ => {}
             }
@@ -4232,7 +4270,11 @@ impl Adapter {
             // strips a menu-routed arm must never flip invisibly).
             (_, UiEffect::HabitConvertArm | UiEffect::SeriesConvertArm) if self.kiosk => Vec::new(),
             (_, UiEffect::HabitConvertArm) => {
-                let armed = match self.focused_habit {
+                // The subject resolves through the effective walk /
+                // click union (chunk 8 D4): the keyboard walk's habit
+                // landing arms the conversion exactly as the pointer
+                // row click does — click ≡ key.
+                let armed = match self.effective_habit() {
                     Some(habit) => self.arm_habit_convert(window, habit),
                     None => false,
                 };
@@ -6025,32 +6067,13 @@ impl Adapter {
         habit: taskboard_domain::HabitId,
     ) -> Vec<crate::menu::MenuEntry> {
         let state = self.state.load_full();
-        let row = state.habits.habits.get(&habit).cloned();
         let chain = [ContextId::Board, ContextId::Global].to_vec();
-        // The reorder pair's slots (H2 D4): the row seam's exact
-        // floor-midpoint arithmetic over the section's live order —
-        // up slots at the habit's own index, down at index + 1.
-        let mut orders: Vec<i64> = state
-            .habits
-            .habits
-            .values()
-            .filter(|h| h.is_live() && h.board == row.as_ref().map_or(h.board, |r| r.board))
-            .map(|h| h.order)
-            .collect();
-        orders.sort_unstable();
-        let position = orders
-            .iter()
-            .position(|&order| Some(order) == row.as_ref().map(|r| r.order));
-        let slot_order = |slot: Option<usize>| -> Option<i64> {
-            let slot = slot?;
-            let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
-            let next = orders.get(slot).copied();
-            Some(crate::presentation::habit_drop_order(prev, next))
-        };
-        self.habit_move_up = position.map(|_| habit).zip(slot_order(position));
-        self.habit_move_down = position
-            .map(|_| habit)
-            .zip(slot_order(position.map(|p| p + 1)));
+        // The reorder pair's slots (H2 D4): the shared mint (chunk 8
+        // D4 — one arithmetic, three invocation paths: menu open,
+        // keyboard walk, drag gap).
+        let (up, down) = Self::habit_move_slots(&state, habit);
+        self.habit_move_up = up;
+        self.habit_move_down = down;
         let states = self.habit_menu_states(&state, habit);
         let subject = crate::presentation::task_menu_subject(
             &state,
@@ -6058,6 +6081,57 @@ impl Adapter {
         );
         drop(state);
         crate::menu::habit_context_page(&self.keymap, &chain, subject, &states)
+    }
+
+    /// The reorder pair's shared mint (chunk 8 D4, #934 — H2 D4's
+    /// arithmetic factored to one home): the floor-midpoint one-shot
+    /// pair over the section's live board-scoped order — up slots at
+    /// the habit's own index, down at index + 1. Three invocation
+    /// paths converge here: the menu open, the keyboard walk's
+    /// pre-mint, and the drag gap's order. `None` for a stale or
+    /// positionless habit (the consumers take the typed `NoTarget`).
+    fn habit_move_slots(
+        state: &taskboard_domain::AppState,
+        habit: taskboard_domain::HabitId,
+    ) -> HabitMoveSlots {
+        let row = state.habits.habits.get(&habit);
+        let mut orders: Vec<i64> = state
+            .habits
+            .habits
+            .values()
+            .filter(|h| h.is_live() && h.board == row.map_or(h.board, |r| r.board))
+            .map(|h| h.order)
+            .collect();
+        orders.sort_unstable();
+        let position = orders
+            .iter()
+            .position(|&order| Some(order) == row.map(|r| r.order));
+        let slot_order = |slot: Option<usize>| -> Option<i64> {
+            let slot = slot?;
+            let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
+            let next = orders.get(slot).copied();
+            Some(crate::presentation::habit_drop_order(prev, next))
+        };
+        let up = position
+            .zip(slot_order(position))
+            .map(|(_, order)| (habit, order));
+        let down = position
+            .and_then(|p| slot_order(Some(p + 1)))
+            .map(|order| (habit, order));
+        (up, down)
+    }
+
+    /// The habit verbs' effective subject (chunk 8 D4): the walk
+    /// cursor's habit landing when the walk has entered — a task
+    /// landing resolves to `None` (a stale click fact can never
+    /// answer a task walk's stroke) — the pointer click fact
+    /// otherwise.
+    fn effective_habit(&self) -> Option<taskboard_domain::HabitId> {
+        match self.view_state.walk_subject() {
+            Some(crate::presentation::RowSubject::Habit(habit)) => Some(habit),
+            Some(crate::presentation::RowSubject::Task(_)) => None,
+            None => self.focused_habit,
+        }
     }
 
     /// The open habit menu's submenu page (H2 D4): the Convert
