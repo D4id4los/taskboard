@@ -44,6 +44,7 @@ fn main() {
         "task_card_hover_probe",
         "stat_bars_severing_probe",
         "window_max_probe",
+        "plan_window_max_probe",
         "widget_framework_probe",
         "action_menu_bar_probe",
         "overlay_migration_probe",
