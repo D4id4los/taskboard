@@ -136,6 +136,9 @@ export component TodayView inherits FocusScope {
     // The right-click context request (H2 D4): the habit menu's
     // opener (index, window x, window y).
     callback habits-context-requested(int, float, float);
+    // The habit list's gap drop (chunk 8 D5): the delegate-resolved
+    // (row, gap) pair from the section's DropAreas.
+    callback habits-drop-asked(int, int);
     // The Tracked section's activation seam (#490): the adapter
     // resolves the row against the tracked-today table and opens the
     // task (the today-row-activated precedent).
@@ -230,6 +233,7 @@ export component TodayView inherits FocusScope {
                     undo-log-clicked(r) => root.habits-undo-log-clicked(r);
                     repair-clicked(r) => root.habits-repair-clicked(r);
                     context-requested(r, x, y) => root.habits-context-requested(r, x, y);
+                    drop-asked(r, g) => root.habits-drop-asked(r, g);
                     create-open: root.habits-create-open;
                     quota-validity: root.habits-quota-validity;
                     quota-error-hint: root.habits-quota-error-hint;

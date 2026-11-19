@@ -21,6 +21,7 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { FieldValidity, TextField } from "../widgets/text-field.slint";
+import { DragState } from "../drag-state.slint";
 
 // One tracker row on the card substrate (H2 D2): the card slots are
 // the model derivation's (models::habit_card); the strip facts ride
@@ -68,6 +69,17 @@ export component HabitsSection inherits Rectangle {
     // window coordinates — the same seam the task cards speak.
     // slint: habits-context-requested
     callback context-requested(int, float, float);
+    // The pointer drag's gap-drop grammar (chunk 8 D5, US-4/AC-1 —
+    // the #918 board pattern over the flat list): each card carries a
+    // full-size child DropArea that resolves the gap edge from the
+    // pointer geometry inside the delegate (indexes only cross to
+    // Rust; the r2 D-E invariant). The aim-gap highlight is
+    // section-local presentation state — the board delegate's
+    // hairline reused, no new hint family; kiosk never arms (the
+    // editing verb's gate, HAB-14).
+    // slint: habits-drop-asked
+    callback drop-asked(int, int);
+    in-out property <int> aim-gap: -1;
 
     // The create flow (round-7 D-7.2): the header affordance asks,
     // the adapter arms (`create-open` — adapter-owned, pushed), the
@@ -217,23 +229,66 @@ export component HabitsSection inherits Rectangle {
         for row[row-index] in root.habits: VerticalLayout {
             spacing: Theme.space-1;
 
-            habit-card := TaskCard {
-                model: row.card;
-                hint-keys: [];
-                activated => {
-                    root.row-activated(row-index);
+            // The card's drag shell (chunk 8 D5): the board's DragArea
+            // + child DropArea pattern — the arm fires on `dragging`
+            // (not accept, so the card's own gestures stay), the gap
+            // edge resolves from the pointer half inside the delegate,
+            // and the release reports the aimed gap to the adapter
+            // (which mints the floor-midpoint order and dispatches
+            // `MoveHabit`). Kiosk never arms (HAB-14).
+            drag-zone := DragArea {
+                width: 100%;
+                height: habit-card.preferred-height;
+                allow-move: root.editing-enabled;
+                data: DragState.payload;
+                drag-finished(_) => {
+                    root.aim-gap = -1;
                 }
-                clicked => {
-                    root.row-activated(row-index);
+                habit-card := TaskCard {
+                    model: row.card;
+                    hint-keys: [];
+                    activated => {
+                        root.row-activated(row-index);
+                    }
+                    clicked => {
+                        root.row-activated(row-index);
+                    }
+                    // The done slot IS the +1 log control (H2 D2): the
+                    // card's done toggle routes the habit log — surplus
+                    // logs are first-class, so `done` never flips.
+                    done-toggled => {
+                        root.log-clicked(row-index);
+                    }
+                    context-requested(x, y) => {
+                        root.context-requested(row-index, x, y);
+                    }
                 }
-                // The done slot IS the +1 log control (H2 D2): the
-                // card's done toggle routes the habit log — surplus
-                // logs are first-class, so `done` never flips.
-                done-toggled => {
-                    root.log-clicked(row-index);
+                // The insertion indicator (the board delegate's
+                // hairline, reused): a paint-only Rectangle at the
+                // aimed gap's leading edge — the TouchAreas beneath
+                // keep every click.
+                if (root.aim-gap == row-index): Rectangle {
+                    width: 100%;
+                    height: 2px * Theme.base-scale;
+                    y: 0;
+                    background: Semantic.sync-active;
+                    border-radius: Theme.radius-small;
                 }
-                context-requested(x, y) => {
-                    root.context-requested(row-index, x, y);
+                gap-zone := DropArea {
+                    width: 100%;
+                    height: 100%;
+                    can-drop(event) => {
+                        root.aim-gap = event.position.y < habit-card.height / 2
+                            ? row-index : row-index + 1;
+                        root.editing-enabled ? DragAction.move : DragAction.none
+                    }
+                    dropped(event) => {
+                        root.drop-asked(row-index,
+                            event.position.y < habit-card.height / 2
+                                ? row-index : row-index + 1);
+                        root.aim-gap = -1;
+                        return event.proposed-action;
+                    }
                 }
             }
             HorizontalLayout {
@@ -277,6 +332,16 @@ export component HabitsSection inherits Rectangle {
                     clicked => root.repair-clicked(row-index);
                 }
             }
+        }
+
+        // The after-last insertion marker (the board's append twin):
+        // the last card's drop zone aims gap `length` — the hairline
+        // paints below the final strip, slint-local like the rest.
+        if (root.aim-gap >= 0 && root.aim-gap >= root.habits.length): Rectangle {
+            width: 100%;
+            height: 2px * Theme.base-scale;
+            background: Semantic.sync-active;
+            border-radius: Theme.radius-small;
         }
     }
 }
