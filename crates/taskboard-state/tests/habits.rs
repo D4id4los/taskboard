@@ -423,3 +423,151 @@ async fn us6_s1_update_habit_stores_the_day_inside_the_canonical_window() {
     assert_eq!(h2.published(), before, "memory ≡ disk across restarts");
     h2.shutdown().await;
 }
+
+/// US-5 AC-1 (J1, H4 D5): the editor's changeset maps every field
+/// through one sparse `UpdateHabit` — title, description set AND
+/// clear, quota (a period-kind change carrying the now-mismatched day
+/// inert), `anchor_time` set AND clear — while every untouched field's
+/// LWW clock stays byte-equal (the sparse discipline: `None` =
+/// untouched, clocks preserved).
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // the journey reads best as one scenario
+async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
+    let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+    let clock = FixedClock::new(T0);
+    let h = spawn_over(repo.clone(), clock.clone()).await;
+    let board = h.board_id();
+    let CommandOutcome::HabitCreated(habit) = h
+        .handle
+        .execute(StateCommand::CreateHabit {
+            board,
+            title: "run".into(),
+            target: taskboard_domain::HabitTarget::PerWeek(
+                taskboard_domain::NonZeroCount::new(2).unwrap(),
+            ),
+        })
+        .await
+        .expect("create")
+    else {
+        panic!("create names the habit");
+    };
+    let before = h.published().habits[&habit].clone();
+
+    // Every D5 row in one sparse changeset.
+    let wednesday = taskboard_domain::habit::AnchorDay::Weekday(chrono::Weekday::Wed);
+    clock.advance(60);
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                title: Some("long run".into()),
+                description: Some("slow and far".into()),
+                target: Some(taskboard_domain::HabitTarget::PerWeek(
+                    taskboard_domain::NonZeroCount::new(3).unwrap(),
+                )),
+                anchor_time: Some(Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap())),
+                anchor_day: Some(Some(wednesday)),
+                continued_from: None,
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::Applied => {}
+        other => panic!("the edit applies, got {other:?}"),
+    }
+    let after = h.published().habits[&habit].clone();
+    assert_eq!(after.title, "long run");
+    assert_eq!(after.description, "slow and far");
+    assert_eq!(
+        after.target,
+        taskboard_domain::HabitTarget::PerWeek(taskboard_domain::NonZeroCount::new(3).unwrap())
+    );
+    assert_eq!(
+        after.anchor_time,
+        Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap())
+    );
+    assert_eq!(after.anchor_day, Some(wednesday));
+    // Every touched field's clock moved (LWW stamps ride the injected
+    // clock), the untouched ones stay byte-equal.
+    assert_ne!(after.clocks.title, before.clocks.title);
+    assert_ne!(after.clocks.target, before.clocks.target);
+    assert_ne!(after.clocks.description, before.clocks.description);
+    assert_ne!(after.clocks.anchor_time, before.clocks.anchor_time);
+    assert_ne!(after.clocks.anchor_day, before.clocks.anchor_day);
+    // The sparse discipline's other half: nothing else churns.
+    assert_eq!(
+        after.clocks.order, before.clocks.order,
+        "the order slot is reorder-only"
+    );
+    assert_eq!(after.clocks.deleted, before.clocks.deleted);
+    assert_eq!(
+        after.continued_from, before.continued_from,
+        "the conversion seam is not editor data"
+    );
+
+    // `Some("")` clears the description; a kind change to PerDay
+    // carries the now-mismatched day inert (no silent destructive
+    // clearing).
+    clock.advance(60);
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                description: Some(String::new()),
+                target: Some(taskboard_domain::HabitTarget::PerDay(
+                    taskboard_domain::NonZeroCount::new(1).unwrap(),
+                )),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::Applied => {}
+        other => panic!("the clear applies, got {other:?}"),
+    }
+    let cleared = h.published().habits[&habit].clone();
+    assert_eq!(cleared.description, "");
+    assert_eq!(
+        cleared.target,
+        taskboard_domain::HabitTarget::PerDay(taskboard_domain::NonZeroCount::new(1).unwrap())
+    );
+    assert_eq!(
+        cleared.anchor_day,
+        Some(wednesday),
+        "the mismatched day is carried, never silently dropped"
+    );
+
+    // `Some(None)` clears the double-Option fields.
+    clock.advance(60);
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                anchor_time: Some(None),
+                anchor_day: Some(None),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::Applied => {}
+        other => panic!("the clear applies, got {other:?}"),
+    }
+    let cleared_both = h.published().habits[&habit].clone();
+    assert_eq!(cleared_both.anchor_time, None);
+    assert_eq!(cleared_both.anchor_day, None);
+
+    // Persisted intent: a fresh engine over the same repository sees
+    // the final shape.
+    let expected = h.published();
+    h.shutdown().await;
+    let h2 = spawn_over(repo, FixedClock::new(T0)).await;
+    assert_eq!(h2.published(), expected, "memory ≡ disk across restarts");
+    h2.shutdown().await;
+}

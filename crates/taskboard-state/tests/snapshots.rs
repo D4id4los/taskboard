@@ -2313,6 +2313,51 @@ async fn s45b_adjust_second_window_and_tombstone() {
     s.snap("s45b");
 }
 
+// S45c — the editor round-trip (H4 D5, US-5/AC-1): one sparse
+// `UpdateHabit` naming every field lands all of them (title,
+// description, quota, the double-Option anchor time + day) in the
+// disk contract; the untampered clock slots show which fields the
+// editor left untouched.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s45c_editor_changeset_round_trip_enters_the_disk_contract() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    let CommandOutcome::HabitCreated(habit) = s
+        .run(StateCommand::CreateHabit {
+            board,
+            title: "meditate".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    let CommandOutcome::Applied = s
+        .run(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                title: Some("sit".into()),
+                description: Some("morning sit".into()),
+                target: Some(taskboard_domain::HabitTarget::PerWeek(
+                    taskboard_domain::NonZeroCount::new(2).unwrap(),
+                )),
+                anchor_time: Some(Some(chrono::NaiveTime::from_hms_opt(7, 0, 0).unwrap())),
+                anchor_day: Some(Some(taskboard_domain::habit::AnchorDay::Weekday(
+                    chrono::Weekday::Wed,
+                ))),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    s.snap("s45c");
+}
+
 // ---- S-series: the undo line (ADR 0019) ---------------------------------
 
 /// s50: undo restores the pre-image values and moves the persisted head;
