@@ -1502,7 +1502,8 @@ async fn bootstrap_with_modules(
                     sync_commands,
                     system,
                     reports,
-                    engine.clone(),
+                    user_data_tx,
+                    engine,
                     engine_join,
                     escalation_join,
                     focus_join,
@@ -1616,9 +1617,9 @@ async fn bootstrap_with_modules(
 
 /// A module whose `build_and_spawn` failed after the engine already
 /// spawned: unwind like a failed boot — close every engine input (the
-/// registry senders, the parked reports twin, the system channel after
-/// one `Shutdown`), then bounded-join the engine and drain the storage
-/// actor. Nothing keeps running behind the error; the typed
+/// registry senders, the parked reports twin, the user-data lane's
+/// sender, the system channel after one `Shutdown`), then bounded-join
+/// the engine and drain the storage actor. Nothing keeps running behind the error; the typed
 /// `BootstrapError` maps from the module's `AttachError` (wrap, not
 /// duplicate — D-14).
 #[allow(clippy::too_many_arguments)] // the owned halves ARE the unwind
@@ -1627,6 +1628,7 @@ async fn unwind_after_module_failure(
     sync_commands: mpsc::Sender<SyncCommand>,
     system: broadcast::Sender<SystemEvent>,
     reports: mpsc::Sender<SyncReport>,
+    user_data_tx: mpsc::Sender<taskboard_domain::UserDataReport>,
     engine: EngineHandle,
     engine_join: JoinHandle<()>,
     escalation_join: JoinHandle<()>,
@@ -1643,10 +1645,21 @@ async fn unwind_after_module_failure(
     let _ = system.send(SystemEvent::Shutdown);
     drop(system);
     drop(reports);
+    // The user-data lane's sender must die here too: the engine's drain
+    // completes only once *every* input channel is closed (drain
+    // condition `draining && !reports_open && !user_data_open`,
+    // taskboard-state/src/actor.rs:475) — holding this clone past the
+    // join made every boot failure burn two full budgets (engine join +
+    // escalation driver join, each timing out; measured 2026-11-20,
+    // investigation report §headline). The off-lane precedent is the
+    // `drop(user_data_tx)` in the files-sync substrate else-branch.
+    drop(user_data_tx);
     join_bounded(authority_join, timeout, "authority").await;
     join_bounded(engine_join, timeout, "state engine").await;
     // The handle is the last EngineSignal sender clone: dropping it
     // closes the driver's broadcast (D-10) before its bounded join.
+    // The CALL SITE must pass the handle by value — a frame-held clone
+    // keeps the broadcast open through this whole unwind.
     drop(engine);
     join_bounded(escalation_join, timeout, "escalation driver").await;
     if let Some(focus_join) = focus_join {
