@@ -511,6 +511,11 @@ async fn boot_and_serve(
 
     let _logger = taskboard_app::bootstrap::spawn_system_event_logger(&app.system);
 
+    // The config live-reload watcher (#909, journey W-3): watches the
+    // resolved config path; ends on the Shutdown broadcast (the same
+    // graceful ordering as every other actor).
+    let _watcher = taskboard_app::bootstrap::spawn_config_watcher(&app, config_path.clone());
+
     // The IPC gate (`[ipc] enabled`, the #194 knob): the ONLY
     // conditional step in the boot — the core, the instance lock, the
     // actors, and the optional `[web]` dashboard below run either way.

@@ -673,11 +673,16 @@ async fn run_loop(
                 // The engine never acts on its own StorageFailed, and
                 // it is `TaskResurrected`'s and `SettingsChanged`'s
                 // producer too: all three are emit-upstream-only
-                // verdicts (compiler-forced arm).
+                // verdicts (compiler-forced arm). The config watcher's
+                // reload outcome rides the same posture (#909): the
+                // value lives in the published settings, which the
+                // engine just applied or kept — the report is not an
+                // instruction.
                 Ok(
                     SystemEvent::StorageFailed
                     | SystemEvent::TaskResurrected(_)
-                    | SystemEvent::SettingsChanged,
+                    | SystemEvent::SettingsChanged
+                    | SystemEvent::ConfigReload(_),
                 ) => {}
                 Err(broadcast::error::RecvError::Closed) => system_open = false,
                 Err(broadcast::error::RecvError::Lagged(missed)) => {

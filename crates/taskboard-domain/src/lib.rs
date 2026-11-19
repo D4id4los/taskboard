@@ -130,9 +130,9 @@ pub use merge::{
     merge_label, merge_stack, merge_task, tombstone_label, tombstone_stack, tombstone_task,
 };
 pub use messages::{
-    AppDataEvidence, AppDataUnreadable, EngineSignal, HabitChanges, ImportedReflection,
-    ImportedSetting, LabelChanges, StateCommand, SyncCommand, SyncReport, SystemEvent, TaskChanges,
-    UserDataReport,
+    AppDataEvidence, AppDataUnreadable, ConfigReloadOutcome, EngineSignal, HabitChanges,
+    ImportedReflection, ImportedSetting, LabelChanges, StateCommand, SyncCommand, SyncReport,
+    SystemEvent, TaskChanges, UserDataReport,
 };
 pub use outbox::{LocalOp, OpId, PendingOp};
 pub use ownership::BoardOwnershipMap;

@@ -1999,12 +1999,11 @@ mod argv_tests {
         match resolve_words_with_config_relay(&words, false) {
             LineAction::Execute(
                 Command::Config {
-                    cmd: ConfigCmd::Set { key, value },
+                    cmd: ConfigCmd::Set { pairs },
                 },
                 json,
             ) => {
-                assert_eq!(key, "focus.work_mins");
-                assert_eq!(value, "50");
+                assert_eq!(pairs, vec!["focus.work_mins".to_owned(), "50".to_owned()]);
                 assert!(!json, "no default json over the relay");
             }
             other => panic!("the relay parses config set, got {other:?}"),

@@ -1707,6 +1707,27 @@ pub fn spawn_system_event_logger(
     })
 }
 
+/// The config live-reload watcher's spawn (journey W-3, #909): the
+/// actor task receives the engine handle and the resolved config path
+/// (the single path-resolution rule — `AppConfig::write_path`) and
+/// respects the daemon's shutdown ordering by exiting on the system
+/// bus's `Shutdown` broadcast — the same graceful signal every other
+/// actor drains on, so it never outlives the engine and never holds
+/// the shutdown sequence open (it is not joined by [`App::shutdown`]).
+///
+/// Returns the spawned actor's join handle (`None` on the typed
+/// setup-failure fallback — the watcher is disabled for the session
+/// and one `ConfigReloadOutcome::WatcherDisabled` broadcast fired;
+/// journey US-1/S1's escape).
+#[must_use]
+pub fn spawn_config_watcher(
+    app: &App,
+    config_path: Option<std::path::PathBuf>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let resolved = crate::config::AppConfig::write_path(config_path);
+    crate::config_watcher::spawn(&app.system, &app.engine, resolved)
+}
+
 /// Gives the boot cycle's first pull (a `Syncing` → settled
 /// transition) a bounded chance to land before the verb reads the
 /// state. Only a cycle *in flight right now* is awaited; a settled
@@ -2916,5 +2937,72 @@ mod device_identity_tests {
 
         let author = taskboard_domain::ids::AuthorId::from_uuid(first.as_uuid());
         assert_eq!(author.as_uuid(), second.as_uuid());
+    }
+}
+
+/// The config live-reload watcher's bootstrap seam tests (journey
+/// W-3, #909).
+#[cfg(test)]
+mod config_watcher_tests {
+    use super::*;
+    use crate::test_support::StandaloneFixture;
+
+    /// `us1_s1_watcher_spawns_with_engine_handle_and_shutdown_ordering`
+    /// (journey US-1/S1 + W-3): the watcher spawns against a booted
+    /// core with the engine handle and the resolved config path, and
+    /// the graceful `Shutdown` broadcast ends it — the shutdown
+    /// ordering contract, asserted on the join handle.
+    #[tokio::test]
+    async fn us1_s1_watcher_spawns_with_engine_handle_and_shutdown_ordering() {
+        let fixture = crate::test_support::standalone_boot_fixture("watch-spawn").await;
+        let handle = spawn_config_watcher(&fixture.app, Some(fixture.config_path.clone()))
+            .expect("the watcher spawned");
+
+        // Shutdown ordering: the same graceful broadcast every other
+        // actor drains on ends the watcher.
+        fixture
+            .app
+            .system
+            .send(SystemEvent::Shutdown)
+            .expect("the watcher subscribes");
+        tokio::time::timeout(std::time::Duration::from_secs(10), handle)
+            .await
+            .expect("the watcher ended on Shutdown within the budget")
+            .expect("the watcher task joined cleanly");
+        fixture.app.shutdown().await;
+    }
+
+    /// The typed setup-failure fallback (US-1/S1 escape): a resolved
+    /// path whose parent directory does not exist refuses the watch —
+    /// no task spawns, ONE typed `WatcherDisabled` broadcast fires,
+    /// and the session degrades (never a poll fallback, never a
+    /// panic).
+    #[tokio::test]
+    async fn a_setup_failure_degrades_typed_with_one_watcher_disabled_broadcast() {
+        let fixture = crate::test_support::standalone_boot_fixture("watch-fallback").await;
+        let mut events = fixture.app.system.subscribe();
+        let missing = fixture.app_dir_missing_config();
+        let handle = spawn_config_watcher(&fixture.app, Some(missing));
+        assert!(handle.is_none(), "no task spawned on the fallback");
+        let mut disabled = 0_u32;
+        while let Ok(event) = events.try_recv() {
+            if matches!(
+                event,
+                SystemEvent::ConfigReload(taskboard_domain::ConfigReloadOutcome::WatcherDisabled)
+            ) {
+                disabled += 1;
+            }
+        }
+        assert_eq!(disabled, 1, "one typed broadcast, never a loop");
+        fixture.app.shutdown().await;
+    }
+
+    impl StandaloneFixture {
+        /// A config path inside a directory that does not exist — the
+        /// setup-failure fixture (the watch refuses: no inotify watch
+        /// can arm on a missing directory).
+        fn app_dir_missing_config(&self) -> std::path::PathBuf {
+            self.dir.path().join("missing-dir").join("taskboard.toml")
+        }
     }
 }

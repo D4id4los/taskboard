@@ -881,6 +881,51 @@ pub enum SystemEvent {
     /// publish) — consumers re-read the value per iteration, so a
     /// missed doorbell costs one stale-cadence cycle, never a value.
     SettingsChanged,
+    /// The config live-reload watcher finished one debounced reload
+    /// attempt (#909, journey US-1): typed payload, never log text —
+    /// the settings/UI lane may surface the outcome read-only later
+    /// (no surface in the #909/#910 chunk). One event per trailing
+    /// edge; a `Lagged` consumer misses at most the *outcome report*,
+    /// never a value (the value lives in the published settings).
+    ConfigReload(ConfigReloadOutcome),
+}
+
+/// The config live-reload watcher's typed outcome per debounced
+/// reload attempt (#909, journey US-1/S1–S4). Copy-typed so it rides
+/// the broadcast envelope: the failure classes are discriminants, not
+/// message strings — a refusal names *what stage* refused, and the
+/// blamed field (when any) travels through the config error's own
+/// typed channel where a surface needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfigReloadOutcome {
+    /// The reloaded document proved bootable and differed from the
+    /// published settings — the whole-snapshot `UpdateSettings`
+    /// applied (US-1/S4).
+    Applied,
+    /// The decoded snapshot equals the published settings — no-op:
+    /// the app's own write-through saves and no-op external saves
+    /// cost one decode, never an engine round trip (US-1/S4, AC-4).
+    Unchanged,
+    /// The file was missing or unreadable at the attempt (a
+    /// rename-storm's mid-rename instant) — skipped, retried on the
+    /// next trailing edge; never an error loop (US-1/S2, AC-3).
+    SkippedTransient,
+    /// The file failed the file-layer decode — the engine keeps the
+    /// last-known-good snapshot (US-1/S3, AC-5).
+    RefusedDecode,
+    /// The file decoded but failed `validate` — the engine keeps the
+    /// last-known-good snapshot (US-1/S3, AC-5).
+    RefusedValidate,
+    /// An engine was handed but could not apply (stopped mid-flight) —
+    /// the typed next-start-shaped outcome: the file stays the boot
+    /// authority and the watcher keeps running (US-1/S4).
+    EngineGone,
+    /// The watcher could not start (no inotify descriptor, an exotic
+    /// filesystem): live reload is disabled for this session — one
+    /// typed broadcast, never an error loop, never a poll fallback
+    /// (US-1/S1 escape). The restart contract degrades to the
+    /// pre-#909 behavior.
+    WatcherDisabled,
 }
 
 /// Engine → UI repaint trigger (broadcast payload).
