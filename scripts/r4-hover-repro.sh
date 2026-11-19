@@ -57,7 +57,10 @@ command -v import >/dev/null || {
     exit 1
 }
 
-SCRATCH="$(mktemp -d /tmp/r4-hover-repro.XXXXXX)"
+# Scratch lands under /var/tmp by default, never host tmpfs /tmp
+# (docs/agent_dispatch.org §2, the #1043 ENOSPC law); an operator-set
+# TMPDIR pointing somewhere other than /tmp is honored.
+SCRATCH="$(mktemp -d "${TMPDIR:-/var/tmp}/r4-hover-repro.XXXXXX")"
 trap 'rm -rf "$SCRATCH"' EXIT
 cat > "$SCRATCH/taskboard.toml" <<TOML
 [storage]
