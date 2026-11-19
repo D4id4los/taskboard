@@ -183,7 +183,52 @@ Reading:
 
 ## 3. Arm C — shared `CARGO_TARGET_DIR`
 
-(To be filled.)
+**Mechanism**: one per-machine target dir
+(`/var/tmp/p9-bench/shared-target`, external to every worktree, off
+tmpfs) used by both bench worktrees via `CARGO_TARGET_DIR`. **Site
+deviation recorded**: the arm's target dir lives on `/var/tmp`, not
+inside the repo — same semantics the rollout would use (an absolute
+shared path).
+
+**Configuration surface a rollout would touch**: every §10 command,
+the pre-commit hook, `scripts/run-quality-gates.sh`,
+`scripts/memory-gate.sh`'s TMPDIR reasoning, AGENTS §8 teardown law
+(a shared dir must NOT be removed at worktree teardown), and CI (CI
+runners are ephemeral — a shared local dir is meaningless there).
+
+| label | wall | maxRSS | MemAvail before→after | shared dir | notes |
+|---|---|---|---|---|---|
+| C-cold-clippy-1 (bench-a, empty shared dir) | 162 s | 3.43 GB | 20.0→19.9 GB | 3.7G | |
+| C-warm-clippy-1 | 1 s | 0.15 GB | 19.9→19.9 GB | 3.7G | |
+| C-cross-worktree-clippy-1 (bench-b, same commit, warm shared dir) | 75 s | 3.43 GB | 19.9→18.0 GB | 5.2G | **best cross-worktree cold number**; dir grows 3.7→5.2G (both worktrees' variants coexist) |
+| C-warm-clippy-2 (bench-a again, after bench-b) | 106 s | 3.43 GB | 18.0→11.9 GB | 5.2G | **ping-pong churn: switching worktrees costs ~106 s each time** |
+| C-cold-nextest-1 | 292 s | 5.73 GB | 12.3→21.0 GB | 25G | ≈ A (linking dominates) |
+| C-incremental-1/2/3 | 186/35/56 s | 3.43/2.46/2.44 GB | — | 29→31G | steady state better than A (63–69 s → 35–56 s); run 1's 186 s pays the post-nextest profile gap |
+
+Reading:
+
+- **Cross-worktree reuse is real and better than sccache** (75 s vs
+  B's 98–102 s): cargo fingerprints match fully at identical commits,
+  so only genuine deltas rebuild.
+- **But the ping-pong churn is the killer finding**: after worktree B
+  builds, worktree A's next build is ~106 s, *not* the 0–1 s warm of
+  arm A. Two agents alternating builds on one machine (the normal
+  dispatcher pattern) pay a ~100 s re-verification tax on **every
+  switch**, eating the reuse win and then some. The dir accumulates
+  both worktrees' artifacts (5.2G), so disk saving shrinks toward 2×
+  half-dirs.
+- **The incremental shape does improve** (35–56 s vs A's 63–69 s) —
+  shared incremental state survives across worktrees.
+- **No per-machine peak-memory change**; the concurrency semantics are
+  §6's exercise.
+- One harness incident recorded honestly: the three incremental runs
+  first failed instantly (rc=1, 0 s) because the host's `/tmp` tmpfs
+  was 100% full from a *foreign* agent's scratch dir
+  (`/tmp/om-bisect`, 5.8G) — the failures were ENOSPC on log capture,
+  not build failures, and were re-run with logs on `/var/tmp`. Lesson
+  recorded for the rollout analysis: shared-scheme dirs must live on
+  real disk, and agent scratch on tmpfs is itself a shared resource
+  (backlog issue filed).
 
 ## 4. Arm D — per-branch target dirs
 
