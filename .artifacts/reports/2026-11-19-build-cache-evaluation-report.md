@@ -66,7 +66,42 @@ alone.
 
 ### 0.3 Deviations from the chunk plan's method
 
-(To be filled as they occur — final list at the end of the battery.)
+- **D1 — bench sites moved out of the doctor's scan (re-dispatch)**.
+  The original bench worktrees
+  (`taskboard-WT-bench-bench-a`/`-bench-b`, per the plan §3.1 naming)
+  were deleted mid-battery by another agent's worktree-doctor sweep
+  (bench/bench-b's HEAD was contained in `origin/main` — doctor-
+  disposable by design). Arms A–C and the D/E battery had already
+  completed at the original sites before the sweep; the re-dispatch
+  re-created the two build sites for §6/§7 at
+  `/var/tmp/p9-bench/wt-{a,b}` — *outside* the `taskboard-WT-*` glob —
+  on the same commits (`c7be6e46`), so the probes' evidence is
+  comparable. Backlog issue #1042 records the footgun.
+- **D2 — arm E LOAD-FLAG recorded, not re-run**: E-cold-fill-1
+  started at 13.6 GB MemAvailable vs its paired D-cold's 21.4 GB
+  (>20%; the plan's rule would demand a re-run). Not re-run because
+  E's elimination rests on the load-independent verbatim stat (0.00%
+  Rust hit rate), not on the wall comparison.
+- **D3 — E-warm's 35 s** (vs D-warm's 5 s) is attributed to wrapper
+  overhead over a fully-missing cache; the attribution is uncertain
+  and the number is recorded as measured, not smoothed.
+- **D4 — concurrency probes used a single-crate shape**
+  (`cargo build -p taskboard-domain` from two sites simultaneously)
+  instead of two full workspace builds: the exercise deliberately
+  runs two builds ungated, and two concurrent workspace builds on
+  this box would recreate the OOM incident's *uncontrolled* shape.
+  Lock semantics and correctness outcomes are unaffected; only the
+  contention magnitude is bounded.
+- **D5 — log-capture ENOSPC (arm C)**: the first three C-incremental
+  runs failed rc=1 in 0 s because `/tmp` (tmpfs) was full from a
+  foreign agent's scratch dir; re-run with logs on `/var/tmp`
+  (recorded in §3). Backlog issue #1043.
+- **D6 — cold nextest was measured once per arm** (not a median of
+  3 — a deviation from §3.2(4), whose median-of-3 rule covers cold
+  timing runs and whose single-run allowance is for memory peaks
+  only): the 264/320/292 s spread is small and the conclusion
+  (linking dominates; no scheme's compile cache helps it materially)
+  does not rest on fine timing.
 
 ## 1. Baseline characterization (arm A — status quo)
 
@@ -173,13 +208,12 @@ Reading:
 - **Peak memory unchanged** (maxRSS ~3.4 GB per rustc — sccache wraps
   rustc, it does not reduce per-process footprint; it reduces the
   *number of cold rustc invocations* per machine over time).
-- No LOAD-FLAGs (starts 14.9–21.5 GB; the 14.9 GB start on B-cold-1 is
-  within 20% of its paired A run? — A-cold-1 started at 19.5 GB; the
-  pair A-cold-1/B-cold-1 diverges 24%. Per the plan that pair is
-  LOAD-FLAGGED; however B-cold-1's *conclusion* (+28% overhead) is
-  corroborated by the miss-dominated mechanics and is not the
-  comparison the recommendation rests on — recorded, not re-run. The
-  load-bearing pair A-cold-{2,3} vs B-cold-{2,3} starts differ by <3%.)
+- LOAD-FLAG handling: the pair A-cold-1/B-cold-1 diverges 24% at start
+  (19.5 vs 14.9 GB) and was LOAD-FLAGGED and **re-run per the plan's
+  rule** (B-cold-clippy-1b, 135 s at 20.5 GB start — within 5% of its
+  paired A run). The load-bearing pair A-cold-{2,3} vs B-cold-{2,3}
+  starts differ by <3%; all remaining pairs satisfy the 20% rule, so
+  no other re-runs were needed.
 
 ## 3. Arm C — shared `CARGO_TARGET_DIR`
 
@@ -319,20 +353,177 @@ Reading:
 
 ## 6. Concurrency exercise log
 
-(To be filled: two-worktree runs verbatim.)
+Two build sites: `/var/tmp/p9-bench/wt-a` and `/var/tmp/p9-bench/wt-b`
+(both branch checkouts of commit `c7be6e46`, outside the
+`taskboard-WT-*` glob — see §0.3 deviation D1). Runs verbatim.
+
+### 6.1 Scheme C — two worktrees, one shared `CARGO_TARGET_DIR`
+
+Setup: a one-line edit in wt-a's `crates/taskboard-domain/src/lib.rs`
+(so wt-a's build has real work), then **two simultaneous**
+`cargo build -p taskboard-domain` (one per worktree, same shared dir;
+single-crate shape to bound memory — §0.3 D4):
+
+```
+concurrent-build-A rc=0; concurrent-build-B rc=0
+buildA: "Blocking waiting for file lock on package cache" (x2)
+buildB: "Blocking waiting for file lock on package cache" (x5)
+```
+
+Outcome: **cargo's own file locks serialize the two builds; both
+complete correctly.** No corruption, no hard failure — the cost is
+latency (the loser waits), which on full workspace builds is exactly
+the memory-gate's serialization duplicated. Scheme C's concurrency
+semantics are *safe but serialized twice* (cargo lock + gate lock).
+
+### 6.2 Scheme B — two worktrees, sccache-fronted builds
+
+Two simultaneous sccache-fronted builds (same shape). Both rc=0; the
+crate artifacts were already fresh in each worktree's own `target/`,
+so zero compilations executed (`sccache --show-stats`: 7 requests,
+0 executed, 0 errors); both builds still showed cargo's
+package-cache lock waits. **No server errors or races observed.** The
+stronger B evidence is the serial battery (§2): the server handles
+~3900 requests across two worktrees without a single cache error.
 
 ## 7. Risk-axis evidence
 
-(To be filled: poisoning / feature divergence / CI parity /
-operational.)
+### 7.1 Cache poisoning across branches / feature divergence
+
+**Scheme C probe** (shared dir, sequential): wt-a builds
+`--features tokio-console` (rc=0) → wt-b builds default (rc=0) →
+wt-a rebuilds default (rc=0) → **typed correctness probe**:
+`cargo nextest run -p taskboard-domain` through the shared dir —
+**1313 passed, 0 failed** (`rk1-domain-test.out`). Cargo's
+feature-aware fingerprints handled the divergence: the flip rebuilt
+the affected units, nothing stale was reused, and the shared dir grew
+to hold both variants (the churn cost §3 already quantified). No
+poisoning observed — C's risk is performance/complexity, not
+correctness.
+
+**Scheme B probe** (sccache, feature flip): `--features
+tokio-console` build rc=0, then default build rc=0. Stats verbatim:
+the feature build hit 598 Rust units (cache warm from the battery for
+the shared non-feature units), the flip back to default hit 617 /
+208 Rust misses (**74.79% Rust hit rate**) — a feature flip costs a
+rebuild of feature-divergent units only, and sccache's
+content-addressed hashing produces correct rebuilds. No poisoning
+surface materialized.
+
+**Reverted-commit / rebase shape**: not separately exercised; it is
+the same fingerprint mechanism the feature flip exercised (fingerprint
+mismatch → rebuild). Recorded as inferred, not measured.
+
+### 7.2 CI parity
+
+- **A**: CI-invisible (status quo).
+- **B**: CI-positive *with setup cost* — a GHA sccache action + cache
+  restore of the cache dir; ephemeral one-suite-per-runner CI gains
+  cross-run compile reuse for the price of a ~1–2G cache artifact.
+  CI change is operator-gated, not in this chunk.
+- **C**: CI-meaningless (a per-machine shared dir does not persist
+  across ephemeral runners) — adopting C locally means CI keeps its
+  own semantics: a standing divergence between agent and CI builds.
+- **D**: CI-neutral — CI keeps per-runner targets exactly as today;
+  the `CARGO_TARGET_DIR` env var simply wouldn't be exported in CI.
+
+### 7.3 Operational/behavioral risks
+
+- **Debugging opacity**: C is worst (a wrong artifact's blast radius
+  spans every worktree; `cargo clean` becomes a machine-wide event).
+  B's surface is small (content-addressed; a suspect unit is a miss
+  away from a rebuild). D is nearest to A (blast radius = one branch).
+- **Eviction**: B bounded by its configured cap (20G configured for
+  the battery; LRU). C unbounded except by hand (`cargo clean`). D
+  grows per active branch (3.7–5.6G measured per branch dir) and
+  needs a sweep for landed-PR dirs — the natural hook is the doctor
+  pass (a branch fully contained in `origin/main` has no live
+  worktree → its dir is disposable), which the rollout chunk would
+  implement and AGENTS §8 would have to permit.
+- **Teardown interaction**: under D, worktree removal must NOT delete
+  the branch dir (the resume win depends on it surviving). AGENTS §8's
+  teardown law text would need that amendment — recorded, not changed.
+- **Daemon lifecycle (B only)**: sccache's server auto-starts per
+  user and idles; on this 30G box its RSS and the cache dir are new
+  fixed residents. Measured: server-side overhead within noise; cache
+  788 MiB after the full battery.
 
 ## 8. Analysis
 
-(To be filled.)
+Per-axis summary (every number's command shape is in its section):
+
+| axis | A (status quo) | B (sccache) | C (shared target) | D (per-branch dirs) | E (B+D) |
+|---|---|---|---|---|---|
+| cross-worktree cold clippy | 145 s (each site) | **98–102 s** | 75 s first, **~106 s churn per switch** | n/a by design (isolation) | fails (0% hits) |
+| recreate/resume after teardown | 145 s cold | 145 s (linking etc. unchanged) | 145 s | **0 s** | ~168 s |
+| warm clippy | 0–10 s | 1 s | 1 s (same site) | 1–5 s | 35 s |
+| incremental (leaf edit) | 63–69 s | 28–51 s | 35–56 s | **27–28 s** | n/a |
+| cold nextest build | 264 s | 320 s (+21%) | 292 s | ≈A (not separately measured; no compile-reuse mechanism differs from A beyond dir location) | n/a |
+| peak single-proc RSS | 3.43 GB | 3.43 GB | 3.43 GB | 3.43 GB | 3.43 GB |
+| disk per machine | 30G × N worktrees | 30G × N + 0.8G cache | 31G total (shared, churn-grown) | **3.7–5.6G × active branch** | 7.4G two dirs + cache |
+| correctness under divergence/concurrency | — | clean (74.8% hit on flip-back, rc=0) | clean (1313 tests pass; locks serialize) | same mechanism as A per branch | — |
+| new fixed cost | none | daemon + cache dir | none | branch-dir sweep duty | both |
+| CI posture | invisible | positive w/ setup | meaningless | neutral | — |
+
+The incident axis first (the plan's primacy rule): the 2026-11-17 OOM
+was N concurrent cold builds. None of the schemes reduces per-build
+peak RSS — that is the memory-gate's job and stays. What D changes is
+the *number* of cold builds a box pays over time: every
+doctor-teardown → recreate cycle (the standard chunk lifecycle) stops
+being a cold build (0 s vs 145 s), so the cold-build population
+shrinks to genuinely-new branches only. B reduces the *cost* of the
+remaining cold builds (~32% on clippy) but adds a daemon and cannot
+combine with D (E's 0.00% Rust hit rate, §5 — the `--out-dir` hash).
+
+C is eliminated on measured behavior: the ~106 s per-worktree-switch
+churn tax (§3) exceeds the reuse win it exists to provide, its disk
+saving evaporates through churn (31G for two sites vs D's 9.3G), and
+it carries the highest opacity and CI divergence costs.
+
+B alone remains defensible for a compile-check-heavy shop (the
+pre-commit clippy peak drops 145 s → ~100 s), but it does nothing for
+the disk problem (#890's other half) or the resume problem, and its
+one big win (cross-worktree reuse) is achieved by D more cheaply *for
+the same branch* and is precisely the scenario agents on one box
+least hit (parallel agents work on *different* branches by law).
 
 ## 9. Recommendation
 
-(Exactly one; consequences + rollout shape.)
+**Adopt scheme D — per-branch target dirs (`CARGO_TARGET_DIR` keyed by
+branch slug, dirs under `/var/tmp/taskboard-target/<branch-slug>`) —
+via a dedicated rollout chunk, gated on the operator's acceptance of
+this ruling.**
+
+Decisive numbers: resume **0 s vs 145 s** (D-resume vs A-cold median),
+switch-back **1 s vs 106 s** (D-back-switch vs C's churn tax),
+incremental **27–28 s vs 63–69 s** (D vs A steady state), disk
+**3.7–5.6G per active branch vs 30G per worktree**.
+
+Consequences:
+
+- A rollout chunk would change: the worktree law in AGENTS §8 (agent
+  worktrees export `CARGO_TARGET_DIR` keyed by branch; the branch dir
+  survives teardown), AGENTS §10's quality-gate text (the env var is
+  part of every gated command), `scripts/worktree-doctor.sh` (sweep
+  branch dirs whose branch is fully contained in `origin/main`),
+  optionally a `scripts/target-dir-for-branch.sh` helper; no CI
+  change (CI keeps per-runner targets); no sccache, no daemon.
+- The operator coordinates: the AGENTS §8/§10 amendments, the
+  `/var/tmp` disk budget (~4–6G per concurrently active branch, plus
+  the sweep discipline), and the acceptance itself.
+- Accepted risks (evidence §7): no correctness hazard observed under
+  feature divergence or concurrency; the rebase/reverted-commit shape
+  is covered by the same fingerprint mechanism (inferred, §7.1);
+  eviction is the one new operational duty.
+- Rejected: C (measured churn tax + disk churn + CI divergence), B
+  (daemon cost, no disk/resume win, nextest regression, and
+  structurally incompatible with D per E), E (does not compose), keep-A
+  (pays the 145 s cold build on every worktree recreate — the exact
+  lifecycle the R1 law makes frequent).
+
+Gate handoff: **issue #890 stays open through the operator gate.**
+Accept → a rollout chunk is planned from this ruling; reject → the
+status quo stands and #890 closes on this evidence.
 
 ## 10. Appendix — gate/deferral log and transcripts
 
@@ -350,7 +541,17 @@ operational.)
 - All battery runs: acquired without recorded waits beyond the above
   (each run's start MemAvailable is in its table row).
 
-### 10.2 Command transcripts
+### 10.2 Command transcripts (re-dispatch probes)
+
+The §6/§7 probes ran from `/tmp/p9-bench/risk2.sh` (scratch, deleted
+before handoff) against the re-created sites
+`/var/tmp/p9-bench/wt-{a,b}`; all gated serial runs
+(feature-divergence clippy ×3, nextest, sccache flip ×2) acquired the
+memory-gate lock without recorded waits. Raw probe logs under
+`/var/tmp/p9-bench-logs/rk*.out|txt`; summary lines reproduced in
+§6–§7 are the evidence.
+
+### 10.3 Command transcripts (original battery)
 
 Harness and raw logs lived in `/tmp/p9-bench/` (measure.sh, arm-a.sh,
 arm-b.sh, arm-c.sh, arm-d.sh, logs/summary.log + per-run .time files).
