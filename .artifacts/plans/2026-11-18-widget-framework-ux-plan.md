@@ -175,9 +175,9 @@ menus/flyouts 200/360 px, ×base-scale). -->
 |---|---|---|---|---|---|---|---|---|---|
 | W-1 | ui/widgets/modal-dialog-host.slint (new; the host intents accepted/dismissed/button-invoked resolve per D-W1-1 — the W1 proof mount wires capture-dismiss-requested) | ModalDialog + host | capture-dismiss-requested | modal host mount point | — | — | — | US-1/S1-S4 | widget_framework_probe_tests.rs::g11_dismissal_law_left_click_right_click_inside |
 | W-2 | ui/widgets/anchored-overlay.slint (new) | AnchoredOverlay helper | — | anchor facts struct | — | — | — | US-2/S1-S3 | widget_framework_probe_tests.rs::g2_below_places_the_overlay_clear_of_the_anchor |
-| W-3 | task-view.slint | description editor mount | — | — | — | — | — | US-3/S1 | details_polish_journeys.rs::us3_s1 |
-| W-4 | task-view.slint | Effort Estimate row | on_effort_commit | effort seam | task.effort.set | StateCommand::UpdateTask | — | US-3/S2 | details_polish_journeys.rs::us3_s2 |
-| W-5 | migrated mounts (recur, labels, palette, date/time pickers) | — | — | host-based mount | — | — | — | US-1/S1 | — (chunk 5 lands the migrated-mount test) |
+| W-3 | task-view.slint | description editor mount | — | — | — | — | — | US-3/S1 | overlay_migration_probe_tests.rs::om_us3_s1_description_section_keeps_its_height_across_the_edit_mount |
+| W-4 | task-view.slint | Effort Estimate row | task-effort-focus-lost | effort seam | — | StateCommand::UpdateTask | — | US-3/S2 | journeys.rs::om_us3_s2_effort_commits_once_on_focus_loss_and_never_twice |
+| W-5 | migrated mounts (recur, labels, palette, date/time pickers) | — | — | host-based mount | — | — | — | US-1/S1 | journeys.rs::om_us1_s1_recur_scrim_click_commits_a_valid_draft_and_nothing_else (the modal-family routing pair; om_us1_s1_labels / om_us1_s2_s3_palette are the siblings) |
 
 ## 7. Command-contract delta
 
@@ -208,8 +208,11 @@ bound-test: US-1/S4 -> widget_framework_probe_tests.rs::g12_dismissal_restores_t
 bound-test: US-2/S1 -> journeys.rs::us2_s1_the_setter_opens_below_the_anchor_never_covering_it
 bound-test: US-2/S2 -> widget_framework_probe_tests.rs::g3_the_overlay_flips_above_near_the_floor
 bound-test: US-2/S3 -> journeys.rs::the_quick_time_button_opens_the_menu_without_closing_the_picker
+bound-test: US-2/S3 -> journeys.rs::om_us2_s3_time_flyout_never_over_its_field_and_the_mirror_tracks
+bound-test: US-3/S1 -> overlay_migration_probe_tests.rs::om_us3_s1_description_section_keeps_its_height_across_the_edit_mount
+bound-test: US-3/S2 -> journeys.rs::om_us3_s2_effort_commits_once_on_focus_loss_and_never_twice
 
-US-3's rows stay open until chunk 5 (W2's migration) lands them.
+US-3's rows landed with chunk 5 (2026-11-18, the overlay migration).
 
 ## 9. Definition of done
 

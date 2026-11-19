@@ -248,7 +248,9 @@ const SEAM_INVENTORY: &[&str] = &[
     // 2026-11-17): the TimeField's field click arms the one-shot
     // focus-steal latch before the focus move.
     "task_date_time_field_armed",
-    // The effort row's seams (task-detail-editor UX plan US-3/D-8,
+    // The effort row's seams (the overlay migration, M9): callback
+    // "task-effort-focus-lost" (the always-on row's commit funnel;
+    // the D-5 guard).
     // #838, 2026-11-17): the inline editor's open/mirror/commit/
     // clear/cancel and the focus-loss settle (the date-editor buffer
     // pattern over adapter state).
