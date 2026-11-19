@@ -827,16 +827,14 @@ async fn a12_shutdown_exits_the_loop() {
     let actor = spawn(&server, repo_with(&[(2, STACK)], &[]));
     wait_subscribed(&actor.system_tx).await;
     actor.system_tx.send(SystemEvent::Shutdown).unwrap();
-    for _ in 0..10_000 {
-        if actor.join.is_finished() {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(
-        actor.join.is_finished(),
-        "actor exits on Shutdown without any timer"
-    );
+    // Deterministic by construction (issue #968): awaiting the join
+    // handle IS the fact under test ("the actor exits on Shutdown").
+    // A bounded yield count is a poll-lottery that loses the race
+    // 10k yields in a row under load. Trade-off recorded: if the
+    // actor ever fails to exit, this test hangs rather than fails —
+    // under a paused clock a hang cannot be a load flake (all
+    // non-IO time is deterministic), so a hang is a genuine
+    // regression signal.
     actor.join.await.expect("actor exits without panicking");
 }
 

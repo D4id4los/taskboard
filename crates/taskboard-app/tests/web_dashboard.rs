@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use taskboard_app::bootstrap::{App, bootstrap};
-use taskboard_app::config::{AppConfig, CredentialStoreKind, WebSection};
+use taskboard_app::config::{AppConfig, AppSection, CredentialStoreKind, WebSection};
 use taskboard_app::secrets::CredentialStore;
 use taskboard_domain::StateCommand;
 
@@ -49,6 +49,13 @@ fn config_for(dir: &tempfile::TempDir) -> AppConfig {
             bind: "127.0.0.1:0".to_owned(),
             refresh_secs: 30,
             token: Some("journey-token".to_owned()),
+        },
+        // Tight 1 s teardown budget (#1071): the standalone dashboard
+        // world has no sync cycle to drain; no test here pins a
+        // timeout contract.
+        app: AppSection {
+            shutdown_timeout_secs: 1,
+            ..AppSection::default()
         },
         ..AppConfig::default()
     }

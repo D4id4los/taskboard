@@ -30,6 +30,14 @@ fn standalone_config(db: &Path) -> AppConfig {
         storage: taskboard_app::config::StorageSection {
             db_path: Some(db.to_path_buf()),
         },
+        // Tight 1 s teardown budget (#1071, D2 sweep straggler): the
+        // standalone daemon world has no sync cycle; these tests all
+        // pass well under 5 s today, and the dead-identity detach
+        // contract pins its own 60 s budget explicitly.
+        app: taskboard_app::config::AppSection {
+            shutdown_timeout_secs: 1,
+            ..taskboard_app::config::AppSection::default()
+        },
         ..AppConfig::default()
     }
 }

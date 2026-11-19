@@ -87,8 +87,10 @@ pub const SYSTEM_BROADCAST_CAPACITY: usize = 64;
 
 /// The join budget for the boot-unwind storage join (the bootstrap
 /// failure tail): a generous bound on an actor that should drain and
-/// exit the moment its inbox closes.
-const BOOT_FAILURE_JOIN_BUDGET: Duration = Duration::from_secs(10);
+/// exit the moment its inbox closes. 2 s — 5× the tests' 1 s verb
+/// budget (#1071); the boot-failure tests previously paid 10–30 s in
+/// wall-clock for a structural expectation of instant drain.
+const BOOT_FAILURE_JOIN_BUDGET: Duration = Duration::from_secs(2);
 /// Channel capacity of the sync-command inbox (`SyncNow` nudges; "full"
 /// already means "coalesced").
 pub const SYNC_COMMAND_CAPACITY: usize = 32;
