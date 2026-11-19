@@ -70,7 +70,48 @@ alone.
 
 ## 1. Baseline characterization (arm A — status quo)
 
-(To be filled: cold/warm/incremental tables + disk picture.)
+Site: bench worktree `taskboard-WT-bench-bench-a` (branch `bench/bench-a`,
+commit `c7be6e46`, default per-worktree `target/`). Every run routed
+through `scripts/memory-gate.sh` (hold mode). Command shapes: cold
+clippy = `cargo clippy --workspace --all-targets -- -D warnings` from an
+empty `target/`; warm = immediate re-run; cold nextest =
+`cargo nextest run --workspace --no-run` from empty; incremental =
+one-line comment appended to `crates/taskboard-domain/src/lib.rs`
+(leaf crate) then the workspace clippy, three times, then reverted.
+
+| label | wall | maxRSS (single proc) | MemAvail before→after | target size |
+|---|---|---|---|---|
+| A-cold-clippy-1 (fresh worktree) | 214 s | 3.43 GB | 19.5→20.7 GB | 3.7G |
+| A-warm-clippy-1 | 10 s | 0.15 GB | 17.5→21.2 GB | 3.7G |
+| A-cold-clippy-2 (rm -rf target) | 145 s | 3.43 GB | 21.2→20.6 GB | 3.7G |
+| A-warm-clippy-2 | 1 s | 0.15 GB | 20.6→20.6 GB | 3.7G |
+| A-cold-clippy-3 (rm -rf target) | 139 s | 3.43 GB | 20.9→20.5 GB | 3.7G |
+| A-warm-clippy-3 | 0 s | 0.15 GB | 20.5→20.6 GB | 3.7G |
+| A-cold-nextest-1 (rm -rf target) | 264 s | 5.57 GB | 20.6→20.6 GB | 25G |
+| A-incremental-1 | 157 s | 3.43 GB | 20.5→21.2 GB | 29G |
+| A-incremental-2 | 69 s | 2.45 GB | 21.2→19.1 GB | 30G |
+| A-incremental-3 | 63 s | 2.45 GB | 19.2→16.8 GB | 30G |
+
+Reading of the baseline (commands in appendix §10.1):
+
+- **Cold clippy median 145 s** (runs 2–3; run 1's 214 s is the fresh
+  worktree shape, which additionally pays build-script/proc-macro
+  warming — exactly the OOM-incident shape when N worktrees cold-build
+  simultaneously). Peak single-process RSS ~3.43 GB; with cargo's
+  parallelism (16 jobs) the build tree transiently holds many such
+  processes — that is the memory-gate's reason to exist.
+- **Warm clippy is ~0–10 s** — the status quo's warm path is already
+  excellent *within* one worktree.
+- **Cold nextest build 264 s, 25G target**; after the test profile the
+  target sits at **29–30G** — this reproduces the disk report's 30G
+  per-worktree figure and shows where it comes from (test binaries +
+  incremental state, not clippy metadata).
+- **Incremental after a leaf-crate edit: 63–157 s** (first run pays
+  test-profile artifacts missing after the `rm`; steady state ~63–69 s)
+  and grows `target/` by ~4–5G. One leaf edit makes the *whole
+  workspace* clippy re-verify ~63 s+ — the inter-chunk floor.
+- No LOAD-FLAGs: all MemAvailable starts within 19.1–21.2 GB (≤20%
+  divergence satisfied pairwise).
 
 ## 2. Arm B — sccache
 
@@ -107,4 +148,24 @@ operational.)
 
 ## 10. Appendix — gate/deferral log and transcripts
 
-(To be filled.)
+### 10.1 Gate/deferral log (verbatim wait events)
+
+- sccache install (`scripts/memory-gate.sh cargo install sccache
+  --locked`): 5m09s compile, gate hold acquired without recorded wait.
+- Report-skeleton commit pre-commit hook: `memory-gate: waiting for the
+  memory-gate lock … (sccache install on main checkout, then
+  refactor/ui-overlay-migration's clippy) … lock acquired (waited 358s)`
+  — a docs commit waited 6 min for two agents' clippy; the hook's
+  clippy then ran in this docs worktree (MemAvailable 20.8 GB at
+  start). Recorded as a real-world baseline observation: even a
+  docs-only commit currently pays a workspace clippy.
+- All battery runs: acquired without recorded waits beyond the above
+  (each run's start MemAvailable is in its table row).
+
+### 10.2 Command transcripts
+
+Harness and raw logs lived in `/tmp/p9-bench/` (measure.sh, arm-a.sh,
+arm-b.sh, arm-c.sh, arm-d.sh, logs/summary.log + per-run .time files).
+**Deleted before handoff** per the evidence mandate — the summary lines
+reproduced in §1–§6 are the evidence. The exact command shapes are
+recorded in §1 and each arm's section.
