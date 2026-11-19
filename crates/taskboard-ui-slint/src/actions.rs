@@ -258,6 +258,24 @@ pub enum ActionId {
     ViewScrollDown,
     NavNextItem,
     NavPrevItem,
+    /// The directional-focus family (J3 US-1, round 9 chunk 9): the
+    /// four directions move *focus* one step, never task selection —
+    /// the interpretation is per-view (`adapter.rs`'s directional
+    /// table). Contexts are the five view contexts, never `Global`
+    /// (Global is chain-visible under insert and would fire while
+    /// typing — the control walk's recorded rule).
+    NavFocusLeft,
+    NavFocusRight,
+    NavFocusUp,
+    NavFocusDown,
+    /// The selection-extend twin of the item walk (#875 RIDER,
+    /// round 9 chunk 9): the explicit route-level front for the
+    /// printable-bound walk rows whose shift bit folds into the glyph
+    /// (vi `J`/`K`) and the explicit Shift rows. Board only — the
+    /// D-4 scoping: extension is a board surface. The named-key
+    /// arrow intercept (`adapter.rs`) stays as the fallback front.
+    NavExtendNext,
+    NavExtendPrev,
     BoardNext,
     BoardPrevious,
     BoardSelect,
@@ -620,6 +638,12 @@ impl ActionId {
             Self::ViewScrollDown => "view.scroll-down",
             Self::NavNextItem => "nav.next-item",
             Self::NavPrevItem => "nav.prev-item",
+            Self::NavFocusLeft => "nav.focus-left",
+            Self::NavFocusRight => "nav.focus-right",
+            Self::NavFocusUp => "nav.focus-up",
+            Self::NavFocusDown => "nav.focus-down",
+            Self::NavExtendNext => "nav.extend-next",
+            Self::NavExtendPrev => "nav.extend-prev",
             Self::BoardNext => "board.next",
             Self::BoardPrevious => "board.previous",
             Self::BoardSelect => "board.select",
@@ -1080,6 +1104,74 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 130,
         description: "Moves the focus to the previous card or switcher entry in reading order.",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    // The directional-focus family (J3 US-1, round 9 chunk 9): the
+    // five view contexts, never Global (the control walk's recorded
+    // insert-mode rule). Interpretation is per-view — the adapter's
+    // directional table owns what "left" means on each surface.
+    ActionEntry {
+        id: ActionId::NavFocusLeft,
+        label: "Focus left",
+        contexts: CONTROL_NAV,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 121,
+        description: "Moves the focus one step left; the direction's meaning is per view (stack step on the board, control walk on the forms).",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::NavFocusRight,
+        label: "Focus right",
+        contexts: CONTROL_NAV,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 122,
+        description: "Moves the focus one step right; the direction's meaning is per view (stack step on the board, control walk on the forms).",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::NavFocusUp,
+        label: "Focus up",
+        contexts: CONTROL_NAV,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 123,
+        description: "Moves the focus one step up; the direction's meaning is per view (item walk on the lists, control walk on the forms).",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::NavFocusDown,
+        label: "Focus down",
+        contexts: CONTROL_NAV,
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 124,
+        description: "Moves the focus one step down; the direction's meaning is per view (item walk on the lists, control walk on the forms).",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    // The selection-extend pair (#875 RIDER): Board only — extension
+    // is a board surface (the D-4 scoping). The named-key arrow
+    // intercept stays the fallback front for layouts that deliver
+    // base-glyph named keys with the shift bit.
+    ActionEntry {
+        id: ActionId::NavExtendNext,
+        label: "Extend selection to next item",
+        contexts: &[ContextId::Board],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 125,
+        description: "Extends the board selection to the next card in reading order (the shift-walk twin of focus-next-item).",
+        menu_group: Some(MenuGroup::ViewNav),
+    },
+    ActionEntry {
+        id: ActionId::NavExtendPrev,
+        label: "Extend selection to previous item",
+        contexts: &[ContextId::Board],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 126,
+        description: "Extends the board selection to the previous card in reading order (the shift-walk twin of focus-previous-item).",
         menu_group: Some(MenuGroup::ViewNav),
     },
     ActionEntry {
