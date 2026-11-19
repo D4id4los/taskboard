@@ -7876,6 +7876,99 @@ pub fn habit_drop_order(prev: Option<i64>, next: Option<i64>) -> i64 {
     }
 }
 
+/// The focused-subject key translation (chunk 8 D3): at the dispatch
+/// entry, a task-row verb resolved under a habit-focused walk maps to
+/// its habit twin — the preset tables stay the single source of stroke
+/// truth (one stroke, one binding per context; duplicating the task
+/// strokes for habit ids would fork the grammar). Deliberately
+/// unmapped: `TaskEdit` (H4's reserved editing verbs — the stroke
+/// falls through to the typed `NoTarget` refusal rather than a dead
+/// row) and `TaskDelete` (no habit delete verb until H4). Every other
+/// id, and every dispatch under a task-focused or focusless walk, is
+/// the identity — pointer paths are untouched by construction.
+#[must_use]
+pub fn translate_for_subject(
+    id: crate::actions::ActionId,
+    subject: Option<RowSubject>,
+) -> crate::actions::ActionId {
+    match (id, subject) {
+        (crate::actions::ActionId::TaskComplete, Some(RowSubject::Habit(_))) => {
+            crate::actions::ActionId::HabitLog
+        }
+        (id, _) => id,
+    }
+}
+
+#[cfg(test)]
+mod translate_for_subject_tests {
+    use super::*;
+    use crate::actions::ActionId;
+    use taskboard_domain::{HabitId, TaskId};
+
+    fn habit_subject() -> RowSubject {
+        RowSubject::Habit(HabitId::from_uuid(uuid::Uuid::nil()))
+    }
+
+    fn task_subject() -> RowSubject {
+        RowSubject::Task(TaskId::from_uuid(uuid::Uuid::nil()))
+    }
+
+    #[test]
+    fn us3_s2_complete_translates_to_the_habit_log_under_a_habit_focus() {
+        assert_eq!(
+            translate_for_subject(ActionId::TaskComplete, Some(habit_subject())),
+            ActionId::HabitLog
+        );
+    }
+
+    #[test]
+    fn the_h4_reserved_edit_stroke_is_deliberately_untranslated() {
+        assert_eq!(
+            translate_for_subject(ActionId::TaskEdit, Some(habit_subject())),
+            ActionId::TaskEdit
+        );
+    }
+
+    #[test]
+    fn delete_is_untranslated_until_h4_mints_the_habit_verb() {
+        assert_eq!(
+            translate_for_subject(ActionId::TaskDelete, Some(habit_subject())),
+            ActionId::TaskDelete
+        );
+    }
+
+    #[test]
+    fn habit_verbs_are_the_identity_under_a_habit_focus() {
+        for id in [
+            ActionId::HabitLog,
+            ActionId::HabitUndoLog,
+            ActionId::HabitMoveUp,
+            ActionId::HabitMoveDown,
+            ActionId::HabitConvertArm,
+        ] {
+            assert_eq!(translate_for_subject(id, Some(habit_subject())), id);
+        }
+    }
+
+    #[test]
+    fn a_task_focus_is_the_identity_for_every_row_verb() {
+        for id in [
+            ActionId::TaskComplete,
+            ActionId::TaskEdit,
+            ActionId::HabitLog,
+        ] {
+            assert_eq!(translate_for_subject(id, Some(task_subject())), id);
+        }
+    }
+
+    #[test]
+    fn a_focusless_dispatch_is_the_identity() {
+        for id in [ActionId::TaskComplete, ActionId::TaskEdit] {
+            assert_eq!(translate_for_subject(id, None), id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod habit_section_tests {
     use super::*;
