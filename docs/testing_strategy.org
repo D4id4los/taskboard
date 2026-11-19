@@ -86,7 +86,13 @@ Task reminders and Kiosk screen rotations depend on time passing. Standard
   =tokio::time::pause()= to freeze the runtime clock, then
   =tokio::time::advance(Duration::from_secs(3600)).await= to fast-forward
   instantly. Strict timeouts, delayed API retries, and task deadlines are
-  tested deterministically.
+  tested deterministically. Under =tokio::time::pause()=, a timer the
+  fixture *re-arms during the scenario* (a sleep whose deadline is
+  recreated each loop iteration at =now + window=) does not fire when
+  the final =advance= lands the virtual clock *exactly on* the deadline —
+  advance strictly past it (=window + 1ms=) for the trailing edge to
+  fire deterministically (observed tokio 1.54.1, #1046;
+  =config_watcher.rs= =us1_s2_rename_storm_coalesces_into_one_reload=).
 
 ** 6.1 Wall-clock dependence: the seam inventory (2026-11-06)
 

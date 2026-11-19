@@ -173,6 +173,12 @@ executable:
 - *Non-Blocking Logic:* The UI crate must act as a "dumb presentation
   client". It only reads from the =ArcSwap= snapshot, maps fields to
   widgets, and emits non-blocking =mpsc= commands on user interactions.
+- *Section gating mounts, never hides:* gate a layout section with the
+  =if (...)= conditional mount — =visible: false= hides the element but
+  *keeps its layout slot* (dead gaps; the H4 habit editor's
+  priority-open row shifted the task-view goldens ~99px, r9 chunk 10 /
+  #1047). =visible:= is only safe where the reserved slot is intended
+  or the element has no layout footprint.
 - *No shared-mutable-state locks across actors:* =Mutex=/=RwLock= are
   reserved for intra-actor internals, never for cross-actor communication.
 
