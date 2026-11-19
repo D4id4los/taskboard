@@ -1371,10 +1371,24 @@ fn break_firings(
 }
 
 /// The tracker nudge's effective occurrence: the anchor reading inside
-/// the current day window (`tracker_anchor_occurrence`), snooze-walked
-/// like every family. `None` ⇔ the habit row is missing or tombstoned
-/// or the anchor is cleared (an unanchored habit has no nudge — the
-/// reader is total on arbitrary input).
+/// the current day window (`tracker_anchor_occurrence`), gated by the
+/// nudge-day law (H4 D2, O-1) and snooze-walked like every family.
+///
+/// The gate: when the habit carries an anchor day, the nudge is
+/// **silent** on the window's days before [`crate::habit::nudge_day`]
+/// and armed from it through the window's end (each armed day reads
+/// its own day-anchored occurrence, quota-gated as today). Without an
+/// anchor day `nudge_day` returns the period's start — `today` is
+/// never before its own period's start, so the gate is inert and the
+/// derivation is byte-identical to the pre-gate engine. The gate
+/// decides WHEN only (`tracker_eligible` stays the quota gate; the
+/// snooze walk reads the map after the gate). Variant-mismatched
+/// anchor days stay inert for free (`nudge_day` falls through — the
+/// domain's documented leniency, consumed not re-policed).
+///
+/// `None` ⇔ the habit row is missing or tombstoned, the anchor is
+/// cleared (an unanchored habit has no nudge), or `today` lies before
+/// the window's nudge day — the reader is total on arbitrary input.
 fn tracker_effective_occurrence(
     habit: &Habit,
     day: DayCalendar,
@@ -1384,7 +1398,14 @@ fn tracker_effective_occurrence(
     if !habit.is_live() {
         return None;
     }
-    let base = crate::habit::tracker_anchor_occurrence(habit.anchor_time?, day.today(now), day);
+    let anchor_time = habit.anchor_time?;
+    let today = day.today(now);
+    let window = crate::habit::WindowStart::of_period(habit.target.kind(), today);
+    let arm = crate::habit::nudge_day(habit, window);
+    if today < arm {
+        return None;
+    }
+    let base = crate::habit::tracker_anchor_occurrence(anchor_time, today, day);
     Some(walk_chain(
         base,
         ReminderRef::Tracker(habit.id),
@@ -5998,6 +6019,280 @@ mod tests {
                 "P3: the deadline {} is neither the day boundary nor a due instant",
                 deadline
             );
+        }
+    }
+
+    // ---- The nudge-day gate (H4 D2, O-1's nudge law) -------------------
+
+    use crate::habit::AnchorDay;
+    use chrono::Datelike as _;
+
+    fn anchored_habit(
+        raw: u128,
+        target: HabitTarget,
+        anchor: Option<chrono::NaiveTime>,
+        anchor_day: Option<AnchorDay>,
+    ) -> crate::habit::Habit {
+        let mut habit = tracker_habit(raw, target, anchor);
+        habit.anchor_day = anchor_day;
+        habit
+    }
+
+    fn firings_on(habits: &HabitState, now: DateTime<Utc>) -> Vec<ReminderFiring> {
+        due_firings(
+            &BTreeMap::new(),
+            &TrackingState::default(),
+            habits,
+            day5(),
+            &ReminderState::default(),
+            &ReminderDefaults::default(),
+            now,
+        )
+    }
+
+    /// Week of 2026-11-02 (Monday) .. 2026-11-08 (Sunday).
+    fn week_dates() -> [chrono::NaiveDate; 7] {
+        let monday = ymd(2026, 11, 2);
+        assert_eq!(
+            monday.weekday(),
+            chrono::Weekday::Mon,
+            "the fixture week starts Monday"
+        );
+        std::array::from_fn(|i| {
+            monday + chrono::Duration::days(i64::try_from(i).expect("index fits"))
+        })
+    }
+
+    #[test]
+    fn tracker_firing_waits_for_the_anchor_day() {
+        let wednesday = anchored_habit(
+            1,
+            HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+            Some(AnchorDay::Weekday(chrono::Weekday::Wed)),
+        );
+        let habits = habits_of(std::slice::from_ref(&wednesday));
+        let week = week_dates();
+        // Monday and Tuesday: silent — the nudge has not armed yet.
+        for day in &week[..2] {
+            for probe in [at(8, 0), at(12, 0), at(23, 0)] {
+                let now = day5().instant(*day, probe);
+                assert!(
+                    firings_on(&habits, now).is_empty(),
+                    "no firing before the anchor day at {day} {probe}"
+                );
+            }
+        }
+        // Wednesday at the anchor reading: the nudge arms.
+        let arm = day5().instant(week[2], at(9, 0));
+        let firings = firings_on(&habits, arm);
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].reminder, tracker_ref(1));
+        assert_eq!(firings[0].occurrence, arm);
+        // Armed through the window's end: every later day reads its own
+        // day-anchored occurrence (quota-gated as today).
+        for day in &week[3..] {
+            let probe = day5().instant(*day, at(9, 0));
+            let firings = firings_on(&habits, probe);
+            assert_eq!(firings.len(), 1, "armed on {day}");
+            assert_eq!(firings[0].occurrence, probe);
+        }
+    }
+
+    /// The law's else-branch: without an anchor day the nudge reads the
+    /// period's start as its arm day — for the weekly habit that means
+    /// the gate is inert on every day of the window (today ≥ Monday
+    /// always), so the per-day re-arm is byte-identical to the
+    /// pre-change engine.
+    #[test]
+    fn tracker_firing_without_a_day_starts_at_the_period_start() {
+        let weekly = anchored_habit(
+            1,
+            HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+            None,
+        );
+        let habits = habits_of(std::slice::from_ref(&weekly));
+        for day in week_dates() {
+            let probe = day5().instant(day, at(9, 0));
+            let firings = firings_on(&habits, probe);
+            assert_eq!(firings.len(), 1, "daily re-arm on {day}");
+            assert_eq!(firings[0].occurrence, probe);
+        }
+        // Monthly: the arm day is the calendar 1st — the gate is inert
+        // on every day of the month.
+        let monthly = anchored_habit(
+            2,
+            HabitTarget::PerMonth(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+            None,
+        );
+        let habits = habits_of(std::slice::from_ref(&monthly));
+        for d in [1u32, 15, 28] {
+            let probe = day5().instant(ymd(2026, 11, d), at(9, 0));
+            let firings = firings_on(&habits, probe);
+            assert_eq!(firings.len(), 1, "monthly re-arm on day {d}");
+            assert_eq!(firings[0].occurrence, probe);
+        }
+    }
+
+    #[test]
+    fn tracker_firing_month_day_clamps_into_the_window() {
+        // 2026 is not a leap year: February has 28 days, so the 31
+        // clamps to the 28th (the domain's documented leniency).
+        let february = anchored_habit(
+            3,
+            HabitTarget::PerMonth(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+            Some(AnchorDay::MonthDay(
+                crate::habit::MonthDay::new(31).expect("31 is a valid month day"),
+            )),
+        );
+        let habits = habits_of(std::slice::from_ref(&february));
+        for d in [10u32, 27] {
+            let probe = day5().instant(ymd(2026, 2, d), at(9, 0));
+            assert!(
+                firings_on(&habits, probe).is_empty(),
+                "silent before the clamped arm day on Feb {d}"
+            );
+        }
+        let arm = day5().instant(ymd(2026, 2, 28), at(9, 0));
+        let firings = firings_on(&habits, arm);
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].occurrence, arm);
+    }
+
+    #[test]
+    fn tracker_firing_per_day_ignores_the_day_field() {
+        // The documented inert leniency: a weekday anchor on a PerDay
+        // habit never gates — daily behavior throughout.
+        let daily = anchored_habit(
+            4,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+            Some(AnchorDay::Weekday(chrono::Weekday::Wed)),
+        );
+        let habits = habits_of(std::slice::from_ref(&daily));
+        let monday = ymd(2026, 11, 2);
+        let probe = day5().instant(monday, at(9, 0));
+        let firings = firings_on(&habits, probe);
+        assert_eq!(firings.len(), 1, "a PerDay habit nudges every day");
+        assert_eq!(firings[0].occurrence, probe);
+    }
+
+    #[test]
+    fn tracker_snooze_chain_composes_with_the_day_gate() {
+        let wednesday = anchored_habit(
+            5,
+            HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+            Some(AnchorDay::Weekday(chrono::Weekday::Wed)),
+        );
+        let habits = habits_of(std::slice::from_ref(&wednesday));
+        let week = week_dates();
+        // A snooze stamped on a PRE-gate occurrence must stay inert:
+        // the gate runs first, so Tuesday's chain never walks.
+        let tuesday_base = day5().instant(week[1], at(9, 0));
+        let mut snoozed = ReminderState::default();
+        snoozed.snoozes.insert(
+            ReminderSnoozeKey {
+                reminder: tracker_ref(5),
+                occurrence: tuesday_base,
+            },
+            day5().instant(week[1], at(12, 0)),
+        );
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &snoozed,
+                &ReminderDefaults::default(),
+                day5().instant(week[1], at(12, 0)),
+            ),
+            Vec::new(),
+            "the pre-gate snoozed occurrence never fires"
+        );
+        // A snooze on the armed Wednesday occurrence moves the firing
+        // to the snooze target (the walk reads the map after the gate).
+        let wednesday_base = day5().instant(week[2], at(9, 0));
+        let target = day5().instant(week[2], at(13, 0));
+        snoozed.snoozes.insert(
+            ReminderSnoozeKey {
+                reminder: tracker_ref(5),
+                occurrence: wednesday_base,
+            },
+            target,
+        );
+        assert_eq!(
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day5(),
+                &snoozed,
+                &ReminderDefaults::default(),
+                day5().instant(week[2], at(10, 0)),
+            ),
+            Vec::new()
+        );
+        let firings = due_firings(
+            &BTreeMap::new(),
+            &TrackingState::default(),
+            &habits,
+            day5(),
+            &snoozed,
+            &ReminderDefaults::default(),
+            target,
+        );
+        assert_eq!(firings.len(), 1);
+        assert_eq!(firings[0].occurrence, target);
+    }
+
+    // The H4 D2 property: within a window the gate's armed set is a
+    // suffix of the window's days — silent strictly before the
+    // `nudge_day`, armed from it on (the day-anchored occurrence is
+    // the plain engine's), and the arm day never escapes the
+    // canonical window (it is `nudge_day`'s own invariant, consumed
+    // not re-policed).
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config(24))]
+        #[test]
+        fn tracker_day_gate_armed_set_is_a_window_suffix(
+            wd in 0_u32..7,
+        ) {
+            let weekday = match wd {
+                0 => chrono::Weekday::Mon,
+                1 => chrono::Weekday::Tue,
+                2 => chrono::Weekday::Wed,
+                3 => chrono::Weekday::Thu,
+                4 => chrono::Weekday::Fri,
+                5 => chrono::Weekday::Sat,
+                _ => chrono::Weekday::Sun,
+            };
+            let habit = anchored_habit(
+                6,
+                HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()),
+                Some(at(9, 0)),
+                Some(AnchorDay::Weekday(weekday)),
+            );
+            let habits = habits_of(std::slice::from_ref(&habit));
+            let week = week_dates();
+            let arm = crate::habit::nudge_day(
+                &habit,
+                WindowStart::of_period(habit.target.kind(), week[0]),
+            );
+            prop_assert!(
+                arm >= week[0] && arm <= week[6],
+                "the arm day never escapes the canonical window"
+            );
+            for day in &week {
+                let probe = day5().instant(*day, at(9, 0));
+                let armed = firings_on(&habits, probe).len() == 1;
+                let today = day5().today(probe);
+                prop_assert_eq!(armed, today >= arm, "arming is the window suffix");
+            }
         }
     }
 }
