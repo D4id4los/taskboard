@@ -55,6 +55,10 @@ export component PlanNextDayView inherits FocusScope {
     accessible-role: AccessibleRole.region;
     accessible-label: "Plan next day";
     init => self.focus();
+    // The severing cap (J4 US-3 AC-2; the task-view precedent): the
+    // root's layout merge must never bound the OS window's max width
+    // — the empty EmptyState mount would otherwise collapse it.
+    max-width: Theme.layout-severing-max-width;
 
     ring := Rectangle {
         width: 100%;

@@ -3605,12 +3605,22 @@ fn push_review_walk(
                 ),
             ]
         }
-        crate::view_state::WalkStage::Planner => vec![dialog_button(
-            presentation::walk_prev_label(),
-            crate::DialogButtonRole::Dismiss,
-            false,
-            0,
-        )],
+        crate::view_state::WalkStage::Planner => vec![
+            dialog_button(
+                presentation::walk_prev_label(),
+                crate::DialogButtonRole::Dismiss,
+                false,
+                0,
+            ),
+            // Done planning: the child's Completed exit advances the
+            // walk to Prompts (D-2).
+            dialog_button(
+                presentation::walk_next_label(),
+                crate::DialogButtonRole::Accept,
+                true,
+                1,
+            ),
+        ],
         crate::view_state::WalkStage::Prompts => vec![
             dialog_button(
                 presentation::walk_prev_label(),

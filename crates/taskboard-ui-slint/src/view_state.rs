@@ -3104,7 +3104,20 @@ impl ViewState {
         };
         match stage {
             WalkStage::Entry | WalkStage::Inbox | WalkStage::CarryForward => {
-                *stage = walk_first_open_stage(*stage, rows);
+                // The advance targets the machine's NEXT stage, then
+                // the skip law normalizes it (D-3): Entry → Inbox,
+                // Inbox → Carry, Carry → Prompts — each landing on its
+                // first open shape. The planner is never a skip
+                // destination (the verb, D-6).
+                let from = match stage {
+                    WalkStage::Entry => WalkStage::Inbox,
+                    WalkStage::Inbox => WalkStage::CarryForward,
+                    // Carry forward and every later stage alike: the
+                    // Next beyond Carry is Prompts (the planner is the
+                    // verb, D-6).
+                    _ => WalkStage::Prompts,
+                };
+                *stage = walk_first_open_stage(from, rows);
                 *cursor = 0;
                 WalkStep::Advanced
             }
@@ -3432,6 +3445,18 @@ impl ViewState {
     /// — the same funnel seeds from the row's instant adapter-side).
     pub fn open_plan_place(&mut self, task: TaskId) -> Vec<FlowOutcome> {
         self.write_flow(Flow::PlanPlace { task });
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The placement form as the embedded planner's own child (J4
+    /// D-2): pushed ABOVE the live `ReviewPlanner` level — replacing
+    /// the top flow would kill the walk's planner step. The commit /
+    /// discard tails end the child through `write_flow(None)` (the
+    /// truncate), handing the level back to the planner.
+    pub fn open_plan_place_child(&mut self, task: TaskId) -> Vec<FlowOutcome> {
+        if let Err(crate::surfaces::AlreadyInChain) = self.mount_child(Flow::PlanPlace { task }) {
+            return Vec::new();
+        }
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -7818,8 +7843,10 @@ mod settings_surface_tests {
         );
         assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Inbox, _)));
 
-        // The armed Pick-a-date child is the same generic rung.
-        vs.advance_review_walk(rows(1, 0));
+        // The armed Pick-a-date child is the same generic rung (the
+        // carry rows count is virtual here — the date child only
+        // arms over the Carry stage).
+        vs.advance_review_walk(rows(1, 1));
         vs.review_walk_pick_date();
         assert!(matches!(vs.flow(), Flow::WalkDatePick));
         assert_eq!(
@@ -7848,6 +7875,11 @@ mod settings_surface_tests {
 
         // Prompts steps back to Carry forward, never into the planner.
         vs.advance_review_walk(rows(0, 1));
+        assert!(matches!(
+            walk_flow(&vs),
+            (DAY, _, WalkStage::CarryForward, 0)
+        ));
+        vs.advance_review_walk(rows(0, 1));
         assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Prompts, 0)));
         vs.back_review_walk(rows(1, 1));
         assert!(matches!(
@@ -7855,8 +7887,12 @@ mod settings_surface_tests {
             (DAY, _, WalkStage::CarryForward, 0)
         ));
 
-        // Entry and Complete are inert behind Prev (Entry is the
-        // start; the completion stage's single exit is the control).
+        // Carry's Prev steps to the Inbox when it has rows, then to
+        // Entry; Entry and Complete are inert behind Prev (Entry is
+        // the start; the completion stage's single exit is the
+        // control).
+        vs.back_review_walk(rows(1, 1));
+        assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Inbox, 0)));
         vs.back_review_walk(rows(1, 1));
         assert!(matches!(walk_flow(&vs), (DAY, _, WalkStage::Entry, 0)));
         assert_eq!(vs.back_review_walk(rows(1, 1)), Vec::<FlowOutcome>::new());
@@ -7956,6 +7992,42 @@ mod settings_surface_tests {
                 .any(|o| matches!(o, FlowOutcome::Command(_))),
             "a settle never dispatches — there is nothing to commit"
         );
+    }
+
+    // -- the skip law's totality (J4 D-3, T12) ------------------------------
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(512))]
+
+        /// The skip law is total: `walk_first_open_stage` never lands a
+        /// row stage on a zero-row rendering — the result is the stage
+        /// itself when it has rows, otherwise the next non-empty stage,
+        /// otherwise Prompts (the terminal that always "has rows": the
+        /// template's prompts). The planner is never a skip
+        /// destination.
+        #[test]
+        fn the_skip_law_never_lands_a_row_stage_on_zero_rows(
+            inbox in 0usize..4,
+            carry in 0usize..4,
+        ) {
+            let rows = WalkRows { inbox, carry };
+            for from in [WalkStage::Inbox, WalkStage::CarryForward] {
+                let landed = crate::view_state::walk_first_open_stage(from, rows);
+                prop_assert!(
+                    matches!(landed, WalkStage::Prompts)
+                        || ViewState::walk_stage_rows(landed, rows) > 0,
+                    "from {from:?} over ({inbox}, {carry}) landed on {landed:?} with zero rows"
+                );
+                prop_assert!(
+                    !matches!(landed, WalkStage::Planner | WalkStage::Entry),
+                    "the skip law never lands on the opt-in planner or Entry"
+                );
+                // The landing is idempotent (a stage never skips twice).
+                prop_assert_eq!(crate::view_state::walk_first_open_stage(landed, rows), landed);
+            }
+        }
     }
 
     // -- the exit protocol (W5b D-H3, chunk 3; plan D8) --------------------

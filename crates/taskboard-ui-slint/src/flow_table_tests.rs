@@ -68,6 +68,11 @@ enum FK {
     /// innermost-first walk). The fixture arms them at depth 1, where
     /// the bubble lands on the root handler.
     Child,
+    /// The embedded planner child (J4 D-2): the child cell's shape,
+    /// with the walk's own verb arm and the planner-surface rows —
+    /// its kept arms (`PlanBegin` mounts the form as its child, J4
+    /// D-2; the walk intents route to the walk beneath).
+    PlanChild,
 }
 
 /// The eleven effect classes the matrix columns range over.
@@ -98,12 +103,11 @@ fn kind_of(flow: &Flow) -> FK {
         // commit/confirm, settle is the disarm.
         Flow::ConfirmDelete(_) | Flow::BoardColorPick { .. } | Flow::None => FK::None,
         // The child levels (chunk 3's ports): no kept intents of
-        // their own; settle is the Cancelled end. The embedded
-        // planner child (J4 D-2) is the walk's own child.
-        Flow::EntryDatePicker
-        | Flow::ReviewPlanner
-        | Flow::WalkFilePick { .. }
-        | Flow::WalkDatePick => FK::Child,
+        // their own; settle is the Cancelled end.
+        Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick => FK::Child,
+        // The embedded planner child (J4 D-2): its own kind — the
+        // walk-intent arm and the planner rows are its kept arms.
+        Flow::ReviewPlanner => FK::PlanChild,
         Flow::Create { .. }
         | Flow::CreateStack
         | Flow::CreateBoard
@@ -390,6 +394,7 @@ use FK::FocusOverlay as KFoc;
 use FK::LabelOverlay as KLabel;
 use FK::Move as KMove;
 use FK::Palette as KPal;
+use FK::PlanChild as KPlanChild;
 use FK::PlanForm as KPlanForm;
 use FK::RecurEditor as KRecur;
 use FK::ReviewWalk as KWalk;
@@ -583,6 +588,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         row(kind, C::LabelsOverlay, exp(Z, N));
     }
     row(FK::Child, C::LabelsOverlay, exp(Z, K(KChild)));
+    row(FK::PlanChild, C::LabelsOverlay, exp(Z, K(KPlanChild)));
     // CHILD LEVELS (chunk 3's ports): the settle is the Cancelled end
     // (the modals' terminator rule); everything else bubbles outward —
     // at the fixture's depth 1 the overlay-open classes replace the
@@ -595,10 +601,23 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
     row(FK::Child, C::BeginCapture, exp(Z, K(KCap)));
     row(FK::Child, C::FocusOverlay, exp(Z, K(KFoc)));
     row(FK::Child, C::TrackOverlay, exp(Z, K(KChild)));
+    row(FK::PlanChild, C::TrackOverlay, exp(Z, K(KPlanChild)));
     for class in [C::Edit, C::Menu, C::System, C::Picker] {
         row(FK::Child, class, exp(Z, K(KChild)));
     }
     row(FK::Child, C::ReviewWalk, exp(Z, K(KChild)));
+    row(FK::PlanChild, C::ReviewWalk, exp(Z, K(KPlanChild)));
+    // The embedded planner child (J4 D-2): the child cell's shape,
+    // plus the walk's kept verb arm and the planner-surface keep.
+    for class in [C::Nav, C::Lifecycle, C::Begin, C::Title, C::Cancel] {
+        row(FK::PlanChild, class, exp(Z, N));
+    }
+    row(FK::PlanChild, C::OpenPalette, exp(Z, K(KPal)));
+    row(FK::PlanChild, C::BeginCapture, exp(Z, K(KCap)));
+    row(FK::PlanChild, C::FocusOverlay, exp(Z, K(KFoc)));
+    for class in [C::Edit, C::Menu, C::System, C::Picker] {
+        row(FK::PlanChild, class, exp(Z, K(KPlanChild)));
+    }
     // A held foreign flow under the plan-surface class: the named
     // inert keeps the flow (the modal discipline; Escape out first).
     for kind in [
@@ -615,6 +634,7 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::ReviewWalk,
         FK::RecurEditor,
         FK::Child,
+        FK::PlanChild,
     ] {
         row(kind, C::PlanSurface, exp(Z, held_flow_keep(kind)));
     }
@@ -651,6 +671,9 @@ fn class_table() -> Vec<(FK, EC, Exp)> {
         FK::TrackForm,
         FK::LabelOverlay,
         FK::PlanForm,
+        // The walk keeps its own intents (the modal's kept arms run
+        // the verb table; the Record exit now lands on the summary —
+        // the walk stays live, J4 D-1/D-8).
         FK::ReviewWalk,
         FK::RecurEditor,
     ] {
@@ -683,6 +706,7 @@ fn held_flow_keep(kind: FK) -> Post {
         FK::ReviewWalk => K(KWalk),
         FK::RecurEditor => K(KRecur),
         FK::Child => K(KChild),
+        FK::PlanChild => K(KPlanChild),
         FK::None => unreachable!("no flow held"),
     }
 }
@@ -709,6 +733,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::ReviewWalk,
         FK::RecurEditor,
         FK::Child,
+        FK::PlanChild,
     ] {
         let keep = match kind {
             FK::Text => K(KTxt),
@@ -725,6 +750,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             FK::ReviewWalk => K(KWalk),
             FK::RecurEditor => K(KRecur),
             FK::Child => K(KChild),
+            FK::PlanChild => K(KPlanChild),
             FK::None => unreachable!("the loop never names None"),
         };
         row(kind, E::RecurIntent, exp(Z, keep));
@@ -784,9 +810,13 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // (the child dispatch arm); with no walk beneath — the fixture's
     // depth 1 — they are the inert no-op and the child stays.
     row(FK::Child, E::WalkAdvance, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::WalkAdvance, exp(Z, K(KPlanChild)));
     row(FK::Child, E::WalkExit, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::WalkExit, exp(Z, K(KPlanChild)));
     row(FK::Child, E::WalkVerb, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::WalkVerb, exp(Z, K(KPlanChild)));
     row(FK::Child, E::WalkFileArm, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::WalkFileArm, exp(Z, K(KPlanChild)));
     // -- LIFECYCLE under every foreign kind: the settle-then-run
     //    re-run's outcome is effect-shaped (a rename arms a fresh
     //    text flow, a delete dispatches with no flow) --
@@ -835,6 +865,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::ReviewWalk,
         FK::RecurEditor,
         FK::Child,
+        FK::PlanChild,
     ] {
         let cmd = if kind == FK::Text { NZ } else { Z };
         row(kind, E::BeginDateEdit, exp(cmd, K(KDue)));
@@ -1121,7 +1152,9 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // shape.
     row(FK::ReviewWalk, E::WalkFileArm, exp(Z, K(KChild)));
     row(FK::ReviewWalk, E::WalkVerb, exp(Z, K(KWalk)));
-    row(FK::ReviewWalk, E::WalkExit, exp(Z, N));
+    // The Record/Finish exits land on the completion summary now —
+    // the walk stays live (J4 D-1/D-8).
+    row(FK::ReviewWalk, E::WalkExit, exp(Z, K(KWalk)));
     // -- RECUR EDITOR rows (round-7 D-7.1): the opener is the
     //    entries-overlay's shape — an explicit table arm that replaces
     //    any foreign flow without settling it (no commit), opens the
@@ -1141,6 +1174,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::PlanForm,
         FK::ReviewWalk,
         FK::Child,
+        FK::PlanChild,
     ] {
         row(kind, E::SeriesEditOpen, exp(Z, K(KRecur)));
     }
@@ -1163,6 +1197,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::PlanForm,
         FK::ReviewWalk,
         FK::Child,
+        FK::PlanChild,
     ] {
         row(kind, E::SeriesDetach, exp(Z, held_flow_keep(kind)));
     }
@@ -1179,10 +1214,20 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::None, E::PlanBox, exp(Z, N));
     row(FK::None, E::PlanRemove, exp(NZ, N));
     row(FK::PlanForm, E::PlanOpen, exp(Z, N));
+    // The embedded planner's form is the planner's own child (J4
+    // D-2): the mount keeps the child cell's flow shape at Kind(PlanForm).
+    row(FK::Child, E::PlanBegin, exp(Z, K(KChild)));
+    // The embedded planner's form mounts as the planner's own child
+    // (J4 D-2).
+    row(FK::PlanChild, E::PlanBegin, exp(Z, K(KPlanForm)));
     row(FK::PlanForm, E::PlanBegin, exp(Z, K(KPlanForm)));
     row(FK::PlanForm, E::PlanCommit, exp(Z, K(KPlanForm)));
     row(FK::PlanForm, E::PlanBox, exp(Z, K(KPlanForm)));
     row(FK::PlanForm, E::PlanRemove, exp(Z, K(KPlanForm)));
+    // The embedded planner's unplace: the honest write lands under
+    // the child (J4 D-2); the plain children keep the named inert.
+    row(FK::Child, E::PlanRemove, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::PlanRemove, exp(NZ, K(KPlanChild)));
     // A held foreign flow keeps every planner intent inert (the
     // modal discipline verbatim: Escape out of the flow first).
     for kind in [
@@ -1199,6 +1244,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         FK::ReviewWalk,
         FK::RecurEditor,
         FK::Child,
+        FK::PlanChild,
     ] {
         let keep = held_flow_keep(kind);
         for key in [
@@ -1211,6 +1257,36 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
             row(kind, key, exp(Z, keep));
         }
     }
+
+    // The embedded planner child mirrors the child cells verbatim
+    // (the depth-1 XOR replaces it like any child; its kept arms —
+    // the walk verbs and the planner rows — are the earlier rows).
+    row(FK::PlanChild, E::BoardDefaultPreset, exp(Z, N));
+    row(FK::PlanChild, E::TrackEntryDismiss, exp(Z, N));
+    row(FK::PlanChild, E::LabelsDismiss, exp(Z, N));
+    // The embedded planner child mirrors the child cells verbatim
+    // (the depth-1 XOR replaces it like any child; its kept arms —
+    // the walk verbs and the planner rows — are the earlier rows).
+    row(FK::PlanChild, E::BeginCreate, exp(Z, K(KTxt)));
+    row(FK::PlanChild, E::BeginCreateStack, exp(Z, K(KTxt)));
+    row(FK::PlanChild, E::RequestMove, exp(Z, K(KMove)));
+    row(FK::PlanChild, E::StackDelete, exp(Z, K(KNone)));
+    row(FK::PlanChild, E::StackRename, exp(Z, K(KTxt)));
+    row(FK::PlanChild, E::StackMove, exp(Z, K(KMove)));
+    row(FK::PlanChild, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FK::PlanChild, E::BoardColorEdit, exp(Z, K(KNone)));
+    row(FK::PlanChild, E::BoardDelete, exp(Z, K(KNone)));
+    row(FK::PlanChild, E::BoardRename, exp(Z, K(KTxt)));
+    row(FK::PlanChild, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(FK::PlanChild, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
+    row(FK::PlanChild, E::ReviewOpen, exp(Z, K(KWalk)));
+    row(FK::PlanChild, E::WalkAdvance, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::WalkExit, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::WalkVerb, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::WalkFileArm, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::LabelsOpen, exp(Z, K(KLabel)));
+    row(FK::PlanChild, E::PlanBegin, exp(Z, K(KChild)));
+    row(FK::PlanChild, E::PlanRemove, exp(Z, K(KChild)));
     t
 }
 
@@ -1753,7 +1829,7 @@ fn the_matrix_covers_every_class_cell() {
     }
     assert_eq!(
         cells.len(),
-        15 * 16,
+        16 * 16,
         "one row per (FlowKind, EffectClass) cell"
     );
 }

@@ -1238,7 +1238,61 @@ expression: rows
   category: navigation
   enabled: true
   menu_rank: 470
-  description: Ends the walk without recording anything — the equal-prominence exit.
+  description: Ends the reflection stage without recording — the guilt-free exit lands on the completion summary.
+  menu_group: ~
+- id: review.planner
+  label: Plan next day
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 480
+  description: Mounts the plan-next-day step inside the review walk (the embedded planner step).
+  menu_group: ~
+- id: review.walk-prev
+  label: Walk previous stage
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 490
+  description: Steps the walk back one visited stage (the Prev control).
+  menu_group: ~
+- id: review.walk-complete
+  label: Finish the review
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 500
+  description: "Leaves the completion summary: closes the walk and restores the view focus."
+  menu_group: ~
+- id: review.abort-arm
+  label: Arm the review abort confirm
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 510
+  description: Asks before ending the review mid-walk; the Entry stage closes silently.
+  menu_group: ~
+- id: review.abort-accept
+  label: End the review
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 520
+  description: "Accepts the abort confirm: closes the walk; decisions already made stay applied."
+  menu_group: ~
+- id: review.abort-dismiss
+  label: Keep reviewing
+  contexts:
+    - review-walk
+  category: navigation
+  enabled: true
+  menu_rank: 530
+  description: "Dismisses the abort confirm: the walk stays exactly as it was."
   menu_group: ~
 - id: habit.move
   label: Reorder habit

@@ -18688,7 +18688,17 @@ fn the_card_opens_the_walk_over_the_due_window() {
             );
             open_walk(&mut harness);
             assert!(walk_open(&harness), "the card opened the walk");
-            assert_eq!(walk_stage(&harness), 0, "the walk opens at the Inbox");
+            // J4 D-1: the walk always opens at the Entry guidance
+            // stage; the row stages follow through the skip law.
+            assert_eq!(walk_stage(&harness), 4, "the walk opens at Entry");
+            assert_eq!(
+                walk_rows(&harness),
+                1,
+                "the guidance stage shows the intro row"
+            );
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 0, "Entry's Next lands on Inbox");
             assert_eq!(
                 walk_rows(&harness),
                 inbox_ids.len(),
@@ -18882,6 +18892,8 @@ fn filing_commits_one_move_task() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             open_walk(&mut harness);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewInboxFile);
             harness.driver.advance_time(0);
             assert!(
@@ -18923,7 +18935,10 @@ fn keep_on_the_last_row_passes_the_stage() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             open_walk(&mut harness);
-            // Step to the last row, then keep: the stage passes.
+            // Entry → Inbox, then step to the last row and keep: the
+            // stage passes.
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
             harness.stroke(parse("Down").expect("Down"));
             harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
@@ -18968,13 +18983,23 @@ fn an_empty_inbox_opens_at_carry_forward() {
             harness.handle.dispatch_action(ActionId::ReviewOpen);
             harness.driver.advance_time(0);
             assert!(walk_open(&harness));
+            // J4 D-1: the walk opens at the guidance stage; the skip
+            // law applies from Entry's Next.
+            assert_eq!(walk_stage(&harness), 4, "the walk opens at Entry");
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
             assert_eq!(walk_stage(&harness), 1, "the empty inbox is skipped");
             let strip = harness.handle.window().get_walk_model().strip;
-            let inbox_note = (0..strip.row_count())
-                .find_map(|i| strip.row_data(i))
-                .expect("the inbox strip row");
+            // The strip is the walk order; the row stages sit behind
+            // the Entry row (D-1). Any non-empty note is a skipped
+            // stage's b-line.
+            let notes: Vec<String> = (0..strip.row_count())
+                .filter_map(|i| strip.row_data(i))
+                .map(|row| row.note.to_string())
+                .filter(|note| !note.is_empty())
+                .collect();
             assert!(
-                !inbox_note.note.is_empty(),
+                !notes.is_empty(),
                 "the skipped stage's b-line rides the strip"
             );
             assert!(
@@ -18999,7 +19024,10 @@ fn carry_tomorrow_moves_to_the_next_window_start() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             open_walk(&mut harness);
-            // Pass the inbox (keep both rows), land on Carry forward.
+            // Entry → Inbox, then pass the inbox (keep both rows),
+            // land on Carry forward.
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
             harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
@@ -19034,9 +19062,12 @@ fn carry_tomorrow_moves_to_the_next_window_start() {
                 other => panic!("one carry write, got {other:?}"),
             }
             // The row left the carry reading (its anchor moved out of
-            // the window).
+            // the window): the row verb passed the last carry row and
+            // the skip law landed on Prompts (the planner is opt-in,
+            // J4 D-3).
             harness.engine.settle(&harness.handle);
-            assert_eq!(walk_rows(&harness), 0, "the carried row left");
+            assert_eq!(walk_stage(&harness), 2, "the carried row left");
+            assert!(walk_open(&harness));
         },
     );
     let _ = due_before;
@@ -19055,6 +19086,8 @@ fn the_date_pick_commits_parseable_input_only() {
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             open_walk(&mut harness);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
             for _ in 0..2 {
                 harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
                 harness.driver.advance_time(0);
@@ -19108,113 +19141,6 @@ fn the_date_pick_commits_parseable_input_only() {
     );
 }
 
-/// J10 — advancing out of Carry forward lands the walk on the
-/// planner: flow `None`, view `PlanNextDay`, the walk's return view
-/// snapshot untouched (the planner's own return seam).
-#[test]
-fn the_advance_hands_off_to_the_planner() {
-    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            // Advance through Inbox (empty via keeps? the fixture has
-            // rows — advance twice: once past Inbox, once out of
-            // Carry forward).
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            assert_eq!(walk_stage(&harness), 1);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            assert!(!walk_open(&harness), "the walk closed at the handoff");
-            assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::PlanNextDay,
-                "the planner is mounted"
-            );
-            assert!(
-                harness.engine.drain().is_empty(),
-                "the handoff dispatched no command"
-            );
-        },
-    );
-}
-
-/// J11 — closing the planner without placing anything is the built-in
-/// skip: the walk resumes at Prompts (P12 — nothing forced, nothing
-/// lost).
-#[test]
-fn closing_the_planner_resumes_at_prompts() {
-    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::PlanNextDay
-            );
-            // The planner's Escape rung (its own context binding).
-            harness.stroke(parse("Escape").expect("Escape"));
-            harness.driver.advance_time(0);
-            assert!(walk_open(&harness), "the walk resumed");
-            assert_eq!(walk_stage(&harness), 2, "at Prompts");
-            assert!(
-                harness.engine.drain().is_empty(),
-                "the resume dispatched nothing"
-            );
-        },
-    );
-}
-
-/// J13 — leaving the planner by another route (`view.today`) drops
-/// the hint: no walk resumes, and a later planner close resumes
-/// nothing (the walk never ambushes later).
-#[test]
-fn leaving_the_planner_by_another_route_drops_the_hint() {
-    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.handle.dispatch_action(ActionId::ReviewOpen);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::PlanNextDay
-            );
-            // Out by the view intent, not the planner's close.
-            harness.handle.dispatch_action(ActionId::ViewToday);
-            harness.driver.advance_time(0);
-            assert!(!walk_open(&harness), "no walk ambushes the Today view");
-            // A later planner open + close resumes nothing.
-            harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
-            harness.driver.advance_time(0);
-            assert!(!walk_open(&harness), "the hint is gone");
-        },
-    );
-}
-
 /// J14 — Record with two answers: exactly one `RecordReflection` with
 /// the reference's cadence/day/window; after the entry lands in the
 /// published state the card is gone.
@@ -19260,12 +19186,12 @@ fn recording_routes_one_entry_and_clears_the_card() {
             harness.press(ActionId::ViewToday);
             harness.driver.advance_time(0);
             open_walk(&mut harness);
-            // Straight to the prompts: the walk advance runs the
-            // handoff and the planner close resumes at Prompts.
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-            harness.driver.advance_time(0);
+            // Straight to the prompts: Entry → the first open stage →
+            // (skip law) → Prompts (J4 D-3; the planner leg is opt-in).
+            for _ in 0..3 {
+                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+                harness.driver.advance_time(0);
+            }
             harness.stroke(parse("Escape").expect("Escape"));
             harness.driver.advance_time(0);
             assert_eq!(walk_stage(&harness), 2);
@@ -19306,7 +19232,13 @@ fn recording_routes_one_entry_and_clears_the_card() {
                 }
                 other => panic!("one record, got {other:?}"),
             }
-            assert!(!walk_open(&harness), "the walk closed on the record");
+            // The record lands on the completion summary (J4 D-8);
+            // the summary's exit closes the walk.
+            assert_eq!(walk_stage(&harness), 5, "the summary presents");
+            assert!(walk_open(&harness));
+            harness.handle.dispatch_action(ActionId::ReviewWalkComplete);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the exit closed the walk");
             harness.engine.replace_state(published, &harness.handle);
             assert!(
                 !harness.handle.window().get_review_card_visible(),
@@ -19316,8 +19248,9 @@ fn recording_routes_one_entry_and_clears_the_card() {
     );
 }
 
-/// J15 — an all-blank Record and `Finish without recording` both end
-/// the walk gently: no command, flow closed.
+/// J15 re-based (J4 D-1/D-8) — an all-blank Record and `Finish without
+/// recording` both land on the completion summary gently: no command,
+/// `recorded: no`, the walk stays open for the honest summary.
 #[test]
 fn blank_records_and_finish_dispatch_nothing() {
     let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
@@ -19330,10 +19263,10 @@ fn blank_records_and_finish_dispatch_nothing() {
             for exit in [ActionId::ReviewRecord, ActionId::ReviewFinish] {
                 harness.handle.dispatch_action(ActionId::ReviewOpen);
                 harness.driver.advance_time(0);
-                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-                harness.driver.advance_time(0);
-                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
-                harness.driver.advance_time(0);
+                for _ in 0..3 {
+                    harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+                    harness.driver.advance_time(0);
+                }
                 harness.stroke(parse("Escape").expect("Escape"));
                 harness.driver.advance_time(0);
                 assert_eq!(walk_stage(&harness), 2);
@@ -19343,15 +19276,26 @@ fn blank_records_and_finish_dispatch_nothing() {
                     harness.engine.drain().is_empty(),
                     "{exit:?} dispatched nothing"
                 );
-                assert!(!walk_open(&harness), "{exit:?} closed the walk");
+                assert_eq!(
+                    walk_stage(&harness),
+                    5,
+                    "{exit:?} lands on the completion summary"
+                );
+                assert!(walk_open(&harness), "the summary is presented");
+                // Leave through the summary's exit for the next leg.
+                harness.handle.dispatch_action(ActionId::ReviewWalkComplete);
+                harness.driver.advance_time(0);
+                assert!(!walk_open(&harness));
             }
         },
     );
 }
 
-/// J16 — the Escape ladder: an armed date field disengages first
-/// (the focused field's Insert), then the sub-state clears, then the
-/// stage steps back, then the walk closes — no command at any rung.
+/// J16 re-based (J4 D-6) — the Escape ladder: an armed date field
+/// disengages first (the focused field's Insert), then the sub-state
+/// clears, then the abort confirm arms (never a silent step-back) and
+/// the second Escape dismisses it — no command at any rung, the walk
+/// never leaves the Carry stage.
 #[test]
 fn the_escape_ladder_never_dispatches() {
     let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
@@ -19363,6 +19307,8 @@ fn the_escape_ladder_never_dispatches() {
             let mut harness = Harness::mount(SlintDriver::default(), state);
             open_walk(&mut harness);
             assert!(walk_open(&harness));
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
             harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
@@ -19388,19 +19334,29 @@ fn the_escape_ladder_never_dispatches() {
             // Rung 2: the sub-state clears.
             harness.stroke(parse("Escape").expect("Escape"));
             harness.driver.advance_time(0);
+            harness.driver.advance_time(0);
             assert!(
                 !harness.handle.window().get_walk_model().picking,
                 "the armed field disengaged"
             );
             assert_eq!(walk_stage(&harness), 1, "the stage holds");
-            // Rung 3: the stage steps back to the Inbox.
+            // Rung 3: the abort confirm arms (R-2 — never a silent
+            // step-back).
             harness.stroke(parse("Escape").expect("Escape"));
             harness.driver.advance_time(0);
-            assert_eq!(walk_stage(&harness), 0, "the stage stepped back");
-            // Rung 4: the walk closes.
+            assert!(
+                harness.handle.window().get_walk_model().abort_confirm,
+                "the confirm armed"
+            );
+            assert_eq!(walk_stage(&harness), 1, "the stage is untouched");
+            // Rung 4: the second Escape dismisses ("Keep reviewing").
             harness.stroke(parse("Escape").expect("Escape"));
             harness.driver.advance_time(0);
-            assert!(!walk_open(&harness));
+            assert!(
+                !harness.handle.window().get_walk_model().abort_confirm,
+                "the confirm dismissed"
+            );
+            assert!(walk_open(&harness), "the walk stays open");
             assert!(
                 harness.engine.drain().is_empty(),
                 "no ladder rung dispatched"
@@ -19489,7 +19445,10 @@ fn a_blank_reflection_record_echoes_its_typed_no_op() {
             harness.press(ActionId::ViewToday);
             harness.driver.advance_time(0);
             open_walk(&mut harness);
-            // Straight to the prompts (the recorded journey's path).
+            // Straight to the prompts (the recorded journey's path):
+            // Entry → first open stage → (skip law) → Prompts.
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
             harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
@@ -19507,7 +19466,14 @@ fn a_blank_reflection_record_echoes_its_typed_no_op() {
                 harness.handle.window().get_notice_visible(),
                 "the typed no-op echoes on the status notice"
             );
-            assert!(!walk_open(&harness), "the walk closed gently");
+            assert_eq!(
+                walk_stage(&harness),
+                5,
+                "the walk lands on the honest summary (recorded: no)"
+            );
+            harness.handle.dispatch_action(ActionId::ReviewWalkComplete);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the exit closes gently");
         },
     );
 }
@@ -19592,11 +19558,12 @@ fn the_kiosk_mount_never_surfaces_the_walk() {
     );
 }
 
-/// J20 — the walk opened over the planner: advancing out of Carry
-/// forward keeps the planner mounted (no toggle-close — the handoff's
-/// skip-leg).
+/// J4 US-3/S1 — the plan-next-day choice out of Carry mounts the
+/// embedded planner child: the walk stays open beneath (stage 3),
+/// and the Prev control ends the child Cancelled — back returns to
+/// Carry, the walk never closed (D-2's exit contract).
 #[test]
-fn the_walk_over_the_planner_hands_off_without_closing_it() {
+fn us3_s1_planner_embeds_and_back_returns_to_carry() {
     let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
     support::driver::run(
         DriverOptions {
@@ -19604,35 +19571,79 @@ fn the_walk_over_the_planner_hands_off_without_closing_it() {
         },
         move |_driver| {
             let mut harness = Harness::mount(SlintDriver::default(), state);
-            // Open the planner first, then the walk over it.
-            harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
-            harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewOpen);
             harness.driver.advance_time(0);
-            assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::PlanNextDay
-            );
             assert!(walk_open(&harness));
+            // Entry → Inbox → Carry.
             harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
             harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 1, "the walk is at Carry");
+            // The planner choice mounts the embedded step.
+            harness.handle.dispatch_action(ActionId::ReviewWalkPlanner);
             harness.driver.advance_time(0);
             assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::PlanNextDay,
-                "the planner stays mounted (no toggle-close)"
+                walk_stage(&harness),
+                3,
+                "the planner is the walk's own stage"
             );
-            assert!(!walk_open(&harness), "the walk closed at the handoff");
+            assert!(walk_open(&harness), "the walk stays open beneath");
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Board,
+                "no view swap: the planner is embedded, never a navigation"
+            );
+            // Back ends the child Cancelled: back to Carry.
+            harness.handle.dispatch_action(ActionId::ReviewWalkPrev);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 1, "back returns to Carry");
+            assert!(walk_open(&harness), "the walk never closed");
         },
     );
 }
 
-/// J12 — the planner leg places a task, then closes: the placement's
-/// `UpdateTask` lands and the walk resumes at Prompts (placed tasks
-/// reach it as plain state).
+/// J4 US-3/S2 — completing the embedded planner ends the child
+/// `Completed`: the walk advances to Prompts and stays open (D-2's
+/// exit contract; the whole walk is never skipped).
 #[test]
-fn the_planner_leg_places_then_resumes() {
+fn us3_s2_planner_complete_advances_to_prompts() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkPlanner);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 3);
+            // Done planning: the Next control ends the child Completed.
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                walk_stage(&harness),
+                2,
+                "the child's completion advances to Prompts"
+            );
+            assert!(walk_open(&harness), "the walk carries on");
+            harness.engine.drain();
+        },
+    );
+}
+
+/// J12 re-based (J4 US-3/S2) — the planner leg places a task, then
+/// completes: the placement's `UpdateTask` lands and the walk
+/// advances to Prompts over the placed state (placed tasks reach the
+/// walk as plain snapshot state).
+#[test]
+fn us3_s2_the_planner_leg_places_then_advances_to_prompts() {
     let (fixture, state, _stack, _inbox_ids) = walk_fixture_state();
     let task0 = fixture.task0;
     let title = state.tasks.get(&task0).expect("task0").title.clone();
@@ -19648,12 +19659,11 @@ fn the_planner_leg_places_then_resumes() {
             harness.driver.advance_time(0);
             harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
             harness.driver.advance_time(0);
-            harness.engine.drain();
-            assert_eq!(
-                harness.handle.window().get_current_view(),
-                View::PlanNextDay
-            );
-            // Place task0 from the pool: the placement form's funnel.
+            harness.handle.dispatch_action(ActionId::ReviewWalkPlanner);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 3);
+            // Place task0 from the pool: the placement form's funnel,
+            // mounted inside the walk dialog.
             let row = harness
                 .driver
                 .find_by_label(&format!("Place {title}"))
@@ -19671,11 +19681,426 @@ fn the_planner_leg_places_then_resumes() {
                     .any(|c| matches!(c, StateCommand::UpdateTask { .. })),
                 "the placement write landed"
             );
-            // The planner's Escape: the walk resumes at Prompts.
-            harness.stroke(parse("Escape").expect("Escape"));
+            // Done planning: the child's Completed exit advances to
+            // Prompts; the walk stays open over the placed state.
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
             harness.driver.advance_time(0);
             assert!(walk_open(&harness));
             assert_eq!(walk_stage(&harness), 2);
+        },
+    );
+}
+
+/// The empty-row-state fixture: the golden state plus an inbox board
+/// with `n` triage rows and NO carry anchor — the skip-law journeys'
+/// row source.
+fn walk_empty_carry_state(inbox_n: usize) -> AppState {
+    use taskboard_domain::{Board, BoardClocks, BoardId, Color, Stack, StackClocks, StackId, Task};
+    let (_fixture, mut state) = fixture::golden_state();
+    state.reflection.entries.clear();
+    let inbox = BoardId::from_uuid(uuid::Uuid::new_v4());
+    state.boards.insert(
+        inbox,
+        Board {
+            id: inbox,
+            remote: None,
+            title: "Inbox".to_owned(),
+            color: Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: BoardClocks {
+                title: BoardClocks::epoch(),
+                color: BoardClocks::epoch(),
+                archived: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
+            remote_seen: None,
+        },
+    );
+    let inbox_stack = StackId::from_uuid(uuid::Uuid::new_v4());
+    state.stacks.insert(
+        inbox_stack,
+        Stack {
+            id: inbox_stack,
+            remote: None,
+            board: inbox,
+            title: "Inbox".to_owned(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: StackClocks {
+                title: BoardClocks::epoch(),
+                order: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::StackAuthors::default(),
+            remote_seen: None,
+        },
+    );
+    for index in 0..inbox_n {
+        let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut task = Task {
+            id,
+            remote: None,
+            label_memberships: std::collections::BTreeMap::new(),
+            title: format!("triage-{index}"),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: inbox_stack,
+            order: 0,
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            remote_seen: None,
+            clocks: taskboard_domain::TaskClocks {
+                title: BoardClocks::epoch(),
+                description: BoardClocks::epoch(),
+                duedate: BoardClocks::epoch(),
+                scheduled: BoardClocks::epoch(),
+                done: BoardClocks::epoch(),
+                position: BoardClocks::epoch(),
+                effort: BoardClocks::epoch(),
+                importance: BoardClocks::epoch(),
+                urgency: BoardClocks::epoch(),
+                recur: BoardClocks::epoch(),
+                kind: BoardClocks::epoch(),
+                archived: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
+            remote_baseline: None,
+        };
+        task.stack = inbox_stack;
+        state.tasks.insert(id, task);
+    }
+    // The scheduled anchors (the golden fixture's carry sources) are
+    // cleared: the carry reading is empty by construction.
+    for task in state.tasks.values_mut() {
+        task.scheduled = None;
+    }
+    state
+}
+
+/// J4 US-1/S1 — the guided entry: the modal opens at the Entry stage
+/// (D-1), the Next control steps Entry → the first open row stage,
+/// and the stage-position phrase rides the model (D-9).
+#[test]
+fn us1_s1_entry_opens_and_steps_forward() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness), "the modal is open");
+            assert_eq!(walk_stage(&harness), 4, "the walk opens at Entry");
+            assert!(
+                !harness
+                    .handle
+                    .window()
+                    .get_walk_model()
+                    .stage_position
+                    .is_empty(),
+                "the stage position rides the model (D-9)"
+            );
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 0, "Entry's Next lands on Inbox");
+            harness.engine.drain();
+        },
+    );
+}
+
+/// J4 US-1/S2 — next/prev roundtrip across the machine's stages; the
+/// Prev control never skips past a visited stage into a closed walk.
+#[test]
+fn us1_s2_stage_next_prev_roundtrip() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            // Forward: Entry → Inbox → Carry → Prompts.
+            for expected in [0, 1, 2] {
+                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+                harness.driver.advance_time(0);
+                assert_eq!(walk_stage(&harness), expected);
+            }
+            // Back: Prompts → Carry → Inbox → Entry; the walk stays
+            // open at every rung (the close is the abort/exit law).
+            for expected in [1, 0, 4] {
+                harness.handle.dispatch_action(ActionId::ReviewWalkPrev);
+                harness.driver.advance_time(0);
+                assert_eq!(walk_stage(&harness), expected);
+                assert!(walk_open(&harness));
+            }
+            harness.engine.drain();
+        },
+    );
+}
+
+/// J4 US-1/S3 — the completion path: Finish lands on the summary
+/// (D-8), whose exit closes the walk and restores the view focus.
+#[test]
+fn us1_s3_complete_closes_and_restores_focus() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            for _ in 0..3 {
+                harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+                harness.driver.advance_time(0);
+            }
+            assert_eq!(walk_stage(&harness), 2);
+            // The guilt-free exit lands on the summary, recorded: no.
+            harness.handle.dispatch_action(ActionId::ReviewFinish);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 5, "Finish lands on Complete");
+            assert!(
+                walk_open(&harness),
+                "the summary is presented, never a silent close"
+            );
+            assert!(
+                !harness.handle.window().get_walk_model().tally_recorded,
+                "recorded: no is presented honestly (P12)"
+            );
+            // The summary's single exit closes and restores.
+            harness.handle.dispatch_action(ActionId::ReviewWalkComplete);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the exit closes the walk");
+            assert_eq!(
+                harness.handle.window().get_current_view(),
+                View::Board,
+                "the view is restored (the D15 hand-off)"
+            );
+            harness.engine.drain();
+        },
+    );
+}
+
+/// J4 US-2/S1 (D-3) — the empty Carry stage auto-skips: passing the
+/// last inbox row lands on Prompts, and the "Move to tomorrow" strip
+/// is never mounted over zero rows (the count gate).
+#[test]
+fn us2_s1_empty_carry_stage_auto_skips() {
+    let state = walk_empty_carry_state(1);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 0);
+            // The row verb passes the last row; the skip law lands on
+            // Prompts — the carry stage never renders empty.
+            harness.handle.dispatch_action(ActionId::ReviewInboxKeep);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                walk_stage(&harness),
+                2,
+                "the empty carry stage is skipped to Prompts"
+            );
+            harness.engine.drain();
+        },
+    );
+}
+
+/// J4 US-2/S1 (D-3) — the empty-everything law: the whole walk is
+/// NEVER skipped; with no rows anywhere it lands on Prompts and
+/// finishing reaches the completion summary end-to-end.
+#[test]
+fn us2_s1_empty_everything_reaches_completion() {
+    let state = walk_empty_carry_state(0);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 4, "Entry is never skipped");
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 2, "both stages empty land on Prompts");
+            harness.handle.dispatch_action(ActionId::ReviewFinish);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 5);
+            harness.handle.dispatch_action(ActionId::ReviewWalkComplete);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the whole walk completed");
+            harness.engine.drain();
+        },
+    );
+}
+
+/// J4 US-4 (D-5/D-6) — modal containment: the walk stays open through
+/// in-dialog interaction; Escape at a row stage arms the abort
+/// confirm (never a silent step-back), whose dismiss keeps the walk
+/// verbatim.
+#[test]
+fn us4_s1_modal_containment() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            assert_eq!(walk_stage(&harness), 0);
+            // Tab strokes stay contained: the walk stays open.
+            harness.stroke(parse("Tab").expect("Tab"));
+            harness.driver.advance_time(0);
+            harness.stroke(parse("Tab").expect("Tab"));
+            harness.driver.advance_time(0);
+            assert!(walk_open(&harness), "the Tab walk is clamped inside");
+            // Escape arms the confirm (R-2), never a silent close.
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_walk_model().abort_confirm,
+                "Escape arms the abort confirm"
+            );
+            assert!(walk_open(&harness));
+            // Dismiss: the confirm closes, the walk stays verbatim.
+            harness.handle.dispatch_action(ActionId::ReviewAbortDismiss);
+            harness.driver.advance_time(0);
+            assert!(
+                !harness.handle.window().get_walk_model().abort_confirm,
+                "the confirm closed"
+            );
+            assert_eq!(walk_stage(&harness), 0, "the stage is untouched");
+            assert!(walk_open(&harness));
+            harness.engine.drain();
+        },
+    );
+}
+
+/// J4 US-4 (D-6) — the abort ladder's decision-safety law: decisions
+/// already made are applied `StateCommand`s; accepting the confirm
+/// ends the walk but never undoes them. The Entry stage closes
+/// silently (the one silent exit).
+#[test]
+fn us4_s1_abort_confirm_keeps_decisions() {
+    let (_fixture, state, stack, inbox_ids) = walk_fixture_state();
+    let filed = inbox_ids[0];
+    let filed_stack_before = state.tasks.get(&filed).expect("the row exists").stack;
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            // The Entry silent exit: nothing decided, nothing typed.
+            harness.handle.dispatch_action(ActionId::ReviewAbortArm);
+            harness.driver.advance_time(0);
+            assert!(
+                !walk_open(&harness),
+                "Entry closes without a confirm (the one silent exit)"
+            );
+            // Reopen: decide something (file the cursor row), then
+            // abort.
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewInboxFile);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewFileCommit);
+            harness.driver.advance_time(0);
+            // The commit's drained boundary carries exactly the
+            // filed row's MoveTask — the decision already made.
+            let drained_decision = harness.engine.drain();
+            let [
+                StateCommand::MoveTask {
+                    id, stack: target, ..
+                },
+            ] = drained_decision.as_slice()
+            else {
+                panic!("one MoveTask, got {drained_decision:?}");
+            };
+            assert_eq!(*id, filed, "the decision names the filed row");
+            assert_ne!(
+                *target, filed_stack_before,
+                "the row left its original stack"
+            );
+            harness.stroke(parse("Escape").expect("Escape"));
+            harness.driver.advance_time(0);
+            assert!(
+                harness.handle.window().get_walk_model().abort_confirm,
+                "the abort confirm is armed"
+            );
+            harness.handle.dispatch_action(ActionId::ReviewAbortAccept);
+            harness.driver.advance_time(0);
+            assert!(!walk_open(&harness), "the accept ends the walk");
+            // The accept dispatches nothing new: the decision above
+            // is the journal's truth — the abort undid nothing.
+            let drained_after = harness.engine.drain();
+            assert!(
+                drained_after.is_empty(),
+                "the accept dispatches nothing new"
+            );
+            let _ = stack;
+        },
+    );
+}
+
+/// J4 US-2 seam (D-3, T10) — `Move to tomorrow` with no carry cursor
+/// dispatches nothing: the typed inert (the adapter's guard, kept
+/// and pinned structurally over the command count).
+#[test]
+fn carry_tomorrow_never_dispatches_without_cursor() {
+    let state = walk_empty_carry_state(1);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.handle.dispatch_action(ActionId::ReviewOpen);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+            // At the Inbox (the carry verb is stage-typed inert here —
+            // and the carry stage itself is unreachable with zero
+            // rows): the dispatch must produce no command.
+            harness
+                .handle
+                .dispatch_action(ActionId::ReviewCarryTomorrow);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the None-cursor carry dispatches nothing"
+            );
         },
     );
 }

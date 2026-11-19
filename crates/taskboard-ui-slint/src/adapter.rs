@@ -40,7 +40,7 @@ use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, EffectClass, Mode, UiEffect, WalkIntent};
 use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
-use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState, WalkStep};
+use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState, WalkStage, WalkStep};
 use crate::{AppWindow, Breakpoint, KeyFeedback, KeyboardState, Responsive, UiStatus};
 
 /// The repaint cadence (D1): the UI-owned timer's tick, in
@@ -3436,6 +3436,16 @@ impl Adapter {
             WalkIntent::CursorDown => self.view_state.review_walk_cursor(1, rows),
             WalkIntent::Advance => {
                 self.walk_abort_armed = false;
+                // Completing the embedded planner ends the child
+                // `Completed(None)` (D-2's exit contract): the parent's
+                // consumption advances the walk to Prompts.
+                if self.view_state.walk_stage() == Some(WalkStage::Planner) {
+                    let state_guard = self.state.load();
+                    return self.view_state.end_top_flow_with(
+                        &state_guard,
+                        crate::surfaces::GuestExit::Completed(None),
+                    );
+                }
                 match self.view_state.advance_review_walk(rows) {
                     WalkStep::Advanced => vec![FlowOutcome::RefreshNow],
                     _ => Vec::new(),
@@ -3443,6 +3453,18 @@ impl Adapter {
             }
             WalkIntent::Prev => {
                 self.walk_abort_armed = false;
+                // Back out of the planner ends the child `Cancelled`
+                // (D-6's rung, J4 US-3/S1): the exit contract returns
+                // the walk to Carry, the walk stays open.
+                if self.view_state.walk_stage() == Some(WalkStage::Planner) {
+                    let state_guard = self.state.load();
+                    let outcomes = self
+                        .view_state
+                        .end_top_flow_with(&state_guard, crate::surfaces::GuestExit::Cancelled);
+                    Self::reset_editing_facts(window);
+                    window.invoke_refocus_view();
+                    return outcomes;
+                }
                 let outcomes = self.view_state.back_review_walk(rows);
                 Self::reset_editing_facts(window);
                 window.invoke_refocus_view();
@@ -4704,8 +4726,18 @@ impl Adapter {
                 }
             }
             // The row verbs (dispatch-time gating: the rows only
-            // render on the surface; a stale target is inert).
-            (Flow::None | Flow::ReviewPlanner, UiEffect::PlanBeginPlace(task)) => {
+            // render on the surface; a stale target is inert). Under
+            // the embedded planner the form mounts as the planner's
+            // own child level (J4 D-2 — replacing the top flow would
+            // kill the planner step).
+            (Flow::ReviewPlanner, UiEffect::PlanBeginPlace(task)) => {
+                let outcomes = self.view_state.open_plan_place_child(task);
+                // The child mount seeds nothing: a placement begun
+                // from the pool carries no prior instant (the seed
+                // rule reads the placed box, not the pool row).
+                outcomes
+            }
+            (Flow::None, UiEffect::PlanBeginPlace(task)) => {
                 let outcomes = self.view_state.open_plan_place(task);
                 // Re-opening a placed box edits that box (D-3): the
                 // form seeds from the row's instant — tomorrow's box
