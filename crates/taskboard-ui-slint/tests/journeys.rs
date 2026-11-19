@@ -6905,6 +6905,16 @@ fn the_focused_cell_activates_on_return_and_space_under_any_preset() {
                 harness.driver.advance_time(0);
                 let mut guard = 0;
                 while walk_stop(&harness) != stop && guard < 20 {
+                    // The always-on Effort Estimate field (M9) is a
+                    // walk-through text stop: under vi landing on it
+                    // arms insert, where NavNextControl is deliberately
+                    // unbound (typing owns the field). Leave insert and
+                    // step on — the field is pass-through for the walk
+                    // (chunk 11 owns the effort edit/clear verbs).
+                    if harness.chain().starts_with(&[ContextId::ViInsert]) {
+                        harness.handle.dispatch_action(ActionId::ModeNormal);
+                        harness.driver.advance_time(0);
+                    }
                     press_preset(&mut harness, preset, ActionId::NavNextControl);
                     harness.driver.advance_time(0);
                     guard += 1;
