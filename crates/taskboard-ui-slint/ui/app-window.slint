@@ -1033,7 +1033,11 @@ export component AppWindow inherits Window {
                 kind: root.label-overlay-form-open
                     ? DialogKind.edit : DialogKind.confirm;
                 body-preferred-width: 360px * Theme.base-scale;
-                walk-stops: 1;
+                // The panel's own walk extent (3 roster stops; the add
+                // form's open flip re-arms 6 through the panel's
+                // changed watch) — the mount-time value matches the
+                // panel's own arm so the ordering never shows 1.
+                walk-stops: 3;
                 viewport-floor: status.y;
                 accepted => root.labels-overlay-form-commit-requested();
                 dismissed => root.labels-overlay-dismiss-requested();
@@ -1075,7 +1079,11 @@ export component AppWindow inherits Window {
                 kind: root.label-overlay-form-open
                     ? DialogKind.edit : DialogKind.confirm;
                 body-preferred-width: 360px * Theme.base-scale;
-                walk-stops: 1;
+                // The panel's own walk extent (3 roster stops; the add
+                // form's open flip re-arms 6 through the panel's
+                // changed watch) — the mount-time value matches the
+                // panel's own arm so the ordering never shows 1.
+                walk-stops: 3;
                 viewport-floor: status.y;
                 accepted => root.labels-overlay-form-commit-requested();
                 dismissed => root.labels-overlay-dismiss-requested();
