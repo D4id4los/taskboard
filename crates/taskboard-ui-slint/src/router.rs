@@ -55,6 +55,17 @@ pub enum PriorityField {
     Urgency,
 }
 
+/// The directional-focus family's four directions (J3 US-1, round 9
+/// chunk 9). Pure data — the meaning of "left" is decided per view by
+/// the adapter's directional table, never here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 /// UI-internal effects (design §5: "ui-internal actions → focus
 /// moves, view switches, mode flips"). The adapter applies them to
 /// the shell/window; `Exit` maps to the slint event-loop quit.
@@ -174,6 +185,17 @@ pub enum UiEffect {
     FocusNext,
     /// Retreat board focus in reading order.
     FocusPrev,
+    /// The directional-focus step (J3 US-1, round 9 chunk 9): the
+    /// interpretation is per view (the adapter's directional table) —
+    /// focus movement, never task selection; during a board move the
+    /// same directions are the move's kept arms (US-2).
+    FocusDirectional(Direction),
+    /// The selection-extend twin of the item walk (#875 RIDER): the
+    /// route-level front for the printable-bound Shift rows. The
+    /// adapter guards the effect to the Board view (the typed no-op
+    /// elsewhere — the intercept's scoping).
+    ExtendSelectionNext,
+    ExtendSelectionPrev,
     /// Enter the next view in the one view cycle.
     NextView,
     /// Enter the previous view in the one view cycle.
@@ -444,6 +466,9 @@ impl UiEffect {
             | Self::OpenSettings
             | Self::FocusNext
             | Self::FocusPrev
+            | Self::FocusDirectional(_)
+            | Self::ExtendSelectionNext
+            | Self::ExtendSelectionPrev
             | Self::FocusFirst
             | Self::FocusLast
             | Self::StackNext
@@ -1577,6 +1602,23 @@ impl ActionRouter {
             )),
             ActionId::NavNextItem => DispatchOutcome::UiEffect(UiEffect::FocusNext),
             ActionId::NavPrevItem => DispatchOutcome::UiEffect(UiEffect::FocusPrev),
+            // The directional-focus family (J3 US-1, round 9 chunk 9)
+            // and its selection-extend twin (#875): one effect per
+            // direction — the per-view reading lives in the adapter.
+            ActionId::NavFocusLeft => {
+                DispatchOutcome::UiEffect(UiEffect::FocusDirectional(Direction::Left))
+            }
+            ActionId::NavFocusRight => {
+                DispatchOutcome::UiEffect(UiEffect::FocusDirectional(Direction::Right))
+            }
+            ActionId::NavFocusUp => {
+                DispatchOutcome::UiEffect(UiEffect::FocusDirectional(Direction::Up))
+            }
+            ActionId::NavFocusDown => {
+                DispatchOutcome::UiEffect(UiEffect::FocusDirectional(Direction::Down))
+            }
+            ActionId::NavExtendNext => DispatchOutcome::UiEffect(UiEffect::ExtendSelectionNext),
+            ActionId::NavExtendPrev => DispatchOutcome::UiEffect(UiEffect::ExtendSelectionPrev),
             ActionId::TaskCreate => DispatchOutcome::UiEffect(UiEffect::BeginCreate {
                 target: ctx.create_target,
             }),
@@ -2373,11 +2415,50 @@ mod tests {
             (ActionId::BoardRename, UiEffect::BoardRename),
             (ActionId::NavFirstItem, UiEffect::FocusFirst),
             (ActionId::NavLastItem, UiEffect::FocusLast),
+            // The directional-focus family (J3 US-1, round 9 chunk 9):
+            // one direction-bearing effect, plus the extend twin (#875).
+            (
+                ActionId::NavFocusLeft,
+                UiEffect::FocusDirectional(Direction::Left),
+            ),
+            (
+                ActionId::NavFocusRight,
+                UiEffect::FocusDirectional(Direction::Right),
+            ),
+            (
+                ActionId::NavFocusUp,
+                UiEffect::FocusDirectional(Direction::Up),
+            ),
+            (
+                ActionId::NavFocusDown,
+                UiEffect::FocusDirectional(Direction::Down),
+            ),
+            (ActionId::NavExtendNext, UiEffect::ExtendSelectionNext),
+            (ActionId::NavExtendPrev, UiEffect::ExtendSelectionPrev),
         ] {
             assert_eq!(
                 ActionRouter::dispatch(id, &ctx(true)),
                 DispatchOutcome::UiEffect(effect)
             );
+        }
+    }
+
+    /// J3 US-1 (round 9 chunk 9, W-2): the directional family rides
+    /// the walk's `EffectClass::Nav` class — no new matrix row, so a
+    /// foreign flow settles-then-runs exactly as `FocusNext` does
+    /// today. The class is the resolver's only contract with the
+    /// effects; the interpretation table consumes the direction.
+    #[test]
+    fn the_directional_family_rides_the_nav_class() {
+        for effect in [
+            UiEffect::FocusDirectional(Direction::Left),
+            UiEffect::FocusDirectional(Direction::Right),
+            UiEffect::FocusDirectional(Direction::Up),
+            UiEffect::FocusDirectional(Direction::Down),
+            UiEffect::ExtendSelectionNext,
+            UiEffect::ExtendSelectionPrev,
+        ] {
+            assert_eq!(effect.class(), EffectClass::Nav);
         }
     }
 
