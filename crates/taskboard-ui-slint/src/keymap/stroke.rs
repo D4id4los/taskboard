@@ -191,9 +191,7 @@ impl Stroke {
         // table the shift-distinct chords stay distinct
         // (`Ctrl+Shift+z` ≠ `Ctrl+z` — the shift bit survives the
         // case law), exactly as before the map existed.
-        // Out of the table: no candidates. This also keeps the
-        // shift-distinct chords distinct, exactly as before the map
-        // existed.
+        // Out of the table: no candidates.
         let Some(member) = member else {
             return Vec::new();
         };
