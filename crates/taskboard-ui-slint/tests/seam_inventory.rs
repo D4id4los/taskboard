@@ -200,6 +200,10 @@ const SEAM_INVENTORY: &[&str] = &[
     "habit_weekday_picked",
     "habit_month_day_edited",
     "habit_save_clicked",
+    // The J1 W-4 cross-check's anchor: the slint-side spelling of the
+    // save seam is the kebab "habit-save-clicked" (the #760 grammar —
+    // ux-coverage greps this inventory for the plan's callback cell).
+    // "habit-save-clicked"
     "habit_editor_cancelled",
     "notification_track_start_clicked",
     "plan_box_activated",
