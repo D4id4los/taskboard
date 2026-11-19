@@ -23,7 +23,9 @@ use taskboard_sync_files::layout::ROOT_FOLDER_NAME;
 use crate::error::TransportError;
 use crate::etag::Etag;
 use crate::extract::{PROPFIND_DEPTH1_BODY, extract_207};
-use crate::transport::{FileContent, FilesTransport, MkcolOutcome, PropfindListing, PutOutcome};
+use crate::transport::{
+    DeleteOutcome, FileContent, FilesTransport, MkcolOutcome, PropfindListing, PutOutcome,
+};
 
 const DAV_FILES_PATH: &str = "remote.php/dav/files";
 
@@ -412,6 +414,26 @@ impl FilesTransport for WebDavFilesTransport {
                 }
             },
         )
+        .await
+    }
+
+    async fn delete(&self, path: &str) -> Result<DeleteOutcome, TransportError> {
+        let url = self.url_for(path)?;
+        self.send_with_retries(Method::DELETE, url, Vec::new, None, |raw| {
+            match raw.status {
+                s if s == StatusCode::NO_CONTENT || s == StatusCode::OK => {
+                    Ok(DeleteOutcome::Deleted)
+                }
+                // The idempotent-delete mapping, before map_status so
+                // 404 stays a successful no-op (a GC re-run after a
+                // crash); 401/403 etc. still map through map_status.
+                StatusCode::NOT_FOUND => Ok(DeleteOutcome::AlreadyAbsent),
+                _ => {
+                    map_status(&raw)?;
+                    Err(TransportError::Server(raw.status.as_u16()))
+                }
+            }
+        })
         .await
     }
 }

@@ -31,7 +31,7 @@ use common::{
 };
 use taskboard_sync_files_nextcloud::error::TransportError;
 use taskboard_sync_files_nextcloud::etag::Etag;
-use taskboard_sync_files_nextcloud::transport::{FilesTransport, PutOutcome};
+use taskboard_sync_files_nextcloud::transport::{DeleteOutcome, FilesTransport, PutOutcome};
 
 /// A unique, never-deleted per-run file path under `devices/` (the
 /// runs leave their subtrees behind — readers never delete).
@@ -199,9 +199,11 @@ async fn it_nextcloud_live_files_tree_listing() {
 }
 
 /// F8: the trashbin is present and lists a deleted file — the
-/// runbook's recovery path re-pinned against the real tier. The
-/// DELETE is *test scaffolding only* (a raw `reqwest` call; the
-/// transport's verb set stays closed — readers never delete).
+/// runbook's recovery path re-pinned against the real tier. The raw
+/// `reqwest` DELETE here is scaffolding for the trashbin probe; the
+/// transport's own `delete` verb is pinned by
+/// `it_nextcloud_live_files_delete_idempotence` below (the lifecycle
+/// duties' verb, owner-scoped).
 #[tokio::test]
 #[ignore = "requires the live tier (.env TASKBOARD_IT_NEXTCLOUD_*)"]
 async fn it_nextcloud_live_files_trashbin_presence() {
@@ -279,6 +281,43 @@ async fn it_nextcloud_live_files_trashbin_presence() {
         assert!(
             listing.contains(&name),
             "the deleted name must be listed in the trashbin (F8)"
+        );
+    })
+    .await
+    .expect("test must finish within the live deadline");
+}
+
+/// The transport `delete` verb's idempotence against the real tier
+/// (the lifecycle duties' wire contract): seed → `Deleted`, repeat →
+/// `AlreadyAbsent`, listing confirms absence. DELETE is no longer
+/// scaffolding-only — it is a pinned transport verb.
+#[tokio::test]
+#[ignore = "requires the live tier (.env TASKBOARD_IT_NEXTCLOUD_*)"]
+async fn it_nextcloud_live_files_delete_idempotence() {
+    let Some(cfg) = live_config() else {
+        return;
+    };
+    with_deadline(async move {
+        let id = run_id();
+        let transport = seed_run_dirs(&cfg, &id).await;
+        let path = format!("taskboard/devices/{id}/gc-pin.json");
+        retrying_server_errors(|| async { transport.put_create(&path, b"gc pin").await })
+            .await
+            .expect("seed create");
+        let first = transport.delete(&path).await.expect("first delete");
+        assert_eq!(first, DeleteOutcome::Deleted);
+        let repeat = transport.delete(&path).await.expect("repeat delete");
+        assert_eq!(repeat, DeleteOutcome::AlreadyAbsent);
+        let listing = transport
+            .propfind_tree(&format!("taskboard/devices/{id}"))
+            .await
+            .expect("listing");
+        assert!(
+            !listing
+                .members
+                .iter()
+                .any(|member| member.href.ends_with("gc-pin.json")),
+            "the deleted member is gone from the listing"
         );
     })
     .await

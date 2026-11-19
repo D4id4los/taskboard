@@ -4,10 +4,14 @@
 //! test fake both implement it.
 //!
 //! The verb set is **closed**: `MKCOL`, `PROPFIND` (Depth 1, fixed
-//! body), `GET`, conditional `PUT` (create-once / if-match). The trait
-//! has no delete, move, proppatch, or lock method, so no code path can
-//! remove or relocate a file — the readers-never-delete posture
-//! enforced by construction (F8).
+//! body), `GET`, conditional `PUT` (create-once / if-match), and
+//! exactly one destructive verb, [`FilesTransport::delete`]. No move,
+//! proppatch, or lock method exists, so no code path can relocate or
+//! re-label a file. The delete verb is callable only from the
+//! lifecycle duties (the owner's post-snapshot GC pass and the unbind
+//! retirement in `board_cycle`) — the pull/fold/publish paths stay
+//! delete-free. F8's law is re-stated, not dropped: readers still
+//! never delete; the *lifecycle duties* do, owner-scoped.
 //!
 //! Paths are substrate-relative forward-slash strings (the pure core's
 //! [`taskboard_sync_files::layout`] vocabulary); the transport maps
@@ -62,6 +66,16 @@ pub trait FilesTransport: Send + Sync + 'static {
         body: &[u8],
         etag: &Etag,
     ) -> impl Future<Output = Result<PutOutcome, TransportError>> + Send;
+
+    /// Deletes the file or collection at `path` (a collection delete
+    /// is recursive per RFC 4918 Depth semantics). Idempotent: a
+    /// missing target is [`DeleteOutcome::AlreadyAbsent`] — a GC
+    /// re-run after a crash is a no-op, not an error. Called only
+    /// from the lifecycle duties, always on owner-scoped paths.
+    fn delete(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<DeleteOutcome, TransportError>> + Send;
 }
 
 /// `MKCOL` outcomes: created (201) or the collection already existed
@@ -105,6 +119,15 @@ pub enum PutOutcome {
     Updated { etag: Option<Etag> },
 }
 
+/// `DELETE` outcomes: deleted (2xx) or already absent (404 — the
+/// idempotent-delete mapping; a GC re-run after a crash is a no-op,
+/// not an error).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    Deleted,
+    AlreadyAbsent,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +141,8 @@ mod tests {
     fn outcomes_are_closed() {
         let outcomes: [MkcolOutcome; 2] = [MkcolOutcome::Created, MkcolOutcome::AlreadyExists];
         assert_eq!(outcomes.len(), 2);
+        let deletes: [DeleteOutcome; 2] = [DeleteOutcome::Deleted, DeleteOutcome::AlreadyAbsent];
+        assert_eq!(deletes.len(), 2);
         let puts = [
             PutOutcome::Created { etag: None },
             PutOutcome::Updated {
@@ -176,6 +201,11 @@ mod tests {
         ) -> Result<PutOutcome, TransportError> {
             Ok(PutOutcome::Updated { etag: None })
         }
+
+        #[allow(clippy::unused_async_trait_impl)] // the stub mirrors the trait's shape
+        async fn delete(&self, _path: &str) -> Result<DeleteOutcome, TransportError> {
+            Ok(DeleteOutcome::Deleted)
+        }
     }
 
     #[tokio::test]
@@ -202,6 +232,10 @@ mod tests {
                 .put_if_match("x", b"{}", &Etag::new("\"e\"".into()))
                 .await,
             Ok(PutOutcome::Updated { etag: None })
+        ));
+        assert!(matches!(
+            transport.delete("x").await,
+            Ok(DeleteOutcome::Deleted)
         ));
     }
 }

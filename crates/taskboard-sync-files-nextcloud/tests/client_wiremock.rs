@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use taskboard_sync_files_nextcloud::client::{RetrySleep, WebDavFilesTransport};
 use taskboard_sync_files_nextcloud::error::TransportError;
-use taskboard_sync_files_nextcloud::transport::FilesTransport;
+use taskboard_sync_files_nextcloud::transport::{DeleteOutcome, FilesTransport};
 use wiremock::matchers::{body_bytes, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -248,6 +248,73 @@ async fn mkcol_parent_missing_is_a_conflict() {
         .await
         .expect_err("409 maps typed");
     assert!(matches!(err, TransportError::Conflict));
+}
+
+/// The DELETE verb's typed outcome table (the GC/retirement duties'
+/// wire contract): 204 → `Deleted`, 404 → `AlreadyAbsent` (the
+/// idempotent-delete mapping), 403 → typed `Forbidden`, and a 5xx
+/// after budget exhaustion → the transport class. The mock pins
+/// `Method::DELETE` so a wrong-verb bug cannot hide behind an
+/// any-method matcher.
+#[tokio::test]
+async fn delete_maps_204_and_404_to_the_idempotent_outcomes() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(appdata_path()))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1u64)
+        .mount(&server)
+        .await;
+    let outcome = transport(&server.uri())
+        .delete(&format!("taskboard/devices/{DEVICE}/appdata.json"))
+        .await
+        .expect("204 deletes");
+    assert_eq!(outcome, DeleteOutcome::Deleted);
+
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(appdata_path()))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1u64)
+        .mount(&server)
+        .await;
+    let outcome = transport(&server.uri())
+        .delete(&format!("taskboard/devices/{DEVICE}/appdata.json"))
+        .await
+        .expect("404 is the already-absent mapping");
+    assert_eq!(outcome, DeleteOutcome::AlreadyAbsent);
+}
+
+#[tokio::test]
+async fn delete_maps_403_typed_without_retry() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(appdata_path()))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1u64)
+        .mount(&server)
+        .await;
+    let err = instant(transport(&server.uri()))
+        .delete(&format!("taskboard/devices/{DEVICE}/appdata.json"))
+        .await
+        .expect_err("403 maps typed");
+    assert!(matches!(err, TransportError::Forbidden));
+}
+
+#[tokio::test]
+async fn delete_surfaces_the_transport_class_after_budget_exhaustion() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(appdata_path()))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(3u64)
+        .mount(&server)
+        .await;
+    let err = instant(transport(&server.uri()))
+        .delete(&format!("taskboard/devices/{DEVICE}/appdata.json"))
+        .await
+        .expect_err("budget exhausted");
+    assert!(matches!(err, TransportError::Unavailable));
 }
 
 #[tokio::test]
