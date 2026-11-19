@@ -260,3 +260,41 @@ None discovered during this stage: the only other `prop_filter` sites
 shapes; the second `pushes` filter is negligible by measurement
 reasoning and inside the chunk's byte-law scope. **No backlog issues
 filed.**
+
+## 8. Stage-2 execution notes (2026-11-19, deviations from D3)
+
+The synthesized-board branch of D3 and the byte-identity of the
+property body were tested against reality at 256 cases; two deviations
+were forced by failures and are recorded here for stage 3:
+
+1. **D3's board repair operates in place, not by synthesis.** The first
+   failing case showed the filter's clauses 1–3 are about the *first
+   bound board* (`values().find(|b| b.remote.is_some())`), not "any
+   bound board" — a repaired draw with an earlier bound-but-unseen
+   board fails clause 2. The repair now binds/stamps/undeletes the
+   draw's single existing board in place (the strategy always generates
+   exactly one board); a synthesized row only covers the
+   strategy-unreachable no-boards case.
+2. **The repair never creates cross-board topology.** A second failing
+   case proved that repaired multi-board shapes (synthesized board +
+   entities owned by the deleted unbound board, including an
+   `UpdateBoard` op targeting it) *fail the equivalence property* — the
+   two pipelines attribute board-op bookkeeping (`sync.last_success`)
+   to different boards. The five clauses are necessary but not
+   sufficient outside the single-board topology the old filter's
+   universe contained. The repair therefore stays inside the validated
+   single-board domain; the divergence itself is production behavior
+   out of scope for this chunk, filed as **#1080**. The §3
+   coverage-equivalence argument holds as stated (superset of the
+   admitted set), with the operational caveat that new shapes are
+   constrained to the single-board topology.
+
+Also: `test_support::mod.rs` gained a one-line re-export of
+`push_ready_state_strategy` (necessary; the plan's file list omitted
+it), and the auto-appended proptest regression entry from the
+intermediate generator was reverted (it encoded a no-longer-reproducible
+case). Measured before/after with the identical command
+(`scripts/memory-gate.sh cargo nextest run -p taskboard-domain -E
+'test(apply_push_report_equals_the_pipeline_push_phase)'`):
+**97.406s → 0.802s** (pre-change re-measured on the branch; the 75s
+runtime-report figure was under full-suite load).
