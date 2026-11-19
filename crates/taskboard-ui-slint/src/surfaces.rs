@@ -50,6 +50,9 @@ pub enum FlowTag {
     DragMove,
     PlanPlace,
     ReviewWalk,
+    /// The embedded planner child level (J4 D-2, #716): the walk's
+    /// plan-next-day step.
+    ReviewPlanner,
     EntryDatePicker,
     WalkFilePick,
     WalkDatePick,
@@ -88,6 +91,7 @@ impl Flow {
             Flow::DragMove { .. } => FlowTag::DragMove,
             Flow::PlanPlace { .. } => FlowTag::PlanPlace,
             Flow::ReviewWalk { .. } => FlowTag::ReviewWalk,
+            Flow::ReviewPlanner => FlowTag::ReviewPlanner,
             Flow::EntryDatePicker => FlowTag::EntryDatePicker,
             Flow::WalkFilePick { .. } => FlowTag::WalkFilePick,
             Flow::WalkDatePick => FlowTag::WalkDatePick,
@@ -480,7 +484,7 @@ impl FlowTag {
                 ContextId::ViInsert,
                 ContextId::Global,
             ],
-            FlowTag::ReviewWalk => &[
+            FlowTag::ReviewWalk | FlowTag::ReviewPlanner => &[
                 ContextId::ReviewWalk,
                 ContextId::ViInsert,
                 ContextId::Global,
@@ -557,7 +561,9 @@ mod tests {
                 reference: reference(),
                 stage: WalkStage::Prompts,
                 cursor: 0,
+                tally: crate::view_state::WalkTally::default(),
             },
+            FlowTag::ReviewPlanner => Flow::ReviewPlanner,
             FlowTag::Labels => Flow::Labels {
                 subject: crate::view_state::LabelOverlaySubject::Task(TASK),
             },
@@ -591,6 +597,7 @@ mod tests {
         FlowTag::DragMove,
         FlowTag::PlanPlace,
         FlowTag::ReviewWalk,
+        FlowTag::ReviewPlanner,
         FlowTag::EntryDatePicker,
         FlowTag::WalkFilePick,
         FlowTag::WalkDatePick,

@@ -1,21 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The review walk overlay (DR-7 chunk 3, #638; L2 composition): the
-// progress strip (three stage headers with their empty b-lines), the
-// current stage's rows, the cursor row's verb strip, and the equal-
-// prominence commit exits. Presentation only (the dumb client): the
-// header, the strip, the row titles, the emphasis, and every button
-// label arrive derived from the Rust pass; the tree computes nothing.
-// The File-to picker and the date field render only while armed (the
-// pushed booleans); the prompts stage renders one multi-line editor
-// per prompt (the seeds ride the mount transition — a re-push never
-// clobbers typing). The scrim lives in the app window (the focus
-// overlay's precedent); Escape is the action layer's (the walk
-// context binds it), never a widget handler.
+// The review walk overlay (DR-7 chunk 3, #638; J4 D-5 remount): the
+// ModalDialogHost's BODY — the progress strip (the guided journey's
+// stage headers with their empty b-lines), the current stage's rows,
+// the cursor row's verb strip, and the equal-prominence commit exits.
+// The host owns the scrim, the absorbing panel root, the sizing law,
+// and the walk-mask arming; the dialog button row (Next/Prev/Finish/
+// the completion exit) rides the host's button model. Presentation
+// only (the dumb client): the header, the strip, the row titles, the
+// emphasis, and every button label arrive derived from the Rust pass;
+// the tree computes nothing. The File-to picker and the date field
+// render only while armed (the pushed booleans); the prompts stage
+// renders one multi-line editor per prompt (the seeds ride the mount
+// transition — a re-push never clobbers typing). The Planner stage
+// (3) embeds the PlanNextDayView mount (J4 US-3: the planner is a
+// step in the same dialog — #716's integration); Escape is the action
+// layer's (the walk context binds it), never a widget handler.
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { ListView } from "../widgets/listview.slint";
+import { DialogButtonModel } from "../widgets/modal-dialog-host.slint";
+import { PlanNextDayView, PlanModel } from "plan-next-day-view.slint";
 
 export struct WalkStageStripRow {
     // The stage header (C5/C7/C10).
@@ -36,12 +42,29 @@ export struct ReviewWalkModel {
     open: bool,
     // The walk header (C4).
     header: string,
-    // The progress strip: all three stages, in walk order.
+    // The progress strip: the guided journey's stages, in walk order.
     strip: [WalkStageStripRow],
     // The current stage's rows.
     rows: [WalkRowModel],
-    // The stage discriminator: 0 inbox, 1 carry forward, 2 prompts.
+    // The stage discriminator: 0 inbox, 1 carry forward, 2 prompts,
+    // 3 planner (embedded), 4 entry, 5 completion summary.
     stage-kind: int,
+    // The stage position phrase ("Step 2 of 5"; D-9).
+    stage-position: string,
+    // The Entry stage's intro sentence (D-1).
+    stage-intro: string,
+    // The completion summary's tally (D-8).
+    tally-filed: int,
+    tally-moved: int,
+    tally-left: int,
+    tally-recorded: bool,
+    // The abort confirm's arm (D-6): the nested confirm host mounts
+    // while set.
+    abort-confirm: bool,
+    // The dialog button row's model and its parallel intent codes
+    // (D-5): code i dispatches the walk intent the site maps i to.
+    buttons: [DialogButtonModel],
+    button-codes: [int],
     // -- the inbox stage --
     // `true` = the File-to picker is armed on the cursor row.
     filing: bool,
@@ -57,6 +80,8 @@ export struct ReviewWalkModel {
     tomorrow-label: string,
     pick-label: string,
     leave-label: string,
+    // The embedded planner choice (J4 US-3/S1).
+    plan-label: string,
     // -- the prompts stage --
     record-label: string,
     finish-label: string,
@@ -112,7 +137,20 @@ export component ReviewWalkOverlay inherits Rectangle {
     in property <ReviewWalkModel> model;
     // The prompts' one-shot answer seeds (the mount-transition push).
     in property <[string]> answer-seeds;
-    callback scrim-clicked();
+    // The embedded planner's mirrors (J4 US-3: the same plan model
+    // and text buffers the standalone surface reads; D-2).
+    in property <PlanModel> plan;
+    in property <string> plan-time-text;
+    in property <string> plan-effort-text;
+    callback plan-box-activated(int);
+    callback plan-pool-activated(int);
+    callback plan-box-earlier(int);
+    callback plan-box-later(int);
+    callback plan-box-remove(int);
+    callback plan-time-edited(string);
+    callback plan-effort-edited(string);
+    callback plan-place-commit();
+    callback plan-place-cancel();
     callback file-clicked();
     callback keep-clicked();
     callback file-prev-clicked();
@@ -122,26 +160,36 @@ export component ReviewWalkOverlay inherits Rectangle {
     callback tomorrow-clicked();
     callback pick-clicked();
     callback leave-clicked();
+    callback plan-clicked();
     callback date-edited(string);
     callback date-commit-clicked();
     callback answer-edited(int, string);
     callback record-clicked();
     callback finish-clicked();
 
-    background: Theme.surface-raised;
-    border-radius: Theme.radius-medium;
-    border-width: Theme.focus-ring-width;
-    border-color: Semantic.focus-ring;
-    drop-shadow-blur: 12px;
-
+    // No chrome of its own: the host panel is the surface (D-5).
     VerticalLayout {
-        padding: Theme.space-3;
+        padding: Theme.space-2;
         spacing: Theme.space-2;
 
-        RoleText {
+        HorizontalLayout {
             vertical-stretch: 0;
-            role: Typography.display;
-            text: root.model.header;
+            spacing: Theme.space-3;
+            RoleText {
+                vertical-stretch: 0;
+                role: Typography.display;
+                text: root.model.header;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            RoleText {
+                vertical-stretch: 0;
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: root.model.stage-position;
+                vertical-alignment: center;
+            }
         }
 
         HorizontalLayout {
@@ -154,11 +202,12 @@ export component ReviewWalkOverlay inherits Rectangle {
             }
         }
 
-        // The rows: content-sized below the page bound, capped above
-        // it (the today sections' viewport discipline).
+        // The rows: content-sized, capped above the page bound (the
+        // today sections' viewport discipline; D-5 kills the stretch).
         rows-clip := Rectangle {
             clip: true;
-            vertical-stretch: 1;
+            max-height: Theme.space-6 * 10;
+            vertical-stretch: 0;
             rows := ListView {
                 height: 100%;
                 for row[index] in root.model.rows: VerticalLayout {
@@ -166,10 +215,12 @@ export component ReviewWalkOverlay inherits Rectangle {
                     spacing: Theme.space-1;
                     RoleText {
                         vertical-stretch: 0;
-                        role: Typography.body;
+                        role: root.model.stage-kind == 4 || root.model.stage-kind == 5
+                            ? Typography.caption : Typography.body;
                         text: row.title;
                         overflow: elide;
-                        text-color: row.emphasis ? Theme.text-primary : Theme.text-secondary;
+                        text-color: row.emphasis || root.model.stage-kind >= 4
+                            ? Theme.text-primary : Theme.text-secondary;
                     }
                     // The prompts stage: one editor per prompt row (the
                     // seed is one-shot; edits mirror adapter-side).
@@ -188,6 +239,31 @@ export component ReviewWalkOverlay inherits Rectangle {
                         edited(text) => root.answer-edited(index, text);
                     }
                 }
+            }
+        }
+
+        // The embedded planner step (J4 US-3, D-2): the same view the
+        // standalone surface mounts, clipped and height-bounded inside
+        // the dialog (the severing token keeps the window max honest).
+        if (root.model.stage-kind == 3): Rectangle {
+            clip: true;
+            max-height: Theme.space-6 * 14;
+            vertical-stretch: 0;
+            PlanNextDayView {
+                width: 100%;
+                height: 100%;
+                plan: root.plan;
+                time-text: root.plan-time-text;
+                effort-text: root.plan-effort-text;
+                box-activated(i) => root.plan-box-activated(i);
+                pool-activated(i) => root.plan-pool-activated(i);
+                box-earlier(i) => root.plan-box-earlier(i);
+                box-later(i) => root.plan-box-later(i);
+                box-remove(i) => root.plan-box-remove(i);
+                time-edited(t) => root.plan-time-edited(t);
+                effort-edited(t) => root.plan-effort-edited(t);
+                place-commit() => root.plan-place-commit();
+                place-cancel() => root.plan-place-cancel();
             }
         }
 
@@ -241,7 +317,11 @@ export component ReviewWalkOverlay inherits Rectangle {
                 }
             }
         }
-        if (root.model.stage-kind == 1 && !root.model.picking): HorizontalLayout {
+        // The count gate (D-3's defensive law): the carry verbs —
+        // including the planner choice — render only over rows, so
+        // "Move to tomorrow" is never clickable over zero rows.
+        if (root.model.stage-kind == 1 && !root.model.picking
+            && root.model.rows.length > 0): HorizontalLayout {
             vertical-stretch: 0;
             spacing: Theme.space-2;
             VerbButton {
@@ -255,6 +335,10 @@ export component ReviewWalkOverlay inherits Rectangle {
             VerbButton {
                 label: root.model.leave-label;
                 clicked => root.leave-clicked();
+            }
+            VerbButton {
+                label: root.model.plan-label;
+                clicked => root.plan-clicked();
             }
         }
         if (root.model.stage-kind == 1 && root.model.picking): VerticalLayout {
@@ -277,7 +361,8 @@ export component ReviewWalkOverlay inherits Rectangle {
                 }
             }
         }
-        // The prompts' equal-prominence exits (C11; P12: no guilt path).
+        // The prompts' equal-prominence exits (C11; P12: no guilt
+        // path — both land on the completion summary, D-1).
         if (root.model.stage-kind == 2): HorizontalLayout {
             vertical-stretch: 0;
             spacing: Theme.space-2;

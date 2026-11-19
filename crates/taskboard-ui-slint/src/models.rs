@@ -317,6 +317,9 @@ pub struct PushModels {
     /// transition — a re-push must never clobber a field the user is
     /// typing into (the focus-overlay seed's rule).
     walk_prompts_open: bool,
+    /// The abort confirm's arm (J4 D-6): the adapter sets it before
+    /// the pass; the model mirror mounts the nested confirm host.
+    pub(crate) walk_abort_armed: bool,
     /// The today view's per-section row handles (chunk 10 D7): fixed
     /// to the four display sections — a rollover refresh must not
     /// re-instantiate the cards (the r2 D9 discipline).
@@ -3455,6 +3458,34 @@ fn plan_row(
     }
 }
 
+/// One dialog-row button model (D-5): the label/role pair plus the
+/// intent code the site's `button-codes` model mirrors.
+fn dialog_button(
+    label: &'static str,
+    role: crate::DialogButtonRole,
+    autofocus: bool,
+    code: i32,
+) -> (crate::DialogButtonModel, i32) {
+    (
+        crate::DialogButtonModel {
+            label: SharedString::from(label),
+            role,
+            enabled: true,
+            autofocus,
+        },
+        code,
+    )
+}
+
+/// The usize→i32 narrowing for the pushed counters (the pass's
+/// `candidate_index` convention).
+const fn as_i32(value: usize) -> i32 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    {
+        value as i32
+    }
+}
+
 /// The review walk overlay's pass (DR-7 chunk 3, #638): the header,
 /// the progress strip, the current stage's rows, the cursor emphasis,
 /// the armed picker/date-field state, and every button label — all
@@ -3481,6 +3512,15 @@ fn push_review_walk(
         strip: ModelRc::new(VecModel::<crate::WalkStageStripRow>::from(Vec::new())),
         rows: ModelRc::new(VecModel::<crate::WalkRowModel>::from(Vec::new())),
         stage_kind: 0,
+        stage_position: SharedString::new(),
+        stage_intro: SharedString::new(),
+        tally_filed: 0,
+        tally_moved: 0,
+        tally_left: 0,
+        tally_recorded: false,
+        abort_confirm: false,
+        buttons: ModelRc::new(VecModel::<crate::DialogButtonModel>::from(Vec::new())),
+        button_codes: ModelRc::new(VecModel::<i32>::from(Vec::new())),
         filing: false,
         candidates: ModelRc::new(VecModel::<SharedString>::from(Vec::new())),
         candidate_index: 0,
@@ -3491,6 +3531,7 @@ fn push_review_walk(
         tomorrow_label: SharedString::new(),
         pick_label: SharedString::new(),
         leave_label: SharedString::new(),
+        plan_label: SharedString::new(),
         record_label: SharedString::new(),
         finish_label: SharedString::new(),
     };
@@ -3499,6 +3540,7 @@ fn push_review_walk(
         reference,
         stage,
         cursor,
+        tally,
     } = vs.walk_flow().unwrap_or(crate::view_state::Flow::None)
     else {
         models.walk_prompts_open = false;
@@ -3514,24 +3556,92 @@ fn push_review_walk(
         return 0;
     }
     let walk_window = taskboard_domain::review_window(cadence, reference, calendar);
-    let strip: Vec<crate::WalkStageStripRow> = [
-        crate::view_state::WalkStage::Inbox,
-        crate::view_state::WalkStage::CarryForward,
-        crate::view_state::WalkStage::Prompts,
-    ]
-    .into_iter()
-    .map(|strip_stage| {
-        let template = taskboard_domain::DEFAULT_TEMPLATES
+    let template_for = || {
+        taskboard_domain::DEFAULT_TEMPLATES
             .iter()
             .find(|template| template.cadence == cadence)
-            .expect("a curated template per cadence");
-        crate::WalkStageStripRow {
-            label: SharedString::from(presentation::walk_stage_header(strip_stage, template)),
-            note: SharedString::from(presentation::walk_stage_empty_line(strip_stage)),
-        }
+            .expect("a curated template per cadence")
+    };
+    // The strip (D-9): every machine stage in walk order — the planner
+    // is a real step now, its note empty (the skip law never skips it).
+    let strip: Vec<crate::WalkStageStripRow> = [
+        crate::view_state::WalkStage::Entry,
+        crate::view_state::WalkStage::Inbox,
+        crate::view_state::WalkStage::CarryForward,
+        crate::view_state::WalkStage::Planner,
+        crate::view_state::WalkStage::Prompts,
+        crate::view_state::WalkStage::Complete,
+    ]
+    .into_iter()
+    .map(|strip_stage| crate::WalkStageStripRow {
+        label: SharedString::from(presentation::walk_stage_header(strip_stage, template_for())),
+        note: SharedString::from(presentation::walk_stage_empty_line(strip_stage)),
     })
     .collect();
+    let position = SharedString::from(presentation::walk_stage_position(stage, tally.planner));
+    // The dialog button row (D-5): the stage's Next/Prev/Finish plus
+    // the completion exit. Codes route through the adapter's button
+    // seam: 0 Prev, 1 Advance, 2 Finish, 3 Complete.
+    let buttons: Vec<(crate::DialogButtonModel, i32)> = match stage {
+        crate::view_state::WalkStage::Entry => vec![dialog_button(
+            presentation::walk_next_label(),
+            crate::DialogButtonRole::Accept,
+            true,
+            1,
+        )],
+        crate::view_state::WalkStage::Inbox | crate::view_state::WalkStage::CarryForward => {
+            vec![
+                dialog_button(
+                    presentation::walk_prev_label(),
+                    crate::DialogButtonRole::Dismiss,
+                    false,
+                    0,
+                ),
+                dialog_button(
+                    presentation::walk_next_label(),
+                    crate::DialogButtonRole::Accept,
+                    true,
+                    1,
+                ),
+            ]
+        }
+        crate::view_state::WalkStage::Planner => vec![dialog_button(
+            presentation::walk_prev_label(),
+            crate::DialogButtonRole::Dismiss,
+            false,
+            0,
+        )],
+        crate::view_state::WalkStage::Prompts => vec![
+            dialog_button(
+                presentation::walk_prev_label(),
+                crate::DialogButtonRole::Dismiss,
+                false,
+                0,
+            ),
+            dialog_button("Finish for now", crate::DialogButtonRole::Accept, true, 2),
+        ],
+        crate::view_state::WalkStage::Complete => vec![dialog_button(
+            presentation::walk_complete_label(),
+            crate::DialogButtonRole::Accept,
+            true,
+            3,
+        )],
+    };
     let (rows, stage_kind, candidates, candidate_index, filing, picking) = match stage {
+        crate::view_state::WalkStage::Entry => {
+            // The guidance stage (D-1): one intro row.
+            (
+                vec![crate::WalkRowModel {
+                    title: SharedString::from(presentation::walk_entry_intro()),
+                    emphasis: false,
+                }],
+                4,
+                Vec::new(),
+                0,
+                false,
+                false,
+            )
+        }
         crate::view_state::WalkStage::Inbox => {
             // The armed File-to picker is the walk's child level (N3a):
             // the mirrors read its presence and armed position.
@@ -3586,12 +3696,14 @@ fn push_review_walk(
                     .collect();
             (rows, 1, Vec::new(), 0, false, picking)
         }
+        crate::view_state::WalkStage::Planner => {
+            // The embedded planner step (D-2): the walk's own rows are
+            // empty — the body mounts the PlanNextDayView fed by the
+            // shared plan model.
+            (Vec::new(), 3, Vec::new(), 0, false, false)
+        }
         crate::view_state::WalkStage::Prompts => {
-            let template = taskboard_domain::DEFAULT_TEMPLATES
-                .iter()
-                .find(|template| template.cadence == cadence)
-                .expect("a curated template per cadence");
-            let rows: Vec<crate::WalkRowModel> = template
+            let rows: Vec<crate::WalkRowModel> = template_for()
                 .prompts
                 .iter()
                 .map(|prompt| crate::WalkRowModel {
@@ -3605,7 +3717,7 @@ fn push_review_walk(
                 // The mount-only seed (the focus-overlay note rule):
                 // the answers mirror adapter-side afterwards.
                 window.set_walk_answer_seeds(ModelRc::new(VecModel::from(
-                    template
+                    template_for()
                         .prompts
                         .iter()
                         .map(|_| SharedString::new())
@@ -3613,6 +3725,18 @@ fn push_review_walk(
                 )));
             }
             (rows, 2, Vec::new(), 0, false, false)
+        }
+        crate::view_state::WalkStage::Complete => {
+            // The completion summary (D-8): the session tally, derived
+            // here (the tree computes nothing).
+            let rows: Vec<crate::WalkRowModel> = presentation::walk_summary_lines(tally)
+                .into_iter()
+                .map(|line| crate::WalkRowModel {
+                    title: SharedString::from(line),
+                    emphasis: false,
+                })
+                .collect();
+            (rows, 5, Vec::new(), 0, false, false)
         }
     };
     if stage_kind != 2 {
@@ -3627,10 +3751,25 @@ fn push_review_walk(
         strip: ModelRc::new(VecModel::from(strip)),
         rows: ModelRc::new(VecModel::from(rows)),
         stage_kind,
+        stage_position: position,
+        stage_intro: SharedString::from(presentation::walk_entry_intro()),
+        tally_filed: as_i32(tally.filed),
+        tally_moved: as_i32(tally.moved),
+        tally_left: as_i32(tally.left),
+        tally_recorded: tally.recorded,
+        abort_confirm: models.walk_abort_armed,
+        buttons: ModelRc::new(VecModel::from(
+            buttons
+                .iter()
+                .map(|(model, _)| model.clone())
+                .collect::<Vec<_>>(),
+        )),
+        button_codes: ModelRc::new(VecModel::from(
+            buttons.iter().map(|(_, code)| *code).collect::<Vec<_>>(),
+        )),
         filing,
         candidates: ModelRc::new(VecModel::from(candidates)),
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-        candidate_index: i32::try_from(candidate_index).unwrap_or(i32::MAX),
+        candidate_index: as_i32(candidate_index),
         file_label: SharedString::from(file_label),
         keep_label: SharedString::from(keep_label),
         picking,
@@ -3638,6 +3777,7 @@ fn push_review_walk(
         tomorrow_label: SharedString::from(tomorrow_label),
         pick_label: SharedString::from(pick_label),
         leave_label: SharedString::from(leave_label),
+        plan_label: SharedString::from(presentation::walk_plan_label()),
         record_label: SharedString::from(record_label),
         finish_label: SharedString::from(finish_label),
     });

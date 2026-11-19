@@ -2894,29 +2894,80 @@ pub fn walk_header(
     }
 }
 
-/// The progress strip's stage headers (C5/C7/C10): the two neutral
-/// stage nouns and the template's own name for the prompts stage.
+/// The progress strip's stage headers (C5/C7/C10; J4 D-9): the
+/// guided journey's stage nouns and the template's own name for the
+/// prompts stage.
 #[must_use]
 pub fn walk_stage_header(
     stage: crate::view_state::WalkStage,
     template: &taskboard_domain::ReflectionTemplate,
 ) -> String {
     match stage {
+        crate::view_state::WalkStage::Entry => "Start".to_owned(),
         crate::view_state::WalkStage::Inbox => "Inbox".to_owned(),
         crate::view_state::WalkStage::CarryForward => "Carry forward".to_owned(),
+        crate::view_state::WalkStage::Planner => "Plan tomorrow".to_owned(),
         crate::view_state::WalkStage::Prompts => template.name.to_owned(),
+        crate::view_state::WalkStage::Complete => "Done".to_owned(),
     }
 }
 
-/// The skipped/empty stage's b-line (C5b/C7b); the prompts stage has
-/// none (empty).
+/// The skipped/empty stage's b-line (C5b/C7b; D-9 extends the notes to
+/// the machine's new stages); stages without a note render none.
 #[must_use]
 pub const fn walk_stage_empty_line(stage: crate::view_state::WalkStage) -> &'static str {
     match stage {
         crate::view_state::WalkStage::Inbox => "The inbox is empty.",
         crate::view_state::WalkStage::CarryForward => "Nothing to carry forward.",
-        crate::view_state::WalkStage::Prompts => "",
+        crate::view_state::WalkStage::Entry
+        | crate::view_state::WalkStage::Planner
+        | crate::view_state::WalkStage::Prompts
+        | crate::view_state::WalkStage::Complete => "",
     }
+}
+
+/// The Entry stage's intro sentence (J4 D-1: the guidance the operator
+/// asked for).
+#[must_use]
+pub const fn walk_entry_intro() -> &'static str {
+    "A short pass over today: triage the inbox, carry forward what is left, then reflect."
+}
+
+/// The stage position phrase (J4 D-9): "Step N of M" over the machine
+/// stages; the planner counts only when visited (the tally's
+/// `planner` flag is the visit marker).
+#[must_use]
+pub fn walk_stage_position(stage: crate::view_state::WalkStage, planner_visited: bool) -> String {
+    use crate::view_state::WalkStage;
+    let mut order = vec![WalkStage::Entry, WalkStage::Inbox, WalkStage::CarryForward];
+    if planner_visited {
+        order.push(WalkStage::Planner);
+    }
+    order.push(WalkStage::Prompts);
+    order.push(WalkStage::Complete);
+    let total = order.len();
+    let position = order
+        .iter()
+        .position(|candidate| *candidate == stage)
+        .unwrap_or(0)
+        + 1;
+    format!("Step {position} of {total}")
+}
+
+/// The completion summary's line models (D-8): one row per tally
+/// counter, derived here (the tree computes nothing). `recorded`
+/// phrases honestly — "no" is a fine outcome (P12, guilt-free).
+#[must_use]
+pub fn walk_summary_lines(tally: crate::view_state::WalkTally) -> Vec<String> {
+    vec![
+        format!("Filed from inbox: {}", tally.filed),
+        format!("Moved to tomorrow: {}", tally.moved),
+        format!("Left as is: {}", tally.left),
+        format!(
+            "Reflection recorded: {}",
+            if tally.recorded { "yes" } else { "no" }
+        ),
+    ]
 }
 
 /// The Inbox row verbs (C6).
@@ -2935,6 +2986,28 @@ pub const fn walk_carry_actions() -> (&'static str, &'static str, &'static str) 
 #[must_use]
 pub const fn walk_commit_actions() -> (&'static str, &'static str) {
     ("Record", "Finish without recording")
+}
+
+/// The walk's dialog-row labels (J4 D-5): Prev / Next / the planner
+/// choice / the completion exit.
+#[must_use]
+pub const fn walk_prev_label() -> &'static str {
+    "Back"
+}
+
+#[must_use]
+pub const fn walk_next_label() -> &'static str {
+    "Next"
+}
+
+#[must_use]
+pub const fn walk_plan_label() -> &'static str {
+    "Plan tomorrow"
+}
+
+#[must_use]
+pub const fn walk_complete_label() -> &'static str {
+    "Done"
 }
 
 /// The File-to picker's candidate stacks (plan D-W4): every live
