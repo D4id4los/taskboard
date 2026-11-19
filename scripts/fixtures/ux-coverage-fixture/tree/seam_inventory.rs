@@ -3,3 +3,4 @@
 const SEAM_INVENTORY: &[&str] = &[
     "fixture_tap",
 ];
+    "load",

@@ -69,9 +69,11 @@ usage: scripts/ux-coverage.sh <plan.md> [--gate] [--root <dir>]
   --root <dir>   repository root for evidence greps (default: the git
                  toplevel of the script's location)
   --self-test    exercise the bundled fixture's PASS, BOUND, AMBIGUOUS,
-                 INVENTORY-MISS, MISSING and dead-bound-test paths plus a
-                 malformed-table variant; asserts exit codes and row
-                 counts only
+                 INVENTORY-MISS, MISSING and dead-bound-test paths, a
+                 malformed-table variant, the #965 boundary-matching
+                 variants (prefix-miss and prefix-found), and the
+                 #967/#970 exclusion variants; asserts exit codes and
+                 row counts only
 
 exit codes: 0 all FOUND/BOUND / informational; 1 open rows under
             --gate; 2 PARSE-ERROR; 64 usage
@@ -236,12 +238,19 @@ parse_plan() {
 # ---------------------------------------------------------------------------
 FOUND_EV=""
 
-first_match() { # first_match <token> <file>...
+# Token match (#965): boundary-anchored — the token must not be
+# preceded or followed by an identifier character, so `save` does not
+# match `save_extra` / `on_save_extra` (the #920 substring class, gate
+# edition). Tokens are identifier-shaped by the plan grammar, so no
+# regex escaping is needed; an honest occurrence in real source is
+# always delimited by punctuation, whitespace or end of line, so the
+# anchor never turns an honest match into a miss.
+tok_match() { # tok_match <token> <file>...
   local tok=$1 f out
   shift
   for f in "$@"; do
     [[ -f $f ]] || continue
-    if out=$(grep -nF -- "$tok" "$f" 2>/dev/null | head -n 1); then
+    if out=$(grep -nE -- "(^|[^A-Za-z0-9_])${tok}([^A-Za-z0-9_]|$)" "$f" 2>/dev/null | head -n 1); then
       FOUND_EV="${f}:${out%%:*}"
       return 0
     fi
@@ -254,16 +263,35 @@ adapter_match() { # adapter_match <callback> <adapter-file>...
   shift
   for f in "$@"; do
     [[ -f $f ]] || continue
-    if out=$(grep -nF -- "on_${cb}" "$f" 2>/dev/null | head -n 1); then
+    if out=$(grep -nE -- "on_${cb}([^A-Za-z0-9_]|$)" "$f" 2>/dev/null | head -n 1); then
       FOUND_EV="${f}:${out%%:*}"
       return 0
     fi
-    if out=$(grep -nF "install_seam!" "$f" 2>/dev/null | grep -F -- "$cb" | head -n 1); then
+    if out=$(grep -nF "install_seam!" "$f" 2>/dev/null | grep -E -- "(^|[^A-Za-z0-9_])${cb}([^A-Za-z0-9_]|$)" | head -n 1); then
       FOUND_EV="${f}:${out%%:*}"
       return 0
     fi
   done
   return 1
+}
+
+# Evidence universe scan (#967/#970): one shared find predicate —
+# prune the self-test fixture root (evidence-scoped: exactly the
+# script-relative fixtures/ux-coverage-fixture tree when it exists,
+# never a blanket scripts/ exclusion), build-output directories
+# (`target`, `node_modules` — no repo source directory collides) and
+# `.git`. Uses EVID_ROOT and FX_ROOT from the caller.
+find_evidence() { # find_evidence <name>
+  local name=$1
+  local -a args=(find "$EVID_ROOT")
+  if [[ -n ${FX_ROOT:-} ]]; then
+    args+=(-path "$FX_ROOT" -prune -o)
+  fi
+  args+=(-name target -prune -o
+         -name node_modules -prune -o
+         -path "$EVID_ROOT/.git" -prune -o
+         -type f -name "$name" -print)
+  "${args[@]}" 2>/dev/null
 }
 
 # Boundary fn-name match: `fn <name>` not followed by another name
@@ -422,6 +450,79 @@ self_test() {
     rc=1
   fi
 
+  # 7. #965 prefix-miss: a plan row naming a callback/command against a
+  #    tree carrying only the suffixed spellings does NOT resolve —
+  #    fixed-substring matching (pre-#965) credited both rows FOUND.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-prefixmiss.md" --gate --root "$fx/tree" \
+    >"$tmp/pmiss.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'callback save → MISSING$' "$tmp/pmiss.out" || true)
+  d=$(grep -c 'command LogHabit → MISSING$' "$tmp/pmiss.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 && $d -eq 1 ]]; then
+    echo "self-test 7 (#965 prefix-miss --gate exits 1, the colliding-only rows MISSING): PASS"
+  else
+    echo "self-test 7 (#965 prefix-miss --gate exits 1, the colliding-only rows MISSING): FAIL (exit $code, $c callback, $d command)"
+    sed 's/^/    /' "$tmp/pmiss.out"
+    rc=1
+  fi
+
+  # 8. #965 no-miss guard: honest occurrences adjacent to the colliding
+  #    spellings still resolve FOUND — the boundary anchor must not
+  #    turn an honest match into a miss (round law c).
+  bash "${BASH_SOURCE[0]}" "$fx/plan-prefixfound.md" --gate --root "$fx/tree" \
+    >"$tmp/pfound.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'callback load → FOUND' "$tmp/pfound.out" || true)
+  d=$(grep -c 'command DropHabit → FOUND' "$tmp/pfound.out" || true)
+  m=$(grep -c 'MISSING$' "$tmp/pfound.out" || true)
+  if [[ $code -eq 0 && $c -eq 1 && $d -eq 1 && $m -eq 0 ]]; then
+    echo "self-test 8 (#965 prefix-found --gate exits 0, honest rows FOUND beside colliding spellings): PASS"
+  else
+    echo "self-test 8 (#965 prefix-found --gate exits 0, honest rows FOUND beside colliding spellings): FAIL (exit $code, $c callback, $d command, $m MISSING)"
+    sed 's/^/    /' "$tmp/pfound.out"
+    rc=1
+  fi
+
+  # 9. #967 fixture-tree exclusion: a token present ONLY inside a
+  #    nested scripts/fixtures/ux-coverage-fixture/tree under the scan
+  #    root (via a copied script+fixtures layout) reads MISSING —
+  #    pre-#967 the fixture file satisfied the evidence universe.
+  local repo7="$tmp/repo7"
+  mkdir -p "$repo7/scripts/fixtures" "$repo7/tests"
+  cp "${BASH_SOURCE[0]}" "$repo7/scripts/"
+  cp -r "$fx" "$repo7/scripts/fixtures/"
+  printf '// StateCommand variants probe (#967): this token lives only\n// inside the fixture tree, which is never evidence.\n' \
+    >>"$repo7/scripts/fixtures/ux-coverage-fixture/tree/messages.rs"
+  cp "$fx/tree/tests/"*.rs "$repo7/tests/"
+  bash "$repo7/scripts/ux-coverage.sh" "$fx/plan-fixturepin.md" --gate --root "$repo7" \
+    >"$tmp/fxpin.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'command StateCommand variants → MISSING$' "$tmp/fxpin.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 ]]; then
+    echo "self-test 9 (#967 nested fixture tree excluded, probe row MISSING): PASS"
+  else
+    echo "self-test 9 (#967 nested fixture tree excluded, probe row MISSING): FAIL (exit $code, $c probe rows)"
+    sed 's/^/    /' "$tmp/fxpin.out"
+    rc=1
+  fi
+
+  # 10. #970 build-output exclusion: a fn present ONLY under target/
+  #     does not satisfy a bound-test row (MISSING, not BOUND), while
+  #     the honest bound rows stay BOUND.
+  local repo8="$tmp/repo8"
+  mkdir -p "$repo8/tests" "$repo8/target/debug"
+  printf '#[test]\nfn us1_s2_toast_shown() {}\n\n#[test]\nfn us2_s1_badge_renders() {}\n' \
+    >"$repo8/tests/fixture_journeys.rs"
+  printf 'fn us1_s1_fixture_create() {}\n' >"$repo8/target/debug/out.rs"
+  bash "${BASH_SOURCE[0]}" "$fx/plan-targetpin.md" --gate --root "$repo8" \
+    >"$tmp/tpin.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c ' journey test → MISSING$' "$tmp/tpin.out" || true)
+  b=$(grep -c ' BOUND (' "$tmp/tpin.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 && $b -eq 1 ]]; then
+    echo "self-test 10 (#970 target/ excluded, target-only bound row MISSING, honest row BOUND): PASS"
+  else
+    echo "self-test 10 (#970 target/ excluded, target-only bound row MISSING, honest row BOUND): FAIL (exit $code, $c journey MISSING, $b BOUND)"
+    sed 's/^/    /' "$tmp/tpin.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -464,15 +565,29 @@ main() {
   local records=""
   records=$(parse_plan "$plan") || { echo "$records" >&2; exit 2; }
 
-  # Evidence file universe (find by name so --root trees of any shape work).
+  # Evidence file universe (find by name so --root trees of any shape
+  # work), through the shared #967/#970 predicate: the self-test
+  # fixture tree and build output are never evidence. The fixture
+  # prune is skipped when the scan root itself is the fixture tree or
+  # inside it (--root is the self-test's tree) — the exclusion is
+  # evidence-scoped, not a kill switch for explicit roots.
+  local EVID_ROOT=$root
+  local FX_ROOT=""
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -d "$script_dir/fixtures/ux-coverage-fixture" ]] \
+     && ! [[ "$root" -ef "$script_dir/fixtures/ux-coverage-fixture" ]] \
+     && [[ "$root/" != "$script_dir/fixtures/ux-coverage-fixture/"* ]]; then
+    FX_ROOT="$script_dir/fixtures/ux-coverage-fixture"
+  fi
   local -a slint_files=() adapter_files=() messages_files=() \
         requests_files=() actions_files=() test_files=() all_rs_files=()
-  mapfile -t slint_files < <(find "$root" -type f -name '*.slint' 2>/dev/null)
-  mapfile -t adapter_files < <(find "$root" -type f -name 'adapter.rs' 2>/dev/null)
-  mapfile -t messages_files < <(find "$root" -type f -name 'messages.rs' 2>/dev/null)
-  mapfile -t requests_files < <(find "$root" -type f -name 'requests.rs' 2>/dev/null)
-  mapfile -t actions_files < <(find "$root" -type f -name 'actions.rs' 2>/dev/null)
-  mapfile -t all_rs_files < <(find "$root" -type f -name '*.rs' 2>/dev/null)
+  mapfile -t slint_files < <(find_evidence '*.slint')
+  mapfile -t adapter_files < <(find_evidence 'adapter.rs')
+  mapfile -t messages_files < <(find_evidence 'messages.rs')
+  mapfile -t requests_files < <(find_evidence 'requests.rs')
+  mapfile -t actions_files < <(find_evidence 'actions.rs')
+  mapfile -t all_rs_files < <(find_evidence '*.rs')
 
   local test_root
   test_root=$(grep -m1 '^Test-root:' "$plan" | sed 's/^Test-root:[[:space:]]*//' || true)
@@ -486,7 +601,7 @@ main() {
   # tree) skips the #760 cross-check for that run; it is a fixture-shape
   # fact, not a finding.
   local inv_file=""
-  inv_file=$(find "$root" -type f -name 'seam_inventory.rs' 2>/dev/null | head -n 1)
+  inv_file=$(find_evidence 'seam_inventory.rs' | head -n 1)
 
   # Parse records into parallel per-table arrays.
   local -a cap_rows=() rul_rows=() jrn_stories=() jrn_steps=() jrn_rows=() \
@@ -581,7 +696,7 @@ main() {
     elif [[ -f "${root}/${test_root}/${f}" ]]; then
       echo "${root}/${test_root}/${f}"
     else
-      find "$root" -type f -name "$f" 2>/dev/null | head -n 1
+      find_evidence "$f" | head -n 1
     fi
   }
 
@@ -631,7 +746,7 @@ main() {
     # 3. Bound-test mapping (retro cohort).
     if [[ -n ${bound_nom[$sid]:-} ]]; then
       name=${bound_nom[$sid]}
-      mapfile -t hits < <(grep -rnE --include='*.rs' "fn ${name}(_|\\()" "$root" 2>/dev/null | head -n 1 || true)
+      mapfile -t hits < <(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules --exclude-dir=.git "fn ${name}(_|\\()" "$root" 2>/dev/null | head -n 1 || true)
       if (( ${#hits[@]} > 0 )); then
         FOUND_EV=$(ev_fileline "${hits[0]}")
         emit_bound "$label"
@@ -705,7 +820,7 @@ main() {
     [[ -n $w_id ]] || continue
 
     if ! is_absent "$w_cb"; then
-      if first_match "$w_cb" "${slint_files[@]}"; then
+      if tok_match "$w_cb" "${slint_files[@]}"; then
         slint_ev=$FOUND_EV
         if adapter_match "$w_cb" "${adapter_files[@]}"; then
           adapter_ev=$FOUND_EV
@@ -730,7 +845,7 @@ main() {
 
     if ! is_absent "$w_action"; then
       tok=${w_action#ActionId::}
-      if first_match "$tok" "${actions_files[@]}"; then
+      if tok_match "$tok" "${actions_files[@]}"; then
         emit_found "${w_id} action ${tok}"
       else
         emit_missing "${w_id} action ${tok}"
@@ -759,7 +874,7 @@ main() {
         ActionId) files_sel=("${actions_files[@]}") ;;
         *) files_sel=("${messages_files[@]}" "${requests_files[@]}" "${actions_files[@]}") ;;
       esac
-      if first_match "$tok" "${files_sel[@]}"; then
+      if tok_match "$tok" "${files_sel[@]}"; then
         emit_found "${w_id} command ${tok}"
       else
         emit_missing "${w_id} command ${tok}"
