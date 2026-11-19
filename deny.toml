@@ -41,6 +41,10 @@ allow = [
     # Unlicense: a fontdb/ttf-parser-family helper in the slint text
     # stack (public-domain-equivalent).
     "Unlicense",
+    # CC0-1.0: `notify` (the config live-reload watcher, #909) declares
+    # it for its own crate manifest — a public-domain-equivalent
+    # dedication, same class as Unlicense/0BSD.
+    "CC0-1.0",
 ]
 # Some crates ship their license text in unusual formats; resolve rather than deny.
 confidence-threshold = 0.93
