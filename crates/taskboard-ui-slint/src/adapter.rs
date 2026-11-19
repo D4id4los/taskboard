@@ -6069,8 +6069,9 @@ impl Adapter {
         let state = self.state.load_full();
         let chain = [ContextId::Board, ContextId::Global].to_vec();
         // The reorder pair's slots (H2 D4): the shared mint (chunk 8
-        // D4 — one arithmetic, three invocation paths: menu open,
-        // keyboard walk, drag gap).
+        // D4 — one floor-midpoint arithmetic, `habit_drop_order` over
+        // the section's shared live order: menu open, keyboard walk,
+        // drag gap).
         let (up, down) = Self::habit_move_slots(&state, habit);
         self.habit_move_up = up;
         self.habit_move_down = down;
@@ -6086,26 +6087,24 @@ impl Adapter {
     /// The reorder pair's shared mint (chunk 8 D4, #934 — H2 D4's
     /// arithmetic factored to one home): the floor-midpoint one-shot
     /// pair over the section's live board-scoped order — up slots at
-    /// the habit's own index, down at index + 1. Three invocation
-    /// paths converge here: the menu open, the keyboard walk's
-    /// pre-mint, and the drag gap's order. `None` for a stale or
-    /// positionless habit (the consumers take the typed `NoTarget`).
+    /// the habit's own index, down at index + 1, through
+    /// `presentation::habit_drop_order` (the one floor-midpoint
+    /// arithmetic the drag gap also mints through). Two invocation
+    /// paths converge here: the menu open and the keyboard walk's
+    /// pre-mint. `None` for a stale or positionless habit (the
+    /// consumers take the typed `NoTarget`).
     fn habit_move_slots(
         state: &taskboard_domain::AppState,
         habit: taskboard_domain::HabitId,
     ) -> HabitMoveSlots {
-        let row = state.habits.habits.get(&habit);
-        let mut orders: Vec<i64> = state
-            .habits
-            .habits
-            .values()
-            .filter(|h| h.is_live() && h.board == row.map_or(h.board, |r| r.board))
+        let Some(row) = state.habits.habits.get(&habit) else {
+            return (None, None); // stale: no board, no position
+        };
+        let orders: Vec<i64> = crate::presentation::live_habits_in_order(state, row.board)
+            .iter()
             .map(|h| h.order)
             .collect();
-        orders.sort_unstable();
-        let position = orders
-            .iter()
-            .position(|&order| Some(order) == row.map(|r| r.order));
+        let position = orders.iter().position(|&order| order == row.order);
         let slot_order = |slot: Option<usize>| -> Option<i64> {
             let slot = slot?;
             let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
@@ -9943,6 +9942,49 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.focused_habit = Some(habit);
     }
 
+    });
+
+    // The habit list's gap drop (chunk 8 D5, US-4/AC-1 — the #918
+    // board pattern over the flat list): the delegate-resolved gap
+    // index mints the floor-midpoint order through the shared
+    // arithmetic (`presentation::habit_drop_order` over the section's
+    // shared live-order enumeration `presentation::live_habits_in_order`)
+    // and routes `HabitMove` — the same dispatch seam the menu rows
+    // speak. A stale index or gap is absorbed (the pointer seams'
+    // posture); kiosk absorbs silently (the editing verb's HAB-14
+    // gate — the slint side never arms, the adapter doubles the gate).
+    // slint: habits-drop-asked
+    install_seam!(window: window.on_habits_drop_asked, adapter: adapter;
+    bind mut (a, window), args (row, gap), {        let _ = &window;
+        if a.kiosk {
+            return;
+        }
+        let (Ok(row), Ok(gap)) = (usize::try_from(row), usize::try_from(gap)) else {
+            return;
+        };
+        let Some(&habit) = a.tables.habits.get(row) else {
+            return;
+        };
+        let state = a.state.load_full();
+        let Some(habit_row) = state.habits.habits.get(&habit) else {
+            return;
+        };
+        if !habit_row.is_live() {
+            return;
+        }
+        let orders: Vec<i64> = crate::presentation::live_habits_in_order(&state, habit_row.board)
+            .iter()
+            .map(|h| h.order)
+            .collect();
+        drop(state);
+        // The clamp law (the board's `min(gap, len)`): a gap past the
+        // end is the append slot.
+        let slot = gap.min(orders.len());
+        let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
+        let next = orders.get(slot).copied();
+        let order = crate::presentation::habit_drop_order(prev, next);
+        a.habit_move = Some((habit, order));
+        a.route(&window, ActionId::HabitMove);
     });
 
     // The habit row's context menu (H2 D4/B1): the right-click seam —

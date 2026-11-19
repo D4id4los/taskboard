@@ -160,6 +160,9 @@ const SEAM_INVENTORY: &[&str] = &[
     // them), the +1 renames to the done-slot-shared log seam.
     // seam (H2 W-2): callback "habits-context-requested".
     "habits_context_requested",
+    // The habit list's gap drop (chunk 8 D5, US-4/AC-1): callback
+    // "habits-drop-asked" — the #918 board pattern over the flat list.
+    "habits_drop_asked",
     "habits_create_asked",
     "habits_create_cancelled",
     "habits_create_confirmed",
