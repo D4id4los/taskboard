@@ -568,9 +568,9 @@ fn the_closed_hosts_leave_no_anatomy_behind() {
 
 // ---- W3: the TextButton catalogue (plan §7 step 1; #950) ----------
 // The button grammar's laws on the primitive: the tab stop + the
-// Return/Space activation (the single keyboard copy), the one gate
+// `Return`/`Space` activation (the single keyboard copy), the one gate
 // shared by pointer/keys/AT, the click-through ceremony (r2 D34),
-// and the request-focus forward (the DialogButton autofocus half).
+// and the request-focus forward (the `DialogButton` autofocus half).
 
 fn button_center(window: &WidgetFrameworkProbeWindow) -> (f32, f32) {
     (
@@ -590,10 +590,10 @@ fn press_key(window: &WidgetFrameworkProbeWindow, key: slint::platform::Key) {
     advance_probe_clock(0);
 }
 
-/// The TextButton is a real tab stop: from the fixture opener, one
-/// synthetic Tab reaches the button and Return activates it (the
+/// The `TextButton` is a real tab stop: from the fixture opener, one
+/// synthetic `Tab` reaches the button and `Return` activates it (the
 /// grammar's keyboard half — every absorbed variant's law, and the
-/// gain B-1 records for VerbButton).
+/// gain B-1 records for `VerbButton`).
 #[test]
 fn g_button_tab_stop_and_return_activates() {
     run_probe(|window| {
@@ -606,20 +606,20 @@ fn g_button_tab_stop_and_return_activates() {
         advance_probe_clock(0);
         assert!(
             window.get_button_focused(),
-            "one more tab lands on the TextButton"
+            "one more tab lands on the `TextButton`"
         );
         let before = window.get_button_clicked_count();
         press_key(window, slint::platform::Key::Return);
         assert_eq!(
             window.get_button_clicked_count() - before,
             1,
-            "Return activates the focused TextButton"
+            "`Return` activates the focused `TextButton`"
         );
     });
 }
 
 /// A disabled button refuses every channel with one gate: the
-/// pointer click is swallowed and the Return/Space activations are
+/// pointer click is swallowed and the `Return`/`Space` activations are
 /// gated (the AT channel shares the same `enabled || click-through`
 /// gate — the accessible-enabled + gated default-action shape).
 #[test]
@@ -684,7 +684,7 @@ fn g_click_through_fires_while_disabled() {
 }
 
 /// The autofocus half: `request-focus()` forwards to the internal
-/// scope and the `focused` out property observes it (DialogButton's
+/// scope and the `focused` out property observes it (`DialogButton`'s
 /// mount-focus seam rides this).
 #[test]
 fn g_focus_forwards_to_request_focus() {
@@ -696,5 +696,110 @@ fn g_focus_forwards_to_request_focus() {
             window.get_button_focused(),
             "request-focus lands on the internal scope"
         );
+    });
+}
+
+// ---- W3: the CheckBox catalogue (plan §7 step 3; #953) ------------
+// The state-less check anatomy: the model bit is the single source of
+// truth, the toggle intent is the only emission, and the focusable
+// flag carries the card's no-tab-stop posture.
+
+fn check_center(window: &WidgetFrameworkProbeWindow) -> (f32, f32) {
+    (
+        window.get_check_x() + window.get_check_w() / 2.0,
+        window.get_check_y() + window.get_check_h() / 2.0,
+    )
+}
+
+/// State-less rendering: a pointer toggle only emits the intent — the
+/// rendered check bit follows the model property alone (a local
+/// checked state anywhere would flip the render before the model).
+#[test]
+fn g_check_renders_model_bit_statelessly() {
+    run_probe(|window| {
+        assert!(!window.get_check_shows_check(), "precondition: unchecked");
+        let (x, y) = check_center(window);
+        click(window, x, y);
+        assert_eq!(window.get_check_toggled_count(), 1, "the click emits toggled");
+        assert!(
+            !window.get_check_shows_check(),
+            "the render does not move until the model bit does"
+        );
+
+        window.set_probe_check_checked(true);
+        advance_probe_clock(0);
+        assert!(
+            window.get_check_shows_check(),
+            "the model push is the single writer of the render"
+        );
+        assert_eq!(window.get_check_toggled_count(), 1, "no intent from a model push");
+    });
+}
+
+/// The keyboard and pointer channels land on the same `toggled` seam:
+/// `Return` and `Space` on the tab-reachable box, then the click.
+#[test]
+fn g_check_keyboard_and_pointer_toggled() {
+    run_probe(|window| {
+        press_tab(window);
+        press_tab(window);
+        press_tab(window);
+        advance_probe_clock(0);
+        assert!(window.get_check_focused(), "three tabs land on the view-side box");
+
+        press_key(window, slint::platform::Key::Return);
+        press_key(window, slint::platform::Key::Space);
+        assert_eq!(window.get_check_toggled_count(), 2, "both keys toggle");
+
+        let (x, y) = check_center(window);
+        click(window, x, y);
+        assert_eq!(window.get_check_toggled_count(), 3, "the pointer toggles too");
+    });
+}
+
+/// The card posture: `focusable: false` removes the box from the tab
+/// walk — after the view-side box, no synthetic tab ever lands on it.
+#[test]
+fn g_unfocusable_variant_is_no_tab_stop() {
+    run_probe(|window| {
+        press_tab(window);
+        press_tab(window);
+        press_tab(window);
+        advance_probe_clock(0);
+        assert!(window.get_check_focused(), "precondition: the first box holds focus");
+        press_tab(window);
+        advance_probe_clock(0);
+        assert!(
+            !window.get_check2_focused(),
+            "the unfocusable variant never takes the tab"
+        );
+    });
+}
+
+/// The out-property seams: `focused` and `hovered` are observable —
+/// the exact surface the view-side facts mirroring and the card's
+/// done-hover re-expression consume.
+#[test]
+fn g_focus_and_hover_are_observable() {
+    run_probe(|window| {
+        assert!(!window.get_check_focused() && !window.get_check_hovered());
+        press_tab(window);
+        press_tab(window);
+        press_tab(window);
+        advance_probe_clock(0);
+        assert!(window.get_check_focused(), "focus rides the tab walk");
+
+        let (x, y) = check_center(window);
+        window.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(x, y),
+        });
+        advance_probe_clock(0);
+        assert!(window.get_check_hovered(), "hover is observable on the seam");
+
+        window.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(1.0, 1.0),
+        });
+        advance_probe_clock(0);
+        assert!(!window.get_check_hovered(), "leave clears the hover seam");
     });
 }

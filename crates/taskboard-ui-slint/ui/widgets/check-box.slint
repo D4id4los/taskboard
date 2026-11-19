@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The check-box primitive (L1, round-9 W3 O-6, #953): the single copy
+// of the checkbox anatomy the inventory found three times (F-8) — the
+// task-view done-box (with its verbatim ActivationStop re-statement,
+// sanctioned copy now dead: this primitive carries
+// `AccessibleRole.checkbox` natively so the copy's reason evaporates)
+// and the task-card's done box (the card posture is `focusable:
+// false`). Stateless by design: it renders `checked` and never owns
+// it — the model push is the single writer, so it cannot desync.
+//
+// The keyboard/AT half is the button grammar's shape (the
+// modifier-guarded Return/Space on a full-size FocusScope; the
+// TouchArea declared last so the scope's keys win hit-testing). The
+// hover surface sits under the box fill (the closed cells' hover
+// grammar) and a non-empty `description` arms the TooltipState.hover
+// idiom (blanket rule a — defaulting call sites stay tip-less).
+
+import { Theme, Semantic } from "../theme.slint";
+import { TooltipState } from "tooltip.slint";
+
+export component CheckBox inherits Rectangle {
+    // The model bit — pushed by the adapter, rendered, never mutated
+    // here (the toggle intent is the only emission).
+    in property <bool> checked;
+    // False is the card's no-tab-stop posture (the per-card focus
+    // law): the box leaves the tab walk entirely.
+    in property <bool> focusable: true;
+    // The done/undone verb pair (the a11y label and the tooltip text;
+    // `checked-label` announces while checked — the un-check verb —
+    // `unchecked-label` while unchecked — the check verb), so the
+    // a11y tree and click-by-label agree across surfaces.
+    in property <string> checked-label;
+    in property <string> unchecked-label;
+    // The tooltip trigger's parts (round-1 D8); empty keeps the arm
+    // off (the card variant passes nothing).
+    in property <string> description: "";
+    in property <[string]> hint-keys: [];
+    callback toggled();
+    // The observation seams: the view-side facts mirroring
+    // (TaskViewWalkFacts/EditingFacts) consumes `focused`; the card's
+    // done-hover re-expression consumes `hovered`.
+    out property <bool> focused: check-focus.has-focus;
+    out property <bool> hovered: check-touch.has-hover;
+    // The rendered check bit (the state-lessness witness — it reads
+    // the model property and nothing else).
+    out property <bool> shows-check: root.checked;
+
+    // The canonical square (the done-box anatomy, space-4).
+    width: Theme.space-4;
+    height: Theme.space-4;
+    border-radius: Theme.radius-small;
+    border-width: Theme.focus-ring-width;
+    border-color: check-focus.has-focus
+        ? Semantic.focus-ring
+        : root.checked ? Semantic.success : Theme.text-secondary;
+
+    // The hover surface first (z-under the box fill): the closed
+    // cells' hover grammar.
+    if (check-touch.has-hover): Rectangle {
+        background: Theme.surface-hover;
+        border-radius: Theme.radius-small;
+    }
+
+    // The activation stop: a checkbox address (never the shared
+    // ActivationStop — its role is constant-only and its reservation
+    // count would misaddress the a11y tree).
+    check-focus := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: root.focusable;
+        accessible-role: AccessibleRole.checkbox;
+        accessible-label: root.checked ? root.checked-label : root.unchecked-label;
+        accessible-action-default => { root.toggled(); }
+        key-pressed(event) => {
+            if ((event.text == Key.Return || event.text == " ")
+                && !event.modifiers.control
+                && !event.modifiers.alt
+                && !event.modifiers.shift
+                && !event.modifiers.meta) {
+                root.toggled();
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    // The single check Path (the F-8 duplication dies here).
+    if (root.checked): Path {
+        width: Theme.space-4 - 2 * Theme.space-1;
+        height: Theme.space-4 - 2 * Theme.space-1;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        commands: "M 2 6 L 5 9 L 10 3";
+        stroke: Semantic.success;
+        stroke-width: Theme.focus-ring-width;
+        fill: transparent;
+        viewbox-width: 12;
+        viewbox-height: 12;
+    }
+
+    check-touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        // The tooltip arm (blanket rule a): the same verb pair the
+        // a11y layer reads; the derived-property wrap — `changed`
+        // delivers on the wrapper alias, not a foreign element's
+        // binding.
+        property <bool> hover-guard: self.has-hover;
+        changed hover-guard => {
+            if (self.hover-guard && root.description != "") {
+                TooltipState.hover(
+                    root.checked ? root.checked-label : root.unchecked-label,
+                    root.description,
+                    root.hint-keys,
+                    self.absolute-position.x,
+                    self.absolute-position.y,
+                    self.width,
+                    self.height,
+                );
+            } else {
+                TooltipState.unhover();
+            }
+        }
+        clicked => {
+            TooltipState.unhover();
+            root.toggled();
+        }
+    }
+}

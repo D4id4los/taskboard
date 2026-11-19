@@ -18,6 +18,7 @@ export { MaskWalkFacts }
 import { ModalDialogHost, DialogButtonModel, DialogButtonRole, DialogKind } from "../ui/widgets/modal-dialog-host.slint";
 import { AnchoredOverlayHost, OverlayPlacement } from "../ui/widgets/anchored-overlay.slint";
 import { TextButton } from "../ui/widgets/text-button.slint";
+import { CheckBox } from "../ui/widgets/check-box.slint";
 
 export component WidgetFrameworkProbeWindow inherits Window {
     // The window-default tokens (the token lint forbids literal px
@@ -56,6 +57,11 @@ export component WidgetFrameworkProbeWindow inherits Window {
     in-out property <bool> probe-button-enabled: true;
     in-out property <bool> probe-button-click-through: false;
 
+    // The CheckBox proof mounts' controls (round-9 W3, plan §6): the
+    // state-less model bit and the card variant's focusable flag.
+    in-out property <bool> probe-check-checked: false;
+    in-out property <bool> probe-check2-focusable: false;
+
     // ---- Intent counters (read from Rust) ---------------------------
     in-out property <int> accepted-count: 0;
     in-out property <int> dismissed-count: 0;
@@ -64,6 +70,8 @@ export component WidgetFrameworkProbeWindow inherits Window {
     in-out property <int> invoked-index: -1;
     in-out property <int> anchored-dismissed-count: 0;
     in-out property <int> button-clicked-count: 0;
+    in-out property <int> check-toggled-count: 0;
+    in-out property <int> check2-toggled-count: 0;
 
     // ---- Observation mirrors ----------------------------------------
     // The fake status bar's top edge — the viewport floor.
@@ -98,6 +106,16 @@ export component WidgetFrameworkProbeWindow inherits Window {
     out property <length> button-y: probe-button.y;
     out property <length> button-w: probe-button.width;
     out property <length> button-h: probe-button.height;
+    // The CheckBox seams: the out properties (the view-side facts
+    // mirroring consumes exactly these) plus the rendered check bit.
+    out property <bool> check-focused: probe-check.focused;
+    out property <bool> check-hovered: probe-check.hovered;
+    out property <bool> check-shows-check: probe-check.shows-check;
+    out property <bool> check2-focused: probe-check2.focused;
+    out property <length> check-x: probe-check.x;
+    out property <length> check-y: probe-check.y;
+    out property <length> check-w: probe-check.width;
+    out property <length> check-h: probe-check.height;
 
     // The opener (the focus-restore target, G-12) and the fixture
     // anchor (G-2..G-5) share the top strip; the sibling witnesses
@@ -151,6 +169,29 @@ export component WidgetFrameworkProbeWindow inherits Window {
     // public function is widget-internal, so the fixture wraps it.
     public function probe-request-button-focus() {
         probe-button.request-focus();
+    }
+
+    // ---- The CheckBox proof mounts (round-9 W3) ----------------------
+    // Right of the button, on the same strip: the view-side box
+    // (focusable, tab-reachable) and the card-posture variant
+    // (focusable: false — the no-tab-stop posture).
+    probe-check := CheckBox {
+        x: Theme.space-15 + Theme.space-4;
+        y: Theme.space-8 + Theme.space-7 + Theme.space-7 + Theme.space-1;
+        checked: root.probe-check-checked;
+        unchecked-label: "Mark probe done";
+        checked-label: "Mark probe not done";
+        description: "Toggles the probe's state.";
+        toggled => { root.check-toggled-count += 1; }
+    }
+    probe-check2 := CheckBox {
+        x: Theme.space-15 + Theme.space-6;
+        y: Theme.space-8 + Theme.space-7 + Theme.space-7 + Theme.space-1;
+        focusable: root.probe-check2-focusable;
+        checked: false;
+        unchecked-label: "Mark probe two done";
+        checked-label: "Mark probe two not done";
+        toggled => { root.check2-toggled-count += 1; }
     }
 
     // ---- The modal proof mount ---------------------------------------
