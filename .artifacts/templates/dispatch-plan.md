@@ -120,13 +120,22 @@ observable activity, so long silent commands kill working agents.
 6. *Resource law (concurrency cap + memory gate)*: at most **3
    concurrent work-performing agents per box**, staggered ≥3 minutes
    apart (cold pre-commit build peaks must not align); the
-   **dispatcher's full §10 suite runs only in a free window** — zero
-   agents mid-build (llvm-cov counts as an agent slot of its own);
-   docs-only stages count toward the cap (their commits trigger hook
-   builds). Any real build (>~1 min) and the pre-commit hook's clippy
-   step route through `scripts/memory-gate.sh` (cross-worktree flock +
-   `MemAvailable` floor, bounded wait, `--status`); the full §10 suite
-   keeps `scripts/run-quality-gates.sh`. *Two-mode routing*: builds and
+   **dispatcher's full §10 suite counts as ONE slot toward the ≤3
+   cap** (agents + suite runs ≤ 3 total; `run-quality-gates.sh`'s
+   flock still serializes suites; the memory gate still guards every
+   agent build) — the suite is the heaviest single slot on the box, so
+   stagger it ≥3 minutes from any agent start like any other slot. The
+   strict **zero-agent free window is reserved for when
+   `memory-gate.sh --status` shows pressure** (MemAvailable below the
+   floor — the always-on free-window framing was the 2026-11-17 OOM
+   report's belt-and-braces rule, demoted to pressure-triggered by
+   #1063). Bench/measurement worktrees live outside the
+   `taskboard-WT-*` glob. Docs-only stages count toward the cap (their
+   commits trigger hook builds). Any real build (>~1 min) and the
+   pre-commit hook's clippy step route through `scripts/memory-gate.sh`
+   (cross-worktree flock + `MemAvailable` floor, bounded wait,
+   `--status`); the full §10 suite keeps
+   `scripts/run-quality-gates.sh`. *Two-mode routing*: builds and
    the hook's clippy step route gated-hold; self-capped long runs
    (mutants/miri-style — own job cap + wall-clock cap) route
    `memory-gate.sh --preflight` only; never hold the gate lock across a

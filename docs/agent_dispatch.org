@@ -82,15 +82,45 @@ earned by a recovered incident. The full narrative:
 - *Resource law (the concurrency cap)*: at most **3 concurrent
   work-performing agents per box**, with **staggered starts ≥3
   minutes apart** (cold pre-commit build peaks must not align), and
-  the **dispatcher's full §10 suite runs only in a free window** —
-  zero agents mid-build; the llvm-cov build is the heaviest single
-  job on the box and counts as an agent slot of its own. Docs-only
+  the **dispatcher's full §10 suite counts as ONE slot toward the ≤3
+  cap** (agents + suite runs ≤ 3 total; `run-quality-gates.sh`'s
+  flock still serializes suites; the memory gate still guards every
+  agent build) — the suite is the heaviest single slot on the box, so
+  stagger it ≥3 minutes from any agent start like any other slot. The
+  strict **zero-agent free window is reserved for when
+  `memory-gate.sh --status` shows pressure** (MemAvailable below the
+  floor — the always-on free-window framing was the 2026-11-17 OOM
+  report's belt-and-braces rule, demoted to pressure-triggered by
+  #1063). Docs-only
   stages count toward the cap (their commits trigger hook builds —
   the incident's main memory source). The memory gate protects
   memory; this cap protects latency and the inactivity cutoffs.
   Evidence: the 2026-11-17 OOM (same report); 2–3 staggered agents
   is operator-validated practice on this box. This bullet supersedes
   the interim rule in that report's §5.
+- *Scratch never lands on host tmpfs (#1043)*: host `/tmp` is tmpfs
+  (RAM-backed) — scratch written there consumes `MemAvailable`
+  directly and is a shared, unbounded resource (the 2026-11-19 ENOSPC
+  incident: a foreign agent's 5.8G scratch dir on a 6G tmpfs killed
+  three bench runs instantly). Large agent scratch (bench batteries,
+  bisects, mutants shards, multi-hundred-MB logs) routes through
+  `scripts/memory-gate.sh`'s TMPDIR redirection (both modes already
+  redirect an unset-or-`/tmp` TMPDIR to `/var/tmp`) or creates its
+  scratch under `/var/tmp` explicitly; nothing writes unbounded
+  scratch under `/tmp`. Evidence:
+  `.artifacts/reports/2026-11-19-build-cache-evaluation-report.md` §3.
+- *Measurement/bench worktrees live outside the standard layout
+  (#1042)*: bench worktrees whose only purpose is keeping a warm
+  `target/` for an in-flight battery **live outside the
+  `taskboard-WT-*` glob** (e.g. `/var/tmp/taskboard-bench-<arm>`,
+  created with plain `git worktree add` / `git clone`), never under
+  the standard worktree layout — the worktree-doctor sweep cannot
+  distinguish them from disposable worktrees of record (the
+  2026-11-19 incident: `taskboard-WT-bench-bench-b` swept
+  mid-battery, invalidating its paired-load design;
+  `.artifacts/reports/2026-11-19-build-cache-evaluation-report.md`).
+  They are ephemeral the same way: the agent that finishes the
+  battery removes them.
 
 * 3. Stage-exit verification (the dispatcher never trusts reports)
 
