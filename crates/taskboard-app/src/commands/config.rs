@@ -142,6 +142,11 @@ pub fn render_path_text(view: &ConfigPathView) -> String {
 /// The `config set`/`unset` knob table (T-18, #801): the dotted key
 /// vocabulary is exactly the GUI settings editor's `Field::key()`
 /// set plus the choice bools — one vocabulary, two modality fronts.
+/// Recorded CLI-only exceptions to the `Field::key()` vocabulary:
+/// `files_sync.anchor` (round-6 D-6.6) and `files_sync.poll_secs`
+/// (#1051) — the Files row's editor lattice does not carry them (the
+/// `poll_secs` GUI field is #1083); the apply-registry's lattice test
+/// lists both explicitly.
 /// The value predicates are re-expressed here against the app's own
 /// config bounds (the settings form's mirrors live in the UI crate,
 /// which the CLI cannot depend on; the grammars that ARE shared ride
@@ -167,6 +172,7 @@ enum ConfigKey {
     FocusLongBreakEvery,
     FocusNotify,
     FilesSyncEnabled,
+    FilesSyncPollSecs,
 }
 
 /// The typed refusal of one `config set`/`unset` invocation (T-18):
@@ -236,6 +242,7 @@ impl ConfigKey {
             "focus.long_break_every" => Self::FocusLongBreakEvery,
             "focus.notify" => Self::FocusNotify,
             "files_sync.enabled" => Self::FilesSyncEnabled,
+            "files_sync.poll_secs" => Self::FilesSyncPollSecs,
             _ => return None,
         })
     }
@@ -261,6 +268,7 @@ impl ConfigKey {
             Self::FocusLongBreakEvery => ("focus", "long_break_every"),
             Self::FocusNotify => ("focus", "notify"),
             Self::FilesSyncEnabled => ("files_sync", "enabled"),
+            Self::FilesSyncPollSecs => ("files_sync", "poll_secs"),
         }
     }
 
@@ -278,15 +286,17 @@ impl ConfigKey {
                 .parse::<chrono::NaiveTime>()
                 .map(TypedSetting::DayStart)
                 .map_err(|_| bad()),
-            Self::TickSecs | Self::PollInterval | Self::BackoffInitial | Self::BackoffMax => {
-                trimmed
-                    .parse::<i64>()
-                    .ok()
-                    .filter(|secs| *secs > 0)
-                    .and_then(|secs| u64::try_from(secs).ok())
-                    .map(TypedSetting::Secs)
-                    .ok_or_else(bad)
-            }
+            Self::TickSecs
+            | Self::PollInterval
+            | Self::BackoffInitial
+            | Self::BackoffMax
+            | Self::FilesSyncPollSecs => trimmed
+                .parse::<i64>()
+                .ok()
+                .filter(|secs| *secs > 0)
+                .and_then(|secs| u64::try_from(secs).ok())
+                .map(TypedSetting::Secs)
+                .ok_or_else(bad),
             Self::ReminderBefore => ReminderOffset::parse_text_form(trimmed)
                 .map(TypedSetting::Before)
                 .ok_or_else(bad),
@@ -384,6 +394,9 @@ impl ConfigKey {
             }
             (Self::FilesSyncEnabled, TypedSetting::Bool(value)) => {
                 crate::settings_overlay::set_files_sync_enabled(path, *value, None)
+            }
+            (Self::FilesSyncPollSecs, TypedSetting::Secs(secs)) => {
+                crate::settings_overlay::set_files_sync_poll_secs(path, *secs)
             }
             _ => unreachable!("parse_value and write agree on the key's value shape"),
         }
@@ -638,7 +651,8 @@ fn batch_edit(parsed: ConfigKey, typed: &TypedSetting) -> crate::settings_overla
             ConfigKey::TickSecs
             | ConfigKey::PollInterval
             | ConfigKey::BackoffInitial
-            | ConfigKey::BackoffMax,
+            | ConfigKey::BackoffMax
+            | ConfigKey::FilesSyncPollSecs,
             TypedSetting::Secs(secs),
         ) => toml_edit::value(i64::try_from(*secs).unwrap_or(i64::MAX)),
         (
@@ -1209,6 +1223,139 @@ mod set_tests {
         let text = std::fs::read_to_string(&path).expect("the file");
         assert!(text.contains("tick_secs = 30"), "nothing wrote: {text}");
         app.shutdown().await;
+    }
+
+    // -- the files_sync.poll_secs lane (#1051, the #673 writer twin) ------
+
+    /// #1051 (the #673 writer twin): `config set files_sync.poll_secs`
+    /// applies live — the minted snapshot carries the override, and the
+    /// shorten/lengthen axis mints a fresh snapshot each set (the same
+    /// sequence shape the #673 doorbell tests run actor-side).
+    #[tokio::test]
+    async fn files_sync_poll_secs_set_applies_live_and_mints_the_override() {
+        let fixture = crate::test_support::standalone_boot_fixture("poll-lane").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        for secs in [12, 90, 2] {
+            let view = set_with_locked(
+                &path,
+                "files_sync.poll_secs",
+                &secs.to_string(),
+                &locked,
+                Some(&app.engine),
+            )
+            .await
+            .expect("the live write lands");
+            assert!(view.applied_live, "the live lane: {view:?}");
+            assert_eq!(view.value.as_deref(), Some(secs.to_string().as_str()));
+            assert_eq!(
+                app.engine
+                    .shared_state()
+                    .load()
+                    .settings
+                    .files_sync_poll_secs,
+                Some(taskboard_domain::TickSecs::new(secs).expect("secs > 0")),
+                "the engine minted the override"
+            );
+        }
+        app.shutdown().await;
+    }
+
+    /// #1051: `config unset files_sync.poll_secs` removes the override
+    /// live — the minted snapshot's `files_sync_poll_secs` is `None`
+    /// (the actor's `unwrap_or` fallback to `[sync] poll_interval_secs`)
+    /// and the key leaves the file.
+    #[tokio::test]
+    async fn files_sync_poll_secs_unset_propagates_live_to_none() {
+        let fixture = crate::test_support::standalone_boot_fixture("poll-unset").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        set_with_locked(
+            &path,
+            "files_sync.poll_secs",
+            "12",
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("set live");
+        let view = unset_with_locked(&path, "files_sync.poll_secs", &locked, Some(&app.engine))
+            .await
+            .expect("unset lands");
+        assert!(view.applied_live, "the live lane");
+        assert_eq!(view.value, None);
+        assert_eq!(
+            app.engine
+                .shared_state()
+                .load()
+                .settings
+                .files_sync_poll_secs,
+            None,
+            "the fallback rule: the override is gone"
+        );
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(!text.contains("poll_secs"), "the key left the file: {text}");
+        app.shutdown().await;
+    }
+
+    /// #1051 + D3's batch arm: the batch lane carries the key too —
+    /// one atomic document write, the value lands in the file.
+    #[tokio::test]
+    async fn files_sync_poll_secs_batch_set_lands_the_value() {
+        let fixture = crate::test_support::standalone_boot_fixture("poll-batch").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        let view = set_batch_with_locked(
+            &path,
+            &["files_sync.poll_secs".to_owned(), "12".to_owned()],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("the batch lands");
+        assert!(view.applied_live, "the live lane: {view:?}");
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(text.contains("poll_secs = 12"), "the file wrote: {text}");
+        app.shutdown().await;
+    }
+
+    /// #1051's invalid-value rule: `0` and negatives refuse typed at
+    /// the parse gate (before any lane choice, nothing written) — the
+    /// same `> 0` predicate the `[sync]` secs keys run.
+    #[tokio::test]
+    async fn files_sync_poll_secs_invalid_values_refuse_typed_before_any_write() {
+        let path = temp_config("poll-bad");
+        let _ = std::fs::remove_file(&path);
+        for value in ["0", "-3", "abc"] {
+            let err = set(Some(path.clone()), "files_sync.poll_secs", value)
+                .await
+                .expect_err("the value refuses");
+            assert!(
+                matches!(err, ConfigSetError::BadValue { .. }),
+                "{value}: typed refusal"
+            );
+        }
+        let text = std::fs::read_to_string(&path);
+        assert!(text.is_err(), "no file was created on any refusal");
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    /// The env guard for the new key (mirrors `us1_s3`): an
+    /// env-pinned `files_sync.poll_secs` refuses typed before the
+    /// write — the lock-set seam, no real env mutation.
+    #[tokio::test]
+    async fn files_sync_poll_secs_env_pinned_refuses_typed() {
+        let path = temp_config("poll-env");
+        let _ = std::fs::remove_file(&path);
+        let mut locked = std::collections::BTreeSet::new();
+        locked.insert("files_sync.poll_secs".to_owned());
+        let err = set_with_locked(&path, "files_sync.poll_secs", "12", &locked, None)
+            .await
+            .expect_err("the locked key refuses");
+        assert!(matches!(err, ConfigSetError::EnvLocked { .. }), "{err:?}");
+        let text = std::fs::read_to_string(&path);
+        assert!(text.is_err(), "nothing wrote: {text:?}");
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
     }
 
     // -- the batch surface (#910, journey US-2) ---------------------------

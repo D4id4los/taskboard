@@ -462,6 +462,19 @@ pub fn set_files_sync_anchor(path: &Path, name: &str) -> Result<(), OverlayError
     prove_and_write(path, "files_sync", "anchor", toml_edit::value(name))
 }
 
+/// Writes `[files_sync] poll_secs` (the #1051 writer twin of the #673
+/// reader-side re-arm): the files-sync actor's per-cycle cadence
+/// override. Creates the table when absent. Any ordering/upper-bound
+/// rule is NOT enforced here — it is the prove gate's whole-document
+/// verdict, symmetric to [`set_backoff_initial`].
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn set_files_sync_poll_secs(path: &Path, secs: u64) -> Result<(), OverlayError> {
+    set_secs(path, "files_sync", "poll_secs", secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -918,6 +931,47 @@ mod tests {
         )
         .expect("decodes");
         assert_eq!(decoded.files_sync.anchor.as_deref(), Some("work"));
+    }
+
+    /// #1051: the `poll_secs` writer lands its typed value, creates the
+    /// `[files_sync]` table when absent, and preserves the siblings
+    /// and comments (mirroring the `poll_secs survives` test in
+    /// `set_files_sync_enabled`'s suite).
+    #[test]
+    fn set_files_sync_poll_secs_lands_the_value_and_preserves_siblings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        set_files_sync_poll_secs(&path, 90).expect("lands");
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            written.contains("# operator comment") && written.contains("# keep me"),
+            "comments survived: {written}"
+        );
+        assert!(written.contains("scale = 1.5"), "[ui] survives");
+        assert!(
+            written.contains("backoff_initial_secs = 5"),
+            "[sync] siblings survive"
+        );
+        let decoded = crate::config::AppConfig::decode_file_only_str(&written).expect("decodes");
+        decoded.validate().expect("the written config stays valid");
+        assert_eq!(decoded.files_sync.poll_secs, Some(90));
+    }
+
+    /// #1051's invalid-value rule at the prove gate: a `0` that
+    /// arrived by any path is refused typed, the file untouched (the
+    /// whole-document verdict, symmetric to the backoff pair).
+    #[test]
+    fn set_files_sync_poll_secs_zero_refuses_at_the_prove_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        let before = std::fs::read_to_string(&path).expect("read");
+        let err = set_files_sync_poll_secs(&path, 0).expect_err("the gate refuses");
+        assert!(matches!(err, OverlayError::Rejected(_)), "{err:?}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            before,
+            "the file is untouched"
+        );
     }
 
     // -- the removal writer (journey W-4, US-3/S2) -----------------------

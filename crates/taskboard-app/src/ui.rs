@@ -468,6 +468,7 @@ pub fn settings_apply_registry()
                  spawn needs substrate wiring fenced to the filesync round",
             ),
         ),
+        ("files_sync.poll_secs", Apply::live()),
         (
             "files_sync.anchor",
             Apply::on_restart(
@@ -1011,6 +1012,7 @@ mod tests {
             "sync.poll_interval_secs",
             "sync.backoff_initial_secs",
             "sync.backoff_max_secs",
+            "files_sync.poll_secs",
             "ui.due_soon_days",
             "focus.work_mins",
             "focus.break_mins",
@@ -1069,6 +1071,11 @@ mod tests {
         assert!(
             expected.insert("files_sync.anchor"),
             "the anchor key is not an editor Field — listed once, here"
+        );
+        assert!(
+            expected.insert("files_sync.poll_secs"),
+            "the poll_secs key is CLI-only this chunk (no editor Field) — \
+             listed once, here; the exception shrinks when the field lands (#1083)"
         );
         assert_eq!(registry, expected);
     }
