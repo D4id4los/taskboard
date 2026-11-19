@@ -14604,7 +14604,7 @@ fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     install_seam!(window: window.on_walk_plan_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewWalkPlanner);
     });
-    install_seam!(window: window.on_walk_button_invoked, adapter: adapter;
+    install_seam!(window: window.on_walk_button_invoked, adapter: adapter; // walk-button-invoked
     bind mut (a, window), args (code), {        let action = match code {
             0 => ActionId::ReviewWalkPrev,
             1 => ActionId::ReviewWalkAdvance,
