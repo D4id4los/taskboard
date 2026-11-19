@@ -2527,6 +2527,29 @@ impl Adapter {
         self.refresh_forced(window);
     }
 
+    /// The date combobox's filtered quick-list rows (r4 D26): the
+    /// armed gate (round-5 F10) — disarmed = the full 96-slot grid
+    /// (empty digits match everything); the first keystroke re-arms
+    /// the per-keystroke narrowing. No armed editor renders no slots.
+    fn quick_time_slots(
+        editor: Option<&crate::level_state::DateEditorState>,
+        time_text: &str,
+    ) -> Vec<chrono::NaiveTime> {
+        if editor.is_some_and(|e| e.picker.is_some()) {
+            let digits = if editor.is_some_and(|e| e.time_filter_armed) {
+                crate::due_edit::filter_digits(time_text)
+            } else {
+                String::new()
+            };
+            crate::due_edit::quarter_slots()
+                .into_iter()
+                .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// The unguarded D1 pass: reconcile + full re-derive + the cheap
     /// tail. Every caller whose inputs moved outside the state Arc
     /// calls this directly (the plan §5 audit's forced set).
@@ -2603,22 +2626,7 @@ impl Adapter {
         }
         let editor = self.view_state.date_editor();
         let time_text = editor.map_or("--:--", |e| e.time_text.as_str());
-        let time_slots: Vec<chrono::NaiveTime> = if editor.is_some_and(|e| e.picker.is_some()) {
-            // The armed gate (round-5 F10): disarmed = the full
-            // 96-slot grid (empty digits match everything); the first
-            // keystroke re-arms the per-keystroke narrowing.
-            let digits = if editor.is_some_and(|e| e.time_filter_armed) {
-                crate::due_edit::filter_digits(time_text)
-            } else {
-                String::new()
-            };
-            crate::due_edit::quarter_slots()
-                .into_iter()
-                .filter(|slot| crate::due_edit::quick_list_matches(&digits, *slot))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let time_slots = Self::quick_time_slots(editor, time_text);
         // The quick options' focused slot (task-detail-editor UX plan
         // US-2/D-7, N-6): the flyout's open-time seed (captured once —
         // see the lazy capture above) — a picker-held time wins
