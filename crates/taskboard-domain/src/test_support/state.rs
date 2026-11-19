@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use proptest::prelude::*;
 
 use super::entities::{label_clocks_strategy, stack_clocks_strategy, task_clocks_strategy};
@@ -533,6 +533,184 @@ pub fn persisted_state_strategy() -> impl Strategy<Value = PersistedState> {
                 }
             },
         )
+}
+
+/// The fixed remote baseline and queue timestamp the repair below
+/// stamps on entities it touches. Drawn-clock diversity is preserved
+/// because the repair is the identity on every already-conforming draw
+/// (the common case); a repaired draw was previously rejected outright,
+/// so any repaired timestamp is strictly new coverage.
+fn repair_seen() -> DateTime<Utc> {
+    Utc.timestamp_opt(1_000_000_000, 0).unwrap()
+}
+
+/// A [`PersistedState`] whose shape matches the mirror-snapshot
+/// precondition of the push-phase equivalence property
+/// (`pipeline.rs::apply_push_report_equals_the_pipeline_push_phase`):
+/// a bound, live, seen board; every bound stack, label, and task seen;
+/// a non-empty outbox. Built as a minimal-repair post-transform of
+/// [`persisted_state_strategy`] — a draw is changed only where a
+/// clause fails, and every already-conforming state passes through
+/// untouched, so the value space is a superset of what the old
+/// five-clause `prop_filter` admitted. Reusable by adoption wherever
+/// that same shape is needed.
+pub fn push_ready_state_strategy() -> impl Strategy<Value = PersistedState> {
+    persisted_state_strategy().prop_map(repair_for_push_phase)
+}
+
+/// Total, minimal-repair post-transform enforcing the push-phase shape:
+/// repairs each violated clause and leaves every already-conforming
+/// state untouched. Carries the five invariants as `debug_assert!`s —
+/// executable documentation here (compiled out in release); pinned in
+/// test builds by the pipeline invariant property.
+fn repair_for_push_phase(mut state: PersistedState) -> PersistedState {
+    // Clause 1–3: a bound, seen, live board. The strategy generates
+    // exactly one board, so the repair works on that board *in place*
+    // (bind it, stamp it, undelete it). Synthesizing a second board
+    // instead would create cross-board topology the equivalence
+    // property's validated domain never contained (its old filter
+    // admitted only single-board states) — repaired multi-board shapes
+    // provably diverge between the two pipelines (issue #1080), so the
+    // repair stays inside the validated domain.
+    let seen = repair_seen();
+    repair_board_clause(&mut state, seen);
+
+    // Clause 4: every bound entity seen. Existing `Some` values are never
+    // overwritten (drawn `last_modified` diversity stays); unbound
+    // entities are untouched.
+    repair_seen_clauses(&mut state, seen);
+
+    // Clause 5: a non-empty outbox. After the board repair a board always
+    // exists, so an `UpdateBoard` op resolves; one append is sufficient
+    // (the property needs `len >= 1` and nothing more). The op targets
+    // the repaired (bound) board — the only board a draw has.
+    let bound_board_id = state
+        .boards
+        .values()
+        .find(|b| b.remote.is_some())
+        .map(|b| b.id)
+        .expect("board repaired above");
+    if state.outbox.is_empty() {
+        state.outbox.push(PendingOp {
+            op_id: crate::outbox::OpId(uuid::Uuid::new_v4()),
+            op: LocalOp::UpdateBoard(bound_board_id),
+            queued_at: seen,
+        });
+    }
+
+    let board_ok = state
+        .boards
+        .values()
+        .find(|b| b.remote.is_some())
+        .is_some_and(|b| b.remote_seen.is_some() && !b.deleted);
+    debug_assert!(board_ok, "clauses 1–3: the bound board is seen and live");
+    debug_assert!(
+        state
+            .stacks
+            .values()
+            .filter(|s| s.remote.is_some())
+            .all(|s| s.remote_seen.is_some()),
+        "clause 4: bound stacks seen"
+    );
+    debug_assert!(
+        state
+            .labels
+            .values()
+            .filter(|l| l.remote.is_some())
+            .all(|l| l.remote_seen.is_some()),
+        "clause 4: bound labels seen"
+    );
+    debug_assert!(
+        state
+            .tasks
+            .values()
+            .filter(|t| t.remote.is_some())
+            .all(|t| t.remote_seen.is_some()),
+        "clause 4: bound tasks seen"
+    );
+    debug_assert!(
+        !state.outbox.is_empty(),
+        "clause 5: the outbox is non-empty"
+    );
+    state
+}
+
+/// Repairs clause 4: every bound stack, label, and task gets a remote
+/// baseline; entities already carrying one keep their drawn value.
+fn repair_seen_clauses(state: &mut PersistedState, seen: DateTime<Utc>) {
+    for stack in state.stacks.values_mut() {
+        if stack.remote.is_some() && stack.remote_seen.is_none() {
+            stack.remote_seen = Some(seen);
+        }
+    }
+    for label in state.labels.values_mut() {
+        if label.remote.is_some() && label.remote_seen.is_none() {
+            label.remote_seen = Some(seen);
+        }
+    }
+    for task in state.tasks.values_mut() {
+        if task.remote.is_some() && task.remote_seen.is_none() {
+            task.remote_seen = Some(seen);
+        }
+    }
+}
+
+/// Repairs clauses 1–3 in place on the draw's existing board(s): bind
+/// the first board with a fresh deck number, stamp its baseline, and
+/// clear its tombstone. A no-op when the draw already carries a bound,
+/// seen, live board — so drawn bindings and baselines survive on
+/// conforming draws. A synthesized row is inserted only in the
+/// (strategy-unreachable, defensive) no-boards case, keeping the
+/// repair total — the function never falls back to rejection.
+fn repair_board_clause(state: &mut PersistedState, seen: DateTime<Utc>) {
+    if state
+        .boards
+        .values()
+        .any(|b| b.remote.is_some() && b.remote_seen.is_some() && !b.deleted)
+    {
+        return;
+    }
+    // The next unused deck number avoids colliding with other boards'
+    // bindings.
+    let next_remote = state
+        .boards
+        .values()
+        .filter_map(|b| Some(b.remote.as_ref()?.board.as_deck().unwrap_or(0)))
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let pick = state.boards.values().next().map(|b| b.id);
+    if let Some(id) = pick {
+        let board = state.boards.get_mut(&id).expect("pick came from the map");
+        board.remote = Some(crate::ids::RemoteBoardBinding {
+            connector: crate::test_support::test_connector(),
+            board: crate::ids::RemoteBoardId::deck(next_remote),
+        });
+        board.remote_seen = Some(seen);
+        board.deleted = false;
+    } else {
+        let id = crate::ids::BoardId::from_uuid(uuid::Uuid::new_v4());
+        let board = Board {
+            id,
+            remote: Some(crate::ids::RemoteBoardBinding {
+                connector: crate::test_support::test_connector(),
+                board: crate::ids::RemoteBoardId::deck(1),
+            }),
+            title: String::from("push-phase repair board"),
+            color: Color::new(String::from("0000ff")),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::BoardClocks {
+                color: crate::entities::BoardClocks::epoch(),
+                archived: crate::entities::BoardClocks::epoch(),
+                deleted: crate::entities::BoardClocks::epoch(),
+                title: crate::entities::BoardClocks::epoch(),
+            },
+            authors: crate::entities::BoardAuthors::default(),
+            remote_seen: Some(seen),
+        };
+        state.boards.insert(id, board);
+    }
 }
 
 /// Maps op-kind rows onto the generated entities; rows whose targets don't

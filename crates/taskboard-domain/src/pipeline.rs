@@ -5376,30 +5376,40 @@ mod tests {
             #![proptest_config(test_support::proptest_config(256))]
 
             #[test]
+            fn push_ready_state_draws_satisfy_the_mirror_precondition(
+                state in test_support::push_ready_state_strategy(),
+            ) {
+                // The shape contract of `push_ready_state_strategy`,
+                // pinned independently of the equivalence property: the
+                // five filter clauses of the push-phase property hold by
+                // construction, so the mirror snapshot always succeeds.
+                let bound_board = state
+                    .boards
+                    .values()
+                    .find(|b| b.remote.is_some());
+                prop_assert!(bound_board.is_some(), "clause 1: a bound board exists");
+                let board = bound_board.expect("clause 1 checked");
+                prop_assert!(board.remote_seen.is_some(), "clause 2: the bound board is seen");
+                prop_assert!(!board.deleted, "clause 3: the bound board is live");
+                prop_assert!(
+                    state.stacks.values().filter(|s| s.remote.is_some())
+                        .all(|s| s.remote_seen.is_some())
+                        && state.labels.values().filter(|l| l.remote.is_some())
+                            .all(|l| l.remote_seen.is_some())
+                        && state.tasks.values().filter(|t| t.remote.is_some())
+                            .all(|t| t.remote_seen.is_some()),
+                    "clause 4: every bound entity is seen"
+                );
+                prop_assert!(!state.outbox.is_empty(), "clause 5: the outbox is non-empty");
+                prop_assert!(
+                    mirror_snapshot(&state).is_some(),
+                    "the mirror snapshot succeeds on every draw"
+                );
+            }
+
+            #[test]
             fn apply_push_report_equals_the_pipeline_push_phase(
-                state in test_support::persisted_state_strategy().prop_filter(
-                    "bound board and seen baselines",
-                    |state| {
-                        // Equivalence holds when the snapshot mirrors the bound
-                        // state exactly (so the merge/reconciliation phases are
-                        // no-ops) and no board cascade can fire.
-                        let bound_board = state
-                            .boards
-                            .values()
-                            .find(|b| b.remote.is_some());
-                        let Some(board) = bound_board else { return false };
-                        board.remote_seen.is_some()
-                            && !board.deleted
-                            && state.stacks.values().filter(|s| s.remote.is_some())
-                                .all(|s| s.remote_seen.is_some())
-                            && state.labels.values().filter(|l| l.remote.is_some())
-                                .all(|l| l.remote_seen.is_some())
-                            && state.tasks.values().filter(|t| t.remote.is_some())
-                                .all(|t| t.remote_seen.is_some())
-                            // Push evidence must reference real outbox ops.
-                            && !state.outbox.is_empty()
-                    },
-                ),
+                state in test_support::push_ready_state_strategy(),
                 pushes in proptest::collection::vec(
                     (
                         test_support::op_id_strategy(),
