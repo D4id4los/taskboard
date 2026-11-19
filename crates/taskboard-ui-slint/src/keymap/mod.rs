@@ -799,14 +799,16 @@ mod tests {
         );
     }
 
-    /// Round 3 (D25) extended by r4 chunk 6 (D19) and the keymap-parity
-    /// move (plan US-1/D-1): C-f/C-b walk controls on the detail chain
-    /// (the isearch pair, untouched) while C-n/C-p carry the now-live
-    /// item walk there (the D-2 route fix made the detail's item table
-    /// real); the board keeps its live task/stack walk on C-n/C-p and
-    /// its isearch chords on C-f/C-b; Today/StackDetail keep the item
-    /// walk (excluded — not conflict-clean); Settings resolves the
-    /// control walk on both chord pairs.
+    /// Round 3 (D25) extended by r4 chunk 6 (D19), reshaped by J3 R-3
+    /// (round 9 chunk 9, 2026-11-19): the detail's item walk is
+    /// RETIRED (the census-dated D-2 supersession) — C-n/C-p carry
+    /// nothing on the detail chain until the retune re-points them
+    /// onto nav.focus-down/up; C-f/C-b walk controls there (the
+    /// isearch pair, untouched); the board keeps its live task/stack
+    /// walk on C-n/C-p and its isearch chords on C-f/C-b;
+    /// Today/StackDetail keep the item walk (excluded — not
+    /// conflict-clean); Settings resolves the control walk on both
+    /// chord pairs.
     #[test]
     fn emacs_four_chords_walk_controls_on_the_detail_chain() {
         let keymap = Keymap::from_preset(Preset::Emacs);
@@ -827,10 +829,6 @@ mod tests {
             ("Ctrl+f", ActionId::NavNextControl),
             ("Ctrl+b", ActionId::NavPrevControl),
         ];
-        let detail_item_rows = [
-            ("Ctrl+n", ActionId::NavNextItem),
-            ("Ctrl+p", ActionId::NavPrevItem),
-        ];
         for (spelling, walk) in chords {
             let stroke = stroke::parse(spelling).expect("the chord parses");
             assert_eq!(
@@ -839,12 +837,15 @@ mod tests {
                 "{spelling} walks controls on the detail chain"
             );
         }
-        for (spelling, walk) in detail_item_rows {
+        // The retired detail item walk (J3 R-3): the removed member
+        // rows leave C-n/C-p unbound on the detail chain (the typed
+        // unbound no-op until the retune's nav.focus rows land).
+        for spelling in ["Ctrl+n", "Ctrl+p"] {
             let stroke = stroke::parse(spelling).expect("the chord parses");
             assert_eq!(
                 keymap.resolve(&detail_chain, &[stroke]),
-                Some(walk),
-                "{spelling} steps the detail's item walk (the D-1 move)"
+                None,
+                "{spelling} carries no detail binding (the item walk is retired)"
             );
         }
         // The board keeps its live task/stack walk: C-n/C-p stay item

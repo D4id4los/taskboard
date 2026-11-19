@@ -399,15 +399,10 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     ),
     (ActionId::NavLastItem, ContextId::StackDetail, &["Ctrl+End"]),
     (ActionId::TaskCreate, ContextId::StackDetail, &["N"]),
-    // TaskDetail
-    (ActionId::NavNextItem, ContextId::TaskDetail, &["Down"]),
-    (ActionId::NavPrevItem, ContextId::TaskDetail, &["Up"]),
-    (
-        ActionId::NavFirstItem,
-        ContextId::TaskDetail,
-        &["Ctrl+Home"],
-    ),
-    (ActionId::NavLastItem, ContextId::TaskDetail, &["Ctrl+End"]),
+    // TaskDetail: the item-walk member rows are RETIRED (J3 R-3,
+    // 2026-11-19 — the subject walk is gone, census-dated; the
+    // directional NavFocus* rows own the detail's keys from the
+    // retune commit). The title re-arm keeps its F2.
     // Round 3 (W-SM-d, F26): the title re-arm — F2, the CUA rename
     // convention, matching this preset's own `StackRename = F2`.
     (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["F2"]),
@@ -952,19 +947,11 @@ static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavFirstItem, ContextId::StackDetail, &["Alt+<"]),
     (ActionId::NavLastItem, ContextId::StackDetail, &["Alt+>"]),
     (ActionId::TaskCreate, ContextId::StackDetail, &["Ctrl+o"]),
-    // TaskDetail (keymap-parity plan US-1, D-1): C-n/C-p carry the
-    // *item* walk — the r4 D19 control-walk rows were recorded as a
-    // move-in-waiting ("the item walk is semantically dead here") and
-    // the D-2 route fix made the detail's item table live; the
-    // intra-context contract makes this a move, not an add. The
-    // control walk keeps its isearch pair (C-f/C-b, the r3 D25 rows
-    // below) — freeing C-n/C-p contacts the control walk nowhere else
-    // (the Board keeps its live task/stack walk; Today/StackDetail
-    // are the recorded exclusions).
-    (ActionId::NavNextItem, ContextId::TaskDetail, &["Ctrl+n"]),
-    (ActionId::NavPrevItem, ContextId::TaskDetail, &["Ctrl+p"]),
-    (ActionId::NavFirstItem, ContextId::TaskDetail, &["Alt+<"]),
-    (ActionId::NavLastItem, ContextId::TaskDetail, &["Alt+>"]),
+    // TaskDetail: the D-1 item-walk rows (C-n/C-p item walk,
+    // M-</M-> jumps) are RETIRED (J3 R-3, 2026-11-19 — the subject
+    // walk is gone, census-dated; the retune re-points the detail's
+    // C-n/C-p onto nav.focus-down/up). The control walk keeps its
+    // isearch pair (C-f/C-b, the r3 D25 rows below).
     // Menu
     (ActionId::MenuNext, ContextId::Menu, &["Ctrl+n"]),
     (ActionId::MenuPrevious, ContextId::Menu, &["Ctrl+p"]),

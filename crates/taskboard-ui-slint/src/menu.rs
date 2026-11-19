@@ -1192,19 +1192,27 @@ mod tests {
             ActionId::ViewInbox,       // 70
             // The review walk's opener (DR-7 chunk 3, #638): rank 75,
             // after the inbox jump, before the board focus.
-            ActionId::ReviewOpen,     // 75
-            ActionId::NavFocusBoard,  // 80
+            ActionId::ReviewOpen,    // 75
+            ActionId::NavFocusBoard, // 80
             ActionId::NavShowTask, // 90 (palette-only availability: not chain-visible over the board chain)
             ActionId::NavNextView, // 100
             ActionId::NavPrevView, // 110
             ActionId::NavNextItem, // 120
-            ActionId::NavPrevItem, // 130
-            ActionId::NavFirstItem, // 140
-            ActionId::NavLastItem, // 150
+            // The directional family's menu rows (J3 US-1, round 9
+            // chunk 9): ranks 121–126, interleaved by the rank order.
+            ActionId::NavFocusLeft,   // 121
+            ActionId::NavFocusRight,  // 122
+            ActionId::NavFocusUp,     // 123
+            ActionId::NavFocusDown,   // 124
+            ActionId::NavExtendNext,  // 125 (Board-only availability)
+            ActionId::NavExtendPrev,  // 126 (Board-only availability)
+            ActionId::NavPrevItem,    // 130
+            ActionId::NavFirstItem,   // 140
+            ActionId::NavLastItem,    // 150
             ActionId::NavNextControl, // 160
             ActionId::NavPrevControl, // 170
             ActionId::ViewScrollDown, // 180
-            ActionId::ViewScrollUp, // 190
+            ActionId::ViewScrollUp,   // 190
         ];
         let expected: Vec<_> = expected
             .iter()
