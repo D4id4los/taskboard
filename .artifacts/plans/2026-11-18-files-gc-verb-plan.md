@@ -275,6 +275,40 @@ stale-peer hazard is a documented module-doc law either way (and if the
 operator wants belt-and-braces, Option B remains implementable later on
 top of leg 1 without rework — the trigger seam and the verb are shared).
 
+## 4.4 Addendum (2026-11-19) — the operator's gate decision, as amended
+
+The operator cleared the leg-2 gate choosing **Option A (GC-on-unbind)**
+with one binding scope restriction from the dispatcher: **the unbind
+cleanup deletes only THIS device's files under the remote board — never
+the whole remote board subtree** — because a different client may still
+be connected to that board. Concretely, §4.1's single collection
+`DELETE "boards/<uuid>"` is replaced by:
+
+- The retiring lane's tick deletes **this device's own directory only**:
+  `boards/<remote>/devices/<own-device>/` (one collection DELETE — the
+  directory's contents are entirely this device's: `info.json`,
+  `ops/NNNNNN.json`, `snapshot-NNNNNN.json`). The owner-scoped law is
+  the same one leg 1's GC pass enforces structurally: only paths
+  derived from `ctx.identity.device_id` / this device's ops and
+  watermarks are ever constructed or deleted; the board's shared bytes
+  (`identity.json`, `move.json`, other devices' directories) are never
+  touched.
+- Failure semantics unchanged from §4.1: a transport error defers the
+  retirement into `Lanes::retiring`-equivalent handling (the lane stays,
+  the next tick retries the single DELETE), `AlreadyAbsent` is the
+  idempotent success, and the outcome surfaces typed on the
+  lane-outcomes watch.
+- Lane + `lanes.discovered` pruning happens on retirement completion
+  exactly as §3 recorded (the stale-lane leak fix rides this trigger).
+- The §4.1 "D-BF7 tension" paragraph stands, narrowed: only this
+  device's tombstone-bearing chunk files are removed; another device's
+  snapshots (which carry the board's tombstone floor) are untouched, so
+  a still-bound peer's late-join floor survives the unbind.
+- Fail-by-construction test law ([L](c) amendment): a test asserting
+  that a foreign device's ops dir or the board's shared subtree survives
+  the retirement — and that every recorded DELETE path sits under this
+  device's own directory prefix — pins the scope.
+
 ## 5. Risks
 
 1. **DELETE deletes remote data** — the stage-3 review's line-by-line
