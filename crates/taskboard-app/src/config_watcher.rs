@@ -74,8 +74,10 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// caller owns the broadcast. Never panics on a raced writer — every
 /// failure is a typed outcome.
 ///
-/// Deterministic by construction: one synchronous read + decode +
-/// mint + compare, one engine round trip on difference.
+/// Deterministic by construction: one read + decode + mint + compare,
+/// one engine round trip on difference. The read rides the async FS
+/// API (`tokio::fs` — `spawn_blocking` underneath) so the debouncer's
+/// actor task never parks the runtime on a blocking syscall.
 pub(crate) async fn reload_once(
     path: &Path,
     engine: &taskboard_state::EngineHandle,
@@ -83,7 +85,7 @@ pub(crate) async fn reload_once(
     // Transient absence (a rename storm's mid-rename instant) or any
     // unreadable instant: skip — retried on the next trailing edge,
     // never an error loop (US-1/S2, AC-3).
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = tokio::fs::read_to_string(path).await else {
         return ConfigReloadOutcome::SkippedTransient;
     };
     // The prove gate's read half, verbatim (plan D-RELOAD-PATH): the
@@ -404,11 +406,20 @@ mod tests {
         // the clock reaches its deadline — advancing exactly the
         // window would land the clock ON the deadline.
         tokio::time::advance(QUIET_WINDOW + Duration::from_millis(1)).await;
-        tokio::task::yield_now().await;
+        // The reload rides the async FS API (spawn_blocking under the
+        // hood), so the outcome surfaces when a real blocking thread
+        // finishes — a single yield no longer guarantees it. A bounded
+        // deterministic spin (yield_now only, never a sleep) polls the
+        // predicate to completion: microseconds in practice, and a
+        // miss is this test's honest failure. The count accumulates
+        // over the whole spin so a double reload cannot hide.
         let mut reloaded = 0_u32;
-        while let Ok(event) = outcomes.try_recv() {
-            if matches!(event, SystemEvent::ConfigReload(_)) {
-                reloaded += 1;
+        for _ in 0..2_000 {
+            tokio::task::yield_now().await;
+            while let Ok(event) = outcomes.try_recv() {
+                if matches!(event, SystemEvent::ConfigReload(_)) {
+                    reloaded += 1;
+                }
             }
         }
         assert_eq!(reloaded, 1, "one reload per storm, on the trailing edge");
