@@ -453,7 +453,11 @@ pub const HABIT_CONTEXT: &[ActionId] = &[
     ActionId::HabitRepair,
     ActionId::HabitMoveUp,
     ActionId::HabitMoveDown,
+    ActionId::HabitEdit,
     ActionId::HabitConvertArm,
+    ActionId::HabitRemove,
+    ActionId::HabitRemoveConfirm,
+    ActionId::HabitRemoveCancel,
 ];
 
 /// The habit row context menu's page (H2 D4, US-2): the curated core
@@ -484,6 +488,14 @@ pub fn habit_context_page(
         if !HABIT_CONTEXT.contains(&id) {
             continue;
         }
+        // The remove trio is destructive-last: appended after the
+        // Convert parent below, never ranked into the body (D4).
+        if matches!(
+            id,
+            ActionId::HabitRemove | ActionId::HabitRemoveConfirm | ActionId::HabitRemoveCancel
+        ) {
+            continue;
+        }
         let projected = row(keymap, chain, states, entry);
         rows.push((entry.menu_rank, index, projected));
     }
@@ -501,6 +513,24 @@ pub fn habit_context_page(
             hint: Vec::new(),
             submenu: Some(Submenu::Task(TaskMenuGroup::Convert)),
         });
+    }
+    // The staged remove's page rows (H4 D4, #944), destructive-last:
+    // the arm, the confirm (greyed while unarmed — consequence-first,
+    // it flips enabled with the arm), and — while armed — the cancel
+    // step. `states[HabitRemoveConfirm] == true` IS armed (the
+    // convert trio's states-map grammar, deviation (1)).
+    for id in [
+        ActionId::HabitRemove,
+        ActionId::HabitRemoveConfirm,
+        ActionId::HabitRemoveCancel,
+    ] {
+        if let Some(entry) = REGISTRY.iter().find(|entry| entry.id == id) {
+            let projected = row(keymap, chain, states, entry);
+            if id == ActionId::HabitRemoveCancel && !states.get(&id).copied().unwrap_or(false) {
+                continue; // the cancel step joins while armed only
+            }
+            page.push(projected);
+        }
     }
     page
 }
@@ -939,9 +969,14 @@ mod tests {
             ActionId::HabitRepair,
             ActionId::HabitConvertArm,
             ActionId::HabitConvertToSeries,
+            // The H4 family joins at ranks 240..254 (the registry's
+            // reviewed rows).
             ActionId::SeriesPause,
+            ActionId::HabitEdit,
             ActionId::SeriesPauseCommit,
+            ActionId::HabitRemove,
             ActionId::SeriesResume,
+            ActionId::HabitRemoveConfirm,
             ActionId::SeriesConvertArm,
             ActionId::SeriesConvertToHabit,
         ];
@@ -1723,15 +1758,28 @@ mod tests {
             ActionId::HabitConvertArm,
             ActionId::HabitMoveUp,
             ActionId::HabitMoveDown,
+            // The H4 editor opener joins the non-destructive body
+            // (D1: after the reorder pair, before the Convert arm).
+            ActionId::HabitEdit,
         ]
         .iter()
         .map(|&id| Some(id))
         .collect();
         expected.push(None);
-        assert_eq!(ids(&page), expected, "declared order + the Convert parent");
+        // The staged remove's pair closes the page (H4 D4, the
+        // destructive-last law): the arm enabled, the confirm greyed
+        // while unarmed (consequence-first), no cancel step.
+        expected.push(Some(ActionId::HabitRemove));
+        expected.push(Some(ActionId::HabitRemoveConfirm));
+        assert_eq!(
+            ids(&page),
+            expected,
+            "declared order + parent + remove pair"
+        );
         assert!(
-            page.last().is_some_and(|e| e.submenu.is_some()),
-            "the parent last"
+            page.last()
+                .is_some_and(|e| e.action == Some(ActionId::HabitRemoveConfirm)),
+            "the remove confirm closes the page (destructive-last law)"
         );
     }
 

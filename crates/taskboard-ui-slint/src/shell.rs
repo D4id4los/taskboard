@@ -140,6 +140,7 @@ impl KeymapShell {
             habit_move: None,
             habit_repair: None,
             habit_convert_target: None,
+            habit_remove_target: None,
             pattern_draft: None,
             series_target: None,
             pause_draft: None,
@@ -285,6 +286,9 @@ impl KeymapShell {
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitConvertCancel
+            | UiEffect::HabitRemoveArm
+            | UiEffect::HabitRemoveCancel
+            | UiEffect::HabitEdit
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
             // The recur editor's intents are adapter-interpreted view

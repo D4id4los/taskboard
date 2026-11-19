@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
-assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -925,6 +924,42 @@ expression: rows
   menu_rank: 220
   description: "Routes the confirmed habit-to-series conversion with the quota's default pattern."
   menu_group: task
+- id: habit.edit
+  label: Edit habit
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 240
+  description: "Opens the habit editor on the shared detail surface (title, description, quota, anchor time and day)."
+  menu_group: task
+- id: habit.remove
+  label: Remove habit
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 250
+  description: "Arms the habit-remove confirm (consequence first: the dispatch waits for Confirm)."
+  menu_group: task
+- id: habit.remove-confirm
+  label: Confirm habit removal
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 252
+  description: "Routes the confirmed removal: the habit tombstones, its log history outlives it."
+  menu_group: task
+- id: habit.remove-cancel
+  label: Cancel removal
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 254
+  description: Disarms the armed habit-remove confirm; nothing was dispatched.
+  menu_group: ~
 - id: habit.move-up
   label: Move habit up
   contexts:

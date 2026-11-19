@@ -432,6 +432,22 @@ pub enum ActionId {
     /// The habit → series confirm's dispatch: routes
     /// `ConvertHabitToSeries` with the quota's default pattern (D-2).
     HabitConvertToSeries,
+    /// The habit editor's opener (H4 D1, US-5): opens the shared
+    /// task-detail surface over the focused/menu-row habit (the
+    /// `TaskEdit` → Activate shape; the adapter resolves the one-shot
+    /// subject).
+    HabitEdit,
+    /// The GUI habit remove's arm step (H4 D4, #944): the staged
+    /// consequence-first grammar (the task-delete/`BreakRuleRemove`
+    /// shape) — arms the confirm inside the open habit menu; the
+    /// dispatch itself waits for Confirm.
+    HabitRemove,
+    /// The staged remove's confirm dispatch: routes
+    /// `StateCommand::DeleteHabit` (the tombstone: the log outlives).
+    HabitRemoveConfirm,
+    /// The armed remove's cancel step: disarms INSIDE the open menu;
+    /// nothing was dispatched.
+    HabitRemoveCancel,
     /// The task-view recur row's pause affordance: opens the inline
     /// pause editor (a view intent, the entries-overlay precedent).
     SeriesPause,
@@ -679,6 +695,10 @@ impl ActionId {
             Self::HabitRepair => "habit.repair",
             Self::HabitConvertArm => "habit.convert-arm",
             Self::HabitConvertToSeries => "habit.convert-to-series",
+            Self::HabitEdit => "habit.edit",
+            Self::HabitRemove => "habit.remove",
+            Self::HabitRemoveConfirm => "habit.remove-confirm",
+            Self::HabitRemoveCancel => "habit.remove-cancel",
             Self::SeriesPause => "series.pause",
             Self::SeriesPauseCommit => "series.pause-commit",
             Self::SeriesResume => "series.resume",
@@ -1838,6 +1858,47 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
+        id: ActionId::HabitEdit,
+        label: "Edit habit",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 240,
+        description: "Opens the habit editor on the shared detail surface (title, description, quota, anchor time and day).",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitRemove,
+        label: "Remove habit",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 250,
+        description: "Arms the habit-remove confirm (consequence first: the dispatch waits for Confirm).",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitRemoveConfirm,
+        label: "Confirm habit removal",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 252,
+        description: "Routes the confirmed removal: the habit tombstones, its log history outlives it.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitRemoveCancel,
+        label: "Cancel removal",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 254,
+        description: "Disarms the armed habit-remove confirm; nothing was dispatched.",
+        // Internal verb — the armed page's only affordance.
+        menu_group: None,
+    },
+    ActionEntry {
         id: ActionId::HabitMoveUp,
         label: "Move habit up",
         contexts: GLOBAL,
@@ -2613,6 +2674,11 @@ mod tests {
             ActionId::HabitMoveUp,
             ActionId::HabitMoveDown,
             ActionId::HabitConvertCancel,
+            // The H4 family: the editor opener and the staged remove.
+            ActionId::HabitEdit,
+            ActionId::HabitRemove,
+            ActionId::HabitRemoveConfirm,
+            ActionId::HabitRemoveCancel,
         ];
         for id in ALL {
             assert_eq!(REGISTRY.iter().filter(|e| e.id == *id).count(), 1);

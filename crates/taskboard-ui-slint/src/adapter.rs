@@ -594,6 +594,10 @@ pub(crate) struct Adapter {
     /// disarmed. One subject armed at a time; opening another
     /// subject's menu disarms.
     habit_convert_armed: Option<taskboard_domain::HabitId>,
+    /// The staged habit remove's armed subject (H4 D4, #944): the
+    /// task-delete/`BreakRuleRemove` grammar verbatim — the arm
+    /// stages adapter-side, the confirm routes `DeleteHabit`.
+    habit_remove_armed: Option<taskboard_domain::HabitId>,
     /// The create form's armed flag (round-7 D-7.2): the inline form
     /// mounts below the section header while true — adapter-owned,
     /// pushed per pass (the armed-strip doctrine; no transient UI
@@ -1608,6 +1612,13 @@ impl Adapter {
         }
         if wants.wants(crate::router::OneShotSet::HABIT_CONVERT_TARGET) {
             ctx.habit_convert_target = self.habit_convert_target.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_REMOVE_TARGET) {
+            // The staged remove's armed subject (H4 D4): the arm
+            // recorded it; the confirm consumes the one-shot (the
+            // armed state clears with the dispatch — a repeat confirm
+            // is the disarmed `NoTarget`).
+            ctx.habit_remove_target = self.habit_remove_armed.take();
         }
         if wants.wants(crate::router::OneShotSet::HABIT_CREATE_DRAFT) {
             ctx.habit_create_draft = self.habit_create_draft.take();
@@ -2670,6 +2681,17 @@ impl Adapter {
                 .is_some_and(taskboard_domain::habit::Habit::is_live)
         }) {
             self.habit_convert_armed = None;
+        }
+        // The armed remove absorbs when its habit dies (the same
+        // stale-index law; the armed flag is id-keyed).
+        if !self.habit_remove_armed.is_some_and(|armed| {
+            state
+                .habits
+                .habits
+                .get(&armed)
+                .is_some_and(taskboard_domain::habit::Habit::is_live)
+        }) {
+            self.habit_remove_armed = None;
         }
         let recur = crate::models::RecurRowPush {
             pause_open: self.recur_pause_open,
@@ -4372,6 +4394,49 @@ impl Adapter {
                 self.refresh_forced(window);
                 Vec::new()
             }
+            // The staged remove's arm (H4 D4, #944): staging touches
+            // no engine state — the armed subject rides the adapter
+            // flag and the open menu's page re-projects (the confirm
+            // flips enabled). Kiosk dispatch is structurally inert
+            // (the convert arm's exact posture).
+            (_, UiEffect::HabitRemoveArm | UiEffect::HabitRemoveCancel) if self.kiosk => Vec::new(),
+            (_, UiEffect::HabitRemoveArm) => {
+                let armed = match self.focused_habit {
+                    Some(habit) => {
+                        let live = self
+                            .state
+                            .load()
+                            .habits
+                            .habits
+                            .get(&habit)
+                            .is_some_and(taskboard_domain::habit::Habit::is_live);
+                        if live {
+                            self.habit_remove_armed = Some(habit);
+                            self.reproject_habit_menu(window);
+                        }
+                        live
+                    }
+                    None => false,
+                };
+                if !armed {
+                    self.arm_no_target_notice(ActionId::HabitRemove);
+                }
+                self.push_notice(window);
+                // The armed-confirm echo rides adapter-owned flags —
+                // the unchanged-refresh guard would eat the pass
+                // (the convert arm's precedent).
+                self.refresh_forced(window);
+                Vec::new()
+            }
+            // The armed remove's cancel step: disarms INSIDE the open
+            // menu — the re-projected confirm greys again; nothing
+            // was dispatched.
+            (_, UiEffect::HabitRemoveCancel) => {
+                self.habit_remove_armed = None;
+                self.reproject_habit_menu(window);
+                self.refresh_forced(window);
+                Vec::new()
+            }
             (_, UiEffect::SeriesConvertArm) => {
                 let armed = match self.view_state.subject_task() {
                     Some(task) => self.arm_series_convert(task),
@@ -4514,6 +4579,24 @@ impl Adapter {
             }
             (Flow::None, UiEffect::BeginDescriptionEdit) => {
                 self.begin_description_edit(window);
+                Vec::new()
+            }
+            // The habit editor's opener (H4 D1, US-5): the Activate
+            // shape over the one-shot habit subject — the shared
+            // detail surface mounts the habit variant. Kiosk dispatch
+            // is structurally inert (D7: the editor is unmountable; a
+            // subjectless dispatch surfaces the typed refusal on the
+            // notice lane — the T-19 twin).
+            (_, UiEffect::HabitEdit) if self.kiosk => Vec::new(),
+            (Flow::None, UiEffect::HabitEdit) => {
+                if let Some(habit) = self.habit_edit_subject() {
+                    let outcomes = self.view_state.open_habit_editor(habit);
+                    self.apply_outcomes(window, &outcomes);
+                    self.finish_mutation(window);
+                } else {
+                    self.arm_no_target_notice(ActionId::HabitEdit);
+                    self.push_notice(window);
+                }
                 Vec::new()
             }
             (
@@ -5756,8 +5839,13 @@ impl Adapter {
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitConvertCancel
+            | UiEffect::HabitRemoveArm
+            | UiEffect::HabitRemoveCancel
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
+            // The H4 editor opener interprets like every view intent
+            // (the kiosk/subject refusals live in the arm).
+            | UiEffect::HabitEdit
             // The recur editor's intents (round-7 D-7.1): the opener
             // and the detach strip's flag flips interpret like every
             // view intent — the kiosk/subject refusals live in the
@@ -6021,6 +6109,25 @@ impl Adapter {
     /// subjectless/no-target dispatch surfaces on the status-notice
     /// lane from the action's registry description. Structural fact
     /// only (`notice.is_some()`); the phrase is never asserted.
+    /// The habit editor's one-shot subject (H4 D1): the menu row
+    /// routes the bare id — the opener's focus fact mints the target
+    /// (the habit menu's `focused_habit`; the repair seam's exact
+    /// arithmetic). The convert arm's resolution order, habit-side.
+    fn habit_edit_subject(&self) -> Option<taskboard_domain::HabitId> {
+        let habit = self.focused_habit.or(match self.menu_row_subject {
+            Some(crate::presentation::RowSubject::Habit(habit)) => Some(habit),
+            _ => None,
+        });
+        habit.filter(|habit| {
+            self.state
+                .load()
+                .habits
+                .habits
+                .get(habit)
+                .is_some_and(taskboard_domain::habit::Habit::is_live)
+        })
+    }
+
     fn arm_no_target_notice(&mut self, id: ActionId) {
         self.notice = Some(Notice {
             text: crate::presentation::no_target_notice_phrase(
@@ -6101,6 +6208,13 @@ impl Adapter {
         states.insert(ActionId::HabitConvertArm, !armed);
         states.insert(ActionId::HabitConvertToSeries, armed);
         states.insert(ActionId::HabitConvertCancel, armed);
+        // The staged remove's verdicts (H4 D4): the arm greys while
+        // armed (the confirm replaces its enabled state), the confirm
+        // flips on with the arm, the cancel joins armed-only.
+        let remove_armed = self.habit_remove_armed == Some(habit);
+        states.insert(ActionId::HabitRemove, !remove_armed);
+        states.insert(ActionId::HabitRemoveConfirm, remove_armed);
+        states.insert(ActionId::HabitRemoveCancel, remove_armed);
         let repair = state
             .habits
             .habits
@@ -6126,6 +6240,9 @@ impl Adapter {
                 ActionId::HabitConvertArm,
                 ActionId::HabitConvertToSeries,
                 ActionId::HabitConvertCancel,
+                ActionId::HabitEdit,
+                ActionId::HabitRemove,
+                ActionId::HabitRemoveConfirm,
             ] {
                 states.insert(id, false);
             }
@@ -6250,11 +6367,14 @@ impl Adapter {
             return;
         }
         // Opening another subject's menu disarms (H2 D4: one subject
-        // armed at a time).
+        // armed at a time — the remove arm obeys the same law).
         if self.habit_convert_armed.is_some_and(|armed| armed != habit) {
             self.habit_convert_armed = None;
             self.habit_convert_target = None;
             self.pattern_draft = None;
+        }
+        if self.habit_remove_armed.is_some_and(|armed| armed != habit) {
+            self.habit_remove_armed = None;
         }
         self.focused_habit = Some(habit);
         self.menu_row_subject = Some(crate::presentation::RowSubject::Habit(habit));
@@ -9707,6 +9827,7 @@ pub(crate) fn install(
         effort_editor: None,
         walk_abort_armed: false,
         habit_convert_armed: None,
+        habit_remove_armed: None,
         habit_create_open: false,
         habit_create_draft: None,
         habit_create_quota: String::new(),
@@ -10992,12 +11113,14 @@ impl Adapter {
             return;
         }
         // Opening another subject's menu disarms the armed habit
-        // conversion (H2 D4: one subject armed at a time).
+        // conversion (H2 D4: one subject armed at a time) — and the
+        // armed remove (H4 D4, the same one-subject law).
         if self.habit_convert_armed.is_some() {
             self.habit_convert_armed = None;
             self.habit_convert_target = None;
             self.pattern_draft = None;
         }
+        self.habit_remove_armed = None;
         // The curated grammar (UX-R8 chunk-5 D-4/D-5, US-2): the
         // quick bar + the applicable rows + the four families compose
         // through `task_context_page` over the per-subject facts (the

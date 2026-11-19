@@ -21,7 +21,7 @@ use slint::Model as _;
 use std::sync::Arc;
 use taskboard_domain::{AppState, StateCommand};
 use taskboard_ui_slint::actions::ActionId;
-use taskboard_ui_slint::{KeyboardState, UiSettings};
+use taskboard_ui_slint::{KeyboardState, UiSettings, View};
 
 /// The minimal habit-journey harness: driver + fake engine + mount.
 /// The journeys suite's harness is that suite's surface; this file
@@ -257,9 +257,18 @@ fn us2_s1_right_click_opens_the_habit_context_menu() {
             let rows: Vec<_> = (0..entries.row_count())
                 .map(|i| entries.row_data(i).expect("row"))
                 .collect();
+            // H4 supersedes the page's tail: the Convert parent is
+            // followed by the staged remove's destructive-last pair
+            // (the confirm closes the page — menu.rs's page test pins
+            // the declared order).
             assert!(
-                rows.last().is_some_and(|r| r.submenu),
-                "the Convert parent closes the page (destructive-last law)"
+                rows.iter().any(|r| r.submenu),
+                "the Convert parent renders in the page body"
+            );
+            assert!(
+                rows.last()
+                    .is_some_and(|r| r.action.as_str() == "habit.remove-confirm"),
+                "the remove confirm closes the page (destructive-last law)"
             );
         },
     );
@@ -710,4 +719,192 @@ fn golden_state_with_habits() -> AppState {
     let board = *state.boards.keys().next().expect("fixture board");
     state_two_habits(&mut state, board);
     state
+}
+
+/// The second habit for the one-armed-subject-at-a-time law.
+fn state_second_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
+    let habit = taskboard_domain::habit::Habit {
+        id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "stretch".into(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerDay(
+            taskboard_domain::NonZeroCount::new(1).unwrap(),
+        ),
+        order: 1,
+        anchor_time: None,
+        anchor_day: None,
+        clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
+        continued_from: None,
+        deleted: false,
+        by: None,
+    };
+    state.habits.habits.insert(habit.id, habit);
+}
+
+/// `h4_remove_s1` (H4 D4, #944): the staged remove arm — the arm flips
+/// the confirm enabled INSIDE the open menu (the states-map
+/// re-projection; staging dispatches nothing), the arm row greys
+/// while armed, and opening another subject's menu disarms (one
+/// armed subject at a time).
+#[test]
+fn h4_remove_s1_remove_arms_and_the_confirm_flips() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    state_second_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            let rows_by_action = |harness: &Harness| -> Vec<taskboard_ui_slint::MenuEntryModel> {
+                let entries = keyboard(harness).get_menu_entries();
+                (0..entries.row_count())
+                    .map(|i| entries.row_data(i).expect("row"))
+                    .collect()
+            };
+
+            window.invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            let find = |harness: &Harness, action: &str| {
+                rows_by_action(harness)
+                    .into_iter()
+                    .find(|r| r.action == action)
+                    .unwrap_or_else(|| panic!("{action} renders"))
+            };
+            assert!(find(&harness, "habit.remove").enabled);
+            assert!(
+                !find(&harness, "habit.remove-confirm").enabled,
+                "unarmed: the confirm greys (consequence first)"
+            );
+
+            // The arm: staging only — nothing reaches the boundary.
+            harness.handle.dispatch_action(ActionId::HabitRemove);
+            harness.driver.advance_time(0);
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the arm stages; the confirm dispatches"
+            );
+            assert!(
+                !find(&harness, "habit.remove").enabled,
+                "the arm row greys while armed (the confirm replaces its state)"
+            );
+            assert!(
+                find(&harness, "habit.remove-confirm").enabled,
+                "the re-projection enables the armed confirm inside the menu"
+            );
+            assert!(
+                find(&harness, "habit.remove-cancel").enabled,
+                "the cancel step joins while armed"
+            );
+            // Opening the OTHER subject's menu disarms (one armed
+            // subject at a time): the confirm greys again.
+            window.invoke_habits_context_requested(1, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            assert!(keyboard(&harness).get_menu_open());
+            assert!(find(&harness, "habit.remove").enabled);
+            assert!(
+                !find(&harness, "habit.remove-confirm").enabled,
+                "the other subject's menu opens unarmed"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "disarm dispatches nothing"
+            );
+        },
+    );
+}
+
+/// `h4_remove_s2` (H4 D4, #944): the confirm routes the domain verb
+/// (`DeleteHabit` — the tombstone: the log outlives) and the staging
+/// clears; nothing else dispatches.
+#[test]
+fn h4_remove_s2_confirm_tombstones_and_closes() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            window.invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitRemove);
+            harness.driver.advance_time(0);
+            harness.handle.dispatch_action(ActionId::HabitRemoveConfirm);
+            harness.driver.advance_time(0);
+            match harness.engine.drain().as_slice() {
+                [StateCommand::DeleteHabit { .. }] => {}
+                other => panic!("the confirm routes the tombstone, got {other:?}"),
+            }
+        },
+    );
+}
+
+/// `h4_kiosk_editor_gate` (H4 D7): on kiosk the editor is unmountable —
+/// the `habit.edit` dispatch is structurally inert (the view never
+/// swaps) — and the editor/remove rows join the greyed set in the
+/// menu (visible-disabled, never withheld).
+#[test]
+fn h4_kiosk_editor_gate() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount_with_settings(
+                SlintDriver::default(),
+                state,
+                UiSettings {
+                    kiosk: true,
+                    ..UiSettings::default()
+                },
+            );
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+
+            // The greyed menu: the editor and the remove pair render,
+            // disabled (the #790 visible-gating grammar).
+            window.invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            let entries = keyboard(&harness).get_menu_entries();
+            let rows: Vec<_> = (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .collect();
+            for action in ["habit.edit", "habit.remove", "habit.remove-confirm"] {
+                let row = rows
+                    .iter()
+                    .find(|r| r.action == action)
+                    .unwrap_or_else(|| panic!("{action} renders, greyed"));
+                assert!(!row.enabled, "{action} greys on kiosk");
+            }
+
+            // The dispatch is structurally inert: no view swap, no
+            // staging.
+            harness.handle.dispatch_action(ActionId::HabitEdit);
+            harness.driver.advance_time(0);
+            assert_eq!(
+                window.get_current_view(),
+                View::Board,
+                "the editor never mounts on kiosk"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the kiosk dispatch stages and sends nothing"
+            );
+        },
+    );
 }
