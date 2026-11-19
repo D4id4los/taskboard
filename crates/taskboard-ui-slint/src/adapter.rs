@@ -14835,12 +14835,20 @@ fn install_notification_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     // target — the same registry actions, unchanged. The target's
     // anchor mirrors the ref (task rows task-anchored; alarm rows
     // adhoc-anchored — mute has no button there anyway).
-    install_seam!(window: window.on_notification_snooze_clicked, adapter: adapter;
-        bind mut (a, window), args (index), {
+    // The snooze choice flyout's pick (H4 D3, US-6/S2): the row's
+    // chosen span routes the typed delta (the keyboard verb keeps its
+    // fixed 1-hour hop — the grammar gains no chord).
+    install_seam!(window: window.on_notification_snooze_span_picked, adapter: adapter;
+        bind mut (a, window), args (index, span), {
         let Some(row) = notification_row(&a, index) else {
             return;
         };
-        a.notification_snooze(&window, &row);
+        a.send(taskboard_domain::StateCommand::SnoozeReminder {
+            reminder: row.reminder,
+            occurrence: row.occurrence,
+            postpone: crate::router::snooze_span(usize::try_from(span).unwrap_or(usize::MAX)),
+        });
+        a.finish_mutation(&window);
     });
 
     install_seam!(window: window.on_notification_mute_clicked, adapter: adapter;

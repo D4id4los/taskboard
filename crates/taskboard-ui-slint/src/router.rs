@@ -14,6 +14,28 @@ use crate::presentation::ReminderTarget;
 /// How far a banner snooze pushes an occurrence out (D4): one hour.
 pub const SNOOZE_POSTPONE: TimeDelta = TimeDelta::hours(1);
 
+/// The snooze choice flyout's span set (H4 D3, US-6/S2): hours first,
+/// days after, ascending — O-1's "snooze in hours AND days". Every
+/// reminder family snoozes through the same banner grammar (the ask
+/// is tracker-side; per-habit spans stay #959's home). The keyboard
+/// verb keeps [`SNOOZE_POSTPONE`]; the flyout adds choice, the key
+/// grammar gains none.
+pub const SNOOZE_SPANS: [TimeDelta; 4] = [
+    TimeDelta::hours(1),
+    TimeDelta::hours(4),
+    TimeDelta::days(1),
+    TimeDelta::days(3),
+];
+
+/// The typed span behind the flyout's index (the adapter's trust
+/// boundary): an out-of-range index degrades to the keyboard verb's
+/// fixed hop (the stale-index law — never a panic, never a negative
+/// delta).
+#[must_use]
+pub fn snooze_span(index: usize) -> TimeDelta {
+    SNOOZE_SPANS.get(index).copied().unwrap_or(SNOOZE_POSTPONE)
+}
+
 /// The vi mode (D17): two plain shell states — ordinary state, not a
 /// subsystem (D10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
