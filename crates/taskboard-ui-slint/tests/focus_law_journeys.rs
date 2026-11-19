@@ -519,10 +519,19 @@ fn the_standard_extend_row_extends_one_member_per_press() {
                     ..UiSettings::default()
                 },
             );
-            let sel = |harness: &Harness, column: usize, row: usize| {
+            // The typed oracle is the selection COUNT over the whole
+            // board: exactly the anchor plus the one extension member
+            // — no double dispatch, no stray members anywhere.
+            let selected_count = |harness: &Harness| {
                 let board = harness.handle.window().get_board_model();
-                let column = board.stacks.row_data(column).expect("column");
-                column.tasks.row_data(row).expect("card").selected
+                (0..board.stacks.row_count())
+                    .map(|column| {
+                        let column = board.stacks.row_data(column).expect("column");
+                        (0..column.tasks.row_count())
+                            .filter(|row| column.tasks.row_data(*row).expect("card").selected)
+                            .count()
+                    })
+                    .sum::<usize>()
             };
             // Seed the walk focus on the first card, then anchor it.
             harness.press_preset(preset, ActionId::NavFocusDown);
@@ -533,11 +542,10 @@ fn the_standard_extend_row_extends_one_member_per_press() {
                 .invoke_board_task_clicked_modifiers(0, 0, true, false);
             harness.stroke(parse("Shift+Down").expect("Shift+Down"));
             harness.advance();
-            assert!(sel(&harness, 0, 0), "the anchor holds");
-            assert!(sel(&harness, 0, 1), "the extension member");
-            assert!(
-                !sel(&harness, 1, 0),
-                "exactly one front fired for the press (no double dispatch)"
+            assert_eq!(
+                selected_count(&harness),
+                2,
+                "the anchor plus exactly one extension member (one front, one press)"
             );
             harness.assert_commands(&[]);
         },
@@ -567,18 +575,28 @@ fn the_vi_and_emacs_extend_rows_extend_one_member_per_press() {
                     ..UiSettings::default()
                 },
             );
-            let sel = |harness: &Harness, column: usize, row: usize| {
+            // The same typed oracle as the Standard twin: the
+            // selection COUNT over the whole board is exactly two.
+            let selected_count = |harness: &Harness| {
                 let board = harness.handle.window().get_board_model();
-                let column = board.stacks.row_data(column).expect("column");
-                column.tasks.row_data(row).expect("card").selected
+                (0..board.stacks.row_count())
+                    .map(|column| {
+                        let column = board.stacks.row_data(column).expect("column");
+                        (0..column.tasks.row_count())
+                            .filter(|row| column.tasks.row_data(*row).expect("card").selected)
+                            .count()
+                    })
+                    .sum::<usize>()
             };
             harness.press_preset(preset, ActionId::NavFocusDown);
             harness.advance();
             harness.stroke(parse("J").expect("J"));
             harness.advance();
-            assert!(sel(&harness, 0, 0), "the anchor singleton");
-            assert!(sel(&harness, 0, 1), "J extended to the next card");
-            assert!(!sel(&harness, 1, 0), "exactly one front fired for J");
+            assert_eq!(
+                selected_count(&harness),
+                2,
+                "the anchor plus exactly one J extension (one front, one press)"
+            );
             harness.assert_commands(&[]);
             drop(harness);
 
@@ -597,14 +615,10 @@ fn the_vi_and_emacs_extend_rows_extend_one_member_per_press() {
             harness.advance();
             harness.stroke(parse("Ctrl+Shift+n").expect("Ctrl+Shift+n"));
             harness.advance();
-            assert!(sel(&harness, 0, 0), "the anchor singleton");
-            assert!(
-                sel(&harness, 0, 1),
-                "Ctrl+Shift+n extended to the next card"
-            );
-            assert!(
-                !sel(&harness, 1, 0),
-                "exactly one front fired for Ctrl+Shift+n"
+            assert_eq!(
+                selected_count(&harness),
+                2,
+                "the anchor plus exactly one Ctrl+Shift+n extension (one front, one press)"
             );
             harness.assert_commands(&[]);
         },
