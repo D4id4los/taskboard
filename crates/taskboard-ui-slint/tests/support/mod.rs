@@ -12,6 +12,7 @@
 pub mod driver;
 pub mod fake_engine;
 pub mod fixture;
+pub mod focus_journey;
 pub mod golden_compare;
 pub mod guard;
 pub mod health;
