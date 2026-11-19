@@ -219,6 +219,12 @@ impl KeymapShell {
             UiEffect::OpenPalette
             | UiEffect::FocusNext
             | UiEffect::FocusPrev
+            // The directional-focus family (J3 US-1, round 9 chunk 9)
+            // and its extend twin (#875) move no shell state — the
+            // per-view readings live in `view_state`/the adapter.
+            | UiEffect::FocusDirectional(_)
+            | UiEffect::ExtendSelectionNext
+            | UiEffect::ExtendSelectionPrev
             | UiEffect::NextView
             | UiEffect::PrevView
             | UiEffect::FocusBoard

@@ -662,6 +662,12 @@ pub struct ViewState {
     /// `reconcile` exactly on the first refresh where the board is
     /// live again (an armed target whose board is deleted prunes).
     pending_board_select: Option<BoardId>,
+    /// The planner's focused pane (J3 R-5, round 9 chunk 9): `0` =
+    /// placed boxes, `1` = candidate pool — the `models.rs`
+    /// `plan_position` pane numbering. The directional left/right
+    /// keys flip it; the in-pane walk is not landed (no planner
+    /// cursor seam today — the chunk plan §4's recorded scope).
+    plan_focus_pane: usize,
 }
 
 /// The `Flow` the flow accessors return when no flow level is live —
@@ -853,6 +859,7 @@ impl ViewState {
             retired: Vec::new(),
             selection: BoardSelection::default(),
             pending_board_select: None,
+            plan_focus_pane: 0,
         }
     }
 
@@ -1474,12 +1481,44 @@ impl ViewState {
     /// twin — a pushed view level, exact restore by truncation, the
     /// D7 refusal mapped to repaint-only.
     pub fn open_plan_next_day(&mut self) -> Vec<FlowOutcome> {
+        // A fresh open anchors the pane cursor on the placed boxes
+        // (the day shape's primary pane; J3 R-5's two-pane grammar).
+        self.plan_focus_pane = 0;
         match self
             .surfaces
             .push(crate::surfaces::Surface::View(ViewId::PlanNextDay))
         {
             Ok(_) | Err(crate::surfaces::AlreadyInChain) => vec![FlowOutcome::RefreshNow],
         }
+    }
+
+    /// The planner's focused pane (J3 R-5, round 9 chunk 9): `0` =
+    /// placed boxes, `1` = candidate pool — the `models.rs`
+    /// `plan_position` numbering.
+    #[must_use]
+    pub const fn plan_focus_pane(&self) -> usize {
+        self.plan_focus_pane
+    }
+
+    /// The directional left/right kept arm on the planner (J3 R-5):
+    /// the two-pane grammar's pane switch. Two panes, so both
+    /// directions toggle; Up/Down are not routed here (no in-pane
+    /// cursor seam today — the chunk plan §4's recorded scope, the
+    /// backlog issue carries the walk).
+    pub fn switch_plan_pane(&mut self, direction: i32) -> Vec<FlowOutcome> {
+        if self.view() != ViewId::PlanNextDay {
+            return Vec::new(); // the typed no-op: the grammar is the planner's
+        }
+        // Two panes: the step lands if it stays in `{0, 1}`, else it
+        // toggles (a second Left from boxes wraps to the pool — the
+        // two-value ring is the pane count's own geometry).
+        let stepped = usize::try_from(
+            i64::try_from(self.plan_focus_pane).unwrap_or(0) + i64::from(direction),
+        )
+        .ok()
+        .filter(|pane| *pane < 2);
+        self.plan_focus_pane = stepped.unwrap_or(1 - self.plan_focus_pane.min(1));
+        vec![FlowOutcome::RefreshNow]
     }
 
     /// Closes the plan-next-day surface: the `close_settings` twin.
@@ -3691,6 +3730,46 @@ impl ViewState {
         if let Some(Flow::Move { target, slot, .. }) = self.surfaces.top_flow_mut() {
             *target = stack;
             *slot = gap;
+        }
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The directional left/right kept arm during a move flow (J3
+    /// US-2, round 9 chunk 9): hop the drop *column* one stack over,
+    /// keeping the picked gap index (clamped to the target stack's
+    /// gap count) — the horizontal geometry of the same flow. Clamp,
+    /// not wrap (the ends hold: the column walk's edge is the board's
+    /// edge); the move survives every hop.
+    pub fn cycle_move_stack_column(
+        &mut self,
+        state: &AppState,
+        direction: i32,
+    ) -> Vec<FlowOutcome> {
+        let Flow::Move { target, slot, .. } = self.flow().clone() else {
+            return Vec::new();
+        };
+        let stacks = self.stack_ids(state);
+        let Some(current) = stacks.iter().position(|s| *s == target) else {
+            return Vec::new(); // a vanished target: reconcile repairs first
+        };
+        let next = usize::try_from(i64::try_from(current).unwrap_or(0) + i64::from(direction))
+            .ok()
+            .filter(|idx| *idx < stacks.len());
+        let Some(next) = next else {
+            return Vec::new(); // the edge holds
+        };
+        let target = stacks[next];
+        // The picked row index survives the hop; the target's gap
+        // count bounds it (a shorter column clamps the gap — the
+        // append gap is index `len`).
+        let gap_count = state.tasks_in_stack(target).len().saturating_add(1);
+        let slot = slot.min(gap_count.saturating_sub(1));
+        if let Some(Flow::Move {
+            target: t, slot: s, ..
+        }) = self.surfaces.top_flow_mut()
+        {
+            *t = target;
+            *s = slot;
         }
         vec![FlowOutcome::RefreshNow]
     }
@@ -6532,6 +6611,93 @@ mod tests {
         let outcomes = vs.cancel_move();
         assert_eq!(outcomes, vec![FlowOutcome::RefreshNow]);
         assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    // -- the directional kept arms (J3 US-2, round 9 chunk 9) ------------
+
+    #[test]
+    fn move_flow_column_hop_keeps_the_row_and_clamps_at_the_edges() {
+        let (state, _, [s0, s1], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s0,
+                slot: 1
+            },
+            "the flow arms at the slot after the task's own position"
+        );
+        // Right hops the column; the picked row index survives the
+        // hop, clamped to the shorter column's gap count (s1: one
+        // task, gaps 0..=1).
+        vs.cycle_move_stack_column(&state, 1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s1,
+                slot: 1
+            }
+        );
+        // Left hops back; the edge beyond s0 holds (clamp, no wrap).
+        vs.cycle_move_stack_column(&state, -1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s0,
+                slot: 1
+            }
+        );
+        vs.cycle_move_stack_column(&state, -1);
+        assert_eq!(
+            *vs.flow(),
+            Flow::Move {
+                task: a,
+                target: s0,
+                slot: 1
+            },
+            "the board's left edge holds"
+        );
+        // The move survives every hop (confirm still completes).
+        assert_eq!(*vs.cancel_move(), [FlowOutcome::RefreshNow][..]);
+    }
+
+    #[test]
+    fn move_flow_column_hop_without_a_live_target_is_inert() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        assert_eq!(vs.cycle_move_stack_column(&state, 1), Vec::new());
+    }
+
+    // -- the planner's pane grammar (J3 R-5, round 9 chunk 9) ------------
+
+    #[test]
+    fn planner_pane_switch_toggles_and_a_fresh_open_reanchors_on_boxes() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        // Outside the planner the switch is the typed no-op.
+        assert_eq!(vs.switch_plan_pane(1), Vec::new());
+        assert_eq!(vs.plan_focus_pane(), 0, "the no-op leaves the pane");
+        vs.open_plan_next_day();
+        assert_eq!(vs.plan_focus_pane(), 0, "a fresh open anchors on boxes");
+        assert_eq!(vs.switch_plan_pane(1), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.plan_focus_pane(), 1, "Right lands on the pool");
+        // The two-value ring: a second Right toggles back.
+        vs.switch_plan_pane(1);
+        assert_eq!(vs.plan_focus_pane(), 0);
+        vs.switch_plan_pane(-1);
+        assert_eq!(vs.plan_focus_pane(), 1, "Left from boxes wraps to the pool");
+        // A fresh open re-anchors on the boxes pane.
+        vs.close_plan_next_day();
+        vs.open_plan_next_day();
+        assert_eq!(vs.plan_focus_pane(), 0);
     }
 
     #[test]

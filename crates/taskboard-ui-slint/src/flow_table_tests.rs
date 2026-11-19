@@ -153,6 +153,14 @@ enum EK {
     SetModeInsert,
     FocusNext,
     FocusPrev,
+    /// The directional horizontal (Left/Right) and vertical (Up/Down)
+    /// keys (J3 US-1): the kept move-flow arms differ per axis, so
+    /// the pair harness carries them separately.
+    DirectionH,
+    DirectionV,
+    /// The selection-extend twin (#875): no kept arms under any flow
+    /// (the Nav settle-then-run re-runs it flow-free).
+    ExtendSelection,
     NextView,
     PrevView,
     FocusBoard,
@@ -258,6 +266,16 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::SetMode(Mode::Insert) => EK::SetModeInsert,
         UiEffect::FocusNext => EK::FocusNext,
         UiEffect::FocusPrev => EK::FocusPrev,
+        // The directional family's kept-arm split is per axis (the
+        // move column hop vs the ring); the extend twin has no kept
+        // arms.
+        UiEffect::FocusDirectional(
+            crate::router::Direction::Left | crate::router::Direction::Right,
+        ) => EK::DirectionH,
+        UiEffect::FocusDirectional(
+            crate::router::Direction::Up | crate::router::Direction::Down,
+        ) => EK::DirectionV,
+        UiEffect::ExtendSelectionNext | UiEffect::ExtendSelectionPrev => EK::ExtendSelection,
         UiEffect::NextView => EK::NextView,
         UiEffect::PrevView => EK::PrevView,
         UiEffect::FocusBoard => EK::FocusBoard,
@@ -960,6 +978,11 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // -- MOVE rows --
     row(FK::Move, E::FocusNext, exp(Z, K(KMove))); // kept target cycle
     row(FK::Move, E::FocusPrev, exp(Z, K(KMove)));
+    // The directional kept arms (J3 US-2, round 9 chunk 9): the
+    // horizontal keys hop the drop column, the vertical keys ride the
+    // target ring — the move survives both.
+    row(FK::Move, E::DirectionH, exp(Z, K(KMove)));
+    row(FK::Move, E::DirectionV, exp(Z, K(KMove)));
     row(FK::Move, E::Activate, exp(NZ, N)); // kept confirm
     row(FK::Move, E::RequestMove, exp(Z, N)); // kept toggle-cancel
     row(FK::Move, E::CancelMove, exp(Z, N)); // kept cancel
@@ -975,6 +998,15 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::Drag, E::RequestMove, exp(Z, N)); // kept cancel
     row(FK::Drag, E::FocusNext, exp(Z, K(KDrag))); // kept named inert
     row(FK::Drag, E::FocusPrev, exp(Z, K(KDrag)));
+    // The directional keys are absorbed mid-drag too (the pointer
+    // owns the ring — J3 US-2's DragMove absorb).
+    row(FK::Drag, E::DirectionH, exp(Z, K(KDrag)));
+    row(FK::Drag, E::DirectionV, exp(Z, K(KDrag)));
+    // The extend twin (#875): the named inert under the move/drag
+    // flows (the flows own the selection semantics; a settle would
+    // cancel the move — the bug class US-2 fixes).
+    row(FK::Drag, E::ExtendSelection, exp(Z, K(KDrag)));
+    row(FK::Move, E::ExtendSelection, exp(Z, K(KMove)));
     row(FK::Drag, E::CancelMove, exp(Z, N)); // kept cancel
     row(FK::Drag, E::BeginCreate, exp(Z, K(KTxt)));
     row(FK::Drag, E::BeginCreateStack, exp(Z, K(KTxt)));
@@ -1509,6 +1541,15 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::SetMode(Mode::Insert),
         UiEffect::FocusNext,
         UiEffect::FocusPrev,
+        // The directional family runs the whole matrix too (J3 US-1):
+        // each direction is payload-distinct, but the interpretation
+        // is payload-blind at the settle layer (the class decides).
+        UiEffect::FocusDirectional(crate::router::Direction::Left),
+        UiEffect::FocusDirectional(crate::router::Direction::Right),
+        UiEffect::FocusDirectional(crate::router::Direction::Up),
+        UiEffect::FocusDirectional(crate::router::Direction::Down),
+        UiEffect::ExtendSelectionNext,
+        UiEffect::ExtendSelectionPrev,
         UiEffect::NextView,
         UiEffect::PrevView,
         UiEffect::FocusBoard,
@@ -2799,6 +2840,12 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::SetMode(_)
         | UiEffect::FocusNext
         | UiEffect::FocusPrev
+        // The directional-focus family (J3 US-1) and its extend twin
+        // (#875): pure focus/selection steps — no anchor moves (the
+        // walk family's Survive class).
+        | UiEffect::FocusDirectional(_)
+        | UiEffect::ExtendSelectionNext
+        | UiEffect::ExtendSelectionPrev
         | UiEffect::FocusFirst
         | UiEffect::FocusLast
         | UiEffect::ControlNext
