@@ -327,6 +327,9 @@ impl LevelState {
                 | crate::surfaces::FlowTag::MoveStack
                 | crate::surfaces::FlowTag::TrackEntries
                 | crate::surfaces::FlowTag::DragMove
+                // The embedded planner child (J4 D-2): armed-with-
+                // no-buffer — the placement form is its own level.
+                | crate::surfaces::FlowTag::ReviewPlanner
                 | crate::surfaces::FlowTag::WalkFilePick
                 // The armed-delete strip carries no buffer or cursor
                 // (UX R-2 D-2): the armed identity rides the flow

@@ -8,7 +8,7 @@
 // All user-visible verbs route through the action layer — the
 // callbacks below are the dispatch seams, no key handlers (§5.1).
 
-import { Theme, Typography, Semantic } from "theme.slint";
+import { Theme, Typography, Semantic, RoleText } from "theme.slint";
 import { Responsive, Breakpoint } from "responsive.slint";
 import { ActionMenu, MenuEntryModel, QuickBarEntryModel } from "compositions/action-menu.slint";
 import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
@@ -26,7 +26,7 @@ import { LabelsPanel, LabelRowModel } from "compositions/labels-overlay.slint";
 import { TrackPanelFacts, TrackPanelWalkFacts } from "track-panel-facts.slint";
 import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
-import { ModalDialogHost, DialogKind } from "widgets/modal-dialog-host.slint";
+import { ModalDialogHost, DialogKind, DialogButtonModel, DialogButtonRole } from "widgets/modal-dialog-host.slint";
 import { AnchoredOverlayHost } from "widgets/anchored-overlay.slint";
 import { HabitCardModel } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
@@ -80,7 +80,7 @@ export { AlarmWindow, AlarmRowModel }
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
 export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
-export { ReviewWalkModel }
+export { ReviewWalkModel, DialogButtonModel, DialogButtonRole }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
 
@@ -360,7 +360,16 @@ export component AppWindow inherits Window {
     // The walk's seams: scrim, the row verbs (cursor row only), the
     // armed picker and date field, the prompt mirrors, and the commit
     // exits.
-    callback walk-scrim-clicked();
+    // The abort ladder's seams (J4 D-6): the host's outside click
+    // arms (Entry closes silently); the confirm's two buttons.
+    callback walk-abort-arm-requested();
+    callback walk-abort-accept-clicked();
+    callback walk-abort-dismiss-clicked();
+    // The dialog button row (D-5): the pushed intent code dispatches
+    // the walk verb the pass mapped it to.
+    callback walk-button-invoked(int);
+    // The embedded planner choice (J4 US-3/S1).
+    callback walk-plan-clicked();
     callback walk-file-clicked();
     callback walk-keep-clicked();
     callback walk-file-prev-clicked();
@@ -1549,37 +1558,96 @@ export component AppWindow inherits Window {
         // (the capture-overlay precedent; the later sibling wins the
         // hit test, so an outside click lands on the scrim and closes
         // — the session keeps running; the overlay is presentation).
-        // The review walk's scrim (the focus overlay's precedent): an
-        // outside click steps the walk back one level — never past a
-        // command (the ladder shape).
-        if (root.walk-model.open): TouchArea {
-            width: 100%;
-            height: 100%;
-            clicked => root.walk-scrim-clicked();
+        // The review walk on the J2 modal base (J4 D-5, US-4): the
+        // host owns the scrim, the absorbing panel root (inside clicks
+        // never close — the ad-hoc scrim dies), the content-bounded
+        // height, and the walk-mask arming; kind `confirm` routes the
+        // outside click to the abort law (R-2), never a silent
+        // step-back. The dialog button row carries the stage's
+        // Next/Prev/Finish + the completion exit (the pass derives the
+        // model and the parallel intent codes).
+        if (root.walk-model.open): ModalDialogHost {
+            open: true;
+            title: root.walk-model.header;
+            kind: DialogKind.confirm;
+            body-preferred-width: 560px * Theme.base-scale;
+            walk-stops: 1 + root.walk-model.rows.length;
+            viewport-floor: status.y;
+            // The stage's button row (D-5): the pass derives the
+            // model + parallel intent codes; without this binding the
+            // journey's visible Next/Prev/Finish/Done controls vanish.
+            buttons: root.walk-model.buttons;
+            // Confirm kind: outside click is the only host-emitted
+            // dismissal (the R-4 law) — and it is the abort law's arm.
+            dismissed => root.walk-abort-arm-requested();
+            button-invoked(code) => root.walk-button-invoked(
+                root.walk-model.button-codes[code]);
+            ReviewWalkOverlay {
+                model: root.walk-model;
+                answer-seeds: root.walk-answer-seeds;
+                plan: root.plan-model;
+                plan-time-text: root.plan-time-text;
+                plan-effort-text: root.plan-effort-text;
+                plan-box-activated(i) => root.plan-box-activated(i);
+                plan-pool-activated(i) => root.plan-pool-activated(i);
+                plan-box-earlier(i) => root.plan-box-earlier(i);
+                plan-box-later(i) => root.plan-box-later(i);
+                plan-box-remove(i) => root.plan-box-remove(i);
+                plan-time-edited(t) => root.plan-time-edited(t);
+                plan-effort-edited(t) => root.plan-effort-edited(t);
+                plan-place-commit() => root.plan-place-commit();
+                plan-place-cancel() => root.plan-place-cancel();
+                file-clicked() => root.walk-file-clicked();
+                keep-clicked() => root.walk-keep-clicked();
+                file-prev-clicked() => root.walk-file-prev-clicked();
+                file-next-clicked() => root.walk-file-next-clicked();
+                candidate-activated(index) => root.walk-candidate-activated(index);
+                file-commit-clicked() => root.walk-file-commit-clicked();
+                tomorrow-clicked() => root.walk-tomorrow-clicked();
+                pick-clicked() => root.walk-pick-clicked();
+                leave-clicked() => root.walk-leave-clicked();
+                plan-clicked() => root.walk-plan-clicked();
+                date-edited(text) => root.walk-date-edited(text);
+                date-commit-clicked() => root.walk-date-commit-clicked();
+                answer-edited(index, text) => root.walk-answer-edited(index, text);
+                record-clicked() => root.walk-record-clicked();
+                finish-clicked() => root.walk-finish-clicked();
+            }
         }
-        if (root.walk-model.open): ReviewWalkOverlay {
-            width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
-            x: (root.width - self.width) / 2;
-            y: max(Theme.space-4,
-                   min((root.height - status.height - self.height) / 2,
-                       status.y - self.height - Theme.space-2));
-            model: root.walk-model;
-            answer-seeds: root.walk-answer-seeds;
-            scrim-clicked() => root.walk-scrim-clicked();
-            file-clicked() => root.walk-file-clicked();
-            keep-clicked() => root.walk-keep-clicked();
-            file-prev-clicked() => root.walk-file-prev-clicked();
-            file-next-clicked() => root.walk-file-next-clicked();
-            candidate-activated(index) => root.walk-candidate-activated(index);
-            file-commit-clicked() => root.walk-file-commit-clicked();
-            tomorrow-clicked() => root.walk-tomorrow-clicked();
-            pick-clicked() => root.walk-pick-clicked();
-            leave-clicked() => root.walk-leave-clicked();
-            date-edited(text) => root.walk-date-edited(text);
-            date-commit-clicked() => root.walk-date-commit-clicked();
-            answer-edited(index, text) => root.walk-answer-edited(index, text);
-            record-clicked() => root.walk-record-clicked();
-            finish-clicked() => root.walk-finish-clicked();
+        // The abort confirm (J4 D-6): a nested confirm-kind host above
+        // the walk dialog (the later sibling wins the hit test).
+        // Accept closes the walk — decisions already made are applied
+        // commands and survive; dismiss keeps the walk verbatim. The
+        // tally is NOT presented here: the summary belongs to a
+        // completed session only.
+        if (root.walk-model.open && root.walk-model.abort-confirm): ModalDialogHost {
+            open: true;
+            title: "End this review?";
+            kind: DialogKind.confirm;
+            body-preferred-width: 420px * Theme.base-scale;
+            walk-stops: 2;
+            viewport-floor: status.y;
+            // Confirm kind: outside click dismisses ("Keep
+            // reviewing") — the one host-emitted resolution.
+            dismissed => root.walk-abort-dismiss-clicked();
+            button-invoked(i) => {
+                if (i == 0) {
+                    root.walk-abort-dismiss-clicked();
+                } else {
+                    root.walk-abort-accept-clicked();
+                }
+            }
+            buttons: [
+                { label: "Keep reviewing", role: DialogButtonRole.dismiss, enabled: true, autofocus: true },
+                { label: "End review", role: DialogButtonRole.accept, enabled: true, autofocus: false },
+            ];
+            VerticalLayout {
+                RoleText {
+                    role: Typography.body;
+                    text: "Steps already taken stay as they are. Half-typed text is dropped.";
+                    wrap: word-wrap;
+                }
+            }
         }
         if (root.focus-overlay-open): focus-overlay-backdrop := TouchArea {
             width: 100%;

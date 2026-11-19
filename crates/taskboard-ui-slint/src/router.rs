@@ -302,8 +302,17 @@ pub enum UiEffect {
 pub enum WalkIntent {
     CursorUp,
     CursorDown,
+    /// The Escape ladder's stage rung (J4 D-6): the insert rung and the
+    /// child rung first, then the abort-confirm arm (or the Entry
+    /// stage's one silent exit).
     Back,
+    /// The Prev control (the dialog button row): one visited stage
+    /// back.
+    Prev,
     Advance,
+    /// The plan-next-day choice out of Carry (J4 US-3/S1): mounts the
+    /// embedded `ReviewPlanner` child.
+    Planner,
     InboxFile,
     InboxKeep,
     FileTargetPrev,
@@ -315,6 +324,18 @@ pub enum WalkIntent {
     CarryDateCommit,
     Record,
     Finish,
+    /// The completion summary's exit (J4 D-8): closes the walk and
+    /// restores focus.
+    Complete,
+    /// The abort arm (the dialog host's outside click; J4 R-2): the
+    /// Entry stage closes silently, any other stage arms the confirm.
+    AbortArm,
+    /// The abort confirm's accept: close + focus restore. Decisions
+    /// already made are applied `StateCommand`s — never undone.
+    AbortAccept,
+    /// The abort confirm's dismiss ("Keep reviewing"): the confirm
+    /// closes, the walk stays exactly as it was.
+    AbortDismiss,
 }
 
 /// The effect classes the flow-settle matrix ranges over (round-3
@@ -1551,6 +1572,24 @@ impl ActionRouter {
             }
             ActionId::ReviewFinish => {
                 DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::Finish))
+            }
+            ActionId::ReviewWalkPlanner => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::Planner))
+            }
+            ActionId::ReviewWalkPrev => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::Prev))
+            }
+            ActionId::ReviewWalkComplete => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::Complete))
+            }
+            ActionId::ReviewAbortArm => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::AbortArm))
+            }
+            ActionId::ReviewAbortAccept => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::AbortAccept))
+            }
+            ActionId::ReviewAbortDismiss => {
+                DispatchOutcome::UiEffect(UiEffect::ReviewWalk(WalkIntent::AbortDismiss))
             }
             // Reserved (§5.8) — PaletteSearch opens the palette; the
             // only disabled row left (D6) is AppHelp (the undo rows

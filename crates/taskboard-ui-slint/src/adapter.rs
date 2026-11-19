@@ -40,7 +40,7 @@ use crate::resolver::{KeymapResolver, Resolution};
 use crate::router::{ActionRouter, DispatchOutcome, EffectClass, Mode, UiEffect, WalkIntent};
 use crate::settings_form::{self, ConnectionDraft};
 use crate::shell::KeymapShell;
-use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState, WalkStage, WalkStep};
+use crate::view_state::{Flow, FlowOutcome, FocusEdge, ViewState, WalkStep};
 use crate::{AppWindow, Breakpoint, KeyFeedback, KeyboardState, Responsive, UiStatus};
 
 /// The repaint cadence (D1): the UI-owned timer's tick, in
@@ -306,13 +306,6 @@ pub(crate) struct FocusOrigin {
 
 use crate::level_state::TrackFormState;
 
-/// The walk's planner-handoff return hint (see the field docs on
-/// `Adapter`).
-struct WalkResume {
-    cadence: taskboard_domain::ReviewCadence,
-    reference: chrono::NaiveDate,
-}
-
 /// The reorder pair's minted one-shot cells (chunk 8 D4): the up and
 /// down `(habit, slot order)` pair, `None` where the slot does not
 /// exist (the typed `NoTarget`'s input).
@@ -365,10 +358,10 @@ pub(crate) struct Adapter {
     /// repaint driver consults it per tick. Kiosk is structurally and
     /// explicitly excluded.
     pub(crate) seconds_surfaces_active: bool,
-    /// The review walk's cross-surface return hint (DR-7 chunk 3,
-    /// #638; chunk 1 D9): the shape-B planner handoff. The walk's
-    /// prompt answers and armed date field live in its level.
-    walk_resume: Option<WalkResume>,
+    /// The review walk's abort-confirm arm (J4 D-6): `true` while the
+    /// nested confirm is mounted; a stage change or the dismissal
+    /// clears it.
+    walk_abort_armed: bool,
     /// The last [`Self::apply_outcomes`] pass's flow liveness (the
     /// flowless enum variant replaces a bool — clippy's
     /// excessive-bools wall). The D15 focus hand-off (and the r4 D20
@@ -2243,19 +2236,6 @@ impl Adapter {
                         }
                     }
                 }
-                FlowOutcome::PlannerHandoff => {
-                    // The walk's boundary ask (chunk 3's exit
-                    // protocol): the shape-B transition, exactly the
-                    // adapter-side half of `WalkStep::Handoff` — the
-                    // walk is still open (the stage does not change on
-                    // the handoff), so the window rides with it.
-                    if let crate::view_state::Flow::ReviewWalk {
-                        cadence, reference, ..
-                    } = self.view_state.flow().clone()
-                    {
-                        self.hand_off_to_planner(window, cadence, reference);
-                    }
-                }
             }
         }
         if mode_changed {
@@ -2555,12 +2535,10 @@ impl Adapter {
         if self.menu_kind == MenuKind::Object && self.menu_subject_dead(&state) {
             self.apply_close_menu(window);
         }
-        // The walk's refresh-time normalization (plan D-W2): the
-        // cursor clamps against the pushed row count, an emptied
-        // stage advances structurally, a dead candidate disarms. And
-        // the return hint's abandon rule (plan D-W3): a view that
-        // left the planner by any other route drops the hint — the
-        // user went elsewhere; the walk never ambushes later.
+        // The walk's refresh-time normalization (J4 D-3): the cursor
+        // clamps against the pushed row count, an emptied stage
+        // advances through the symmetric skip law, a dead candidate
+        // disarms.
         if let Flow::ReviewWalk {
             cadence, reference, ..
         } = self.view_state.walk_flow().unwrap_or(Flow::None)
@@ -2568,11 +2546,6 @@ impl Adapter {
             let (rows, _) = self.walk_rows(&state, cadence, reference);
             let candidates = crate::presentation::walk_file_candidates(&state);
             self.view_state.clamp_review_walk(&state, rows, &candidates);
-        }
-        if self.walk_resume.is_some()
-            && self.view_state.view() != crate::view_state::ViewId::PlanNextDay
-        {
-            self.walk_resume = None;
         }
         // After the reconcile — the reconciled view-state is what the
         // term reads. The pass's clock read feeds the timers term (r4
@@ -2793,6 +2766,7 @@ impl Adapter {
             })
             .and_then(|p| i32::try_from(p).ok())
             .unwrap_or(-1);
+        self.models.walk_abort_armed = self.walk_abort_armed;
         self.tables = crate::models::push(
             window,
             &state,
@@ -3408,30 +3382,36 @@ impl Adapter {
             .map_or_else(|| calendar.today(now), |due| due.window().day())
     }
 
-    /// The shape-B handoff (plan D-W3): the adapter-local return hint
-    /// is set, the walk closes (no command — there is nothing to
-    /// commit), and the planner opens through the EXISTING
-    /// `(Flow::None, OpenPlanNextDay)` route — the walk reaches the
-    /// planner exactly the way the action does, zero shared state
-    /// beyond `AppState`. If the view is already `PlanNextDay` (the
-    /// walk was opened over the planner) the route is skipped: the
-    /// toggle would close it.
-    fn hand_off_to_planner(
-        &mut self,
-        window: &AppWindow,
-        cadence: taskboard_domain::ReviewCadence,
-        reference: chrono::NaiveDate,
-    ) {
-        self.walk_resume = Some(WalkResume { cadence, reference });
-        // The close's wipe is the walk level's drop (D-H2).
+    /// The abort-confirm helpers (J4 D-6): `End review` closes the
+    /// walk (decisions already made are applied `StateCommand`s — the
+    /// command journal keeps them; un-committed drafts die with the
+    /// walk, the documented child-death rule) and restores focus;
+    /// `Keep reviewing` drops the arm, the walk stays verbatim.
+    fn abort_accept(&mut self, window: &AppWindow) -> Vec<FlowOutcome> {
+        self.walk_abort_armed = false;
         let outcomes = self.view_state.close_review_walk();
-        // The planner opens BEFORE the close outcomes' refresh runs:
-        // the refresh pass reads the post-open view (the abandon rule
-        // must not mistake the inline handoff for a navigation away).
-        if self.view_state.view() != crate::view_state::ViewId::PlanNextDay {
-            self.interpret(window, UiEffect::OpenPlanNextDay);
+        Self::reset_editing_facts(window);
+        window.invoke_refocus_view();
+        outcomes
+    }
+
+    fn abort_dismiss(&mut self) -> Vec<FlowOutcome> {
+        self.walk_abort_armed = false;
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The abort arm rung (J4 R-2): the Entry stage — nothing decided,
+    /// nothing typed — closes silently (the one silent exit); any
+    /// other live stage arms the confirm.
+    fn abort_arm(&mut self) -> Vec<FlowOutcome> {
+        if self.view_state.walk_stage() == Some(crate::view_state::WalkStage::Entry) {
+            return self.view_state.close_review_walk();
         }
-        self.apply_outcomes(window, &outcomes);
+        if !self.walk_abort_armed {
+            self.walk_abort_armed = true;
+            return vec![FlowOutcome::RefreshNow];
+        }
+        Vec::new()
     }
 
     /// The walk's intents (the `ReviewWalk(WalkIntent)` carrier's
@@ -3454,13 +3434,23 @@ impl Adapter {
         match intent {
             WalkIntent::CursorUp => self.view_state.review_walk_cursor(-1, rows),
             WalkIntent::CursorDown => self.view_state.review_walk_cursor(1, rows),
-            WalkIntent::Advance => match self.view_state.advance_review_walk() {
-                WalkStep::Handoff => {
-                    self.hand_off_to_planner(window, cadence, reference);
-                    Vec::new()
+            WalkIntent::Advance => {
+                self.walk_abort_armed = false;
+                match self.view_state.advance_review_walk(rows) {
+                    WalkStep::Advanced => vec![FlowOutcome::RefreshNow],
+                    _ => Vec::new(),
                 }
-                WalkStep::Advanced => vec![FlowOutcome::RefreshNow],
-                WalkStep::Inert => Vec::new(),
+            }
+            WalkIntent::Prev => {
+                self.walk_abort_armed = false;
+                let outcomes = self.view_state.back_review_walk(rows);
+                Self::reset_editing_facts(window);
+                window.invoke_refocus_view();
+                outcomes
+            }
+            WalkIntent::Planner => match self.view_state.walk_open_planner() {
+                WalkStep::Planner => vec![FlowOutcome::RefreshNow],
+                _ => Vec::new(),
             },
             WalkIntent::Back => {
                 // The TrackEntryDismiss ladder's first rung: a focused
@@ -3477,13 +3467,21 @@ impl Adapter {
                     Self::reset_editing_facts(window);
                     return vec![FlowOutcome::SetMode(Mode::Normal)];
                 }
+                // A confirm already armed: the second Escape dismisses
+                // it ("Keep reviewing") — the walk stays verbatim.
+                if self.walk_abort_armed {
+                    return self.abort_dismiss();
+                }
                 // The ladder's sub-state rung is the generic Cancelled
                 // rung (D-H4): an armed child — the File-to picker,
-                // the Pick-a-date field — ends alone, the stage stays;
-                // without a child the stage ladder applies.
+                // the Pick-a-date field, the embedded planner — ends
+                // alone (the planner's Cancelled exit returns the walk
+                // to Carry, D-2); without a child the abort law
+                // applies (J4 R-2): Entry closes silently, any other
+                // stage arms the confirm.
                 let outcomes = match self.view_state.cancel_top_child(state) {
                     Some(outcomes) => outcomes,
-                    None => self.view_state.back_review_walk(rows),
+                    None => self.abort_arm(),
                 };
                 // A rung that unmounted a field (the child's death,
                 // the stage-back out of Prompts) or the walk itself
@@ -3500,9 +3498,7 @@ impl Adapter {
                 let candidates = crate::presentation::walk_file_candidates(state);
                 self.view_state.review_walk_file(&candidates)
             }
-            WalkIntent::InboxKeep | WalkIntent::CarryLeave => {
-                self.step_walk_row(window, cadence, reference, rows)
-            }
+            WalkIntent::InboxKeep | WalkIntent::CarryLeave => self.step_walk_row(window, rows),
             WalkIntent::FileTargetPrev => {
                 let candidates = crate::presentation::walk_file_candidates(state);
                 self.view_state.review_walk_file_target(-1, &candidates)
@@ -3524,9 +3520,9 @@ impl Adapter {
                 // The commit completes the child with the armed stack
                 // (N3a); the walk's consumption builds the MoveTask
                 // (the end-of-stack append the move flow computes —
-                // plan D-W4) and steps the row — R2's order preserved
-                // by construction. The handoff ask crosses as
-                // [`FlowOutcome::PlannerHandoff`].
+                // plan D-W4), bumps the tally's `filed` (D-8) and
+                // steps the row — R2's order preserved by
+                // construction.
                 self.view_state.end_top_flow_with(
                     state,
                     crate::surfaces::GuestExit::Completed(Some(
@@ -3557,7 +3553,9 @@ impl Adapter {
                         },
                     },
                 )];
-                self.finish_walk_row(window, cadence, reference, rows, step)
+                self.view_state
+                    .walk_tally_note(crate::view_state::WalkTallyNote::Moved);
+                self.finish_walk_row(window, rows, step)
             }
             WalkIntent::CarryPickDate => self.view_state.review_walk_pick_date(),
             WalkIntent::CarryDateCommit => {
@@ -3605,7 +3603,9 @@ impl Adapter {
                         },
                     },
                 )];
-                self.finish_walk_row(window, cadence, reference, rows, step)
+                self.view_state
+                    .walk_tally_note(crate::view_state::WalkTallyNote::Moved);
+                self.finish_walk_row(window, rows, step)
             }
             // -- the prompt commit verbs --
             WalkIntent::Record => {
@@ -3629,15 +3629,21 @@ impl Adapter {
                         until: chrono::Utc::now() + crate::presentation::OUTCOME_NOTICE_HORIZON,
                     });
                     self.push_notice(window);
-                    let outcomes = self.view_state.close_review_walk();
+                    // The walk advances to the completion summary (D-8):
+                    // `recorded: no` is presented honestly — never a
+                    // silent close.
+                    if let Some(Flow::ReviewWalk { stage, .. }) = self.view_state.walk_flow_mut() {
+                        *stage = crate::view_state::WalkStage::Complete;
+                    }
+                    let outcomes = vec![FlowOutcome::RefreshNow];
                     self.apply_outcomes(window, &outcomes);
-                    // The prompt editors died with the flow (no loss
-                    // events): reset the facts, re-anchor the focus.
+                    // The prompt editors died with the stage change (no
+                    // loss events): reset the facts, re-anchor focus.
                     Self::reset_editing_facts(window);
                     window.invoke_refocus_view();
                     return Vec::new();
                 }
-                let step = vec![FlowOutcome::Command(
+                let mut outcomes = vec![FlowOutcome::Command(
                     taskboard_domain::StateCommand::RecordReflection {
                         cadence,
                         day: window_bounds.day(),
@@ -3648,20 +3654,59 @@ impl Adapter {
                         flags: std::collections::BTreeSet::new(),
                     },
                 )];
-                let mut outcomes = step;
-                outcomes.extend(self.view_state.close_review_walk());
+                self.view_state
+                    .walk_tally_note(crate::view_state::WalkTallyNote::Recorded);
+                if let Some(Flow::ReviewWalk { stage, .. }) = self.view_state.walk_flow_mut() {
+                    *stage = crate::view_state::WalkStage::Complete;
+                }
+                outcomes.push(FlowOutcome::RefreshNow);
                 self.apply_outcomes(window, &outcomes);
-                // The prompt editors died with the flow (no loss
-                // events): reset the facts, re-anchor the focus.
+                // The prompt editors died with the stage change (no
+                // loss events): reset the facts, re-anchor focus.
                 Self::reset_editing_facts(window);
                 window.invoke_refocus_view();
                 Vec::new()
             }
+            // The guilt-free exit (P12): lands on the completion
+            // summary — `recorded: no` is presented honestly (D-8).
             WalkIntent::Finish => {
+                if let Some(Flow::ReviewWalk { stage, .. }) = self.view_state.walk_flow_mut() {
+                    *stage = crate::view_state::WalkStage::Complete;
+                }
+                let outcomes = vec![FlowOutcome::RefreshNow];
+                self.apply_outcomes(window, &outcomes);
+                Self::reset_editing_facts(window);
+                window.invoke_refocus_view();
+                Vec::new()
+            }
+            // The completion summary's exit (D-8): close + restore.
+            WalkIntent::Complete => {
                 let outcomes = self.view_state.close_review_walk();
                 self.apply_outcomes(window, &outcomes);
                 Self::reset_editing_facts(window);
                 window.invoke_refocus_view();
+                Vec::new()
+            }
+            // The abort ladder (J4 D-6): the arm (the host's outside
+            // click; Entry closes silently), the accept (close + the
+            // applied decisions stay), the dismiss (verbatim stay).
+            WalkIntent::AbortArm => {
+                let outcomes = self.abort_arm();
+                if self.view_state.walk_flow().is_none() {
+                    // The Entry silent exit closed the walk.
+                    Self::reset_editing_facts(window);
+                    window.invoke_refocus_view();
+                }
+                outcomes
+            }
+            WalkIntent::AbortAccept => {
+                let outcomes = self.abort_accept(window);
+                self.apply_outcomes(window, &outcomes);
+                Vec::new()
+            }
+            WalkIntent::AbortDismiss => {
+                let outcomes = self.abort_dismiss();
+                self.apply_outcomes(window, &outcomes);
                 Vec::new()
             }
         }
@@ -3699,50 +3744,40 @@ impl Adapter {
         }
     }
 
-    /// A commandless row step (`Keep in inbox`, `Leave as is`); a
-    /// stage-passing step into the handoff runs the transition.
+    /// A commandless row step (`Keep in inbox`, `Leave as is`): the
+    /// tally's `left` bump (D-8), then the cursor/stage step (the
+    /// skip law lands on the next open stage).
     fn step_walk_row(
         &mut self,
         window: &AppWindow,
-        cadence: taskboard_domain::ReviewCadence,
-        reference: chrono::NaiveDate,
         rows: crate::view_state::WalkRows,
     ) -> Vec<FlowOutcome> {
         self.end_armed_walk_child(window);
+        self.view_state
+            .walk_tally_note(crate::view_state::WalkTallyNote::Left);
         match self.view_state.review_walk_next_row(rows) {
-            WalkStep::Handoff => {
-                self.hand_off_to_planner(window, cadence, reference);
-                Vec::new()
-            }
             WalkStep::Advanced => vec![FlowOutcome::RefreshNow],
-            WalkStep::Inert => Vec::new(),
+            _ => Vec::new(),
         }
     }
 
     /// A row step that dispatches `step` first (the carry commits):
-    /// the command lands, then the cursor advances (or the handoff
-    /// runs after the write).
+    /// the command lands, then the cursor advances (the skip law may
+    /// pass straight through to Prompts).
     fn finish_walk_row(
         &mut self,
         window: &AppWindow,
-        cadence: taskboard_domain::ReviewCadence,
-        reference: chrono::NaiveDate,
         rows: crate::view_state::WalkRows,
         step: Vec<FlowOutcome>,
     ) -> Vec<FlowOutcome> {
         self.end_armed_walk_child(window);
         let mut outcomes = step;
         match self.view_state.review_walk_next_row(rows) {
-            WalkStep::Handoff => {
-                self.apply_outcomes(window, &outcomes);
-                self.hand_off_to_planner(window, cadence, reference);
-                Vec::new()
-            }
             WalkStep::Advanced => {
                 outcomes.push(FlowOutcome::RefreshNow);
                 outcomes
             }
-            WalkStep::Inert => outcomes,
+            _ => outcomes,
         }
     }
 
@@ -3814,7 +3849,7 @@ impl Adapter {
         self.menu_anchor = MenuAnchor::default();
         self.width_drag = None;
         self.scale_drag = None;
-        self.walk_resume = None;
+        self.walk_abort_armed = false;
     }
 
     /// The date editor's adapter-owned buffers, for the §8 invariant
@@ -4615,14 +4650,13 @@ impl Adapter {
             // view never sees a `StateCommand`); invalid input
             // dispatches nothing — the typed refusal keeps the text.
             (Flow::PlanPlace { task }, UiEffect::PlanCommitPlace) => self.commit_plan_place(*task),
-            (Flow::None, UiEffect::PlanCommitPlace) => Vec::new(),
+            (Flow::None | Flow::ReviewPlanner, UiEffect::PlanCommitPlace) => Vec::new(),
             // -- the review walk (DR-7 chunk 3, #638) --
             // Kiosk: the dispatch is structurally inert (layer 2 of
             // the three-layer exclusion, D-J14 — the pinned gate).
             (_, UiEffect::OpenReviewWalk | UiEffect::ReviewWalk(_)) if self.kiosk => Vec::new(),
             // Already in the walk: the opener is not a toggle (the
-            // modal discipline — Escape out first; the walk-over-
-            // planner leg rides the handoff's skip instead).
+            // modal discipline — Escape out first).
             (Flow::ReviewWalk { .. }, UiEffect::OpenReviewWalk) => Vec::new(),
             // The opener (the action, the Today card, the menu): the
             // reference derives from `review_due` when a window is
@@ -4631,15 +4665,17 @@ impl Adapter {
             (Flow::None, UiEffect::OpenReviewWalk) => {
                 let reference = self.walk_reference(&state);
                 let cadence = taskboard_domain::ReviewCadence::Day;
-                let (rows, _) = self.walk_rows(&state, cadence, reference);
-                self.view_state.open_review_walk(cadence, reference, rows)
+                self.view_state.open_review_walk(cadence, reference)
             }
             // The carrier's intents under any child level: the child
             // has no kept arms — the verb table runs against the walk
             // level beneath (inert without one; the fixture's depth-1
             // shape).
             (
-                Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick,
+                Flow::EntryDatePicker
+                | Flow::WalkFilePick { .. }
+                | Flow::WalkDatePick
+                | Flow::ReviewPlanner,
                 UiEffect::ReviewWalk(intent),
             ) => match self.view_state.walk_flow() {
                 Some(Flow::ReviewWalk {
@@ -4662,30 +4698,14 @@ impl Adapter {
                     // US-5 (#706): the restore's subject-liveness
                     // guard (see the OpenSettings close arm).
                     outcomes.extend(self.view_state.repair_restored_root(&state));
-                    // The walk's return (plan D-W3): closing the
-                    // planner is the built-in skip (P12) and resumes
-                    // the same way — the walk re-opens at Prompts over
-                    // the restored view. Placed tasks reach it as
-                    // plain state (they are `UpdateTask` writes in the
-                    // published snapshot).
-                    if let Some(WalkResume { cadence, reference }) = self.walk_resume.take() {
-                        let mut resumed = self.view_state.open_review_walk_at(
-                            cadence,
-                            reference,
-                            WalkStage::Prompts,
-                        );
-                        resumed.extend(outcomes);
-                        resumed
-                    } else {
-                        outcomes
-                    }
+                    outcomes
                 } else {
                     self.view_state.open_plan_next_day()
                 }
             }
             // The row verbs (dispatch-time gating: the rows only
             // render on the surface; a stale target is inert).
-            (Flow::None, UiEffect::PlanBeginPlace(task)) => {
+            (Flow::None | Flow::ReviewPlanner, UiEffect::PlanBeginPlace(task)) => {
                 let outcomes = self.view_state.open_plan_place(task);
                 // Re-opening a placed box edits that box (D-3): the
                 // form seeds from the row's instant — tomorrow's box
@@ -4710,11 +4730,14 @@ impl Adapter {
                 }
                 outcomes
             }
-            (Flow::None, UiEffect::PlanRemoveBox(task)) => {
+            (Flow::None | Flow::ReviewPlanner, UiEffect::PlanRemoveBox(task)) => {
                 // The unplace's wipe is the level's drop (D-H2).
                 self.view_state.remove_plan_box(task)
             }
-            (Flow::None, effect @ (UiEffect::PlanBoxEarlier(_) | UiEffect::PlanBoxLater(_))) => {
+            (
+                Flow::None | Flow::ReviewPlanner,
+                effect @ (UiEffect::PlanBoxEarlier(_) | UiEffect::PlanBoxLater(_)),
+            ) => {
                 let (UiEffect::PlanBoxEarlier(task) | UiEffect::PlanBoxLater(task)) = effect else {
                     unreachable!("arm matched")
                 };
@@ -5261,6 +5284,11 @@ impl Adapter {
             // own the walk's intents; settle is its close (the
             // palette family's terminator).
             | Flow::ReviewWalk { .. }
+            // The embedded planner child (J4 D-2): the modals' row —
+            // its close paths are its exits (the Cancelled/Completed
+            // exit contract advances the walk's stage through
+            // `on_child_exit`).
+            | Flow::ReviewPlanner
             // The recurrence editor (round-7 D-7.1): the sixth modal —
             // settle is its clean close (the overlay family's row; a
             // foreign settle never commits a draft).
@@ -9645,7 +9673,7 @@ pub(crate) fn install(
         label_form: None,
         label_delete_armed: None,
         effort_editor: None,
-        walk_resume: None,
+        walk_abort_armed: false,
         habit_convert_armed: None,
         habit_create_open: false,
         habit_create_draft: None,
@@ -14532,8 +14560,27 @@ fn install_review_ledger_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>
 }
 
 fn install_review_walk_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    install_seam!(window: window.on_walk_scrim_clicked, adapter: adapter;
-    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewWalkBack);
+    install_seam!(window: window.on_walk_abort_arm_requested, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewAbortArm);
+    });
+    install_seam!(window: window.on_walk_abort_accept_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewAbortAccept);
+    });
+    install_seam!(window: window.on_walk_abort_dismiss_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewAbortDismiss);
+    });
+    install_seam!(window: window.on_walk_plan_clicked, adapter: adapter;
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewWalkPlanner);
+    });
+    install_seam!(window: window.on_walk_button_invoked, adapter: adapter;
+    bind mut (a, window), args (code), {        let action = match code {
+            0 => ActionId::ReviewWalkPrev,
+            1 => ActionId::ReviewWalkAdvance,
+            2 => ActionId::ReviewFinish,
+            3 => ActionId::ReviewWalkComplete,
+            _ => return, // a stale code past the pushed row: inert
+        };
+        a.route(&window, action);
     });
     install_seam!(window: window.on_walk_file_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::ReviewInboxFile);

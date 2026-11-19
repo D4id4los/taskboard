@@ -98,8 +98,12 @@ fn kind_of(flow: &Flow) -> FK {
         // commit/confirm, settle is the disarm.
         Flow::ConfirmDelete(_) | Flow::BoardColorPick { .. } | Flow::None => FK::None,
         // The child levels (chunk 3's ports): no kept intents of
-        // their own; settle is the Cancelled end.
-        Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick => FK::Child,
+        // their own; settle is the Cancelled end. The embedded
+        // planner child (J4 D-2) is the walk's own child.
+        Flow::EntryDatePicker
+        | Flow::ReviewPlanner
+        | Flow::WalkFilePick { .. }
+        | Flow::WalkDatePick => FK::Child,
         Flow::Create { .. }
         | Flow::CreateStack
         | Flow::CreateBoard
@@ -1390,7 +1394,11 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
             reference: chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("date"),
             stage: crate::view_state::WalkStage::Inbox,
             cursor: 0,
+            tally: crate::view_state::WalkTally::default(),
         },
+        // The embedded planner child (J4 D-2): a child level over the
+        // walk fixture — same cell family, no kept intents of its own.
+        Flow::ReviewPlanner,
         // The child levels (chunk 3's ports): armed at depth 1 the
         // fixtures exercise their settle cell (the Cancelled end);
         // nested mounts are the journeys' and the proptest's shape.
