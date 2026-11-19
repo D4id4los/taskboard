@@ -1800,3 +1800,70 @@ async fn boards_move_refuses_unknown_boards() {
 
     let _ = app.shutdown().await;
 }
+
+/// DIAG (issue #1071, plan D6, `#[ignore]`d — never part of the gate):
+/// reproduces the pre-fix 10 s teardown and prints the per-phase
+/// tracing so the shutdown tail names the actor that burns the budget.
+/// Run:
+/// `RUST_LOG=trace cargo test -p taskboard-app --test cli_verbs
+///  -- --ignored diag_teardown --nocapture`
+#[tokio::test]
+#[ignore = "diagnostic harness for the actor-teardown investigation (#1071); manual run only"]
+async fn diag_teardown_who_burns_the_shutdown_budget() {
+    // Reproduce the finding against the ORIGINAL 10 s default: the
+    // fixture now pins 1 s, so the harness deliberately re-pins the
+    // production default.
+    let dir = tempdir();
+    let server = wiremock::MockServer::start().await;
+    mount_pull(&server, two_stacks_json()).await;
+    mount_get(&server, STACKS_ARCHIVED_PATH, json!([]).to_string()).await;
+    let db = dir.path().join("diag.db");
+    common::seed_board_binding(&db, 0x00DA_000E, common::BOARD, "diag").await;
+    let store = store_for(&server.uri());
+    let mut config = config_for(&server.uri(), dir.path(), "diag.db");
+    config.app.shutdown_timeout_secs = 10;
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(true)
+        .with_writer(std::io::stdout)
+        .try_init();
+
+    let t_boot = std::time::Instant::now();
+    let added = tasks::add(config.clone(), Arc::clone(&store), "diag", Some("col1"))
+        .await
+        .expect("add");
+    tracing::info!(
+        phase = "add",
+        elapsed_ms = ms(t_boot.elapsed()),
+        "phase done"
+    );
+
+    let t_list = std::time::Instant::now();
+    let _ = tasks::list(config.clone(), Arc::clone(&store), None)
+        .await
+        .expect("list");
+    tracing::info!(
+        phase = "list",
+        elapsed_ms = ms(t_list.elapsed()),
+        "phase done"
+    );
+
+    let t_sync = std::time::Instant::now();
+    let outcome = sync::run(config, store, false, Duration::from_secs(5), None)
+        .await
+        .expect("sync");
+    tracing::info!(
+        phase = "sync",
+        elapsed_ms = ms(t_sync.elapsed()),
+        outcome = ?outcome,
+        "phase done"
+    );
+
+    let _ = added;
+}
+
+/// Milliseconds, saturating at `u64::MAX` (tracing field, diagnostics only).
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
