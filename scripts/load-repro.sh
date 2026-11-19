@@ -21,7 +21,10 @@
 set -euo pipefail
 
 WORKERS="${WORKERS:-4}"
-SPIN_DIR="$(mktemp -d /tmp/load-repro.XXXXXX)"
+# Scratch lands under /var/tmp by default, never host tmpfs /tmp
+# (docs/agent_dispatch.org §2, the #1043 ENOSPC law); an operator-set
+# TMPDIR pointing somewhere other than /tmp is honored.
+SPIN_DIR="$(mktemp -d "${TMPDIR:-/var/tmp}/load-repro.XXXXXX")"
 SELF_TEST=0
 
 # Kill every recorded PID, then — in self-test mode — verify from the
