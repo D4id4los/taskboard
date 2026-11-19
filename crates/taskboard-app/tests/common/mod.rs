@@ -353,6 +353,16 @@ pub fn valid_config(server_url: &str) -> taskboard_app::config::AppConfig {
             username: Some("alice".to_owned()),
             credential_store: taskboard_app::config::CredentialStoreKind::Env,
         },
+        // Tight 1 s teardown budget: in the hermetic test world the
+        // slowest legitimate verb work (wiremock roundtrips + a sqlite
+        // flush + the sync detach) finishes in well under a second; a
+        // join that needs more than that IS the finding, not margin
+        // (issue #1071). Precedent: bootstrap.rs / cli_standalone.rs
+        // already pin 1.
+        app: taskboard_app::config::AppSection {
+            shutdown_timeout_secs: 1,
+            ..taskboard_app::config::AppSection::default()
+        },
         ..taskboard_app::config::AppConfig::default()
     }
 }
