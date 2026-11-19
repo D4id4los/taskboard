@@ -17,6 +17,7 @@ import { MaskWalkFacts } from "../ui/mask-walk-facts.slint";
 export { MaskWalkFacts }
 import { ModalDialogHost, DialogButtonModel, DialogButtonRole, DialogKind } from "../ui/widgets/modal-dialog-host.slint";
 import { AnchoredOverlayHost, OverlayPlacement } from "../ui/widgets/anchored-overlay.slint";
+import { TextButton } from "../ui/widgets/text-button.slint";
 
 export component WidgetFrameworkProbeWindow inherits Window {
     // The window-default tokens (the token lint forbids literal px
@@ -49,6 +50,12 @@ export component WidgetFrameworkProbeWindow inherits Window {
     in-out property <length> probe-content-width: Theme.space-15;
     in-out property <length> probe-content-height: Theme.space-7;
 
+    // The TextButton proof mount's controls (round-9 W3, plan §3):
+    // the customization points the absorption exercises.
+    in-out property <string> probe-button-label: "Probe button";
+    in-out property <bool> probe-button-enabled: true;
+    in-out property <bool> probe-button-click-through: false;
+
     // ---- Intent counters (read from Rust) ---------------------------
     in-out property <int> accepted-count: 0;
     in-out property <int> dismissed-count: 0;
@@ -56,6 +63,7 @@ export component WidgetFrameworkProbeWindow inherits Window {
     in-out property <int> invoked-count: 0;
     in-out property <int> invoked-index: -1;
     in-out property <int> anchored-dismissed-count: 0;
+    in-out property <int> button-clicked-count: 0;
 
     // ---- Observation mirrors ----------------------------------------
     // The fake status bar's top edge — the viewport floor.
@@ -83,6 +91,13 @@ export component WidgetFrameworkProbeWindow inherits Window {
     out property <length> sib1-y: witness1.y;
     in-out property <bool> opener-focused: opener.has-focus;
     in-out property <bool> body-stop-focused: body-stop.has-focus;
+    // The TextButton seams: focus (DialogButton's autofocus half) and
+    // the realized rect (the pointer-channel clicks).
+    out property <bool> button-focused: probe-button.focused;
+    out property <length> button-x: probe-button.x;
+    out property <length> button-y: probe-button.y;
+    out property <length> button-w: probe-button.width;
+    out property <length> button-h: probe-button.height;
 
     // The opener (the focus-restore target, G-12) and the fixture
     // anchor (G-2..G-5) share the top strip; the sibling witnesses
@@ -118,6 +133,24 @@ export component WidgetFrameworkProbeWindow inherits Window {
             height: Theme.space-5;
             background: Theme.surface;
         }
+    }
+
+    // ---- The TextButton proof mount (round-9 W3) ---------------------
+    // Below the witness stack, clear of every overlay's realized
+    // geometry; the seams above expose its rect to the pointer clicks.
+    probe-button := TextButton {
+        x: Theme.space-2;
+        y: Theme.space-8 + Theme.space-7 + Theme.space-7;
+        label: root.probe-button-label;
+        enabled: root.probe-button-enabled;
+        click-through: root.probe-button-click-through;
+        clicked => { root.button-clicked-count += 1; }
+    }
+
+    // The request-focus forward (DialogButton's autofocus half): the
+    // public function is widget-internal, so the fixture wraps it.
+    public function probe-request-button-focus() {
+        probe-button.request-focus();
     }
 
     // ---- The modal proof mount ---------------------------------------
