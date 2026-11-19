@@ -929,6 +929,23 @@ pub struct ConfigSetView {
     pub applied_live: bool,
 }
 
+/// The `config set` batch receipt (#910, journey US-2/S6): the
+/// per-key echoes (each a [`ConfigSetView`], one per pair) plus the
+/// ONE lane bit for the whole invocation — the batch is one intent,
+/// so `applied_live` is true iff the running engine took the whole
+/// batch's single `UpdateSettings`. An empty `entries` never
+/// reaches this view: the even-pair grammar refuses zero pairs
+/// before anything is touched.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+pub struct ConfigBatchSetView {
+    /// One echo per pair, in argv order.
+    pub entries: Vec<ConfigSetView>,
+    /// The typed lane bit: the running app applied the whole batch
+    /// immediately (true) or the file layer only — next start (false).
+    pub applied_live: bool,
+}
+
 /// The `connect` (and deprecated `login` alias) receipt. No secret ever
 /// appears in any projection.
 // The bools are independent, documented receipt facts (what the
@@ -1549,5 +1566,70 @@ mod tests {
                 "{r:?}"
             );
         }
+    }
+
+    /// `us2_s6_batch_view_carries_per_key_entries_and_the_lane_bit`
+    /// (journey W-7, US-2/S6 + AC-6): the typed batch receipt's JSON
+    /// shape — one entry per pair in argv order, each carrying its
+    /// own key/value echo, and the ONE lane bit for the whole
+    /// invocation. Structural, machine-checkable; never label text.
+    #[test]
+    fn us2_s6_batch_view_carries_per_key_entries_and_the_lane_bit() {
+        let view = ConfigBatchSetView {
+            entries: vec![
+                ConfigSetView {
+                    key: "reminders.tick_secs".to_owned(),
+                    value: Some("45".to_owned()),
+                    applied_live: true,
+                },
+                ConfigSetView {
+                    key: "focus.work_mins".to_owned(),
+                    value: Some("50".to_owned()),
+                    applied_live: true,
+                },
+            ],
+            applied_live: true,
+        };
+        let json = serde_json::to_value(&view).expect("serializes");
+        let entries = json
+            .get("entries")
+            .and_then(|e| e.as_array())
+            .expect("entries array");
+        assert_eq!(entries.len(), 2, "one entry per pair");
+        assert_eq!(
+            entries[0].get("key").and_then(|k| k.as_str()),
+            Some("reminders.tick_secs")
+        );
+        assert_eq!(entries[0].get("value").and_then(|v| v.as_str()), Some("45"));
+        assert_eq!(
+            entries[1].get("key").and_then(|k| k.as_str()),
+            Some("focus.work_mins")
+        );
+        assert_eq!(
+            json.get("applied_live")
+                .and_then(serde_json::Value::as_bool),
+            Some(true),
+            "one lane bit for the whole invocation"
+        );
+        // The typed view round-trips through the Exec bytes.
+        let text = serde_json::to_string(&view).expect("serializes");
+        let back: ConfigBatchSetView = serde_json::from_str(&text).expect("deserializes");
+        assert_eq!(back, view);
+
+        // The next-start lane bit rides the same shape.
+        let view = ConfigBatchSetView {
+            entries: vec![ConfigSetView {
+                key: "ui.due_soon_days".to_owned(),
+                value: Some("14".to_owned()),
+                applied_live: false,
+            }],
+            applied_live: false,
+        };
+        let json = serde_json::to_value(&view).expect("serializes");
+        assert_eq!(
+            json.get("applied_live")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
     }
 }

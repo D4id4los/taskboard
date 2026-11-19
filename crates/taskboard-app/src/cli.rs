@@ -1665,24 +1665,29 @@ pub enum ConfigCmd {
     /// target — a side-effect-free resolution diagnostic: no decode,
     /// no core boot.
     Path,
-    /// Set one knob (T-18, #801; live propagation #845). `key` is
-    /// the dotted config key — exactly the vocabulary the GUI
-    /// settings editor uses (`reminders.tick_secs`,
-    /// `focus.long_break_every`, `files_sync.enabled`, ...); `value`
-    /// parses per key against the same predicates the settings form
-    /// applies. When the app is running, the value applies to it
-    /// immediately (the running engine takes the change live, like
-    /// the settings editor); without a running app the write lands
-    /// in the toml layer only and applies at the next start. Defaults
-    /// and `TASKBOARD_*` env are never touched; the write is atomic
-    /// and proven bootable. An env-overridden key is a typed refusal
-    /// — the write would be dead text under the env layer.
+    /// Set one or more knobs in ONE atomic write (T-18, #801; live
+    /// propagation #845; batch #910). Each pair is `key value`; the
+    /// whole list lands as one document — one prove verdict, one
+    /// write, one apply — so either every pair is in effect or
+    /// nothing is (`config set reminders.tick_secs 45
+    /// focus.work_mins 50`). `key` is the dotted config key —
+    /// exactly the vocabulary the GUI settings editor uses
+    /// (`reminders.tick_secs`, `focus.long_break_every`,
+    /// `files_sync.enabled`, ...); `value` parses per key against the
+    /// same predicates the settings form applies. While the app runs,
+    /// the batch applies to it immediately (and an external edit of
+    /// the config file is picked up live, too); without a running
+    /// app the write lands in the toml layer only and applies at the
+    /// next start. Defaults and `TASKBOARD_*` env are never touched;
+    /// an env-overridden key, an unknown key, a malformed value, or
+    /// a duplicated key is a typed refusal naming the key — nothing
+    /// writes.
     Set {
-        /// The dotted config key (the settings editor's vocabulary).
-        key: String,
-        /// The value (parsed per key; a malformed value is a typed
-        /// refusal, nothing writes).
-        value: String,
+        /// An even list of dotted-key/value pairs (one pair is the
+        /// single-knob form; zero pairs and odd counts are typed
+        /// refusals, nothing touched).
+        #[arg(value_name = "KEY VALUE", num_args = 0..)]
+        pairs: Vec<String>,
     },
     /// Remove one knob's override (T-18, #801; live propagation
     /// #845) — the way a set value returns to the default (or to its
@@ -1938,6 +1943,59 @@ mod tests {
             .expect_err("a zero-flag edit is rejected at the parse boundary");
         assert_eq!(err.kind(), ClapErrorKind::MissingRequiredArgument);
         assert!(err.use_stderr(), "a usage error exits nonzero");
+    }
+
+    // -- the `config set` pair grammar (journey W-6, US-2/S1) -------------
+
+    /// `us2_s1_batch_arity_parse`: the clap boundary passes the whole
+    /// argv through as pairs — one pair is the single-knob form,
+    /// several pairs ride as a flat list, and zero pairs reach the
+    /// typed `BadArity` refusal (the grammar is even-list-shaped at
+    /// the parse boundary; the even-count *law* lives one layer up in
+    /// the command surface, where the refusal is typed, not a clap
+    /// usage error).
+    #[test]
+    fn us2_s1_batch_arity_parse() {
+        let cli = Cli::try_parse_from(["taskboard", "config", "set", "focus.work_mins", "50"])
+            .expect("the single pair parses");
+        let Some(Command::Config {
+            cmd: ConfigCmd::Set { pairs },
+        }) = cli.command
+        else {
+            panic!("a config set parses as ConfigCmd::Set");
+        };
+        assert_eq!(pairs, vec!["focus.work_mins".to_owned(), "50".to_owned()]);
+
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "config",
+            "set",
+            "reminders.tick_secs",
+            "45",
+            "focus.work_mins",
+            "50",
+            "ui.due_soon_days",
+            "14",
+        ])
+        .expect("three pairs parse as one flat list");
+        let Some(Command::Config {
+            cmd: ConfigCmd::Set { pairs },
+        }) = cli.command
+        else {
+            panic!("a config set parses as ConfigCmd::Set");
+        };
+        assert_eq!(pairs.len(), 6, "the pairs ride the argv verbatim");
+
+        // Zero pairs parse (empty list) so the typed refusal — not a
+        // clap usage error — carries the arity law.
+        let cli = Cli::try_parse_from(["taskboard", "config", "set"]).expect("zero pairs parse");
+        let Some(Command::Config {
+            cmd: ConfigCmd::Set { pairs },
+        }) = cli.command
+        else {
+            panic!("a config set parses as ConfigCmd::Set");
+        };
+        assert!(pairs.is_empty(), "the empty list reaches the typed refusal");
     }
 
     #[test]

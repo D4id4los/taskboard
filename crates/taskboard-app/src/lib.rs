@@ -36,6 +36,7 @@ pub mod cli;
 pub mod commands;
 mod completion;
 pub mod config;
+mod config_watcher;
 pub mod connections;
 mod connector_ceremonies;
 pub mod connectors;

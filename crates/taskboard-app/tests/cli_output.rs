@@ -385,6 +385,7 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::SessionOnly => "session-only",
             CommandError::Cancelled => "cancelled",
             CommandError::ConfigSet(_) => "config-set-refused",
+            CommandError::ConfigBatch(_) => "config-batch-refused",
         }
     }
 

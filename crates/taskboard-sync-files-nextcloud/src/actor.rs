@@ -181,6 +181,13 @@ async fn run<T: FilesTransport>(
                 Ok(
                     SystemEvent::StorageFailed
                         | SystemEvent::TaskResurrected(_)
+                        // SettingsChanged is NOT here: it re-arms the
+                        // cadence through the min rule above (P8,
+                        // #673). ConfigReload's outcome is the config
+                        // watcher's lane (P6, #909) — this actor
+                        // counts nothing and publishes nothing from
+                        // it.
+                        | SystemEvent::ConfigReload(_)
                         | SystemEvent::NetworkLost
                         | SystemEvent::NetworkRestored
                         | SystemEvent::ConnectorLost(_)

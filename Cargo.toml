@@ -155,6 +155,18 @@ flate2 = "1"
 # the dev session's live notification daemon). Pin discipline: the
 # exact version is committed via Cargo.lock (Q12).
 notify-rust = { version = "4.18.2", default-features = false, features = ["z-with-tokio"] }
+# Config-file change watching (taskboard-app, #909; stack approval
+# GRANTED at the P6 journey gate 2026-11-19 — plan D-STACK). The
+# default cross-platform backend (inotify on Linux,
+# ReadDirectoryChangesW on Windows) with raw event delivery; NO
+# debouncer crate — the 300 ms quiet window is hand-rolled inside the
+# watcher actor over tokio timers, so the debounce tests are
+# deterministic under tokio::time::pause/advance (AGENTS §5; the
+# debouncer crates own their own clock threads and would reopen the
+# sleep-in-test problem the clock law forbids). Pin discipline: the
+# exact version is committed via Cargo.lock (Q12); consumed by
+# taskboard-app only, so a future bump is one line.
+notify = "8"
 
 # Owned alarm audio (taskboard-app, DR-3/4 / D-I10 — stack approval
 # GRANTED 2026-10-26). Minimal no-decode feature set, verified against

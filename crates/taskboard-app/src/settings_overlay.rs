@@ -23,7 +23,6 @@ use std::path::Path;
 
 use toml_edit::DocumentMut;
 
-use chrono::Timelike as _;
 use taskboard_domain::ReminderOffset;
 
 use crate::config::{ConfigError, SinkChoice};
@@ -131,6 +130,95 @@ fn prove_verdict(text: &str) -> Result<(), Box<ConfigError>> {
         .and_then(|config| config.validate().map_err(Box::new))
 }
 
+/// One batch edit's address: the `(section, key)` cell and the typed
+/// value already minted as a `toml_edit` item (the batch surface's
+/// parse step owns the typing — the writer only places what it is
+/// handed).
+pub struct BatchEdit {
+    /// The target section (created when absent, `files_sync`-writer
+    /// precedent).
+    pub section: String,
+    /// The target key inside the section.
+    pub key: String,
+    /// The typed value as a `toml_edit` item.
+    pub item: toml_edit::Item,
+}
+
+/// The doc-level multi-section batch writer (plan D-BATCH-SHAPE, the
+/// #910 atomic transaction): one document load, every `(section, key)`
+/// mutation, **one** prove verdict, **one** atomic write. A failing
+/// mid-batch key rolls back by construction — the write never
+/// happened. The base-verdict/attribution rule is the per-intent
+/// writers', generalized to the edited-section *set*: against a
+/// previously-valid file any result failure is refused typed; against
+/// an already-invalid base the refusal fires only when the blamed
+/// field lives inside an edited section (the batch must not be bricked
+/// by garbage it did not create), any other pre-existing failure
+/// warns and writes.
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn prove_and_write_doc(path: &Path, edits: &[BatchEdit]) -> Result<(), OverlayError> {
+    let mut doc = crate::config::overlay_document(path).map_err(OverlayError::Io)?;
+    let base_verdict = prove_verdict(&doc.to_string());
+    for edit in edits {
+        let table = doc
+            .entry(&edit.section)
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| {
+                OverlayError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("[{}] is not a table", edit.section),
+                ))
+            })?;
+        table.insert(&edit.key, edit.item.clone());
+    }
+    let result = prove_verdict(&doc.to_string());
+    match result {
+        // The file as a whole still boots: write.
+        Ok(()) => write(path, &doc),
+        Err(result_err) => match base_verdict {
+            // A previously-valid file: the batch introduced the
+            // failure — refuse typed, file untouched.
+            Ok(()) => Err(OverlayError::Rejected(result_err)),
+            Err(base_err) => {
+                let blamed_inside = result_err.field().is_some_and(|field| {
+                    edits
+                        .iter()
+                        .any(|edit| field.starts_with(&format!("{}.", edit.section)))
+                });
+                if blamed_inside {
+                    Err(OverlayError::Rejected(result_err))
+                } else {
+                    tracing::warn!(
+                        base = %base_err.kind(),
+                        result = %result_err.kind(),
+                        sections = ?edits.iter().map(|edit| edit.section.as_str()).collect::<Vec<_>>(),
+                        "batch write over an already-invalid config: \
+                         unrelated pre-existing failure, writing anyway"
+                    );
+                    write(path, &doc)
+                }
+            }
+        },
+    }
+}
+
+/// The rendered `day_start_time` form: `%H:%M` for whole minutes (the
+/// user-echo convention: a write never widens the spelling it was
+/// handed) and `%H:%M:%S` otherwise. One definition — the per-intent
+/// writer and the batch writer both render through it.
+pub(crate) fn render_day_start(time: chrono::NaiveTime) -> String {
+    use chrono::Timelike as _;
+    if time.second() == 0 && time.nanosecond() == 0 {
+        time.format("%H:%M").to_string()
+    } else {
+        time.format("%H:%M:%S").to_string()
+    }
+}
+
 fn write(path: &Path, doc: &DocumentMut) -> Result<(), OverlayError> {
     crate::config::write_config_atomic(path, doc.to_string().as_str()).map_err(OverlayError::Io)
 }
@@ -156,11 +244,7 @@ fn set_secs(path: &Path, section: &str, key: &str, secs: u64) -> Result<(), Over
 ///
 /// [`OverlayError`] — see the module docs.
 pub fn set_day_start(path: &Path, time: chrono::NaiveTime) -> Result<(), OverlayError> {
-    let rendered = if time.second() == 0 && time.nanosecond() == 0 {
-        time.format("%H:%M").to_string()
-    } else {
-        time.format("%H:%M:%S").to_string()
-    };
+    let rendered = render_day_start(time);
     set_str(path, "preferences", "day_start_time", &rendered)
 }
 
@@ -900,5 +984,128 @@ mod tests {
         let text = std::fs::read_to_string(&path).expect("read back");
         assert!(text.contains("tick_secs = 30"), "document intact: {text}");
         assert!(!text.contains("focus"), "no empty table created: {text}");
+    }
+
+    // -- the doc-level batch writer (journey W-4, US-2/S4) ----------------
+
+    /// `us2_s4_batch_lands_one_atomic_document` (US-2 AC-1): a
+    /// cross-section batch lands every pair through **one** document —
+    /// one atomic rename — with the comments and every unrelated table
+    /// preserved, and the written file decodes carrying all pairs.
+    #[test]
+    fn us2_s4_batch_lands_one_atomic_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        let edits = vec![
+            BatchEdit {
+                section: "reminders".to_owned(),
+                key: "tick_secs".to_owned(),
+                item: toml_edit::value(45_i64),
+            },
+            BatchEdit {
+                section: "focus".to_owned(),
+                key: "work_mins".to_owned(),
+                item: toml_edit::value(50_i64),
+            },
+            BatchEdit {
+                section: "sync".to_owned(),
+                key: "poll_interval_secs".to_owned(),
+                item: toml_edit::value(60_i64),
+            },
+        ];
+        prove_and_write_doc(&path, &edits).expect("the batch lands");
+
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            written.contains("# operator comment") && written.contains("# keep me"),
+            "comments survived: {written}"
+        );
+        assert!(written.contains("scale = 1.5"), "[ui] survives");
+        assert!(
+            written.contains("credential_store = \"file\""),
+            "[nextcloud] survives"
+        );
+        let decoded = crate::config::AppConfig::decode_file_only_str(&written).expect("decodes");
+        decoded.validate().expect("the written batch stays valid");
+        assert_eq!(decoded.reminders.tick_secs, 45);
+        assert_eq!(decoded.focus.work_mins, 50);
+        assert_eq!(decoded.sync.poll_interval_secs, 60);
+    }
+
+    /// US-2 AC-4, the atomic rollback: one batch whose *later* pair
+    /// crosses the whole-document validity (the backoff ordering)
+    /// refuses typed and the file is byte-identical — the earlier,
+    /// individually-valid pair is NOT landed (the write never
+    /// happened).
+    #[test]
+    fn a_failing_mid_batch_key_rolls_back_the_whole_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        let before = std::fs::read_to_string(&path).expect("read");
+        let edits = vec![
+            BatchEdit {
+                section: "reminders".to_owned(),
+                key: "tick_secs".to_owned(),
+                item: toml_edit::value(45_i64),
+            },
+            BatchEdit {
+                section: "sync".to_owned(),
+                key: "backoff_initial_secs".to_owned(),
+                item: toml_edit::value(400_i64),
+            },
+        ];
+        let err =
+            prove_and_write_doc(&path, &edits).expect_err("the crossing pair refuses the batch");
+        let OverlayError::Rejected(config_err) = &err else {
+            panic!("typed Rejected, got {err:?}");
+        };
+        assert_eq!(
+            config_err.field(),
+            Some("sync.backoff_initial_secs"),
+            "the blame names the offending key's field"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            before,
+            "the file is byte-identical — no half-provisioned batch"
+        );
+    }
+
+    /// The batch attribution rule against an already-invalid base: a
+    /// pre-existing failure in an *unedited* section warns and writes
+    /// (the batch must not be bricked by garbage it did not create);
+    /// a failure blamed inside an *edited* section refuses. Both
+    /// seeded through `tick_secs = 0` (the arm-c seed's shape).
+    #[test]
+    fn the_batch_attribution_rule_follows_the_edited_section_set() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(
+            &dir,
+            "[reminders]\ntick_secs = 0\n[ui]\nscale = 1.0\n[nextcloud]\ncredential_store = \"file\"\n",
+        );
+        // Arm 1: the failure is outside the edited sections — writes.
+        let edits = vec![BatchEdit {
+            section: "sync".to_owned(),
+            key: "poll_interval_secs".to_owned(),
+            item: toml_edit::value(60_i64),
+        }];
+        prove_and_write_doc(&path, &edits).expect("the unrelated edit lands");
+        let decoded = crate::config::AppConfig::decode_file_only_str(
+            &std::fs::read_to_string(&path).expect("read"),
+        )
+        .expect("decodes");
+        assert_eq!(decoded.sync.poll_interval_secs, 60, "the edit landed");
+
+        // Arm 2: the failure is blamed inside the edited section —
+        // refuses typed, the file keeps the pre-batch leaf values.
+        let before = std::fs::read_to_string(&path).expect("read");
+        let edits = vec![BatchEdit {
+            section: "reminders".to_owned(),
+            key: "enabled".to_owned(),
+            item: toml_edit::value(false),
+        }];
+        let err = prove_and_write_doc(&path, &edits).expect_err("the edited-section blame refuses");
+        assert!(matches!(err, OverlayError::Rejected(_)), "{err:?}");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), before);
     }
 }

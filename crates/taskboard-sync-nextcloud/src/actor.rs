@@ -320,6 +320,7 @@ async fn run(
                 Ok(
                     SystemEvent::StorageFailed
                         | SystemEvent::TaskResurrected(_)
+                        | SystemEvent::ConfigReload(_)
                         | SystemEvent::NetworkLost
                         | SystemEvent::NetworkRestored
                         | SystemEvent::ConnectorLost(_)

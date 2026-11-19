@@ -6,7 +6,7 @@
 use taskboard_domain::ReminderOffset;
 
 use crate::cli::ConfigCmd;
-use crate::commands::output::{ConfigPathView, ConfigSetView, ConfigView};
+use crate::commands::output::{ConfigBatchSetView, ConfigPathView, ConfigSetView, ConfigView};
 use crate::commands::{CommandCtx, CommandError, emit_to, report_to};
 use crate::config::{AppConfig, ConfigError, SinkChoice, SyncBackend};
 use crate::settings_overlay::OverlayError;
@@ -456,7 +456,7 @@ pub async fn set(
 /// precedes everything (US-4/S2 — nothing is touched on a refusal);
 /// the env guard precedes the write (US-4/S1); the prove gate
 /// precedes any engine command (US-4/S3, US-1 AC-2).
-async fn set_with_locked(
+pub(crate) async fn set_with_locked(
     write_path: &std::path::Path,
     key: &str,
     value: &str,
@@ -567,6 +567,228 @@ pub fn render_set_text(view: &ConfigSetView) -> String {
     }
 }
 
+/// The typed refusal of one `config set` *batch* invocation (#910,
+/// journey US-2): the set lattice plus the batch-only classes. Every
+/// refusal names the offending key where one exists, and no variant
+/// in the chain before the write ever touches the file (the
+/// parse/guard/duplicate chain runs before the document load — the
+/// prove skeleton is never invoked on a doomed batch).
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigBatchError {
+    /// Zero pairs or an odd argv count — the even-pair grammar
+    /// (`<k1> <v1> [<k2> <v2> …]`) refused before anything is touched
+    /// (US-2/S1, `BadValue`-class per the plan).
+    #[error("expected an even list of key/value pairs")]
+    BadArity,
+    /// The same dotted key appears twice in one batch — ambiguity is
+    /// never resolved silently (last-wins rejected, US-2 AC-5).
+    #[error("duplicate key in the batch")]
+    DuplicateKey {
+        /// The duplicated dotted key.
+        key: String,
+    },
+    /// One of the batch's keys is pinned by a `TASKBOARD_*` env value
+    /// — the whole batch refuses typed naming the key, nothing
+    /// written (US-2 AC-3).
+    #[error("the key is set by an environment variable")]
+    EnvLocked {
+        /// The pinned dotted key.
+        key: String,
+    },
+    /// A key is not in the knob table (US-2/S1).
+    #[error("unknown config key")]
+    UnknownKey {
+        /// The unknown dotted key.
+        key: String,
+    },
+    /// A value failed its key's predicate (US-2/S1, AC-2).
+    #[error("the value does not fit the key")]
+    BadValue {
+        /// The refused dotted key.
+        key: String,
+    },
+    /// The toml-layer read or atomic write failed.
+    #[error("the config file could not be written")]
+    Io(#[from] std::io::Error),
+    /// The prove gate refused the *whole* batch: the resulting
+    /// document would not boot — a failing mid-batch key rolls back
+    /// by construction (the write never happened, US-2 AC-4).
+    #[error("the write would make the config unbootable")]
+    Rejected(#[source] Box<ConfigError>),
+}
+
+/// The typed value → `toml_edit` item mapping for the batch writer
+/// (`parse_value`'s inverse half): the same typed fronts the
+/// per-intent writers land, minted as items for the one document.
+fn batch_edit(parsed: ConfigKey, typed: &TypedSetting) -> crate::settings_overlay::BatchEdit {
+    let (section, key) = parsed.dotted();
+    let item = match (parsed, typed) {
+        (ConfigKey::DayStart, TypedSetting::DayStart(time)) => {
+            toml_edit::value(crate::settings_overlay::render_day_start(*time))
+        }
+        (
+            ConfigKey::RemindersEnabled
+            | ConfigKey::FocusEnabled
+            | ConfigKey::FocusChain
+            | ConfigKey::FocusNotify
+            | ConfigKey::FilesSyncEnabled,
+            TypedSetting::Bool(value),
+        ) => toml_edit::value(*value),
+        (
+            ConfigKey::TickSecs
+            | ConfigKey::PollInterval
+            | ConfigKey::BackoffInitial
+            | ConfigKey::BackoffMax,
+            TypedSetting::Secs(secs),
+        ) => toml_edit::value(i64::try_from(*secs).unwrap_or(i64::MAX)),
+        (
+            ConfigKey::FocusWorkMins | ConfigKey::FocusBreakMins | ConfigKey::FocusLongBreakMins,
+            TypedSetting::FocusMins(mins),
+        ) => toml_edit::value(i64::try_from(*mins).unwrap_or(i64::MAX)),
+        (ConfigKey::FocusLongBreakEvery, TypedSetting::FocusEvery(every)) => {
+            toml_edit::value(i64::try_from(*every).unwrap_or(i64::MAX))
+        }
+        (ConfigKey::DueSoonDays, TypedSetting::DueSoonDays(days)) => {
+            toml_edit::value(i64::from(*days))
+        }
+        (ConfigKey::ReminderBefore, TypedSetting::Before(offset)) => {
+            toml_edit::value(offset.text_form().clone())
+        }
+        (ConfigKey::ReminderSink, TypedSetting::Sink(choice)) => toml_edit::value(match choice {
+            SinkChoice::Auto => "auto",
+            SinkChoice::Log => "log",
+            SinkChoice::Desktop => "desktop",
+        }),
+        _ => unreachable!("parse_value and batch_edit agree on the key's value shape"),
+    };
+    crate::settings_overlay::BatchEdit {
+        section: section.to_owned(),
+        key: key.to_owned(),
+        item,
+    }
+}
+
+/// `config set <k1> <v1> [<k2> <v2> …]` (#910, journey US-2): the
+/// local lane of the atomic batch — one document, one prove verdict,
+/// one write, one lane bit for the whole invocation. Any refusal
+/// (arity, unknown key, bad value, env-pinned key, duplicate key,
+/// prove gate) leaves the file byte-identical and names the offending
+/// key typed.
+///
+/// # Errors
+///
+/// [`ConfigBatchError`] — the typed refusal classes.
+pub async fn set_batch(
+    config_path: Option<std::path::PathBuf>,
+    pairs: &[String],
+) -> Result<ConfigBatchSetView, ConfigBatchError> {
+    let write_path = AppConfig::write_path(config_path);
+    let locked = AppConfig::env_overridden_keys(Some(write_path.as_path()))
+        .map_err(|err| ConfigBatchError::Io(std::io::Error::other(err.to_string())))?;
+    set_batch_with_locked(&write_path, pairs, &locked, None).await
+}
+
+/// The lock-set seam for the batch (the [`set_with_locked`] twin,
+/// journey W-5): parse *all* pairs → env-guard *all* keys →
+/// duplicate-key check → **one** `run_settings_write`-shaped port
+/// call carrying the doc-level batch writer. The chain runs before
+/// the document load, so the prove skeleton is never invoked on a
+/// doomed batch.
+async fn set_batch_with_locked(
+    write_path: &std::path::Path,
+    pairs: &[String],
+    locked: &std::collections::BTreeSet<String>,
+    engine: Option<&taskboard_state::EngineHandle>,
+) -> Result<ConfigBatchSetView, ConfigBatchError> {
+    if pairs.is_empty() || !pairs.len().is_multiple_of(2) {
+        return Err(ConfigBatchError::BadArity);
+    }
+    // Parse ALL pairs before anything is touched (US-2/S1): each key
+    // resolves in the knob table, each value parses against its
+    // predicate.
+    let mut parsed_pairs: Vec<(String, ConfigKey, TypedSetting)> = Vec::new();
+    for [key, value] in pairs.as_chunks::<2>().0 {
+        let parsed = ConfigKey::from_dotted(key)
+            .ok_or_else(|| ConfigBatchError::UnknownKey { key: key.clone() })?;
+        let Ok(typed) = parsed.parse_value(value) else {
+            return Err(ConfigBatchError::BadValue { key: key.clone() });
+        };
+        parsed_pairs.push((key.clone(), parsed, typed));
+    }
+    // Env-guard ALL keys before the write (US-2/S2), naming the pin.
+    for (key, _, _) in &parsed_pairs {
+        if locked.contains(key) {
+            return Err(ConfigBatchError::EnvLocked { key: key.clone() });
+        }
+    }
+    // Duplicate check after the guards (US-2/S3, AC-5): last-wins is
+    // never silently applied.
+    let mut seen = std::collections::BTreeSet::new();
+    for (key, _, _) in &parsed_pairs {
+        if !seen.insert(key.as_str()) {
+            return Err(ConfigBatchError::DuplicateKey { key: key.clone() });
+        }
+    }
+    let edits: Vec<crate::settings_overlay::BatchEdit> = parsed_pairs
+        .iter()
+        .map(|(_, parsed, typed)| batch_edit(*parsed, typed))
+        .collect();
+    let guard_keys: Vec<&str> = parsed_pairs
+        .iter()
+        .map(|(key, _, _)| key.as_str())
+        .collect();
+    let outcome = run_settings_write(
+        write_path,
+        locked,
+        &guard_keys,
+        |path| crate::settings_overlay::prove_and_write_doc(path, &edits),
+        engine,
+    )
+    .await
+    .map_err(|err| match err {
+        SettingsWriteError::EnvLocked => {
+            // The port's own guard tripped; our named guard above
+            // runs first, so this arm is a port-race paranoia — the
+            // first batch key is the honest name available here.
+            let key = guard_keys
+                .iter()
+                .find(|key| locked.contains(**key))
+                .map(|key| (*key).to_owned())
+                .unwrap_or_default();
+            ConfigBatchError::EnvLocked { key }
+        }
+        SettingsWriteError::Overlay(overlay) => match overlay {
+            OverlayError::Io(io) => ConfigBatchError::Io(io),
+            OverlayError::Rejected(config_err) => ConfigBatchError::Rejected(config_err),
+        },
+        SettingsWriteError::Config(config_err) => ConfigBatchError::Rejected(config_err),
+    })?;
+    let applied_live = outcome.apply == LiveApply::Applied;
+    let entries = parsed_pairs
+        .into_iter()
+        .map(|(key, _, typed)| ConfigSetView {
+            key,
+            value: Some(typed.echo()),
+            applied_live,
+        })
+        .collect();
+    Ok(ConfigBatchSetView {
+        entries,
+        applied_live,
+    })
+}
+
+/// The typed batch receipt's human lines (W-5's text lane): one
+/// honest line per entry (the per-key echoes), presentation only.
+#[must_use]
+pub fn render_batch_set_text(view: &ConfigBatchSetView) -> String {
+    view.entries
+        .iter()
+        .map(render_set_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Dispatch glue so `dispatch` stays a flat table.
 pub(crate) async fn handle(cmd: &ConfigCmd, ctx: &mut CommandCtx<'_>) -> u8 {
     match *cmd {
@@ -582,15 +804,13 @@ pub(crate) async fn handle(cmd: &ConfigCmd, ctx: &mut CommandCtx<'_>) -> u8 {
             emit_to(&mut ctx.io, &view, &render_path_text(&view));
             0
         }
-        ConfigCmd::Set { ref key, ref value } => {
-            match set(ctx.config_path.clone(), key, value).await {
-                Ok(view) => {
-                    emit_to(&mut ctx.io, &view, &render_set_text(&view));
-                    0
-                }
-                Err(err) => report_to(&mut ctx.io, &CommandError::ConfigSet(err)),
+        ConfigCmd::Set { ref pairs } => match set_batch(ctx.config_path.clone(), pairs).await {
+            Ok(view) => {
+                emit_to(&mut ctx.io, &view, &render_batch_set_text(&view));
+                0
             }
-        }
+            Err(err) => report_to(&mut ctx.io, &CommandError::ConfigBatch(err)),
+        },
         ConfigCmd::Unset { ref key } => match unset(ctx.config_path.clone(), key).await {
             Ok(view) => {
                 emit_to(&mut ctx.io, &view, &render_set_text(&view));
@@ -620,25 +840,34 @@ pub(crate) async fn handle_daemon(
         Ok(locked) => locked,
         Err(err) => return report_to(io, &CommandError::ConfigSet(err)),
     };
-    let result = match *cmd {
-        ConfigCmd::Set { ref key, ref value } => {
-            set_with_locked(&write_path, key, value, &locked, Some(&app.engine)).await
+    // The two relay verbs keep their own typed classes end-to-end: a
+    // batch `set` refusal is a `ConfigBatch` report, a single-key
+    // `unset` refusal stays a `ConfigSet` report with its one-echo
+    // reply — the relay never relabels an invocation it only carries.
+    match *cmd {
+        ConfigCmd::Set { ref pairs } => {
+            match set_batch_with_locked(&write_path, pairs, &locked, Some(&app.engine)).await {
+                Ok(view) => {
+                    emit_to(io, &view, &render_batch_set_text(&view));
+                    0
+                }
+                Err(err) => report_to(io, &CommandError::ConfigBatch(err)),
+            }
         }
         ConfigCmd::Unset { ref key } => {
-            unset_with_locked(&write_path, key, &locked, Some(&app.engine)).await
+            match unset_with_locked(&write_path, key, &locked, Some(&app.engine)).await {
+                Ok(view) => {
+                    emit_to(io, &view, &render_set_text(&view));
+                    0
+                }
+                Err(err) => report_to(io, &CommandError::ConfigSet(err)),
+            }
         }
         // Print/Path stay `IpcRoute::Local` (journey R-2); only
         // Set/Unset take the relay lane, so nothing else arrives here.
         ConfigCmd::Print | ConfigCmd::Path => {
             unreachable!("the relay lane carries only config set/unset (R-2)")
         }
-    };
-    match result {
-        Ok(view) => {
-            emit_to(io, &view, &render_set_text(&view));
-            0
-        }
-        Err(err) => report_to(io, &CommandError::ConfigSet(err)),
     }
 }
 
@@ -866,16 +1095,23 @@ mod set_tests {
             json: true,
         };
         let cmd = ConfigCmd::Set {
-            key: "focus.work_mins".to_owned(),
-            value: "50".to_owned(),
+            pairs: vec!["focus.work_mins".to_owned(), "50".to_owned()],
         };
         let code = handle_daemon(&cmd, &app, Some(&path), &mut io).await;
         assert_eq!(code, 0, "a live set is a success");
-        let view: ConfigSetView =
+        let view: ConfigBatchSetView =
             serde_json::from_slice(&out).expect("the typed view travels as JSON");
-        assert_eq!(view.key, "focus.work_mins");
-        assert_eq!(view.value.as_deref(), Some("50"));
         assert!(view.applied_live, "the live lane bit");
+        let entries: Vec<_> = view
+            .entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), entry.value.as_deref()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![("focus.work_mins", Some("50"))],
+            "one per-key echo for the single-pair form"
+        );
         app.shutdown().await;
     }
 
@@ -972,6 +1208,273 @@ mod set_tests {
         assert!(matches!(err, ConfigSetError::EnvLocked { .. }), "{err:?}");
         let text = std::fs::read_to_string(&path).expect("the file");
         assert!(text.contains("tick_secs = 30"), "nothing wrote: {text}");
+        app.shutdown().await;
+    }
+
+    // -- the batch surface (#910, journey US-2) ---------------------------
+
+    /// `us2_s1_batch_parse_refusals_name_the_offending_key` (US-2
+    /// AC-2): a batch whose second pair is malformed refuses typed
+    /// naming that key, and the file is byte-identical to before —
+    /// parse precedes everything, nothing is touched.
+    #[tokio::test]
+    async fn us2_s1_batch_parse_refusals_name_the_offending_key() {
+        let path = temp_config("batch-parse");
+        std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
+        let before = std::fs::read_to_string(&path).expect("read");
+
+        // Zero pairs: the even-pair grammar refuses, nothing touched.
+        let err = set_batch(Some(path.clone()), &[])
+            .await
+            .expect_err("zero pairs refuse");
+        assert!(matches!(err, ConfigBatchError::BadArity), "{err:?}");
+
+        // Odd count: same class.
+        let err = set_batch(Some(path.clone()), &["focus.work_mins".to_owned()])
+            .await
+            .expect_err("an odd argv refuses");
+        assert!(matches!(err, ConfigBatchError::BadArity), "{err:?}");
+
+        // Unknown key named.
+        let err = set_batch(
+            Some(path.clone()),
+            &[
+                "focus.work_mins".to_owned(),
+                "50".to_owned(),
+                "not.a.knob".to_owned(),
+                "1".to_owned(),
+            ],
+        )
+        .await
+        .expect_err("the unknown key refuses");
+        assert!(
+            matches!(err, ConfigBatchError::UnknownKey { ref key } if key == "not.a.knob"),
+            "the refusal names the offending key: {err:?}"
+        );
+
+        // Malformed second-pair value named; the first pair is
+        // individually valid but the batch refuses wholesale.
+        let err = set_batch(
+            Some(path.clone()),
+            &[
+                "focus.work_mins".to_owned(),
+                "50".to_owned(),
+                "reminders.tick_secs".to_owned(),
+                "0".to_owned(),
+            ],
+        )
+        .await
+        .expect_err("the malformed value refuses");
+        assert!(
+            matches!(err, ConfigBatchError::BadValue { ref key } if key == "reminders.tick_secs"),
+            "the refusal names the offending key: {err:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            before,
+            "the file is byte-identical — no pair landed"
+        );
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    /// `us2_s2_batch_env_guard_names_the_pinned_key` (US-2 AC-3): a
+    /// batch containing an env-pinned key refuses typed naming the
+    /// key, and NOTHING is written — not even the unpinned pairs.
+    #[tokio::test]
+    async fn us2_s2_batch_env_guard_names_the_pinned_key() {
+        let path = temp_config("batch-env");
+        std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
+        let mut locked = std::collections::BTreeSet::new();
+        locked.insert("reminders.tick_secs".to_owned());
+        let err = set_batch_with_locked(
+            &path,
+            &[
+                "focus.work_mins".to_owned(),
+                "50".to_owned(),
+                "reminders.tick_secs".to_owned(),
+                "45".to_owned(),
+            ],
+            &locked,
+            None,
+        )
+        .await
+        .expect_err("the pinned key refuses the whole batch");
+        assert!(
+            matches!(err, ConfigBatchError::EnvLocked { ref key } if key == "reminders.tick_secs"),
+            "the typed refusal names the pinned key: {err:?}"
+        );
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            text.contains("tick_secs = 30") && !text.contains("work_mins"),
+            "nothing wrote: {text}"
+        );
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    /// `us2_s3_duplicate_batch_key_refuses_before_any_write` (US-2
+    /// AC-5): a duplicated key refuses typed; last-wins is never
+    /// applied silently.
+    #[tokio::test]
+    async fn us2_s3_duplicate_batch_key_refuses_before_any_write() {
+        let path = temp_config("batch-dup");
+        std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
+        let locked = std::collections::BTreeSet::new();
+        let err = set_batch_with_locked(
+            &path,
+            &[
+                "reminders.tick_secs".to_owned(),
+                "45".to_owned(),
+                "reminders.tick_secs".to_owned(),
+                "60".to_owned(),
+            ],
+            &locked,
+            None,
+        )
+        .await
+        .expect_err("the duplicate refuses");
+        assert!(
+            matches!(err, ConfigBatchError::DuplicateKey { ref key } if key == "reminders.tick_secs"),
+            "the typed refusal names the duplicated key: {err:?}"
+        );
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.contains("tick_secs = 30"), "nothing wrote: {text}");
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    /// `us2_s4_batch_lands_one_atomic_document` through the command
+    /// surface (US-2 AC-1, the multi-pair shape): a valid batch lands
+    /// all pairs as one document and the figment re-read carries all
+    /// of them; `config print` stays truthful after the batch.
+    #[tokio::test]
+    async fn us2_s4_a_valid_batch_lands_all_pairs_as_one_document() {
+        let path = temp_config("batch-ok");
+        std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
+        let view = set_batch(
+            Some(path.clone()),
+            &[
+                "reminders.tick_secs".to_owned(),
+                "45".to_owned(),
+                "focus.work_mins".to_owned(),
+                "50".to_owned(),
+                "sync.poll_interval_secs".to_owned(),
+                "60".to_owned(),
+            ],
+        )
+        .await
+        .expect("the batch lands");
+        assert!(!view.applied_live, "the local lane bit");
+        assert_eq!(view.entries.len(), 3);
+        assert_eq!(view.entries[0].key, "reminders.tick_secs");
+        assert_eq!(view.entries[0].value.as_deref(), Some("45"));
+        let file_only = AppConfig::extract_file_only(Some(path.as_path())).expect("decodes");
+        assert_eq!(file_only.reminders.tick_secs, 45);
+        assert_eq!(file_only.focus.work_mins, 50);
+        assert_eq!(file_only.sync.poll_interval_secs, 60);
+        let printed = print(Some(path.clone())).expect("print decodes");
+        assert!(printed.valid);
+        assert_eq!(printed.config.focus.work_mins, 50, "print is truthful");
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    /// `us2_s5_batch_apply_is_one_update_settings` (US-2 AC-6 + AC-1's
+    /// engine half): against a running daemon, a valid batch applies
+    /// with exactly ONE whole-snapshot `UpdateSettings` for the whole
+    /// invocation — observed via one `SettingsChanged` doorbell per
+    /// applied batch — and the typed view reports `applied_live: true`
+    /// with the per-key echoes.
+    #[tokio::test]
+    async fn us2_s5_batch_apply_is_one_update_settings() {
+        let fixture = crate::test_support::standalone_boot_fixture("batch-live").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let mut doorbells = app.system.subscribe();
+        let locked = std::collections::BTreeSet::new();
+        let view = set_batch_with_locked(
+            &path,
+            &[
+                "focus.work_mins".to_owned(),
+                "50".to_owned(),
+                "reminders.tick_secs".to_owned(),
+                "45".to_owned(),
+            ],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("the live batch lands");
+        assert!(view.applied_live, "the live lane bit: {view:?}");
+        let entries: Vec<_> = view
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key.as_str(),
+                    entry.value.as_deref(),
+                    entry.applied_live,
+                )
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("focus.work_mins", Some("50"), true),
+                ("reminders.tick_secs", Some("45"), true),
+            ],
+            "per-key echoes, one shared lane bit"
+        );
+        // Exactly one engine apply for the whole batch: exactly one
+        // SettingsChanged doorbell for this batch's invocation.
+        let mut applied = 0_u32;
+        while let Ok(event) = doorbells.try_recv() {
+            if matches!(event, taskboard_domain::SystemEvent::SettingsChanged) {
+                applied += 1;
+            }
+        }
+        assert_eq!(applied, 1, "one UpdateSettings for the whole batch");
+        let published = app.engine.shared_state().load();
+        assert_eq!(
+            published.settings.focus.as_ref().expect("minted").work(),
+            chrono::TimeDelta::minutes(50),
+            "the engine took the whole batch's snapshot"
+        );
+        app.shutdown().await;
+    }
+
+    /// The batch prove gate on the daemon lane: a batch whose later
+    /// pair crosses the whole-document validity refuses typed, the
+    /// file is untouched, and the engine never saw anything.
+    #[tokio::test]
+    async fn the_batch_prove_gate_refuses_wholesale_on_the_daemon_lane() {
+        let fixture = crate::test_support::standalone_boot_fixture("batch-gate").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let before = app.engine.shared_state().load().settings.clone();
+        let locked = std::collections::BTreeSet::new();
+        let err = set_batch_with_locked(
+            &path,
+            &[
+                "reminders.tick_secs".to_owned(),
+                "45".to_owned(),
+                "sync.backoff_initial_secs".to_owned(),
+                "400".to_owned(),
+            ],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect_err("the crossing pair refuses the whole batch");
+        assert!(
+            matches!(err, ConfigBatchError::Rejected(_)),
+            "typed Rejected: {err:?}"
+        );
+        assert_eq!(
+            app.engine.shared_state().load().settings,
+            before,
+            "the engine never saw the refused batch"
+        );
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            !text.contains("tick_secs = 45") && !text.contains("backoff"),
+            "the file is untouched — no half-provisioned batch: {text}"
+        );
         app.shutdown().await;
     }
 

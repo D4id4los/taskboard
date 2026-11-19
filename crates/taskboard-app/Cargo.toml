@@ -58,6 +58,9 @@ serde_json.workspace = true
 # Desktop toast notifications ([reminders] sink = "desktop"; the D-R10
 # stack ruling) — pinned once in [workspace.dependencies].
 notify-rust.workspace = true
+# Config live-reload watching (#909; the D-STACK stack ruling — pinned
+# once in [workspace.dependencies]).
+notify.workspace = true
 # Owned alarm audio for the escalation driver (DR-3/4 / D-I10) —
 # pinned once in [workspace.dependencies].
 rodio.workspace = true

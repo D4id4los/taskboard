@@ -133,6 +133,11 @@ pub enum CommandError {
     /// failure — matches!-able at the arm.
     #[error("config set refused")]
     ConfigSet(#[from] crate::commands::config::ConfigSetError),
+    /// A `config set` *batch* invocation was refused (#910, journey
+    /// US-2): the set lattice plus the batch-only classes (bad arity,
+    /// duplicate key) — matches!-able at the arm.
+    #[error("config batch set refused")]
+    ConfigBatch(#[from] crate::commands::config::ConfigBatchError),
     /// The in-process core failed to boot.
     #[error("core bootstrap failed")]
     Bootstrap(Box<BootstrapError>),
@@ -545,6 +550,21 @@ impl CommandError {
                 crate::commands::config::ConfigSetError::BadValue { .. } => "config-bad-value",
                 crate::commands::config::ConfigSetError::Io(_) => "config-write-failed",
                 crate::commands::config::ConfigSetError::Rejected(_) => "config-write-rejected",
+            },
+            Self::ConfigBatch(err) => match err {
+                crate::commands::config::ConfigBatchError::DuplicateKey { .. } => {
+                    "config-duplicate-key"
+                }
+                crate::commands::config::ConfigBatchError::EnvLocked { .. } => "config-env-locked",
+                crate::commands::config::ConfigBatchError::UnknownKey { .. } => {
+                    "config-unknown-key"
+                }
+                // `BadArity` is `BadValue`-class per the plan (US-2/S1):
+                // the even-pair grammar's refusal shares the kind.
+                crate::commands::config::ConfigBatchError::BadArity
+                | crate::commands::config::ConfigBatchError::BadValue { .. } => "config-bad-value",
+                crate::commands::config::ConfigBatchError::Io(_) => "config-write-failed",
+                crate::commands::config::ConfigBatchError::Rejected(_) => "config-write-rejected",
             },
             Self::Bootstrap(err) => match **err {
                 BootstrapError::InstanceLocked { .. } => "instance-locked",
@@ -2768,8 +2788,7 @@ mod ipc_routing_tests {
             // local next-start lane.
             Command::Config {
                 cmd: crate::cli::ConfigCmd::Set {
-                    key: "focus.work_mins".to_owned(),
-                    value: "50".to_owned(),
+                    pairs: vec!["focus.work_mins".to_owned(), "50".to_owned()],
                 },
             },
             Command::Config {
@@ -2866,8 +2885,7 @@ mod ipc_routing_tests {
         assert_eq!(
             route_for_ipc(&Command::Config {
                 cmd: crate::cli::ConfigCmd::Set {
-                    key: "focus.work_mins".to_owned(),
-                    value: "50".to_owned(),
+                    pairs: vec!["focus.work_mins".to_owned(), "50".to_owned()],
                 },
             }),
             IpcRoute::IpcOrLocal
@@ -2897,8 +2915,7 @@ mod ipc_routing_tests {
         assert_eq!(
             route_for_ipc(&Command::Config {
                 cmd: crate::cli::ConfigCmd::Set {
-                    key: "focus.work_mins".to_owned(),
-                    value: "50".to_owned(),
+                    pairs: vec!["focus.work_mins".to_owned(), "50".to_owned()],
                 },
             }),
             route_for_ipc(&Command::Sync {
