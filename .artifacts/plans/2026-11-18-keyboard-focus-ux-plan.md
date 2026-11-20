@@ -188,8 +188,8 @@ flowchart LR
 | W-1 | keymap stroke parse | — | — | to_stroke/from_event case-fold | — | — | — | US-3/S1 | crates/taskboard-ui-slint/tests/journeys/keymap_case_seam.rs::us3_s1 |
 | W-2 | interpret table | — | — | UiEffect::FocusDirectional table | nav.focus-up | — | — | US-1/S1-S2 | crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs::us1_s1 |
 | W-3 | adapter settle matrix | — | — | Flow::Move kept arms | nav.focus-right | — | — | US-2/S1 | crates/taskboard-ui-slint/tests/journeys/board_move_journeys.rs::us2_s1 |
-| W-4 | task-view widgets | done/tracker/entries/effort/back | on activation | detail shortcut map | task.toggle-done, TaskToggleTracker, task.entries.open, task.effort.set, task.back | StateCommand variants | — | US-4/S1-S2 | detail_shortcuts_journeys.rs::us4_s1 |
-| W-5 | board view | tracker verbs | — | board-context keymap arm | TaskStartTracker/TaskStopTracker/TaskToggleTracker | StateCommand | ItemAddr card | US-5 | tracker_journeys.rs::us5_s1 |
+| W-4 | task-view widgets | done/tracker/entries/effort/back | task-track-entries-clicked | the router's detail arms + the D19 hint projections | TaskTrackToggle | StartTracking | — | US-4/S1-S2 | detail_shortcuts_journeys.rs::us4_s1 detail_shortcuts_journeys.rs::us4_s2 |
+| W-5 | board view | tracker verbs | — | board-context keymap arm | TaskTrackStart | StartTracking | ItemAddr card | US-5 | tracker_journeys.rs::us5_s1 |
 | W-6 | rule-list.slint rows | selected-rule cursor | — | on_task_rule_row_clicked (adapter.rs install_task_seam) — slint callback task-rule-row-clicked; the directional TaskDetail arm + Activate resolution (adapter.rs::interpret_directional / activate_rule_cursor) | nav.focus-down | — | — | US-6/S1 | focus_law_journeys.rs::us6_s1 |
 
 ## 7. Command-contract delta
@@ -199,7 +199,9 @@ flowchart LR
 | ActionId | nav.focus-up/down/left/right | direction only | US-1 |
 | ActionId | move.hop-stack | direction | US-2 (deviation: no such id — see §8) |
 | ActionId | TaskToggleTracker | existing id, newly bound | US-4, US-5 |
-| ActionId | task.toggle-done, task.entries.open, task.effort.set, task.back | new detail verbs | US-4 |
+| ActionId | TaskComplete / TaskReopen (the done pair; the sketch name task.toggle-done is §9's supersession) | existing ids, newly bound at TaskDetail | US-4 |
+| ActionId | TaskTrackToggle | new id (the R-8 smart toggle; the sketch named TaskToggleTracker — §9) | US-4, US-5 |
+| ActionId | TaskTrackEntries (the sketch's task.entries.open — §9), TaskEffortEdit, TaskEffortClear, NavFocusBoard (Back) | existing/new ids, newly bound at TaskDetail | US-4 |
 
 ## 8. Verification plan
 
@@ -258,3 +260,26 @@ flowchart LR
 
   bound-test: US-1/S2 -> crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs::today_horizontal_is_the_control_walk_first_cut
   bound-test: US-1/S3 -> crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs::the_text_entry_guards_own_the_directional_keys
+
+bound-test: US-3/S2 -> crates/taskboard-ui-slint/tests/journeys/keymap_case_seam.rs::us3_s1_shifted_today_delivery_opens_today_and_us3_s2_bare_ctrl_t_does_not
+
+## 9. Stage-2 landing deviations (2026-11-20, round 9 chunk 11 — recorded)
+
+- **The §4/§6/§7 sketch ids are shorthand, not shipped ids.** The
+  landed contract (chunk 9's D-table + chunk 11's completion, plan
+  `.artifacts/plans/2026-11-19-taskdetail-shortcuts-plan.md` §3):
+  the done pair is `TaskComplete`/`TaskReopen` (existing ids, newly
+  bound at TaskDetail — Space/Ctrl+Space/C-c C-t/g i-shaped per
+  preset table); the smart toggle is the NEW id `TaskTrackToggle`
+  (distinct from `TaskToggleTracker`, the tracker-kind flag, #492 —
+  the sketch conflated them); the entries opener is the existing
+  `TaskTrackEntries`; the effort pair is the new
+  `TaskEffortEdit`/`TaskEffortClear`; Back reuses `NavFocusBoard`
+  (it IS the back verb) with the Alt+Left Global alternate.
+- **US-4 needs no new callbacks.** The detail verbs are
+  keymap-dispatched through the registry arms; the one resolved
+  callback in the W-4 row (`task-track-entries-clicked`, r4) is the
+  family's pointer twin, kept as the row's wiring evidence.
+- **US-5's toggle rides the same id** in Board/StackDetail (the r8
+  start/stop spellings extended verbatim; the toggle bound in all
+  four card contexts).

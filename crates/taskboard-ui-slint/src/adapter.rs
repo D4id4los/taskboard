@@ -14546,7 +14546,7 @@ fn install_tracking_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // precedent; the subject is not guaranteed focused). The open
     // arm's kiosk/subject refusals are the interpret arms'
     // dispatch-time gating.
-    install_seam!(window: window.on_task_track_entries_clicked, adapter: adapter;
+    install_seam!(window: window.on_task_track_entries_clicked, adapter: adapter; [try] // slint callback: task-track-entries-clicked (the entries overlay's opener, r4 D-TS6)
     bind mut (a, window), args (), {        a.track_target = a.view_state.subject_task();
     a.route(&window, ActionId::TaskTrackEntries);
 

@@ -323,7 +323,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "task_title_committed",
     "task_title_edit_activated",
     "task_title_edited",
-    "task_track_entries_clicked",
+    "task_track_entries_clicked", // the slint spelling: "task-track-entries-clicked" (r4 D-TS6; the #760 grammar)
     "task_track_start_clicked",
     "task_track_stop_clicked",
     "text_flow_focus_lost",
