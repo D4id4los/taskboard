@@ -395,9 +395,6 @@ fn g10_the_mask_arms_on_open_and_clamps_the_push() {
     });
 }
 
-/// G-10 (walk half): Tab from the body stop walks into the button
-/// row — the dialog's own stops hold the walk before any mask
-/// arming.
 /// G-10 (#1053, button-row half): the walk mount's declared extent
 /// counts the D-5 button row — the app-window walk arm composes the
 /// body's own stop + every row + the buttons (the host mounts them
@@ -452,6 +449,33 @@ fn g10_tab_from_the_body_stop_reaches_the_buttons() {
             0,
             "the walk continues into the button row"
         );
+    });
+}
+
+/// G-14: the dialog chrome (#1004) — the panel carries the focus-ring
+/// border and the theme's elevation shadow (the capture composition's
+/// pre-migration chrome, restored on the base widget so every dialog
+/// gains it). Structural property reads off the host's out seams; a
+/// border paints inside the rectangle and a shadow paints nothing
+/// into layout, so the geometry pins above stay untouched.
+#[test]
+fn g14_the_panel_carries_the_dialog_chrome() {
+    run_probe(|window| {
+        open_modal(window);
+        assert!(
+            window.get_modal_panel_border_width() > 0.0,
+            "the panel paints a border"
+        );
+        assert_eq!(
+            window.get_modal_panel_border_color(),
+            slint::Color::from_rgb_u8(0x7a, 0xa2, 0xf7),
+            "the border is the focus-ring token"
+        );
+        assert!(
+            window.get_modal_panel_shadow_blur() > 0.0,
+            "the panel paints an elevation shadow"
+        );
+        close_modal(window);
     });
 }
 

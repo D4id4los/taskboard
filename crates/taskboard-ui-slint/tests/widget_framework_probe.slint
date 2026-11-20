@@ -88,6 +88,10 @@ export component WidgetFrameworkProbeWindow inherits Window {
     out property <length> panel-y: modal.panel-y;
     out property <length> modal-panel-width: modal.panel-width;
     out property <length> modal-panel-height: modal.panel-height;
+    // The dialog chrome seams (#1004).
+    out property <length> modal-panel-border-width: modal.panel-border-width;
+    out property <color> modal-panel-border-color: modal.panel-border-color;
+    out property <length> modal-panel-shadow-blur: modal.panel-shadow-blur;
     out property <color> modal-scrim: modal.scrim-color;
     out property <int> modal-focused-button: modal.focused-button;
     out property <int> modal-mask-extent: modal.mask-extent;
