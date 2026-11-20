@@ -16947,6 +16947,37 @@ fn walk_step(harness: &mut Harness, action: ActionId) {
     harness.driver.advance_time(0);
 }
 
+/// #1053 — the walk host's declared extent counts the D-5 button row:
+/// the armed `MaskWalkFacts.extent` equals the body's own stop (1) +
+/// every row + every dialog button (the host mounts them as
+/// `TextButton` tab stops, so an extent without them under-declares
+/// and the adapter's cursor can walk past the last real stop).
+#[test]
+fn the_walk_extent_counts_the_dialog_button_row() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let harness = mount_open_walk(state);
+            assert!(walk_open(&harness), "the walk opened");
+            let model = harness.handle.window().get_walk_model();
+            let expected = 1 + model.rows.row_count() + model.buttons.row_count();
+            let extent = i32::try_from(expected).expect("the extent fits");
+            assert_eq!(
+                harness
+                    .handle
+                    .window()
+                    .global::<taskboard_ui_slint::MaskWalkFacts>()
+                    .get_extent(),
+                extent,
+                "the declared extent includes the button row"
+            );
+        },
+    );
+}
+
 /// J1 — unreviewed closed day → the Today card; the click opens the
 /// walk at the Inbox stage over the due window's reference.
 #[test]
