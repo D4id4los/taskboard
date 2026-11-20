@@ -173,9 +173,9 @@ menus/flyouts 200/360 px, ×base-scale). -->
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/widgets/modal-dialog-host.slint (new; the host intents accepted/dismissed/button-invoked resolve per D-W1-1 — the W1 proof mount wires capture-dismiss-requested) | ModalDialog + host | capture-dismiss-requested | modal host mount point | — | — | — | US-1/S1-S4 | widget_framework_probe_tests.rs::g11_dismissal_law_left_click_right_click_inside |
-| W-2 | ui/widgets/anchored-overlay.slint (new) | AnchoredOverlay helper | — | anchor facts struct | — | — | — | US-2/S1-S3 | widget_framework_probe_tests.rs::g2_below_places_the_overlay_clear_of_the_anchor |
-| W-3 | task-view.slint | description editor mount | — | — | — | — | — | US-3/S1 | overlay_migration_probe_tests.rs::om_us3_s1_description_section_keeps_its_height_across_the_edit_mount |
+| W-1 | ui/widgets/modal-dialog-host.slint (new; the host intents accepted/dismissed/button-invoked resolve per D-W1-1 — the W1 proof mount wires capture-dismiss-requested) | ModalDialog + host | capture-dismiss-requested | modal host mount point | — | — | — | US-1/S1-S4 | crates/taskboard-ui-slint/tests/probes/widget_framework_probe_tests.rs::g11_dismissal_law_left_click_right_click_inside |
+| W-2 | ui/widgets/anchored-overlay.slint (new) | AnchoredOverlay helper | — | anchor facts struct | — | — | — | US-2/S1-S3 | crates/taskboard-ui-slint/tests/probes/widget_framework_probe_tests.rs::g2_below_places_the_overlay_clear_of_the_anchor |
+| W-3 | task-view.slint | description editor mount | — | — | — | — | — | US-3/S1 | crates/taskboard-ui-slint/tests/probes/overlay_migration_probe_tests.rs::om_us3_s1_description_section_keeps_its_height_across_the_edit_mount |
 | W-4 | task-view.slint | Effort Estimate row | task-effort-focus-lost | effort seam | — | StateCommand::UpdateTask | — | US-3/S2 | journeys.rs::om_us3_s2_effort_commits_once_on_focus_loss_and_never_twice |
 | W-5 | migrated mounts (recur, labels, palette, date/time pickers) | — | — | host-based mount | — | — | — | US-1/S1 | journeys.rs::om_us1_s1_recur_scrim_click_commits_a_valid_draft_and_nothing_else (the modal-family routing pair; om_us1_s1_labels / om_us1_s2_s3_palette are the siblings) |
 
@@ -201,15 +201,15 @@ menus/flyouts 200/360 px, ×base-scale). -->
 Bound-test mappings (round-9 W1 — chunk-3 rows; the base-layer laws
 live on the probe fixture, the routing pairs on the real mounts):
 
-bound-test: US-1/S1 -> widget_framework_probe_tests.rs::g1_modal_panel_is_centered_within_the_floor_band
-bound-test: US-1/S2 -> widget_framework_probe_tests.rs::g10_tab_from_the_body_stop_reaches_the_buttons
+bound-test: US-1/S1 -> crates/taskboard-ui-slint/tests/probes/widget_framework_probe_tests.rs::g1_modal_panel_is_centered_within_the_floor_band
+bound-test: US-1/S2 -> crates/taskboard-ui-slint/tests/probes/widget_framework_probe_tests.rs::g10_tab_from_the_body_stop_reaches_the_buttons
 bound-test: US-1/S3 -> journeys.rs::us1_s3_inside_click_never_closes_and_scrim_click_dismisses
-bound-test: US-1/S4 -> widget_framework_probe_tests.rs::g12_dismissal_restores_the_opener_focus
+bound-test: US-1/S4 -> crates/taskboard-ui-slint/tests/probes/widget_framework_probe_tests.rs::g12_dismissal_restores_the_opener_focus
 bound-test: US-2/S1 -> journeys.rs::us2_s1_the_setter_opens_below_the_anchor_never_covering_it
-bound-test: US-2/S2 -> widget_framework_probe_tests.rs::g3_the_overlay_flips_above_near_the_floor
+bound-test: US-2/S2 -> crates/taskboard-ui-slint/tests/probes/widget_framework_probe_tests.rs::g3_the_overlay_flips_above_near_the_floor
 bound-test: US-2/S3 -> journeys.rs::the_quick_time_button_opens_the_menu_without_closing_the_picker
 bound-test: US-2/S3 -> journeys.rs::om_us2_s3_time_flyout_never_over_its_field_and_the_mirror_tracks
-bound-test: US-3/S1 -> overlay_migration_probe_tests.rs::om_us3_s1_description_section_keeps_its_height_across_the_edit_mount
+bound-test: US-3/S1 -> crates/taskboard-ui-slint/tests/probes/overlay_migration_probe_tests.rs::om_us3_s1_description_section_keeps_its_height_across_the_edit_mount
 bound-test: US-3/S2 -> journeys.rs::om_us3_s2_effort_commits_once_on_focus_loss_and_never_twice
 
 US-3's rows landed with chunk 5 (2026-11-18, the overlay migration).

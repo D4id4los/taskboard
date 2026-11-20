@@ -56,7 +56,7 @@ for the whole retrofit cohort.
 
 #760: the wiring-inventory callback check stops at "`.slint` hit +
 adapter hit"; a callback claimed wired but absent from the adapter's
-structural manifest (`crates/taskboard-ui-slint/tests/seam_inventory.rs`,
+structural manifest (`crates/taskboard-ui-slint/tests/inventory/seam_inventory.rs`,
 the two-sided totality census) is never flagged.
 
 ## 2. The verdict-state contract ([L](a) — machine-readable)

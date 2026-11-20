@@ -51,8 +51,12 @@ on_slint_thread(|| {
 
 The hosting tier for layout, focus-walk, and constraint behavior. A
 *probe* is a small =.slint= window in =tests/<name>_probe.slint= that
-mounts the real widget under controlled model state; the test binary
-=tests/<name>_probe_tests.rs= drives it through
+mounts the real widget under controlled model state; its test suite
+lives as a member file =tests/probes/<name>_probe_tests.rs= inside one
+of the two grouped probe binaries — =probe_composition.rs= (the
+desktop-renderer probes, =headless_renderer: false=) and
+=probe_pixel.rs= (the software-renderer golden-compare probes,
+=headless_renderer: true=) — and drives it through
 =tests/support/driver.rs=.
 
 Mechanics (see any existing pair, e.g. =walk_probe*= or

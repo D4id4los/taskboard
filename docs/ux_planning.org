@@ -213,11 +213,12 @@ on_*= handler in =adapter.rs=); each command / =ActionId= token must
      never credits.
 
   *Naming law (going forward)*: each plan's journey tests live in a
-  per-plan file =<topic>_journeys.rs= (=topic = the plan filename's
-  segment between the date and =-ux-plan=, =-= → =_=) and test names
+  per-plan file =tests/journeys/<topic>_journeys.rs= (=topic = the plan
+  filename's segment between the date and =-ux-plan=, =-= → =_=) and
+  test names
   carry the step token as a prefix, =us<n>_s<k>_<description>=; the
   §6 =Test= column MUST nominate each journey step's file. The r9
-  plans already do. Existing files (e.g. =habits_journey.rs=) are
+  plans already do. Existing files (e.g. =tests/journeys/habits_journey.rs=) are
   grandfathered; retro plans use the =bound-test:= mapping.
 - For each **capability-matrix cell** marked with a story: that
   story's §4 table exists and all its steps are covered per the
@@ -391,7 +392,7 @@ cut.
 | *Statecharts* (Harel; statecharts.dev) for overlay/dialog logic — hierarchy, guards, impossible states excluded by construction | Editors like the round-7 recur-editor (pattern/bound draft validity, armed-confirm strip) are literally state machines; a plan-time statechart forces the invalid-draft, armed-confirm, and escape transitions to be designed *before* implementation | Slint itself has native =states=; the chart stays plan-time documentation (no XState-style runtime machinery — Slint owns state) | G4 |
 | *Cognitive walkthrough* (Polson/Rieman) as a **review-stage agent protocol** | Task-focused learnability inspection that needs no users | 2025 research shows LLM agents perform credible scaled walkthroughs (Synthetic Cognitive Walkthrough, arXiv 2512.03568; Amazon's UXAgent). The stage-3 review agent can role-play each story against the real UI through the existing =i-slint-backend-testing= driver | G4 |
 | *Heuristic evaluation* (Nielsen's 10, subset) | Cheap cross-cutting quality rubric | Paired with the walkthrough as its second pass; six heuristics (§2.4) | G4 |
-| *E2E journey automation* | Journeys that click the real widgets and assert the dispatched commands | Already house-proven: 21 integration test files under =crates/taskboard-ui-slint/tests/= incl. =journeys.rs=, =seam_inventory.rs=, =golden_visuals.rs=, driven through =tests/support/driver.rs= over =i-slint-backend-testing=. The framework only mandates coverage, invents no harness | G1, G2, G3 (mechanically) |
+| *E2E journey automation* | Journeys that click the real widgets and assert the dispatched commands | Already house-proven: the six integration test binaries under =crates/taskboard-ui-slint/tests/= (the journey suites grouped in =journey_suites.rs=, the composition/pixel probes in =probe_composition.rs=/=probe_pixel.rs=, the structural inventories in =structural.rs=) incl. =journeys.rs=, =tests/inventory/seam_inventory.rs=, =tests/journeys/golden_visuals.rs=, driven through =tests/support/driver.rs= over =i-slint-backend-testing=. The framework only mandates coverage, invents no harness | G1, G2, G3 (mechanically) |
 
 ** 4.2 Adapted
 
