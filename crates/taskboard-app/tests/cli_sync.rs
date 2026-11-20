@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! The boards/sync CLI verb family, grouped into one binary (#1070,
+//! plan §3.2): wiremock ceremonies for the attach/break/connect/
+//! standalone/verbs grammars. Members are verbatim moves living under
+//! `tests/cli/`; each keeps its own `common` include.
+
+#[path = "cli/cli_attach.rs"]
+mod cli_attach;
+#[path = "cli/cli_breaks.rs"]
+mod cli_breaks;
+#[path = "cli/cli_connect.rs"]
+mod cli_connect;
+#[path = "cli/cli_standalone.rs"]
+mod cli_standalone;
+#[path = "cli/cli_verbs.rs"]
+mod cli_verbs;
