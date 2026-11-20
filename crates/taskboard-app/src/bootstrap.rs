@@ -1804,10 +1804,11 @@ pub fn spawn_config_watcher(
 /// transition) a bounded chance to land before the verb reads the
 /// state. Only a cycle *in flight right now* is awaited; a settled
 /// hydrated status (the common case) returns immediately — freshness
-/// beyond the last sync is `taskboard sync`'s job. A board-less db can
-/// only ever skip silently (`NoBoard`), so it returns immediately; a
-/// deadline expiry degrades gracefully — offline-first: local data
-/// serves the command.
+/// beyond the last sync is `taskboard sync`'s job. A world with
+/// nothing pullable — a board-less db (skips silently, `NoBoard`) or
+/// one whose every live board lacks a remote binding (no sync actor
+/// can pull it) — also returns immediately; a deadline expiry degrades
+/// gracefully — offline-first: local data serves the command.
 /// Public for the hermetic bootstrap suite's settle-contract pins
 /// (`tests/core/bootstrap.rs`): the predicate is an in-process seam
 /// and that suite is its lowest-layer tester (AGENTS §5).
@@ -1829,8 +1830,26 @@ pub async fn wait_for_boot_pull(engine: &EngineHandle, timeout: Duration) {
             {
                 return;
             }
-            // No live board: the cycle can only skip silently.
-            _ if !state.boards.values().any(|b| !b.deleted) => return,
+            // No live board, or every live board is locally created
+            // with no remote binding: no sync actor anywhere can pull
+            // anything for this world — the boot cycle provably has
+            // nothing to settle. (A board-less db is the degenerate
+            // case and can only skip silently, `NoBoard`; a locally
+            // created board is `remote: None` until the connector
+            // ceremony binds it, and its cycle is a silent poll-tick
+            // skip — decision 10.) Deliberate leniency (AGENTS §2 A1):
+            // a live board bound to a *deconfigured* connector still
+            // waits out the deadline — the predicate cannot
+            // distinguish "bound and being synced" from "bound but
+            // orphaned" from state alone, and the deadline backstop
+            // bounds it (#1120).
+            _ if !state
+                .boards
+                .values()
+                .any(|b| !b.deleted && b.remote.is_some()) =>
+            {
+                return;
+            }
             _ => {}
         }
         if tokio::time::Instant::now() >= deadline {
