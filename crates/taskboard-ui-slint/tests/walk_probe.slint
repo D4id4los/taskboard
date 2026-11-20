@@ -14,9 +14,11 @@ import { ListView } from "../ui/widgets/listview.slint";
 // button — the only F-1 copy without a keyboard, under migration to
 // the TextButton primitive (the sanctioned behavior change B-1).
 import { VerbButton, ReviewWalkOverlay, ReviewWalkModel } from "../ui/views/review-walk-overlay.slint";
-// The #1053 probe mount: the walk host arm's shape — the
-// ModalDialogHost carrying the ReviewWalkOverlay body.
-import { ModalDialogHost, DialogKind } from "../ui/widgets/modal-dialog-host.slint";
+// The #1053/#1036 probe mounts: the walk host arm's shape — the
+// ModalDialogHost carrying the ReviewWalkOverlay body — and the
+// standalone planner surface (the #1036 focus gate's guard).
+import { ModalDialogHost, DialogKind, DialogButtonModel, DialogButtonRole } from "../ui/widgets/modal-dialog-host.slint";
+import { PlanNextDayView } from "../ui/views/plan-next-day-view.slint";
 
 export global WalkProbeFacts {
     in-out property <int> first-gained: 0;
@@ -32,6 +34,11 @@ export global WalkProbeFacts {
     // a conditional — the app overlay's exact shape.
     in-out property <int> p5-container-gained: 0;
     in-out property <int> p5-inner-gained: 0;
+    // The #1036 standalone-planner facts: the count of focus gains and
+    // the live has-focus mirror (the init edge can precede the
+    // changed-handler attach, so both edges report).
+    in-out property <int> standalone-focus-gained: 0;
+    in-out property <bool> standalone-focus-live: false;
 }
 
 // The P5 component: the panel's shape — a conditional component
@@ -99,6 +106,27 @@ component ProbePanel inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+// The #1036 standalone-planner wrapper: the planner mounted under a
+// conditional (armed post-mount, like the app's view switch); the
+// focus gains land in the facts global.
+component StandalonePlanner inherits Rectangle {
+    in property <bool> take-focus: true;
+    width: Theme.space-15;
+    height: Theme.space-15;
+    planner := PlanNextDayView {
+        take-focus-on-init: root.take-focus;
+        init => {
+            WalkProbeFacts.standalone-focus-live = self.has-focus;
+        }
+        changed has-focus => {
+            WalkProbeFacts.standalone-focus-live = self.has-focus;
+            if (self.has-focus) {
+                WalkProbeFacts.standalone-focus-gained += 1;
             }
         }
     }
@@ -238,12 +266,45 @@ export component WalkProbeWindow inherits Window {
     // ReviewWalkModel and reads the armed mask extent through the
     // host's seam — the mount-side pin for the arithmetic.
     in-out property <bool> walk-open: false;
-    in-out property <ReviewWalkModel> walk-model;
+    // The default model carries the entry stage's row and the D-5
+    // button row, so the host's open transition (the proven mount-grab
+    // edge) lands the initial focus on the button.
+    in-out property <ReviewWalkModel> walk-model: {
+        open: false,
+        header: "",
+        strip: [],
+        rows: [{ title: "row one", emphasis: false }],
+        stage-kind: 4,
+        stage-position: "",
+        stage-intro: "",
+        tally-filed: 0,
+        tally-moved: 0,
+        tally-left: 0,
+        tally-recorded: false,
+        abort-confirm: false,
+        buttons: [
+            { label: "Next", role: DialogButtonRole.accept, enabled: true, autofocus: true },
+        ],
+        button-codes: [0],
+        filing: false,
+        candidates: [],
+        candidate-index: 0,
+        file-label: "",
+        keep-label: "",
+        picking: false,
+        date-text: "",
+        tomorrow-label: "",
+        pick-label: "",
+        leave-label: "",
+        plan-label: "",
+        record-label: "",
+        finish-label: "",
+    };
     walk-host := ModalDialogHost {
         x: 0;
-        y: Theme.space-15 * 3;
-        width: Theme.space-15 * 2;
-        height: Theme.space-15 * 2;
+        y: 0;
+        width: 100%;
+        height: 100%;
         open: root.walk-open;
         title: "";
         kind: DialogKind.confirm;
@@ -254,9 +315,29 @@ export component WalkProbeWindow inherits Window {
         walk-stops: 1 + root.walk-model.rows.length
             + root.walk-model.buttons.length;
         buttons: root.walk-model.buttons;
-        ReviewWalkOverlay {
+        // The walk's initial focus lands on the first button (the
+        // derived button row's mount grab) — gated on open so the
+        // closed host never competes for the window's init focus.
+        initial-focus: root.walk-open ? 0 : -1;
+        walk-body := ReviewWalkOverlay {
             model: root.walk-model;
         }
     }
     out property <int> walk-mask-extent: walk-host.mask-extent;
+    // The #1036 seams: the host's focused button and the overlay's
+    // embedded-planner focus fact.
+    out property <int> walk-focused-button: walk-host.focused-button;
+    out property <bool> embedded-planner-focused: walk-body.planner-has-focus;
+
+    // ---- The #1036 standalone planner mount --------------------------
+    // The standalone surface's shape: the planner mounted on an
+    // attached window (armed from the test post-mount, like the app's
+    // view switch). The gate pin flips `standalone-take-focus`.
+    in-out property <bool> standalone-arm: false;
+    in-out property <bool> standalone-take-focus: true;
+    if (root.standalone-arm): StandalonePlanner {
+        x: 0;
+        y: Theme.space-15 * 3;
+        take-focus: root.standalone-take-focus;
+    }
 }

@@ -274,3 +274,85 @@ fn w4_walk_arm_extent_counts_rows_and_buttons() {
         );
     });
 }
+
+// ---- #1036: the embedded planner's mount-focus gate -----------------
+
+/// The walk's initial focus survives the planner-stage mount: opening
+/// the walk lands focus on the derived button row, and advancing to
+/// stage-kind 3 (the embedded planner) never steals it — the planner
+/// root stays unfocused and the button row keeps the walk's focus
+/// (the D-7 gate; the journey reaches the planner by Tab, not by a
+/// mount grab).
+#[test]
+fn w5_embedded_planner_never_steals_focus_at_mount() {
+    run_probe(|window| {
+        // The probe default model carries the entry row + the button
+        // row; opening lands the initial focus on the button (the
+        // host's open-transition grab edge).
+        window.set_walk_open(true);
+        advance_probe_clock(0);
+        advance_probe_clock(0);
+        assert_eq!(
+            window.get_walk_focused_button(),
+            0,
+            "the walk's button row holds the initial focus"
+        );
+
+        // Advance to the planner stage: the stage-3 arm mounts the
+        // embedded planner mid-session (the window is attached).
+        let mut model = window.get_walk_model();
+        model.stage_kind = 3;
+        window.set_walk_model(model);
+        advance_probe_clock(0);
+        advance_probe_clock(0);
+        assert!(
+            !window.get_embedded_planner_focused(),
+            "the embedded planner never grabs focus at mount"
+        );
+        assert_eq!(
+            window.get_walk_focused_button(),
+            0,
+            "the walk's initial focus survives the planner mount"
+        );
+    });
+}
+
+/// The standalone mount keeps its init grab (the property default's
+/// guard): arming the standalone planner on an attached window takes
+/// focus on init exactly as the pre-change surface did. Both edges
+/// report (the init read and the changed mirror) — the mount-focus
+/// law is the platform's (the P5 finding), this pin guards the gate's
+/// default passing the grab through.
+#[test]
+fn w6_standalone_planner_takes_focus_on_init() {
+    run_probe(|window| {
+        let facts = window.global::<WalkProbeFacts>();
+        advance_probe_clock(0);
+        window.set_standalone_arm(true);
+        advance_probe_clock(0);
+        advance_probe_clock(0);
+        assert!(
+            facts.get_standalone_focus_gained() >= 1 || facts.get_standalone_focus_live(),
+            "the standalone mount takes focus on init (the default gate)"
+        );
+    });
+}
+
+/// The gate refuses when the mount asks it to: `take-focus-on-init:
+/// false` mints no init grab on either edge — the exact binding the
+/// walk embed carries.
+#[test]
+fn w7_the_take_focus_gate_refuses_when_false() {
+    run_probe(|window| {
+        let facts = window.global::<WalkProbeFacts>();
+        advance_probe_clock(0);
+        window.set_standalone_take_focus(false);
+        window.set_standalone_arm(true);
+        advance_probe_clock(0);
+        advance_probe_clock(0);
+        assert!(
+            facts.get_standalone_focus_gained() == 0 && !facts.get_standalone_focus_live(),
+            "the gated mount takes no init focus"
+        );
+    });
+}
