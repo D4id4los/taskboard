@@ -755,10 +755,11 @@ mod tests {
         config.validate().expect("valid");
         let store: std::sync::Arc<dyn crate::secrets::CredentialStore> =
             std::sync::Arc::new(FixedStore);
-        crate::bootstrap::bootstrap(
+        crate::bootstrap::bootstrap_in(
             config,
             store,
             std::sync::Arc::new(crate::notifications::LogSink),
+            crate::bootstrap::BootIdentity::At(dir.to_owned()),
         )
         .await
         .expect("boots")
@@ -1294,10 +1295,11 @@ mod tests {
         config.files_sync.enabled = true;
         config.app.shutdown_timeout_secs = 2;
         config.validate().expect("valid");
-        let app = crate::bootstrap::bootstrap(
+        let app = crate::bootstrap::bootstrap_in(
             config,
             std::sync::Arc::new(FixedStore),
             std::sync::Arc::new(crate::notifications::LogSink),
+            crate::bootstrap::BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("boots");
@@ -1317,10 +1319,11 @@ mod tests {
         plain.storage.db_path = Some(dir2.path().join("taskboard.db"));
         plain.app.shutdown_timeout_secs = 2;
         plain.validate().expect("valid");
-        let app2 = crate::bootstrap::bootstrap(
+        let app2 = crate::bootstrap::bootstrap_in(
             plain,
             std::sync::Arc::new(FixedStore),
             std::sync::Arc::new(crate::notifications::LogSink),
+            crate::bootstrap::BootIdentity::At(dir2.path().to_owned()),
         )
         .await
         .expect("boots");
