@@ -1761,18 +1761,21 @@ fn every_task_view_cell_and_chip_carries_its_info_tip() {
                 spots.dedup();
                 spots.len()
             };
-            for id in [
-                "TaskView::title-touch",
-                "TaskView::due-touch",
-                "TaskView::scheduled-touch",
-                "TaskView::description-touch",
-            ] {
-                assert_eq!(
-                    distinct_spots(&harness, id),
-                    1,
-                    "exactly one tip trigger at {id}"
-                );
-            }
+            // The W4 absorption: the four closed cells share the
+            // widget's touch anatomy — one tip trigger per cell, four
+            // distinct spots over the shared id (the address-only
+            // rename per the CheckBox precedent), plus the tracked
+            // row's hover-only arm.
+            assert_eq!(
+                distinct_spots(&harness, "LabeledValueRow::cell-touch"),
+                4,
+                "exactly one tip trigger per closed cell"
+            );
+            assert_eq!(
+                distinct_spots(&harness, "LabeledValueRow::value-touch"),
+                1,
+                "exactly one hover arm at the tracked row"
+            );
             assert_eq!(
                 distinct_spots(&harness, "PresetChip::touch"),
                 4,
@@ -1793,6 +1796,7 @@ fn every_task_view_cell_and_chip_carries_its_info_tip() {
             for label in ["Edit title", "Edit due date", "5m"] {
                 let (x, y) = cell(&harness, label);
                 harness.driver.hover_at(x, y);
+                harness.driver.advance_time(0);
                 assert!(
                     tooltip_state(&harness).get_pending(),
                     "{label}'s hover armed the delay"
@@ -21994,7 +21998,7 @@ fn us1_s1_picker_close_restores_the_invoking_field() {
             assert_eq!((seam, kind, a, b), (3, 4, -1, -1), "the origin fact");
             assert_eq!(nonce, facts_before.4 + 1, "one-shot edge");
             assert!(
-                focused_carries(&harness, "title-stop"),
+                focused_carries(&harness, "value-stop"),
                 "the title cell holds slint focus"
             );
         },
@@ -22156,7 +22160,7 @@ fn us1_s3_commit_exit_restores_the_row_anchor() {
             let (seam, kind, _, _, _) = focus_facts(&harness);
             assert_eq!((seam, kind), (12, 4), "the title editor's origin fact");
             assert!(
-                focused_carries(&harness, "title-stop"),
+                focused_carries(&harness, "value-stop"),
                 "the title cell holds slint focus after the commit"
             );
         },

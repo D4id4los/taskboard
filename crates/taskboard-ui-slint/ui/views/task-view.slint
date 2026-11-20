@@ -23,6 +23,7 @@ import { LabeledValueRow, RowMode } from "../widgets/labeled-value-row.slint";
 import { ToggleStrip } from "../widgets/toggle-strip.slint";
 import { EditingFacts } from "../editing-facts.slint";
 import { TaskViewWalkFacts } from "../walk-facts.slint";
+import { FocusFacts } from "../focus-facts.slint";
 import { TrackPanelFacts } from "../track-panel-facts.slint";
 import { TrackEntryRowModel } from "../compositions/track-entries.slint";
 
@@ -639,6 +640,7 @@ export component TaskView inherits FocusScope {
                 }
                 if (!root.task.edit-open): title-display := LabeledValueRow {
                     horizontal-stretch: 1;
+                    vertical-stretch: 1;
                     // The closed title cell (the grammar's origin, r4
                     // D16a): the widget carries the stop (stop-id 3),
                     // the ring (armed/walk latch view-side), the
@@ -648,6 +650,7 @@ export component TaskView inherits FocusScope {
                     value: root.task.title;
                     value-role: Typography.title;
                     value-elide: true;
+                    value-fill: true;
                     value-inset: Theme.space-2;
                     placeholder-em-dash: false;
                     hover-surface: Theme.surface-raised;
@@ -656,9 +659,27 @@ export component TaskView inherits FocusScope {
                     stop-label: "Edit title";
                     stop-description: "Arms the title editor for the viewed task.";
                     stop-id: 3;
-                    restore-kind: 4;
                     hint-keys: root.task-title-edit-hint;
                     edit-asked() => { root.title-edit-opened(); }
+                    // The focus-origin restore (US-1/W-1): an overlay
+                    // opened from the detail restores into the title
+                    // cell — kind 4 in `FocusFacts`. The init leg
+                    // covers the mount-after-push order (the editor
+                    // unmounts and the display remounts in the same
+                    // pass); the wrapper property is the
+                    // `changed`-on-global idiom (the walk probe's
+                    // recorded watch shape).
+                    property <int> watch-restore-nonce: FocusFacts.nonce;
+                    init => {
+                        if (FocusFacts.anchor-kind == 4) {
+                            title-display.request-value-focus();
+                        }
+                    }
+                    changed watch-restore-nonce => {
+                        if (FocusFacts.anchor-kind == 4) {
+                            title-display.request-value-focus();
+                        }
+                    }
                 }
                 // The tracking verbs (r4 D16c, F11): moved here from
                 // the metadata row's State column — exactly one verb
@@ -694,12 +715,15 @@ export component TaskView inherits FocusScope {
                 // (5/6 preserved), the tooltip arms and the hover
                 // surfaces ride `LabeledValueRow`.
                 stack-column := LabeledValueRow {
+                    vertical-stretch: 0;
                     mode: RowMode.display;
                     label: "Stack";
                     value: root.task.stack-title;
+                    value-fill: true;
                     placeholder-em-dash: false;
                 }
                 due-column := LabeledValueRow {
+                    vertical-stretch: 0;
                     mode: RowMode.cell;
                     label: "Due date";
                     value: root.task.due-phrase;
@@ -716,6 +740,7 @@ export component TaskView inherits FocusScope {
                 // The start-date column (round-3 D8/F14): the due
                 // column's twin, one look.
                 scheduled-column := LabeledValueRow {
+                    vertical-stretch: 0;
                     mode: RowMode.cell;
                     label: "Start date";
                     value: root.task.scheduled-phrase;
@@ -730,10 +755,12 @@ export component TaskView inherits FocusScope {
                     }
                 }
                 state-column := LabeledValueRow {
+                    vertical-stretch: 0;
                     mode: RowMode.display;
                     label: "State";
                     value: root.task.done ? "Completed" : "Open";
                     value-color: root.task.done ? Semantic.success : Theme.text-primary;
+                    value-fill: true;
                     placeholder-em-dash: false;
                 }
             }
@@ -797,11 +824,15 @@ export component TaskView inherits FocusScope {
                 // mode + the trailing pencil affordance (grammar (a) —
                 // the echo is data, the pencil routes the picker).
                 LabeledValueRow {
+                    vertical-stretch: 0;
                     mode: RowMode.display;
                     label: "Importance";
                     value: root.task.importance-echo;
                     value-role: Typography.mono;
                     value-color: Theme.text-secondary;
+                    value-fill: true;
+                    trailing-right: true;
+                    trailing-width: Theme.space-6;
                     trailing-gap: Theme.space-1;
                     IconButton {
                         icon: IconKind.pencil;
@@ -812,11 +843,15 @@ export component TaskView inherits FocusScope {
                     }
                 }
                 LabeledValueRow {
+                    vertical-stretch: 0;
                     mode: RowMode.display;
                     label: "Urgency";
                     value: root.task.urgency-echo;
                     value-role: Typography.mono;
                     value-color: Theme.text-secondary;
+                    value-fill: true;
+                    trailing-right: true;
+                    trailing-width: Theme.space-6;
                     trailing-gap: Theme.space-1;
                     IconButton {
                         icon: IconKind.pencil;
@@ -843,6 +878,7 @@ export component TaskView inherits FocusScope {
             // stay view-side verbatim).
             effort-row := LabeledValueRow {
                 visible: !root.task.is-habit;
+                vertical-stretch: 0;
                 mode: RowMode.editor;
                 caption-beside: true;
                 content-gap: Theme.space-2;
@@ -948,6 +984,7 @@ export component TaskView inherits FocusScope {
             // open — the per-second tick is the adapter's seam.
             LabeledValueRow {
                 visible: !root.task.is-habit;
+                vertical-stretch: 0;
                 mode: RowMode.display;
                 caption-beside: true;
                 content-gap: Theme.space-3;
@@ -956,7 +993,8 @@ export component TaskView inherits FocusScope {
                 value: root.task.tracked-total;
                 value-role: Typography.mono;
                 placeholder-em-dash: false;
-                value-hstretch: 1;
+                trailing-right: true;
+                trailing-width: Theme.space-6;
                 value-hint-label: root.task.tracked-total;
                 value-hint-description: "Total tracked time on this task, including any running entry.";
                 value-a11y-label: "Tracked time total";
@@ -1150,21 +1188,32 @@ export component TaskView inherits FocusScope {
                 // the restore law (kind 5) and the tooltip arm are the
                 // widget's; the em-dash rides the editor's placeholder
                 // slot (the empty-display convention, unchanged).
-                if (!root.task.description-edit-open): LabeledValueRow {
+                if (!root.task.description-edit-open): description-display := LabeledValueRow {
                     vertical-stretch: 1;
                     mode: RowMode.cell;
                     value-hosted: true;
                     label: "Description";
-                    value-hstretch: 1;
-                    value-vstretch: 1;
                     hover-surface: Theme.surface-raised;
                     ring-latched: TaskViewWalkFacts.stop-id == 11
                         || root.task.description-armed;
                     stop-label: "Edit description";
                     stop-description: "Opens the description editor.";
                     stop-id: 11;
-                    restore-kind: 5;
                     edit-asked() => { root.description-edit-opened(); }
+                    // The focus-origin restore's description twin
+                    // (US-1/W-1, kind 5): same grammar as the title
+                    // cell.
+                    property <int> watch-restore-nonce: FocusFacts.nonce;
+                    init => {
+                        if (FocusFacts.anchor-kind == 5) {
+                            description-display.request-value-focus();
+                        }
+                    }
+                    changed watch-restore-nonce => {
+                        if (FocusFacts.anchor-kind == 5) {
+                            description-display.request-value-focus();
+                        }
+                    }
                     MultiLineEditor {
                         editing: false;
                         text: root.task.description;
@@ -1185,7 +1234,6 @@ export component TaskView inherits FocusScope {
                     vertical-stretch: 1;
                     mode: RowMode.editor;
                     label: "Description";
-                    value-vstretch: 1;
                     HorizontalLayout {
                         horizontal-stretch: 1;
                         vertical-stretch: 1;

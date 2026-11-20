@@ -9,6 +9,42 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
+- *Status*: =round 9 W4 labeled-value-row landed (2026-11-20, chunk
+  14, branch =refactor/ui-labeled-value-row=)= — the O-6
+  centralization: =ui/widgets/labeled-value-row.slint= (the
+  caption+value row grammar's single copy; =RowMode=
+  display/cell/editor) absorbs the ten hand-rolled task-view rows
+  (`task-view.slint::stack-column` → display,
+  `task-view.slint::due-column` / `::scheduled-column` → cell (stop
+  ids 5/6 preserved), `::state-column` → display,
+  `task-view.slint::title-display` → cell (stop id 3, the restore law
+  riding the widget's =restore-kind=), the importance/urgency echo
+  rows → display + trailing pencil, `task-view.slint::effort-row` →
+  editor (the R-9 commit/re-seed semantics stay view-side, Rule E),
+  the description section (`::description-section`, stop id 11: the
+  display branch cell mode hosting the read-only MultiLineEditor, the
+  edit branch editor mode) and the tracked summary row → display with
+  the tooltip arm and the value's a11y data-presence);
+  `review-view.slint::StatCell` re-hosts on the display row (its
+  space-1 caption gap, the collapse dash and the elide law as widget
+  properties; call sites untouched); the habit anchor-day weekday
+  strip (`task-view.slint` kind == 1 row) re-expresses over
+  `ui/widgets::ToggleStrip` (the D-4 ruling). The date-anchor mirrors
+  and the push functions read the widget's =out value-*= seams (the
+  overlay-anchor law; the click-time-push semantics verbatim).
+  Stay-recorded: `settings-view.slint::LabeledField` (a form-field
+  wrapper — validity, error line, secret, staged buffers — not a
+  value display), the habit editor field rows (their labels ride the
+  fields' own =label:= property; a conversion would fork the shared
+  create/edit surface), the priority slot list (chunk 15's W6 scope),
+  the recur pattern echo (not a label+value shape — the pattern
+  caption IS the content), the labels chip row (W5 ActionChip
+  scope). Census evidence addresses re-point to
+  `ui/widgets/labeled-value-row.slint::LabeledValueRow` with symbol
+  anchors per #775. Zero behavior deltas sanctioned — goldens,
+  journeys, walk/focus/overlay probes and the habit gates re-passed
+  unchanged (zero golden delta, no re-blessing); closes #951 at
+  merge. Previously:
 - *Status*: =round 9 W3 button primitives landed (2026-11-20, chunk
   13, branch =refactor/ui-button-primitives=)= — the O-6
   centralization: =ui/widgets/text-button.slint= (the F-1 button

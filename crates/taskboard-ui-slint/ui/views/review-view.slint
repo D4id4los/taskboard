@@ -144,8 +144,10 @@ component StatCell inherits VerticalLayout {
     in property <bool> collapsed;
     vertical-stretch: 0;
     LabeledValueRow {
+        vertical-stretch: 0;
         label: root.label;
         value: root.collapsed ? "—" : root.value;
+        value-fill: true;
         placeholder-em-dash: false;
         value-elide: true;
         caption-gap: Theme.space-1;

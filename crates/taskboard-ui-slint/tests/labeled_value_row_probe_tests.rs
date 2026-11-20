@@ -23,7 +23,7 @@ use slint::platform::{PointerEventButton, WindowEvent};
 fn run_probe(job: impl FnOnce(&LabeledValueRowProbe) + Send + 'static) {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         move |_driver| {
             let window = LabeledValueRowProbe::new().expect("the probe window instantiates");
@@ -315,5 +315,29 @@ fn the_elide_law_bounds_the_value_to_the_region() {
             window.get_display_value_width() <= region,
             "the value width stays bounded by the region"
         );
+    });
+}
+
+/// The differential echo pin: the widget's in-layout echo mount
+/// solves to the hand-rolled echo grammar's geometry — the row
+/// heights and the dash placement agree to the pixel (the golden
+/// oracle's structural aid for the W4 re-host).
+#[test]
+fn the_echo_mount_matches_the_hand_rolled_geometry() {
+    run_probe(|window| {
+        settle(window);
+        // The row body heights agree (the widget's echo mount solves
+        // to the hand-rolled grammar's 32px inner row).
+        assert_eq!(
+            window.get_echo_widget_content_height(),
+            window.get_echo_hand_height(),
+            "the row body heights agree"
+        );
+        // The trailing slot right-aligns in the region (the hand
+        // grammar's pencil rides the column's right end).
+        let inner_right = window.get_echo_widget_inner_x() + window.get_echo_widget_inner_width();
+        let content_right =
+            window.get_echo_widget_content_x() + window.get_echo_widget_content_width();
+        assert_eq!(inner_right, content_right, "the slot right-aligns");
     });
 }

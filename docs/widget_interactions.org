@@ -18,6 +18,28 @@ in =crates/taskboard-ui-slint/ui/widgets/=.
 
 - Modal dialog — =widgets/modal-dialog-host.slint= (W1).
 - Anchored popover / flyout — =widgets/anchored-overlay.slint= (W1).
+- Labeled value row — =widgets/labeled-value-row.slint= (W4): the
+  caption+value row family's base (O-6, #951). Three modes over one
+  =RowMode= switch: =display= (caption + value RoleText; the
+  =@children= slot renders trailing affordances; a non-empty
+  =value-hint-label= arms the tooltip; =value-a11y-label= publishes
+  the value's data-presence), =cell= (the clickable closed cell: the
+  internal ActivationStop — walk stop + a11y triple + the
+  EditingFacts activation discipline in their single copy — the hover
+  surface, the focus ring and the focus-origin restore law
+  (=restore-kind=); activation reports =edit-asked()=), =editor=
+  (caption + =@children= value slot — Rule E: the field stays at the
+  mount, all commit/re-seed/validity semantics view-side). The
+  geometry seams (=out value-x/y/width/height=) are the
+  overlay-anchor law's read side; =out focused=/=ringed= are the
+  observation seams. Sizing: content-sized by contract (D16d — only
+  description-class mounts stretch); the caption/value gap is
+  =caption-gap= (0 px flush for the task rows, StatCell's space-1 the
+  recorded exception); the beside/trailing gaps are =content-gap= /
+  =trailing-gap= per mount. Anti-ad-hoc rule: re-declaring the
+  caption+value row grammar outside =ui/widgets/= is a
+  review-blocker (the F-8 law, lint-by-review). Probe:
+  =tests/labeled_value_row_probe_tests.rs=.
 - Menu — ActionMenu today; MenuShell in W6 (chunk 17).
 - Palette — search-palette (modal migration candidate, J2 R-5).
 - Inline editor flow — due/recur editors (W2 migration decisions).

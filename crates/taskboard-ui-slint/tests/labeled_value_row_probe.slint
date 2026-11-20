@@ -9,7 +9,7 @@
 // (`labeled_value_row_probe_tests.rs`); every intent lands in a
 // counter. No text assertions, no clocks.
 
-import { Theme, Typography } from "../ui/theme.slint";
+import { Theme, Typography, RoleText } from "../ui/theme.slint";
 import { LabeledValueRow, RowMode } from "../ui/widgets/labeled-value-row.slint";
 import { TextField } from "../ui/widgets/text-field.slint";
 import { IconButton, IconKind } from "../ui/widgets/icon-button.slint";
@@ -61,6 +61,20 @@ export component LabeledValueRowProbe inherits Window {
     out property <length> editor-value-height: editor-row.value-height;
     out property <length> editor-row-x: editor-row.absolute-position.x;
     out property <length> display-row-x: display-row.absolute-position.x;
+    // The differential echo geometry (the W4 golden-oracle aid): the
+    // widget's echo mount vs the hand-rolled echo grammar side by
+    // side — the row solves must agree to the pixel.
+    out property <length> echo-hand-y: echo-hand-host.y;
+    out property <length> echo-hand-height2: echo-hand-host.height;
+    out property <length> echo-hand-dash-y: hand-dash.y;
+    out property <length> echo-hand-dash-height: hand-dash.height;
+    out property <length> echo-hand-height: echo-hand.height;
+    out property <length> echo-widget-y: echo-widget.y;
+    out property <length> echo-widget-content-height: echo-widget.content-height;
+    out property <length> echo-widget-content-width: echo-widget.content-width;
+    out property <length> echo-widget-content-x: echo-widget.content-x;
+    out property <length> echo-widget-inner-x: echo-widget.inner-x;
+    out property <length> echo-widget-inner-width: echo-widget.inner-width;
     // The theme mirror (the colour-forwarding evidence reads equality
     // against the token, not a pin of the token's value).
     out property <color> theme-text-secondary: Theme.text-secondary;
@@ -82,7 +96,6 @@ export component LabeledValueRowProbe inherits Window {
                 value-color: Theme.text-secondary;
                 placeholder-em-dash: root.display-dash;
                 value-elide: root.display-elide;
-                value-hstretch: 1;
                 value-hint-label: root.display-hint;
                 value-hint-description: "Total tracked time on this task, including any running entry.";
                 hint-keys: ["Ctrl+E"];
@@ -95,8 +108,45 @@ export component LabeledValueRowProbe inherits Window {
             }
         }
 
+        // The differential echo pair: the hand-rolled echo grammar
+        // (the pre-W4 row) over the widget's echo mount — identical
+        // fixtures, adjacent rows, geometry seams out.
+        echo-hand-host := Rectangle {
+            echo-hand := HorizontalLayout {
+                spacing: Theme.space-1;
+                hand-dash := RoleText {
+                    role: Typography.mono;
+                    text-color: Theme.text-secondary;
+                    text: "—";
+                    vertical-alignment: center;
+                }
+                IconButton {
+                    icon: IconKind.pencil;
+                    label: "Hand pencil";
+                }
+            }
+        }
+        echo-widget := LabeledValueRow {
+            vertical-stretch: 0;
+            mode: RowMode.display;
+            label: "Echo";
+            value: "";
+            value-role: Typography.mono;
+            value-color: Theme.text-secondary;
+            value-fill: true;
+            trailing-right: true;
+            trailing-width: Theme.space-6;
+            trailing-gap: Theme.space-1;
+            IconButton {
+                icon: IconKind.pencil;
+                label: "Widget pencil";
+            }
+        }
+
         // The cell fixture (the due column's grammar): the closed cell
-        // with the preserved stop identity and the restore law armed.
+        // with the preserved stop identity. The restore law's watch is
+        // mount-side; the probe arm drives it through the public
+        // focus seam.
         cell-row := LabeledValueRow {
             mode: RowMode.cell;
             label: "Due date";
@@ -105,9 +155,16 @@ export component LabeledValueRowProbe inherits Window {
             stop-label: "Edit due date";
             stop-description: "Opens the due-date editor.";
             stop-id: 5;
-            restore-kind: 4;
             hint-keys: ["Ctrl+E"];
             edit-asked() => { root.edit-asked-count += 1; }
+            // The restore law's mount-side watch (the task-view mount
+            // grammar): the nonce edge drives the public focus seam.
+            property <int> watch-restore-nonce: FocusFacts.nonce;
+            changed watch-restore-nonce => {
+                if (FocusFacts.anchor-kind == 4) {
+                    cell-row.request-value-focus();
+                }
+            }
         }
 
         // The editor fixture (the effort row's grammar): the

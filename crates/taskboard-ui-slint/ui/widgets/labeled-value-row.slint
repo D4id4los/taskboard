@@ -42,7 +42,6 @@
 import { Theme, Semantic, RoleText, Typography, TextRole } from "../theme.slint";
 import { TooltipState } from "tooltip.slint";
 import { ActivationStop } from "activation-stop.slint";
-import { FocusFacts } from "../focus-facts.slint";
 
 // The row's interaction grammar (F-2's three divergent edit grammars,
 // modeled as one switch).
@@ -77,6 +76,11 @@ export component LabeledValueRow inherits VerticalLayout {
     // law the built-in RoleText cannot carry). The built-in value
     // text stays hidden; the stop/hover/ring chrome wraps the slot.
     in property <bool> value-hosted: false;
+    // The free value text fills the region width, left-aligned (the
+    // stack/state column grammar and the title cell's pinned inset);
+    // false keeps the preferred width, centered in the space left of
+    // the trailing slot (the closed-cell em-dash grammar).
+    in property <bool> value-fill: false;
 
     // ---- Geometry knobs (content-sized law; per-mount gaps) --------
     // The caption/value vertical gap (task rows sit flush at 0 px;
@@ -88,10 +92,13 @@ export component LabeledValueRow inherits VerticalLayout {
     // Caption↔content gap on the beside axis; value↔trailing gap.
     in property <length> content-gap: 0px;
     in property <length> trailing-gap: 0px;
-    // The value region's layout stretch (int stretch passthrough:
-    // title/tracked/description stretch, the echoes do not).
-    in property <int> value-hstretch: 0;
-    in property <int> value-vstretch: 0;
+    // The right-aligned trailing slot's width (the tracked anchor);
+    // unset keeps the slot at its preferred width after the value.
+    in property <length> trailing-width;
+    // The trailing slot right-aligns in the region (the tracked row's
+    // anchor rides the row's right end); false keeps it after the
+    // value text.
+    in property <bool> trailing-right: false;
     // The built-in value's horizontal inset inside the cell (the
     // title cell's space-2 padding); 0 for the plain echoes.
     in property <length> value-inset: 0px;
@@ -108,10 +115,6 @@ export component LabeledValueRow inherits VerticalLayout {
     // The hover surface (the echoes use surface-hover; the title and
     // description cells use surface-raised).
     in property <color> hover-surface: Theme.surface-hover;
-    // The focus-origin restore law's kind (4 title, 5 description;
-    // 0 = not a restore target) — the nonce watch lives on the
-    // internal stop.
-    in property <int> restore-kind: 0;
 
     // ---- Tooltip arm --------------------------------------------------
     // Non-empty arms the tooltip. In cell mode the stop's a11y strings
@@ -129,6 +132,13 @@ export component LabeledValueRow inherits VerticalLayout {
     // The intent: cell activation (click or Return/Space) — the view
     // routes it (the date cells push their anchor first).
     callback edit-asked();
+    // The focus-origin restore's seam (US-1/W-1): the mount's nonce
+    // watch (the `changed`-on-global idiom stays at the mount, the
+    // walk probe's recorded watch shape) calls this to focus the
+    // internal stop.
+    public function request-value-focus() {
+        value-stop.focus();
+    }
 
     // The geometry seams (the overlay-anchor law): the value region's
     // realized rect, window-space.
@@ -136,29 +146,36 @@ export component LabeledValueRow inherits VerticalLayout {
     out property <length> value-y: content.absolute-position.y;
     out property <length> value-width: content.width;
     out property <length> value-height: content.height;
+    // The differential-probe seam: the region's solved height (the
+    // row body's height below the caption).
+    out property <length> content-height: content.height;
+    out property <length> content-width: content.width;
+    out property <length> content-x: content.x;
+    out property <length> inner-x: inner.x;
+    out property <length> inner-width: inner.width;
     // The observation seams (walk/focus probes).
     out property <bool> focused: value-stop.has-focus;
     out property <bool> ringed: content.border-width > 0px;
     // The built-in value's resolved role/colour (the forwarding
     // evidence for the probe catalogue).
-    out property <TextRole> value-role-out: value-text.role;
-    out property <color> value-color-out: value-text.text-color;
+    out property <TextRole> value-role-out: value-metrics.role;
+    out property <color> value-color-out: value-metrics.text-color;
     // The empty+dash witness (the probe's em-dash evidence: the
     // built-in value claims the dash's width iff the placeholder is
     // armed on an empty value).
-    out property <length> value-preferred-width: value-text.preferred-width;
+    out property <length> value-preferred-width: value-metrics.preferred-width;
     // The elide/dash witnesses (the probe catalogue's structural
     // evidence that the knobs reached the built-in value).
-    out property <bool> value-elide-out: value-text.overflow == TextOverflow.elide;
-    out property <bool> value-dash-out: value-text.text == "—";
+    out property <bool> value-elide-out: value-metrics.overflow == TextOverflow.elide;
+    out property <bool> value-dash-out: value-metrics.text == "—";
 
     spacing: root.caption-gap;
 
-    // The caption above (the default axis); the beside axis renders it
-    // inside the row below. Two conditional carriers over the same
-    // label — exactly one instantiates, and neither is a layout child
-    // of the other.
-    if (!root.caption-beside): RoleText {
+    // The caption above (the default axis, the label-less title cell
+    // renders none); the beside axis renders it inside the row below.
+    // Conditional carriers — conditionals take no layout space, and
+    // the row's fill-based geometry needs no caption reads.
+    if (root.label != "" && !root.caption-beside): RoleText {
         role: Typography.caption;
         text-color: Theme.text-secondary;
         text: root.label;
@@ -166,21 +183,49 @@ export component LabeledValueRow inherits VerticalLayout {
 
     row := HorizontalLayout {
         spacing: root.content-gap;
-        vertical-stretch: root.value-vstretch;
+        // The row absorbs the widget's internal leftover below the
+        // caption (the old column VL's internal distribution); the
+        // WIDGET's own outer stretch is the mount's decision.
+        vertical-stretch: 1;
 
-        if (root.caption-beside): RoleText {
-            role: Typography.caption;
-            text-color: Theme.text-secondary;
-            text: root.label;
-            vertical-alignment: center;
+        if (root.caption-beside): caption-host := Rectangle {
+            // The caption rides a full-height host (the hand-rolled
+            // rows' stretched-caption grammar): the host fills the
+            // row's height and the text centers within it; the width
+            // stays at the caption's preferred.
+            height: 100%;
+            horizontal-stretch: 0;
+            caption-side := RoleText {
+                height: 100%;
+                vertical-stretch: 1;
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: root.label;
+                // The editor rows' captions ride centered beside the
+                // field (the effort row's grammar); the display rows'
+                // captions sit at the row top (the tracked row's).
+                vertical-alignment: root.mode == RowMode.editor
+                    ? TextVerticalAlignment.center
+                    : TextVerticalAlignment.top;
+            }
         }
 
         // The value region — the cell chrome (border/hover/stop) in
         // cell mode, the plain value host otherwise; the editor's
-        // children region. The geometry seams read this element.
+        // children region. It fills the row's remaining width (the
+        // old column cells stretched to their column's width). The
+        // geometry seams read this element.
         content := Rectangle {
-            horizontal-stretch: root.mode == RowMode.editor ? 1 : root.value-hstretch;
-            vertical-stretch: root.value-vstretch;
+            // The region's floor: the built-in value's line height. The
+            // percent-sized and conditional children (the stop, the
+            // slot, the gated texts) contribute nothing to the
+            // preferred-size merge — without the floor the region
+            // collapses around the free value text.
+            min-height: inner.preferred-height > value-metrics.preferred-height
+                ? inner.preferred-height
+                : value-metrics.preferred-height;
+            horizontal-stretch: 1;
+            vertical-stretch: 1;
             border-radius: Theme.radius-small;
             border-width: root.mode == RowMode.cell
                 && (value-stop.has-focus || root.ring-latched)
@@ -208,20 +253,33 @@ export component LabeledValueRow inherits VerticalLayout {
                 stop-description: root.stop-description;
                 stop-id: root.stop-id;
                 activated => { root.edit-asked(); }
-                // The focus-origin restore (US-1/W-1): an overlay
-                // opened from this cell restores into it. The init leg
-                // covers the mount-after-push order; the wrapper
-                // property is the `changed`-on-global idiom (the walk
-                // probe's recorded watch shape).
-                property <int> watch-restore-nonce: FocusFacts.nonce;
-                init => {
-                    if (root.restore-kind != 0 && FocusFacts.anchor-kind == root.restore-kind) {
-                        self.focus();
+
+                // The cell touch (click ≡ Return/Space ≡ edit-asked),
+                // INSIDE the stop — the scope-wraps-touch shape (the
+                // dropdown field's): the scope owns the keys, the
+                // touch owns the pointer, one activation seam.
+                cell-touch := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    mouse-cursor: MouseCursor.pointer;
+                    changed has-hover => {
+                        if (self.has-hover) {
+                            TooltipState.hover(
+                                root.value-hint-label == "" ? root.stop-label : root.value-hint-label,
+                                root.value-hint-description == "" ? root.stop-description : root.value-hint-description,
+                                root.hint-keys,
+                                self.absolute-position.x,
+                                self.absolute-position.y,
+                                self.width,
+                                self.height,
+                            );
+                        } else {
+                            TooltipState.unhover();
+                        }
                     }
-                }
-                changed watch-restore-nonce => {
-                    if (root.restore-kind != 0 && FocusFacts.anchor-kind == root.restore-kind) {
-                        self.focus();
+                    clicked => {
+                        TooltipState.unhover();
+                        root.edit-asked();
                     }
                 }
             }
@@ -249,24 +307,98 @@ export component LabeledValueRow inherits VerticalLayout {
                 }
             }
 
-            // The value content row: the built-in RoleText beside the
-            // slot children (trailing affordances / hosted content /
-            // the editor's field). The inset paddings reproduce the
-            // title cell's pinned text inset.
-            HorizontalLayout {
-                width: 100%;
-                height: 100%;
-                padding-left: root.value-inset;
-                padding-right: root.value-inset;
-                spacing: root.trailing-gap;
+            // The metrics carrier: the built-in value's resolved
+            // bindings, readable through the out seams regardless of
+            // the placement conditional; invisible and (as a free
+            // child of the region) layout-inert.
+            value-metrics := RoleText {
+                visible: false;
+                role: root.value-role;
+                text-color: root.value-color;
+                text: (root.placeholder-em-dash && root.value == "") ? "—" : root.value;
+                overflow: root.value-elide ? TextOverflow.elide : TextOverflow.clip;
+            }
 
-                value-text := RoleText {
-                    visible: root.mode != RowMode.editor && !root.value-hosted;
-                    role: root.value-role;
-                    text-color: root.value-color;
-                    text: (root.placeholder-em-dash && root.value == "") ? "—" : root.value;
-                    overflow: root.value-elide ? TextOverflow.elide : TextOverflow.clip;
-                }
+            // The built-in value text — a free child of the region,
+            // reproducing the hand-rolled cells' placements: the fill
+            // rows (stack/state/title) claim the region's width at the
+            // inset, the centered cells (due/scheduled/tracked) keep
+            // the preferred width, centered in the space left of the
+            // trailing slot (the non-layout parent's centering rule).
+            // Conditional, not visible-gated: a visibility wrapper
+            // contributes no preferred size to the region's merge, and
+            // the region's height IS the text's line.
+            // The built-in value texts — free children of the region,
+            // reproducing the hand-rolled rows' placements (free
+            // children center in the region by default, the Slint
+            // default the old cells rode):
+            // - fill rows (stack/state/title): the region's width at
+            //   the inset;
+            // - centered cells (due/scheduled/tracked): the preferred
+            //   width, centered in the space left of the trailing slot;
+            // - the in-layout echoes (importance/urgency): the
+            //   preferred width at the region's left, the trailing
+            //   pencil directly after.
+            value-text-fill := RoleText {
+                visible: root.value-fill
+                    && root.mode != RowMode.editor
+                    && !root.value-hosted;
+                x: root.value-inset;
+                y: 0;
+                width: content.width - 2 * root.value-inset;
+                height: content.height;
+                // The fill rows' glyph placement: the column texts sit
+                // at the top (the old VL children), the stretched
+                // echo/tracking texts centered (the old HLayout
+                // children).
+                vertical-alignment: (root.value-fill && root.value-inset == 0px
+                    && !root.trailing-right)
+                    ? TextVerticalAlignment.top
+                    : TextVerticalAlignment.center;
+                role: root.value-role;
+                text-color: root.value-color;
+                text: (root.placeholder-em-dash && root.value == "") ? "—" : root.value;
+                overflow: root.value-elide ? TextOverflow.elide : TextOverflow.clip;
+            }
+            value-text-center := RoleText {
+                // Pure defaults: the region centers its preferred-size
+                // child (the hand-rolled cells' generated placement).
+                visible: !root.value-fill
+                    && root.mode != RowMode.editor
+                    && !root.value-hosted;
+                role: root.value-role;
+                text-color: root.value-color;
+                text: (root.placeholder-em-dash && root.value == "") ? "—" : root.value;
+                overflow: root.value-elide ? TextOverflow.elide : TextOverflow.clip;
+            }
+
+            // The slot row: the in-layout value text beside the
+            // trailing affordances (the echo grammar), the hosted
+            // value content in a hosted cell, the editor's field
+            // (Rule E — no field semantics inside the widget).
+            inner := HorizontalLayout {
+                // The slot fills the region for the hosted/editor and
+                // echo grammars; rides the trailing width right-aligned
+                // beside the centered value text (the tracked anchor);
+                // sits after the value text for the echo grammar.
+                horizontal-stretch: root.mode == RowMode.editor
+                    || root.value-hosted
+                    ? 1
+                    : 0;
+                height: content.height;
+                width: root.mode == RowMode.editor
+                    || root.value-hosted
+                    ? parent.width
+                    : root.trailing-right
+                        ? root.trailing-width
+                        : self.preferred-width;
+                x: root.mode == RowMode.editor
+                    || root.value-hosted
+                    ? 0
+                    : root.trailing-right
+                        ? parent.width - root.trailing-width
+                        : 0;
+                spacing: root.trailing-gap;
 
                 // The single children slot: trailing affordances in
                 // display mode, the hosted value content in a hosted
@@ -275,29 +407,13 @@ export component LabeledValueRow inherits VerticalLayout {
                 @children
             }
 
-            // The cell touch (click ≡ Return/Space ≡ edit-asked).
-            cell-touch := TouchArea {
-                visible: root.mode == RowMode.cell;
-                mouse-cursor: MouseCursor.pointer;
-                changed has-hover => {
-                    if (self.has-hover) {
-                        TooltipState.hover(
-                            root.value-hint-label == "" ? root.stop-label : root.value-hint-label,
-                            root.value-hint-description == "" ? root.stop-description : root.value-hint-description,
-                            root.hint-keys,
-                            self.absolute-position.x,
-                            self.absolute-position.y,
-                            self.width,
-                            self.height,
-                        );
-                    } else {
-                        TooltipState.unhover();
-                    }
-                }
-                clicked => {
-                    TooltipState.unhover();
-                    root.edit-asked();
-                }
+            // The data-presence a11y node (mount-gated — the role
+            // constant cannot bind).
+            if (root.value-a11y-label != ""): Rectangle {
+                width: content.width;
+                height: content.height;
+                accessible-role: AccessibleRole.text;
+                accessible-label: root.value-a11y-label;
             }
         }
     }
