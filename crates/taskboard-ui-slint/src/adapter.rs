@@ -13170,7 +13170,13 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
-    install_seam!(window: window.on_priority_dismiss_requested, adapter: adapter;
+    // `[try]` (round-9 chunk 15): the widget's walk-away close can
+    // echo this seam while the adapter is mid-pass holding its own
+    // borrow (the focus push that moved the walk away); the echo is
+    // absorbed — the mid-pass context settles its own flag, and a
+    // later user-driven close converges (the CancelMove arm reads the
+    // flag directly).
+    install_seam!(window: window.on_priority_dismiss_requested, adapter: adapter; [try]
     bind mut (a, window), args (), {        if a.priority_open.take().is_some() {
             a.refresh_forced(&window);
         }

@@ -291,7 +291,7 @@ export component Dropdown inherits Rectangle {
             // close selects first (D-6).
             let was-select = DropdownFacts.select-close;
             DropdownFacts.select-close = false;
-            root.close-internal(!was-select);
+            if (was-select) { root.close-settling(); } else { root.close-dismissing(); }
         }
     }
     // The anchor geometry, mirrored one-way: window-space by
@@ -390,14 +390,14 @@ export component Dropdown inherits Rectangle {
                     root.open = false;
                     accept
                 } else if (event.text == Key.Escape) {
-                    root.close-internal(true);
+                    root.close-dismissing();
                     accept
                 } else if (event.text == Key.Tab) {
                     // Close BEFORE the traversal runs: the flyout is
                     // not the focus owner (the field is), so the
                     // unmount is safe, and the walk continues from the
                     // field onto the next stop.
-                    root.close-internal(true);
+                    root.close-dismissing();
                     reject
                 } else {
                     reject
@@ -422,7 +422,7 @@ export component Dropdown inherits Rectangle {
         // scope that actually holds the walk.
         changed has-focus => {
             if (!self.has-focus && root.open) {
-                root.close-internal(true);
+                root.close-walkaway();
             }
         }
         field-row := HorizontalLayout {
@@ -569,11 +569,38 @@ export component Dropdown inherits Rectangle {
     // adapter's origin restore must win the walk (the focus contract
     // the priority journeys pin). Legacy sites have no seam: the close
     // is the silent, field-refocusing widget-internal close of record.
-    public function close-internal(route-dismiss: bool) {
-        if (route-dismiss && root.has-dismiss-seam) {
+    // The dismissal-routing close (D-6): when the consumer owns the
+    // dismissal (`has-dismiss-seam`), the close routes `dismiss-asked()`
+    // and skips the field refocus — the adapter's origin restore must
+    // win the walk. Legacy sites close silently field-refocusing.
+    public function close-dismissing() {
+        if (root.has-dismiss-seam) {
             root.dismiss-asked();
         } else {
             field-scope.focus();
+        }
+        root.open = false;
+    }
+
+    // The settle close: the close that must NOT route the dismissal —
+    // the select-close (a flyout row click selects first, D-6) and the
+    // adapter-driven model flips (the mirror edges; the adapter is
+    // mid-pass holding its own borrow — a re-entrant seam call would
+    // panic, the RefCell discipline).
+    public function close-settling() {
+        field-scope.focus();
+        root.open = false;
+    }
+
+    // The walk-away close: focus is ALREADY leaving the field (the
+    // traversal or the adapter's focus push owns where it lands), so
+    // this close never refocuses — grabbing the field back here would
+    // fight the walk and strand the keystrokes on a dying focus owner.
+    // The dismissal seam still routes (D-6 counts the walk-away); a
+    // mid-pass echo is absorbed by the seam's `[try]` borrow.
+    public function close-walkaway() {
+        if (root.has-dismiss-seam) {
+            root.dismiss-asked();
         }
         root.open = false;
     }

@@ -791,7 +791,11 @@ export component TaskView inherits FocusScope {
                         has-dismiss-seam: true;
                         rows: root.task.importance-rows;
                         selected-index: root.task.importance-selected-index;
-                        field-text: root.task.importance-echo;
+                        // The em-dash placeholder (the LVR's unset-value
+                        // convention, carried over from the retired echo).
+                        field-text: root.task.importance-echo != ""
+                            ? root.task.importance-echo
+                            : "—";
                         field-label: "Importance";
                         field-description: "Opens the importance picker: six levels, commit on pick.";
                         external-open-requested() => root.importance-edit-asked();
@@ -811,7 +815,9 @@ export component TaskView inherits FocusScope {
                         has-dismiss-seam: true;
                         rows: root.task.urgency-rows;
                         selected-index: root.task.urgency-selected-index;
-                        field-text: root.task.urgency-echo;
+                        field-text: root.task.urgency-echo != ""
+                            ? root.task.urgency-echo
+                            : "—";
                         field-label: "Urgency";
                         field-description: "Opens the urgency picker: six levels, commit on pick.";
                         external-open-requested() => root.urgency-edit-asked();
@@ -829,7 +835,7 @@ export component TaskView inherits FocusScope {
                     if (self.imp-open-mirror) {
                         importance-dd.open-requested();
                     } else if (importance-dd.open) {
-                        importance-dd.close-internal(false);
+                        importance-dd.close-settling();
                     }
                 }
                 property <bool> urg-open-mirror: root.task.urgency-open;
@@ -837,7 +843,7 @@ export component TaskView inherits FocusScope {
                     if (self.urg-open-mirror) {
                         urgency-dd.open-requested();
                     } else if (urgency-dd.open) {
-                        urgency-dd.close-internal(false);
+                        urgency-dd.close-settling();
                     }
                 }
             }
