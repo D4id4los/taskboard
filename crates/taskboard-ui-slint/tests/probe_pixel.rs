@@ -26,6 +26,8 @@ pub(crate) const HEADLESS_RENDERER: bool = true;
 
 #[path = "probes/icon_probe_tests.rs"]
 mod icon_probe_tests;
+#[path = "probes/stale_remount_probe_tests.rs"]
+mod stale_remount_probe_tests;
 #[path = "probes/stat_bars_severing_probe_tests.rs"]
 mod stat_bars_severing_probe_tests;
 #[path = "probes/task_card_hover_probe_tests.rs"]

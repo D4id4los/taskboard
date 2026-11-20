@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The stale-geometry probe (#1023, a facet of #954's unreliable
+// mirroring): one conditional subtree toggled away and back — the
+// freshly remounted element's element-query geometry against the
+// typed root seam. The fixture carries both observation channels:
+// the typed seam the subtree pushes (the compensating law's oracle)
+// and an accessible label the element query addresses.
+
+import { Theme } from "../ui/theme.slint";
+
+export component StaleRemountProbe inherits Window {
+    width: Theme.space-15 * 4;
+    height: Theme.space-15 * 2;
+    background: Theme.background;
+
+    // The conditional subtree's gate (the mount sites'
+    // `if (flag): Host {}` protocol).
+    in property <bool> subtree-open: false;
+
+    // The typed root seam (#1023's compensating law): the freshly
+    // remounted subtree pushes its realized width here — the oracle
+    // journey oracles prefer over element queries.
+    out property <length> seam-width: 0 * Theme.space-1;
+
+    if (root.subtree-open): panel := Rectangle {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: Theme.space-15;
+        height: Theme.space-7;
+        background: Theme.surface-raised;
+        accessible-role: AccessibleRole.button;
+        accessible-label: "Remounted panel";
+        // The typed seam's push edges: mount init plus every width
+        // change (the changed-mirror shape whose delivery #1023
+        // records).
+        init => { root.seam-width = self.width; }
+        changed width => { root.seam-width = self.width; }
+    }
+}
