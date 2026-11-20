@@ -95,6 +95,19 @@ pub struct StatusView {
     /// precedent — no protocol-version bump).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files_sync: Option<crate::commands::output::FilesSyncStatusView>,
+    /// The stop-drain window's typed fact (#991, issue #991): present
+    /// only in the client-side `no_daemon` answer, and only `Some(true)`
+    /// — the socket artifact exists beside a held instance lock, so a
+    /// daemon is mid-shutdown (or wedged). Absent alongside
+    /// `daemon: false` means genuinely no daemon (no artifact, or a
+    /// stale artifact beside a free lock). Core-holding projections
+    /// (`server`/`in_session`) never set it — a serving daemon is not
+    /// draining. Additivity rides `default` + `skip_serializing_if`
+    /// (the `connectors` precedent — no protocol-version bump; the
+    /// `{"daemon": false}` byte pin survives, the draining answer is
+    /// byte-additive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draining: Option<bool>,
 }
 
 /// The engine-activity counters' wire projection: flat numbers, the
@@ -246,6 +259,7 @@ impl StatusView {
                 .files_sync_status
                 .as_ref()
                 .map(|rx| crate::commands::output::FilesSyncStatusView::new(&rx.borrow().clone())),
+            draining: None,
         }
     }
 
@@ -268,6 +282,7 @@ impl StatusView {
             boards: None,
             engine: None,
             files_sync: None,
+            draining: crate::ipc::client::fallback_blocked_by_lock(db_path).then_some(true),
         }
     }
 
@@ -306,6 +321,7 @@ impl StatusView {
                 .files_sync_status
                 .as_ref()
                 .map(|rx| crate::commands::output::FilesSyncStatusView::new(&rx.borrow().clone())),
+            draining: None,
         }
     }
 }
@@ -540,6 +556,7 @@ mod tests {
             boards: None,
             engine: None,
             files_sync: None,
+            draining: None,
         }
     }
 
@@ -565,6 +582,52 @@ mod tests {
         )))
         .expect("json");
         assert_eq!(json, serde_json::json!({ "daemon": false }));
+    }
+
+    /// The stop-drain distinction (#991): artifact present + lock held
+    /// — a daemon mid-shutdown (or wedged) — answers `daemon: false`
+    /// with the typed `draining: true`; `holder_pid` stays the diagnostic
+    /// field it was.
+    #[cfg(unix)]
+    #[test]
+    fn an_artifact_beside_a_held_lock_answers_draining() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("draining.db");
+        let _lock = crate::lockfile::InstanceLock::acquire(&db).expect("acquire");
+        std::fs::write(crate::ipc::socket_sidecar(&db), b"").expect("artifact");
+        let view = StatusView::no_daemon(&db);
+        assert!(!view.daemon);
+        assert_eq!(view.draining, Some(true));
+        assert!(view.holder_pid.is_some());
+        // Byte-additive: the draining answer is the byte pin plus the
+        // `draining` key and the diagnostic holder pid — no other keys.
+        let json = serde_json::to_value(&view).expect("json");
+        assert_eq!(json["daemon"], serde_json::json!(false));
+        assert_eq!(json["draining"], serde_json::json!(true));
+        let keys = json.as_object().expect("object").keys().collect::<Vec<_>>();
+        assert_eq!(keys, ["daemon", "draining", "holder_pid"]);
+    }
+
+    /// The stale shape — artifact present, lock free — stays "no
+    /// daemon" plainly: `draining` absent, never `Some(false)` (#991).
+    #[cfg(unix)]
+    #[test]
+    fn an_artifact_beside_a_free_lock_does_not_answer_draining() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("stale.db");
+        std::fs::write(crate::ipc::socket_sidecar(&db), b"").expect("artifact");
+        let view = StatusView::no_daemon(&db);
+        assert!(!view.daemon);
+        assert_eq!(view.draining, None);
+    }
+
+    /// No artifact at all: `draining` absent (the `{"daemon": false}`
+    /// byte pin unchanged).
+    #[test]
+    fn an_absent_artifact_does_not_answer_draining() {
+        let view = StatusView::no_daemon(std::path::Path::new("/nonexistent/taskboard.db"));
+        assert!(!view.daemon);
+        assert_eq!(view.draining, None);
     }
 
     /// The in-session projection carries the gated connector fact and

@@ -281,6 +281,7 @@ mod tests {
             boards: None,
             engine: None,
             files_sync: None,
+            draining: None,
         };
         let json = serde_json::to_value(Response::Status { v: 1, status: view }).expect("s");
         assert_eq!(json["type"], "status");
@@ -411,6 +412,7 @@ mod tests {
                     boards: None,
                     engine: None,
                     files_sync: None,
+                    draining: None,
                 },
             },
             Response::Shutdown { v: 1 },
@@ -448,6 +450,7 @@ mod tests {
             connector_attached: Some(true),
             engine: None,
             files_sync: None,
+            draining: None,
             connectors: Some(vec![ConnectorStatusView {
                 name: "alpha".to_owned(),
                 health: SyncStatusView {
@@ -520,6 +523,7 @@ mod tests {
             boards: None,
             engine: None,
             files_sync: None,
+            draining: None,
         };
         let json = serde_json::to_value(&view).expect("serialize");
         assert_eq!(json, serde_json::json!({ "daemon": false }));
@@ -568,6 +572,7 @@ mod tests {
             boards: None,
             engine: None,
             files_sync: None,
+            draining: None,
         };
         let json = serde_json::to_value(&attached).expect("serialize");
         assert_eq!(json["connector_attached"], true);
