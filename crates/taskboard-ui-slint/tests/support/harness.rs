@@ -281,87 +281,84 @@ fn dummy_system_receiver() -> SignalReceiver {
     rx
 }
 
-impl Harness {
-    /// The per-test preamble (#1062 D-1062): one fixture (held at the
-    /// call site — the test names which one it speaks), one
-    /// `driver::run`, one mount. Options come from
-    /// `crate::HEADLESS_RENDERER` — no per-test literal (the literal is
-    /// what made the #1016 mode mix possible).
-    pub fn run_journey<R>(
-        state: taskboard_domain::AppState,
-        job: impl FnOnce(&mut Harness) -> R + Send + 'static,
-    ) -> R
-    where
-        R: Send + 'static,
-    {
-        Self::run_journey_with_settings(state, UiSettings::default(), job)
-    }
+/// The per-test preamble (#1062 D-1062): one fixture (held at the
+/// call site — the test names which one it speaks), one
+/// `driver::run`, one mount. Options come from
+/// `crate::HEADLESS_RENDERER` — no per-test literal (the literal is
+/// what made the #1016 mode mix possible).
+pub fn run_journey<R>(
+    state: taskboard_domain::AppState,
+    job: impl FnOnce(&mut Harness) -> R + Send + 'static,
+) -> R
+where
+    R: Send + 'static,
+{
+    run_journey_with_settings(state, UiSettings::default(), job)
+}
 
-    /// The settings journeys' preamble: `run_journey` with a
-    /// configured `UiSettings` hand-over (the settings row list's
-    /// seed).
-    pub fn run_journey_with_settings<R>(
-        state: taskboard_domain::AppState,
-        settings: UiSettings,
-        job: impl FnOnce(&mut Harness) -> R + Send + 'static,
-    ) -> R
-    where
-        R: Send + 'static,
-    {
-        Self::run_journey_full(state, settings, None, move |harness| job(harness))
-    }
+/// The settings journeys' preamble: `run_journey` with a
+/// configured `UiSettings` hand-over (the settings row list's
+/// seed).
+pub fn run_journey_with_settings<R>(
+    state: taskboard_domain::AppState,
+    settings: UiSettings,
+    job: impl FnOnce(&mut Harness) -> R + Send + 'static,
+) -> R
+where
+    R: Send + 'static,
+{
+    run_journey_full(state, settings, None, move |harness| job(harness))
+}
 
-    /// The files-watch journeys' preamble (the files-sync-status plan
-    /// US-8, D-8): the mount carries a live `FilesSyncChip` watch —
-    /// the sender half stays on the harness (`mount_with_files_sync`
-    /// verbatim), so the chip's seed outlives the job's body.
-    pub fn run_journey_with_files_sync<R>(
-        state: taskboard_domain::AppState,
-        settings: UiSettings,
-        chip: taskboard_ui_slint::presentation::FilesSyncChip,
-        job: impl FnOnce(&mut Harness) -> R + Send + 'static,
-    ) -> R
-    where
-        R: Send + 'static,
-    {
-        Self::run_journey_full_inner(move |_driver| {
-            let mut harness =
-                Harness::mount_with_files_sync(SlintDriver::default(), state, settings, chip);
-            job(&mut harness)
-        })
-    }
+/// The files-watch journeys' preamble (the files-sync-status plan
+/// US-8, D-8): the mount carries a live `FilesSyncChip` watch —
+/// the sender half stays on the harness (`mount_with_files_sync`
+/// verbatim), so the chip's seed outlives the job's body.
+pub fn run_journey_with_files_sync<R>(
+    state: taskboard_domain::AppState,
+    settings: UiSettings,
+    chip: taskboard_ui_slint::presentation::FilesSyncChip,
+    job: impl FnOnce(&mut Harness) -> R + Send + 'static,
+) -> R
+where
+    R: Send + 'static,
+{
+    run_journey_full_inner(move |_driver| {
+        let mut harness =
+            Harness::mount_with_files_sync(SlintDriver::default(), state, settings, chip);
+        job(&mut harness)
+    })
+}
 
-    /// The full-shape preamble: explicit settings and files-sync
-    /// receiver. The `driver::run` `SENDER`/`OPTIONS` `OnceLock`
-    /// mechanics are untouched — this wraps them, reading
-    /// `crate::HEADLESS_RENDERER` for the one-platform decision.
-    pub fn run_journey_full<R>(
-        state: taskboard_domain::AppState,
-        settings: UiSettings,
-        files_sync: Option<
-            tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::FilesSyncChip>,
-        >,
-        job: impl FnOnce(&mut Harness) -> R + Send + 'static,
-    ) -> R
-    where
-        R: Send + 'static,
-    {
-        Self::run_journey_full_inner(move |_driver| {
-            let mut harness =
-                Harness::mount_full(SlintDriver::default(), state, settings, files_sync);
-            job(&mut harness)
-        })
-    }
+/// The full-shape preamble: explicit settings and files-sync
+/// receiver. The `driver::run` `SENDER`/`OPTIONS` `OnceLock`
+/// mechanics are untouched — this wraps them, reading
+/// `crate::HEADLESS_RENDERER` for the one-platform decision.
+pub fn run_journey_full<R>(
+    state: taskboard_domain::AppState,
+    settings: UiSettings,
+    files_sync: Option<
+        tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::FilesSyncChip>,
+    >,
+    job: impl FnOnce(&mut Harness) -> R + Send + 'static,
+) -> R
+where
+    R: Send + 'static,
+{
+    run_journey_full_inner(move |_driver| {
+        let mut harness = Harness::mount_full(SlintDriver::default(), state, settings, files_sync);
+        job(&mut harness)
+    })
+}
 
-    fn run_journey_full_inner<R>(job: impl FnOnce(&mut SlintDriver) -> R + Send + 'static) -> R
-    where
-        R: Send + 'static,
-    {
-        super::driver::run(
-            DriverOptions {
-                headless_renderer: crate::HEADLESS_RENDERER,
-            },
-            job,
-        )
-    }
+fn run_journey_full_inner<R>(job: impl FnOnce(&mut SlintDriver) -> R + Send + 'static) -> R
+where
+    R: Send + 'static,
+{
+    super::driver::run(
+        DriverOptions {
+            headless_renderer: crate::HEADLESS_RENDERER,
+        },
+        job,
+    )
 }

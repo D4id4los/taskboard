@@ -5264,75 +5264,69 @@ fn a_palette_activation_shows_the_task() {
     needle.title = "zebra needle".to_owned();
     state.tasks.insert(id, needle);
 
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            macro_rules! window {
-                () => {
-                    harness.handle.window()
-                };
-            }
+    support::harness::run_journey(state, move |harness| {
+        macro_rules! window {
+            () => {
+                harness.handle.window()
+            };
+        }
 
-            // From Today: the source view is part of the repro.
-            harness.stroke(parse("Ctrl+T").expect("ctrl t"));
-            assert_eq!(window!().get_current_view(), View::Today);
+        // From Today: the source view is part of the repro.
+        harness.stroke(parse("Ctrl+T").expect("ctrl t"));
+        assert_eq!(window!().get_current_view(), View::Today);
 
-            // The palette round-trip: one unique hit, Return shows it.
-            harness.press(ActionId::PaletteSearch);
-            assert!(window!().get_palette_open());
-            harness.type_text("zebra needle");
-            assert_eq!(window!().get_palette_model().row_count(), 1);
-            let before = window!()
-                .global::<taskboard_ui_slint::FocusScrollHint>()
-                .get_nonce();
-            harness.stroke(parse("Return").expect("return"));
+        // The palette round-trip: one unique hit, Return shows it.
+        harness.press(ActionId::PaletteSearch);
+        assert!(window!().get_palette_open());
+        harness.type_text("zebra needle");
+        assert_eq!(window!().get_palette_model().row_count(), 1);
+        let before = window!()
+            .global::<taskboard_ui_slint::FocusScrollHint>()
+            .get_nonce();
+        harness.stroke(parse("Return").expect("return"));
 
-            assert!(!window!().get_palette_open(), "the jump ends the flow");
-            assert_eq!(window!().get_current_view(), View::Board);
-            assert_eq!(
-                window!().get_board_bar_model().selected,
-                1,
-                "the task's board (board two) is selected"
-            );
-            assert_eq!(
-                harness.emphasized_card(),
-                Some((0, 1)),
-                "the needle's card is focused in its stack"
-            );
-            let hint = window!().global::<taskboard_ui_slint::FocusScrollHint>();
-            assert!(
-                hint.get_nonce() > before,
-                "the retarget armed the scroll hint"
-            );
-            assert_eq!(
-                (hint.get_target_a(), hint.get_target_b()),
-                (0, 1),
-                "column 0, canonical row 1 of the task's stack"
-            );
+        assert!(!window!().get_palette_open(), "the jump ends the flow");
+        assert_eq!(window!().get_current_view(), View::Board);
+        assert_eq!(
+            window!().get_board_bar_model().selected,
+            1,
+            "the task's board (board two) is selected"
+        );
+        assert_eq!(
+            harness.emphasized_card(),
+            Some((0, 1)),
+            "the needle's card is focused in its stack"
+        );
+        let hint = window!().global::<taskboard_ui_slint::FocusScrollHint>();
+        assert!(
+            hint.get_nonce() > before,
+            "the retarget armed the scroll hint"
+        );
+        assert_eq!(
+            (hint.get_target_a(), hint.get_target_b()),
+            (0, 1),
+            "column 0, canonical row 1 of the task's stack"
+        );
 
-            // From Settings: one semantics, no per-source branching —
-            // the activation still mounts the board view on the
-            // task's home.
-            harness.press(ActionId::AppSettings);
-            assert_eq!(window!().get_current_view(), View::Settings);
-            harness.press(ActionId::PaletteSearch);
-            harness.type_text("zebra needle");
-            harness.stroke(parse("Return").expect("return"));
-            assert_eq!(
-                window!().get_current_view(),
-                View::Board,
-                "the view is always the task's home board"
-            );
-            assert_eq!(
-                window!().get_board_bar_model().selected,
-                1,
-                "board two stayed selected"
-            );
-        },
-    );
+        // From Settings: one semantics, no per-source branching —
+        // the activation still mounts the board view on the
+        // task's home.
+        harness.press(ActionId::AppSettings);
+        assert_eq!(window!().get_current_view(), View::Settings);
+        harness.press(ActionId::PaletteSearch);
+        harness.type_text("zebra needle");
+        harness.stroke(parse("Return").expect("return"));
+        assert_eq!(
+            window!().get_current_view(),
+            View::Board,
+            "the view is always the task's home board"
+        );
+        assert_eq!(
+            window!().get_board_bar_model().selected,
+            1,
+            "board two stayed selected"
+        );
+    });
 }
 
 /// Round-3 D22 — the toolbar view switcher journey: the clicks drive
@@ -5346,85 +5340,79 @@ fn a_palette_activation_shows_the_task() {
 fn the_switcher_drives_and_tracks_the_view() {
     let (_fixture, state) = fixture::two_board_state();
 
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            macro_rules! window {
-                () => {
-                    harness.handle.window()
-                };
-            }
+    support::harness::run_journey(state, move |harness| {
+        macro_rules! window {
+            () => {
+                harness.handle.window()
+            };
+        }
 
-            #[allow(clippy::items_after_statements)] // the run closure's helper
-            fn segment(driver: &SlintDriver, label: &str) -> support::driver::Element {
-                driver
-                    .find_all_by_label(label)
-                    .into_iter()
-                    .find(support::driver::Element::is_radio_button)
-                    .unwrap_or_else(|| panic!("the {label} segment is present"))
-            }
+        #[allow(clippy::items_after_statements)] // the run closure's helper
+        fn segment(driver: &SlintDriver, label: &str) -> support::driver::Element {
+            driver
+                .find_all_by_label(label)
+                .into_iter()
+                .find(support::driver::Element::is_radio_button)
+                .unwrap_or_else(|| panic!("the {label} segment is present"))
+        }
 
-            // The pushed index tracks the view from the mount on.
-            assert_eq!(window!().get_switcher_index(), 0, "the board branch");
+        // The pushed index tracks the view from the mount on.
+        assert_eq!(window!().get_switcher_index(), 0, "the board branch");
 
-            // Click → action: Today. The segment's radio-button role
-            // is the address (the visible text labels echo the same
-            // string); AT activation is the click path here.
-            segment(&harness.driver, "Today").invoke_default_action();
-            assert_eq!(window!().get_current_view(), View::Today);
-            harness.driver.advance_time(0);
-            assert_eq!(window!().get_switcher_index(), 1, "today lit");
+        // Click → action: Today. The segment's radio-button role
+        // is the address (the visible text labels echo the same
+        // string); AT activation is the click path here.
+        segment(&harness.driver, "Today").invoke_default_action();
+        assert_eq!(window!().get_current_view(), View::Today);
+        harness.driver.advance_time(0);
+        assert_eq!(window!().get_switcher_index(), 1, "today lit");
 
-            // Keyboard equivalence: Alt+1 lands where the Board
-            // segment click does, and the echo is reply-sourced.
-            harness.stroke(parse("Alt+1").expect("alt 1"));
-            assert_eq!(window!().get_current_view(), View::Board);
-            harness.driver.advance_time(0);
-            assert_eq!(window!().get_switcher_index(), 0);
+        // Keyboard equivalence: Alt+1 lands where the Board
+        // segment click does, and the echo is reply-sourced.
+        harness.stroke(parse("Alt+1").expect("alt 1"));
+        assert_eq!(window!().get_current_view(), View::Board);
+        harness.driver.advance_time(0);
+        assert_eq!(window!().get_switcher_index(), 0);
 
-            // Settings round-trip: the segment names the return view.
-            harness.press(ActionId::AppSettings);
-            assert_eq!(window!().get_current_view(), View::Settings);
-            harness.driver.advance_time(0);
-            assert_eq!(window!().get_switcher_index(), 0, "return reads board");
-            segment(&harness.driver, "Today").invoke_default_action();
-            assert_eq!(window!().get_current_view(), View::Today);
-            harness.driver.advance_time(0);
-            assert_eq!(window!().get_switcher_index(), 1);
+        // Settings round-trip: the segment names the return view.
+        harness.press(ActionId::AppSettings);
+        assert_eq!(window!().get_current_view(), View::Settings);
+        harness.driver.advance_time(0);
+        assert_eq!(window!().get_switcher_index(), 0, "return reads board");
+        segment(&harness.driver, "Today").invoke_default_action();
+        assert_eq!(window!().get_current_view(), View::Today);
+        harness.driver.advance_time(0);
+        assert_eq!(window!().get_switcher_index(), 1);
 
-            // Compact: the switcher survives the breakpoint that
-            // drops the inbox chip.
-            harness.driver.set_window_size(600, 400);
-            assert!(window!().get_compact_active(), "600 px is compact");
-            assert!(
-                harness.driver.find_by_label("Today").is_some(),
-                "the switcher is mounted in compact"
-            );
-            segment(&harness.driver, "Board").invoke_default_action();
-            assert_eq!(window!().get_current_view(), View::Board);
-            harness.driver.advance_time(0);
-            assert_eq!(window!().get_switcher_index(), 0);
-            harness.driver.set_window_size(1280, 800);
+        // Compact: the switcher survives the breakpoint that
+        // drops the inbox chip.
+        harness.driver.set_window_size(600, 400);
+        assert!(window!().get_compact_active(), "600 px is compact");
+        assert!(
+            harness.driver.find_by_label("Today").is_some(),
+            "the switcher is mounted in compact"
+        );
+        segment(&harness.driver, "Board").invoke_default_action();
+        assert_eq!(window!().get_current_view(), View::Board);
+        harness.driver.advance_time(0);
+        assert_eq!(window!().get_switcher_index(), 0);
+        harness.driver.set_window_size(1280, 800);
 
-            // A live board-create flow settles under the switcher
-            // click (the leaving rule): the field closes, nothing
-            // dispatches, the switch happens.
-            harness.press(ActionId::BoardCreate);
-            harness.driver.advance_time(0);
-            assert!(window!().get_board_create_open(), "the flow armed");
-            segment(&harness.driver, "Today").invoke_default_action();
-            harness.driver.advance_time(0);
-            assert!(
-                !window!().get_board_create_open(),
-                "the leaving settle ended the flow"
-            );
-            assert_eq!(window!().get_current_view(), View::Today);
-            harness.assert_commands(&[]);
-        },
-    );
+        // A live board-create flow settles under the switcher
+        // click (the leaving rule): the field closes, nothing
+        // dispatches, the switch happens.
+        harness.press(ActionId::BoardCreate);
+        harness.driver.advance_time(0);
+        assert!(window!().get_board_create_open(), "the flow armed");
+        segment(&harness.driver, "Today").invoke_default_action();
+        harness.driver.advance_time(0);
+        assert!(
+            !window!().get_board_create_open(),
+            "the leaving settle ended the flow"
+        );
+        assert_eq!(window!().get_current_view(), View::Today);
+        harness.assert_commands(&[]);
+    });
 }
 
 /// Round-3 D24 (R3-F34) — the palette input row's geometry pin: with
@@ -5447,63 +5435,57 @@ fn the_palette_input_row_stays_one_line() {
         state.tasks.insert(id, task);
     }
 
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            macro_rules! window {
-                () => {
-                    harness.handle.window()
-                };
-            }
+    support::harness::run_journey(state, move |harness| {
+        macro_rules! window {
+            () => {
+                harness.handle.window()
+            };
+        }
 
-            #[allow(clippy::items_after_statements)] // the run closure's helper
-            fn palette_panel(driver: &SlintDriver) -> support::driver::Element {
-                driver
-                    .find_all_by_id("AppWindow::palette-panel")
-                    .into_iter()
-                    .next()
-                    .expect("the palette panel is mounted")
-            }
-
-            harness.press(ActionId::PaletteSearch);
-            harness.driver.advance_time(0);
-            // Zero rows: the panel is content-sized — the full-window
-            // pane regression (the surplus distributing into the
-            // field) cannot recur; the input row reads one line.
-            let panel = palette_panel(&harness.driver);
-            let field = harness
-                .driver
-                .find_all_by_label("Search")
+        #[allow(clippy::items_after_statements)] // the run closure's helper
+        fn palette_panel(driver: &SlintDriver) -> support::driver::Element {
+            driver
+                .find_all_by_id("AppWindow::palette-panel")
                 .into_iter()
                 .next()
-                .expect("the query field is addressable");
-            let natural = f64::from(field.size().height);
-            assert!(
-                natural > 0.0 && natural < 100.0,
-                "the input row is one line, not a pane"
-            );
-            let height = f64::from(panel.size().height);
-            assert!(
-                height < natural * 3.0,
-                "the zero-row panel is content-sized ({height}), not a pane"
-            );
+                .expect("the palette panel is mounted")
+        }
 
-            // Eight rows: content-driven, clamped above the status
-            // bar, even at the minimum viewport.
-            harness.type_text("zebra");
-            harness.driver.advance_time(0);
-            let panel = palette_panel(&harness.driver);
-            assert_eq!(window!().get_palette_model().row_count(), 8);
-            assert!(
-                f64::from(panel.absolute_position().y + panel.size().height)
-                    <= f64::from(window!().get_status_top()),
-                "the panel stays above the status bar"
-            );
-        },
-    );
+        harness.press(ActionId::PaletteSearch);
+        harness.driver.advance_time(0);
+        // Zero rows: the panel is content-sized — the full-window
+        // pane regression (the surplus distributing into the
+        // field) cannot recur; the input row reads one line.
+        let panel = palette_panel(&harness.driver);
+        let field = harness
+            .driver
+            .find_all_by_label("Search")
+            .into_iter()
+            .next()
+            .expect("the query field is addressable");
+        let natural = f64::from(field.size().height);
+        assert!(
+            natural > 0.0 && natural < 100.0,
+            "the input row is one line, not a pane"
+        );
+        let height = f64::from(panel.size().height);
+        assert!(
+            height < natural * 3.0,
+            "the zero-row panel is content-sized ({height}), not a pane"
+        );
+
+        // Eight rows: content-driven, clamped above the status
+        // bar, even at the minimum viewport.
+        harness.type_text("zebra");
+        harness.driver.advance_time(0);
+        let panel = palette_panel(&harness.driver);
+        assert_eq!(window!().get_palette_model().row_count(), 8);
+        assert!(
+            f64::from(panel.absolute_position().y + panel.size().height)
+                <= f64::from(window!().get_status_top()),
+            "the panel stays above the status bar"
+        );
+    });
 }
 
 // ---- round 2 (D16–D21): the action round-up journeys --------------------
@@ -5615,24 +5597,20 @@ fn move_cancel_routes_through_escape_and_emacs_c_g() {
 #[test]
 fn emacs_double_c_g_cancels_from_the_today_chain() {
     let (_fixture, state, _walked) = fixture::today_overdue_state();
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
+    let preset = taskboard_ui_slint::keymap::Preset::Emacs;
+    support::harness::run_journey_with_settings(
+        state,
+        UiSettings {
+            keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
+            keymap_preset: preset,
+            ..UiSettings::default()
         },
-        move |_driver| {
+        move |harness| {
             let preset = taskboard_ui_slint::keymap::Preset::Emacs;
-            let mut harness = Harness::mount_with_settings(
-                SlintDriver::default(),
-                state,
-                UiSettings {
-                    keymap: taskboard_ui_slint::keymap::Keymap::from_preset(preset),
-                    keymap_preset: preset,
-                    ..UiSettings::default()
-                },
-            );
+
             harness.stroke(parse("Ctrl+T").expect("Ctrl+T"));
-            press_preset(&mut harness, preset, ActionId::NavFocusDown); // seed a today row
-            press_preset(&mut harness, preset, ActionId::TaskMove);
+            press_preset(&mut *harness, preset, ActionId::NavFocusDown); // seed a today row
+            press_preset(&mut *harness, preset, ActionId::TaskMove);
             harness.driver.advance_time(0);
             assert!(
                 harness.handle.window().get_flow_hint_model().visible,
@@ -7306,81 +7284,75 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
         .get_mut(&fixture.task0)
         .expect("fixture task")
         .duedate = Some(due);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavFocusDown);
-            harness.press(ActionId::NavNextView);
-            harness.press(ActionId::NavNextView);
-            harness.driver.click_by_label("Edit due date");
-            harness.driver.advance_time(0);
-            assert!(
-                harness.handle.window().get_task_model().date_picker_open,
-                "the picker is default-open; the field keeps focus"
-            );
-            let grid_armed = |harness: &Harness| {
-                harness
-                    .handle
-                    .window()
-                    .global::<taskboard_ui_slint::KeyboardState>()
-                    .get_date_picker_grid()
-            };
-            assert!(
-                !grid_armed(&harness),
-                "the context is disarmed while the field holds focus"
-            );
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::NavNextView);
+        harness.press(ActionId::NavNextView);
+        harness.driver.click_by_label("Edit due date");
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_task_model().date_picker_open,
+            "the picker is default-open; the field keeps focus"
+        );
+        let grid_armed = |harness: &Harness| {
+            harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::KeyboardState>()
+                .get_date_picker_grid()
+        };
+        assert!(
+            !grid_armed(&*harness),
+            "the context is disarmed while the field holds focus"
+        );
 
-            let cursor_index = |harness: &Harness| -> Option<usize> {
-                let grid = harness.handle.window().get_task_model().date_grid;
-                let mut flat = 0usize;
-                for r in 0..grid.row_count() {
-                    let row = grid.row_data(r).expect("row");
-                    for c in 0..row.row_count() {
-                        if row.row_data(c).expect("cell").cursor {
-                            return Some(flat);
-                        }
-                        flat += 1;
+        let cursor_index = |harness: &Harness| -> Option<usize> {
+            let grid = harness.handle.window().get_task_model().date_grid;
+            let mut flat = 0usize;
+            for r in 0..grid.row_count() {
+                let row = grid.row_data(r).expect("row");
+                for c in 0..row.row_count() {
+                    if row.row_data(c).expect("cell").cursor {
+                        return Some(flat);
                     }
+                    flat += 1;
                 }
-                None
-            };
-            // The seeded due is January 30, 2030: one Monday-first
-            // leading blank (the month opens on a Tuesday) puts the
-            // 30th at flat index 30.
-            assert_eq!(cursor_index(&harness), Some(30), "the due anchors");
+            }
+            None
+        };
+        // The seeded due is January 30, 2030: one Monday-first
+        // leading blank (the month opens on a Tuesday) puts the
+        // 30th at flat index 30.
+        assert_eq!(cursor_index(&*harness), Some(30), "the due anchors");
 
-            // The walk enters the picker: Down-in-field hands focus
-            // to the grid (the chunk-3 focus-on-mount seam) and the
-            // focus seam arms the context — the same arming a Tab
-            // traversal onto the grid produces.
-            harness.stroke(parse("Down").expect("Down"));
-            harness.driver.advance_time(0);
-            assert!(
-                grid_armed(&harness),
-                "the grid took focus and armed the context"
-            );
+        // The walk enters the picker: Down-in-field hands focus
+        // to the grid (the chunk-3 focus-on-mount seam) and the
+        // focus seam arms the context — the same arming a Tab
+        // traversal onto the grid produces.
+        harness.stroke(parse("Down").expect("Down"));
+        harness.driver.advance_time(0);
+        assert!(
+            grid_armed(&*harness),
+            "the grid took focus and armed the context"
+        );
 
-            // The preset's keys drive the grid: picker.right moves
-            // the cursor one day (January 2030 stays on-grid).
-            harness.press(ActionId::PickerRight);
-            harness.driver.advance_time(0);
-            assert_eq!(cursor_index(&harness), Some(31), "one day forward");
+        // The preset's keys drive the grid: picker.right moves
+        // the cursor one day (January 2030 stays on-grid).
+        harness.press(ActionId::PickerRight);
+        harness.driver.advance_time(0);
+        assert_eq!(cursor_index(&*harness), Some(31), "one day forward");
 
-            // The context never masks: Escape resolves ModeNormal
-            // from ViInsert — the editor's clean close.
-            harness.stroke(parse("Escape").expect("Escape"));
-            harness.driver.advance_time(0);
-            assert!(
-                !harness.handle.window().get_task_model().date_picker_open,
-                "the editor closed clean"
-            );
-            assert!(!grid_armed(&harness), "the context disarmed with the flow");
-            harness.assert_commands(&[]);
-        },
-    );
+        // The context never masks: Escape resolves ModeNormal
+        // from ViInsert — the editor's clean close.
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        assert!(
+            !harness.handle.window().get_task_model().date_picker_open,
+            "the editor closed clean"
+        );
+        assert!(!grid_armed(&*harness), "the context disarmed with the flow");
+        harness.assert_commands(&[]);
+    });
 }
 
 /// Round-3 D26 — the scroll actions page the focused area: the
@@ -7392,100 +7364,94 @@ fn the_control_walk_reaches_fields_buttons_and_the_picker() {
 fn scroll_actions_page_the_focused_area() {
     let (_fixture, state) = fixture::two_board_state();
 
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            macro_rules! window {
-                () => {
-                    harness.handle.window()
-                };
-            }
-            macro_rules! scroll_hint {
-                ($h:expr) => {
-                    $h.handle
-                        .window()
-                        .global::<taskboard_ui_slint::ScrollPageHint>()
-                };
-            }
+    support::harness::run_journey(state, move |harness| {
+        macro_rules! window {
+            () => {
+                harness.handle.window()
+            };
+        }
+        macro_rules! scroll_hint {
+            ($h:expr) => {
+                $h.handle
+                    .window()
+                    .global::<taskboard_ui_slint::ScrollPageHint>()
+            };
+        }
 
-            // -- settings: pages to the end and clamps at both ends --
-            harness.press(ActionId::AppSettings);
-            harness.driver.advance_time(0);
-            macro_rules! scroll_facts {
-                ($h:expr) => {
-                    $h.handle
-                        .window()
-                        .global::<taskboard_ui_slint::SettingsScrollFacts>()
-                };
-            }
-            let viewport = scroll_facts!(harness).get_viewport_height();
-            let content = scroll_facts!(harness).get_content_height();
-            assert!(
-                content > viewport,
-                "precondition: the settings pane scrolls"
-            );
+        // -- settings: pages to the end and clamps at both ends --
+        harness.press(ActionId::AppSettings);
+        harness.driver.advance_time(0);
+        macro_rules! scroll_facts {
+            ($h:expr) => {
+                $h.handle
+                    .window()
+                    .global::<taskboard_ui_slint::SettingsScrollFacts>()
+            };
+        }
+        let viewport = scroll_facts!(harness).get_viewport_height();
+        let content = scroll_facts!(harness).get_content_height();
+        assert!(
+            content > viewport,
+            "precondition: the settings pane scrolls"
+        );
+        harness.press(ActionId::ViewScrollDown);
+        harness.driver.advance_time(0);
+        let after_one = scroll_facts!(harness).get_viewport_y();
+        assert!(after_one > 0.0, "one page advanced the pane");
+
+        // Page to the end: the clamp is content − viewport (the
+        // save row's reachability), and further pages stay there.
+        for _ in 0..20 {
             harness.press(ActionId::ViewScrollDown);
             harness.driver.advance_time(0);
-            let after_one = scroll_facts!(harness).get_viewport_y();
-            assert!(after_one > 0.0, "one page advanced the pane");
+        }
+        let max = scroll_facts!(harness).get_viewport_y();
+        assert!(
+            (max - (content - viewport)).abs() < 1.0,
+            "the pane clamped at the end of content"
+        );
+        harness.press(ActionId::ViewScrollDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            scroll_facts!(harness).get_viewport_y(),
+            max,
+            "the clamp holds"
+        );
 
-            // Page to the end: the clamp is content − viewport (the
-            // save row's reachability), and further pages stay there.
-            for _ in 0..20 {
-                harness.press(ActionId::ViewScrollDown);
-                harness.driver.advance_time(0);
-            }
-            let max = scroll_facts!(harness).get_viewport_y();
-            assert!(
-                (max - (content - viewport)).abs() < 1.0,
-                "the pane clamped at the end of content"
-            );
-            harness.press(ActionId::ViewScrollDown);
+        // Page up clamps at the top.
+        for _ in 0..20 {
+            harness.press(ActionId::ViewScrollUp);
             harness.driver.advance_time(0);
-            assert_eq!(
-                scroll_facts!(harness).get_viewport_y(),
-                max,
-                "the clamp holds"
-            );
+        }
+        assert_eq!(
+            scroll_facts!(harness).get_viewport_y(),
+            0.0,
+            "the top clamp"
+        );
 
-            // Page up clamps at the top.
-            for _ in 0..20 {
-                harness.press(ActionId::ViewScrollUp);
-                harness.driver.advance_time(0);
-            }
-            assert_eq!(
-                scroll_facts!(harness).get_viewport_y(),
-                0.0,
-                "the top clamp"
-            );
+        // -- board: the focused task's column pages --
+        harness.press(ActionId::NavFocusBoard);
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::ViewScrollDown);
+        harness.driver.advance_time(0);
+        let h = scroll_hint!(harness);
+        assert!(h.get_nonce() > 0, "the focused column's page hint armed");
+        assert_eq!(h.get_family(), 1, "the board-column family");
+        assert_eq!(h.get_page(), 1, "the down direction");
 
-            // -- board: the focused task's column pages --
-            harness.press(ActionId::NavFocusBoard);
-            harness.press(ActionId::NavFocusDown);
-            harness.press(ActionId::ViewScrollDown);
-            harness.driver.advance_time(0);
-            let h = scroll_hint!(harness);
-            assert!(h.get_nonce() > 0, "the focused column's page hint armed");
-            assert_eq!(h.get_family(), 1, "the board-column family");
-            assert_eq!(h.get_page(), 1, "the down direction");
-
-            // -- task detail: no container, a typed no-op --
-            harness.press(ActionId::NavNextView);
-            harness.press(ActionId::NavNextView);
-            assert_eq!(window!().get_current_view(), View::TaskDetail);
-            let nonce_before = scroll_hint!(harness).get_nonce();
-            harness.press(ActionId::ViewScrollDown);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                scroll_hint!(harness).get_nonce(),
-                nonce_before,
-                "the containerless detail hints nothing"
-            );
-        },
-    );
+        // -- task detail: no container, a typed no-op --
+        harness.press(ActionId::NavNextView);
+        harness.press(ActionId::NavNextView);
+        assert_eq!(window!().get_current_view(), View::TaskDetail);
+        let nonce_before = scroll_hint!(harness).get_nonce();
+        harness.press(ActionId::ViewScrollDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            scroll_hint!(harness).get_nonce(),
+            nonce_before,
+            "the containerless detail hints nothing"
+        );
+    });
 }
 
 /// Round-3 D27 — the menu curates itself: the `ViewNav` page rides the
@@ -7500,145 +7466,138 @@ fn scroll_actions_page_the_focused_area() {
 fn the_menu_curates_itself() {
     let (_fixture, state) = fixture::two_board_state();
 
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            macro_rules! window {
-                () => {
-                    harness.handle.window()
-                };
-            }
-
-            harness.press(ActionId::NavFocusDown); // seed a focus
-            harness.press(ActionId::AppMenu);
-            harness.driver.advance_time(0);
-
-            macro_rules! keyboard {
-                () => {
-                    window!().global::<taskboard_ui_slint::KeyboardState>()
-                };
-            }
-            let find = |model: &slint::ModelRc<taskboard_ui_slint::MenuEntryModel>,
-                        action: &str| {
-                (0..model.row_count())
-                    .map(|i| model.row_data(i).expect("row"))
-                    .find(|row| row.action == action)
-                    .unwrap_or_else(|| panic!("the {action} row is on the page"))
+    support::harness::run_journey(state, move |harness| {
+        macro_rules! window {
+            () => {
+                harness.handle.window()
             };
-            // Walk to a parent row and open it (the cursor walks the
-            // root page; the first parent is the Task group).
-            macro_rules! open_first_parent {
-                ($h:expr) => {{
-                    let opened = loop {
-                        let k = keyboard!();
-                        let entries = k.get_menu_entries();
-                        #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel
-                        let index = k.get_menu_selected_index().max(0) as usize;
-                        if let Some(row) = entries.row_data(index) {
-                            if row.submenu {
-                                break true;
-                            }
+        }
+
+        harness.press(ActionId::NavFocusDown); // seed a focus
+        harness.press(ActionId::AppMenu);
+        harness.driver.advance_time(0);
+
+        macro_rules! keyboard {
+            () => {
+                window!().global::<taskboard_ui_slint::KeyboardState>()
+            };
+        }
+        let find = |model: &slint::ModelRc<taskboard_ui_slint::MenuEntryModel>, action: &str| {
+            (0..model.row_count())
+                .map(|i| model.row_data(i).expect("row"))
+                .find(|row| row.action == action)
+                .unwrap_or_else(|| panic!("the {action} row is on the page"))
+        };
+        // Walk to a parent row and open it (the cursor walks the
+        // root page; the first parent is the Task group).
+        macro_rules! open_first_parent {
+            ($h:expr) => {{
+                let opened = loop {
+                    let k = keyboard!();
+                    let entries = k.get_menu_entries();
+                    #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel
+                    let index = k.get_menu_selected_index().max(0) as usize;
+                    if let Some(row) = entries.row_data(index) {
+                        if row.submenu {
+                            break true;
                         }
-                        #[allow(clippy::cast_possible_truncation)] // page-bounded walk
-                        #[allow(clippy::cast_possible_wrap)]
-                        if i32::try_from(index).is_ok_and(|i| i > 24) {
-                            break false;
-                        }
-                        $h.stroke(parse("Down").expect("Down"));
-                        $h.driver.advance_time(0);
-                    };
-                    if opened {
-                        $h.stroke(parse("Return").expect("Return"));
-                        $h.driver.advance_time(0);
                     }
-                    opened
-                }};
-            }
-
-            // The Mode parent is filtered under the standard preset:
-            // five parents ride the root page (D27b).
-            let root = keyboard!().get_menu_entries();
-            let parents = (0..root.row_count())
-                .filter(|i| root.row_data(*i).expect("row").submenu)
-                .count();
-            assert_eq!(parents, 5, "the Mode parent is filtered (D27b)");
-
-            // The greying flip: without a move flow the Task page's
-            // cancel row reads disabled.
-            assert!(open_first_parent!(harness), "a parent row opened");
-            let task_page = keyboard!().get_menu_submenu_entries();
-            assert!(
-                !find(&task_page, "task.move.cancel").enabled,
-                "the cancel row greys without a flow"
-            );
-            harness.stroke(parse("Escape").expect("Escape"));
-            harness.driver.advance_time(0);
-            harness.stroke(parse("Escape").expect("Escape"));
-            harness.driver.advance_time(0);
-            assert!(!keyboard!().get_menu_open(), "the menu closed");
-
-            // The ViewNav page's order: the go-to verbs above the
-            // cycle (D27a). The ViewNav parent is the fourth of the
-            // five rendered parents.
-            harness.press(ActionId::AppMenu);
-            harness.driver.advance_time(0);
-            let mut parent_ordinal = 0;
-            for _ in 0..20 {
-                let k = keyboard!();
-                let entries = k.get_menu_entries();
-                #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel
-                let index = k.get_menu_selected_index().max(0) as usize;
-                let row = entries.row_data(index).expect("row");
-                if row.submenu {
-                    parent_ordinal += 1;
-                    if parent_ordinal == 4 {
-                        break;
+                    #[allow(clippy::cast_possible_truncation)] // page-bounded walk
+                    #[allow(clippy::cast_possible_wrap)]
+                    if i32::try_from(index).is_ok_and(|i| i > 24) {
+                        break false;
                     }
+                    $h.stroke(parse("Down").expect("Down"));
+                    $h.driver.advance_time(0);
+                };
+                if opened {
+                    $h.stroke(parse("Return").expect("Return"));
+                    $h.driver.advance_time(0);
                 }
-                harness.stroke(parse("Down").expect("Down"));
-                harness.driver.advance_time(0);
+                opened
+            }};
+        }
+
+        // The Mode parent is filtered under the standard preset:
+        // five parents ride the root page (D27b).
+        let root = keyboard!().get_menu_entries();
+        let parents = (0..root.row_count())
+            .filter(|i| root.row_data(*i).expect("row").submenu)
+            .count();
+        assert_eq!(parents, 5, "the Mode parent is filtered (D27b)");
+
+        // The greying flip: without a move flow the Task page's
+        // cancel row reads disabled.
+        assert!(open_first_parent!(harness), "a parent row opened");
+        let task_page = keyboard!().get_menu_submenu_entries();
+        assert!(
+            !find(&task_page, "task.move.cancel").enabled,
+            "the cancel row greys without a flow"
+        );
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        assert!(!keyboard!().get_menu_open(), "the menu closed");
+
+        // The ViewNav page's order: the go-to verbs above the
+        // cycle (D27a). The ViewNav parent is the fourth of the
+        // five rendered parents.
+        harness.press(ActionId::AppMenu);
+        harness.driver.advance_time(0);
+        let mut parent_ordinal = 0;
+        for _ in 0..20 {
+            let k = keyboard!();
+            let entries = k.get_menu_entries();
+            #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel
+            let index = k.get_menu_selected_index().max(0) as usize;
+            let row = entries.row_data(index).expect("row");
+            if row.submenu {
+                parent_ordinal += 1;
+                if parent_ordinal == 4 {
+                    break;
+                }
             }
-            assert_eq!(parent_ordinal, 4, "the ViewNav parent is the fourth");
-            harness.stroke(parse("Return").expect("Return"));
+            harness.stroke(parse("Down").expect("Down"));
             harness.driver.advance_time(0);
-            let submenu = keyboard!().get_menu_submenu_entries();
-            let index = |action: &str| {
-                (0..submenu.row_count())
-                    .map(|i| submenu.row_data(i).expect("row"))
-                    .position(|row| row.action == action)
-                    .unwrap_or_else(|| panic!("the {action} row rides the page"))
-            };
-            assert!(index("view.today") < index("nav.next-view"));
-            assert!(index("nav.focus-board") < index("nav.next-view"));
-            assert!(index("nav.next-view") < index("nav.next-control"));
+        }
+        assert_eq!(parent_ordinal, 4, "the ViewNav parent is the fourth");
+        harness.stroke(parse("Return").expect("Return"));
+        harness.driver.advance_time(0);
+        let submenu = keyboard!().get_menu_submenu_entries();
+        let index = |action: &str| {
+            (0..submenu.row_count())
+                .map(|i| submenu.row_data(i).expect("row"))
+                .position(|row| row.action == action)
+                .unwrap_or_else(|| panic!("the {action} row rides the page"))
+        };
+        assert!(index("view.today") < index("nav.next-view"));
+        assert!(index("nav.focus-board") < index("nav.next-view"));
+        assert!(index("nav.next-view") < index("nav.next-control"));
 
-            harness.stroke(parse("Escape").expect("Escape"));
-            harness.driver.advance_time(0);
-            harness.stroke(parse("Escape").expect("Escape"));
-            harness.driver.advance_time(0);
-            assert!(!keyboard!().get_menu_open(), "the menu closed");
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        assert!(!keyboard!().get_menu_open(), "the menu closed");
 
-            // The flip's reachable half: with a live move flow the
-            // cancel row reads enabled (the menu-open settle cannot
-            // coexist with the flow, so the enabled side rides the
-            // entry_states pin at the adapter layer).
-            harness.stroke(parse("Escape").expect("Escape"));
-            harness.driver.advance_time(0);
-            harness.stroke(parse("M").expect("M")); // task.move
-            harness.driver.advance_time(0);
-            harness.press(ActionId::AppMenu);
-            harness.driver.advance_time(0);
-            assert!(open_first_parent!(harness), "a parent row opened");
-            let task_page = keyboard!().get_menu_submenu_entries();
-            assert!(
-                !find(&task_page, "task.move.cancel").enabled,
-                "opening the menu settled the flow (F9): the cancel row greys again"
-            );
-        },
-    );
+        // The flip's reachable half: with a live move flow the
+        // cancel row reads enabled (the menu-open settle cannot
+        // coexist with the flow, so the enabled side rides the
+        // entry_states pin at the adapter layer).
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        harness.stroke(parse("M").expect("M")); // task.move
+        harness.driver.advance_time(0);
+        harness.press(ActionId::AppMenu);
+        harness.driver.advance_time(0);
+        assert!(open_first_parent!(harness), "a parent row opened");
+        let task_page = keyboard!().get_menu_submenu_entries();
+        assert!(
+            !find(&task_page, "task.move.cancel").enabled,
+            "opening the menu settled the flow (F9): the cancel row greys again"
+        );
+    });
 }
 
 /// R2 D25 — the due editor's typed path: ISO commits at 00:00 UTC,
@@ -14730,26 +14689,20 @@ fn a_right_press_outside_dismisses_the_date_picker() {
         .get_mut(&fixture.task0)
         .expect("fixture task")
         .duedate = Some(due);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.press(ActionId::NavFocusDown);
-            harness.press(ActionId::NavNextView);
-            harness.press(ActionId::NavNextView);
-            harness.driver.click_by_label("Edit due date");
-            harness.driver.advance_time(0);
-            assert!(harness.handle.window().get_task_model().date_picker_open);
-            harness.driver.set_window_size(1000, 900);
-            harness.driver.right_press_at(990.0, 890.0);
-            assert!(
-                !harness.handle.window().get_task_model().date_picker_open,
-                "the right-down closed the picker"
-            );
-        },
-    );
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::NavNextView);
+        harness.press(ActionId::NavNextView);
+        harness.driver.click_by_label("Edit due date");
+        harness.driver.advance_time(0);
+        assert!(harness.handle.window().get_task_model().date_picker_open);
+        harness.driver.set_window_size(1000, 900);
+        harness.driver.right_press_at(990.0, 890.0);
+        assert!(
+            !harness.handle.window().get_task_model().date_picker_open,
+            "the right-down closed the picker"
+        );
+    });
 }
 
 /// The guard half of D2: the dismissal layer eats the right-press —
@@ -24711,65 +24664,59 @@ fn us1_s3_inside_click_never_closes_and_scrim_click_dismisses() {
 #[test]
 fn us2_s1_the_setter_opens_below_the_anchor_never_covering_it() {
     let (_fixture, state) = fixture::golden_state();
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: false,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.set_window_size(1000, 900);
-            harness.press(ActionId::ViewToday);
-            harness.driver.advance_time(0);
-            open_setter(&mut harness);
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1000, 900);
+        harness.press(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        open_setter(&mut *harness);
 
-            // The anchor: the header button ("Set a timer"); the panel
-            // shares the label (the D33-pinned copy) and mounts last in
-            // the tree, so the last match is the panel.
-            let matches = harness.driver.find_all_by_label("Set a timer");
-            assert!(
-                matches.len() >= 2,
-                "the anchor button and the panel both address the label"
-            );
-            let anchor = &matches[0];
-            let panel = matches.last().expect("the panel match");
-            let a_pos = anchor.absolute_position();
-            let a_size = anchor.size();
-            // The known mirror race (#954: `changed absolute-position`
-            // is unreliable in the testing backend — W6's absorption):
-            // the journey mirrors the anchor facts itself, exactly what
-            // the real button does, then lets the host re-place.
-            {
-                let facts = harness
-                    .handle
-                    .window()
-                    .global::<taskboard_ui_slint::TimerSetterFacts>();
-                facts.set_anchor_x(a_pos.x);
-                facts.set_anchor_y(a_pos.y);
-                facts.set_anchor_width(a_size.width);
-                facts.set_anchor_height(a_size.height);
-            }
-            harness.driver.advance_time(0);
+        // The anchor: the header button ("Set a timer"); the panel
+        // shares the label (the D33-pinned copy) and mounts last in
+        // the tree, so the last match is the panel.
+        let matches = harness.driver.find_all_by_label("Set a timer");
+        assert!(
+            matches.len() >= 2,
+            "the anchor button and the panel both address the label"
+        );
+        let anchor = &matches[0];
+        let panel = matches.last().expect("the panel match");
+        let a_pos = anchor.absolute_position();
+        let a_size = anchor.size();
+        // The known mirror race (#954: `changed absolute-position`
+        // is unreliable in the testing backend — W6's absorption):
+        // the journey mirrors the anchor facts itself, exactly what
+        // the real button does, then lets the host re-place.
+        {
+            let facts = harness
+                .handle
+                .window()
+                .global::<taskboard_ui_slint::TimerSetterFacts>();
+            facts.set_anchor_x(a_pos.x);
+            facts.set_anchor_y(a_pos.y);
+            facts.set_anchor_width(a_size.width);
+            facts.set_anchor_height(a_size.height);
+        }
+        harness.driver.advance_time(0);
 
-            let p_pos = panel.absolute_position();
-            let p_size = panel.size();
-            // Below the anchor with the space-1 gap (G-3's below leg).
-            assert!(
-                p_pos.y >= a_pos.y + a_size.height,
-                "the popover opens below the anchor: panel y {} vs anchor bottom {}",
-                p_pos.y,
-                a_pos.y + a_size.height
-            );
-            // Non-intersection (G-2, both axes).
-            let no_overlap = p_pos.y >= a_pos.y + a_size.height
-                || p_pos.y + p_size.height <= a_pos.y
-                || p_pos.x >= a_pos.x + a_size.width
-                || p_pos.x + p_size.width <= a_pos.x;
-            assert!(
-                no_overlap,
-                "the popover never covers its anchor (US-2 AC-1)"
-            );
-        },
-    );
+        let p_pos = panel.absolute_position();
+        let p_size = panel.size();
+        // Below the anchor with the space-1 gap (G-3's below leg).
+        assert!(
+            p_pos.y >= a_pos.y + a_size.height,
+            "the popover opens below the anchor: panel y {} vs anchor bottom {}",
+            p_pos.y,
+            a_pos.y + a_size.height
+        );
+        // Non-intersection (G-2, both axes).
+        let no_overlap = p_pos.y >= a_pos.y + a_size.height
+            || p_pos.y + p_size.height <= a_pos.y
+            || p_pos.x >= a_pos.x + a_size.width
+            || p_pos.x + p_size.width <= a_pos.x;
+        assert!(
+            no_overlap,
+            "the popover never covers its anchor (US-2 AC-1)"
+        );
+    });
 }
 
 // -- round-9 chunk 5: the overlay migration (J2 US-2/S3, R-8 race 2) --
