@@ -2099,6 +2099,19 @@ mod tests {
         assert!(!dir.exists(), "the drop deletes the dir");
     }
 
+    /// The #984 dated-pin gate (the #865 re-homing debt, tracked in
+    /// the round-3 backlog): true when no `TASKBOARD_*` ambient is
+    /// present. The settings-editor/port guard and persist reads
+    /// compose the process env in production, and this lib crate
+    /// forbids the env mutation that `taskboard_env_lock` needs — so
+    /// under a hostile ambient the composed read refuses before the
+    /// fact under test. The integration suite
+    /// `tests/services/ui_settings.rs` is the hostile-oracle home for
+    /// the re-homed legs.
+    fn clean_ambient() -> bool {
+        !std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
+    }
+
     fn epoch() -> chrono::DateTime<chrono::Utc> {
         BoardClocks::epoch()
     }
@@ -2229,14 +2242,8 @@ mod tests {
     /// stage gate, never a reimplemented undo.
     #[tokio::test]
     async fn us6_ac1_restore_guards_refuse_typed_currently_pins_the_clean_ambient_read() {
-        // Dated pin (the #865 re-homing debt): the guard/persist read
-        // composes the process env, and this lib crate forbids the env
-        // mutation that `taskboard_env_lock` needs — under a hostile
-        // `TASKBOARD_*` ambient the composed read refuses before the
-        // fact under test. Gated only while such an ambient is
-        // present; the integration suite (tests/services/ui_settings.rs)
-        // is the hostile-oracle home for the re-homed legs.
-        if std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_")) {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
@@ -2320,6 +2327,10 @@ mod tests {
     /// is the fresh snapshot whose channel half carries the move.
     #[tokio::test]
     async fn us10_ac1_rebind_preserves_the_remote_identity() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         write_two_connector_config(&config);
@@ -2385,6 +2396,10 @@ mod tests {
     /// refusal, not a no-op); a dead target lane is `BindRefused`.
     #[tokio::test]
     async fn us10_ac2_rebind_preconditions_refuse_typed() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         write_two_connector_config(&config);
@@ -2543,14 +2558,8 @@ mod tests {
     /// gone board is `Gone`.
     #[tokio::test]
     async fn us4_s2_publish_guards_refuse_deck_bound_currently_pins_the_clean_ambient_read() {
-        // Dated pin (the #865 re-homing debt): the guard/persist read
-        // composes the process env, and this lib crate forbids the env
-        // mutation that `taskboard_env_lock` needs — under a hostile
-        // `TASKBOARD_*` ambient the composed read refuses before the
-        // fact under test. Gated only while such an ambient is
-        // present; the integration suite (tests/services/ui_settings.rs)
-        // is the hostile-oracle home for the re-homed legs.
-        if std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_")) {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
             return;
         }
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3429,6 +3438,10 @@ mod tests {
     /// field invalidity.
     #[tokio::test]
     async fn the_editor_handlers_write_through_the_workspace_path() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(
@@ -3602,6 +3615,10 @@ mod tests {
     /// Nextcloud the gate refuses typed and the file stays untouched.
     #[tokio::test]
     async fn the_files_toggle_writes_only_its_key_and_refuses_without_nextcloud() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(
@@ -3670,6 +3687,10 @@ mod tests {
     /// keys, the reply snapshot echoes the resolved anchor.
     #[tokio::test]
     async fn the_reanchoring_pick_lands_both_keys_and_echoes_the_anchor() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(
@@ -3831,14 +3852,8 @@ mod tests {
     /// US-1/US-3 choreography in one place.
     #[tokio::test]
     async fn the_port_applies_live_to_a_real_engine_currently_pins_the_clean_ambient_read() {
-        // Dated pin (the #865 re-homing debt): the guard/persist read
-        // composes the process env, and this lib crate forbids the env
-        // mutation that `taskboard_env_lock` needs — under a hostile
-        // `TASKBOARD_*` ambient the composed read refuses before the
-        // fact under test. Gated only while such an ambient is
-        // present; the integration suite (tests/services/ui_settings.rs)
-        // is the hostile-oracle home for the re-homed legs.
-        if std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_")) {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
             return;
         }
         let fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
@@ -3865,6 +3880,10 @@ mod tests {
     /// next-start outcome — the fronts decide how to render it).
     #[tokio::test]
     async fn the_port_engine_gone_reports_the_next_start_lane() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let mut fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
         let (workspace, app) = (&fixture.workspace, &mut fixture.rest.app);
         // Drain the engine (the D-5.3 journey's pattern): every later
@@ -3902,6 +3921,10 @@ mod tests {
     /// the port reports `NoEngine` — the typed `applied_live: false`.
     #[tokio::test]
     async fn the_port_no_engine_lane_reports_next_start() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
         let workspace = &fixture.workspace;
         let locked = std::collections::BTreeSet::new();
