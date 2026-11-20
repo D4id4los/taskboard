@@ -286,17 +286,44 @@ fn g12_dismissal_restores_the_opener_focus() {
     });
 }
 
-/// G-13: the button model — every click routes `button-invoked` with
-/// the model index, and `initial-focus` lands on the declared button.
+/// The G-13 flag-level pin (#996): the autofocus flag is
+/// authoritative — the Rust side derives the host's
+/// `initial-focus-index` from the same button vec it builds (the lib
+/// twin is `taskboard_ui_slint::models::initial_focus_index`; the
+/// slint structs are per-binary, so the probe mirrors the derivation
+/// over its own generated type) and focus lands on the flagged,
+/// enabled row — no hand-declared site index.
 #[test]
 fn g13_button_model_routes_indices_and_lands_the_initial_focus() {
     run_probe(|window| {
-        window.set_probe_initial_focus(1);
+        let buttons = vec![
+            DialogButtonModel {
+                label: "Cancel".into(),
+                role: DialogButtonRole::Dismiss,
+                enabled: true,
+                autofocus: false,
+            },
+            DialogButtonModel {
+                label: "Save".into(),
+                role: DialogButtonRole::Accept,
+                enabled: true,
+                autofocus: true,
+            },
+        ];
+        window.set_probe_buttons(std::rc::Rc::new(slint::VecModel::from(buttons.clone())).into());
+        // The derivation (models::initial_focus_index's law over the
+        // probe-local struct).
+        window.set_probe_initial_focus_index(
+            buttons
+                .iter()
+                .position(|button| button.enabled && button.autofocus)
+                .map_or(-1, |index| i32::try_from(index).unwrap_or(-1)),
+        );
         open_modal(window);
         assert_eq!(
             window.get_modal_focused_button(),
             1,
-            "initial focus lands on the declared button"
+            "initial focus lands on the autofocus-flagged button"
         );
 
         // The Save button's centre: the cluster is at the panel's
@@ -321,30 +348,36 @@ fn g13_button_model_routes_indices_and_lands_the_initial_focus() {
     });
 }
 
-/// G-13 (gating half): a disabled button neither takes the initial
-/// focus nor invokes — the row never focuses the declared-but-disabled
-/// entry.
+/// G-13 (gating half, #996): the derivation skips disabled rows —
+/// autofocus on a disabled entry never focuses it (the helper's law:
+/// first *enabled* autofocus row, `-1` when none), and the disabled
+/// click never invokes.
 #[test]
 fn g13_a_disabled_button_never_focuses_nor_invokes() {
     run_probe(|window| {
-        window.set_probe_buttons(
-            std::rc::Rc::new(slint::VecModel::from(vec![
-                DialogButtonModel {
-                    label: "Cancel".into(),
-                    role: DialogButtonRole::Dismiss,
-                    enabled: true,
-                    autofocus: false,
-                },
-                DialogButtonModel {
-                    label: "Save".into(),
-                    role: DialogButtonRole::Accept,
-                    enabled: false,
-                    autofocus: false,
-                },
-            ]))
-            .into(),
+        let buttons = vec![
+            DialogButtonModel {
+                label: "Cancel".into(),
+                role: DialogButtonRole::Dismiss,
+                enabled: true,
+                autofocus: false,
+            },
+            DialogButtonModel {
+                label: "Save".into(),
+                role: DialogButtonRole::Accept,
+                enabled: false,
+                autofocus: true,
+            },
+        ];
+        window.set_probe_buttons(std::rc::Rc::new(slint::VecModel::from(buttons.clone())).into());
+        // The derivation over a disabled autofocus row: -1 (no next
+        // enabled autofocus row exists).
+        window.set_probe_initial_focus_index(
+            buttons
+                .iter()
+                .position(|button| button.enabled && button.autofocus)
+                .map_or(-1, |index| i32::try_from(index).unwrap_or(-1)),
         );
-        window.set_probe_initial_focus(1);
         advance_probe_clock(0);
         open_modal(window);
         assert_eq!(
@@ -430,7 +463,7 @@ fn g10_the_walk_extent_counts_the_button_row() {
 #[test]
 fn g10_tab_from_the_body_stop_reaches_the_buttons() {
     run_probe(|window| {
-        window.set_probe_initial_focus(-1);
+        window.set_probe_initial_focus_index(-1);
         open_modal(window);
         // The body stop's centre (panel top-left padding + half the
         // fixture body box): a click focuses it like a user's.

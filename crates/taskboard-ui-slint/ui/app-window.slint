@@ -1592,6 +1592,10 @@ export component AppWindow inherits Window {
             // model + parallel intent codes; without this binding the
             // journey's visible Next/Prev/Finish/Done controls vanish.
             buttons: root.walk-model.buttons;
+            // The autofocus flag is authoritative (#996): the same
+            // Rust pass derives the index from the buttons vec — the
+            // site binds it, never a hand-declared literal.
+            initial-focus-index: root.walk-model.initial-focus-index;
             // Confirm kind: outside click is the only host-emitted
             // dismissal (the R-4 law) — and it is the abort law's arm.
             dismissed => root.walk-abort-arm-requested();
@@ -1652,6 +1656,11 @@ export component AppWindow inherits Window {
                     root.walk-abort-accept-clicked();
                 }
             }
+            // The literal-array mount (#996): Slint functions have no
+            // model reduce, so a literal site cannot derive an index —
+            // this site leaves `initial-focus-index` at the default -1
+            // (unchanged behavior); the `autofocus` flags stay
+            // declarative metadata here.
             buttons: [
                 { label: "Keep reviewing", role: DialogButtonRole.dismiss, enabled: true, autofocus: true },
                 { label: "End review", role: DialogButtonRole.accept, enabled: true, autofocus: false },

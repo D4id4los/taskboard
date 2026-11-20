@@ -316,9 +316,10 @@ export component WalkProbeWindow inherits Window {
             + root.walk-model.buttons.length;
         buttons: root.walk-model.buttons;
         // The walk's initial focus lands on the first button (the
-        // derived button row's mount grab) — gated on open so the
-        // closed host never competes for the window's init focus.
-        initial-focus: root.walk-open ? 0 : -1;
+        // derived button row's mount grab, #996's renamed host
+        // property) — gated on open so the closed host never competes
+        // for the window's init focus.
+        initial-focus-index: root.walk-open ? 0 : -1;
         walk-body := ReviewWalkOverlay {
             model: root.walk-model;
         }

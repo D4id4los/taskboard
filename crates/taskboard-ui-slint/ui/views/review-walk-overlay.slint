@@ -66,6 +66,11 @@ export struct ReviewWalkModel {
     // (D-5): code i dispatches the walk intent the site maps i to.
     buttons: [DialogButtonModel],
     button-codes: [int],
+    // The button row's authoritative initial-focus index (#996):
+    // derived in Rust from the same buttons vec (the first enabled
+    // autofocus row, -1 when none) — the host site binds it, never a
+    // hand-declared index (Slint functions have no model reduce).
+    initial-focus-index: int,
     // -- the inbox stage --
     // `true` = the File-to picker is armed on the cursor row.
     filing: bool,
