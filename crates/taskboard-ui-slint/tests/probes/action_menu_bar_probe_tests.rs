@@ -10,8 +10,7 @@
 //! component all menus inherit). Deterministic: one platform turn per
 //! dispatch, no sleeps, no text assertions.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::driver::{DriverOptions, find_all_by_id_on};
 

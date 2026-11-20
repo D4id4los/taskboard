@@ -10,8 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{binary_command, spawn_daemon, tempdir, wait_until, write_test_config};
 

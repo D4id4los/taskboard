@@ -18,8 +18,7 @@ use taskboard_app::commands::{BasicSession, CommandError, CommandIo, dispatch_li
 use taskboard_app::config::AppConfig;
 use taskboard_domain::TaskChanges;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{forbidden_store, standalone_config, tempdir};
 

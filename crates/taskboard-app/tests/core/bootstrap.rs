@@ -25,8 +25,7 @@ use taskboard_storage_sqlite::{StorageHandle, open};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{BOARD, EnvOverride, FakeCredentialStore, STACK, T, mount_standard_pull};
 use taskboard_app::bootstrap::DetachOutcome;

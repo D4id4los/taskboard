@@ -21,8 +21,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{Child, binary_command, spawn_daemon, tempdir, write_test_config};
 

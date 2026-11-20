@@ -6,8 +6,7 @@
 //! outcome (exit 1) — routing only; the verbs' success paths are the
 //! L/V/K-series' job, not duplicated here.
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use taskboard_app::cli::{
     BoardsCmd, Command, ConfigCmd, LabelEditFlags, LabelsCmd, StacksCmd, TaskEditFlags, TasksCmd,

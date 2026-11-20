@@ -7,8 +7,7 @@ use std::sync::Arc;
 use taskboard_app::bootstrap::{BootstrapError, bootstrap};
 use taskboard_app::secrets::CredentialStore;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{FakeCredentialStore, tempdir};
 

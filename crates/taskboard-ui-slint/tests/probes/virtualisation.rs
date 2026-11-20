@@ -11,14 +11,18 @@
 //!
 //! The observable is the **live-instantiation count** via the
 //! backend's per-instance element query (one entry per live
-//! repetition instance) — no production-markup hooks. An eager shape
+//! repetition instance) — no production-markup hooks.
+//!
+//! All probes run the software renderer (`headless_renderer: true`):
+//! the deep-board capture at the i16 crash scale needs it, and one
+//! process holds one platform (#1016), so the whole module standardizes
+//! on the renderer-on mode (merged into `probe_pixel.rs`). An eager shape
 //! renders all N instances; an engaged shape renders only the
 //! viewport window. The ratios asserted are failure detectors on the
 //! eager garbage, deliberately not success ceilings: strictly better
 //! virtualisation (a smaller window) still passes.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::driver::{
     DriverOptions, SlintDriver, advance_probe_clock, find_all_by_id_on, find_by_label_on,
@@ -31,7 +35,7 @@ use slint::{ComponentHandle as _, Model as _};
 fn run_probe(job: impl FnOnce(&mut SlintDriver) + Send + 'static) {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             job(driver);
@@ -388,7 +392,7 @@ fn bench_label(i: usize) -> String {
 fn the_board_regular_leg_virtualises() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (_handle, _engine) = mount_board(driver, 1000, 1000, 900);
@@ -417,7 +421,7 @@ fn the_board_regular_leg_virtualises() {
 fn the_board_compact_leg_virtualises() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (_handle, _engine) = mount_board(driver, 1000, 600, 900);
@@ -492,7 +496,7 @@ fn a_board_beyond_the_i16_pixel_ceiling_renders() {
 fn a_keyboard_jump_to_the_last_card_makes_it_fully_visible() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (handle, _engine) = mount_board(driver, 1000, 1000, 900);
@@ -529,7 +533,7 @@ fn a_keyboard_jump_to_the_last_card_makes_it_fully_visible() {
 fn an_adjacent_step_leaves_the_view_resting() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (handle, _engine) = mount_board(driver, 1000, 1000, 900);
@@ -564,7 +568,7 @@ fn an_adjacent_step_leaves_the_view_resting() {
 fn a_pointer_drag_across_virtualised_columns_moves_the_tabled_task() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (_handle, mut engine) = mount_board(driver, 1000, 1000, 900);
@@ -635,7 +639,7 @@ fn tables_state_head(state: &AppState) -> taskboard_domain::TaskId {
 fn the_today_sections_virtualise() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             // The bench fixture's due dates are in the past: ~N/3 rows
@@ -679,7 +683,7 @@ fn the_today_sections_virtualise() {
 fn the_stack_detail_list_virtualises() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (handle, _engine) = mount_board(driver, 1000, 1000, 900);
@@ -769,7 +773,7 @@ fn the_stack_detail_list_virtualises() {
 fn a_removal_above_the_today_viewport_leaves_the_rows_resting() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let state = Arc::new(ArcSwap::from_pointee(build_state(600)));
@@ -884,7 +888,7 @@ fn mount_today(
 fn an_insertion_above_the_today_viewport_reflows_less_than_one_extent() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (handle, _engine, state) = mount_today(driver, 600);
@@ -1002,7 +1006,7 @@ fn an_insertion_above_the_today_viewport_reflows_less_than_one_extent() {
 fn a_true_removal_above_the_today_viewport_is_pixel_still() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (handle, _engine, state) = mount_today(driver, 600);
@@ -1079,7 +1083,7 @@ fn a_true_removal_above_the_today_viewport_is_pixel_still() {
 fn a_removal_within_the_today_viewport_closes_the_rows_below_without_scrolling() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (handle, _engine, state) = mount_today(driver, 600);
@@ -1167,7 +1171,7 @@ fn a_removal_within_the_today_viewport_closes_the_rows_below_without_scrolling()
 fn a_compact_stack_switch_remounts_the_viewport_cleanly() {
     support::driver::run(
         DriverOptions {
-            headless_renderer: false,
+            headless_renderer: true,
         },
         |driver| {
             let (handle, _engine) = mount_board(driver, 1000, 600, 900);

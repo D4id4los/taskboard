@@ -19,8 +19,7 @@ use taskboard_app::ui_requests::{ConnectionWorkspace, UI_REQUEST_DEBOUNCE, ui_re
 use taskboard_ui_slint::keymap::Preset;
 use taskboard_ui_slint::requests::{ConnectionProfile, Secret, SettingsError, UiRequest};
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::FakeCredentialStore;
 use taskboard_ui_slint::actions::{ActionId, ContextId};

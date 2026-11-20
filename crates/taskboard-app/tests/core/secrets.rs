@@ -8,8 +8,7 @@ use taskboard_app::secrets::{
     KeyringStore, credential_key,
 };
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;

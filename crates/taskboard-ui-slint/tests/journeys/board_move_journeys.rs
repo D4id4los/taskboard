@@ -5,8 +5,7 @@
 //! move survives directional hops (the W-3 kept arms — the settle
 //! matrix never cancels the flow under the directional keys).
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::focus_journey::{JourneyHarness, golden_state_journey};
 

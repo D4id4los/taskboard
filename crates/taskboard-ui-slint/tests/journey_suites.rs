@@ -7,6 +7,20 @@
 //! the files live under `tests/journeys/` (subdirectories are not
 //! auto-discovered as targets).
 
+// The shared harness module, declared exactly once per merged binary:
+// `driver.rs`'s platform dispatch runs off process-global `OnceLock`s,
+// so a per-member `mod support` copy (each member's old standalone
+// preamble) would multiply the platform init and deadlock plain
+// `cargo test` on this target. Members consume it via `crate::support`.
+#[path = "support/mod.rs"]
+mod support;
+
+/// The one-platform mode this merged binary standardizes on: the
+/// `support` self-tests read it so their `DriverOptions` agree with
+/// the members sharing the process (`driver::run`'s guard asserts one
+/// platform per process; see #1016).
+pub(crate) const HEADLESS_RENDERER: bool = true;
+
 #[path = "journeys/board_move_journeys.rs"]
 mod board_move_journeys;
 #[path = "journeys/focus_coverage.rs"]

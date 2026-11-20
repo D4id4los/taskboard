@@ -13,8 +13,7 @@ use taskboard_app::config::{AppConfig, AppSection, CredentialStoreKind, WebSecti
 use taskboard_app::secrets::CredentialStore;
 use taskboard_domain::StateCommand;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::FakeCredentialStore;
 

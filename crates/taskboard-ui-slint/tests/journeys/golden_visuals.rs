@@ -39,8 +39,7 @@
 //! never sets the variable: it compares only. The PR's PNG diff **is**
 //! the review artefact (GitHub renders the images).
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fixture;

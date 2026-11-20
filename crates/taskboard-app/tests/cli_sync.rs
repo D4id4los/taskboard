@@ -5,6 +5,14 @@
 //! standalone/verbs grammars. Members are verbatim moves living under
 //! `tests/cli/`; each keeps its own `common` include.
 
+// The shared helpers module, declared exactly once per merged binary:
+// a per-member `mod common` copy (each member's old standalone
+// preamble) trips `clippy::duplicate_mod` under `--all-targets -D
+// warnings` and multiplies any process-global helper state. Members
+// consume it via `use crate::common;`.
+#[path = "common/mod.rs"]
+mod common;
+
 #[path = "cli/cli_attach.rs"]
 mod cli_attach;
 #[path = "cli/cli_breaks.rs"]

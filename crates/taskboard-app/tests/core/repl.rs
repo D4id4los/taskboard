@@ -19,8 +19,7 @@ use taskboard_app::lockfile::InstanceLock;
 use taskboard_app::repl::{EditorIo, LineEvent, ReplSession, repl_loop, run_session_with_lines};
 use taskboard_app::secrets::CredentialStore;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{FakeCredentialStore, tempdir};
 

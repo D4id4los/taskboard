@@ -11,6 +11,13 @@
 
 mod support;
 
+/// The one-platform mode this binary standardizes on: the `support`
+/// self-tests read it so their `DriverOptions` agree with the binary's
+/// journeys (`driver::run`'s guard asserts one platform per process;
+/// see #1016). The binary's known mixed false sites are #1016/B4a
+/// scope, not touched here.
+pub(crate) const HEADLESS_RENDERER: bool = true;
+
 use chrono::TimeDelta;
 use chrono::TimeZone as _;
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};

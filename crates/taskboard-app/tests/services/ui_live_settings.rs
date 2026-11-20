@@ -5,8 +5,7 @@
 //! standing in the process environment, which only this tree's
 //! `common` helpers may set (the lib forbids unsafe).
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

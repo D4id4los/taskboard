@@ -6,8 +6,7 @@
 //! consumes (the flag, never styling text; the transition itself is
 //! platform-driven, the `TouchArea`'s has-hover).
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use slint::ComponentHandle as _;
 

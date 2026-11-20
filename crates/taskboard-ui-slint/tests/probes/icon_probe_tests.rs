@@ -10,8 +10,7 @@
 //! floors only ("glyph present", "full-tint cores exist at 3.0") —
 //! never ceilings.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::driver::{DriverOptions, SlintDriver};
 use support::golden_compare::{self, Rgba8Image};

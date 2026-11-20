@@ -4,8 +4,7 @@
 //! state. These tests pin what the bench relies on; board semantics
 //! themselves are owned by the state crate's suite.
 
-#[path = "../../benches/support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::{STACK_COUNT, build_state};
 

@@ -11,8 +11,7 @@
 //! (AGENTS §5). The red measurement against the always-mounted rows
 //! is recorded in the stage-2 report.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use slint::{ModelRc, SharedString, VecModel};
 use support::driver::{DriverOptions, JourneyDriver as _, SlintDriver};

@@ -7,8 +7,7 @@
 //! collapse clamped the OS window to a row's content width once the
 //! refresh settled (2026-11-14 user report).
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::driver::{DriverOptions, advance_probe_clock};
 

@@ -8,8 +8,7 @@
 //! `virtualisation.rs` `run_probe` shape): the window must
 //! instantiate headless, not on the winit backend.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::driver::{DriverOptions, advance_probe_clock};
 
