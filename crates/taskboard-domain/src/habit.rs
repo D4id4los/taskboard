@@ -1373,19 +1373,16 @@ mod tests {
             }
         }
     }
-    /// DEBT PIN (currently-pins convention, AGENTS §5): two
-    /// `LogHabit`s stamped with the SAME `now` (same planner
-    /// second) collide under `RecordHabitLog`'s equal-clock LWW
-    /// tie — the replay keeps the stored row and the second
-    /// increment is silently lost. The Σ property above excludes
-    /// the degenerate sequence (dt >= 1s) until the tie is ruled
-    /// (increment-merging rows, or sub-second/monotone row
-    /// clocks). Proposed fix: stamp the log row's clock with a
-    /// per-command monotone tiebreaker, or merge equal-clock
-    /// increments in the storage apply — either is a storage-semantics
-    /// ruling, not a habit-local change.
+    /// Desired semantics (#986): two `LogHabit`s stamped with the
+    /// SAME `now` (same planner second — double-tap, scripted CLI)
+    /// BOTH land. The mint rule
+    /// `mint_log_clock(now, stored_clock) = max(now, stored_clock + 1s)`
+    /// stamps the second log's row strictly past the first, so the
+    /// strictly-newer LWW apply admits it. All apply/fold/SQL layers
+    /// stay strictly-newer; determinism holds because the bump is a
+    /// pure function of (pre-state, command, `now`).
     #[test]
-    fn log_same_instant_double_currently_pins_the_lww_tie_loss() {
+    fn log_same_instant_double_log_increments_twice() {
         let fixture = HabitFixture {
             habit: habit(1, HabitTarget::PerWeek(NonZeroCount::new(1).expect("1"))),
             log: std::collections::BTreeMap::new(),
@@ -1424,8 +1421,8 @@ mod tests {
             .map(|entry| u64::from(entry.count))
             .sum();
         assert_eq!(
-            total, 1,
-            "currently pins the tie loss: the second same-instant +1 is dropped on replay"
+            total, 2,
+            "both same-instant increments land: the mint bump separates the row clocks"
         );
     }
 
