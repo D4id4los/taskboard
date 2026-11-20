@@ -54,8 +54,6 @@ export component ActionChip inherits Rectangle {
     in property <string> stop-description: "";
     in property <TextRole> value-role: Typography.caption;
     in property <TextHorizontalAlignment> text-halign: left;
-    in property <[string]> hint-keys: [];
-    in property <bool> enabled: true;
     // The bordered posture (the PresetChip): a persistent ring-width
     // border that lifts to the focus ring on hover/focus.
     in property <bool> bordered: false;
@@ -109,7 +107,7 @@ export component ActionChip inherits Rectangle {
     // The host's grab seam (the mount-side focus pushes, the
     // IconButton convention): each posture's scope takes it — a
     // disabled/inactive scope ignores the call.
-    public function grab() {
+    function grab() {
         if (root.use-stop) {
             stop-host.focus();
         } else {
@@ -124,7 +122,7 @@ export component ActionChip inherits Rectangle {
     stop-host := ActivationStop {
         width: 100%;
         height: 100%;
-        enabled: root.enabled && root.keyboard-activatable && root.use-stop;
+        enabled: root.keyboard-activatable && root.use-stop;
         stop-label: root.a11y-label == "" ? root.text : root.a11y-label;
         stop-description: root.stop-description;
         stop-id: root.stop-id;
@@ -134,7 +132,7 @@ export component ActionChip inherits Rectangle {
         width: 100%;
         height: 100%;
         focus-on-tab-navigation: true;
-        enabled: root.enabled && root.keyboard-activatable && !root.use-stop;
+        enabled: root.keyboard-activatable && !root.use-stop;
         accessible-role: AccessibleRole.button;
         accessible-label: root.a11y-label == "" ? root.text : root.a11y-label;
         accessible-action-default => { root.invoked(); }
@@ -155,13 +153,13 @@ export component ActionChip inherits Rectangle {
     // The pointer half, after the scopes (hit-tested first). The
     // passive posture disables it entirely (no touch).
     touch := TouchArea {
-        enabled: root.interactive && root.enabled;
+        enabled: root.interactive;
         changed has-hover => {
             if (self.has-hover && root.description != "") {
                 TooltipState.hover(
                     root.a11y-label == "" ? root.text : root.a11y-label,
                     root.description,
-                    root.hint-keys,
+                    [],
                     self.absolute-position.x,
                     self.absolute-position.y,
                     self.width,

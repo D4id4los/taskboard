@@ -30,7 +30,12 @@ at UX-plan level — never a chunk-local surprise.
   scope-first/touch-after dodge baked in one copy — the add-column
   mount *gains* it (its hand-copy had the scope overlay on top, so
   the first physical click ate into a focus gain; probed
-  first-click invocation at both orientations); the nine row-height
+  first-click invocation at both orientations; the stage-3 sweep
+  also converts the board's compact-leg ghost
+  (=board-layout.slint::add-task-compact= — the inventory's third
+  bespoke mount, mis-listed in the survey's plus-opener stay set as
+  an =IconButton=) onto the same row grammar, geometry and a11y
+  byte-identical; the nine row-height
   plus =IconButton= openers stay =IconButton= (the Q-E ruling);
   =ui/widgets/status-notice.slint= (the F-9 single-status-line
   family, =NoticeShape= inline/boxed) absorbs

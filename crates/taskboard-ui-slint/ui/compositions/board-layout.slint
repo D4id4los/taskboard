@@ -17,7 +17,6 @@ import { TextField } from "../widgets/text-field.slint";
 import { Badge } from "../widgets/badge.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TextButton, TextButtonEmphasis } from "../widgets/text-button.slint";
-import { PlusGlyph } from "../widgets/plus-glyph.slint";
 import { ConfirmStrip } from "../widgets/confirm-strip.slint";
 import { GhostOpener, GhostOrientation } from "../widgets/ghost-opener.slint";
 import { BoardBar, BoardBarModel } from "board-bar.slint";
@@ -982,41 +981,18 @@ export component BoardLayout inherits Rectangle {
                 }
 
                 // The compact leg's ghost (r2 D8): addresses the
-                // effective-selected stack.
-                add-task-compact := Rectangle {
-                    min-height: Theme.space-6 + 2 * Theme.space-1;
-                    max-height: Theme.space-6 + 2 * Theme.space-1;
-                    border-radius: Theme.radius-small;
-                    background: add-task-hit-compact.has-hover ? Theme.surface-hover : transparent;
-                    add-task-focus-compact := FocusScope {
-                        width: 100%;
-                        height: 100%;
-                        focus-on-tab-navigation: true;
-                        accessible-role: AccessibleRole.button;
-                        accessible-label: "Add task";
-                        accessible-action-default => root.add-task-activated(root.effective-selected());
-                    }
-                    add-task-hit-compact := TouchArea {
-                        clicked => root.add-task-activated(root.effective-selected());
-                        // The ghost tooltip (r3 D3), compact leg — the
-                        // regular ghost's wiring verbatim.
-                        changed has-hover => {
-                            if (self.has-hover) {
-                                TooltipState.hover("Add task",
-                                    "Creates a task in this stack.",
-                                    root.task-create-hint,
-                                    self.absolute-position.x, self.absolute-position.y,
-                                    self.width, self.height);
-                            } else {
-                                TooltipState.unhover();
-                            }
-                        }
-                    }
-                    PlusGlyph {
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                        glyph-color: add-task-hit-compact.has-hover ? Theme.text-primary : Theme.text-secondary;
-                    }
+                // effective-selected stack. The same `GhostOpener`
+                // row grammar as the regular ghost (the inventory's
+                // third bespoke mount — the survey's "compact leg"
+                // entry in the plus-opener stay list was this shape's
+                // mis-reading; the stage-3 sweep converts it onto the
+                // widget, geometry and a11y byte-identical).
+                add-task-compact := GhostOpener {
+                    orientation: GhostOrientation.row;
+                    label: "Add task";
+                    description: "Creates a task in this stack.";
+                    hint-keys: root.task-create-hint;
+                    invoked => { root.add-task-activated(root.effective-selected()); }
                 }
         }
     }
