@@ -2670,10 +2670,11 @@ mod connector_module_tests {
         config.validate().expect("config valid");
         // A resolved nextcloud backend synthesizes the real module, whose
         // credential load refuses: the loop maps the error and unwinds.
-        let err = bootstrap(
+        let err = bootstrap_in(
             config,
             refusing_store(),
             Arc::new(crate::notifications::LogSink),
+            BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect_err("credential failure surfaces");
