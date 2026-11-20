@@ -9,6 +9,25 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
+- *Status*: =round 9 W3 button primitives landed (2026-11-20, chunk
+  13, branch =refactor/ui-button-primitives=)= — the O-6
+  centralization: =ui/widgets/text-button.slint= (the F-1 button
+  grammar's single copy) absorbs the four bespoke text-button copies
+  (`board-layout.slint::CtaButton` deleted,
+  `timer-setter.slint::CtaButtonArea` deleted,
+  `settings-view.slint::SettingsButton` deleted,
+  `review-walk-overlay.slint::VerbButton` re-expressed over the
+  primitive) and the modal host's `DialogButton` becomes the thin
+  model adapter rendering `ui/widgets::TextButton`; the sanctioned
+  B-1 gain rides the verb row (tab stop + Return/Space, walk-probe
+  gated). `ui/widgets/check-box.slint` absorbs both done-box copies
+  (`task-view.slint::done-box` incl. its verbatim ActivationStop
+  re-statement — retired by the primitive's native checkbox role —
+  and `task-card.slint::done-box`, =focusable: false=);
+  `ui/widgets/toggle-strip.slint` absorbs the recur editor's seven
+  weekday check-glyph IconButtons. Goldens and journeys re-passed
+  unchanged (zero golden delta, no re-blessing); closes #950/#953 at
+  merge. Previously:
 - *Status*: =round 9 W1 in flight (2026-11-18)= — the widget
   framework base landed on its branch
   (=feat/ui-widget-framework-base=): =ui/widgets/modal-dialog-host.slint=
