@@ -44,8 +44,13 @@ fn settle(window: &MenuShellProbe) {
 /// labeled-value-row probe's recorded dispatch pattern): the mock
 /// platform delivers the click on the tick between press and
 /// release.
-fn click_at(window: &MenuShellProbe, x: f32, y: f32) {
-    use slint::platform::{PointerEventButton, WindowEvent};
+fn dispatch_press_at(
+    window: &MenuShellProbe,
+    x: f32,
+    y: f32,
+    button: slint::platform::PointerEventButton,
+) {
+    use slint::platform::WindowEvent;
     let p = slint::LogicalPosition::new(x, y);
     window
         .window()
@@ -53,13 +58,18 @@ fn click_at(window: &MenuShellProbe, x: f32, y: f32) {
     advance_probe_clock(1);
     window.window().dispatch_event(WindowEvent::PointerPressed {
         position: p,
-        button: PointerEventButton::Left,
+        button,
     });
     advance_probe_clock(1);
+}
+
+fn click_at(window: &MenuShellProbe, x: f32, y: f32) {
+    use slint::platform::PointerEventButton;
+    dispatch_press_at(window, x, y, PointerEventButton::Left);
     window
         .window()
-        .dispatch_event(WindowEvent::PointerReleased {
-            position: p,
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(x, y),
             button: PointerEventButton::Left,
         });
     advance_probe_clock(1);
@@ -68,17 +78,7 @@ fn click_at(window: &MenuShellProbe, x: f32, y: f32) {
 /// Dispatches a right-button press (the context seam's down half —
 /// the row's `pointer-event` arm acts on the press, not the release).
 fn right_press_at(window: &MenuShellProbe, x: f32, y: f32) {
-    use slint::platform::{PointerEventButton, WindowEvent};
-    let p = slint::LogicalPosition::new(x, y);
-    window
-        .window()
-        .dispatch_event(WindowEvent::PointerMoved { position: p });
-    advance_probe_clock(1);
-    window.window().dispatch_event(WindowEvent::PointerPressed {
-        position: p,
-        button: PointerEventButton::Right,
-    });
-    advance_probe_clock(1);
+    dispatch_press_at(window, x, y, slint::platform::PointerEventButton::Right);
 }
 
 // ---- G-1: MenuRow anatomy -------------------------------------------
