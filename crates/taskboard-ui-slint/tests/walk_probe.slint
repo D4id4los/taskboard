@@ -13,7 +13,10 @@ import { ListView } from "../ui/widgets/listview.slint";
 // The B-1 probe's mount (round-9 W3): the walk overlay's real verb
 // button — the only F-1 copy without a keyboard, under migration to
 // the TextButton primitive (the sanctioned behavior change B-1).
-import { VerbButton } from "../ui/views/review-walk-overlay.slint";
+import { VerbButton, ReviewWalkOverlay, ReviewWalkModel } from "../ui/views/review-walk-overlay.slint";
+// The #1053 probe mount: the walk host arm's shape — the
+// ModalDialogHost carrying the ReviewWalkOverlay body.
+import { ModalDialogHost, DialogKind } from "../ui/widgets/modal-dialog-host.slint";
 
 export global WalkProbeFacts {
     in-out property <int> first-gained: 0;
@@ -227,4 +230,33 @@ export component WalkProbeWindow inherits Window {
     public function focus-b1-first() {
         b1-first.focus();
     }
+
+    // ---- The #1053 mount: the walk host arm's shape ------------------
+    // ModalDialogHost + ReviewWalkOverlay mounted with the app-window
+    // walk arm's composed walk-stops expression (the body's own stop
+    // + every row + the D-5 button row). The Rust test pushes a
+    // ReviewWalkModel and reads the armed mask extent through the
+    // host's seam — the mount-side pin for the arithmetic.
+    in-out property <bool> walk-open: false;
+    in-out property <ReviewWalkModel> walk-model;
+    walk-host := ModalDialogHost {
+        x: 0;
+        y: Theme.space-15 * 3;
+        width: Theme.space-15 * 2;
+        height: Theme.space-15 * 2;
+        open: root.walk-open;
+        title: "";
+        kind: DialogKind.confirm;
+        viewport-floor: self.height;
+        // The app-window walk arm's composed expression (#1053): the
+        // body's own stop, every row, and the button row (the host
+        // mounts the buttons as `TextButton` tab stops).
+        walk-stops: 1 + root.walk-model.rows.length
+            + root.walk-model.buttons.length;
+        buttons: root.walk-model.buttons;
+        ReviewWalkOverlay {
+            model: root.walk-model;
+        }
+    }
+    out property <int> walk-mask-extent: walk-host.mask-extent;
 }

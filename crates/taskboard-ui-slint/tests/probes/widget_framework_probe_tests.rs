@@ -398,6 +398,38 @@ fn g10_the_mask_arms_on_open_and_clamps_the_push() {
 /// G-10 (walk half): Tab from the body stop walks into the button
 /// row — the dialog's own stops hold the walk before any mask
 /// arming.
+/// G-10 (#1053, button-row half): the walk mount's declared extent
+/// counts the D-5 button row — the app-window walk arm composes the
+/// body's own stop + every row + the buttons (the host mounts them
+/// as `TextButton` tab stops); the host arms the mask with the
+/// composed extent and the consumption edge clamps the adapter's
+/// push into it.
+#[test]
+fn g10_the_walk_extent_counts_the_button_row() {
+    run_probe(|window| {
+        // The composed expression the walk host arm pushes: the
+        // body's own stop + one row + the fixture's two buttons.
+        window.set_probe_walk_stops(1 + 1 + 2);
+        open_modal(window);
+        assert_eq!(
+            window.get_modal_mask_extent(),
+            4,
+            "the composed extent arms the mask"
+        );
+        push_focus(window, true, 99);
+        assert_eq!(
+            window.get_modal_mask_cursor(),
+            3,
+            "the push clamps at the last declared stop (the button row)"
+        );
+        push_focus(window, false, -1);
+        close_modal(window);
+    });
+}
+
+/// G-10 (walk half): Tab from the body stop walks into the button
+/// row — the dialog's own stops hold the walk before any mask
+/// arming.
 #[test]
 fn g10_tab_from_the_body_stop_reaches_the_buttons() {
     run_probe(|window| {

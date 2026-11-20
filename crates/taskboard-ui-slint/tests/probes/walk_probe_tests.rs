@@ -223,3 +223,54 @@ fn b1_walk_tab_reaches_the_verb_row_and_return_activates() {
         );
     });
 }
+
+// ---- #1053: the walk host arm's declared extent --------------------
+// The app-window walk arm composes the D-W1-4 extent as the body's
+// own stop + every row + the D-5 button row (the host mounts the
+// buttons as `TextButton` tab stops). The probe mirrors the mount
+// shape — host + overlay + the composed expression — and reads the
+// armed mask extent through the host's seam after a pushed model.
+
+/// The walk mount's armed extent reflects a pushed `walk-model` with
+/// rows AND buttons: the extent is `1 + rows + buttons`, not the
+/// rows-only under-declaration (#1053's bug shape).
+#[test]
+fn w4_walk_arm_extent_counts_rows_and_buttons() {
+    run_probe(|window| {
+        let mut model = window.get_walk_model();
+        model.rows = std::rc::Rc::new(slint::VecModel::from(vec![
+            WalkRowModel {
+                title: "row one".into(),
+                emphasis: false,
+            },
+            WalkRowModel {
+                title: "row two".into(),
+                emphasis: true,
+            },
+        ]))
+        .into();
+        model.buttons = std::rc::Rc::new(slint::VecModel::from(vec![
+            DialogButtonModel {
+                label: "Prev".into(),
+                role: DialogButtonRole::Dismiss,
+                enabled: true,
+                autofocus: false,
+            },
+            DialogButtonModel {
+                label: "Next".into(),
+                role: DialogButtonRole::Accept,
+                enabled: true,
+                autofocus: false,
+            },
+        ]))
+        .into();
+        window.set_walk_model(model);
+        window.set_walk_open(true);
+        advance_probe_clock(0);
+        assert_eq!(
+            window.get_walk_mask_extent(),
+            1 + 2 + 2,
+            "the armed extent is the composed body + rows + buttons count"
+        );
+    });
+}

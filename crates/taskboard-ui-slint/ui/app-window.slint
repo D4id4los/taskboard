@@ -1592,7 +1592,15 @@ export component AppWindow inherits Window {
             title: root.walk-model.header;
             kind: DialogKind.confirm;
             body-preferred-width: 560px * Theme.base-scale;
-            walk-stops: 1 + root.walk-model.rows.length;
+            // The declared extent (#1053): the body's own stop (the
+            // D-W1-4 declared body stop; the walk's row list is the
+            // body's content and the cursor row's controls are masked
+            // by the walk), every row, and the D-5 button row — the
+            // host mounts the buttons as `TextButton` tab stops, so an
+            // extent without them under-declares and the adapter's
+            // cursor can walk past the last real stop.
+            walk-stops: 1 + root.walk-model.rows.length
+                + root.walk-model.buttons.length;
             viewport-floor: status.y;
             // The stage's button row (D-5): the pass derives the
             // model + parallel intent codes; without this binding the
