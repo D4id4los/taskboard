@@ -84,7 +84,10 @@ export component MenuRow inherits Rectangle {
     // consumers' arms).
     out property <bool> hover-now: row-touch.has-hover;
 
-    height: Theme.space-6;
+    // The height is the consumer's (D-12's byte-identity bar): the
+    // flyout rows pin one space-6 pitch (today's explicit row
+    // height), the action menu's rows stay content-sized (today's
+    // wrapper preferred — the primitive fills its wrapper).
     background: root.highlighted ? Theme.surface-hover : transparent;
 
     // The focus/overlay pair (the action menu row's exact shape): the

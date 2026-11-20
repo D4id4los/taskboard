@@ -198,14 +198,17 @@ const ITEM_WALK_HOSTS: &[ItemWalkHost] = &[
         touches: &["DatePicker::touch"],
         walk_test: "date_picker_item_walk_visits_every_day",
     },
+    // Both rows render the MenuRow primitive now (round-9 W6's
+    // absorption) — the delegate ids stay at the flyouts (the
+    // instances), the touch seams re-point to the landed row id.
     ItemWalkHost {
         delegate: "DropdownFlyout::flyout-row",
-        touches: &["DropdownFlyout::row-touch"],
+        touches: &["MenuRow::row-touch"],
         walk_test: "dropdown_item_walk_visits_every_row",
     },
     ItemWalkHost {
         delegate: "QuickListFlyout::flyout-row",
-        touches: &["QuickListFlyout::pick"],
+        touches: &["MenuRow::row-touch"],
         walk_test: "quick_list_item_walk_visits_every_row",
     },
 ];

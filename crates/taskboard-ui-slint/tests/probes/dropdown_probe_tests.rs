@@ -279,14 +279,16 @@ fn the_de_sited_mount_routes_each_consumer_to_its_own_seam() {
 #[test]
 fn the_flyout_selected_row_renders_the_check_glyph() {
     run_probe(|window| {
-        // Closed at mount: the flyout is not mounted, no glyphs.
+        // Closed at mount: the flyout is not mounted, no glyphs. The
+        // glyph lives on the MenuRow primitive now (round-9 W6's
+        // absorption) — the seam re-points to the landed id.
         assert!(
-            find_all_by_id_on(window, "DropdownFlyout::check-glyph").is_empty(),
+            find_all_by_id_on(window, "MenuRow::check-glyph").is_empty(),
             "no glyph while closed"
         );
         let (x, y) = field_center(window);
         click(window, x, y);
-        let glyphs = find_all_by_id_on(window, "DropdownFlyout::check-glyph");
+        let glyphs = find_all_by_id_on(window, "MenuRow::check-glyph");
         assert_eq!(glyphs.len(), 1, "exactly the one selected row's glyph");
     });
 }

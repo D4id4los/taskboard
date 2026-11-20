@@ -241,13 +241,13 @@ fn the_button_row_carries_the_accessible_label_and_default_action() {
     });
 }
 
-/// The row's height law: one space-6 row pitch (the flyouts' pin).
+/// The flyout row's height law: one space-6 pitch (the consumer's
+/// pin — the action menu's rows stay content-sized).
 #[test]
-fn the_row_is_one_space_six_pitch() {
+fn the_flyout_row_is_one_space_six_pitch() {
     run_probe(|window| {
         settle(window);
         assert_eq!(window.get_list_row_height(), window.get_theme_space_6());
-        assert_eq!(window.get_plain_row_height(), window.get_theme_space_6());
     });
 }
 

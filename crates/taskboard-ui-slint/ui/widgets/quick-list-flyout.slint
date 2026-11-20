@@ -3,17 +3,26 @@
 // TimeField ladder's new home — the ladder moved verbatim from the
 // old in-widget flyout scope (whose displaced underlay carried the
 // F9 coordinate-space defect). Mounted by the app window from
-// `TimeFieldFacts` with the date-picker overlay's clamp/flip grammar;
-// the highlight/seek are panel-local, re-anchored from `nearest-row`
-// on mount. Editing keys are *forwarded* to the host field through
-// `typed` (the append shim — the filter's digit-prefix use), keeping
-// the buffer ownership in the widget.
+// `TimeFieldFacts`; the panel rides the `AnchoredOverlayHost`, which
+// owns the placement. The highlight/seek are panel-local,
+// re-anchored from `nearest-row` on mount. Editing keys are
+// *forwarded* to the host field through `typed` (the append shim —
+// the filter's digit-prefix use), keeping the buffer ownership in
+// the widget.
+//
+// Round-9 W6 (#954): the panel chrome is the MenuShell's and the
+// rows are MenuRows (D-4) — the mono time labels ride `text-role`,
+// the ladder highlight arm drives `highlighted` (hover adds no
+// paint: today's ladder-only rows). The FocusScope ladder, the
+// `typed` forwarding, and the TimeFieldFacts mirroring stay.
 
-import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { Theme, Typography } from "../theme.slint";
 import { TimeSlotRow, TimeFieldFacts } from "time-field.slint";
 import { ListView } from "listview.slint";
+import { MenuShell } from "menu-shell.slint";
+import { MenuRow } from "menu-row.slint";
 
-export component QuickListFlyout inherits Rectangle {
+export component QuickListFlyout inherits MenuShell {
     // The filtered quick-list rows, pushed by the adapter (the mount
     // binds the same model the field renders).
     in property <[TimeSlotRow]> rows;
@@ -29,19 +38,9 @@ export component QuickListFlyout inherits Rectangle {
     callback picked(int);
     callback typed(string);
 
-    height: min(root.rows.length * Theme.space-6, Theme.space-6 * 6);
-    background: Theme.surface-raised;
-    border-radius: Theme.radius-small;
-    border-width: Theme.focus-ring-width;
-    border-color: Semantic.focus-ring;
-    drop-shadow-blur: Theme.space-2;
-    drop-shadow-color: Theme.surface-hover;
-    clip: true;
-
-    // The realized-geometry mirror lives at the mount site now (the
-    // overlay migration, M3): the panel rides the AnchoredOverlayHost,
-    // so the window-space rect is the host's — the panel's own read
-    // would be the host-local zero.
+    row-count: root.rows.length;
+    cap-rows: true;
+    corner-radius: Theme.radius-small;
 
     // The highlight (the cursor-ring visual language) and the seek
     // nonce: panel-local (the ladder lives here now), re-anchored
@@ -115,23 +114,22 @@ export component QuickListFlyout inherits Rectangle {
             width: 100%;
             height: 100%;
 
-            for row[row-index] in root.rows: flyout-row := Rectangle {
+            for row[row-index] in root.rows: flyout-row := MenuRow {
+                // One space-6 pitch (the consumer's pin).
                 height: Theme.space-6;
-                background: row-index == root.highlight
-                    ? Theme.surface-hover : transparent;
-                pick := TouchArea {
-                    clicked => {
-                        root.picked(row.minutes);
-                        // The window-side close: the fact write lands
-                        // as the widget's guard close.
-                        TimeFieldFacts.open = false;
-                    }
-                }
-                row-label := RoleText {
-                    role: Typography.mono;
-                    x: Theme.space-2;
-                    y: (parent.height - self.preferred-height) / 2;
-                    text: row.label;
+                label: row.label;
+                // The mono time labels (the quick-list's grammar).
+                text-role: Typography.mono;
+                // The ladder highlight arm only — hover adds no
+                // paint (today's rows; the slot collapses entirely,
+                // the single label sits at the padding).
+                highlighted: row-index == root.highlight;
+                spacing: Theme.space-1 * 0;
+                invoked => {
+                    root.picked(row.minutes);
+                    // The window-side close: the fact write lands
+                    // as the widget's guard close.
+                    TimeFieldFacts.open = false;
                 }
             }
         }
