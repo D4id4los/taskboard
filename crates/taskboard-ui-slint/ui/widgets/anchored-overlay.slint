@@ -76,6 +76,21 @@ export enum OverlayPlacement {
     above,
 }
 
+// The R-6 menu-width law (#978, the R-6 tokens meeting the flyout
+// consumers): a menu flyout is at least the readable-row floor
+// (`Theme.menu-min-width`), never wider than the viewport's usable
+// band, and otherwise as wide as its preferred (the anchor). One
+// place states the formula; the consumer mounts and the probe's
+// verbatim copies call it instead of re-deriving it. The
+// `menu-max-width` cap is deliberately unused here — it belongs to
+// the future MenuShell family (the inventory report §4, row 10).
+export global OverlayMenuWidth {
+    public pure function menu-width(preferred: length, viewport: length) -> length {
+        return min(viewport - 2 * Theme.space-2,
+                   max(preferred, Theme.menu-min-width));
+    }
+}
+
 export component AnchoredOverlay {
     // The anchor rect in window coordinates (the opener's realized
     // geometry, mirrored by the caller).

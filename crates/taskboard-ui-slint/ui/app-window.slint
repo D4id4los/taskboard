@@ -27,7 +27,7 @@ import { TrackPanelFacts, TrackPanelWalkFacts } from "track-panel-facts.slint";
 import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
 import { ModalDialogHost, DialogKind, DialogButtonModel, DialogButtonRole } from "widgets/modal-dialog-host.slint";
-import { AnchoredOverlayHost, OverlayPlacement } from "widgets/anchored-overlay.slint";
+import { AnchoredOverlayHost, OverlayPlacement, OverlayMenuWidth } from "widgets/anchored-overlay.slint";
 import { HabitCardModel } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
@@ -1172,10 +1172,12 @@ export component AppWindow inherits Window {
         anchor-height: DropdownFacts.anchor-height;
         viewport-width: root.width;
         viewport-floor: status.y;
-        // The anchor-width law preserved: the flyout is as wide as
-        // its closed field (the panel's explicit width below pins the
-        // layout child; the host's floor keeps the minimum).
-        panel-preferred-width: DropdownFacts.anchor-width;
+        // The R-6 menu-width law (#978): the flyout is at least the
+        // readable-row floor, clamped to the viewport band, and
+        // otherwise as wide as its closed field (the panel's explicit
+        // width below pins the layout child; the host's floor keeps
+        // the minimum).
+        panel-preferred-width: OverlayMenuWidth.menu-width(DropdownFacts.anchor-width, root.width);
         walk-stops: 1;
         // The dismissal layer's routing (D-6): the priority consumers
         // own their close (the adapter's origin restore); the legacy
@@ -1205,7 +1207,7 @@ export component AppWindow inherits Window {
         }
         DropdownFlyout {
             rows: DropdownFacts.rows;
-            width: DropdownFacts.anchor-width;
+            width: OverlayMenuWidth.menu-width(DropdownFacts.anchor-width, root.width);
             row-activated(index) => {
                 if (DropdownFacts.consumer == DropdownConsumer.settings-remote) {
                     root.settings-remote-bind-picked(SettingsBoardFacts.active-item, index);
@@ -1320,7 +1322,7 @@ export component AppWindow inherits Window {
         anchor-height: TimeFieldFacts.anchor-height;
         viewport-width: root.width;
         viewport-floor: status.y;
-        panel-preferred-width: TimeFieldFacts.anchor-width;
+        panel-preferred-width: OverlayMenuWidth.menu-width(TimeFieldFacts.anchor-width, root.width);
         walk-stops: 1;
         dismissed => {
             TimeFieldFacts.open = false;

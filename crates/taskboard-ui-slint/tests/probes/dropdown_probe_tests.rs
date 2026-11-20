@@ -338,3 +338,25 @@ fn the_flyout_caps_at_six_rows() {
         );
     });
 }
+
+/// The #978 floor leg: an anchor narrower than the readable-row floor
+/// (`Theme.menu-min-width`) still realizes a panel at the floor — the
+/// R-6 menu-width law's minimum, stated as a floor (no cap pinned).
+#[test]
+fn the_flyout_panel_holds_the_readable_row_floor_on_a_narrow_anchor() {
+    run_probe(|window| {
+        let facts = window.global::<DropdownFacts>();
+        facts.set_anchor_x(20.0);
+        facts.set_anchor_y(20.0);
+        facts.set_anchor_height(28.0);
+        // The narrow anchor: 120 logical px < the 200·scale floor.
+        facts.set_anchor_width(120.0);
+        facts.set_open(true);
+        advance_probe_clock(0);
+        let panel_w = window.get_flyout_panel_w();
+        assert!(
+            panel_w >= 200.0,
+            "the panel meets the readable-row floor: {panel_w}"
+        );
+    });
+}

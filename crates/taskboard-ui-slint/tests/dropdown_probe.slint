@@ -13,8 +13,11 @@
 
 import { Theme } from "../ui/theme.slint";
 import { Dropdown, DropdownConsumer, DropdownFacts, DropdownRow, DropdownIndicator, DropdownTone } from "../ui/widgets/dropdown.slint";
+// The facts global re-exported for the Rust-side `global::<>` seam
+// (the overlay-migration probe's idiom).
+export { DropdownFacts }
 import { DropdownFlyout } from "../ui/widgets/dropdown-flyout.slint";
-import { AnchoredOverlayHost } from "../ui/widgets/anchored-overlay.slint";
+import { AnchoredOverlayHost, OverlayMenuWidth } from "../ui/widgets/anchored-overlay.slint";
 import { IconKind } from "../ui/widgets/icon.slint";
 
 export global DropdownProbe {
@@ -136,6 +139,8 @@ export component DropdownProbeWindow inherits Window {
     in-out property <bool> nine-open: dd9.open;
     in-out property <bool> nine-field-focused: dd9.field-focused;
     in-out property <length> nine-flyout-h: dd9.flyout-height;
+    // The realized flyout panel width (the #978 floor leg's seam).
+    in-out property <length> flyout-panel-w: DropdownFacts.panel-width;
     // The Tab walk's continuation stop (declared after the dropdown).
     in-out property <bool> after-focus: after.has-focus;
 
@@ -189,7 +194,7 @@ export component DropdownProbeWindow inherits Window {
         anchor-height: DropdownFacts.anchor-height;
         viewport-width: root.width;
         viewport-floor: root.height;
-        panel-preferred-width: DropdownFacts.anchor-width;
+        panel-preferred-width: OverlayMenuWidth.menu-width(DropdownFacts.anchor-width, root.width);
         walk-stops: 1;
         // The probe's consumers have no dismissal seam: the underlay
         // closes through the fact write (the widget's external-close
@@ -199,13 +204,18 @@ export component DropdownProbeWindow inherits Window {
         }
         changed panel-x => { DropdownFacts.panel-x = self.panel-x; }
         changed panel-y => { DropdownFacts.panel-y = self.panel-y; }
+        changed panel-width => { DropdownFacts.panel-width = self.panel-width; }
         init => {
+            // The mount-time seed (a `changed` hook alone misses the
+            // initial placement — the app window's idiom, moved to
+            // the mount with the host).
             DropdownFacts.panel-x = self.panel-x;
             DropdownFacts.panel-y = self.panel-y;
+            DropdownFacts.panel-width = self.panel-width;
         }
         DropdownFlyout {
             rows: DropdownFacts.rows;
-            width: DropdownFacts.anchor-width;
+            width: OverlayMenuWidth.menu-width(DropdownFacts.anchor-width, root.width);
             row-activated(index) => {
                 if (DropdownFacts.consumer == DropdownConsumer.settings-remote) {
                     DropdownProbe.reg-activated-a += 1;
