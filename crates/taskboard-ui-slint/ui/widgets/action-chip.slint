@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The action-chip primitive (L1, round-9 W5 — the widget inventory's
+// F-4 family, one component): the small interactive/passive pill —
+// the preset chip's ActivationStop grammar (#665's FocusScope +
+// TouchArea order, the F8 first-click law), the label chip's
+// swatch + remove affordance, the paused chip's passive posture, and
+// the status bar's chip (D-1: the chip's own badge-typography text
+// replaces the Badge-inside-Rectangle composite). Text paints from
+// the theme's canonical ladder (`Semantic.tone-color`, F-3) with the
+// neutral hover lift the PresetChip grammar carries; per-site
+// keyboard grammar is preserved exactly (no new keyboard paths): the
+// internal ActivationStop only arms for the `use-stop` posture (the
+// PresetChip's walk-facts publish), the raw filtered Return/Space
+// scope only arms for the plain-scope posture (the timers chip's
+// #665 grammar, no facts publish), and `keyboard-activatable: false`
+// renders the a11y TouchArea-only posture (the inbox chip — no tab
+// stop existed). No chip grammar outside `ui/widgets/` (the census's
+// anti-ad-hoc law).
+
+import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
+import { ActivationStop } from "activation-stop.slint";
+import { IconButton, IconKind } from "icon-button.slint";
+import { TooltipState } from "tooltip.slint";
+
+export component ActionChip inherits Rectangle {
+    // The painted text (also the default a11y/tooltip label).
+    in property <string> text;
+    in property <Tone> tone: Tone.neutral;
+    // The a11y label override (the timers chip's "Nearest timer");
+    // empty = the text.
+    in property <string> a11y-label: "";
+    // The tooltip/a11y description; empty = no tooltip arm (the
+    // sites without one stay without).
+    in property <string> description: "";
+    // The optional leading swatch square (the label chip's echo).
+    in property <bool> has-swatch: false;
+    in property <color> swatch;
+    // The trailing remove affordance (the label chip's unassign);
+    // its label is the caller's string (a11y byte-identity).
+    in property <bool> removable: false;
+    in property <string> remove-label: "";
+    in property <string> remove-description: "";
+    // false renders the passive posture (the paused chip): no scope,
+    // no touch, invoked() unreachable.
+    in property <bool> interactive: true;
+    // false renders the TouchArea-only a11y posture (the inbox chip's
+    // no-tab-stop grammar).
+    in property <bool> keyboard-activatable: true;
+    // true = the ActivationStop (the PresetChip's walk-facts
+    // publish); false = the raw filtered Return/Space scope (the
+    // timers chip's grammar, no facts publish).
+    in property <bool> use-stop: true;
+    in property <int> stop-id: 0;
+    in property <string> stop-description: "";
+    in property <TextRole> value-role: Typography.caption;
+    in property <TextHorizontalAlignment> text-halign: left;
+    in property <[string]> hint-keys: [];
+    in property <bool> enabled: true;
+    // The bordered posture (the PresetChip): a persistent ring-width
+    // border that lifts to the focus ring on hover/focus.
+    in property <bool> bordered: false;
+    // Geometry customizations (the §2.2 identity set: PresetChip's
+    // min pin, the label-chip padding, the passive surface).
+    in property <length> min-height: 0;
+    in property <length> min-width: 0;
+    in property <length> pad-left: Theme.space-2;
+    in property <length> pad-right: Theme.space-1;
+    in property <color> background: transparent;
+    callback invoked();
+    callback removed();
+
+    border-radius: Theme.radius-small;
+    border-width: root.bordered
+        ? Theme.focus-ring-width
+        : (chip-has-focus ? Theme.focus-ring-width : 0);
+    border-color: root.bordered
+        ? (chip-has-focus || touch.has-hover
+            ? Semantic.focus-ring
+            : Theme.text-secondary)
+        : Semantic.focus-ring;
+    background: root.background;
+    min-height: root.min-height;
+    min-width: root.min-width;
+
+    // The observation seams (the probe's catalogue).
+    out property <length> swatch-x-out: swatch.swatch-x;
+    out property <length> swatch-width-out: swatch.swatch-width;
+    out property <bool> focus-out: chip-has-focus;
+    out property <color> text-color-out: text-paint();
+    private property <bool> chip-has-focus: stop-host.has-focus || raw-scope.has-focus;
+
+    pure function text-paint() -> color {
+        // The neutral hover lift (the PresetChip grammar): the
+        // background alone carries the cue for the semantic tones.
+        root.interactive && root.tone == Tone.neutral && touch.has-hover
+            ? Theme.text-primary
+            : Semantic.tone-color(root.tone)
+    }
+
+    // The host's grab seam (the mount-side focus pushes, the
+    // IconButton convention): each posture's scope takes it — a
+    // disabled/inactive scope ignores the call.
+    public function grab() {
+        if (root.use-stop) {
+            stop-host.focus();
+        } else {
+            raw-scope.focus();
+        }
+    }
+
+    // The keyboard halves: exactly one arms per posture (the other
+    // renders disabled, so the tab traversal and the focus calls
+    // skip it — no new keyboard paths). Declared FIRST, the touch
+    // after: the TouchArea hit-tests first (the F8 first-click law).
+    stop-host := ActivationStop {
+        width: 100%;
+        height: 100%;
+        enabled: root.enabled && root.keyboard-activatable && root.use-stop;
+        stop-label: root.a11y-label == "" ? root.text : root.a11y-label;
+        stop-description: root.stop-description;
+        stop-id: root.stop-id;
+        activated => { root.invoked(); }
+    }
+    raw-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: true;
+        enabled: root.enabled && root.keyboard-activatable && !root.use-stop;
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.a11y-label == "" ? root.text : root.a11y-label;
+        accessible-action-default => { root.invoked(); }
+        key-pressed(event) => {
+            if ((event.text == Key.Return || event.text == " ")
+                    && !event.modifiers.control
+                    && !event.modifiers.alt
+                    && !event.modifiers.shift
+                    && !event.modifiers.meta) {
+                root.invoked();
+                accept
+            } else {
+                reject
+            }
+        }
+    }
+
+    // The pointer half, after the scopes (hit-tested first). The
+    // passive posture disables it entirely (no touch).
+    touch := TouchArea {
+        enabled: root.interactive && root.enabled;
+        changed has-hover => {
+            if (self.has-hover && root.description != "") {
+                TooltipState.hover(
+                    root.a11y-label == "" ? root.text : root.a11y-label,
+                    root.description,
+                    root.hint-keys,
+                    self.absolute-position.x,
+                    self.absolute-position.y,
+                    self.width,
+                    self.height,
+                );
+            } else if (!self.has-hover) {
+                TooltipState.unhover();
+            }
+        }
+        clicked => {
+            TooltipState.unhover();
+            root.grab();
+            root.invoked();
+        }
+    }
+
+    body := HorizontalLayout {
+        padding-left: root.pad-left;
+        padding-right: root.pad-right;
+        spacing: Theme.space-1;
+        // The swatch square (the label chip's echo): space-3, the
+        // hairline border, centred in the row.
+        swatch := VerticalLayout {
+            alignment: center;
+            property <length> swatch-x: swatch-square.x;
+            property <length> swatch-width: swatch-square.width;
+            swatch-square := Rectangle {
+                width: Theme.space-3;
+                height: Theme.space-3;
+                border-radius: Theme.radius-small;
+                background: root.has-swatch ? root.swatch : transparent;
+                border-width: root.has-swatch ? Theme.hairline-width : 0;
+                border-color: Theme.border;
+            }
+        }
+        text-host := RoleText {
+            role: root.value-role;
+            text-color: root.text-color-out;
+            text: root.text;
+            vertical-alignment: center;
+            horizontal-alignment: root.text-halign;
+        }
+        if (root.removable): IconButton {
+            icon: IconKind.remove;
+            tone: Tone.neutral;
+            label: root.remove-label;
+            description: root.remove-description;
+            clicked => { root.removed(); }
+        }
+    }
+}

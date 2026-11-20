@@ -18,6 +18,7 @@ import { Badge } from "../widgets/badge.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TextButton, TextButtonEmphasis } from "../widgets/text-button.slint";
 import { PlusGlyph } from "../widgets/plus-glyph.slint";
+import { ConfirmStrip } from "../widgets/confirm-strip.slint";
 import { BoardBar, BoardBarModel } from "board-bar.slint";
 import { DragState } from "../drag-state.slint";
 import { FocusScrollHint } from "../focus-scroll.slint";
@@ -488,28 +489,12 @@ export component BoardLayout inherits Rectangle {
                         // Confirm/Cancel — the recur editor's stop-strip
                         // shape. Nothing dispatches until Confirm (or
                         // the arm stroke's repeat — click ≡ key).
-                        if (column.delete-armed): HorizontalLayout {
-                            spacing: Theme.space-2;
-                            RoleText {
-                                role: Typography.caption;
-                                text-color: Semantic.danger;
-                                text: "Deletes this stack and every task in it.";
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-                            IconButton {
-                                icon: IconKind.check;
-                                tone: Tone.danger;
-                                label: "Confirm delete stack";
-                                clicked => root.stack-delete-confirmed(column-index);
-                            }
-                            IconButton {
-                                icon: IconKind.remove;
-                                tone: Tone.neutral;
-                                label: "Cancel delete stack";
-                                clicked => root.stack-delete-cancelled(column-index);
-                            }
+                        if (column.delete-armed): ConfirmStrip {
+                            message: "Deletes this stack and every task in it.";
+                            confirm-label: "Confirm delete stack";
+                            cancel-label: "Cancel delete stack";
+                            confirmed => root.stack-delete-confirmed(column-index);
+                            cancelled => root.stack-delete-cancelled(column-index);
                         }
 
                         VerticalLayout {

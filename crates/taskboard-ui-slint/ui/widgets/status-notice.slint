@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The status-notice primitive (L1, round-9 W5 — the widget inventory's
+// F-9 family, one component): the single-status-line shapes — the
+// bare inline caption (echoes, absence signals, field hints) and the
+// boxed error line (the settings form's raised box). The tone rides
+// the theme's canonical ladder (`Semantic.tone-color`, F-3); the
+// mount conditions and site geometry stay with the consumer (the
+// time-field's positioned hint keeps its `y`, the mount's `if` gate
+// is never widget-internal). No chip/header/strip grammar outside
+// `ui/widgets/` (the census's anti-ad-hoc law).
+
+import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
+
+// The notice's two paint shapes (the F-9 family's observed set): the
+// bare inline caption and the boxed error line. (The inventory's
+// "caption-row" variant paints identically to `inline` — a bare
+// caption in its own layout row — so the shape set stays at two; the
+// census records the row usage per mount.)
+export enum NoticeShape {
+    inline,
+    boxed,
+}
+
+export component StatusNotice inherits Rectangle {
+    in property <string> text;
+    // The tone ladder arm (danger default: the family's dominant
+    // grammar is the error mount; neutral = the secondary notice
+    // colour).
+    in property <Tone> tone: Tone.danger;
+    in property <NoticeShape> shape: NoticeShape.inline;
+    // inline: false elides (the resurrect notice's single line);
+    // true word-wraps (the kiosk absence captions). boxed always
+    // word-wraps (the ErrorLine grammar).
+    in property <bool> wrap: false;
+    // The boxed shape stretches inside the settings forms (R-3); the
+    // inline shape keeps its content width.
+    horizontal-stretch: root.shape == NoticeShape.boxed ? 1 : 0;
+    min-height: root.shape == NoticeShape.boxed
+        ? error-text.preferred-height + 2 * Theme.space-1
+        : error-text.preferred-height;
+    background: root.shape == NoticeShape.boxed ? Theme.surface-raised : transparent;
+    border-width: root.shape == NoticeShape.boxed ? Theme.focus-ring-width : 0;
+    border-color: Theme.border;
+    border-radius: Theme.radius-small;
+
+    accessible-role: AccessibleRole.text;
+    accessible-label: root.text;
+
+    // The observation seams (the probe's catalogue reads these; the
+    // consumer contract stays the properties above).
+    out property <color> text-color-out: error-text.text-color;
+    out property <bool> wrapping-out: error-text.wrap == TextWrap.word-wrap;
+    out property <bool> eliding-out: error-text.overflow == TextOverflow.elide
+        && error-text.wrap == TextWrap.no-wrap;
+    out property <length> text-x-out: error-text.x;
+    out property <length> text-y-out: error-text.y;
+    error-text := RoleText {
+        role: Typography.caption;
+        text: root.text;
+        text-color: Semantic.tone-color(root.tone);
+        wrap: root.shape == NoticeShape.boxed || root.wrap ? TextWrap.word-wrap : TextWrap.no-wrap;
+        // `TextOverflow`'s only member is `elide`; the wrapping
+        // shapes never hit it (word-wrap consumes the line budget).
+        overflow: TextOverflow.elide;
+        x: root.shape == NoticeShape.boxed ? Theme.space-2 : 0;
+        width: root.shape == NoticeShape.boxed
+            ? parent.width - 2 * Theme.space-2
+            : parent.width;
+        y: root.shape == NoticeShape.boxed
+            ? (parent.height - self.preferred-height) / 2
+            : 0;
+    }
+}

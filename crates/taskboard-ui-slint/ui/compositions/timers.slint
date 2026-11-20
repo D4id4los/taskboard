@@ -14,6 +14,8 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { TimerSetterFacts } from "../menu-facts.slint";
+import { StatusNotice } from "../widgets/status-notice.slint";
+import { ConfirmStrip } from "../widgets/confirm-strip.slint";
 
 // One active timer row: the label snapshot, the two-part countdown
 // (r4 D32: d/h/m/s remaining), the `@`-prefixed local fire instant,
@@ -193,11 +195,10 @@ export component TimersSection inherits Rectangle {
         }
         // The fence's honest absence signal (UX R-1 D-2, #790): a
         // static muted caption — display state only, no command.
-        if (root.absence-hint): RoleText {
-            role: Typography.caption;
-            text-color: Theme.text-secondary;
+        if (root.absence-hint): StatusNotice {
+            tone: Tone.neutral;
+            wrap: true;
             text: "Alarms ring on the interactive desktop surface — timers and break rules here stay display-only.";
-            wrap: word-wrap;
         }
 
         for row[row-index] in root.timers: HorizontalLayout {
@@ -322,28 +323,12 @@ export component TimersSection inherits Rectangle {
                 // deliveries, dismissals, and snooze links and is not
                 // undoable), Confirm/Cancel. Nothing dispatches until
                 // Confirm.
-                if (rule-row.armed): HorizontalLayout {
-                    spacing: Theme.space-2;
-                    RoleText {
-                        role: Typography.caption;
-                        text-color: Semantic.danger;
-                        text: "Deletes this rule and its recorded firings; this cannot be undone.";
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                        overflow: elide;
-                    }
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: Tone.danger;
-                        label: "Confirm remove rule";
-                        clicked => root.break-remove-confirmed(rule-index);
-                    }
-                    IconButton {
-                        icon: IconKind.remove;
-                        tone: Tone.neutral;
-                        label: "Cancel remove rule";
-                        clicked => root.break-remove-cancelled();
-                    }
+                if (rule-row.armed): ConfirmStrip {
+                    message: "Deletes this rule and its recorded firings; this cannot be undone.";
+                    confirm-label: "Confirm remove rule";
+                    cancel-label: "Cancel remove rule";
+                    confirmed => root.break-remove-confirmed(rule-index);
+                    cancelled => root.break-remove-cancelled();
                 }
             }
 

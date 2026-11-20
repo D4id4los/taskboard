@@ -24,6 +24,7 @@
 // and the dismissal underlay from those facts. This replaces the old
 // in-widget displaced underlay (the F9 coordinate-space defect).
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { StatusNotice } from "status-notice.slint";
 import { TextField, FieldValidity } from "text-field.slint";
 import { IconButton, IconKind } from "icon-button.slint";
 
@@ -179,9 +180,9 @@ export component TimeField inherits Rectangle {
         }
     }
 
-    if (root.validity == FieldValidity.invalid && field.text != "" && field.text != "--:--"): RoleText {
-        role: Typography.caption;
-        text-color: Semantic.danger;
+    if (root.validity == FieldValidity.invalid && field.text != "" && field.text != "--:--"): StatusNotice {
+        // The site-owned geometry (plan §2.4): the hint rides the
+        // field's natural height; the widget keeps its own paint.
         y: field.natural-height;
         text: root.error-hint;
     }

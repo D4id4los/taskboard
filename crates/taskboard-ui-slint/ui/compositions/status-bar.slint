@@ -11,6 +11,7 @@ import { ListRow } from "../widgets/list-row.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { Icon } from "../widgets/icon.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
+import { StatusNotice } from "../widgets/status-notice.slint";
 
 // The files-sync chip's state vocabulary (DR-8 chunk 4, D-FH5): the
 // precedence ladder's rungs, fork loudest. Markup maps the state onto
@@ -465,11 +466,9 @@ export component StatusBar inherits Rectangle {
         // — the kiosk constraint is "never block", and a line never does.
         if (root.notice-visible && root.notice-text != ""): HorizontalLayout {
             spacing: Theme.space-2;
-            RoleText {
-                role: Typography.caption;
-                text-color: Theme.text-secondary;
+            StatusNotice {
+                tone: Tone.neutral;
                 text: root.notice-text;
-                overflow: elide;
             }
         }
     }

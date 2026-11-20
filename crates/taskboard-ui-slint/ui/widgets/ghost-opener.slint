@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The ghost-opener primitive (L1, round-9 W5 — the widget inventory's
+// F-10 family, one component): the board's full-shape ghost openers
+// (the per-column Add Task row and the trailing add-column sliver).
+// The F8 two-click dodge is baked in exactly one copy: the FocusScope
+// is declared FIRST and the TouchArea AFTER it, so the touch
+// hit-tests first and the first physical click invokes (a scope
+// overlay alone would eat the click into a focus gain). The a11y
+// triple (button role, label, tab stop, action-default) stays on the
+// scope. The row-plus `IconButton` openers are NOT this widget —
+// they stay `IconButton` (already the centralized primitive; the
+// Q-E ruling). Rendering is the centered PlusGlyph with the
+// hover-dependent glyph lift; no icon variant until a consumer asks.
+// No ghost grammar outside `ui/widgets/` (the census's anti-ad-hoc
+// law).
+
+import { Theme, Semantic } from "../theme.slint";
+import { PlusGlyph } from "plus-glyph.slint";
+import { TooltipState } from "tooltip.slint";
+
+// The ghost's two orientations (the observed set): the per-column
+// Add Task row and the full-height add-column sliver.
+export enum GhostOrientation {
+    row,
+    column,
+}
+
+export component GhostOpener inherits Rectangle {
+    in property <GhostOrientation> orientation: GhostOrientation.row;
+    // The a11y label ≡ tooltip label (the ghosts' existing identity).
+    in property <string> label;
+    in property <string> description;
+    in property <[string]> hint-keys: [];
+    in property <bool> enabled: true;
+    // The hover read (the board's ghost-tracking observation seam).
+    out property <bool> hovered: touch.has-hover;
+    callback invoked();
+
+    border-radius: Theme.radius-small;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+    // The orientation geometry (§2.6): the row ghost is the control
+    // row's height band; the column ghost is the slim full-height
+    // sliver after the last stack.
+    min-height: root.orientation == GhostOrientation.row
+        ? Theme.space-6 + 2 * Theme.space-1 : 0;
+    max-height: root.orientation == GhostOrientation.row
+        ? Theme.space-6 + 2 * Theme.space-1 : 99999px;
+    width: root.orientation == GhostOrientation.column
+        ? Theme.space-6 + Theme.space-2 : 100%;
+
+    // F8 (r4 D4): the FocusScope is declared FIRST — the TouchArea
+    // after it is hit-tested first, because a FocusScope overlay
+    // alone eats the first physical click (the two-click repro); the
+    // a11y role, label and tab stop stay on the FocusScope.
+    ghost-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: true;
+        enabled: root.enabled;
+        accessible-role: AccessibleRole.button;
+        accessible-label: root.label;
+        accessible-action-default => { root.invoked(); }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.invoked(); }
+        // The ghost tooltip (r3 D3): the standard enter-arms/
+        // leave-dismiss wiring; the label is the accessible tree's
+        // own, the description is the caller's presentation literal.
+        changed has-hover => {
+            if (self.has-hover) {
+                TooltipState.hover(root.label, root.description, root.hint-keys,
+                    self.absolute-position.x, self.absolute-position.y,
+                    self.width, self.height);
+            } else {
+                TooltipState.unhover();
+            }
+        }
+    }
+    PlusGlyph {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        glyph-color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+    }
+}

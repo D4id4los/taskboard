@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The confirm-strip primitive (L1, round-9 W5 — the widget
+// inventory's F-7 family, one component): the armed-confirm strip's
+// message + Confirm/Cancel grammar. Exactly the two observed
+// grammars: `destructive` (message danger, confirm danger — the
+// board/timers remove strips) and non-destructive (message
+// secondary, confirm success — the recur convert strip). The
+// consequence message is caller copy; the IconButton labels are
+// caller strings so every site's a11y labels stay byte-identical.
+// The mount gate (`if armed`) stays with the consumer — the strip
+// never holds arming state. No chip/header/notice grammar outside
+// `ui/widgets/` (the census's anti-ad-hoc law).
+
+import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
+import { IconButton, IconKind } from "icon-button.slint";
+
+export component ConfirmStrip inherits Rectangle {
+    // The consequence message (the caller's copy, consequence-first).
+    in property <string> message;
+    // destructive ⇒ message danger + confirm danger; otherwise
+    // message secondary + confirm success (the two observed
+    // grammars — no third posture exists).
+    in property <bool> destructive: true;
+    // The two affordances' a11y labels (caller-supplied strings).
+    in property <string> confirm-label;
+    in property <string> cancel-label;
+    callback confirmed();
+    callback cancelled();
+
+    min-height: strip.preferred-height;
+    // The observation seams (the probe's tone catalogue).
+    out property <color> message-color-out: strip.message-out;
+    out property <color> confirm-color-out: Semantic.tone-color(root.destructive ? Tone.danger : Tone.success);
+
+    strip := HorizontalLayout {
+        property <color> message-out: message-text.text-color;
+        spacing: Theme.space-2;
+        message-text := RoleText {
+            role: Typography.caption;
+            text-color: root.destructive
+                ? Semantic.tone-color(Tone.danger)
+                : Semantic.tone-color(Tone.neutral);
+            text: root.message;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        IconButton {
+            icon: IconKind.check;
+            tone: root.destructive ? Tone.danger : Tone.success;
+            label: root.confirm-label;
+            clicked => { root.confirmed(); }
+        }
+        IconButton {
+            icon: IconKind.remove;
+            tone: Tone.neutral;
+            label: root.cancel-label;
+            clicked => { root.cancelled(); }
+        }
+    }
+}

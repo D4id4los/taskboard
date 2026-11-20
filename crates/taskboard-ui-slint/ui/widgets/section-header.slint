@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The section-header primitive (L1, round-9 W5 — the widget
+// inventory's F-6 family, one component): the today sections'
+// header row — the title caption, the count caption, the optional
+// mid-row status badge (the timers awaiting slot), the stretch
+// spacer, and the trailing actions (`@children`, rendered after the
+// stretch — the template's order). The TimerSetterFacts click-time
+// anchor push lives in the consumer's IconButton handlers: the
+// widget adds no facts coupling. Not every caption row is a header:
+// summary rows (the tracked-today a11y-text spacer) and
+// heading-over-grid sections (review-view) keep their own anatomy
+// (recorded in the census). No header-row grammar outside
+// `ui/widgets/` (the census's anti-ad-hoc law).
+
+import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { Badge } from "badge.slint";
+
+export component SectionHeader inherits HorizontalLayout {
+    in property <string> title;
+    // The count caption; empty hides it.
+    in property <string> count: "";
+    // The mid-row status badge (the timers awaiting slot); empty
+    // text hides the badge.
+    in property <string> status-badge-text: "";
+    in property <Tone> status-badge-tone: Tone.info;
+
+    spacing: Theme.space-2;
+    RoleText {
+        role: Typography.caption;
+        text: root.title;
+        vertical-alignment: center;
+    }
+    if (root.count != ""): RoleText {
+        role: Typography.caption;
+        text-color: Theme.text-secondary;
+        text: root.count;
+        vertical-alignment: center;
+    }
+    if (root.status-badge-text != ""): Badge {
+        text: root.status-badge-text;
+        tone: root.status-badge-tone;
+    }
+    Rectangle {
+        horizontal-stretch: 1;
+    }
+    @children
+}

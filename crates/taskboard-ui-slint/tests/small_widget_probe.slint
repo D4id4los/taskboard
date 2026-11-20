@@ -7,6 +7,10 @@
 // intent lands in a counter. No text assertions, no clocks.
 
 import { Theme, Semantic, Tone } from "../ui/theme.slint";
+import { StatusNotice, NoticeShape } from "../ui/widgets/status-notice.slint";
+import { ConfirmStrip } from "../ui/widgets/confirm-strip.slint";
+
+export { NoticeShape }
 
 // ---- T1: the tone ladder (F-3, #952) -----------------------------
 // Pure-function equality against the Semantic constants: each arm
@@ -43,4 +47,90 @@ export component SmallWidgetProbe inherits Window {
     // against the token, not a pin of the token's value).
     out property <color> theme-text-secondary: Theme.text-secondary;
     out property <color> theme-text-primary: Theme.text-primary;
+    out property <color> theme-surface-raised: Theme.surface-raised;
+    out property <length> theme-focus-ring-width: Theme.focus-ring-width;
+    out property <length> theme-space-1: Theme.space-1;
+    out property <length> theme-space-2: Theme.space-2;
+    out property <length> theme-space-15: Theme.space-15;
+
+    // ---- T2: StatusNotice --------------------------------------------
+    // The boxed shape (the ErrorLine grammar): raised box, border,
+    // danger caption, stretch. The fixed sibling pins the stretch
+    // evidence (the boxed notice absorbs the leftover width).
+    out property <length> boxed-notice-x: boxed-host.notice-x;
+    out property <length> boxed-notice-width: boxed-host.notice-width;
+    out property <length> boxed-notice-height: boxed-host.notice-height;
+    out property <color> boxed-notice-background: boxed-notice.background;
+    out property <length> boxed-notice-border-width: boxed-notice.border-width;
+    out property <length> boxed-notice-text-y: boxed-notice.text-y-out;
+    out property <length> boxed-notice-text-x: boxed-notice.text-x-out;
+    out property <color> boxed-notice-text-color: boxed-notice.text-color-out;
+    out property <bool> boxed-notice-wrapping: boxed-notice.wrapping-out;
+    // The inline shape (the bare caption grammar): the tone ladder's
+    // colour, no box paint, elide/wrap law.
+    out property <color> inline-notice-text-color: inline-notice.text-color-out;
+    out property <color> inline-notice-background: inline-notice.background;
+    out property <length> inline-notice-border-width: inline-notice.border-width;
+    out property <bool> inline-notice-eliding: inline-notice.eliding-out;
+    out property <bool> wrapped-notice-wrapping: wrapped-notice.wrapping-out;
+    out property <color> wrapped-notice-text-color: wrapped-notice.text-color-out;
+
+    // ---- T3: ConfirmStrip --------------------------------------------
+    // The two grammars' tones + the confirm/cancel seams (the intents
+    // land in counters, never in text).
+    in-out property <int> destructive-confirm-count: 0;
+    in-out property <int> destructive-cancel-count: 0;
+    in-out property <int> convert-confirm-count: 0;
+    in-out property <int> convert-cancel-count: 0;
+    out property <color> destructive-message-color: destructive-strip.message-color-out;
+    out property <color> destructive-confirm-color: destructive-strip.confirm-color-out;
+    out property <color> convert-message-color: convert-strip.message-color-out;
+    out property <color> convert-confirm-color: convert-strip.confirm-color-out;
+
+    VerticalLayout {
+        // The boxed fixture (the settings form's grammar): fixed
+        // sibling + the stretched notice.
+        boxed-host := HorizontalLayout {
+            height: Theme.space-15;
+            property <length> notice-x: boxed-notice.x;
+            property <length> notice-width: boxed-notice.width;
+            property <length> notice-height: boxed-notice.height;
+            Rectangle {
+                width: Theme.space-15;
+            }
+            boxed-notice := StatusNotice {
+                text: "Connect failed: the server refused the credentials.";
+                shape: NoticeShape.boxed;
+            }
+        }
+        // The inline fixtures (the echo/hint grammar): danger eliding,
+        // neutral wrapping.
+        inline-notice := StatusNotice {
+            text: "The typed time is not a valid HH:MM time.";
+            height: Theme.space-5;
+        }
+        wrapped-notice := StatusNotice {
+            text: "Alarms ring on the interactive desktop surface — timers and break rules here stay display-only.";
+            tone: Tone.neutral;
+            wrap: true;
+            height: Theme.space-15;
+        }
+        // The destructive fixture (the board/timers remove grammar).
+        destructive-strip := ConfirmStrip {
+            message: "Deletes this stack and every task in it.";
+            confirm-label: "Confirm delete stack";
+            cancel-label: "Cancel delete stack";
+            confirmed() => { root.destructive-confirm-count += 1; }
+            cancelled() => { root.destructive-cancel-count += 1; }
+        }
+        // The non-destructive fixture (the recur convert grammar).
+        convert-strip := ConfirmStrip {
+            destructive: false;
+            message: "Creates a habit on this board with a 1-per-period quota preset; the series stops repeating.";
+            confirm-label: "Confirm conversion";
+            cancel-label: "Cancel conversion";
+            confirmed() => { root.convert-confirm-count += 1; }
+            cancelled() => { root.convert-cancel-count += 1; }
+        }
+    }
 }

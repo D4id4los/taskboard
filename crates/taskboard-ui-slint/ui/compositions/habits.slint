@@ -22,6 +22,7 @@ import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { FieldValidity, TextField } from "../widgets/text-field.slint";
 import { DragState } from "../drag-state.slint";
+import { StatusNotice } from "../widgets/status-notice.slint";
 
 // One tracker row on the card substrate (H2 D2): the card slots are
 // the model derivation's (models::habit_card); the strip facts ride
@@ -215,9 +216,7 @@ export component HabitsSection inherits Rectangle {
                     }
                 }
             }
-            if (root.quota-validity == FieldValidity.invalid && quota-field.text != ""): RoleText {
-                role: Typography.caption;
-                text-color: Semantic.danger;
+            if (root.quota-validity == FieldValidity.invalid && quota-field.text != ""): StatusNotice {
                 text: root.quota-error-hint;
             }
         }

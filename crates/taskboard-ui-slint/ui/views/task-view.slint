@@ -15,6 +15,7 @@ import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { InfoTip } from "../widgets/info-tip.slint";
 import { RuleList, RuleRowModel } from "../compositions/rule-list.slint";
+import { ConfirmStrip } from "../widgets/confirm-strip.slint";
 import { DueDayModel } from "../compositions/date-picker.slint";
 import { TimeSlotRow } from "../widgets/time-field.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
@@ -1143,26 +1144,13 @@ export component TaskView inherits FocusScope {
                 // The armed confirm strip (issue #506, plan D-8): the
                 // consequence names the mapping before anything
                 // dispatches.
-                if (root.task.recur-confirm-open): HorizontalLayout {
-                    spacing: Theme.space-2;
-                    RoleText {
-                        role: Typography.caption;
-                        text-color: Theme.text-secondary;
-                        text: "Creates a habit on this board with a 1-per-period quota preset; the series stops repeating.";
-                        vertical-alignment: center;
-                    }
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: Tone.success;
-                        label: "Confirm conversion";
-                        clicked => root.recur-convert-confirmed();
-                    }
-                    IconButton {
-                        icon: IconKind.remove;
-                        tone: Tone.neutral;
-                        label: "Cancel conversion";
-                        clicked => root.recur-convert-cancelled();
-                    }
+                if (root.task.recur-confirm-open): ConfirmStrip {
+                    destructive: false;
+                    message: "Creates a habit on this board with a 1-per-period quota preset; the series stops repeating.";
+                    confirm-label: "Confirm conversion";
+                    cancel-label: "Cancel conversion";
+                    confirmed => root.recur-convert-confirmed();
+                    cancelled => root.recur-convert-cancelled();
                 }
             }
 

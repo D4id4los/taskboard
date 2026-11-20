@@ -26,6 +26,7 @@ import { InfoTip } from "../widgets/info-tip.slint";
 import { Responsive, Breakpoint } from "../responsive.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TextButton } from "../widgets/text-button.slint";
+import { StatusNotice, NoticeShape } from "../widgets/status-notice.slint";
 export enum SettingsRowStatus {
     idle,
     syncing,
@@ -379,25 +380,6 @@ component BusyDot inherits Rectangle {
 // field, carrying the field's reason sentence. The text is
 // presentation copy pushed by the adapter (settings_status constants)
 // — never asserted by tests; tests pin validity + presence.
-component ErrorLine inherits Rectangle {
-    in property <string> text;
-    background: Theme.surface-raised;
-    border-width: Theme.focus-ring-width;
-    border-color: Theme.border;
-    border-radius: Theme.radius-small;
-    min-height: error-text.preferred-height + 2 * Theme.space-1;
-    horizontal-stretch: 1;
-    error-text := RoleText {
-        role: Typography.caption;
-        text: root.text;
-        text-color: Semantic.danger;
-        wrap: word-wrap;
-        x: Theme.space-2;
-        width: parent.width - 2 * Theme.space-2;
-        y: (parent.height - self.preferred-height) / 2;
-    }
-}
-
 component LabeledField inherits VerticalLayout {
     spacing: Theme.space-1;
     in property <string> label;
@@ -460,8 +442,9 @@ component LabeledField inherits VerticalLayout {
             }
         }
     }
-    if root.error-text != "": error-line := ErrorLine {
+    if root.error-text != "": error-line := StatusNotice {
         text: root.error-text;
+        shape: NoticeShape.boxed;
     }
 }
 
@@ -1386,8 +1369,9 @@ export component SettingsView inherits FocusScope {
                         root.scale-committed(t);
                     }
                 }
-                if SettingsModel.error-scale != "": ErrorLine {
+                if SettingsModel.error-scale != "": StatusNotice {
                     text: SettingsModel.error-scale;
+                    shape: NoticeShape.boxed;
                 }
             }
         }

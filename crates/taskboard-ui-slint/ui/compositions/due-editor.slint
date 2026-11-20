@@ -11,7 +11,8 @@
 // (the clean close), so the picker never shadows the view Escape
 // (R-c).
 
-import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { Theme, Typography, RoleText, Semantic, Tone } from "../theme.slint";
+import { StatusNotice } from "../widgets/status-notice.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
@@ -96,14 +97,11 @@ export component DueEditor inherits VerticalLayout {
         }
     }
 
-    if (root.echo != ""): RoleText {
-        role: Typography.caption;
-        text-color: Theme.text-secondary;
+    if (root.echo != ""): StatusNotice {
+        tone: Tone.neutral;
         text: root.echo;
     }
-    if (root.echo == "" && root.validity == FieldValidity.invalid): RoleText {
-        role: Typography.caption;
-        text-color: Semantic.danger;
+    if (root.echo == "" && root.validity == FieldValidity.invalid): StatusNotice {
         text: root.syntax-hint;
     }
 }
