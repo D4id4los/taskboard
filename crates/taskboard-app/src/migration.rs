@@ -595,7 +595,7 @@ mod tests {
         use super::*;
 
         // The happy-path composed ladder moved to the integration suite
-        // (`tests/config.rs`): the re-load leg composes the process env
+        // (`tests/core/config.rs`): the re-load leg composes the process env
         // over the migrated file, so the pin needs the TASKBOARD_* scrub
         // of `taskboard_env_lock`, which only the integration harness can
         // hold (the crate forbids the env mutation) — #865's re-homing.

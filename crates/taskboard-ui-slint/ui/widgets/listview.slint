@@ -3,7 +3,7 @@
 // The element NAME and the five length properties are the slint
 // compiler's nominal ListView contract (object_tree.rs:2891-2905):
 // rename any of them and the `for` below silently renders eager —
-// tests/virtualisation.rs's engagement probe fails on purpose.
+// tests/probes/virtualisation.rs's engagement probe fails on purpose.
 export component ListView inherits Flickable {
     in-out property <length> visible-height: self.height;
     in-out property <length> visible-width: self.width;

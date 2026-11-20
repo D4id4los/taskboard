@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The view-mount callback inventory (round-5 D8): the Slint-side
-//! complement of `tests/seam_inventory.rs`, which covers only the
+//! complement of the sibling `seam_inventory.rs`, which covers only the
 //! Rust install side. Source-scan, not compiler introspection — the
 //! failure mode is a missing line of markup (F1's unforwarded
 //! callback), which a source assertion pins exactly.

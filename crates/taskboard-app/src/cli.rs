@@ -2008,7 +2008,7 @@ mod tests {
 
     // The `boards publish --to-files` parse law (US-1/S1, the R-4
     // conflict) lives in the journey Test-root
-    // (`tests/cli_standalone.rs::us1_s1_..`) — one behavior, one test.
+    // (`tests/cli/cli_standalone.rs::us1_s1_..`) — one behavior, one test.
 
     #[test]
     fn parse_due_accepts_rfc3339_bare_date_and_none() {

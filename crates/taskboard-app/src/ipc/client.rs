@@ -164,7 +164,7 @@ pub async fn try_connect(db_path: &Path) -> Option<Connection> {
 /// The fallback gate (issue #886): should a `try_connect` miss fall
 /// through to the in-process boot? Only when the socket artifact is
 /// absent — artifact absent ⇒ the instance lock is provably free (the
-/// #886 invariant, pinned in `tests/ipc.rs`) — or present beside a
+/// #886 invariant, pinned in `tests/services/ipc.rs`) — or present beside a
 /// genuinely free lock (the stale post-crash shape; the flock probe,
 /// not the diagnostic pid, decides). An artifact beside a held lock
 /// means a daemon is draining or wedged: booting there collides with

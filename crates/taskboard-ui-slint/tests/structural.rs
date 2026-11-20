@@ -8,9 +8,9 @@
 //! under `tests/inventory/` (the `include_str!` depth adjusted).
 
 // The bench fixture module, declared once at the binary root so the
-// member's `use support::…` paths resolve (edition-2018 `use` paths
-// are crate-root-relative) and only one copy of the fixture is
-// instantiated. Members consume it via `crate::support`.
+// member's bare `use support::…` paths resolve to this module ahead of
+// the extern crate (edition-2024 uniform paths) and only one copy of
+// the fixture is instantiated. Members consume it via `crate::support`.
 #[path = "../benches/support/mod.rs"]
 mod support;
 

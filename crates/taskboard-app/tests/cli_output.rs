@@ -3,7 +3,8 @@
 //! The output/tty/export/lock/login/ipc-pipe CLI family, grouped into
 //! one binary (#1070, plan §3.2). Members are verbatim moves living
 //! under `tests/cli/` (the member named `cli_output` rides under this
-//! root of the same name); each keeps its own `common` include.
+//! root of the same name). The shared `common` module resolves once
+//! at this root.
 
 // The shared helpers module, declared exactly once per merged binary:
 // a per-member `mod common` copy (each member's old standalone

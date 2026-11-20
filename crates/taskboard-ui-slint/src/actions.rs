@@ -7,7 +7,7 @@
 //! Views bind to *actions*, never keys; the registry is the single
 //! const table describing every v0.1.0 action — id, label,
 //! menu-availability contexts, category, and the `enabled` bit. A
-//! dumped registry (the insta snapshot in `tests/keymap_snapshots.rs`)
+//! dumped registry (the insta snapshot in `tests/inventory/keymap_snapshots.rs`)
 //! **is** the action documentation (§5.2).
 //!
 //! This module is pure: no slint types, no IO, no runtime (the §5.5

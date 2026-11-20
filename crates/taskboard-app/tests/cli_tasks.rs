@@ -3,7 +3,7 @@
 //! The task-lifecycle CLI verb family, grouped into one binary (#1070,
 //! plan §3.2): editing/undo/journal/track/timers/reminders/repeat/
 //! habits verb ceremonies. Members are verbatim moves living under
-//! `tests/cli/`; each keeps its own `common` include.
+//! `tests/cli/`. The shared `common` module resolves once at this root.
 
 // The shared helpers module, declared exactly once per merged binary:
 // a per-member `mod common` copy (each member's old standalone
