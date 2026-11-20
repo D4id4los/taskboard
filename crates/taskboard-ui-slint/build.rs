@@ -48,6 +48,7 @@ fn main() {
         "widget_framework_probe",
         "action_menu_bar_probe",
         "overlay_migration_probe",
+        "labeled_value_row_probe",
     ];
     for name in probes {
         compile_probe(&manifest.join(format!("tests/{name}.slint")), &out);

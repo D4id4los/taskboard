@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The labeled-value-row probe (round-9 W4, plan §3): the three modes
+// of the real `LabeledValueRow` mounted with controlled fixtures —
+// the display row (mono echo + trailing pencil affordance + tooltip
+// arm + a11y data-presence), the cell row (the closed-cell grammar:
+// stop, ring, restore law, geometry seams), and the editor row (the
+// caption-beside `@children` field slot). The probe catalogue's
+// assertions read the typed root seams from Rust
+// (`labeled_value_row_probe_tests.rs`); every intent lands in a
+// counter. No text assertions, no clocks.
+
+import { Theme, Typography } from "../ui/theme.slint";
+import { LabeledValueRow, RowMode } from "../ui/widgets/labeled-value-row.slint";
+import { TextField } from "../ui/widgets/text-field.slint";
+import { IconButton, IconKind } from "../ui/widgets/icon-button.slint";
+import { TooltipState } from "../ui/widgets/tooltip.slint";
+import { TaskViewWalkFacts } from "../ui/walk-facts.slint";
+import { FocusFacts } from "../ui/focus-facts.slint";
+
+export { TooltipState, TaskViewWalkFacts, FocusFacts }
+
+export component LabeledValueRowProbe inherits Window {
+    width: Theme.space-15 * 9;
+    height: Theme.space-15 * 4;
+    background: Theme.background;
+
+    // ---- Fixture controls (set from Rust) ---------------------------
+    in property <string> display-value: "12m";
+    in property <bool> display-dash: true;
+    in property <string> display-hint: "12m";
+    in property <string> display-a11y: "Tracked time total";
+    in property <bool> display-elide: false;
+
+    // ---- Intent counters (read from Rust) ---------------------------
+    in-out property <int> edit-asked-count: 0;
+    in-out property <int> trailing-count: 0;
+
+    // ---- Observation mirrors ----------------------------------------
+    // Display row.
+    out property <length> display-value-x: display-row.value-x;
+    out property <length> display-value-y: display-row.value-y;
+    out property <length> display-value-width: display-row.value-width;
+    out property <length> display-value-height: display-row.value-height;
+    out property <length> display-role-size: display-row.value-role-out.size;
+    out property <color> display-color-out: display-row.value-color-out;
+    out property <length> display-preferred-width: display-row.value-preferred-width;
+    out property <length> display-region-width: display-row.value-width;
+    out property <bool> display-elide-out: display-row.value-elide-out;
+    out property <bool> display-dash-out: display-row.value-dash-out;
+    out property <length> display-row-y: display-row.absolute-position.y;
+    // Cell row.
+    out property <length> cell-value-x: cell-row.value-x;
+    out property <length> cell-value-y: cell-row.value-y;
+    out property <length> cell-value-width: cell-row.value-width;
+    out property <length> cell-value-height: cell-row.value-height;
+    out property <bool> cell-focused: cell-row.focused;
+    out property <bool> cell-ringed: cell-row.ringed;
+    // Editor row.
+    out property <length> editor-value-x: editor-row.value-x;
+    out property <length> editor-value-width: editor-row.value-width;
+    out property <length> editor-value-height: editor-row.value-height;
+    out property <length> editor-row-x: editor-row.absolute-position.x;
+    out property <length> display-row-x: display-row.absolute-position.x;
+    // The theme mirror (the colour-forwarding evidence reads equality
+    // against the token, not a pin of the token's value).
+    out property <color> theme-text-secondary: Theme.text-secondary;
+
+    VerticalLayout {
+        // The display fixture (the tracked row's grammar): mono value,
+        // tooltip arm, a11y data-presence, trailing affordance. The
+        // fixed-width host pins the elide law.
+        host := Rectangle {
+            height: Theme.space-15;
+            display-row := LabeledValueRow {
+                width: host.width - 2 * Theme.space-15;
+                mode: RowMode.display;
+                label: "Tracked";
+                caption-beside: true;
+                content-gap: Theme.space-3;
+                value: root.display-value;
+                value-role: Typography.mono;
+                value-color: Theme.text-secondary;
+                placeholder-em-dash: root.display-dash;
+                value-elide: root.display-elide;
+                value-hstretch: 1;
+                value-hint-label: root.display-hint;
+                value-hint-description: "Total tracked time on this task, including any running entry.";
+                hint-keys: ["Ctrl+E"];
+                value-a11y-label: root.display-a11y;
+                IconButton {
+                    icon: IconKind.pencil;
+                    label: "Probe trailing";
+                    clicked => { root.trailing-count += 1; }
+                }
+            }
+        }
+
+        // The cell fixture (the due column's grammar): the closed cell
+        // with the preserved stop identity and the restore law armed.
+        cell-row := LabeledValueRow {
+            mode: RowMode.cell;
+            label: "Due date";
+            value: "in 9h · 23:45";
+            value-role: Typography.mono;
+            stop-label: "Edit due date";
+            stop-description: "Opens the due-date editor.";
+            stop-id: 5;
+            restore-kind: 4;
+            hint-keys: ["Ctrl+E"];
+            edit-asked() => { root.edit-asked-count += 1; }
+        }
+
+        // The editor fixture (the effort row's grammar): the
+        // caption-beside `@children` field slot — the field carries no
+        // semantics here (Rule E): its intents land in counters.
+        editor-row := LabeledValueRow {
+            mode: RowMode.editor;
+            caption-beside: true;
+            content-gap: Theme.space-2;
+            label: "Effort Estimate";
+            TextField {
+                horizontal-stretch: 1;
+                placeholder: "30 or 1h30m";
+                label: "Effort Estimate";
+                edited(t) => { }
+            }
+        }
+    }
+}

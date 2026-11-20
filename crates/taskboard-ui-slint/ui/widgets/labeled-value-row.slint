@@ -1,0 +1,304 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The labeled-value-row base widget (L1, round-9 W4 O-6, #951): the
+// single copy of the caption+value row family the whole-widget
+// inventory found across the task detail (ten hand-rolled rows, three
+// divergent edit grammars) and the review view (StatCell). One
+// component, three modes:
+//
+// - `display` — caption + value RoleText; the `@children` slot renders
+//   trailing affordances (pencil / anchor) after the value; a
+//   non-empty `value-hint-label` arms the tooltip (the tracked-total
+//   row) and a non-empty `value-a11y-label` publishes the value's
+//   data-presence role.
+// - `cell` — the closed cell: the widget hosts the ActivationStop
+//   (walk stop + a11y triple + Return/Space + the EditingFacts
+//   activation-count discipline — kept in exactly one copy), the
+//   hover surface, the focus ring and the tooltip arm; activation
+//   (click or key) reports `edit-asked()`. The ring renders on the
+//   stop's focus OR the view-supplied `ring-latched` (the armed/walk
+//   stop-id latch stays view-side model data). The focus-origin
+//   restore law (US-1/W-1) rides the stop internally, parameterized
+//   by `restore-kind` (0 = not a restore target).
+// - `editor` — caption + `@children` value slot (Rule E: the field
+//   stays at the mount; all commit/re-seed/validity semantics remain
+//   view-side). The children are THE value region; no built-in value
+//   renders (the mode duality: a component cannot introspect its
+//   children, so the mode enum is the only switch).
+//
+// Geometry law: content-sized (D16d — only mounts that explicitly
+// stretch do), caption/value vertical gap `caption-gap` (0 px — the
+// task rows sit flush; StatCell carries the space-1 exception),
+// caption-side/value and value/trailing gaps `content-gap` /
+// `trailing-gap` per mount. The `out value-*` seams publish the
+// value region's realized window-space rect — the overlay-anchor law
+// (the date anchors read the cell rect through them; the click-time
+// push stays at the view). `out focused` / `out ringed` are the
+// observation seams for the walk/focus probes.
+//
+// Anti-ad-hoc rule: re-declaring the caption+value row grammar
+// outside `ui/widgets/` is a review-blocker (the F-8 law, same
+// status as the overlay rule).
+
+import { Theme, Semantic, RoleText, Typography, TextRole } from "../theme.slint";
+import { TooltipState } from "tooltip.slint";
+import { ActivationStop } from "activation-stop.slint";
+import { FocusFacts } from "../focus-facts.slint";
+
+// The row's interaction grammar (F-2's three divergent edit grammars,
+// modeled as one switch).
+export enum RowMode {
+    // caption + value RoleText + trailing slot; tooltip arm optional.
+    display,
+    // the clickable closed cell: internal ActivationStop + hover
+    // surface + focus ring + tooltip arm; activation → `edit-asked`.
+    cell,
+    // caption + `@children` value slot; no built-in value.
+    editor,
+}
+
+export component LabeledValueRow inherits VerticalLayout {
+    // The interaction grammar.
+    in property <RowMode> mode: RowMode.display;
+    // The caption text; empty renders no caption (the title cell is a
+    // label-less family member).
+    in property <string> label;
+    // The display/cell value text (never rendered in editor mode).
+    in property <string> value;
+    in property <TextRole> value-role: Typography.body;
+    in property <color> value-color: Theme.text-primary;
+    // Empty value renders the em-dash placeholder (the unset-value
+    // convention); false renders the raw text.
+    in property <bool> placeholder-em-dash: true;
+    // Elide the value into the region's width (the title/StatCell
+    // law); false keeps the preferred width.
+    in property <bool> value-elide: false;
+    // True: the cell's value content is the mount's `@children`
+    // (the description's read-only MultiLineEditor — the wrap/height
+    // law the built-in RoleText cannot carry). The built-in value
+    // text stays hidden; the stop/hover/ring chrome wraps the slot.
+    in property <bool> value-hosted: false;
+
+    // ---- Geometry knobs (content-sized law; per-mount gaps) --------
+    // The caption/value vertical gap (task rows sit flush at 0 px;
+    // StatCell carries the space-1 exception).
+    in property <length> caption-gap: 0px;
+    // The row axis: caption beside the value region (tracked/effort)
+    // vs above it (every other family member).
+    in property <bool> caption-beside: false;
+    // Caption↔content gap on the beside axis; value↔trailing gap.
+    in property <length> content-gap: 0px;
+    in property <length> trailing-gap: 0px;
+    // The value region's layout stretch (int stretch passthrough:
+    // title/tracked/description stretch, the echoes do not).
+    in property <int> value-hstretch: 0;
+    in property <int> value-vstretch: 0;
+    // The built-in value's horizontal inset inside the cell (the
+    // title cell's space-2 padding); 0 for the plain echoes.
+    in property <length> value-inset: 0px;
+
+    // ---- Cell grammar ------------------------------------------------
+    in property <string> stop-label;
+    in property <string> stop-description;
+    // The walk identity — preserved verbatim from the hand-rolled
+    // cells (title 3, due 5, scheduled 6, description 11).
+    in property <int> stop-id: 0;
+    // Extra ring condition pushed by the view (the armed flag + the
+    // walk stop-id latch stay model-side).
+    in property <bool> ring-latched: false;
+    // The hover surface (the echoes use surface-hover; the title and
+    // description cells use surface-raised).
+    in property <color> hover-surface: Theme.surface-hover;
+    // The focus-origin restore law's kind (4 title, 5 description;
+    // 0 = not a restore target) — the nonce watch lives on the
+    // internal stop.
+    in property <int> restore-kind: 0;
+
+    // ---- Tooltip arm --------------------------------------------------
+    // Non-empty arms the tooltip. In cell mode the stop's a11y strings
+    // are the default copy; the tracked row passes its own.
+    in property <string> value-hint-label: "";
+    in property <string> value-hint-description: "";
+    in property <[string]> hint-keys: [];
+
+    // ---- Display value a11y (the data-presence role) ------------------
+    // Non-empty publishes `AccessibleRole.text` over the value region
+    // (the tracked total). Role constants cannot bind, so the node is
+    // mount-gated.
+    in property <string> value-a11y-label: "";
+
+    // The intent: cell activation (click or Return/Space) — the view
+    // routes it (the date cells push their anchor first).
+    callback edit-asked();
+
+    // The geometry seams (the overlay-anchor law): the value region's
+    // realized rect, window-space.
+    out property <length> value-x: content.absolute-position.x;
+    out property <length> value-y: content.absolute-position.y;
+    out property <length> value-width: content.width;
+    out property <length> value-height: content.height;
+    // The observation seams (walk/focus probes).
+    out property <bool> focused: value-stop.has-focus;
+    out property <bool> ringed: content.border-width > 0px;
+    // The built-in value's resolved role/colour (the forwarding
+    // evidence for the probe catalogue).
+    out property <TextRole> value-role-out: value-text.role;
+    out property <color> value-color-out: value-text.text-color;
+    // The empty+dash witness (the probe's em-dash evidence: the
+    // built-in value claims the dash's width iff the placeholder is
+    // armed on an empty value).
+    out property <length> value-preferred-width: value-text.preferred-width;
+    // The elide/dash witnesses (the probe catalogue's structural
+    // evidence that the knobs reached the built-in value).
+    out property <bool> value-elide-out: value-text.overflow == TextOverflow.elide;
+    out property <bool> value-dash-out: value-text.text == "—";
+
+    spacing: root.caption-gap;
+
+    // The caption above (the default axis); the beside axis renders it
+    // inside the row below. Two conditional carriers over the same
+    // label — exactly one instantiates, and neither is a layout child
+    // of the other.
+    if (!root.caption-beside): RoleText {
+        role: Typography.caption;
+        text-color: Theme.text-secondary;
+        text: root.label;
+    }
+
+    row := HorizontalLayout {
+        spacing: root.content-gap;
+        vertical-stretch: root.value-vstretch;
+
+        if (root.caption-beside): RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: root.label;
+            vertical-alignment: center;
+        }
+
+        // The value region — the cell chrome (border/hover/stop) in
+        // cell mode, the plain value host otherwise; the editor's
+        // children region. The geometry seams read this element.
+        content := Rectangle {
+            horizontal-stretch: root.mode == RowMode.editor ? 1 : root.value-hstretch;
+            vertical-stretch: root.value-vstretch;
+            border-radius: Theme.radius-small;
+            border-width: root.mode == RowMode.cell
+                && (value-stop.has-focus || root.ring-latched)
+                ? Theme.focus-ring-width
+                : 0px;
+            border-color: Semantic.focus-ring;
+
+            // The hover surface (cell only — the tracked row's tooltip
+            // arm carries no surface): z-under the stop and the value.
+            if (cell-touch.has-hover): Rectangle {
+                background: root.hover-surface;
+                border-radius: Theme.radius-small;
+            }
+
+            // The activation stop (visible-gated, never conditional:
+            // the view and the probes read its focus through the out
+            // seams). Invisible outside cell mode — no a11y, no tab
+            // stop, no hit-testing.
+            value-stop := ActivationStop {
+                width: 100%;
+                height: 100%;
+                visible: root.mode == RowMode.cell;
+                focus-on-tab-navigation: root.mode == RowMode.cell;
+                stop-label: root.stop-label;
+                stop-description: root.stop-description;
+                stop-id: root.stop-id;
+                activated => { root.edit-asked(); }
+                // The focus-origin restore (US-1/W-1): an overlay
+                // opened from this cell restores into it. The init leg
+                // covers the mount-after-push order; the wrapper
+                // property is the `changed`-on-global idiom (the walk
+                // probe's recorded watch shape).
+                property <int> watch-restore-nonce: FocusFacts.nonce;
+                init => {
+                    if (root.restore-kind != 0 && FocusFacts.anchor-kind == root.restore-kind) {
+                        self.focus();
+                    }
+                }
+                changed watch-restore-nonce => {
+                    if (root.restore-kind != 0 && FocusFacts.anchor-kind == root.restore-kind) {
+                        self.focus();
+                    }
+                }
+            }
+
+            // The display tooltip arm (no pointer cursor, no click —
+            // the tracked row's value is data, not a control). Z-under
+            // the content row: the slot's trailing affordances must
+            // win the hit test over the arm.
+            value-touch := TouchArea {
+                visible: root.mode == RowMode.display && root.value-hint-label != "";
+                changed has-hover => {
+                    if (self.has-hover) {
+                        TooltipState.hover(
+                            root.value-hint-label,
+                            root.value-hint-description,
+                            root.hint-keys,
+                            self.absolute-position.x,
+                            self.absolute-position.y,
+                            self.width,
+                            self.height,
+                        );
+                    } else {
+                        TooltipState.unhover();
+                    }
+                }
+            }
+
+            // The value content row: the built-in RoleText beside the
+            // slot children (trailing affordances / hosted content /
+            // the editor's field). The inset paddings reproduce the
+            // title cell's pinned text inset.
+            HorizontalLayout {
+                width: 100%;
+                height: 100%;
+                padding-left: root.value-inset;
+                padding-right: root.value-inset;
+                spacing: root.trailing-gap;
+
+                value-text := RoleText {
+                    visible: root.mode != RowMode.editor && !root.value-hosted;
+                    role: root.value-role;
+                    text-color: root.value-color;
+                    text: (root.placeholder-em-dash && root.value == "") ? "—" : root.value;
+                    overflow: root.value-elide ? TextOverflow.elide : TextOverflow.clip;
+                }
+
+                // The single children slot: trailing affordances in
+                // display mode, the hosted value content in a hosted
+                // cell, the field in editor mode (Rule E — no field
+                // semantics inside the widget).
+                @children
+            }
+
+            // The cell touch (click ≡ Return/Space ≡ edit-asked).
+            cell-touch := TouchArea {
+                visible: root.mode == RowMode.cell;
+                mouse-cursor: MouseCursor.pointer;
+                changed has-hover => {
+                    if (self.has-hover) {
+                        TooltipState.hover(
+                            root.value-hint-label == "" ? root.stop-label : root.value-hint-label,
+                            root.value-hint-description == "" ? root.stop-description : root.value-hint-description,
+                            root.hint-keys,
+                            self.absolute-position.x,
+                            self.absolute-position.y,
+                            self.width,
+                            self.height,
+                        );
+                    } else {
+                        TooltipState.unhover();
+                    }
+                }
+                clicked => {
+                    TooltipState.unhover();
+                    root.edit-asked();
+                }
+            }
+        }
+    }
+}
