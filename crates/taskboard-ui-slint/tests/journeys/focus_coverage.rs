@@ -106,10 +106,6 @@ const EXEMPT: &[(&str, &str)] = &[
          not the site's backdrop",
     ),
     (
-        "TouchArea:AppWindow::track-entries-backdrop",
-        "modal dismissal surface; the panel closes on Escape",
-    ),
-    (
         // The dropdown group rides the `AnchoredOverlayHost` now
         // (round-9 chunk 15 D-3): the dismissal layer is the host's,
         // not the site's backdrop (the timer-setter precedent above).
@@ -1778,10 +1774,13 @@ fn focus_overlay_item_walk_visits_every_row() {
 fn track_entries_has_no_pointer_only_controls() {
     run(|| {
         let mounted = track_entries_fixture();
+        // D-9a (round-9 W6): the hand backdrop is dead — the dismissal
+        // layer is the track host's (the M-law precedent's expected
+        // shape).
         assert_modal_scan(
             &mounted,
             "TrackEntriesPanel",
-            &["TouchArea:AppWindow::track-entries-backdrop"],
+            &["TouchArea:AnchoredOverlayHost::dismissal"],
         );
     });
 }
