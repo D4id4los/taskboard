@@ -3410,9 +3410,18 @@ fn plan_entry_restore(
     if !app.tasks.contains_key(&entry.task) {
         return Err(CommandError::UnknownTask(entry.task));
     }
-    if let Some(stored) = app.tracking.entries.get(&entry.id)
-        && *stored != *entry
-    {
+    if let Some(stored) = app.tracking.entries.get(&entry.id) {
+        // Ids are minted once, so a same-id row is either the exact
+        // already-restored fact (the terminal-repeat no-op — no upsert,
+        // no flush trigger) or a divergent one (refuse typed, never
+        // clobber — D-4c). Whole-row equality: the divergence guard's
+        // `!=` was this check's exact negation, so the pair stays total.
+        if *stored == *entry {
+            return Ok(CommandPlan {
+                actions: Vec::new(),
+                outcome: CommandOutcome::NoOp,
+            });
+        }
         return Err(CommandError::TimeEntryAlreadyPresent(entry.id));
     }
     Ok(CommandPlan {
@@ -9583,7 +9592,45 @@ mod tests {
         .unwrap();
         assert_eq!(plan.outcome, CommandOutcome::NoOp);
         assert_eq!(plan.actions, Vec::new());
-    } // ---- Single-global convergence (DR-5/1, §5.18) -----------------------
+    }
+
+    #[test]
+    fn restore_time_entry_of_an_identical_present_row_plans_nothing() {
+        // #990: the repeat restore of the byte-identical present row is
+        // the terminal-repeat no-op — no upsert, no flush trigger.
+        let (app, outbox) = base();
+        let entry = tracked_entry(1, task_id(), T0 - 800, Some(T0 - 700));
+        let app = with_entry(app, entry.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::RestoreTimeEntry {
+                entry: Box::new(entry.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+
+        // The same-id row with any divergent field still refuses typed —
+        // the no-op tightened nothing about divergence (whole-row
+        // equality is the pair's totality).
+        let mutant = tracked_entry(1, task_id(), T0 - 795, Some(T0 - 700));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::RestoreTimeEntry {
+                entry: Box::new(mutant),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            CommandError::TimeEntryAlreadyPresent(id) if id == entry.id
+        ));
+    }
+
+    // ---- Single-global convergence (DR-5/1, §5.18) -----------------------
 
     proptest! {
         #![proptest_config(crate::test_support::proptest_config(256))]
