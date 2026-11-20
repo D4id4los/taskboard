@@ -77,10 +77,11 @@ pub(crate) async fn standalone_boot_fixture(tag: &str) -> StandaloneFixture {
     config.storage.db_path = Some(dir.path().join("taskboard.db"));
     config.sync.backend = Some(SyncBackend::Standalone);
     config.validate().expect("config valid");
-    let app = crate::bootstrap::bootstrap(
+    let app = crate::bootstrap::bootstrap_in(
         config,
         refusing_store(),
         Arc::new(crate::notifications::LogSink),
+        crate::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("standalone boot");

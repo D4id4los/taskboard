@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
-use taskboard_app::bootstrap::{App, BootstrapError, bootstrap};
+use taskboard_app::bootstrap::{App, BootstrapError, bootstrap_in};
 use taskboard_app::config::AppConfig;
 use taskboard_app::secrets::{CredentialError, CredentialStore};
 use taskboard_domain::persistence::TaskRepository as _;
@@ -169,12 +169,16 @@ async fn eventually(app: &App, pred: impl Fn(&taskboard_domain::AppState) -> boo
 
 /// Bootstraps with the env store (the password override and its env
 /// lock live as long as the returned guard).
-async fn boot(config: AppConfig) -> (App, PasswordEnv) {
+async fn boot(
+    config: AppConfig,
+    identity: taskboard_app::bootstrap::BootIdentity,
+) -> (App, PasswordEnv) {
     let guard = env_password();
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         Arc::new(taskboard_app::secrets::EnvCredentialStore),
         Arc::new(taskboard_app::notifications::LogSink),
+        identity,
     )
     .await
     .expect("bootstrap");
@@ -194,7 +198,11 @@ async fn boot(config: AppConfig) -> (App, PasswordEnv) {
 async fn b1_boot_and_no_board_cycle_through_the_graph() {
     let dir = tempdir();
     let server = MockServer::start().await;
-    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+    let (app, _env) = boot(
+        config_for(&server.uri(), &dir),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     let outcome = app
         .engine
@@ -251,7 +259,11 @@ async fn b2_seeded_cycle_pulls_and_authenticates() {
         seed_join.await.expect("seed actor exits");
     }
 
-    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+    let (app, _env) = boot(
+        config_for(&server.uri(), &dir),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     app.engine
         .execute(StateCommand::RequestSync)
         .await
@@ -284,7 +296,11 @@ async fn b3_graceful_shutdown_reopens_the_database() {
         drop(repo);
         join.await.expect("seed actor exits");
 
-        let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+        let (app, _env) = boot(
+            config_for(&server.uri(), &dir),
+            taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+        )
+        .await;
         let outcome = app.shutdown().await;
         assert!(!outcome.actor_aborted);
 
@@ -321,7 +337,11 @@ async fn b4_shutdown_mid_cycle_is_bounded_and_keeps_the_outbox() {
 
     let mut config = config_for(&server.uri(), &dir);
     config.app.shutdown_timeout_secs = 1; // tight budget: the test's bound
-    let (app, _env) = boot(config).await;
+    let (app, _env) = boot(
+        config,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     app.engine
         .execute(StateCommand::RequestSync)
@@ -375,10 +395,11 @@ async fn b5_bootstrap_failure_paths_are_typed() {
     // Bad URL: config validation rejects it before anything spawns.
     let mut config = common::valid_config("not a url");
     config.storage.db_path = Some(dir.path().join("x.db"));
-    let err = bootstrap(
+    let err = bootstrap_in(
         config,
         Arc::clone(&store),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect_err("bad url");
@@ -388,10 +409,11 @@ async fn b5_bootstrap_failure_paths_are_typed() {
     let server = MockServer::start().await;
     let config = config_for(&server.uri(), &dir);
     let missing: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
-    let err = bootstrap(
+    let err = bootstrap_in(
         config,
         missing,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect_err("no credential");
@@ -409,10 +431,11 @@ async fn b5_bootstrap_failure_paths_are_typed() {
     std::fs::write(&blocker, b"not a directory").expect("write blocker");
     let mut config = config_for(&server.uri(), &dir);
     config.storage.db_path = Some(blocker.join("nested").join("taskboard.db"));
-    let err = bootstrap(
+    let err = bootstrap_in(
         config,
         Arc::clone(&populated),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect_err("db path unusable");
@@ -427,10 +450,11 @@ async fn b5_bootstrap_failure_paths_are_typed() {
     std::fs::write(&corrupt, b"this is not a sqlite database at all").expect("write");
     let mut config = config_for(&server.uri(), &dir);
     config.storage.db_path = Some(corrupt);
-    let err = bootstrap(
+    let err = bootstrap_in(
         config,
         populated,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect_err("corrupt db");
@@ -451,10 +475,11 @@ async fn b6_desktop_mode_boots_the_core() {
     config.nextcloud.username = None;
     config.app.mode = taskboard_app::config::AppMode::Desktop;
     let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         store,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("the core boots under any mode");
@@ -484,7 +509,11 @@ async fn b7_restart_continuity_with_validators() {
 
     // First boot: a full pull stores the validators (ETag "gen-1").
     {
-        let (app, _env) = boot(config.clone()).await;
+        let (app, _env) = boot(
+            config.clone(),
+            taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+        )
+        .await;
         app.engine
             .execute(StateCommand::RequestSync)
             .await
@@ -529,7 +558,11 @@ async fn b7_restart_continuity_with_validators() {
 
     config.nextcloud.server_url = Some(second.uri());
     config.storage.db_path = Some(db_path);
-    let (app, _env) = boot(config).await;
+    let (app, _env) = boot(
+        config,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     // Cycle 1 (post-restart): the forced unconditional refetch.
     app.engine
@@ -583,10 +616,11 @@ async fn b8_standalone_boot_never_touches_credentials_and_serves_commands() {
     config.storage.db_path = Some(dir.path().join("taskboard.db"));
 
     // The empty fake would answer `NotFound` if consulted.
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         Arc::new(common::FakeCredentialStore::default()),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("standalone boot needs no credentials");
@@ -637,7 +671,11 @@ async fn b8_standalone_boot_never_touches_credentials_and_serves_commands() {
 async fn b9_detach_connector_is_graceful_idempotent_and_fails_closed() {
     let dir = tempdir();
     let server = MockServer::start().await;
-    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+    let (app, _env) = boot(
+        config_for(&server.uri(), &dir),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     assert!(app.connector_attached(), "a nextcloud boot has a connector");
 
     assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
@@ -689,10 +727,11 @@ async fn b13_standalone_shutdown_drops_the_parked_reports_sender_before_the_engi
     // inside it, so only the ordering violation can trip the timeout.
     config.app.shutdown_timeout_secs = 30;
 
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         Arc::new(common::FakeCredentialStore::default()),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("standalone boot needs no credentials");
@@ -725,10 +764,11 @@ async fn b10_standalone_attach_makes_the_engine_live_and_the_report_is_ingested(
     config.storage.db_path = Some(dir.path().join("taskboard.db"));
 
     // The empty fake would answer `NotFound` if consulted.
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         Arc::new(common::FakeCredentialStore::default()),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("standalone boot needs no credentials");
@@ -783,7 +823,11 @@ async fn b10_standalone_attach_makes_the_engine_live_and_the_report_is_ingested(
 async fn b11_double_attach_is_refused_typed() {
     let dir = tempdir();
     let server = MockServer::start().await;
-    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+    let (app, _env) = boot(
+        config_for(&server.uri(), &dir),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     assert!(app.connector_attached(), "a nextcloud boot has a connector");
 
     let err = app
@@ -821,7 +865,11 @@ async fn b11_double_attach_is_refused_typed() {
 async fn b12_detach_then_re_attach_round_trips() {
     let dir = tempdir();
     let server = MockServer::start().await;
-    let (app, _env) = boot(config_for(&server.uri(), &dir)).await;
+    let (app, _env) = boot(
+        config_for(&server.uri(), &dir),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
     assert!(!app.connector_attached());
@@ -920,10 +968,11 @@ async fn notifier_join_is_bounded_with_a_delivery_in_flight() {
         release: std::sync::Mutex::new(Some(release_rx)),
         ..GateSink::default()
     });
-    let app = bootstrap(
+    let app = bootstrap_in(
         config.clone(),
         Arc::new(FakeCredentialStore::default()),
         sink.clone(),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("boots");
@@ -1018,10 +1067,11 @@ async fn standalone_boot(dir: &tempfile::TempDir) -> App {
     config.nextcloud.server_url = None;
     config.nextcloud.username = None;
     config.storage.db_path = Some(dir.path().join("taskboard.db"));
-    bootstrap(
+    bootstrap_in(
         config,
         Arc::new(common::FakeCredentialStore::default()),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("standalone boot needs no credentials")
@@ -1123,10 +1173,11 @@ async fn b9_orphaned_binding_refuses_attach_loudly() {
 
     let mut config = config_for(&server.uri(), &dir);
     config.storage.db_path = Some(db_path);
-    let err = bootstrap(
+    let err = bootstrap_in(
         config,
         store,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect_err("orphaned binding");
@@ -1158,10 +1209,11 @@ async fn b10_mixed_fleet_config_boots_and_covers_its_bindings() {
     config.files_sync.enabled = true;
     let (app, _env) = {
         let _guard = common::env_lock();
-        let app = bootstrap(
+        let app = bootstrap_in(
             config,
             store,
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("mixed fleet boots");

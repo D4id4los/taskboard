@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use taskboard_app::bootstrap::{BootstrapError, bootstrap};
+use taskboard_app::bootstrap::{BootstrapError, bootstrap_in};
 use taskboard_app::secrets::CredentialStore;
 
 use crate::common;
@@ -28,18 +28,20 @@ async fn k1_second_bootstrap_on_a_live_db_is_instance_locked() {
     let store: Arc<dyn CredentialStore> =
         Arc::new(FakeCredentialStore::with(&server.uri(), "alice", "pw"));
 
-    let app = bootstrap(
+    let app = bootstrap_in(
         config_for(&server.uri(), dir.path(), "k1.db"),
         Arc::clone(&store),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("first bootstrap");
 
-    let err = bootstrap(
+    let err = bootstrap_in(
         config_for(&server.uri(), dir.path(), "k1.db"),
         store,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect_err("second bootstrap on the same db");
@@ -63,19 +65,21 @@ async fn k2_lock_is_released_after_shutdown() {
     let store: Arc<dyn CredentialStore> =
         Arc::new(FakeCredentialStore::with(&server.uri(), "alice", "pw"));
 
-    let app = bootstrap(
+    let app = bootstrap_in(
         config_for(&server.uri(), dir.path(), "k2.db"),
         Arc::clone(&store),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("first bootstrap");
     app.shutdown().await;
 
-    let second = bootstrap(
+    let second = bootstrap_in(
         config_for(&server.uri(), dir.path(), "k2.db"),
         store,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("bootstrap after shutdown");
@@ -90,10 +94,11 @@ async fn k4_lock_sidecar_is_a_db_sibling() {
     let store: Arc<dyn CredentialStore> =
         Arc::new(FakeCredentialStore::with(&server.uri(), "alice", "pw"));
 
-    let app = bootstrap(
+    let app = bootstrap_in(
         config_for(&server.uri(), dir.path(), "k4.db"),
         store,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("bootstrap");
@@ -110,17 +115,19 @@ async fn k5_different_databases_do_not_contend() {
     let store: Arc<dyn CredentialStore> =
         Arc::new(FakeCredentialStore::with(&server.uri(), "alice", "pw"));
 
-    let one = bootstrap(
+    let one = bootstrap_in(
         config_for(&server.uri(), dir.path(), "k5a.db"),
         Arc::clone(&store),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("first db");
-    let two = bootstrap(
+    let two = bootstrap_in(
         config_for(&server.uri(), dir.path(), "k5b.db"),
         store,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("second db");
@@ -139,10 +146,11 @@ async fn k6_holder_pid_reads_the_recorded_holder_while_locked() {
     let store: Arc<dyn CredentialStore> =
         Arc::new(FakeCredentialStore::with(&server.uri(), "alice", "pw"));
     let db = dir.path().join("k6.db");
-    let _app = bootstrap(
+    let _app = bootstrap_in(
         config_for(&server.uri(), dir.path(), "k6.db"),
         store,
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("boots");

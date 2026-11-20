@@ -533,10 +533,11 @@ async fn r10_session_lane_routes_remind() {
     seed(&config, "Todo", "Session task").await;
 
     let store = forbidden_store();
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");
@@ -796,11 +797,15 @@ fn e2e_config(dir: &std::path::Path, db: &str, default_before: &str) -> AppConfi
 }
 
 /// Boots the observed core with the recording sink.
-async fn e2e_boot(config: AppConfig) -> (taskboard_app::App, Arc<RecordingSink>) {
+async fn e2e_boot(
+    config: AppConfig,
+    identity: taskboard_app::bootstrap::BootIdentity,
+) -> (taskboard_app::App, Arc<RecordingSink>) {
     let sink = Arc::new(RecordingSink::default());
-    let app = taskboard_app::bootstrap::bootstrap(config, forbidden_store(), sink.clone())
-        .await
-        .expect("e2e boots");
+    let app =
+        taskboard_app::bootstrap::bootstrap_in(config, forbidden_store(), sink.clone(), identity)
+            .await
+            .expect("e2e boots");
     (app, sink)
 }
 
@@ -871,7 +876,11 @@ async fn e1_rule_fires_and_delivers_end_to_end() {
         e2e_seed_task_and_rule(&config, "E1 task", TimeDelta::try_minutes(10).expect("10m")).await;
     let rule_uuid = uuid::Uuid::parse_str(&rule_id).expect("rule id");
 
-    let (app, sink) = e2e_boot(config.clone()).await;
+    let (app, sink) = e2e_boot(
+        config.clone(),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     let now = chrono::Utc::now();
     let due = now - chrono::TimeDelta::try_minutes(10).expect("-10m");
     app.engine
@@ -935,7 +944,11 @@ async fn e2_delivery_is_at_most_once_across_restarts() {
         e2e_seed_task_and_rule(&config, "E2 task", TimeDelta::try_minutes(10).expect("10m")).await;
     let rule_uuid = uuid::Uuid::parse_str(&rule_id).expect("rule id");
 
-    let (app, sink) = e2e_boot(config.clone()).await;
+    let (app, sink) = e2e_boot(
+        config.clone(),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     let due = chrono::Utc::now() - chrono::TimeDelta::try_minutes(10).expect("-10m");
     app.engine
         .execute(taskboard_domain::StateCommand::UpdateTask {
@@ -960,7 +973,11 @@ async fn e2_delivery_is_at_most_once_across_restarts() {
 
     // A fresh boot on the same db: the immediate first tick adds
     // nothing.
-    let (app, sink) = e2e_boot(config.clone()).await;
+    let (app, sink) = e2e_boot(
+        config.clone(),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     await_quiet(
         || sink.len() != 0,
         "the refire stays suppressed",
@@ -995,7 +1012,11 @@ async fn e3_disabled_config_stays_silent() {
         e2e_seed_task_and_rule(&config, "E3 task", TimeDelta::try_minutes(10).expect("10m")).await;
     let _ = uuid::Uuid::parse_str(&rule_id).expect("rule id");
 
-    let (app, sink) = e2e_boot(config.clone()).await;
+    let (app, sink) = e2e_boot(
+        config.clone(),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     let due = chrono::Utc::now() - chrono::TimeDelta::try_minutes(10).expect("-10m");
     app.engine
         .execute(taskboard_domain::StateCommand::UpdateTask {
@@ -1028,7 +1049,11 @@ async fn e4_default_reminder_fires_at_the_configured_offset() {
     let config = e2e_config(dir.path(), "e4.db", "0s");
     seed(&config, "Todo", "E4 task").await;
 
-    let (app, sink) = e2e_boot(config.clone()).await;
+    let (app, sink) = e2e_boot(
+        config.clone(),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     let due = chrono::Utc::now() - chrono::TimeDelta::try_minutes(5).expect("-5m");
     app.engine
         .execute(taskboard_domain::StateCommand::UpdateTask {
@@ -1160,10 +1185,11 @@ async fn r13_json_envelope_carries_insistence() {
     seed(&config, "Todo", "Envelope task").await;
 
     let store = forbidden_store();
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");

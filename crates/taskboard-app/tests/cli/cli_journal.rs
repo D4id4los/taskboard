@@ -461,10 +461,11 @@ async fn j14_json_envelopes_on_the_session_lane() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "j14.db");
     let store = forbidden_store();
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");
@@ -556,10 +557,11 @@ async fn j15_session_lane_matches_the_one_shot_lane() {
     let two_row = two.entry.as_ref().expect("row");
 
     let store = forbidden_store();
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");
@@ -654,10 +656,11 @@ async fn j16_bare_export_is_byte_compatible_with_explicit_tracking() {
     let dir = tempdir();
     let config = standalone_config(dir.path(), "j16.db");
     let store = forbidden_store();
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");
@@ -1035,10 +1038,11 @@ async fn j20_journal_export_is_raw_under_json() {
     let row = receipt.entry.as_ref().expect("row");
 
     let store = forbidden_store();
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");

@@ -662,10 +662,11 @@ async fn t11_the_session_lane_routes_track_and_export() {
     let config = standalone_config(dir.path(), "t11.db");
     let store = forbidden_store();
     seed_task(&config, "session work").await;
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");
@@ -1086,10 +1087,11 @@ async fn t15_the_export_payload_bypasses_the_envelope() {
     .expect("logs");
 
     // The lane-level pin: export's bytes are json-flag-blind.
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         forbidden_store(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");
@@ -1125,10 +1127,11 @@ async fn t15_the_export_payload_bypasses_the_envelope() {
     // modes (the receipt-envelope lane is still the failure lane).
     let bad = parse_export(&["export", "--task", "no such task"]);
     for json in [false, true] {
-        let app = taskboard_app::bootstrap::bootstrap(
+        let app = taskboard_app::bootstrap::bootstrap_in(
             config.clone(),
             forbidden_store(),
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("session boots");
@@ -1152,10 +1155,11 @@ async fn t15_the_export_payload_bypasses_the_envelope() {
     }
 
     // Contrast pin: a track receipt still rides the --json envelope.
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         forbidden_store(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");

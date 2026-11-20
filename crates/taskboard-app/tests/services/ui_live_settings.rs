@@ -10,7 +10,7 @@ use crate::common;
 use std::sync::Arc;
 
 use common::{EnvOverride, env_lock, forbidden_store, standalone_config, tempdir};
-use taskboard_app::bootstrap::bootstrap;
+use taskboard_app::bootstrap::bootstrap_in;
 use taskboard_app::notifications::LogSink;
 use taskboard_app::ui_requests::{ConnectionWorkspace, spawn_ui_request_forwarder};
 use taskboard_ui_slint::requests::{Field, SettingsError, UiRequest};
@@ -29,9 +29,14 @@ async fn forwarder(
     let mut config = standalone_config(dir.path(), "live.db");
     config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
     config.validate().expect("validates");
-    let app = bootstrap(config, forbidden_store(), Arc::new(LogSink))
-        .await
-        .expect("standalone boot");
+    let app = bootstrap_in(
+        config,
+        forbidden_store(),
+        Arc::new(LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await
+    .expect("standalone boot");
     let workspace = ConnectionWorkspace {
         config_write_path: config_path,
         store: forbidden_store(),

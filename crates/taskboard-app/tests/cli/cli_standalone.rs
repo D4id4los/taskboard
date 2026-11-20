@@ -319,11 +319,13 @@ async fn persisted_binding_of(
     config: &AppConfig,
     store: &Arc<dyn CredentialStore>,
     board_uuid: uuid::Uuid,
+    identity: taskboard_app::bootstrap::BootIdentity,
 ) -> Option<(String, uuid::Uuid)> {
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         Arc::clone(store),
         Arc::new(taskboard_app::notifications::LogSink),
+        identity,
     )
     .await
     .expect("boots");
@@ -441,7 +443,13 @@ async fn us1_s3_the_bind_is_the_exact_files_mint_persisted() {
     .await
     .expect("the ceremony commits");
 
-    let binding = persisted_binding_of(&j.config, &j.store, board_uuid).await;
+    let binding = persisted_binding_of(
+        &j.config,
+        &j.store,
+        board_uuid,
+        taskboard_app::bootstrap::BootIdentity::At(j.dir.path().to_owned()),
+    )
+    .await;
     assert_eq!(
         binding,
         Some(("files-sync".to_owned(), board_uuid)),
@@ -505,10 +513,11 @@ async fn us2_s1_lane_disabled_refuses_before_any_command_and_the_tree_is_unchang
 
     // The state tree is unchanged: the board never bound (a fresh boot
     // reads the persisted state).
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config,
         forbidden_store(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("boots");
@@ -568,7 +577,13 @@ async fn us2_s2_already_bound_refuses_typed_and_the_binding_is_untouched() {
     );
 
     // The existing binding is untouched by the refusal.
-    let binding = persisted_binding_of(&j.config, &j.store, board_uuid).await;
+    let binding = persisted_binding_of(
+        &j.config,
+        &j.store,
+        board_uuid,
+        taskboard_app::bootstrap::BootIdentity::At(j.dir.path().to_owned()),
+    )
+    .await;
     assert_eq!(
         binding,
         Some(("files-sync".to_owned(), board_uuid)),
