@@ -507,6 +507,9 @@ async fn config_path_is_infallible_even_for_a_garbage_config() {
 /// config is the one typed failure (asserted via the garbage file).
 #[tokio::test]
 async fn status_routes_client_side_without_booting() {
+    // The dispatch tier composes the ambient env over the seeded file
+    // (#984): the lock makes the composed input deterministic.
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     common::write_test_config(&dir.path().join("taskboard.toml"), None, None)
         .expect("write config");
@@ -539,6 +542,9 @@ async fn status_routes_client_side_without_booting() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)] // one verb chain, one row per arm
 async fn one_shot_core_verbs_route_success_end_to_end() {
+    // The dispatch tier composes the ambient env over the seeded file
+    // (#984): the lock makes the composed input deterministic.
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     common::write_test_config(&dir.path().join("taskboard.toml"), None, None).expect("config");
     let mut out = Vec::new();
@@ -708,7 +714,7 @@ async fn sync_routes_the_timeout_and_failure_outcomes() {
         Some("alice"),
     )
     .expect("write config");
-    let _guard = env_lock();
+    let _guard = common::taskboard_env_lock();
     let _password = EnvOverride::set("TASKBOARD_APP_PASSWORD", "pw");
 
     // The cycle's first request outruns the one-second budget: the
