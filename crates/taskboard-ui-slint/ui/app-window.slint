@@ -27,7 +27,7 @@ import { TrackPanelFacts, TrackPanelWalkFacts } from "track-panel-facts.slint";
 import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
 import { ModalDialogHost, DialogKind, DialogButtonModel, DialogButtonRole } from "widgets/modal-dialog-host.slint";
-import { AnchoredOverlayHost } from "widgets/anchored-overlay.slint";
+import { AnchoredOverlayHost, OverlayPlacement } from "widgets/anchored-overlay.slint";
 import { HabitCardModel } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
@@ -932,34 +932,30 @@ export component AppWindow inherits Window {
     // never linger). The panel sits below the anchor button when it
     // fits (above the status bar), else above, clamped into the
     // window — the date-picker's exact `y` expression shape.
+    // D-9a (round-9 W6, #954): the last large-panel hand mount joins
+    // the overlay-migration family — the hand backdrop and the hand
+    // clamp/flip expressions are the host's now (the G-4 probe's law
+    // tests assert the host's placed rect equals the retired
+    // expressions for arbitrary anchors). The panel's width law
+    // (min(viewport - 2·space-2, max(panel preferred, 360·scale)))
+    // is the host's law 4 verbatim with the 360·scale preferred
+    // floor; the dismissal layer is the host's (routing verbatim:
+    // outside click and the right-button down half).
     if (root.current-view == View.task-detail
-            && root.task-model.track-entries-open): track-entries-backdrop := TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => root.track-entries-dismiss-requested();
-        // The right-click dismissal (r4 D2): the card's pointer-event
-        // idiom, closing on the down half.
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down
-                    && event.button == PointerEventButton.right) {
-                root.track-entries-dismiss-requested();
-            }
-        }
-    }
-    if (root.current-view == View.task-detail
-            && root.task-model.track-entries-open): TrackEntriesPanel {
-        width: min(root.width - 2 * Theme.space-2,
-                   max(self.preferred-width, 360px * Theme.base-scale));
-        x: max(Theme.space-2,
-               min(TrackPanelFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((TrackPanelFacts.anchor-y + TrackPanelFacts.anchor-height
-                            + Theme.space-1 + self.height <= status.y
-                        ? TrackPanelFacts.anchor-y + TrackPanelFacts.anchor-height
-                            + Theme.space-1
-                        : TrackPanelFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
+            && root.task-model.track-entries-open): track-entries-host := AnchoredOverlayHost {
+        open: true;
+        anchor-x: TrackPanelFacts.anchor-x;
+        anchor-y: TrackPanelFacts.anchor-y;
+        // No anchor-width fact: the placement law reads the anchor's
+        // x/y/height only (the roster singleton carries three arms).
+        anchor-width: 0;
+        anchor-height: TrackPanelFacts.anchor-height;
+        viewport-width: root.width;
+        viewport-floor: status.y;
+        panel-preferred-width: 360px * Theme.base-scale;
+        walk-stops: 1;
+        dismissed => root.track-entries-dismiss-requested();
+        TrackEntriesPanel {
         rows: root.task-model.track-entries;
         total: root.task-model.track-entries-total;
         // The form surface's pushed halves (r4 D-TS4) — the
@@ -999,6 +995,7 @@ export component AppWindow inherits Window {
         end-stepped(n) => root.track-form-end-stepped(n);
         end-picked(m) => root.track-form-end-picked(m);
         commit-requested() => root.track-form-commit-requested();
+        }
     }
 
         // M4 (overlay migration): the track form's date grid as a
@@ -1262,32 +1259,31 @@ export component AppWindow inherits Window {
     // sibling rule (the later sibling absorbs its own clicks, the
     // underlay receives exactly the outside clicks). The panel hangs
     // below the bar's mirrored anchor, clamped into the window.
-    if (root.board-color-strip-open): board-color-backdrop := TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => root.board-color-strip-dismissed();
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down
-                    && event.button == PointerEventButton.right) {
-                root.board-color-strip-dismissed();
-            }
-        }
-    }
-    if (root.board-color-strip-open): Rectangle {
-        x: max(Theme.space-2,
-               min(BoardBarFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min(BoardBarFacts.anchor-y + BoardBarFacts.anchor-height + Theme.space-1,
-                   root.height - self.height - Theme.space-2));
-        width: 6 * Theme.space-4 + 5 * Theme.space-2 + 2 * Theme.space-2;
-        height: Theme.space-4 + 2 * Theme.space-2;
-        background: Theme.surface-raised;
-        border-radius: Theme.radius-small;
-        border-width: Theme.focus-ring-width;
-        border-color: Semantic.focus-ring;
-        drop-shadow-blur: Theme.space-2;
-        drop-shadow-color: Theme.surface-hover;
+    // D-9b (round-9 W6, #954): the color strip joins the family — the
+    // hand backdrop and the clamp expressions are the host's now (the
+    // G-4 probe's law tests). The strip pins below (no flip leg — the
+    // old expression's law) with the window bottom as the floor, and
+    // its explicit size rides the host's width/height law.
+    if (root.board-color-strip-open): board-color-host := AnchoredOverlayHost {
+        open: true;
+        anchor-x: BoardBarFacts.anchor-x;
+        anchor-y: BoardBarFacts.anchor-y;
+        anchor-width: BoardBarFacts.anchor-width;
+        anchor-height: BoardBarFacts.anchor-height;
+        viewport-width: root.width;
+        viewport-floor: root.height;
+        placement: OverlayPlacement.below;
+        panel-preferred-width: 6 * Theme.space-4 + 5 * Theme.space-2 + 2 * Theme.space-2;
+        walk-stops: 1;
+        dismissed => root.board-color-strip-dismissed();
+        Rectangle {
+            height: Theme.space-4 + 2 * Theme.space-2;
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-small;
+            border-width: Theme.focus-ring-width;
+            border-color: Semantic.focus-ring;
+            drop-shadow-blur: Theme.space-2;
+            drop-shadow-color: Theme.surface-hover;
         HorizontalLayout {
             padding: Theme.space-2;
             spacing: Theme.space-2;
@@ -1305,6 +1301,7 @@ export component AppWindow inherits Window {
                     clicked => root.board-color-picked(index);
                 }
             }
+        }
         }
     }
     // M3 (overlay migration): the time-field quick-list flyout's ONE
