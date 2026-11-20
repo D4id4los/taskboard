@@ -82,6 +82,19 @@ The mount checklist (the six steps a new dialog site performs):
    per-widget mask ritual.
 6. Declare the button model (empty for button-less dialogs).
 
+* Interactable-row cursor heuristic (J3 R-7; W7 formalizes)
+
+Every widget with interactable rows carries a selected-row cursor.
+The cursor is adapter-owned presentation state keyed by the row's
+stable id (never an index), armed by the first vertical directional
+stroke, clamped at refresh against the pass's id table, cleared on
+view exit and every foreign settle; pointer activation moves it; row
+verbs dispatch through the row's own seams, acting on the cursor'd
+row. Adopted: the rule list (round 9 chunk 12, 2026-11-19 —
+=view_state.rs::rule_cursor=, =rule-list.slint::RuleList=).
+Pending adopters: break-rules roster, File-to candidate rows
+(#1030), the planner's in-pane walk (#1041).
+
 * Usage rules
 
 - Dialog vs popover vs inline: a modal for focus-trapped decisions;

@@ -46,6 +46,7 @@ Non-goals: vi/emacs preset remapping beyond conformance to the law
 | chord.uppercase-fire | E | E | E | E | E | E | — |
 | task.toggle-tracker | E | E | E | — | — | — | — |
 | taskdetail.widget-shortcuts | — | E | — | — | — | — | — |
+| row.cursor (R-7, chunk 12) | — | E | — | — | — | — | — |
 
 **Rulings** (operator pass 2026-11-18 over the keyboard research §8):
 
@@ -156,6 +157,12 @@ Non-goals: vi/emacs preset remapping beyond conformance to the law
 | US-3/S1 | any view | press Ctrl+Shift+T | ActionId::view.today | Today view opens | unbound chord: no-op |
 | US-3/S2 | any view | press bare Ctrl+t | — | no dispatch (distinct binding, unbound) | — |
 
+### US-6 — Selected-row cursors app-wide (round 9 chunk 12: the rule list)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-6/S1 | TaskDetail rule rows | press the preset's vertical directional keys | ActionId::nav.focus-down/up | the rule cursor arms at row 0 then walks clamped (zero commands — presentation state) | empty roster: the control ladder (chunk 9 byte-identical) |
+
 ### US-4 — Task-details full shortcut coverage
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
@@ -183,6 +190,7 @@ flowchart LR
 | W-3 | adapter settle matrix | — | — | Flow::Move kept arms | nav.focus-right | — | — | US-2/S1 | board_move_journeys.rs::us2_s1 |
 | W-4 | task-view widgets | done/tracker/entries/effort/back | on activation | detail shortcut map | task.toggle-done, TaskToggleTracker, task.entries.open, task.effort.set, task.back | StateCommand variants | — | US-4/S1-S2 | detail_shortcuts_journeys.rs::us4_s1 |
 | W-5 | board view | tracker verbs | — | board-context keymap arm | TaskStartTracker/TaskStopTracker/TaskToggleTracker | StateCommand | ItemAddr card | US-5 | tracker_journeys.rs::us5_s1 |
+| W-6 | rule-list.slint rows | selected-rule cursor | — | on_task_rule_row_clicked (adapter.rs install_task_seam) — slint callback task-rule-row-clicked; the directional TaskDetail arm + Activate resolution (adapter.rs::interpret_directional / activate_rule_cursor) | nav.focus-down | — | — | US-6/S1 | focus_law_journeys.rs::us6_s1 |
 
 ## 7. Command-contract delta
 
@@ -195,7 +203,8 @@ flowchart LR
 
 ## 8. Verification plan
 
-- **Journey tests**: us1_s1-s3, us2_s1, us3_s1, us4_s1-s2, us5_s1.
+- **Journey tests**: us1_s1-s3, us2_s1, us3_s1, us4_s1-s2, us5_s1,
+  us6_s1-s4 + us6_n1 (the chunk-9 negative; round 9 chunk 12).
 - **Seam tests**: `from_event` chorded-letter delivery contract
   (uppercase + lowercase + shift-preserved); settle-matrix kept-arm
   assertion.
