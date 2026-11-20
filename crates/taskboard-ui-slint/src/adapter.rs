@@ -4181,6 +4181,10 @@ impl Adapter {
                 if self.kiosk || self.view_state.subject_task().is_none() {
                     Vec::new()
                 } else {
+                    // The picker overlay is a foreign settle (D-2
+                    // site 4, the opener sweep): the rule cursor never
+                    // survives under a mask.
+                    self.view_state.clear_rule_cursor();
                     self.priority_open = Some(field);
                     self.refresh_forced(window);
                     Vec::new()
@@ -4388,6 +4392,9 @@ impl Adapter {
             (_, UiEffect::SeriesPauseOpen) if self.kiosk => Vec::new(),
             (_, UiEffect::SeriesPauseOpen) => {
                 if let Some(task) = self.view_state.subject_task() {
+                    // The recur-pause overlay is a foreign settle
+                    // (D-2 site 4, the opener sweep).
+                    self.view_state.clear_rule_cursor();
                     self.series_target = Some(task);
                     self.recur_pause_open = true;
                     self.recur_confirm_armed = false;
@@ -4654,6 +4661,20 @@ impl Adapter {
                 }
                 Vec::new()
             }
+            // The rule cursor's activation (J3 US-6 D-3, round 9
+            // chunk 12): over an armed cursor, Activate dispatches the
+            // cursor'd row's OWN affordance — remove for an armed
+            // rule, the due editor for an unarmed one (the row's
+            // icon-button seams; the cursor is a pointer, not a new
+            // verb family, R-5's parity law). Disarmed, the detail's
+            // Activate falls through to `interpret_begin` untouched.
+            (Flow::None, UiEffect::Activate)
+                if self.view_state.view() == crate::view_state::ViewId::TaskDetail
+                    && self.view_state.rule_cursor().is_some() =>
+            {
+                self.activate_rule_cursor(&state, window);
+                Vec::new()
+            }
             (
                 Flow::None,
                 effect @ (UiEffect::Activate
@@ -4681,8 +4702,13 @@ impl Adapter {
             (Flow::None, UiEffect::OpenInbox) => self.view_state.open_inbox(&state),
             // UX-R8 D-4's Escape cell: the move-cancel stroke with
             // no flow is the settle law's keyboard face — the
-            // selection clears, nothing dispatches.
-            (Flow::None, UiEffect::CancelMove) => self.view_state.clear_selection(),
+            // selection clears, nothing dispatches. The rule cursor's
+            // D-2 site 5 joins: the global cancel stays
+            // unambiguously a clear.
+            (Flow::None, UiEffect::CancelMove) => {
+                self.view_state.clear_rule_cursor();
+                self.view_state.clear_selection()
+            }
             (Flow::None, UiEffect::FocusNext) => {
                 let day = self.day_ctx();
                 self.view_state
@@ -5020,10 +5046,10 @@ impl Adapter {
         // backwards, Right/Down forwards, decided in
         // [`Self::directional_control_step`].
         if matches!(effect, UiEffect::ControlNext | UiEffect::ControlPrev)
-            || self.directional_control_step(effect).is_some()
+            || self.directional_control_step(&state, effect).is_some()
         {
             let backwards = self
-                .directional_control_step(effect)
+                .directional_control_step(&state, effect)
                 .unwrap_or_else(|| effect == UiEffect::ControlPrev);
             if self.mask_armed(window) {
                 let facts = window.global::<crate::MaskWalkFacts>();
@@ -5340,6 +5366,41 @@ impl Adapter {
         }
     }
 
+    /// The rule cursor's activation (J3 US-6 D-3, round 9 chunk 12):
+    /// the cursor'd row's own affordance set read off the projection's
+    /// armed bit — `ReminderRuleRemove` for an armed rule (the one-shot
+    /// `rule_target` minted exactly as `on_task_rule_remove_clicked`
+    /// mints it) and the due editor for an unarmed one (the row's
+    /// jump seam, `begin_date_edit`). Immediate, no staged confirm:
+    /// the row's icon-button affordance is immediate today (R-5's
+    /// strict parity law). A cursor whose rule died pre-dispatch
+    /// re-resolves against the live roster and no-ops (the stale-id
+    /// absorb). The cursor itself survives the verb — the roster the
+    /// prune re-evaluates against changes under the dispatch, never
+    /// by the verb's own hand.
+    fn activate_rule_cursor(&mut self, state: &AppState, window: &AppWindow) {
+        let Some(rule_id) = self.view_state.rule_cursor() else {
+            return;
+        };
+        let Some(rule) = state.reminders.rules.get(&rule_id) else {
+            return; // the stale-id absorb: the dead cursor holds, nothing dispatches
+        };
+        let subject_duedate = self
+            .view_state
+            .subject_task()
+            .and_then(|task| state.tasks.get(&task))
+            .and_then(|task| task.duedate);
+        if crate::presentation::rule_armed(rule, subject_duedate) {
+            self.rule_target = Some(rule_id);
+            self.route(window, ActionId::ReminderRuleRemove);
+        } else {
+            // The unarmed row's jump affordance (r4 D30): the due
+            // editor opens for the subject — the same funnel the
+            // row's calendar icon drives.
+            self.begin_date_edit(window, crate::view_state::DateField::Due);
+        }
+    }
+
     /// The edit flows' commit/discard arms (D5/D9; the round-2
     /// lifecycle flows included), factored out of the table.
     fn interpret_edit(
@@ -5375,7 +5436,11 @@ impl Adapter {
     /// the board's stack step, the planner's pane switch) or the
     /// effect is not directional. Pure — the interpret table's
     /// [`Flow::None`] arm and the post-table tail both read it.
-    fn directional_control_step(&self, effect: UiEffect) -> Option<bool> {
+    fn directional_control_step(
+        &self,
+        state: &taskboard_domain::AppState,
+        effect: UiEffect,
+    ) -> Option<bool> {
         let UiEffect::FocusDirectional(direction) = effect else {
             return None;
         };
@@ -5388,7 +5453,20 @@ impl Adapter {
             crate::view_state::ViewId::Today | crate::view_state::ViewId::StackDetail => {
                 matches!(direction, Direction::Left | Direction::Right).then_some(backwards)
             }
-            // TaskDetail/Settings: every direction is the control
+            // TaskDetail: the rule cursor owns the verticals whenever
+            // the roster can arm one (J3 US-6 D-5, round 9 chunk 12 —
+            // `interpret_directional` returns outcomes — arm, step,
+            // or clamp — and the tail must not ALSO inject a traversal
+            // step); an empty roster (nothing to arm) and every
+            // horizontal stay the control walk (chunk 9's row,
+            // byte-identical while disarmed).
+            crate::view_state::ViewId::TaskDetail
+                if matches!(direction, Direction::Up | Direction::Down)
+                    && self.view_state.rule_walk_owns_stroke(state) =>
+            {
+                None
+            }
+            // TaskDetail/Settings: every other direction is the control
             // walk — the stop ladder is linear today (the recorded
             // degenerate horizontal: up/down ride the same ladder).
             crate::view_state::ViewId::TaskDetail | crate::view_state::ViewId::Settings => {
@@ -5434,6 +5512,19 @@ impl Adapter {
             // Today/StackDetail left/right: the control walk first cut
             // (R-4) — the tail owns it, no outcomes here.
             (ViewId::Today | ViewId::StackDetail, Direction::Left | Direction::Right) => Vec::new(),
+            // TaskDetail's verticals walk the rule cursor (J3 US-6
+            // D-5): the list's geometry is vertical, the declarative
+            // arm sits beside the control-walk row. The arming gate
+            // lives in `walk_rule_cursor` — a stroke over a non-empty
+            // roster arms at row 0 then walks (the arming stroke does
+            // not move past row 0, D-2's arm-then-step); an empty
+            // roster is the typed no-op and the tail's control walk
+            // proceeds (the D-5 negative — `directional_control_step`
+            // returns `None` exactly when this arm owns the stroke).
+            (ViewId::TaskDetail, Direction::Up | Direction::Down) => {
+                let step = i32::from(direction == Direction::Down) * 2 - 1;
+                self.view_state.walk_rule_cursor(state, step)
+            }
             // TaskDetail/Settings: the control walk along the stop
             // ladder — NEVER the subject walk (J3 R-3: the viewed task
             // does not change from the detail at all). The ladder is
@@ -13062,6 +13153,25 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
+    // The rule cursor's pointer seam (J3 US-6 D-4): a row-body click
+    // moves the selected-rule cursor onto that row (id resolved from
+    // the tables at the row's index — the remove seam's resolution
+    // pattern, one helper shape, two callers). The forced refresh
+    // carries the emphasis (the unchanged-refresh guard would eat the
+    // pass — the offset-edited seam's posture).
+    install_seam!(window: window.on_task_rule_row_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        if let Some(rule) = a
+        .tables
+        .task_rules
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    {
+        a.view_state.select_rule_cursor(rule);
+        a.refresh_forced(&window);
+    }
+
+    });
+
     install_seam!(window: window.on_task_rule_remove_clicked, adapter: adapter;
     bind mut (a, window), args (index), {        let Some(rule) = a
         .tables
@@ -13071,6 +13181,10 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return; // a stale index against an older tables pass
     };
+    // The pointer coherence write (J3 US-6 D-4): the icon click moves
+    // the cursor onto the clicked row first — pointer and cursor can
+    // never disagree about which row is selected.
+    a.view_state.select_rule_cursor(rule);
     a.rule_target = Some(rule);
     a.route(&window, ActionId::ReminderRuleRemove);
 

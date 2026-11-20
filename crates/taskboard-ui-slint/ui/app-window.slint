@@ -687,6 +687,7 @@ export component AppWindow inherits Window {
                 habit-save-clicked() => root.habit-save-clicked();
                 habit-editor-cancelled() => root.habit-editor-cancelled();
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
+                rule-row-clicked(i) => root.task-rule-row-clicked(i);
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
                 due-edit-opened() => root.task-due-edit-opened();
@@ -1953,6 +1954,9 @@ export component AppWindow inherits Window {
     // The rule-list seams (chunk 6, D12): index-resolved against the
     // id tables / parsed at the adapter, then routed one-shot.
     pure callback task-rule-remove-clicked(int);
+    // The rule cursor's pointer coherence (J3 US-6 D-4): the row
+    // body's click seam moves the selected-rule cursor.
+    pure callback task-rule-row-clicked(int);
     pure callback rule-add-preset-clicked(int);
     // The bool is the parse outcome (r2 D24): `false` absorbs (D12)
     // and the composition resets its buffer — no reject seam.

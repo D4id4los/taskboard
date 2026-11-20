@@ -635,6 +635,18 @@ pub struct ViewState {
     /// selection) wins at the `walk_subject` read by task
     /// precedence, so no stale habit ever answers a task stroke.
     focused_habit: Option<taskboard_domain::HabitId>,
+    /// The rule list's selected-rule cursor (J3 US-6/R-7, round 9
+    /// chunk 12): `None` = disarmed; `Some(rule)` = the walked row.
+    /// Adapter-owned presentation state like `focused_habit` (the
+    /// task.select precedent) — never synced, never journaled. Id-
+    /// keyed, NOT index-keyed: the row model carries no ids across
+    /// the seam (rule-list.slint D2) and indices go stale on any
+    /// roster change; `reconcile` clamps the cursor against the
+    /// subject's live roster every pass (the `notification_cursor`
+    /// clamp law). Roster-scoped: armed by the first vertical
+    /// directional stroke at the task detail, cleared on view exit,
+    /// subject change, and every foreign settle.
+    rule_cursor: Option<taskboard_domain::ReminderRuleId>,
     /// The compact switcher's selected stack.
     selected_stack: Option<StackId>,
     /// The user-set stack column widths (round-1 D16), stored logical
@@ -854,6 +866,7 @@ impl ViewState {
             subject_habit: None,
             focused_task: None,
             focused_habit: None,
+            rule_cursor: None,
             selected_stack: None,
             stack_widths: BTreeMap::new(),
             retired: Vec::new(),
@@ -1367,6 +1380,96 @@ impl ViewState {
         self.subject_habit
     }
 
+    /// The rule list's selected-rule cursor (J3 US-6, round 9 chunk
+    /// 12): `Some(rule)` while armed on the walked row, `None` while
+    /// disarmed. Pure presentation — read by the row projection
+    /// (`RuleRowModel.selected`) and the Activate resolution.
+    #[must_use]
+    pub const fn rule_cursor(&self) -> Option<taskboard_domain::ReminderRuleId> {
+        self.rule_cursor
+    }
+
+    /// The pointer seam's cursor write (D-4 coherence): clicking a
+    /// rule row — the row body or its remove affordance — moves the
+    /// cursor there, so pointer and cursor can never disagree about
+    /// which row is selected. No hover-follow: hover is not selection
+    /// (the `focused_task` precedent).
+    pub(crate) fn select_rule_cursor(&mut self, rule: taskboard_domain::ReminderRuleId) {
+        self.rule_cursor = Some(rule);
+    }
+
+    /// The rule cursor's typed clear (the D-2 lifecycle sites).
+    pub(crate) fn clear_rule_cursor(&mut self) {
+        self.rule_cursor = None;
+    }
+
+    /// The subject's live rule roster in id-table order — the exact
+    /// derivation the row projection speaks (`state.reminders.rules`
+    /// filtered to the subject), so the walk's landing and the
+    /// rendered rows agree by construction. Empty without a task
+    /// subject.
+    fn rule_roster(
+        state: &AppState,
+        subject: Option<TaskId>,
+    ) -> Vec<taskboard_domain::ReminderRuleId> {
+        subject
+            .map(|task| {
+                state
+                    .reminders
+                    .rules
+                    .values()
+                    .filter(|rule| rule.task == task)
+                    .map(|rule| rule.id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether a vertical directional stroke at the detail is the
+    /// rule cursor's (D-5): a task subject with a non-empty roster —
+    /// the stroke arms or steps instead of riding the control ladder.
+    /// The empty-roster gate's read side: the adapter's
+    /// `directional_control_step` must agree exactly with
+    /// [`Self::walk_rule_cursor`]'s arming verdict, or the arming
+    /// stroke would double-fire (the cursor arms AND the ladder
+    /// steps).
+    pub(crate) fn rule_walk_owns_stroke(&self, state: &AppState) -> bool {
+        self.subject_task.is_some() && !Self::rule_roster(state, self.subject_task).is_empty()
+    }
+
+    /// The walk's mechanics (J3 US-6 D-2, the `step_flat_domain` law):
+    /// the first vertical stroke over a non-empty roster arms the
+    /// cursor at row 0 (arm-then-step — the arming stroke does not
+    /// move past row 0); each further stroke steps within the roster,
+    /// clamping at both edges (no wrap — the ends hold). An empty
+    /// roster and a subjectless detail are the typed no-op (never
+    /// arm).
+    pub(crate) fn walk_rule_cursor(
+        &mut self,
+        state: &AppState,
+        direction: i32,
+    ) -> Vec<FlowOutcome> {
+        let roster = Self::rule_roster(state, self.subject_task);
+        if roster.is_empty() {
+            return Vec::new();
+        }
+        let current = self
+            .rule_cursor
+            .and_then(|cursor| roster.iter().position(|id| *id == cursor));
+        let Some(current) = current else {
+            self.rule_cursor = Some(roster[0]);
+            return vec![FlowOutcome::RefreshNow];
+        };
+        let next = i64::from(direction) + i64::try_from(current).unwrap_or(0);
+        match roster.get(usize::try_from(next).unwrap_or(usize::MAX)) {
+            Some(id) => {
+                self.rule_cursor = Some(*id);
+                vec![FlowOutcome::RefreshNow]
+            }
+            None => Vec::new(), // clamp: no wrap, the ends hold (D-2)
+        }
+    }
+
     /// The habit editor's open (H4 D1, US-5): the `activate_focused`
     /// twin — the shared task-detail surface mounts over the habit
     /// subject (the mount discriminator decides the variant). No flow
@@ -1653,6 +1756,10 @@ impl ViewState {
                 match task {
                     Some(task) => {
                         self.replace_root(ViewId::TaskDetail);
+                        // A fresh open is a new roster (D-2 site 3):
+                        // the arm is roster-scoped, never carried
+                        // across detail opens.
+                        self.rule_cursor = None;
                         self.subject_task = Some(task);
                         // The task/habit subjects are mutually
                         // exclusive mount facts (H4 D1) — same
@@ -2383,6 +2490,11 @@ impl ViewState {
         let Some(task) = self.subject_task.and_then(|id| state.tasks.get(&id)) else {
             return Vec::new();
         };
+        // The date editor is a foreign settle (D-2 site 4): the rule
+        // cursor never survives under a mask. Both fronts land here —
+        // the row affordances and the keyboard openers (click ≡ key
+        // at the funnel).
+        self.rule_cursor = None;
         self.write_flow(Flow::EditDate {
             task: task.id,
             field,
@@ -2409,6 +2521,8 @@ impl ViewState {
                 .get(id)
                 .is_some_and(taskboard_domain::Task::is_open)
         })?;
+        // The recur overlay is a foreign settle (D-2 site 4).
+        self.rule_cursor = None;
         self.write_flow(Flow::EditRecur { task });
         Some(task)
     }
@@ -2950,6 +3064,8 @@ impl ViewState {
     /// *adapter's* gate (dispatch-time gating, D-TS8); this arm opens
     /// whenever asked.
     pub fn open_track_entries(&mut self, task: TaskId) -> Vec<FlowOutcome> {
+        // The entries overlay is a foreign settle (D-2 site 4).
+        self.rule_cursor = None;
         self.write_flow(Flow::TrackEntries { task });
         vec![FlowOutcome::RefreshNow]
     }
@@ -3000,6 +3116,9 @@ impl ViewState {
     /// overlay's D-TS8 shape); this arm opens whenever asked. A held
     /// foreign flow settles first (the resolver's overlay class).
     pub fn open_labels(&mut self, subject: LabelOverlaySubject) -> Vec<FlowOutcome> {
+        // A task-mounted labels overlay is a foreign settle (D-2
+        // site 4); the board mount never holds a rule cursor.
+        self.rule_cursor = None;
         self.write_flow(Flow::Labels { subject });
         vec![FlowOutcome::RefreshNow]
     }
@@ -4329,6 +4448,26 @@ impl ViewState {
                 .is_some_and(taskboard_domain::Habit::is_live)
         }) {
             self.focused_habit = None;
+        }
+        // The rule cursor's clamp law (J3 US-6 D-2, round 9 chunk 12):
+        // id-keyed, pruned — never re-pointed — against this pass's
+        // roster (a dead id never re-anchors to a live neighbour, the
+        // `pending_board_select` prune law). A live rule on a foreign
+        // roster (the subject changed between passes) clears the same
+        // way, and the cursor is a detail-surface cursor: leaving the
+        // detail clears it (the leaving rule's drain face — the
+        // refresh after any exit runs this pass).
+        if let Some(cursor) = self.rule_cursor {
+            let on_roster = self.subject_task.is_some_and(|subject| {
+                state
+                    .reminders
+                    .rules
+                    .get(&cursor)
+                    .is_some_and(|rule| rule.task == subject)
+            });
+            if !on_roster || self.view() != ViewId::TaskDetail {
+                self.rule_cursor = None;
+            }
         }
         // UX-R8 D-4's reconcile arm: the selection repairs like the
         // focus — dead members prune against this pass; a dead anchor
@@ -8738,6 +8877,204 @@ mod edit_recur_tests {
                     (h.order, h.id)
                 });
             prop_assert_eq!(habit_rows, expected);
+        }
+    }
+    // -- the rule-list cursor (J3 US-6, round 9 chunk 12) --------------
+
+    /// A due-anchored rule row on `task` (always unarmed without a
+    /// due date — the unarmed kind the D-3 jump arm reads).
+    fn rule(id: taskboard_domain::ReminderRuleId, task: TaskId) -> taskboard_domain::ReminderRule {
+        taskboard_domain::ReminderRule {
+            insistence: taskboard_domain::Insistence::Normal,
+            id,
+            task,
+            kind: taskboard_domain::ReminderKind::DueOffset(
+                taskboard_domain::ReminderOffset::at_due(),
+            ),
+            created_at: epoch(),
+            updated_at: epoch(),
+            by: None,
+        }
+    }
+
+    /// Seeds `count` rules on `task` and returns their ids in roster
+    /// (id-table) order.
+    fn seed_rules(
+        state: &mut AppState,
+        task: TaskId,
+        count: usize,
+    ) -> Vec<taskboard_domain::ReminderRuleId> {
+        let mut ids = Vec::new();
+        for _ in 0..count {
+            let id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7());
+            state.reminders.rules.insert(id, rule(id, task));
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// The detail mounted the way the shell does: the `TaskDetail` root
+    /// over `subject` (the cursor walk's own fixture).
+    fn detail_over(state: &AppState, subject: TaskId) -> ViewState {
+        let mut vs = ViewState::new_starting(ViewId::TaskDetail);
+        vs.subject_task = Some(subject);
+        vs.reconcile(state);
+        vs
+    }
+
+    #[test]
+    fn us6_s1_the_rule_cursor_arms_at_row_0_and_steps_clamped() {
+        let (mut state, _, _, [a, _, _]) = fixture();
+        let roster = seed_rules(&mut state, a, 3);
+        let mut vs = detail_over(&state, a);
+        assert_eq!(vs.rule_cursor(), None, "a fresh detail is disarmed");
+
+        // The first vertical stroke arms at row 0 (arm-then-step).
+        assert_eq!(
+            vs.walk_rule_cursor(&state, 1),
+            vec![FlowOutcome::RefreshNow]
+        );
+        assert_eq!(vs.rule_cursor(), Some(roster[0]));
+
+        // Down down walks; the third down clamps (no wrap).
+        vs.walk_rule_cursor(&state, 1);
+        assert_eq!(vs.rule_cursor(), Some(roster[1]));
+        vs.walk_rule_cursor(&state, 1);
+        assert_eq!(vs.rule_cursor(), Some(roster[2]));
+        assert_eq!(
+            vs.walk_rule_cursor(&state, 1),
+            Vec::<FlowOutcome>::new(),
+            "the last row clamps"
+        );
+        assert_eq!(vs.rule_cursor(), Some(roster[2]), "the end holds");
+        // Up up up: back to row 0, then the clamp.
+        vs.walk_rule_cursor(&state, -1);
+        vs.walk_rule_cursor(&state, -1);
+        assert_eq!(vs.rule_cursor(), Some(roster[0]));
+        assert_eq!(vs.walk_rule_cursor(&state, -1), Vec::<FlowOutcome>::new());
+        assert_eq!(vs.rule_cursor(), Some(roster[0]), "row 0 clamps too");
+    }
+
+    #[test]
+    fn us6_n1_an_empty_roster_and_a_subjectless_detail_never_arm() {
+        let (state, _, _, [a, _, _]) = fixture();
+        let mut vs = detail_over(&state, a);
+        assert_eq!(
+            vs.walk_rule_cursor(&state, 1),
+            Vec::<FlowOutcome>::new(),
+            "zero rules: the stroke is the typed no-op (the empty-roster gate)"
+        );
+        assert_eq!(vs.rule_cursor(), None);
+        let mut vs = ViewState::new_starting(ViewId::TaskDetail);
+        assert_eq!(
+            vs.walk_rule_cursor(&state, 1),
+            Vec::<FlowOutcome>::new(),
+            "no subject: the stroke is the typed no-op"
+        );
+    }
+
+    #[test]
+    fn us6_s3_a_dead_rule_prunes_and_a_live_one_survives_the_refresh() {
+        let (mut state, _, _, [a, _, _]) = fixture();
+        let roster = seed_rules(&mut state, a, 2);
+        let mut vs = detail_over(&state, a);
+        vs.walk_rule_cursor(&state, 1);
+        assert_eq!(vs.rule_cursor(), Some(roster[0]));
+
+        // A refresh with the cursor'd rule still live keeps the cursor
+        // (D-2: never cleared by refresh alone).
+        vs.reconcile(&state);
+        assert_eq!(
+            vs.rule_cursor(),
+            Some(roster[0]),
+            "the live cursor survives a refresh (the clamp law prunes, not clears)"
+        );
+
+        // A foreign delete (CLI / sync / sibling remove) prunes — the
+        // dead id never re-anchors to a live neighbour.
+        state.reminders.rules.remove(&roster[0]);
+        vs.reconcile(&state);
+        assert_eq!(
+            vs.rule_cursor(),
+            None,
+            "the dead cursor pruned to None (not re-pointed)"
+        );
+    }
+
+    #[test]
+    fn us6_s3_subject_change_and_view_exit_clear_the_cursor() {
+        let (mut state, _, _, [a, b, _]) = fixture();
+        let roster = seed_rules(&mut state, a, 2);
+        seed_rules(&mut state, b, 1);
+        let mut vs = detail_over(&state, a);
+        vs.walk_rule_cursor(&state, 1);
+        assert_eq!(vs.rule_cursor(), Some(roster[0]));
+
+        // Opening a different task's detail is a new roster (D-2
+        // site 3): the open path clears. The open grammar resolves
+        // the subject off `focused_task` (the board focus's open) —
+        // focus b, then enter.
+        vs.focused_task = Some(b);
+        vs.enter(&state, ViewId::TaskDetail);
+        assert_eq!(vs.rule_cursor(), None, "the fresh open cleared the arm");
+        vs.reconcile(&state);
+        assert_eq!(vs.rule_cursor(), None);
+
+        // View exit clears on the leaving pass (D-2 site 1): the
+        // cursor never survives under another surface.
+        vs.walk_rule_cursor(&state, 1);
+        assert!(vs.rule_cursor().is_some());
+        vs.replace_root(ViewId::Board);
+        vs.reconcile(&state);
+        assert_eq!(vs.rule_cursor(), None, "the detail exit cleared");
+    }
+
+    #[test]
+    fn us6_s3_the_overlay_openers_are_foreign_settles() {
+        let (mut state, _, _, [a, _, _]) = fixture();
+        let roster = seed_rules(&mut state, a, 2);
+        let mut vs = detail_over(&state, a);
+        vs.walk_rule_cursor(&state, 1);
+        assert!(vs.rule_cursor().is_some());
+
+        // The due editor (the jump arm's own target — the mask host).
+        vs.begin_edit_date(&state, DateField::Due);
+        assert_eq!(vs.rule_cursor(), None, "the due editor cleared");
+        vs.write_flow(Flow::None);
+
+        // The labels overlay.
+        vs.walk_rule_cursor(&state, 1);
+        vs.open_labels(LabelOverlaySubject::Task(a));
+        assert_eq!(vs.rule_cursor(), None, "the labels overlay cleared");
+        vs.write_flow(Flow::None);
+
+        // The entries overlay.
+        vs.walk_rule_cursor(&state, 1);
+        vs.open_track_entries(a);
+        assert_eq!(vs.rule_cursor(), None, "the entries overlay cleared");
+        vs.write_flow(Flow::None);
+
+        // The recur overlay.
+        vs.walk_rule_cursor(&state, 1);
+        assert_eq!(vs.rule_cursor(), Some(roster[0]));
+        vs.begin_edit_recur(&state);
+        assert_eq!(vs.rule_cursor(), None, "the recur overlay cleared");
+    }
+
+    #[test]
+    fn us6_fold_the_walk_walks_presentation_only() {
+        let (mut state, _, _, [a, _, _]) = fixture();
+        seed_rules(&mut state, a, 2);
+        let mut vs = detail_over(&state, a);
+        // Every outcome of the whole walk is RefreshNow — no
+        // StateCommand variant ever carries the cursor (the fold's
+        // view-state face; the journey pins the boundary stream).
+        for direction in [1, 1, -1, 1] {
+            assert!(
+                vs.walk_rule_cursor(&state, direction)
+                    .into_iter()
+                    .all(|outcome| outcome == FlowOutcome::RefreshNow)
+            );
         }
     }
 }

@@ -792,6 +792,23 @@ pub struct RuleRowTexts {
 /// the cause of "never fires" made visible).
 pub const RULE_ROW_UNARMED: &str = "needs a due date — not armed";
 
+/// The rule's armed bit (J3 US-6 D-3, round 9 chunk 12): `At` rules
+/// are always armed; a `DueOffset` rule arms exactly when its
+/// effective fire instant resolves off the subject's due date. One
+/// derivation, two readers — the row projection and the rule
+/// cursor's Activate resolution (`adapter.rs::activate_rule_cursor`)
+/// — so the keyboard verb and the rendered affordance can never
+/// disagree.
+#[must_use]
+pub fn rule_armed(rule: &taskboard_domain::ReminderRule, duedate: Option<DateTime<Utc>>) -> bool {
+    match &rule.kind {
+        taskboard_domain::ReminderKind::At(_) => true,
+        taskboard_domain::ReminderKind::DueOffset(offset) => duedate
+            .and_then(|d| d.checked_add_signed(offset.as_duration()))
+            .is_some(),
+    }
+}
+
 /// The projection for one rule row (r4 D30): see [`RuleRowTexts`].
 #[must_use]
 pub fn rule_row_texts(
@@ -800,7 +817,7 @@ pub fn rule_row_texts(
     now: DateTime<Utc>,
     tz: &impl chrono::TimeZone,
 ) -> RuleRowTexts {
-    match rule.kind {
+    match &rule.kind {
         taskboard_domain::ReminderKind::At(at) => {
             let effective = at.as_datetime();
             RuleRowTexts {
@@ -810,19 +827,20 @@ pub fn rule_row_texts(
             }
         }
         taskboard_domain::ReminderKind::DueOffset(offset) => {
-            match duedate.map(|d| d.checked_add_signed(offset.as_duration())) {
-                Some(Some(effective)) => RuleRowTexts {
-                    primary: offset.text_form(),
-                    detail: format!("fires {}", iso_local_fire_time(effective, tz)),
-                    armed: true,
+            // Unarmed: no due date (or degenerate arithmetic) — the
+            // explicit state, not silently stale. The armed bit reads
+            // `rule_armed` — one derivation, both readers.
+            let effective = duedate.and_then(|d| d.checked_add_signed(offset.as_duration()));
+            RuleRowTexts {
+                primary: if effective.is_some() {
+                    offset.text_form()
+                } else {
+                    RULE_ROW_UNARMED.to_owned()
                 },
-                // Unarmed: no due date (or degenerate arithmetic) — the
-                // explicit state, not silently stale.
-                _ => RuleRowTexts {
-                    primary: RULE_ROW_UNARMED.to_owned(),
-                    detail: String::new(),
-                    armed: false,
-                },
+                detail: effective.map_or(String::new(), |e| {
+                    format!("fires {}", iso_local_fire_time(e, tz))
+                }),
+                armed: rule_armed(rule, duedate),
             }
         }
     }

@@ -27,6 +27,11 @@ export struct RuleRowModel {
     // The armed bit (derived in the projection, never stored): false
     // shows the jump-to-due affordance.
     armed: bool,
+    // The selected-rule cursor's emphasis (J3 US-6/R-7, round 9
+    // chunk 12): derived in the projection from the view state's
+    // `rule_cursor` (never stored, the habit-card `emphasis`
+    // pattern), rendered as the house focus-ring row highlight.
+    selected: bool,
 }
 
 // One preset chip (r4 D18): the chip body's activation stop is a
@@ -114,6 +119,10 @@ export component RuleList inherits VerticalLayout {
     callback unmute-clicked();
     // D30: an unarmed row's jump affordance opens the due editor.
     callback jump-to-due-clicked();
+    // The rule cursor's pointer coherence (J3 US-6 D-4): clicking a
+    // row body moves the selected-rule cursor onto that row (pointer
+    // and cursor can never disagree; no hover-follow).
+    callback row-clicked(int);
     in property <FieldValidity> offset-validity: FieldValidity.neutral;
     in property <string> offset-error-hint;
     // The custom-offset field's help sentence (r3-3.1): the
@@ -153,44 +162,57 @@ export component RuleList inherits VerticalLayout {
         }
     }
 
-    for row[i] in root.rules: HorizontalLayout {
-        spacing: Theme.space-3;
-        alignment: start;
-        VerticalLayout {
-            spacing: Theme.space-1;
-            RoleText {
-                role: Typography.mono;
-                text: row.before;
-                vertical-alignment: center;
+    for row[i] in root.rules: row-box := Rectangle {
+        border-radius: Theme.radius-small;
+        // The cursor's emphasis (J3 US-6 D-4): the selected row's
+        // ring — the house focus token, the notification row's
+        // emphasis twin (no theme work).
+        border-width: row.selected ? Theme.focus-ring-width : 0;
+        border-color: Semantic.focus-ring;
+        row-touch := TouchArea {
+            // The pointer coherence seam (D-4): a click moves the
+            // cursor onto the clicked row.
+            clicked => { root.row-clicked(i); }
+        }
+        HorizontalLayout {
+            spacing: Theme.space-3;
+            alignment: start;
+            VerticalLayout {
+                spacing: Theme.space-1;
+                RoleText {
+                    role: Typography.mono;
+                    text: row.before;
+                    vertical-alignment: center;
+                }
+                if (row.detail != ""): RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: row.detail;
+                    vertical-alignment: center;
+                }
             }
-            if (row.detail != ""): RoleText {
+            RoleText {
                 role: Typography.caption;
                 text-color: Theme.text-secondary;
-                text: row.detail;
+                text: row.created;
                 vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
             }
-        }
-        RoleText {
-            role: Typography.caption;
-            text-color: Theme.text-secondary;
-            text: row.created;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            overflow: elide;
-        }
-        // The jump affordance (r4 D30): an unarmed row's due-date
-        // repair — opens the due editor for the subject task.
-        if (!row.armed): IconButton {
-            icon: IconKind.calendar;
-            label: "Set a due date to arm this reminder";
-            description: "Opens the due editor for this task.";
-            clicked => { root.jump-to-due-clicked(); }
-        }
-        IconButton {
-            icon: IconKind.remove;
-            label: "Remove reminder";
-            description: "Removes this reminder rule.";
-            clicked => root.remove-clicked(i);
+            // The jump affordance (r4 D30): an unarmed row's due-date
+            // repair — opens the due editor for the subject task.
+            if (!row.armed): IconButton {
+                icon: IconKind.calendar;
+                label: "Set a due date to arm this reminder";
+                description: "Opens the due editor for this task.";
+                clicked => { root.jump-to-due-clicked(); }
+            }
+            IconButton {
+                icon: IconKind.remove;
+                label: "Remove reminder";
+                description: "Removes this reminder rule.";
+                clicked => root.remove-clicked(i);
+            }
         }
     }
 

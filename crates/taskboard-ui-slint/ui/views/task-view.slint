@@ -302,6 +302,9 @@ export component TaskView inherits FocusScope {
     // The rule-list composition's seams (chunk 6, D12): forwarded to
     // the window, resolved against the id tables there.
     callback rule-remove-clicked(int);
+    // The rule cursor's pointer coherence (J3 US-6 D-4, round 9
+    // chunk 12): a row-body click moves the selected-rule cursor.
+    callback rule-row-clicked(int);
     callback rule-add-preset-clicked(int);
     callback rule-add-custom-accepted(string) -> bool;
     // The custom offset's per-keystroke validity (r4 D27).
@@ -1166,6 +1169,7 @@ export component TaskView inherits FocusScope {
                 muted: root.task.rules-muted;
                 offset-help: "Adds a reminder the given time before the due date.";
                 remove-clicked(i) => root.rule-remove-clicked(i);
+                row-clicked(i) => root.rule-row-clicked(i);
                 add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 add-custom-accepted(text) => root.rule-add-custom-accepted(text);
                 offset-validity: root.task.offset-validity;
