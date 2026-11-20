@@ -336,3 +336,102 @@ fn the_mirror_publishes_on_init_and_on_every_source_change() {
         );
     });
 }
+
+// ---- G-4: the host-law fixtures (the two D-9 mounts) -----------------
+
+/// The track-entries mount law on the host: for arbitrary anchors the
+/// host's placed rect equals the old hand mount's exact expressions —
+/// below when it fits, flipped above near the floor, clamped when the
+/// anchor hangs off the edge (plan §4 G-4, the flip probe's oracle).
+#[test]
+fn the_track_law_on_the_host_equals_the_old_expressions() {
+    run_probe(|window| {
+        settle(window);
+        window.set_track_host_open(true);
+        settle(window);
+        // Below fits (anchor high).
+        window.set_law_anchor_x(100.0);
+        window.set_law_anchor_y(60.0);
+        window.set_law_floor(600.0);
+        settle(window);
+        assert!(!window.get_law_track_flipped());
+        assert_eq!(window.get_law_track_x(), window.get_law_track_old_x());
+        assert_eq!(window.get_law_track_y(), window.get_law_track_old_y());
+        // Near the floor: the flip leg.
+        window.set_law_anchor_y(520.0);
+        window.set_law_floor(600.0);
+        settle(window);
+        assert!(window.get_law_track_flipped());
+        assert_eq!(window.get_law_track_x(), window.get_law_track_old_x());
+        assert_eq!(window.get_law_track_y(), window.get_law_track_old_y());
+        // The anchor hangs off the right edge: the clamp leg.
+        window.set_law_anchor_y(60.0);
+        window.set_law_anchor_x(window.get_probe_width() + 50.0);
+        settle(window);
+        assert_eq!(window.get_law_track_x(), window.get_law_track_old_x());
+        assert_eq!(window.get_law_track_y(), window.get_law_track_old_y());
+    });
+}
+
+/// The board color strip's mount law on the host: pinned below (no
+/// flip leg), the same x clamp, the y clamp against the window
+/// bottom.
+#[test]
+fn the_strip_law_on_the_host_equals_the_old_expressions() {
+    run_probe(|window| {
+        settle(window);
+        window.set_strip_host_open(true);
+        settle(window);
+        assert_eq!(window.get_law_strip_x(), window.get_law_strip_old_x());
+        assert_eq!(window.get_law_strip_y(), window.get_law_strip_old_y());
+        // The anchor near the window bottom: the clamp leg keeps the
+        // strip inside.
+        window.set_strip_anchor_y(window.get_probe_height() - 20.0);
+        settle(window);
+        assert_eq!(window.get_law_strip_x(), window.get_law_strip_old_x());
+        assert_eq!(window.get_law_strip_y(), window.get_law_strip_old_y());
+    });
+}
+
+/// The dismissal layer routing per arm: an outside click routes the
+/// mount's dismissal seam; a click on the panel's non-interactive
+/// area is absorbed (the host's dead-space law) — the hand backdrops'
+/// exact routing, one layer per arm.
+#[test]
+fn the_host_layers_route_outside_clicks_and_absorb_panel_clicks() {
+    run_probe(|window| {
+        settle(window);
+        // Arm one family at a time: the later sibling's underlay
+        // would otherwise shadow the earlier one's (the stacked
+        // overlay grammar); the hosts default closed so the row
+        // fixtures above stay hit-testable.
+        window.set_strip_host_open(false);
+        window.set_track_host_open(true);
+        settle(window);
+        // Outside: the top-left corner is under the track host's
+        // underlay (the panel sits at the anchor, rightward).
+        click_at(window, 2.0, 2.0);
+        settle(window);
+        assert_eq!(window.get_track_dismiss_count(), 1);
+        // The panel's own blank area absorbs (no dismissal from the
+        // click that lands inside the panel rect).
+        let (px, py, pw, ph) = (
+            window.get_law_track_x(),
+            window.get_law_track_y(),
+            window.get_law_track_width(),
+            window.get_law_track_height(),
+        );
+        click_at(window, px + pw / 2.0, py + ph / 2.0);
+        settle(window);
+        assert_eq!(window.get_track_dismiss_count(), 1);
+        // The strip's own underlay routes its seam once it is the
+        // armed family.
+        window.set_track_host_open(false);
+        window.set_strip_host_open(true);
+        window.set_strip_anchor_x(window.get_probe_width() - 260.0);
+        settle(window);
+        click_at(window, 2.0, window.get_probe_height() / 2.0);
+        settle(window);
+        assert_eq!(window.get_strip_dismiss_count(), 1);
+    });
+}

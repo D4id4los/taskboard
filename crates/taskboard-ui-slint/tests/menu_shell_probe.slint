@@ -9,7 +9,9 @@
 import { Theme, Semantic, TextRole, Typography } from "../ui/theme.slint";
 import { MenuRow } from "../ui/widgets/menu-row.slint";
 import { MenuShell } from "../ui/widgets/menu-shell.slint";
-import { AnchorMirror } from "../ui/widgets/anchored-overlay.slint";
+import { AnchorMirror, AnchoredOverlayHost, OverlayPlacement } from "../ui/widgets/anchored-overlay.slint";
+
+export { OverlayPlacement }
 import { IconKind } from "../ui/widgets/icon.slint";
 import { DropdownTone } from "../ui/widgets/dropdown.slint";
 
@@ -19,6 +21,10 @@ export component MenuShellProbe inherits Window {
     width: Theme.space-15 * 8;
     height: Theme.space-15 * 8;
     background: Theme.background;
+
+    // The realized window extents (the host fixtures' viewport laws).
+    out property <length> probe-width: root.width;
+    out property <length> probe-height: root.height;
 
     // ---- T1: MenuRow ---------------------------------------------------
     // The intent counters (one row family per grammar posture).
@@ -170,6 +176,98 @@ export component MenuShellProbe inherits Window {
             root.mirror-last-y = y;
             root.mirror-last-width = w;
             root.mirror-last-height = h;
+        }
+    }
+
+    // ---- T4: the host-law fixtures (the two D-9 mounts) -----------------
+    // The AnchoredOverlayHost placed for the track-entries panel's law
+    // (auto below/flip/clamp over the facts anchor) and the board color
+    // strip's law (pinned below, clamped against the window bottom).
+    // The OLD hand mount expressions ride beside them as the oracles —
+    // the tests assert the placed rect equals the old expression's
+    // outputs for arbitrary anchors (plan §4 G-4, before the mount
+    // flips).
+    in-out property <length> law-anchor-x: Theme.space-15;
+    in-out property <length> law-anchor-y: Theme.space-15;
+    in-out property <length> law-anchor-width: Theme.space-6 * 3;
+    in-out property <length> law-anchor-height: Theme.space-6;
+    in-out property <length> law-floor: Theme.space-15 * 6;
+    in-out property <int> track-dismiss-count: 0;
+    in-out property <int> strip-dismiss-count: 0;
+    // The hosts' open bits (the ModalDialogHost contract): the
+    // dismissal test arms one family at a time (the later sibling's
+    // underlay would otherwise shadow the earlier one's).
+    in-out property <bool> track-host-open: false;
+    in-out property <bool> strip-host-open: false;
+    out property <length> law-track-x: track-host.panel-x;
+    out property <length> law-track-y: track-host.panel-y;
+    out property <length> law-track-width: track-host.panel-width;
+    out property <length> law-track-height: track-host.panel-height;
+    out property <bool> law-track-flipped: track-host.flipped;
+    // The old track-entries mount's exact x/y expressions (verbatim
+    // from the app-window arm this chunk converts), over the same
+    // inputs and the host's realized panel size.
+    out property <length> law-track-old-x:
+        max(Theme.space-2,
+            min(root.law-anchor-x,
+                root.width - track-host.panel-width - Theme.space-2));
+    out property <length> law-track-old-y:
+        max(Theme.space-2,
+            min((root.law-anchor-y + root.law-anchor-height
+                        + Theme.space-1 + track-host.panel-height
+                        <= root.law-floor
+                    ? root.law-anchor-y + root.law-anchor-height
+                        + Theme.space-1
+                    : root.law-anchor-y - track-host.panel-height
+                        - Theme.space-1),
+                root.law-floor - track-host.panel-height - Theme.space-2));
+    track-host := AnchoredOverlayHost {
+        open: root.track-host-open;
+        anchor-x: root.law-anchor-x;
+        anchor-y: root.law-anchor-y;
+        anchor-width: root.law-anchor-width;
+        anchor-height: root.law-anchor-height;
+        viewport-width: root.width;
+        viewport-floor: root.law-floor;
+        panel-preferred-width: Theme.space-15 * 2;
+        walk-stops: 1;
+        dismissed => { root.track-dismiss-count += 1; }
+        Rectangle {
+            height: Theme.space-15;
+        }
+    }
+
+    in-out property <length> strip-anchor-x: Theme.space-15;
+    in-out property <length> strip-anchor-y: Theme.space-15 * 4;
+    in-out property <length> strip-anchor-width: Theme.space-6 * 3;
+    in-out property <length> strip-anchor-height: Theme.space-6;
+    out property <length> law-strip-x: strip-host.panel-x;
+    out property <length> law-strip-y: strip-host.panel-y;
+    // The old strip mount's exact x/y expressions (verbatim): x the
+    // same clamp pair, y pinned below and clamped against the window
+    // bottom (no flip leg).
+    out property <length> law-strip-old-x:
+        max(Theme.space-2,
+            min(root.strip-anchor-x,
+                root.width - strip-host.panel-width - Theme.space-2));
+    out property <length> law-strip-old-y:
+        max(Theme.space-2,
+            min(root.strip-anchor-y + root.strip-anchor-height + Theme.space-1,
+                root.height - strip-host.panel-height - Theme.space-2));
+    strip-host := AnchoredOverlayHost {
+        open: root.strip-host-open;
+        anchor-x: root.strip-anchor-x;
+        anchor-y: root.strip-anchor-y;
+        anchor-width: root.strip-anchor-width;
+        anchor-height: root.strip-anchor-height;
+        viewport-width: root.width;
+        viewport-floor: root.height;
+        placement: OverlayPlacement.below;
+        panel-preferred-width: Theme.space-15 * 2;
+        walk-stops: 1;
+        dismissed => { root.strip-dismiss-count += 1; }
+        Rectangle {
+            height: Theme.space-5;
         }
     }
 }
