@@ -1412,7 +1412,7 @@ mod tests {
     /// pure function of (pre-state, command, `now`).
     #[test]
     fn log_same_instant_double_log_increments_twice() {
-        let fixture = HabitFixture {
+        let mut fixture = HabitFixture {
             habit: habit(1, HabitTarget::PerWeek(NonZeroCount::new(1).expect("1"))),
             log: std::collections::BTreeMap::new(),
             now: ts(1_000),
@@ -1432,15 +1432,9 @@ mod tests {
         // The second log plans against the post-first-log state (the
         // mint is a pure function of the pre-state; real replays
         // execute commands in order, so this mirrors the engine).
-        let mut after_first = fixture.clone();
-        let mut persisted = crate::persistence::PersistedState {
-            habits: fixture.state(),
-            ..crate::persistence::PersistedState::default()
-        };
-        crate::persistence::apply_actions(&mut persisted, &plan1.actions);
-        after_first.log = persisted.habits.log;
+        advance_fixture(&mut fixture, &plan1);
         let plan2 = log_plan(
-            &after_first,
+            &fixture,
             &StateCommand::LogHabit {
                 habit: fixture.habit.id,
             },
@@ -1494,7 +1488,7 @@ mod tests {
     /// (planned against the post-first state) at `T + 1s`.
     #[test]
     fn same_instant_double_log_mints_strictly_increasing_clocks() {
-        let fixture = habit_fixture(ts(1_000));
+        let mut fixture = habit_fixture(ts(1_000));
         let plan1 = log_plan(
             &fixture,
             &StateCommand::LogHabit {
@@ -1503,15 +1497,9 @@ mod tests {
             fixture.now,
         )
         .expect("commandable");
-        let mut after_first = fixture.clone();
-        let mut persisted = crate::persistence::PersistedState {
-            habits: fixture.state(),
-            ..crate::persistence::PersistedState::default()
-        };
-        crate::persistence::apply_actions(&mut persisted, &plan1.actions);
-        after_first.log = persisted.habits.log;
+        advance_fixture(&mut fixture, &plan1);
         let plan2 = log_plan(
-            &after_first,
+            &fixture,
             &StateCommand::LogHabit {
                 habit: fixture.habit.id,
             },
@@ -1523,7 +1511,7 @@ mod tests {
         assert_eq!(clock1, fixture.now, "the first log stamps now");
         assert_eq!(
             clock2,
-            fixture.now + chrono::TimeDelta::try_seconds(1).expect("1s"),
+            fixture.now + one_second(),
             "the second same-instant log stamps strictly past the first row"
         );
     }
@@ -1535,10 +1523,6 @@ mod tests {
     #[test]
     fn adjust_after_a_same_instant_burst_stamps_past_the_burst_row() {
         let mut fixture = habit_fixture(ts(1_000));
-        let mut persisted = crate::persistence::PersistedState {
-            habits: fixture.state(),
-            ..crate::persistence::PersistedState::default()
-        };
         let mut burst_clock = None;
         for _ in 0..3 {
             let plan = log_plan(
@@ -1549,8 +1533,7 @@ mod tests {
                 fixture.now,
             )
             .expect("commandable");
-            crate::persistence::apply_actions(&mut persisted, &plan.actions);
-            fixture.log = std::mem::take(&mut persisted.habits.log);
+            advance_fixture(&mut fixture, &plan);
             burst_clock = Some(minted_clock(&plan));
         }
         let burst_clock = burst_clock.expect("the burst ran");
@@ -1561,7 +1544,7 @@ mod tests {
                 window: log_window(&fixture.habit, &fixture.log, fixture.now, fixture.day),
                 count: 7,
             },
-            fixture.now + chrono::TimeDelta::try_seconds(1).expect("1s"),
+            fixture.now + one_second(),
         )
         .expect("commandable");
         let adjust_clock = minted_clock(&plan);
@@ -1576,9 +1559,9 @@ mod tests {
         );
         let mut final_state = crate::persistence::PersistedState {
             habits: fixture.state(),
-            ..crate::persistence::PersistedState::default()
+            ..PersistedState::default()
         };
-        crate::persistence::apply_actions(&mut final_state, &plan.actions);
+        apply_actions(&mut final_state, &plan.actions);
         let window = log_window(&fixture.habit, &fixture.log, fixture.now, fixture.day);
         assert_eq!(
             final_state
@@ -1604,6 +1587,18 @@ mod tests {
                 offset: chrono::FixedOffset::east_opt(0).expect("utc"),
             },
         }
+    }
+
+    /// Apply a plan's actions to the fixture's log in place — the
+    /// engine-shaped advance the mint pins replay (commands execute in
+    /// order against the post-previous-command state).
+    fn advance_fixture(fixture: &mut HabitFixture, plan: &crate::command::CommandPlan) {
+        let mut persisted = PersistedState {
+            habits: fixture.state(),
+            ..PersistedState::default()
+        };
+        apply_actions(&mut persisted, &plan.actions);
+        fixture.log = persisted.habits.log;
     }
 
     fn minted_clock(plan: &crate::command::CommandPlan) -> DateTime<Utc> {
