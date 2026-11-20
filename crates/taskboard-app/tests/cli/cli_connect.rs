@@ -543,13 +543,18 @@ async fn c18_connect_prompts_in_order() {
 #[tokio::test]
 async fn c19_connect_creates_an_explicit_missing_config() {
     let server = mount_boards_ok().await;
-    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let config_path = dir.path().join("fresh").join("taskboard.toml");
-    assert!(matches!(
-        AppConfig::load(Some(config_path.clone())),
-        Err(taskboard_app::config::ConfigError::FileNotFound(_))
-    ));
+    {
+        // Scoped: the pre-run load composes the Env provider (#984);
+        // the lock must release before `run_connect`, which holds the
+        // non-reentrant lock for its own composing read (R-4's shape).
+        let _env = common::taskboard_env_lock();
+        assert!(matches!(
+            AppConfig::load(Some(config_path.clone())),
+            Err(taskboard_app::config::ConfigError::FileNotFound(_))
+        ));
+    }
     let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
 
     run_connect(
