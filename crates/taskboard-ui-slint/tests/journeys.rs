@@ -18827,6 +18827,191 @@ fn us13_s3_the_unset_slot_commits_the_clear_twin() {
     });
 }
 
+// US-6 (J5 R-5, round-9 chunk 15): the detail's priority pickers
+// ARE dropdowns — the shared widget class with the de-sited mount.
+
+/// US-6/S1: the edit intent opens the widget's flyout and a pick
+/// commits the exact `UpdateTask` importance mask — the flow-table
+/// oracle, now through the widget (D-9).
+#[test]
+fn us6_s1_the_importance_dropdown_pick_commits_the_exact_mask() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_importance_edit_asked();
+            harness.driver.advance_time(0);
+            let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
+            assert!(facts.get_open(), "the flyout opened");
+            assert_eq!(
+                facts.get_consumer(),
+                taskboard_ui_slint::DropdownConsumer::TaskImportance,
+                "the open instance named its consumer kind"
+            );
+            // The ladder picks vocabulary row 4 (High): the anchor is
+            // the current value, so walk to the top, then down to 4.
+            for _ in 0..5 {
+                harness.driver.press_stroke(parse("Up").unwrap());
+            }
+            for _ in 0..4 {
+                harness.driver.press_stroke(parse("Down").unwrap());
+            }
+            harness.driver.press_stroke(parse("Return").unwrap());
+            harness.driver.advance_time(0);
+            let drained = harness.engine.drain();
+            assert_eq!(drained.len(), 1);
+            assert!(matches!(
+                &drained[0],
+                taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        importance: Some(Some(taskboard_domain::Importance::High)),
+                        ..
+                    },
+                    ..
+                }
+            ));
+            assert!(
+                !window.get_task_model().importance_open,
+                "the commit closed the picker"
+            );
+            assert!(!facts.get_open(), "the flyout unmounted");
+        },
+    );
+}
+
+/// US-6/S2: Escape closes the open picker through the widget's
+/// dismissal seam (the decline arm hands the stroke to the field) and
+/// dispatches nothing — the focus restore's deep assertions stay
+/// `us1_s1_picker_close_restores_the_invoking_field`'s (unchanged
+/// oracle; one behavior, one test).
+#[test]
+fn us6_s2_escape_closes_the_dropdown_without_dispatching() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_importance_edit_asked();
+            harness.driver.advance_time(0);
+            let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
+            assert!(facts.get_open());
+            harness.driver.press_stroke(parse("Escape").unwrap());
+            harness.driver.advance_time(0);
+            assert!(
+                !window.get_task_model().importance_open,
+                "the picker closed"
+            );
+            assert!(!facts.get_open(), "the flyout unmounted");
+            assert!(
+                harness.engine.drain().is_empty(),
+                "Escape dismisses without dispatching"
+            );
+        },
+    );
+}
+
+/// US-6/S3: the selector ladder on the detail view — the arrows move
+/// the highlight (the `DropdownLadder` seam), Return selects, Escape
+/// closes only (the decline arm proves the keys reach the field, D-7).
+#[test]
+fn us6_s3_the_priority_dropdown_ladder_moves_selects_and_closes() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_importance_edit_asked();
+            harness.driver.advance_time(0);
+            let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
+            let ladder = window.global::<taskboard_ui_slint::DropdownLadder>();
+            assert!(facts.get_open());
+            let anchor = facts.get_highlight();
+            let nonce = ladder.get_moves();
+            harness.driver.press_stroke(parse("Down").unwrap());
+            assert_eq!(
+                facts.get_highlight(),
+                anchor + 1,
+                "Down moved the highlight"
+            );
+            assert!(
+                ladder.get_moves() > nonce,
+                "every move bumped the ladder's typed counter"
+            );
+            // Return on the anchor row selects (the vocabulary index
+            // is the row index; the unset twin is 0).
+            harness.driver.press_stroke(parse("Return").unwrap());
+            harness.driver.advance_time(0);
+            assert!(!facts.get_open(), "the select closed the flyout");
+            assert!(matches!(
+                &harness.engine.drain()[..],
+                [taskboard_domain::StateCommand::UpdateTask { .. }]
+            ));
+            // Escape on a fresh open closes only — no selection.
+            window.invoke_task_importance_edit_asked();
+            harness.driver.advance_time(0);
+            assert!(facts.get_open());
+            harness.driver.press_stroke(parse("Escape").unwrap());
+            harness.driver.advance_time(0);
+            assert!(!facts.get_open());
+            assert!(harness.engine.drain().is_empty(), "Escape never selects");
+        },
+    );
+}
+
+/// US-6/S4: the urgency field is the mirror twin — its edit intent
+/// opens its own consumer kind and its pick commits the urgency mask.
+#[test]
+fn us6_s4_the_urgency_dropdown_pick_commits_the_urgency_mask() {
+    let (_fx, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |_driver| {
+            let mut harness = Harness::mount(SlintDriver::default(), state);
+            label_journey_mount(&mut harness);
+            let window = harness.handle.window();
+            window.invoke_task_urgency_edit_asked();
+            harness.driver.advance_time(0);
+            let facts = window.global::<taskboard_ui_slint::DropdownFacts>();
+            assert!(facts.get_open());
+            assert_eq!(
+                facts.get_consumer(),
+                taskboard_ui_slint::DropdownConsumer::TaskUrgency,
+                "the urgency kind opened, not the importance twin"
+            );
+            for _ in 0..5 {
+                harness.driver.press_stroke(parse("Up").unwrap());
+            }
+            harness.driver.press_stroke(parse("Return").unwrap());
+            harness.driver.advance_time(0);
+            assert!(matches!(
+                &harness.engine.drain()[..],
+                [taskboard_domain::StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        urgency: Some(None),
+                        ..
+                    },
+                    ..
+                }]
+            ));
+        },
+    );
+}
+
 /// US-14/S1: `label.manage` opens the labels overlay over the viewed
 /// task; the roster renders the board's live labels.
 #[test]
