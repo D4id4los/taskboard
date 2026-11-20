@@ -5086,14 +5086,13 @@ impl Adapter {
         // receive focus. The degenerate extent (≤ 1) stays on 0.
         // J3 R-4 (round 9 chunk 9): the directional table's
         // control-walk views ride the same injection — Left/Up walk
-        // backwards, Right/Down forwards, decided in
-        // [`Self::directional_control_step`].
-        if matches!(effect, UiEffect::ControlNext | UiEffect::ControlPrev)
-            || self.directional_control_step(&state, effect).is_some()
-        {
-            let backwards = self
-                .directional_control_step(&state, effect)
-                .unwrap_or_else(|| effect == UiEffect::ControlPrev);
+        // backwards, Right/Down forwards. #1034: Tab/Shift-Tab is the
+        // same decision's special case — the one
+        // [`Self::control_walk_step`] function states the whole walk
+        // half of the stop ladder, and the tail consumes its verdict
+        // once (the old double `directional_control_step` call is
+        // gone).
+        if let Some(backwards) = self.control_walk_step(&state, effect) {
             if self.mask_armed(window) {
                 let facts = window.global::<crate::MaskWalkFacts>();
                 let extent = facts.get_extent();
@@ -5469,6 +5468,25 @@ impl Adapter {
         match effect {
             UiEffect::SetMode(Mode::Normal) => self.view_state.discard_edit(),
             _ => self.view_state.commit_description(),
+        }
+    }
+
+    /// The control walk's decision function (#1034): the whole walk
+    /// half of the stop ladder in one place. Tab steps forwards,
+    /// Shift-Tab backwards (the round-3 D25 re-injection), and a
+    /// directional stroke is the per-view table's verdict
+    /// ([`Self::directional_control_step`]); every other effect is
+    /// not a walk. Pure.
+    fn control_walk_step(
+        &self,
+        state: &taskboard_domain::AppState,
+        effect: UiEffect,
+    ) -> Option<bool> {
+        match effect {
+            UiEffect::ControlNext => Some(false),
+            UiEffect::ControlPrev => Some(true),
+            UiEffect::FocusDirectional(_) => self.directional_control_step(state, effect),
+            _ => None,
         }
     }
 
