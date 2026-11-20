@@ -3561,6 +3561,26 @@ fn dialog_button(
     )
 }
 
+/// The dialog button row's authoritative initial-focus index (#996):
+/// the first *enabled* row carrying `autofocus`, `-1` when none. The
+/// computation lives in Rust where the `DialogButtonModel` vec is
+/// built — Slint functions have no model reduce (the issue's named
+/// trap) — and the site binds the host's `initial-focus-index` from
+/// this derivation, so the model's `autofocus` flag is authoritative
+/// and no site hand-declares an index.
+#[must_use]
+pub fn initial_focus_index(buttons: &[crate::DialogButtonModel]) -> i32 {
+    buttons
+        .iter()
+        .position(|button| button.enabled && button.autofocus)
+        .map_or(-1, |index| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            {
+                index as i32
+            }
+        })
+}
+
 /// The usize→i32 narrowing for the pushed counters (the pass's
 /// `candidate_index` convention).
 const fn as_i32(value: usize) -> i32 {
@@ -3603,6 +3623,7 @@ fn push_review_walk(
         tally_left: 0,
         tally_recorded: false,
         abort_confirm: false,
+        initial_focus_index: -1,
         buttons: ModelRc::new(VecModel::<crate::DialogButtonModel>::from(Vec::new())),
         button_codes: ModelRc::new(VecModel::<i32>::from(Vec::new())),
         filing: false,
@@ -3721,6 +3742,14 @@ fn push_review_walk(
             3,
         )],
     };
+    // The autofocus flag is authoritative (#996): the derivation rides
+    // the same vec this pass builds — the site binds it, never a
+    // hand-declared index.
+    let button_models: Vec<crate::DialogButtonModel> = buttons
+        .iter()
+        .map(|(model, _)| model.clone())
+        .collect::<Vec<_>>();
+    let initial_focus_index = initial_focus_index(&button_models);
     let (rows, stage_kind, candidates, candidate_index, filing, picking) = match stage {
         crate::view_state::WalkStage::Entry => {
             // The guidance stage (D-1): one intro row.
@@ -3852,6 +3881,7 @@ fn push_review_walk(
         tally_left: as_i32(tally.left),
         tally_recorded: tally.recorded,
         abort_confirm: models.walk_abort_armed,
+        initial_focus_index,
         buttons: ModelRc::new(VecModel::from(
             buttons
                 .iter()
@@ -4055,6 +4085,34 @@ mod tests {
     use taskboard_domain::{
         Board, BoardClocks, Importance, Stack, StackClocks, TaskClocks, Urgency,
     };
+
+    /// The dialog button row's autofocus derivation (#996): the first
+    /// *enabled* autofocus row wins, `-1` when none qualifies.
+    #[test]
+    fn initial_focus_index_reads_the_first_enabled_autofocus_row() {
+        let row = |enabled: bool, autofocus: bool| crate::DialogButtonModel {
+            label: SharedString::new(),
+            role: crate::DialogButtonRole::None,
+            enabled,
+            autofocus,
+        };
+        assert_eq!(
+            initial_focus_index(&[row(false, true), row(true, true)]),
+            1,
+            "a disabled autofocus row never wins"
+        );
+        assert_eq!(
+            initial_focus_index(&[row(true, false)]),
+            -1,
+            "no flag, no focus"
+        );
+        assert_eq!(initial_focus_index(&[]), -1, "an empty model never focuses");
+        assert_eq!(
+            initial_focus_index(&[row(true, false), row(true, true), row(true, true)]),
+            1,
+            "the first qualifying row wins"
+        );
+    }
 
     /// The insertion indicator's aim derivation (UX-R8 D-2, US-2/AC-3):
     /// the armed move/drag flows converge on one (stack, gap) pair;

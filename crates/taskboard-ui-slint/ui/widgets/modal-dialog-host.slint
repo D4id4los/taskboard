@@ -33,11 +33,13 @@ export enum DialogButtonRole {
     destructive,
 }
 
-// One button row model entry (D-W1-2). `autofocus` is declarative
-// metadata mirrored by the site's `initial-focus` index (Slint
-// functions have no model reduce, so the index computation lives at
-// the mount site; the adapter forwards it through TextButton's
-// `request-focus()`).
+// One button row model entry (D-W1-2, #996). `autofocus` is
+// authoritative: the Rust models pass derives the host's
+// `initial-focus-index` from the same vec it builds (first *enabled*
+// autofocus row, -1 when none — `models::initial_focus_index`; Slint
+// functions have no model reduce, so the computation cannot live
+// here) and the site binds it; the adapter forwards it through
+// TextButton's `request-focus()`.
 export struct DialogButtonModel {
     label: string,
     role: DialogButtonRole,
@@ -69,8 +71,9 @@ component DialogButton inherits Rectangle {
     callback invoked(int);
     out property <bool> focused: btn.focused;
     // The mount-focus edge: the open transition (not init — the
-    // caller's `initial-focus` may not be bound yet at creation; a
-    // conditional mount starts open, so init covers that arm too).
+    // caller's `initial-focus-index` may not be bound yet at
+    // creation; a conditional mount starts open, so init covers that
+    // arm too).
     function take-initial-focus() {
         if (root.initial-focus-index == self.index && self.model.enabled) {
             btn.request-focus();
@@ -102,10 +105,11 @@ export component ModalDialogHost inherits Rectangle {
     in property <int> walk-stops: 1;
     in property <[DialogButtonModel]> buttons;
     in property <DialogKind> kind: DialogKind.confirm;
-    // The mount focus target (index into `buttons`; -1 leaves the
-    // initial focus to the body's own ritual — the capture field
-    // precedent).
-    in property <int> initial-focus: -1;
+    // The mount focus target (#996): the site derives it from the
+    // button model via `models::initial_focus_index` (index into
+    // `buttons`; -1 leaves the initial focus to the body's own
+    // ritual — the capture field precedent).
+    in property <int> initial-focus-index: -1;
     // The usable floor (the status bar's top edge), injected from the
     // mount site (plan §7.4).
     in property <length> viewport-floor;
@@ -270,7 +274,7 @@ export component ModalDialogHost inherits Rectangle {
                 for btn[i] in root.buttons: DialogButton {
                     model: btn;
                     index: i;
-                    initial-focus-index: root.initial-focus;
+                    initial-focus-index: root.initial-focus-index;
                     host-open: root.open;
                     invoked(i) => { root.button-invoked(i); }
                     // The seam reports enabled buttons only: a

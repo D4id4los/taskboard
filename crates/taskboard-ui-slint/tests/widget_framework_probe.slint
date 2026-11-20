@@ -34,7 +34,7 @@ export component WidgetFrameworkProbeWindow inherits Window {
     in-out property <DialogKind> probe-kind: DialogKind.confirm;
     in-out property <length> probe-preferred-width: Theme.dialog-min-width;
     in-out property <int> probe-walk-stops: 2;
-    in-out property <int> probe-initial-focus: -1;
+    in-out property <int> probe-initial-focus-index: -1;
     in-out property <[DialogButtonModel]> probe-buttons: [
         { label: "Cancel", role: DialogButtonRole.dismiss, enabled: true, autofocus: false },
         { label: "Save", role: DialogButtonRole.accept, enabled: true, autofocus: false },
@@ -230,7 +230,7 @@ export component WidgetFrameworkProbeWindow inherits Window {
         walk-stops: root.probe-walk-stops;
         buttons: root.probe-buttons;
         kind: root.probe-kind;
-        initial-focus: root.probe-initial-focus;
+        initial-focus-index: root.probe-initial-focus-index;
         viewport-floor: root.viewport-floor;
         accepted => {
             root.accepted-count += 1;
