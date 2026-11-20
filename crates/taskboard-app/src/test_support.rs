@@ -19,6 +19,12 @@ use crate::config::{AppConfig, SyncBackend};
 #[derive(Debug)]
 pub(crate) struct RefusingStore;
 
+/// Convenience constructor: one `Arc<dyn CredentialStore>` per call
+/// site, killing the repeated `Arc::new(RefusingStore)` spell (#981).
+pub(crate) fn refusing_store() -> Arc<dyn crate::secrets::CredentialStore> {
+    Arc::new(RefusingStore)
+}
+
 impl crate::secrets::CredentialStore for RefusingStore {
     fn load(
         &self,
@@ -73,7 +79,7 @@ pub(crate) async fn standalone_boot_fixture(tag: &str) -> StandaloneFixture {
     config.validate().expect("config valid");
     let app = crate::bootstrap::bootstrap(
         config,
-        Arc::new(RefusingStore),
+        refusing_store(),
         Arc::new(crate::notifications::LogSink),
     )
     .await

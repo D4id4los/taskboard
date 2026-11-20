@@ -1989,6 +1989,7 @@ fn map_io_error(err: &std::io::Error) -> SettingsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::refusing_store;
     use figment::providers::Format as _;
     use taskboard_domain::{BoardClocks, BoardId, StackClocks, StackId};
 
@@ -2014,14 +2015,14 @@ mod tests {
         config.validate().expect("config valid");
         let app = crate::bootstrap::bootstrap(
             config,
-            Arc::new(RefusingStore),
+            refusing_store(),
             Arc::new(crate::notifications::LogSink),
         )
         .await
         .expect("standalone boot");
         let workspace = ConnectionWorkspace {
             config_write_path: path,
-            store: Arc::new(RefusingStore),
+            store: refusing_store(),
             control: app.connector_control(),
             engine: app.engine.clone(),
             // The suite's own identity home: the ceremony's create arm
@@ -2034,31 +2035,6 @@ mod tests {
             ),
         };
         (workspace, app)
-    }
-
-    /// A credential-refusing store (the bootstrap test's shape): the
-    /// width paths never consult it.
-    struct RefusingStore;
-    impl std::fmt::Debug for RefusingStore {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("RefusingStore")
-        }
-    }
-    impl CredentialStore for RefusingStore {
-        fn load(&self, _: &str, _: &str) -> Result<crate::secrets::AppPassword, CredentialError> {
-            Err(CredentialError::NotFound)
-        }
-        fn store(
-            &self,
-            _: &str,
-            _: &str,
-            _: crate::secrets::AppPassword,
-        ) -> Result<(), CredentialError> {
-            Err(CredentialError::Unsupported)
-        }
-        fn delete(&self, _: &str, _: &str) -> Result<(), CredentialError> {
-            Err(CredentialError::Unsupported)
-        }
     }
 
     fn epoch() -> chrono::DateTime<chrono::Utc> {
