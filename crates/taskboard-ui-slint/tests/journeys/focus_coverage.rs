@@ -22,6 +22,7 @@
 //! so the walk reads the focused item directly; no facts global is
 //! needed.
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use std::ops::ControlFlow;

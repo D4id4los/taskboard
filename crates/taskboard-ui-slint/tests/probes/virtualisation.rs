@@ -17,6 +17,7 @@
 //! eager garbage, deliberately not success ceilings: strictly better
 //! virtualisation (a smaller window) still passes.
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use support::driver::{
@@ -318,7 +319,7 @@ fn within_window_and_boundary_changes_never_compensate() {
 
 // -- the board legs (stage-1 plan §3.2, M2) -------------------------------
 
-#[path = "../benches/support/mod.rs"]
+#[path = "../../benches/support/mod.rs"]
 #[allow(dead_code)] // each binary consumes its own subset of the bench fixture
 mod bench_support;
 

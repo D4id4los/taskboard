@@ -5,7 +5,7 @@
 //! build on. A max-channel delta of ≥ 12 clears the antialiasing
 //! band — a decoded-but-untinted (black) glyph never does.
 
-use crate::support::golden_compare::Rgba8Image;
+use super::golden_compare::Rgba8Image;
 
 /// The count of pixels in the clamped region visibly off `bg` (a
 /// max-channel delta of ≥ 12). A floor, never a ceiling: at the 0.5×

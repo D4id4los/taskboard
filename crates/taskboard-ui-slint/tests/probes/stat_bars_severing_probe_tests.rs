@@ -10,6 +10,7 @@
 //! structural relations over measured widths — no font-metric pins, no
 //! text assertions (AGENTS §5).
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use std::rc::Rc;

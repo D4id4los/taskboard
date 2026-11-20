@@ -37,7 +37,7 @@ use slint::{ComponentHandle as _, LogicalSize, SharedString, WindowSize};
 use taskboard_ui_slint::UiHandle;
 use taskboard_ui_slint::keymap::Stroke;
 
-use crate::support::golden_compare::Rgba8Image;
+use super::golden_compare::Rgba8Image;
 
 /// How the platform is initialised. Decides the first `run` call's
 /// registration; a process has exactly one platform.

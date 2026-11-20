@@ -8,6 +8,7 @@
 //! the date-picker grid's context seam (a different element class
 //! than the chunk-1 `TextField` probe).
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use support::driver::{DriverOptions, advance_probe_clock};

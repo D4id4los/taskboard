@@ -8,6 +8,7 @@
 //! terminal state + the typed commands that reached the fake-engine
 //! boundary; labels are addresses, never text oracles.
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
