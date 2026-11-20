@@ -99,6 +99,7 @@ fn c3_required_fields_missing() {
 /// mechanical no-secrets-in-TOML guarantee.
 #[test]
 fn c4_secret_in_toml_is_a_decode_error() {
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("taskboard.toml");
     std::fs::write(
@@ -166,6 +167,7 @@ fn c6_invalid_values_are_typed() {
 /// absent *default-path* file is not an error (C1).
 #[test]
 fn c7_explicit_missing_file_is_file_not_found() {
+    let _env = taskboard_env_lock();
     let err = AppConfig::load(Some(PathBuf::from("/nonexistent/taskboard.toml")))
         .expect_err("explicit missing file");
     assert!(matches!(err, ConfigError::FileNotFound(_)));
@@ -278,6 +280,7 @@ fn c12_explicit_nextcloud_requires_credentials() {
 /// plus the kebab-case enum).
 #[test]
 fn c13_typoed_backend_value_is_a_decode_error() {
+    let _env = taskboard_env_lock();
     let dir = tempdir();
     let file = dir.path().join("taskboard.toml");
     std::fs::write(
