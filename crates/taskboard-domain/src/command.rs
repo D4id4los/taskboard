@@ -2779,18 +2779,24 @@ pub fn plan_command(
             let habit = live_habit(app, *id)?;
             // No NoOp branch — every invocation is exactly one increment
             // (count habits); the receipt's count is the post-increment
-            // value. Monotone under a monotone clock (the row always
-            // carries this fresh `now`).
+            // value. The row clock is minted monotonically past any
+            // stored same-key row (#986), so a same-instant double log
+            // stamps strictly past the first row and both increments
+            // land under the strictly-newer LWW apply.
             let window = log_window(habit, &app.habits.log, now, day);
             let key = HabitLogKey { habit: *id, window };
             let count = app.habits.log.get(&key).map_or(0, |entry| entry.count) + 1;
+            let clock = crate::habit::mint_log_clock(
+                now,
+                app.habits.log.get(&key).map(|entry| entry.clock),
+            );
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::RecordHabitLog(
                         key,
                         HabitLogEntry {
                             count,
-                            clock: now,
+                            clock,
                             by: author,
                         },
                     ),
@@ -2827,14 +2833,23 @@ pub fn plan_command(
                 return Ok(no_op());
             }
             // The audited fresh stamp: the correction is newest-write
-            // under LWW by construction.
+            // under LWW by construction — the same #986 monotone mint
+            // as `LogHabit` keeps that intent intact (without the bump
+            // a same-second adjust could stamp *older* than a bumped
+            // log row and lose; the minted clock may exceed `now` by
+            // whole seconds after a burst — the documented leniency at
+            // `HabitLogEntry::clock`).
+            let clock = crate::habit::mint_log_clock(
+                now,
+                app.habits.log.get(&key).map(|entry| entry.clock),
+            );
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::RecordHabitLog(
                         key,
                         HabitLogEntry {
                             count: *count,
-                            clock: now,
+                            clock,
                             by: author,
                         },
                     ),

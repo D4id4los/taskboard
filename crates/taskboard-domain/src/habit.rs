@@ -391,7 +391,11 @@ pub struct HabitLogEntry {
     /// The window's count (0 is legal — an audited correction may
     /// empty a window; the row stays, honestly clocked).
     pub count: u32,
-    /// The row's LWW clock (always the writing planner's `now`).
+    /// The row's LWW clock: the writing planner's `now`, monotonically
+    /// advanced past any stored same-key log row (#986) — it may exceed
+    /// `now` by whole seconds after a same-second burst. Documented
+    /// leniency: a row clock ahead of the wall `now` is a legitimate
+    /// value, not corruption.
     pub clock: DateTime<Utc>,
     /// The row's author (F1's `by` leg, the stored duel rank): the
     /// document's `by` when adopted, the device identity when created
@@ -400,6 +404,33 @@ pub struct HabitLogEntry {
     /// `None` here means "author unknown", not "authored by nobody".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<crate::ids::AuthorId>,
+}
+
+/// Mint a habit-log row clock under the #986 monotone rule:
+/// `max(now, stored_clock + 1s)` where `stored_clock` is the
+/// currently stored row's clock for the same [`HabitLogKey`]
+/// (`None` → `now`). Pure in (pre-state, command, `now`), so
+/// journal replay re-mints identical clocks deterministically;
+/// every apply/fold/SQL site stays strictly-newer LWW, and a
+/// same-instant double log stamps strictly past the first row so
+/// both increments land. `AdjustHabitLog` shares the bump (it is
+/// load-bearing, not symmetric polish): without it a same-second
+/// adjust could stamp *older* than a bumped log row and lose its
+/// newest-write intent. The minted clock may exceed `now` by whole
+/// seconds after a burst — the documented leniency at
+/// [`HabitLogEntry::clock`].
+pub(crate) fn mint_log_clock(
+    now: DateTime<Utc>,
+    stored_clock: Option<DateTime<Utc>>,
+) -> DateTime<Utc> {
+    match stored_clock {
+        None => now,
+        Some(stored) => now.max(stored + one_second()),
+    }
+}
+
+fn one_second() -> chrono::TimeDelta {
+    chrono::TimeDelta::try_seconds(1).expect("1s is representable")
 }
 
 /// The habit sub-state, nested in [`crate::state::AppState`] like
@@ -1400,8 +1431,18 @@ mod tests {
             fixture.now,
         )
         .expect("commandable");
+        // The second log plans against the post-first-log state (the
+        // mint is a pure function of the pre-state; real replays
+        // execute commands in order, so this mirrors the engine).
+        let mut after_first = fixture.clone();
+        let mut persisted = crate::persistence::PersistedState {
+            habits: fixture.state(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut persisted, &plan1.actions);
+        after_first.log = persisted.habits.log;
         let plan2 = log_plan(
-            &fixture,
+            &after_first,
             &StateCommand::LogHabit {
                 habit: fixture.habit.id,
             },
