@@ -629,7 +629,11 @@ pub fn write_test_config(
     toml.push_str(
         "[sync]\npoll_interval_secs = 1\nbackoff_initial_secs = 1\nbackoff_max_secs = 5\n",
     );
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    // The 1 s margin (R2's in-process precedent): the settle predicate
+    // settles an all-unbound world immediately (#1082), so the budget
+    // is pure join-safety margin here — a join that needs more than
+    // 1 s in the hermetic world IS the finding.
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(path, toml)
 }
 
