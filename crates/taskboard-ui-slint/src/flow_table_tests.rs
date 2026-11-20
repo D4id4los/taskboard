@@ -992,6 +992,11 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // target ring — the move survives both.
     row(FK::Move, E::DirectionH, exp(Z, K(KMove)));
     row(FK::Move, E::DirectionV, exp(Z, K(KMove)));
+    // #1033: the legacy stack-walk verbs join the kept arms — the
+    // chords behind StackNext/StackPrev hop the drop column mid-move
+    // (was: settle-then-run, cancelling the live move).
+    row(FK::Move, E::StackNext, exp(Z, K(KMove)));
+    row(FK::Move, E::StackPrev, exp(Z, K(KMove)));
     row(FK::Move, E::Activate, exp(NZ, N)); // kept confirm
     row(FK::Move, E::RequestMove, exp(Z, N)); // kept toggle-cancel
     row(FK::Move, E::CancelMove, exp(Z, N)); // kept cancel
