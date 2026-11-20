@@ -580,8 +580,7 @@ async fn an_env_injected_identity_still_refuses_persist_rejected() {
         forwarder.await.expect("forwarder joins cleanly");
     }
 
-    let _env = crate::common::taskboard_env_lock();
-    let _env = common::env_lock();
+    let _env = common::taskboard_env_lock();
     let server = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__SERVER_URL", "https://env.example");
     let user = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "env-user");
     let dir = tempfile::tempdir().expect("tempdir");
