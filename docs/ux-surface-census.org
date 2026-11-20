@@ -60,7 +60,9 @@ at UX-plan level — never a chunk-local surprise.
   legs. Dispatch byte-identical (D-11 — zero Rust changes); visual
   deltas: none intended (D-12; the check glyph stays
   dropdown-selected-only; =IconKind= gains the =none= slot-collapse
-  sentinel, no asset, no mapping arm). The debug seams re-point to
+  sentinel — no asset of its own; the mapping totality law's explicit
+  arm pins the loud warn asset so an accidental mount shouts). The
+  debug seams re-point to
   the landed ids per the chunk-16 precedent
   (=MenuRow::submenu-chevron=, =MenuRow::check-glyph=,
   =MenuRow::row-touch=; the =flyout-row= delegates stay at the
