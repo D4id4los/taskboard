@@ -822,6 +822,7 @@ async fn status_once(db: &Path) -> taskboard_app::commands::status::StatusView {
 /// 2 over the Exec lane.
 #[tokio::test]
 async fn ip16_attach_from_persisted_state_attaches_and_serves() {
+    let _env = common::taskboard_env_lock();
     bounded(async {
         let dir = tempdir();
         let (handle, db, config_path, store) = served_with_config_file(dir.path(), "ip16.db").await;
@@ -912,6 +913,7 @@ async fn ip16_attach_from_persisted_state_attaches_and_serves() {
 /// client loads), so secret rotation reaches the running daemon.
 #[tokio::test]
 async fn ip17_attach_swaps_a_live_connector() {
+    let _env = common::taskboard_env_lock();
     bounded(async {
         let dir = tempdir();
         let (handle, db, config_path, store) = served_with_config_file(dir.path(), "ip17.db").await;
@@ -960,6 +962,7 @@ async fn ip17_attach_swaps_a_live_connector() {
 /// each leaves `connector_attached` unchanged.
 #[tokio::test]
 async fn ip18_attach_refusals_are_typed_and_leave_the_daemon_untouched() {
+    let _env = common::taskboard_env_lock();
     bounded(async {
         let dir = tempdir();
         let (handle, db, config_path, store) = served_with_config_file(dir.path(), "ip18.db").await;
@@ -1303,6 +1306,7 @@ impl CredentialStore for BlockingPoolProbeStore {
 /// the attach still succeeds end-to-end over the wire.
 #[tokio::test]
 async fn ip20_attach_runs_its_blocking_half_off_the_dispatcher_task() {
+    let _env = common::taskboard_env_lock();
     bounded(async {
         let dir = tempdir();
         let probe = Arc::new(BlockingPoolProbeStore {

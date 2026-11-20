@@ -543,6 +543,7 @@ async fn c18_connect_prompts_in_order() {
 #[tokio::test]
 async fn c19_connect_creates_an_explicit_missing_config() {
     let server = mount_boards_ok().await;
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let config_path = dir.path().join("fresh").join("taskboard.toml");
     assert!(matches!(

@@ -101,7 +101,7 @@ async fn l10_login_with_no_config_anywhere_writes_the_xdg_candidate() {
     let xdg_root = xdg.path().to_path_buf();
 
     let code = {
-        let _guard = common::env_lock();
+        let _env = common::taskboard_env_lock();
         let _xdg_var =
             common::EnvOverride::set("XDG_CONFIG_HOME", xdg_root.to_str().expect("utf8"));
         let _store_var = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__CREDENTIAL_STORE", "env");
@@ -128,6 +128,9 @@ async fn l10_login_with_no_config_anywhere_writes_the_xdg_candidate() {
     let written = std::fs::read_to_string(&written_path).expect("config written to XDG");
     assert!(written.contains(&server.uri()), "server persisted");
     assert!(written.contains("alice"), "username persisted");
+    // The load composes the Env provider (#984): re-acquire outside
+    // the dispatch block's guard scope.
+    let _env = common::taskboard_env_lock();
     let loaded = taskboard_app::config::AppConfig::load(Some(written_path))
         .expect("the created config loads");
     assert_eq!(loaded.username(), "alice");
@@ -157,7 +160,7 @@ async fn l11_login_honors_a_missing_taskboard_config_target() {
     let xdg_root = xdg.path().to_path_buf();
 
     let code = {
-        let _guard = common::env_lock();
+        let _env = common::taskboard_env_lock();
         let _xdg_var =
             common::EnvOverride::set("XDG_CONFIG_HOME", xdg_root.to_str().expect("utf8"));
         let _store_var = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__CREDENTIAL_STORE", "env");
@@ -216,7 +219,7 @@ async fn l12_login_overlays_an_existing_xdg_config() {
     .expect("seed xdg config");
 
     let code = {
-        let _guard = common::env_lock();
+        let _env = common::taskboard_env_lock();
         let _xdg_var =
             common::EnvOverride::set("XDG_CONFIG_HOME", xdg_root.to_str().expect("utf8"));
         let _store_var = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__CREDENTIAL_STORE", "env");
@@ -322,7 +325,7 @@ async fn l13_alias_happy_path_writes_stderr_connect_keeps_it_empty() {
     let alias_dir = tempdir();
     let connect_dir = tempdir();
 
-    let _guard = common::env_lock();
+    let _env = common::taskboard_env_lock();
     let _store_var = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__CREDENTIAL_STORE", "env");
     common::remove_env("TASKBOARD_CONFIG");
 

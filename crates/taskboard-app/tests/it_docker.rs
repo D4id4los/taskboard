@@ -311,7 +311,7 @@ async fn it_nextcloud_docker_cli_standalone_publish() {
         .expect("test must finish within the live deadline");
 
     async fn standalone_publish_journey(cfg: &common::LiveCfg) {
-        let _env = common::env_lock();
+        let _env = common::taskboard_env_lock();
         let run = common::run_id();
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("taskboard.db");
@@ -438,7 +438,7 @@ async fn editing_push_journey(cfg: &common::LiveCfg) {
     use taskboard_app::config::{AppConfig, StorageSection};
     use taskboard_domain::TaskChanges;
 
-    let _env = common::env_lock();
+    let _env = common::taskboard_env_lock();
     let run = common::run_id();
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("taskboard.db");
@@ -1584,7 +1584,7 @@ async fn move_to_files_journey(cfg: &common::LiveCfg) {
     use taskboard_app::board_move_ceremony::{MoveDirection, MoveStage, run_on, run_until};
     use taskboard_app::commands::boards;
 
-    let _env = common::env_lock();
+    let _env = common::taskboard_env_lock();
     let _password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
     let budget = Duration::from_secs(60);
     // The default-path identity home: the live journey's in-process

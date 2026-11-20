@@ -1737,6 +1737,7 @@ async fn seed_bound_board(db: &std::path::Path) {
 
 #[tokio::test]
 async fn j1_connect_line_attaches_and_refreshes_the_session() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j1.db");
     seed_bound_board(&db).await;
@@ -1794,6 +1795,7 @@ async fn j1_connect_line_attaches_and_refreshes_the_session() {
 /// nothing about the session changed.
 #[tokio::test]
 async fn j2_a_failed_ceremony_changes_nothing_and_the_session_survives() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j2.db");
     let config_path = seeded_config_file(dir.path(), &db, &minimal_toml(""));
@@ -1851,6 +1853,7 @@ async fn j2_a_failed_ceremony_changes_nothing_and_the_session_survives() {
 /// test home — this pins only the disposition mapping).
 #[tokio::test]
 async fn j3_the_backend_guard_asks_as_a_confirm_disposition() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j3.db");
     let config_path = seeded_config_file(
@@ -1918,6 +1921,7 @@ async fn j3_the_backend_guard_asks_as_a_confirm_disposition() {
 /// receipt reports the re-point with `attached: true`.
 #[tokio::test]
 async fn j4_a_repoint_swaps_the_live_connector_to_the_new_identity() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j4.db");
     seed_bound_board(&db).await;
@@ -2017,6 +2021,7 @@ fn basic_auth_value(user_pass: &str) -> String {
 /// (structural kind; the stderr notice is UX, never asserted).
 #[tokio::test]
 async fn j5_the_login_alias_refuses_typed_where_connect_would_confirm() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j5.db");
     let config_path = seeded_config_file(
@@ -2052,6 +2057,7 @@ async fn j5_the_login_alias_refuses_typed_where_connect_would_confirm() {
 /// is permitted).
 #[tokio::test]
 async fn j6_logout_detaches_strips_and_a_reconnect_reattaches() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j6.db");
     let server = wiremock::MockServer::start().await;
@@ -2111,6 +2117,7 @@ async fn j6_logout_detaches_strips_and_a_reconnect_reattaches() {
 /// rider, now in-session); a re-connect re-attaches.
 #[tokio::test]
 async fn j7_logout_keeps_an_explicit_backend_and_sync_refuses_unavailable() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j7.db");
     let server = wiremock::MockServer::start().await;
@@ -2166,6 +2173,7 @@ async fn j7_logout_keeps_an_explicit_backend_and_sync_refuses_unavailable() {
 /// (`not-configured`) and the session continues.
 #[tokio::test]
 async fn j8_logout_on_a_standalone_session_refuses_typed_and_survives() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j8.db");
     let config_path = seeded_config_file(dir.path(), &db, &minimal_toml(""));
@@ -2237,6 +2245,7 @@ async fn r14_in_session_status_under_standalone_omits_the_connector_fact() {
 /// the config keys survive).
 #[tokio::test]
 async fn j10_in_session_status_surfaces_the_connector_fact_across_logout() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j10.db");
     let server = wiremock::MockServer::start().await;
@@ -2296,6 +2305,7 @@ async fn j10_in_session_status_surfaces_the_connector_fact_across_logout() {
 /// peer cleanly (the journey's own deadline guards the liveness).
 #[tokio::test]
 async fn j9_interrupted_gets_its_verdict_and_the_session_continues() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("j9.db");
     let config_path = seeded_config_file(dir.path(), &db, &minimal_toml(""));
