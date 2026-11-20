@@ -363,3 +363,365 @@ fn the_vi_and_emacs_extend_rows_extend_one_member_per_press() {
         harness.assert_commands(&[]);
     });
 }
+
+// -- the rule cursor walk (J3 US-6, round 9 chunk 12) -------------------
+
+use taskboard_domain::AppState;
+use taskboard_domain::Insistence;
+use taskboard_domain::ReminderKind;
+use taskboard_domain::ReminderOffset;
+use taskboard_domain::ReminderRule;
+use taskboard_domain::ReminderRuleId;
+use taskboard_domain::StateCommand;
+use taskboard_domain::TaskId;
+
+/// Seeds an ARMED rule on `task` under a fixed ordinal uuid — the
+/// roster (id-table) order is then deterministic, so journey row
+/// indices name stable rules (the element-address discipline).
+fn seed_armed_rule(state: &mut AppState, task: TaskId, ordinal: u128) -> ReminderRuleId {
+    use chrono::Timelike;
+    let id = ReminderRuleId::from_uuid(uuid::Uuid::from_u128(ordinal));
+    let fire =
+        chrono::Utc::now().with_nanosecond(0).expect("whole second") + chrono::Duration::hours(24);
+    state.reminders.rules.insert(
+        id,
+        ReminderRule {
+            insistence: Insistence::Normal,
+            id,
+            task,
+            kind: ReminderKind::At(
+                taskboard_domain::AtInstant::whole_second(fire).expect("whole second"),
+            ),
+            created_at: fire,
+            updated_at: fire,
+            by: None,
+        },
+    );
+    id
+}
+
+/// Seeds an UNARMED rule (a due-anchored offset over a task with no
+/// due date — the D-3 jump arm's row).
+fn seed_unarmed_rule(state: &mut AppState, task: TaskId, ordinal: u128) -> ReminderRuleId {
+    let id = ReminderRuleId::from_uuid(uuid::Uuid::from_u128(ordinal));
+    let now = chrono::Utc::now();
+    state.reminders.rules.insert(
+        id,
+        ReminderRule {
+            insistence: Insistence::Normal,
+            id,
+            task,
+            kind: ReminderKind::DueOffset(ReminderOffset::at_due()),
+            created_at: now,
+            updated_at: now,
+            by: None,
+        },
+    );
+    id
+}
+
+/// The fixture's first board card — the detail the shared opener
+/// mounts (the title is the element address).
+fn first_card(state: &AppState) -> TaskId {
+    *state
+        .tasks
+        .iter()
+        .find(|(_, task)| task.title == "task-0")
+        .map(|(id, _)| id)
+        .expect("the fixture's first card")
+}
+
+/// The emphasized rule row: the index whose model carries the
+/// selected bit (the card-emphasis oracle's row twin).
+fn selected_rule_row(harness: &JourneyHarness) -> Option<usize> {
+    let rules = harness.handle.window().get_task_model().rules;
+    (0..rules.row_count()).find(|row| rules.row_data(*row).expect("row").selected)
+}
+
+/// US-6/AC-1 (J3 US-6, round 9 chunk 12; plan tokens
+/// `us6_s1_rule_cursor_walks_the_roster` + the fold's walk half) —
+/// the disarmed vertical stroke arms the rule cursor at row 0
+/// (arm-then-step), further strokes walk with edge clamps, the
+/// emphasis follows the cursor through the row model, and the whole
+/// walk dispatches NOTHING (the presentation-state fold's boundary
+/// face: no cursor-bearing command variant ever reaches the engine).
+#[test]
+fn us6_s1_rule_cursor_walks_the_roster() {
+    golden_state_journey(|mut state| {
+        let task = first_card(&state);
+        seed_armed_rule(&mut state, task, 0xA11);
+        seed_armed_rule(&mut state, task, 0xA12);
+        seed_armed_rule(&mut state, task, 0xA13);
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(state, preset);
+        open_detail_first_card(&mut harness, preset);
+        assert_eq!(
+            selected_rule_row(&harness),
+            None,
+            "a fresh detail is disarmed"
+        );
+        // The first vertical stroke arms at row 0.
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        assert_eq!(
+            selected_rule_row(&harness),
+            Some(0),
+            "the arming stroke lands row 0 (arm-then-step)"
+        );
+        // Down down walks to the last row; a further stroke clamps.
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        assert_eq!(selected_rule_row(&harness), Some(2));
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        assert_eq!(
+            selected_rule_row(&harness),
+            Some(2),
+            "the last row clamps (no wrap)"
+        );
+        // Up walks back; row 0 clamps the same way.
+        harness.press_preset(preset, ActionId::NavFocusUp);
+        harness.advance();
+        harness.press_preset(preset, ActionId::NavFocusUp);
+        harness.advance();
+        assert_eq!(selected_rule_row(&harness), Some(0));
+        harness.press_preset(preset, ActionId::NavFocusUp);
+        harness.advance();
+        assert_eq!(
+            selected_rule_row(&harness),
+            Some(0),
+            "row 0 clamps (no wrap)"
+        );
+        // The walk is view-internal: zero commands (the fold's
+        // boundary face — no cursor-bearing variant exists to send).
+        harness.assert_commands(&[]);
+    });
+}
+
+/// US-6 (J3 US-6, round 9 chunk 12; plan token
+/// `us6_s2_activate_acts_on_the_selected_rule`) — Activate over the
+/// armed cursor dispatches the cursor'd row's OWN affordance: an
+/// armed rule row's Enter removes exactly that rule (the typed
+/// command at the fake-engine boundary), and the cursor prunes on
+/// the post-remove pass (the roster changed under it). Disarmed, the
+/// same stroke falls through untouched (the detail's Activate
+/// grammar is chunk 9's, byte-identical).
+#[test]
+fn us6_s2_activate_acts_on_the_selected_rule() {
+    golden_state_journey(|mut state| {
+        let task = first_card(&state);
+        let rule = seed_armed_rule(&mut state, task, 0xB21);
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(state, preset);
+        open_detail_first_card(&mut harness, preset);
+        // Arm, then Enter: the remove dispatches for the cursor'd rule.
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        harness.handle.dispatch_action(ActionId::TaskEdit);
+        harness.advance();
+        harness.assert_commands(&[StateCommand::RemoveReminderRule { rule }]);
+        // The engine applied the removal; the settle's refresh pass
+        // prunes the dead cursor (D-2: the verb does not clear it,
+        // the roster change does).
+        harness.engine.settle(&harness.handle);
+        assert_eq!(
+            selected_rule_row(&harness),
+            None,
+            "the dead cursor pruned after the roster changed"
+        );
+        assert_eq!(
+            harness.handle.window().get_task_model().rules.row_count(),
+            0,
+            "the rule is gone"
+        );
+    });
+}
+
+/// US-6 (J3 US-6, round 9 chunk 12; plan token
+/// `us6_s2_activate_acts_on_the_selected_rule`, the unarmed leg) —
+/// Activate over a cursor'd UNARMED row opens the due editor (the
+/// row's jump affordance — the D-3 armed-bit resolution).
+#[test]
+fn us6_s2_activate_on_an_unarmed_row_opens_the_due_editor() {
+    golden_state_journey(|mut state| {
+        let task = first_card(&state);
+        seed_unarmed_rule(&mut state, task, 0xB31);
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(state, preset);
+        open_detail_first_card(&mut harness, preset);
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        assert_eq!(selected_rule_row(&harness), Some(0));
+        harness.handle.dispatch_action(ActionId::TaskEdit);
+        harness.advance();
+        assert!(
+            harness.handle.window().get_task_model().date_picker_open,
+            "the unarmed row's Activate opened the due editor (the jump arm)"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
+/// US-6 (J3 US-6, round 9 chunk 12; plan token
+/// `us6_s3_foreign_settles_and_exits_clear_the_cursor`) — the
+/// lifecycle: view exit clears (disarmed on re-entry), a foreign
+/// settle (the labels overlay) clears, and a subject change starts a
+/// fresh roster (the new detail is disarmed even though the old
+/// subject's arm preceded it).
+#[test]
+fn us6_s3_foreign_settles_and_exits_clear_the_cursor() {
+    golden_state_journey(|mut state| {
+        let task = first_card(&state);
+        seed_armed_rule(&mut state, task, 0xC41);
+        seed_armed_rule(&mut state, task, 0xC42);
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(state, preset);
+        open_detail_first_card(&mut harness, preset);
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        assert!(selected_rule_row(&harness).is_some(), "armed");
+
+        // View exit clears: re-entry starts disarmed (D-2 site 1).
+        // The board focus is restored to the exited card, so the
+        // reopen is the detail open alone (no focus move — the
+        // restored anchor already names the ruled task).
+        harness.handle.dispatch_action(ActionId::NavFocusBoard);
+        harness.advance();
+        harness.handle.dispatch_action(ActionId::TaskEdit);
+        harness.advance();
+        assert_eq!(
+            selected_rule_row(&harness),
+            None,
+            "the re-opened detail is disarmed"
+        );
+        assert!(
+            harness.handle.window().get_task_model().rules.row_count() > 0,
+            "the re-opened detail shows the subject's rules"
+        );
+
+        // A foreign settle clears (D-2 site 4, the labels overlay).
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        assert!(selected_rule_row(&harness).is_some(), "armed again");
+        harness.handle.dispatch_action(ActionId::LabelManage);
+        harness.advance();
+        assert_eq!(
+            selected_rule_row(&harness),
+            None,
+            "the labels overlay's settle cleared the cursor"
+        );
+    });
+}
+
+/// US-6 (J3 US-6, round 9 chunk 12; plan token
+/// `us6_s3_foreign_settles_and_exits_clear_the_cursor`, the subject
+/// leg) — opening a DIFFERENT task's detail is a new roster: the arm
+/// never carries across subjects.
+#[test]
+fn us6_s3_a_subject_change_starts_a_fresh_roster() {
+    golden_state_journey(|mut state| {
+        let task = first_card(&state);
+        seed_armed_rule(&mut state, task, 0xC51);
+        let other = *state
+            .tasks
+            .iter()
+            .find(|(_, task)| task.title == "task-1")
+            .map(|(id, _)| id)
+            .expect("the fixture's second card");
+        seed_armed_rule(&mut state, other, 0xC52);
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(state, preset);
+        open_detail_first_card(&mut harness, preset);
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        assert!(selected_rule_row(&harness).is_some(), "armed on task-0");
+        // Leave to the board, walk to the second card, open it.
+        harness.handle.dispatch_action(ActionId::NavFocusBoard);
+        harness.advance();
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        harness.press_preset(preset, ActionId::TaskEdit);
+        harness.advance();
+        assert_eq!(
+            harness.handle.window().get_task_model().title,
+            "task-1",
+            "the second card's detail is open"
+        );
+        assert_eq!(
+            selected_rule_row(&harness),
+            None,
+            "the arm never carried across subjects"
+        );
+    });
+}
+
+/// US-6 (J3 US-6, round 9 chunk 12; plan token
+/// `us6_s4_pointer_click_moves_the_cursor`) — pointer coherence: a
+/// row click moves the cursor onto that row (emphasis follows), and
+/// the following Activate dispatches for the CLICKED row's rule.
+#[test]
+fn us6_s4_pointer_click_moves_the_cursor() {
+    golden_state_journey(|mut state| {
+        let task = first_card(&state);
+        seed_armed_rule(&mut state, task, 0xD61);
+        // The clicked row: row 1 in the id-table roster (D61 < D62).
+        let clicked = seed_armed_rule(&mut state, task, 0xD62);
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(state, preset);
+        open_detail_first_card(&mut harness, preset);
+        // The pointer path: the row body's click seam (row 1).
+        harness.handle.window().invoke_task_rule_row_clicked(1);
+        harness.advance();
+        assert_eq!(
+            selected_rule_row(&harness),
+            Some(1),
+            "the click moved the cursor onto the clicked row"
+        );
+        // The following activation acts on the clicked row's rule.
+        harness.handle.dispatch_action(ActionId::TaskEdit);
+        harness.advance();
+        // The activation removed the CLICKED row's rule (the
+        // fixed-uuid seeding makes the roster order deterministic).
+        harness.assert_commands(&[StateCommand::RemoveReminderRule { rule: clicked }]);
+    });
+}
+
+/// The chunk-9 negative (J3 US-6, round 9 chunk 12; plan token
+/// `us6_n1_disarmed_taskdetail_vertical_stays_the_ladder`) — with an
+/// EMPTY rule roster the vertical strokes never arm: the control
+/// ladder steps exactly as chunk 9 pinned (the walk-stop fact
+/// moves), and the view-internal grammar holds (zero commands).
+#[test]
+fn us6_n1_disarmed_taskdetail_vertical_stays_the_ladder() {
+    golden_state_journey(|state| {
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(state, preset);
+        open_detail_first_card(&mut harness, preset);
+        assert_eq!(
+            selected_rule_row(&harness),
+            None,
+            "no rules, no cursor (the empty-roster gate)"
+        );
+        // The vertical strokes ride the control ladder (the chunk-9
+        // pinned grammar): the walk-stop fact moves off 0.
+        let mut guard = 0;
+        while walk_stop(&harness) == 0 && guard < 10 {
+            harness.press_preset(preset, ActionId::NavFocusDown);
+            harness.advance();
+            guard += 1;
+        }
+        assert_ne!(
+            walk_stop(&harness),
+            0,
+            "the disarmed verticals step the control ladder exactly as chunk 9 pinned"
+        );
+        assert_eq!(
+            selected_rule_row(&harness),
+            None,
+            "the empty roster never armed"
+        );
+        harness.assert_commands(&[]);
+    });
+}

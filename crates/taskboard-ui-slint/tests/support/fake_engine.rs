@@ -290,6 +290,12 @@ impl FakeEngine {
                         board.archived = archived;
                     }
                 }
+                // The rule cursor journeys' continuity half (J3 US-6,
+                // round 9 chunk 12): the removal rejoins the roster on
+                // the settle's refresh — the cursor's prune reads it.
+                StateCommand::RemoveReminderRule { rule } => {
+                    state.reminders.rules.remove(&rule);
+                }
                 // The journey session exercises only the task verbs
                 // and the stack reorder above; anything else is
                 // continuity-relevant never — log-and-keep (the
