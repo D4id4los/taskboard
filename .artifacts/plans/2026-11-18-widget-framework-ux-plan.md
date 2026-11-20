@@ -186,7 +186,7 @@ menus/flyouts 200/360 px, ×base-scale). -->
 | UiRequest | OpenModal | host id, button model | US-1 |
 | UiRequest | CloseModal | host id, outcome role | US-1 |
 | UiRequest | OpenAnchored | host id, anchor facts | US-2 |
-| ActionId | task.effort.set | effort value | US-3 |
+| — (no `ActionId`; corrected 2026-11-20, #1026) | the effort commit dispatches `StateCommand::UpdateTask` directly through the focus-loss seam (W-4's blanked ActionId is the correct inventory — no effort verb exists in the `ActionId` vocabulary; chunk 11's effort edit/clear verbs, when they mint the ActionId, update §6 W-4 and this row **together**) | effort value | US-3 |
 
 ## 8. Verification plan
 
