@@ -1495,6 +1495,121 @@ mod tests {
             None
         );
     }
+    /// The task-detail verb-table fold test (J3 US-4, round 9 chunk
+    /// 11 — the stage-1 plan §3.4 law): every non-exempt row of the
+    /// 22-verb table resolves a binding at `TaskDetail` in every preset
+    /// — zero *regular* activatable detail widgets stay Tab-only. The
+    /// plan's exempt rulings (chip unassign = pointer/Tab-indexed,
+    /// rule-list verbs until chunk 12, series pause = Tab with the
+    /// backlog candidate, the conversion family = rare-verb carve-out,
+    /// `TaskToggleTracker` = menu-only) are deliberately NOT asserted —
+    /// they are the recorded exceptions, not coverage misses.
+    #[test]
+    fn the_detail_verb_table_folds_to_a_binding_in_every_preset() {
+        let chain = [
+            ContextId::TaskDetail,
+            ContextId::ViNormal,
+            ContextId::Global,
+        ];
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for verb in [
+                ActionId::TaskComplete,
+                ActionId::TaskReopen,
+                ActionId::TaskTitleEdit,
+                ActionId::TaskTrackToggle,
+                ActionId::TaskTrackEntries,
+                ActionId::TaskEffortEdit,
+                ActionId::TaskEffortClear,
+            ] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} leaves {verb:?} Tab-only at the task detail"
+                );
+            }
+        }
+    }
+
+    /// The R-2 mis-stroke contract (round 9 chunk 11): the emacs bare
+    /// second stroke `C-c i` resolves the smart toggle while the
+    /// chorded `C-c C-i` resolves the start verb — distinct bindings
+    /// by the bare/chord rule (the `C-c c` capture precedent), at the
+    /// detail AND on the board (where US-5 put the pair).
+    #[test]
+    fn the_emacs_toggle_and_start_strokes_stay_distinct() {
+        use crate::keymap::stroke::parse;
+        let keymap = Keymap::from_preset(Preset::Emacs);
+        let bare = [parse("Ctrl+c").expect("Ctrl+c"), parse("i").expect("i")];
+        let chorded = [
+            parse("Ctrl+c").expect("Ctrl+c"),
+            parse("Ctrl+i").expect("Ctrl+i"),
+        ];
+        for chain in [
+            [
+                ContextId::TaskDetail,
+                ContextId::ViNormal,
+                ContextId::Global,
+            ],
+            [ContextId::Board, ContextId::ViNormal, ContextId::Global],
+        ] {
+            assert_eq!(
+                keymap.resolve(&chain, &bare),
+                Some(ActionId::TaskTrackToggle),
+                "bare C-c i is the toggle at {chain:?}"
+            );
+            assert_eq!(
+                keymap.resolve(&chain, &chorded),
+                Some(ActionId::TaskTrackStart),
+                "chorded C-c C-i is the start at {chain:?}"
+            );
+        }
+    }
+
+    /// US-5's keymap-side contract (round 9 chunk 11): the start/stop
+    /// twins resolve in the Board and `StackDetail` chains in every
+    /// preset (the r8 rows' verbatim extension).
+    #[test]
+    fn the_tracker_pair_resolves_on_board_and_stack_detail_in_every_preset() {
+        use crate::keymap::stroke::parse;
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for chain in [
+                [ContextId::Board, ContextId::ViNormal, ContextId::Global],
+                [
+                    ContextId::StackDetail,
+                    ContextId::ViNormal,
+                    ContextId::Global,
+                ],
+            ] {
+                let (start, stop) = match preset {
+                    Preset::Standard => (parse("F9").expect("F9"), parse("F10").expect("F10")),
+                    Preset::Emacs => (
+                        parse("Ctrl+c").expect("Ctrl+c"),
+                        parse("Ctrl+c").expect("Ctrl+c"),
+                    ),
+                    Preset::Vi => (parse("I").expect("I"), parse("O").expect("O")),
+                };
+                let start_seq: &[Stroke] = match preset {
+                    Preset::Emacs => &[start, parse("Ctrl+i").expect("Ctrl+i")],
+                    _ => &[start],
+                };
+                let stop_seq: &[Stroke] = match preset {
+                    Preset::Emacs => &[stop, parse("Ctrl+o").expect("Ctrl+o")],
+                    _ => &[stop],
+                };
+                assert_eq!(
+                    keymap.resolve(&chain, start_seq),
+                    Some(ActionId::TaskTrackStart),
+                    "{preset:?} start resolves at {chain:?}"
+                );
+                assert_eq!(
+                    keymap.resolve(&chain, stop_seq),
+                    Some(ActionId::TaskTrackStop),
+                    "{preset:?} stop resolves at {chain:?}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

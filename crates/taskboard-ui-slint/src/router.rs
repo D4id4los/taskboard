@@ -2258,6 +2258,105 @@ mod tests {
         );
     }
 
+    /// The smart toggle routes exactly the two tracking verbs'
+    /// outcomes (J3 R-8, round 9 chunk 11 — no new domain command):
+    /// a target holding the open entry stops; a target without one
+    /// starts (the target = the one-shot, else the focused task — the
+    /// card seams' resolution); no target anywhere is `NoTarget`.
+    #[test]
+    fn the_smart_toggle_routes_the_state_correct_tracking_half() {
+        let task = TaskId::from_uuid(Uuid::now_v7());
+
+        // Running on the target: the stop half.
+        let mut running = ctx(true);
+        running.track_target = Some(task);
+        running.focused_task_tracking = true;
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackToggle, &running),
+            DispatchOutcome::Command(StateCommand::StopTracking),
+            "the open entry on the target routes the stop"
+        );
+
+        // Idle: the start half, addressed at the resolved target.
+        let mut idle = ctx(false);
+        idle.track_target = Some(task);
+        idle.focused_task_tracking = false;
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackToggle, &idle),
+            DispatchOutcome::Command(StateCommand::StartTracking {
+                task,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work
+            }),
+            "an idle target routes the start over it"
+        );
+
+        // Running elsewhere (tracking fact false) still starts over
+        // the target — the engine's own law closes the foreign entry.
+        let mut elsewhere = ctx(true);
+        elsewhere.track_target = Some(task);
+        elsewhere.focused_task_tracking = false;
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackToggle, &elsewhere),
+            DispatchOutcome::Command(StateCommand::StartTracking {
+                task,
+                kind: taskboard_domain::tracking::TimeEntryKind::Work
+            }),
+            "a running-elsewhere target still routes the start"
+        );
+
+        // No target: the honest NoTarget.
+        let none = ctx(false);
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskTrackToggle, &none),
+            DispatchOutcome::NoTarget,
+            "no one-shot and no focused task is NoTarget"
+        );
+    }
+
+    /// The effort pair's route gates (J3 US-4, round 9 chunk 11):
+    /// edit is a pure focus effect (no command, ever); clear routes
+    /// the sparse `Some(None)` mask only over a subject that actually
+    /// carries an estimate — the scheduled-fact's gate shape.
+    #[test]
+    fn the_effort_pair_gates_on_the_subject_and_the_estimate() {
+        // Edit: always the focus effect.
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskEffortEdit, &ctx(true)),
+            DispatchOutcome::UiEffect(UiEffect::BeginEffortEdit),
+            "edit is the focus verb, subject or not"
+        );
+
+        // Clear with an estimate: the sparse mask.
+        let mut armed = ctx(true);
+        armed.focused_task_effort = true;
+        assert!(
+            matches!(
+                ActionRouter::dispatch(ActionId::TaskEffortClear, &armed),
+                DispatchOutcome::Command(StateCommand::UpdateTask {
+                    changes: taskboard_domain::TaskChanges {
+                        effort: Some(None),
+                        ..
+                    },
+                    ..
+                })
+            ),
+            "an estimate-carrying subject clears confirmation-free"
+        );
+        // Clear without an estimate, or without a subject: NoTarget.
+        let mut bare = ctx(true);
+        bare.focused_task_effort = false;
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskEffortClear, &bare),
+            DispatchOutcome::NoTarget,
+            "no estimate: nothing to clear"
+        );
+        assert_eq!(
+            ActionRouter::dispatch(ActionId::TaskEffortClear, &ctx(false)),
+            DispatchOutcome::NoTarget,
+            "no subject: nothing to address"
+        );
+    }
+
     /// DR-6/6 — the habit verbs route exact typed commands from their
     /// row targets; a target-less dispatch is the honest `NoTarget`
     /// (the menu can never invoke them — section-scoped entries).

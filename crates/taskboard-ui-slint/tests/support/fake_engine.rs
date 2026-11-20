@@ -296,6 +296,47 @@ impl FakeEngine {
                 StateCommand::RemoveReminderRule { rule } => {
                     state.reminders.rules.remove(&rule);
                 }
+                // The tracking verbs' continuity (round 9 chunk 11,
+                // J3 US-4/US-5): StartTracking inserts the open
+                // entry (the running timer), StopTracking stamps the
+                // newest open entry's end — the smart toggle's
+                // state-correct second press must see the first
+                // press's entry to route the stop half.
+                StateCommand::StartTracking { task, kind } => {
+                    let now = chrono::Utc::now();
+                    let title = state
+                        .tasks
+                        .get(&task)
+                        .map(|task| task.title.clone())
+                        .unwrap_or_default();
+                    let id = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+                    state.tracking.entries.insert(
+                        id,
+                        taskboard_domain::TimeEntry {
+                            id,
+                            task,
+                            task_title: title,
+                            start: now,
+                            end: None,
+                            created_at: now,
+                            updated_at: now,
+                            kind,
+                            by: None,
+                        },
+                    );
+                }
+                StateCommand::StopTracking => {
+                    let now = chrono::Utc::now();
+                    let newest = state
+                        .tracking
+                        .newest_open()
+                        .map(|entry| entry.id)
+                        .expect("an open entry to close");
+                    if let Some(entry) = state.tracking.entries.get_mut(&newest) {
+                        entry.end = Some(now);
+                        entry.updated_at = now;
+                    }
+                }
                 // The journey session exercises only the task verbs
                 // and the stack reorder above; anything else is
                 // continuity-relevant never — log-and-keep (the

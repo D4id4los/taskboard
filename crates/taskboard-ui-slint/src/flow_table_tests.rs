@@ -1682,6 +1682,50 @@ fn rig(state: AppState) -> Rig {
     }
 }
 
+/// A rig mounted with an explicit keymap (the hint-projection legs'
+/// fixture continuity — the empty-map and per-preset empty legs).
+fn keyed_rig(state: AppState, keymap: crate::keymap::Keymap, preset: crate::keymap::Preset) -> Rig {
+    let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+    let (commands_tx, commands_rx) = mpsc::channel(64);
+    let (requests_tx, _requests_rx) = mpsc::channel(16);
+    let (_health_tx, health) =
+        tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+    let handle = mount(
+        state,
+        dummy_receiver(),
+        dummy_receiver(),
+        commands_tx,
+        requests_tx,
+        UiSettings {
+            keymap,
+            keymap_preset: preset,
+            ..UiSettings::default()
+        },
+        health,
+        None,
+    )
+    .expect("mount succeeds on the null platform");
+    Rig {
+        handle,
+        commands_rx,
+    }
+}
+
+fn emacs_map_rig(state: AppState) -> Rig {
+    keyed_rig(
+        state,
+        crate::keymap::Keymap::from_preset(crate::keymap::Preset::Emacs),
+        crate::keymap::Preset::Emacs,
+    )
+}
+
+fn empty_map_rig(state: AppState) -> Rig {
+    keyed_rig(
+        state,
+        crate::keymap::Keymap::default(),
+        crate::keymap::Preset::Standard,
+    )
+}
 impl Rig {
     fn adapter(&self) -> Rc<RefCell<crate::adapter::Adapter>> {
         self.handle.test_adapter()
@@ -2584,6 +2628,73 @@ fn the_header_tracking_buttons_route_their_registry_commands() {
     });
 }
 
+/// The detail shortcut hints' projection law (J3 US-4 W-4 tail,
+/// round 9 chunk 11): the entries opener's and effort row's hints are
+/// keymap projections pushed per refresh — non-empty exactly where
+/// the mounted preset binds the verb in the detail chain (the D19
+/// never-hand-written rule; label content is never asserted), and
+/// the emacs board-return hint is non-empty (the gap fix — emacs
+/// gained its primary `NavFocusBoard` row in this chunk). The track
+/// hint's deliberate Start/Stop (state-correct verb) choice is the
+/// plan §7 R-5 ruling, not a coverage miss.
+#[test]
+fn the_detail_shortcut_hints_project_the_preset_rows() {
+    on_slint_thread(|| {
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+
+        // Standard: entries (F12) and effort (Ctrl+e) bind at the
+        // detail — both projections carry rows.
+        let rig = rig(state);
+        let adapter = rig.adapter();
+        mount_task_detail(&rig, &adapter, a_id, s0);
+        let window = rig.handle.window();
+        assert!(
+            window.get_task_entries_hint().row_count() > 0,
+            "the entries opener's hint projects the bound stroke"
+        );
+        assert!(
+            window.get_task_effort_hint().row_count() > 0,
+            "the effort row's hint projects the bound stroke"
+        );
+        drop(rig);
+
+        // Emacs: the board-return hint is non-empty (the gap fix —
+        // this preset bound NO NavFocusBoard row before chunk 11).
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let rig = emacs_map_rig(state);
+        let adapter = rig.adapter();
+        mount_task_detail(&rig, &adapter, a_id, s0);
+        assert!(
+            rig.handle.window().get_nav_back_hint().row_count() > 0,
+            "emacs' board-return hint is non-empty (the chunk-11 gap fix)"
+        );
+        drop(rig);
+
+        // The empty map binds nothing: both new projections are
+        // empty (the structural binds-nothing case).
+        let (state, fx) = fixture();
+        let [a_id, _b, _c] = fx.tasks;
+        let [s0, _s1] = fx.stacks;
+        let rig = empty_map_rig(state);
+        let adapter = rig.adapter();
+        mount_task_detail(&rig, &adapter, a_id, s0);
+        assert_eq!(
+            rig.handle.window().get_task_entries_hint().row_count(),
+            0,
+            "nothing bound: the entries projection is empty"
+        );
+        assert_eq!(
+            rig.handle.window().get_task_effort_hint().row_count(),
+            0,
+            "nothing bound: the effort projection is empty"
+        );
+    });
+}
+
 /// J4's harness-level pin — the header hint projections: empty while
 /// the task view is mounted under a keymap that binds neither verb in
 /// the TaskDetail-visible chain. The keymap-parity round (US-3) gave
@@ -2604,67 +2715,19 @@ fn the_header_hint_projections_follow_the_mounted_verb() {
         // emacs `C-c C-t` detail rows), so the done hint's empty leg
         // mounts the empty map too — the structural binds-nothing
         // case, like the tracking verbs' leg below.
-        let empty = crate::keymap::Keymap::default();
         let (state, fx) = fixture();
         let [a_id, _b, _c] = fx.tasks;
         let [s0, _s1] = fx.stacks;
-        let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
-        let (commands_tx, commands_rx) = mpsc::channel(64);
-        let (requests_tx, _requests_rx) = mpsc::channel(16);
-        let (_health_tx, health) =
-            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
-        let handle = mount(
-            state,
-            dummy_receiver(),
-            dummy_receiver(),
-            commands_tx,
-            requests_tx,
-            UiSettings {
-                keymap: empty,
-                keymap_preset: crate::keymap::Preset::Standard,
-                ..UiSettings::default()
-            },
-            health,
-            None,
-        )
-        .expect("mount succeeds on the null platform");
-        let rig = Rig {
-            handle,
-            commands_rx,
-        };
+        let rig = empty_map_rig(state);
         let adapter = rig.adapter();
         mount_task_detail(&rig, &adapter, a_id, s0);
         assert_eq!(rig.handle.window().get_task_done_hint().row_count(), 0);
 
         // The track hint's empty leg: the empty map binds nothing.
-        let empty = crate::keymap::Keymap::default();
         let (state, fx) = fixture();
         let [a_id, _b, _c] = fx.tasks;
         let [s0, _s1] = fx.stacks;
-        let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
-        let (commands_tx, commands_rx) = mpsc::channel(64);
-        let (requests_tx, _requests_rx) = mpsc::channel(16);
-        let (_health_tx, health) =
-            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
-        let handle = mount(
-            state,
-            dummy_receiver(),
-            dummy_receiver(),
-            commands_tx,
-            requests_tx,
-            UiSettings {
-                keymap: empty,
-                keymap_preset: crate::keymap::Preset::Standard,
-                ..UiSettings::default()
-            },
-            health,
-            None,
-        )
-        .expect("mount succeeds on the null platform");
-        let rig = Rig {
-            handle,
-            commands_rx,
-        };
+        let rig = empty_map_rig(state);
         let adapter = rig.adapter();
         mount_task_detail(&rig, &adapter, a_id, s0);
         assert_eq!(
