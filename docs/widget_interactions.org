@@ -1,88 +1,105 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-#+TITLE: Widget Interactions — the overlay/dialog taxonomy
-#+DATE: 2026-11-18
-#+STATUS: SKELETON (round-9 chunk W1; W7 fleshes this to the full taxonomy)
+#+TITLE: Widget Interactions — the base-widget taxonomy
+#+DATE: 2026-11-18 (taxonomy extended 2026-11-20, round-9 chunk 18)
+#+STATUS: CURRENT (round-9 O-6 centralization wave landed)
 
 * Purpose & scope
 
-Every overlay, dialog, and flyout in the UI is an instance of a base
-widget (ModalDialogHost, AnchoredOverlayHost, or a later W-chunk's
-base). Ad-hoc overlays are forbidden — a new overlay mount that
-re-declares a backdrop/panel sibling pair instead of mounting a host is
-a review-blocker (lint-by-review until a lint exists). This document is
-the taxonomy and the per-type contracts; the base implementations live
-in =crates/taskboard-ui-slint/ui/widgets/=.
+Every dialog, overlay, flyout, and every member of the absorbed
+button/checkbox/chip/row/notice/strip/header families in the UI is an
+instance of a base widget under =crates/taskboard-ui-slint/ui/widgets/=
+(round-9 chunks 3, 12–17). Ad-hoc re-declaration of any grammar this
+document covers is forbidden — a new mount that re-declares a
+backdrop/panel pair, a button activation block, a caption+value row,
+a tone-coloured notice, or a menu-row anatomy instead of mounting the
+base widget is a review-blocker (lint-by-review until a lint exists).
+This document is the taxonomy, the per-type contracts, and the sizing
+defaults; the implementations live in the widget files cited per
+section. The taxonomy descends from the inventory report
+=.artifacts/reports/2026-11-18-round9-widget-inventory-centralization-report.md=
+(§3 taxonomy, §4 sizing, §5 migration order).
 
-* Widget taxonomy (stub list; per-type contracts land with migrations)
+Layering: =theme.slint= tokens → L1 primitives (=ui/widgets/=) →
+L2 compositions (=ui/compositions/=) → L3 views. Every widget below is
+presentation-only, callbacks-only intents, no business logic, and no
+key handlers beyond the sanctioned leaf raw-key half (Return/Space on
+activation widgets, the ladder keys in dropdown) per AGENTS §1/§4.
 
-- Modal dialog — =widgets/modal-dialog-host.slint= (W1).
-- Anchored popover / flyout — =widgets/anchored-overlay.slint= (W1).
-- Labeled value row — =widgets/labeled-value-row.slint= (W4): the
-  caption+value row family's base (O-6, #951). Three modes over one
-  =RowMode= switch: =display= (caption + value RoleText; the
-  =@children= slot renders trailing affordances; a non-empty
-  =value-hint-label= arms the tooltip; =value-a11y-label= publishes
-  the value's data-presence), =cell= (the clickable closed cell: the
-  internal ActivationStop — walk stop + a11y triple + the
-  EditingFacts activation discipline in their single copy — the hover
-  surface, the focus ring and the focus-origin restore law
-  (the mount's nonce watch calls =request-value-focus=); activation
-  reports =edit-asked()=), =editor=
-  (caption + =@children= value slot — Rule E: the field stays at the
-  mount, all commit/re-seed/validity semantics view-side). The
-  geometry seams (=out value-x/y/width/height=) are the
-  overlay-anchor law's read side; =out focused=/=ringed= are the
-  observation seams. Sizing: content-sized by contract (D16d — only
-  description-class mounts stretch); the caption/value gap is
-  =caption-gap= (0 px flush for the task rows, StatCell's space-1 the
-  recorded exception); the beside/trailing gaps are =content-gap= /
-  =trailing-gap= per mount. Anti-ad-hoc rule: re-declaring the
-  caption+value row grammar outside =ui/widgets/= is a
-  review-blocker (the F-8 law, lint-by-review). Probe:
-  =tests/labeled_value_row_probe_tests.rs=.
-- Dropdown — =widgets/dropdown.slint= (round-9 chunk 15, the
-  de-sited mount law): a closed field + chevron whose flyout renders
-  window-level from the class facts global =DropdownFacts=. Identity
-  is the typed =DropdownConsumer= enum pushed at the open edge — the
-  spike gate (T-0) proved Slint 1.18.1 cannot self-register
+* Widget taxonomy
+
+** Overlay hosts
+
+- *Modal dialog* — =widgets/modal-dialog-host.slint::ModalDialogHost=.
+  Scrim + dismissal + centered panel + the button model
+  (=DialogButtonModel/=DialogButtonRole=, =DialogKind=) + walk arming.
+  Customization points: =title=, =body-preferred-width= (defaults to
+  =Theme.dialog-min-width=), =walk-stops=, =buttons=, =kind=
+  (=edit= vs =confirm= — the R-4 outside-click resolution),
+  =initial-focus-index=, =viewport-floor=, =open=; seams
+  =button-invoked(int)=/=accepted()=/=dismissed()=. Mount protocol:
+  =if (site-open-flag): ModalDialogHost { open: true; ... }= as a
+  =key-root= sibling in the modal-class block, the site wiring the
+  seams to its adapter; the site fires =closed= in its dismissal
+  routing before clearing the flag. The button rows render
+  =TextButton= (the J2 W-1 amend, landed with chunk 13).
+- *Anchored overlay* — =widgets/anchored-overlay.slint= carries three
+  symbols: =AnchoredOverlay= (the pure geometry helper: anchor facts
+  in, placed rect out; =computed-x/y/flipped= observation seams;
+  =OverlayPlacement=), =AnchoredOverlayHost= (the window-level host:
+  underlay + panel + walk arming via =MaskWalkFacts=; customization
+  points =anchor-x/y/width/height=, =viewport-width=,
+  =viewport-floor=, =placement=, =panel-preferred-width= (defaults to
+  =Theme.menu-min-width=), =walk-stops=, =open=; light-dismiss intent
+  =dismissed()= — the unmount stays the site's flag and the adapter
+  restores opener focus in its dismissal routing), and =AnchorMirror=
+  (the zero-render producer-side mirror: bind =source-x/y/width/height=
+  to the anchor's rects and the =published= callback; absorbs the
+  #954 per-site =changed absolute-position= idiom — one copy instead
+  of the former ~7). Anti-ad-hoc rule: re-declaring the
+  backdrop/panel sibling pair outside the hosts is a review-blocker.
+  Probe: =tests/widget_framework_probe.slint= + =_tests.rs=
+  (G-1..G-13).
+
+** Flyouts, dropdowns, menus
+
+- *Dropdown* — =widgets/dropdown.slint::Dropdown= (the de-sited
+  mount law, round-9 chunk 15): a closed field + chevron whose flyout
+  renders window-level from the class facts global =DropdownFacts=.
+  Identity is the typed =DropdownConsumer= enum pushed at the open
+  edge — the spike gate (T-0) proved Slint 1.18.1 cannot self-register
   per-component handlers on a global callback (no parse rule for a
   qualified =Global.callback =>=; the two-way alias route refuses a
-  handler), so the recorded consumer-kind fallback stands: ONE
-  generic =AnchoredOverlayHost= mount in =app-window.slint=
-  dispatches the flyout's row intents on the consumer kind (no
-  per-site mount arms, no =site: int=; a new consumer adds one enum
-  arm and zero app-window mount edits). The =dismissed()= contract
-  (D-6): every widget-internal close (Escape, Tab, walk-away, the
-  window-side fact close) routes the consumer's dismissal seam when
-  the instance arms =has-dismiss-seam= (the adapter restores the
-  origin focus; the field-refocus is skipped), and stays the silent
-  field-refocusing close otherwise; a flyout row-activated close
-  selects first and never routes the dismissal (=select-close=
-  marker). Legacy sites (settings, board bar) leave the seam
-  unassigned. Single-open class semantics: one =DropdownFacts.open=
-  — two dropdowns cannot coexist statefully (research §4.3.2; homed
-  as backlog). The selected flyout row renders the check glyph — a
-  class-wide law (selected ⇒ emphasized text + check,
-  =dropdown-flyout.slint::check-glyph=, D-5). The adapter-driven
-  open rides =open-routes-external= + =open-requested()= (the #794
-  request-mirror idiom); the keyscope decline arm is
-  =keyscope.rs::LadderGlobal::TaskDetailPriority= (D-7). The
-  =DropdownTone= vocabulary STAYS a distinct enum (round-9 W6 D-7
-  ruling, settling chunk 16's W6 note): =Semantic.tone-color='s
-  =Tone= ladder has no =accent= arm (=DropdownTone.accent →
-  Semantic.focus-ring=), and unification would grow the Tone
-  vocabulary for exactly one consumer — the
+  handler), so ONE generic =AnchoredOverlayHost= mount in
+  =app-window.slint= dispatches the flyout's row intents on the
+  consumer kind (no per-site mount arms, no =site: int=; a new
+  consumer adds one enum arm and zero app-window mount edits). The
+  =dismissed()= contract (D-6): every widget-internal close (Escape,
+  Tab, walk-away, the window-side fact close) routes the consumer's
+  dismissal seam when the instance arms =has-dismiss-seam=, and stays
+  the silent field-refocusing close otherwise; a flyout row-activated
+  close selects first and never routes the dismissal
+  (the =select-close= marker). Single-open class semantics: one
+  =DropdownFacts.open= — two dropdowns cannot coexist statefully
+  (research §4.3.2; homed as backlog). The selected flyout row renders
+  the check glyph — a class-wide law (selected ⇒ emphasized text +
+  check, =dropdown-flyout.slint::check-glyph=, D-5). The
+  adapter-driven open rides =open-routes-external= + =open-requested()=
+  (the #794 request-mirror idiom). The =DropdownTone= vocabulary
+  STAYS a distinct enum (round-9 W6 D-7 ruling):
+  =Semantic.tone-color='s =Tone= ladder has no =accent= arm
+  (=.accent → Semantic.focus-ring=), and unification would grow the
+  Tone vocabulary for exactly one consumer — the
   anti-speculative-generality law says stay. Probe:
   =tests/probes/dropdown_probe_tests.rs=.
-- Menu — =widgets/menu-shell.slint::MenuShell= (chrome: raised
-  surface, focus-ring border, drop shadow, clip, the row-count
+- *Menu shell* — =widgets/menu-shell.slint::MenuShell= (chrome:
+  raised surface, focus-ring border, drop shadow, clip, the row-count
   height cap behind =cap-rows=) + =widgets/menu-row.slint::MenuRow=
   (the one row anatomy: the =highlighted=-driven hover-union
   background — the consumer binds the union of its ladder/highlight
   match and the row's =hover-now=; busy-over-glyph leading slot with
-  the collapse law; the check glyph only where =selected= is pushed
-  — the dropdown class's law, never on menus; the KbdHint wrapper,
+  the collapse law; the check glyph only where =selected= is pushed —
+  the dropdown class's law, never on menus; the KbdHint wrapper,
   the submenu chevron, the =text-role= typography, the right-button
   context seam and the tooltip-rect hover payload). Ladder ownership
   is per consumer contract and never merges into the shell: the
@@ -91,16 +108,214 @@ in =crates/taskboard-ui-slint/ui/widgets/=.
   actions, D3). The a11y posture is the instantiation's (Slint 1.18
   keeps =accessible-role= constant): button + label + default action
   on menu rows, list-item on dropdown rows, none on quick-list rows.
-  ActionMenu renders =MenuRow= internally (rows only); its
-  composition machinery, placement and fill-to-floor height law stay
-  at =compositions/action-menu.slint=. Anti-ad-hoc rule: a menu-row
+  =dropdown-flyout.slint::DropdownFlyout= and
+  =quick-list-flyout.slint::QuickListFlyout= inherit =MenuShell=;
+  ActionMenu renders =MenuRow= internally (rows only) and keeps its
+  composition machinery, placement and fill-to-floor height law at
+  =compositions/action-menu.slint=. Anti-ad-hoc rule: a menu-row
   grammar outside =ui/widgets/menu-row.slint= is a review-blocker;
   the labels roster rows are the recorded form-row stay. Probe:
   =tests/probes/menu_shell_probe_tests.rs=.
-- Palette — search-palette (modal migration candidate, J2 R-5).
-- Inline editor flow — due/recur editors (W2 migration decisions).
-- Toast / status notice — status-bar compositions (W7).
-- Tooltip — =widgets/tooltip.slint= (existing base).
+
+** Activation widgets (buttons)
+
+- *Icon button* — =widgets/icon-button.slint::IconButton= — the house
+  gold standard and the reference for the whole family:
+  FocusScope overlay with =focus-on-tab-navigation=,
+  =accessible-role: button= + default action, the modifier-guarded
+  Return/Space activation, =IconKind= + =tone= + =label=/
+  =description= (tooltip) + =hint-keys=, =enabled=, the tone ladder
+  on =icon-color= (now delegating to =Theme.tone-color=), the
+  tooltip arm, square =space-6=. Customization points: =icon=,
+  =tone=, =enabled=, =label=, =description=, =hint-keys=,
+  =clicked()=.
+- *Text button* — =widgets/text-button.slint::TextButton= (chunk 13;
+  absorbs the 8× duplicated button grammar, inventory F-1 — the
+  ~500-line block "FocusScope + tab stop + a11y button role +
+  Return/Space with the four modifier guards" that CtaButton,
+  SettingsButton, VerbButton, the ghosts and the dialog button rows
+  each wrote out). Customization points: =label=, =description=,
+  =emphasis= (=TextButtonEmphasis=, =normal=/=cta= — the
+  SettingsButton/VerbButton vs CtaButton treatments; =cta= adds
+  min-width 4·=space-6=), =size= (=TextButtonSize=, =compact=
+  space-5 / =regular= space-6), =enabled=, =click-through=,
+  =tooltip-text=, =hint-keys=, =clicked()=; observation seam
+  =focused=. Height is =max(min-height-floor(), label preferred)= —
+  geometry-identical to the absorbed originals. Usage rule: any new
+  clickable text affordance is a =TextButton= variant or an
+  =IconButton=; writing a FocusScope+TouchArea activation block in a
+  view or composition is a review-blocker. Consumers:
+  =compositions/board-layout.slint= (the former CtaButton +
+  CtaButtonArea sites), =views/settings-view.slint=,
+  =views/review-walk-overlay.slint= (VerbButton — gained the tab stop
+  it lacked), =compositions/timer-setter.slint=,
+  =widgets/modal-dialog-host.slint= (the button model),
+  =app-window.slint=.
+
+** Selection widgets
+
+- *Check box* — =widgets/check-box.slint::CheckBox= (chunk 13;
+  deletes the task-view done-box's verbatim ActivationStop copy and
+  the hand-declared check =Path=, inventory F-8). State-less by
+  design: the model pushes =checked=, the widget publishes the
+  =toggled()= intent — all state mutation stays at the mount.
+  Customization points: =checked=, =checked-label=/=unchecked-label=
+  (the a11y label reads the state), =description=, =hint-keys=,
+  =focusable=, =toggled()=; observation seams =focused=/=hovered=.
+  A11y: =accessible-role: checkbox= + default action internally.
+  Internal reserve: =ActivationStop= (its role is constant-only —
+  the single shared copy). Consumers: =views/task-view.slint= (the
+  done-box), =widgets/task-card.slint= (the card checkbox).
+- *Toggle strip* — =widgets/toggle-strip.slint::ToggleStrip= — the
+  N-independent-toggle row: =options= (labels, order-stable) +
+  =checked-mask= (model-pushed, positionally aligned) + =picked(int)=.
+  Composed of =IconButton= check slots (tone-flipped: =info= when
+  checked, =neutral= otherwise), so each slot inherits the full
+  button grammar and a11y for free. Consumers:
+  =compositions/recur-editor.slint= (the weekday toggles),
+  =views/task-view.slint=. Usage rule: multi-select toggle chips
+  over a fixed small option set are a =ToggleStrip=; a mutually
+  exclusive choice is a =Dropdown= or =SegmentedControl=
+  (=widgets/segmented-control.slint::SegmentedControl=) instead.
+
+** Rows
+
+- *Labeled value row* — =widgets/labeled-value-row.slint::
+  LabeledValueRow= (chunk 14, O-6, #951): the caption+value row
+  family's base over the =RowMode= switch (=display= / =cell= /
+  =editor=):
+  - =display=: caption + value RoleText; the =@children= slot
+    renders trailing affordances; a non-empty =value-hint-label=
+    arms the tooltip; =value-a11y-label= publishes the value's
+    data-presence.
+  - =cell=: the clickable closed cell — the internal ActivationStop
+    (walk stop + a11y triple + the EditingFacts activation
+    discipline in their single copy), the hover surface, the focus
+    ring and the focus-origin restore law (the mount's nonce watch
+    calls =request-value-focus=); activation reports =edit-asked()=.
+  - =editor=: caption + =@children= value slot — Rule E: the field
+    stays at the mount, all commit/re-seed/validity semantics
+    view-side.
+  The geometry seams (=out value-x/y/width/height=) are the
+  overlay-anchor law's read side; =out focused=/=ringed= are the
+  observation seams. Sizing: content-sized by contract (D16d — only
+  description-class mounts stretch); the caption/value gap is
+  =caption-gap= (0 px flush for the task rows, StatCell's space-1
+  the recorded exception); the beside/trailing gaps are
+  =content-gap= / =trailing-gap= per mount. Anti-ad-hoc rule:
+  re-declaring the caption+value row grammar outside =ui/widgets/=
+  is a review-blocker (the F-8 law, lint-by-review). Probe:
+  =tests/labeled_value_row_probe_tests.rs=.
+- *List row* — =widgets/list-row.slint::ListRow= (text + meta +
+  tone); consumers overlay their own TouchArea by design (Rule E).
+  *Card* — =widgets/task-card.slint::TaskCard=. *Roster rows* stay
+  form-private per the menu law above.
+
+** Chips, headers, notices, strips, openers
+
+- *Action chip* — =widgets/action-chip.slint::ActionChip= (chunk 16;
+  #952) — the interactive/swatch tier of "small tinted pill carrying
+  a fact": =text=, =tone=, =a11y-label=, =description=, =has-swatch=/
+  =swatch= (the optional leading colour square), =removable= +
+  =remove-label=/=remove-description= (the × affordance),
+  =interactive=, =keyboard-activatable=, the ActivationStop knobs
+  =use-stop=/=stop-id=/=stop-description=, =value-role=,
+  =text-halign=, =bordered=, geometry overrides =chip-min-height=/
+  =chip-min-width=/=pad-left=/=pad-right=/=chip-background=/=fit-height=;
+  intents =invoked()=/=removed()=. A11y: button role + default
+  action. Consumers: =compositions/rule-list.slint= (the former
+  PresetChip), =views/task-view.slint= (label chips, paused chip),
+  =compositions/status-bar.slint=, =compositions/toolbar.slint=.
+  *Badge* — =widgets/badge.slint::Badge= — stays for pure
+  tone-tinted count chips (non-interactive); the two-primitive split
+  (Badge static / ActionChip interactive) is the recorded Q-D
+  ruling.
+- *Section header* — =widgets/section-header.slint::SectionHeader=
+  (chunk 16; inventory F-6): =title=, =count=,
+  =status-badge-text=/=status-badge-tone= (the in-flight badge) +
+  =@children= for the trailing header =IconButton= actions; the
+  spacer-stretch row written once. Observation seams
+  (=title-x-out=/=count-x-out=/=badge-x-out=, =*-shown-out=) exist
+  for the probe. Consumers: =compositions/timers.slint=,
+  =compositions/habits.slint=.
+- *Status notice* — =widgets/status-notice.slint::StatusNotice=
+  (chunk 16; inventory F-9 — the five "tone-coloured inline message"
+  shapes unified): =text=, =tone= (default =danger= — the family's
+  dominant grammar), =shape= (=NoticeShape=, =inline=/=boxed= —
+  boxed word-wraps and stretches in form layouts (R-3); inline
+  elides unless =wrap=), =wrap=. A11y: =accessible-role: text=.
+  Consumers: =views/settings-view.slint= (ErrorLine),
+  =compositions/due-editor.slint=, =widgets/time-field.slint=,
+  =compositions/status-bar.slint=, =compositions/habits.slint=,
+  =compositions/timers.slint=. The positioned TimeField hint keeps
+  its own geometry (recorded exception).
+- *Confirm strip* — =widgets/confirm-strip.slint::ConfirmStrip=
+  (chunk 16; inventory F-7 — the four armed strips unified): the
+  consequence sentence + confirm/cancel pair in one anatomy.
+  =message=, =destructive= (danger confirm + the tone the strip
+  publishes; =false= gives success), =confirm-label=, =cancel-label=;
+  intents =confirmed()=/=cancelled()=. Usage rule: an armed
+  irreversible action always routes through a =ConfirmStrip= (or an
+  =edit=-kind modal for drafts); destructive confirmation never
+  rides outside-click or autofocus. Consumers:
+  =compositions/board-layout.slint= (column delete),
+  =views/task-view.slint= (recur convert),
+  =compositions/timers.slint= (break-rule remove).
+- *Ghost opener* — =widgets/ghost-opener.slint::GhostOpener=
+  (chunk 16; inventory #22 / Q-E ruling — the mechanism unified, the
+  two shapes kept on purpose as board affordance identity):
+  =orientation= (=GhostOrientation=, =row= — the control-row height
+  band, / =column= — the slim full-height sliver after the last
+  stack), =label= (≡ a11y label ≡ tooltip), =description=,
+  =hint-keys=, =invoked()=; observation seam =hovered=. Rendering is
+  the centered =plus-glyph.slint::PlusGlyph=; a11y: button role +
+  tab stop on the internal FocusScope, declared FIRST (F8/r4 D4 —
+  the two-click dodge; see the ordering note in the file). Consumer:
+  =compositions/board-layout.slint= (add-task, add-column). Row-height
+  "+" openers stay =IconButton=.
+
+** Already-centralized primitives (no contracts here; file headers carry them)
+
+TextField / TippedField / TimeField (=widgets/text-field.slint=,
+=tipped-field.slint=, =time-field.slint=), MultiLineEditor,
+SegmentedControl, IconButton (above), Badge (above), ListRow,
+TaskCard, EmptyState, StatusDot, KbdHint, PlusGlyph, Icon
+(=widgets/icon.slint= — the =IconKind= vocabulary gate), Tooltip
+(=widgets/tooltip.slint::TooltipPanel=), InfoTip, StatBars, Slider,
+ListView, ActivationStop (=widgets/activation-stop.slint::
+ActivationStop= — the sanctioned activation-reserve copy;
+=CheckBox= and =LabeledValueRow= cell mode are its only holders).
+
+Not needed as primitives (recorded, not proposed — inventory §3):
+StepperField (no consumer beyond icon pairs), Tabs (SegmentedControl
++ the BoardBar strip cover it; unify only if a third strip appears),
+Toast (the notification surface exists), a color-picker dialog (the
+swatch row suffices until asked).
+
+* Sizing defaults
+
+All values are Theme token expressions (=Npx * base-scale=, the
+=theme.slint= multiplier pushed from =[ui] scale=), never bare
+pixels (the token lint). The width floor/cap pairs are
+=theme.slint::dialog-min-width= / =dialog-max-width= and
+=menu-min-width= / =menu-max-width=; the R-6 binding identity is
+=min(viewport - 2·space-2, min(cap, max(preferred, floor)))=.
+
+| Family | Default | Anchor |
+|---|---|---|
+| Click targets | 32 px (=space-6=) square pointer minimum — above WCAG 2.2 AA (24 px), below the touch-platform bars (44/48); the kiosk is a passive display (AGENTS §1) and base-scale raises everything on high-density screens; the 44/48 =touch-friendly= mode stays backlog until touch hardware is a target | =icon-button.slint::IconButton= |
+| Text buttons | regular = space-6, compact = space-5, CTA = space-6 with min-width 4·space-6; height = =max(floor, content)= | =text-button.slint::TextButton= |
+| Dialogs | min-width 280 px, max-width 560 px, preferred = content; height = content capped at =viewport-floor - 2·space-4=; never fixed caps, no vertical stretch | =theme.slint::dialog-min-width= |
+| Menus / flyouts | min-width 200 px, max-width 360 px, row height = space-6, cap visible rows at 6 (=cap-rows=), panel max-height = available height | =theme.slint::menu-min-width= |
+| Anchored overlays | flip + clamp into =[space-2, edge - space-2]=, never intersect the anchor rect, shrink to available space | =anchored-overlay.slint::AnchoredOverlay= |
+| Text fields | single-line min-width = space-15 (96 px, the content-free floor rule, r2 D22) | =text-field.slint::TextField= |
+| Chips | =Badge= space-1 padding/badge typography; =ActionChip= geometry via =chip-min-*= (default content-sized) | =action-chip.slint::ActionChip= |
+| Ghost openers | row = space-6 + 2·space-1 band; column = space-6 + space-2 sliver, full height | =ghost-opener.slint::GhostOpener= |
+
+Sourcing note: these encode the framework survey in inventory §4
+(Material 3 / Apple HIG / WCAG 2.2 / Qt QStyle–QDialog–QComboBox /
+MDN Popover, =<dialog=, anchor-positioning) — the inventory report
+carries the links; this document carries only the landed values.
 
 * Per-type interaction contract (the four laws)
 
@@ -132,35 +347,7 @@ The R-4 kind table: text/field editing dialogs (capture, recur) are
 =confirm=-kind. Capture keeps =confirm= semantics until W2 decides
 otherwise (behavior-preserving W1).
 
-* Base implementations
-
-- =ModalDialogHost= — scrim + dismissal + centered panel + button
-  model (=DialogButtonModel/=DialogButtonRole=) + walk arming. Mount
-  protocol: =if (site-open-flag): ModalDialogHost { open: true; ... }=
-  as a =key-root= sibling in the modal-class block, the site wiring
-  =accepted/dismissed/button-invoked/closed= to its adapter seams.
-- =AnchoredOverlay= / =AnchoredOverlayHost= — the pure geometry helper
-  (facts in, placed rect out; =computed-x/y/flipped= seams) plus the
-  window-level host (underlay + panel + walk arming).
-- =MaskWalkFacts= integration — the host owns extent/cursor; the
-  composition keeps only its own focus grab; =armed= stays
-  adapter-owned.
-
-The mount checklist (the six steps a new dialog site performs):
-
-1. Declare the open flag in the model (the unmount condition).
-2. Mount =if (flag): <Host> { open: true; ... }= at the correct
-   sibling position (anchored block, then modal block — later siblings
-   win the hit test).
-3. Inject =viewport-floor= (=status.y=) and the anchor facts.
-4. Wire the intents (=accepted/dismissed/button-invoked/closed=) to
-   the existing adapter seams; the site fires =closed= in its
-   dismissal routing before clearing the flag.
-5. Declare =walk-stops= and the =initial-focus= index; delete any
-   per-widget mask ritual.
-6. Declare the button model (empty for button-less dialogs).
-
-* Interactable-row cursor heuristic (J3 R-7; W7 formalizes)
+* Interactable-row cursor heuristic (J3 R-7)
 
 Every widget with interactable rows carries a selected-row cursor.
 The cursor is adapter-owned presentation state keyed by the row's
@@ -176,27 +363,75 @@ Pending adopters: break-rules roster, File-to candidate rows
 * Usage rules
 
 - Dialog vs popover vs inline: a modal for focus-trapped decisions;
-  an anchored overlay for light-dismiss pickers/menus; in-layout swaps
-  only when no reflow (J2 R-2 — overlays never resize the view).
-- Destructive actions never ride outside-click or autofocus.
+  an anchored overlay for light-dismiss pickers/menus; in-layout
+  swaps only when no reflow (J2 R-2 — overlays never resize the view).
+- Destructive actions never ride outside-click or autofocus; an
+  irreversible action routes through =ConfirmStrip= or an =edit=-kind
+  modal.
 - Buttons: dismiss-role clusters left, accept/destructive right; the
-  destructive role never takes autofocus.
+  destructive role never takes autofocus. New clickable affordances
+  are =TextButton= or =IconButton= variants — never a hand-rolled
+  FocusScope+TouchArea block.
+- *The knob-consumers rule*: every customization point on a base
+  widget has ≥1 live consumer — no speculative generality. A knob
+  whose last consumer disappears is deleted in the same change that
+  removes the consumer (the stage-3 review gate enforces this; the
+  =Anti-ad-hoc= siblings above are the same law on the mount side).
 - One-open-overlay exclusivity: the newest host mounts above the
   older one (sibling order); the palette/menu grammar stays the
-  one-modal-at-a-time rule (W7 records the pointer).
+  one-modal-at-a-time rule.
+- Tone→colour is =theme.slint::tone-color= / =tone-fill= — the
+  canonical ladders (chunk 16; #952 closed). Widgets call the
+  functions; no conditional Tone chains outside =theme.slint=
+  (=DropdownTone.accent → Semantic.focus-ring= is the recorded
+  exception).
+
+* Base implementations & the mount checklist
+
+The hosts are =widgets/modal-dialog-host.slint::ModalDialogHost= and
+=widgets/anchored-overlay.slint::AnchoredOverlayHost= (plus the pure
+=AnchoredOverlay= geometry helper and the =AnchorMirror= producer
+mirror). =MaskWalkFacts= integration: the host owns extent/cursor;
+the composition keeps only its own focus grab; =armed= stays
+adapter-owned.
+
+The six steps a new dialog site performs:
+
+1. Declare the open flag in the model (the unmount condition).
+2. Mount =if (flag): <Host> { open: true; ... }= at the correct
+   sibling position (anchored block, then modal block — later siblings
+   win the hit test).
+3. Inject =viewport-floor= (=status.y=) and the anchor facts (via
+   =AnchorMirror= for anchored sites).
+4. Wire the intents (=accepted/dismissed/button-invoked/closed=) to
+   the existing adapter seams; the site fires =closed= in its
+   dismissal routing before clearing the flag.
+5. Declare =walk-stops= and the =initial-focus= index; delete any
+   per-widget mask ritual.
+6. Declare the button model (empty for button-less dialogs).
 
 * Testing
 
-The G-catalogue (round-9 W1 plan §5) is the pattern inventory:
+The G-catalogue (round-9 W1 plan §5) is the pattern inventory, now
+plus the per-family probes:
 
-- Probe + facts observation — =tests/widget_framework_probe.slint= +
-  =_tests.rs= (G-1..G-13).
-- Fall-through probe — G-8/G-11 (click panel dead space vs scrim).
-- Walk-containment probe — G-10 (mask arming, push clamping).
-- Focus-restore probe — G-12 (opener re-focus after the handshake).
-- Layout-shift witness — G-9 (sibling rects before/while/after).
+- Overlay probe + facts observation — =tests/widget_framework_probe.slint=
+  + =_tests.rs= (G-1..G-13); fall-through G-8/G-11; walk-containment
+  G-10; focus-restore G-12; layout-shift witness G-9.
+- Dropdown probe — =tests/probes/dropdown_probe_tests.rs= (the
+  de-sited mount, dismissal seam, select-close marker).
+- Menu-shell probe — =tests/probes/menu_shell_probe_tests.rs=
+  (MenuRow anatomy, ladder ownership, cap-rows).
+- Labeled-value-row probe — =tests/labeled_value_row_probe_tests.rs=
+  (RowMode switches, geometry seams, focus-origin restore).
+- Small-widget probe — =tests/small_widget_probe.slint= +
+  =tests/small_widget_probe_tests.rs= (StatusNotice shapes,
+  ConfirmStrip tones, ActionChip swatch/removal, SectionHeader
+  seams, GhostOpener orientations).
 - Journey routing pair — =tests/journeys.rs= =us1_s3=, =us2_s1=
-  (real mounts; one behavior, one test, lowest layer).
+  (real mounts; one behavior, one test, lowest layer). Converted
+  surfaces are proven behavior-preserving by the existing
+  journeys/goldens re-passing unchanged (dispatch plan §14's bar).
 
 * Known limitations & backlog
 
@@ -207,6 +442,10 @@ The G-catalogue (round-9 W1 plan §5) is the pattern inventory:
 - No =inert= property: covered chrome still hovers under an overlay
   (backlog).
 - PopupWindow primitive rejected (round-5 D6 / J2 R-1 stands).
-- 32px touch-target upgrade path for dialog buttons (W3's TextButton).
-- Anchor-facts mirroring rides =changed absolute-position= per site
-  (the #954 race) until the host absorbs the mirroring (W6).
+- 32px touch-target upgrade path (=touch-friendly= sizing mode)
+  deferred until touch hardware is a target (Q-B ruling).
+- Single-open class semantics for =DropdownFacts= (research §4.3.2;
+  homed as backlog).
+- Slint 1.18 keeps =accessible-role= constant-expression (no runtime
+  role switches): the menu-row a11y posture is chosen by the
+  instantiation, not the widget.
