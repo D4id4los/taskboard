@@ -143,6 +143,30 @@ export component WidgetFrameworkProbeWindow inherits Window {
         accessible-role: AccessibleRole.button;
         accessible-label: "Opener";
     }
+
+    // The #995 restore witness: a FocusScope the test can grab, a
+    // disable bit, and a visibility-toggled panel — the hide/re-show
+    // round-trip whose raw-focus restoration the currently-pins probe
+    // records.
+    in-out property <bool> restore-scope-disabled: false;
+    in-out property <bool> restore-panel-visible: true;
+    restore-panel := Rectangle {
+        x: Theme.space-2;
+        y: Theme.space-2 + Theme.space-6;
+        width: Theme.space-15;
+        height: Theme.space-6;
+        visible: root.restore-panel-visible;
+        restore-focusable := FocusScope {
+            width: Theme.space-8;
+            height: Theme.space-6;
+            enabled: !root.restore-scope-disabled;
+            focus-on-tab-navigation: true;
+        }
+    }
+    out property <bool> restore-scope-focused: restore-focusable.has-focus;
+    public function probe-request-restore-focus() {
+        restore-focusable.focus();
+    }
     anchor-rect := Rectangle {
         x: root.anchor-x;
         y: root.anchor-y;

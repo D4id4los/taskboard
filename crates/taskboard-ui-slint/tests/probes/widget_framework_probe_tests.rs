@@ -964,3 +964,40 @@ fn g_strip_reports_picked_index() {
         );
     });
 }
+
+/// #995 currently pins: the raw focus restoration across a
+/// visibility toggle. A scope that held focus is disabled and its
+/// panel hidden and re-shown — the recorded behavior of the testing
+/// backend's restore is pinned verbatim (structural `has-focus`
+/// reads only). Named as debt: an upstream i-slint fix flips this
+/// loudly into a triage, not a regression.
+#[test]
+fn the_disabled_scope_raw_focus_restoration_currently_pins_the_recorded_behavior() {
+    run_probe(|window| {
+        window.invoke_probe_request_restore_focus();
+        advance_probe_clock(0);
+        assert!(
+            window.get_restore_scope_focused(),
+            "the scope holds raw focus while enabled"
+        );
+        // Disable, hide the panel, re-show it: the backend's restore
+        // path runs against a now-disabled scope.
+        window.set_restore_scope_disabled(true);
+        advance_probe_clock(0);
+        window.set_restore_panel_visible(false);
+        advance_probe_clock(0);
+        window.set_restore_panel_visible(true);
+        advance_probe_clock(0);
+        // The recorded quirk (observed 2026-11-20, i-slint 1.18.1):
+        // the restore puts raw focus back onto the now-disabled scope
+        // — `has-focus` reads true on an element the walk must never
+        // enter. The widget-level gates (the enabled bit, the seam
+        // write guard) hold the observable law; the invalidation/
+        // exclusion fix belongs upstream (#954's chunk-17 focus
+        // work), so this pins the debt instead of papering it.
+        assert!(
+            window.get_restore_scope_focused(),
+            "the recorded restore lands raw focus on the disabled scope"
+        );
+    });
+}
