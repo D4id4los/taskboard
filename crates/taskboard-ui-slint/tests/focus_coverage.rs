@@ -153,22 +153,26 @@ const ITEM_WALK_HOSTS: &[ItemWalkHost] = &[
     },
     ItemWalkHost {
         delegate: "BoardLayout::drag-card",
-        touches: &["TaskCard::touch", "TaskCard::done-hit"],
+        // The done box's touch re-anchored to the CheckBox primitive's
+        // internal id (W3 #953 migration: the card mounts CheckBox, so
+        // the touch id is CheckBox::check-touch; the mechanism and the
+        // closed set are unchanged).
+        touches: &["TaskCard::touch", "CheckBox::check-touch"],
         walk_test: "board_item_walk_visits_every_card",
     },
     ItemWalkHost {
         delegate: "BoardLayout::compact-task",
-        touches: &["TaskCard::touch", "TaskCard::done-hit"],
+        touches: &["TaskCard::touch", "CheckBox::check-touch"],
         walk_test: "board_compact_item_walk_visits_every_card",
     },
     ItemWalkHost {
         delegate: "TodayView::today-row",
-        touches: &["TaskCard::touch", "TaskCard::done-hit"],
+        touches: &["TaskCard::touch", "CheckBox::check-touch"],
         walk_test: "today_item_walk_visits_every_row",
     },
     ItemWalkHost {
         delegate: "StackView::detail-task",
-        touches: &["TaskCard::touch", "TaskCard::done-hit"],
+        touches: &["TaskCard::touch", "CheckBox::check-touch"],
         walk_test: "stack_item_walk_visits_every_card",
     },
     ItemWalkHost {
