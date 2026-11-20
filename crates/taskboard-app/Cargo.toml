@@ -113,6 +113,9 @@ reqwest.workspace = true
 # The FakeModule/registry-loop fixtures share the domain's test-support
 # helpers (binding fixtures; fakes over mocks).
 taskboard-domain = { workspace = true, features = ["test-support"] }
+# The settle-contract pins spawn a bare state engine (no actor graph)
+# to mount seeded state on (`spawn_state_engine`); workspace-pinned.
+taskboard-state.workspace = true
 # The v0.1.x db fixture builds a pre-0006 database with raw SQL (the
 # storage crate's own migration-fixture pattern; workspace-pinned pin,
 # zero lock change).

@@ -1808,7 +1808,10 @@ pub fn spawn_config_watcher(
 /// only ever skip silently (`NoBoard`), so it returns immediately; a
 /// deadline expiry degrades gracefully — offline-first: local data
 /// serves the command.
-pub(crate) async fn wait_for_boot_pull(engine: &EngineHandle, timeout: Duration) {
+/// Public for the hermetic bootstrap suite's settle-contract pins
+/// (`tests/core/bootstrap.rs`): the predicate is an in-process seam
+/// and that suite is its lowest-layer tester (AGENTS §5).
+pub async fn wait_for_boot_pull(engine: &EngineHandle, timeout: Duration) {
     let mut signals = engine.subscribe();
     let deadline = tokio::time::Instant::now() + timeout;
     let mut seen_syncing = false;
