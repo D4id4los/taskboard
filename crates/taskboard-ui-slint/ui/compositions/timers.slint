@@ -17,6 +17,7 @@ import { TimerSetterFacts } from "../menu-facts.slint";
 import { StatusNotice } from "../widgets/status-notice.slint";
 import { ConfirmStrip } from "../widgets/confirm-strip.slint";
 import { SectionHeader } from "../widgets/section-header.slint";
+import { AnchorMirror } from "../widgets/anchored-overlay.slint";
 
 // One active timer row: the label snapshot, the two-part countdown
 // (r4 D32: d/h/m/s remaining), the `@`-prefixed local fire instant,
@@ -107,17 +108,22 @@ export component TimersSection inherits Rectangle {
     // scroll page).
     callback setter-opened();
     // The popover's anchor (the DatePickerFacts twin): the header
-    // button's realized window-space geometry, mirrored through
-    // `changed` handlers (values are stale while unmounted — harmless,
-    // the popover's own condition gates the read).
-    private property <length> setter-anchor-x: setter-button.absolute-position.x;
-    private property <length> setter-anchor-y: setter-button.absolute-position.y;
-    private property <length> setter-anchor-width: setter-button.width;
-    private property <length> setter-anchor-height: setter-button.height;
-    changed setter-anchor-x => { TimerSetterFacts.anchor-x = root.setter-anchor-x; }
-    changed setter-anchor-y => { TimerSetterFacts.anchor-y = root.setter-anchor-y; }
-    changed setter-anchor-width => { TimerSetterFacts.anchor-width = root.setter-anchor-width; }
-    changed setter-anchor-height => { TimerSetterFacts.anchor-height = root.setter-anchor-height; }
+    // button's realized window-space geometry, mirrored through the
+    // AnchorMirror (the #954 idiom written once — the init + changed
+    // edges are its lore; values are stale while unmounted —
+    // harmless, the popover's own condition gates the read).
+    AnchorMirror {
+        source-x: setter-button.absolute-position.x;
+        source-y: setter-button.absolute-position.y;
+        source-width: setter-button.width;
+        source-height: setter-button.height;
+        published(x, y, w, h) => {
+            TimerSetterFacts.anchor-x = x;
+            TimerSetterFacts.anchor-y = y;
+            TimerSetterFacts.anchor-width = w;
+            TimerSetterFacts.anchor-height = h;
+        }
+    }
 
     background: transparent;
     accessible-role: AccessibleRole.region;

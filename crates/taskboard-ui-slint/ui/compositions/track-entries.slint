@@ -27,6 +27,7 @@ import { DueDayModel } from "./date-picker.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { IconKind } from "../widgets/icon.slint";
 import { TrackPanelFacts, TrackPanelWalkFacts } from "../track-panel-facts.slint";
+import { AnchorMirror } from "../widgets/anchored-overlay.slint";
 export { TimeSlotRow, FieldValidity }
 
 // One entries row: display parts only (D2 — ids stay in the
@@ -195,19 +196,21 @@ export component TrackEntriesPanel inherits Rectangle {
                         date-row := HorizontalLayout {
                             spacing: Theme.space-1;
                             // The grid anchor's keep-alives (the
-                            // overlay migration, M4): a host scroll
-                            // keeps the window-space mirror live.
-                            property <length> grid-anchor-abs-x: self.absolute-position.x;
-                            property <length> grid-anchor-abs-y: self.absolute-position.y;
-                            changed grid-anchor-abs-x => {
-                                TrackPanelFacts.form-grid-anchor-x = self.grid-anchor-abs-x;
-                                TrackPanelFacts.form-grid-anchor-width = self.width;
-                                TrackPanelFacts.form-grid-anchor-height = self.height;
-                            }
-                            changed grid-anchor-abs-y => {
-                                TrackPanelFacts.form-grid-anchor-y = self.grid-anchor-abs-y;
-                                TrackPanelFacts.form-grid-anchor-width = self.width;
-                                TrackPanelFacts.form-grid-anchor-height = self.height;
+                            // overlay migration, M4; the #954
+                            // AnchorMirror idiom written once): a host
+                            // scroll keeps the window-space mirror
+                            // live.
+                            AnchorMirror {
+                                source-x: date-row.absolute-position.x;
+                                source-y: date-row.absolute-position.y;
+                                source-width: date-row.width;
+                                source-height: date-row.height;
+                                published(x, y, w, h) => {
+                                    TrackPanelFacts.form-grid-anchor-x = x;
+                                    TrackPanelFacts.form-grid-anchor-y = y;
+                                    TrackPanelFacts.form-grid-anchor-width = w;
+                                    TrackPanelFacts.form-grid-anchor-height = h;
+                                }
                             }
                             TextField {
                                 horizontal-stretch: 1;

@@ -196,8 +196,15 @@ fn om_us2_s1_fixture(window: &OverlayMigrationProbe, anchor_x: f32, anchor_y: f3
         ..subject_model(true)
     });
     window.set_viewport_floor(floor);
+    // Realize the view's layout first: the AnchorMirror keep-alive
+    // (round-9 W6's #954 conversion) publishes the real due-column
+    // geometry during this pass — the replay below must land after
+    // it, or the keep-alive would clobber the injected anchor.
+    settle_geometry(window);
     // The click-time push (the real handler's writes, replayed — the
-    // setter journey's recorded mirror idiom).
+    // setter journey's recorded mirror idiom). The second pass
+    // realizes the host's placement; the mirror's sources are
+    // untouched by it, so the injected anchor survives.
     let facts = window.global::<DatePickerFacts>();
     facts.set_anchor_x(anchor_x);
     facts.set_anchor_y(anchor_y);

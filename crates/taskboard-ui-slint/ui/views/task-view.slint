@@ -7,6 +7,7 @@
 
 import { CheckBox } from "../widgets/check-box.slint";
 import { Dropdown, DropdownConsumer, DropdownRow } from "../widgets/dropdown.slint";
+import { AnchorMirror } from "../widgets/anchored-overlay.slint";
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TextField } from "../widgets/text-field.slint";
@@ -362,11 +363,10 @@ export component TaskView inherits FocusScope {
     // cells stay mounted unconditionally now (the in-flow swap is
     // dead), so the reads are unconditional too. The click-time push
     // (D-2, the timers idiom) lands the realized geometry into the
-    // facts global in the same handler that opens; the `changed`
-    // mirrors below are the keep-alives that keep the facts live
-    // across host scrolls (the values are stale while the view is
-    // unmounted; the overlay's mount condition is the model's own
-    // open flags).
+    // facts global in the same handler that opens; the AnchorMirror
+    // below is the keep-alive that keeps the facts live across host
+    // scrolls (the values are stale while the view is unmounted; the
+    // overlay's mount condition is the model's own open flags).
     // The overlay-migration geometry seams (round-9 chunk 5, om probe):
     // the metadata block's realized rects, window-space — the om
     // geometry tests read them across the due/scheduled editor's
@@ -385,25 +385,22 @@ export component TaskView inherits FocusScope {
     out property <length> description-rect-y: description-section.absolute-position.y;
     out property <length> description-rect-height: description-section.height;
 
-    private property <length> date-anchor-x: root.task.due-open
-        ? due-column.value-x
-        : scheduled-column.value-x;
-    private property <length> date-anchor-y: root.task.due-open
-        ? due-column.value-y
-        : scheduled-column.value-y;
-    private property <length> date-anchor-width: root.task.due-open
-        ? due-column.value-width
-        : scheduled-column.value-width;
-    private property <length> date-anchor-height: root.task.due-open
-        ? due-column.value-height
-        : scheduled-column.value-height;
-    // The mirrors (changed handlers — the row-selection mirror
-    // precedent; they fire when the layout resolves the positions
-    // after mount).
-    changed date-anchor-x => { DatePickerFacts.anchor-x = root.date-anchor-x; }
-    changed date-anchor-y => { DatePickerFacts.anchor-y = root.date-anchor-y; }
-    changed date-anchor-width => { DatePickerFacts.anchor-width = root.date-anchor-width; }
-    changed date-anchor-height => { DatePickerFacts.anchor-height = root.date-anchor-height; }
+    // The keep-alive mirror (the #954 AnchorMirror idiom written
+    // once: the init + changed edges are its lore — they fire when
+    // the layout resolves the positions after mount; the click-time
+    // push functions below stay the deterministic open edge).
+    AnchorMirror {
+        source-x: root.task.due-open ? due-column.value-x : scheduled-column.value-x;
+        source-y: root.task.due-open ? due-column.value-y : scheduled-column.value-y;
+        source-width: root.task.due-open ? due-column.value-width : scheduled-column.value-width;
+        source-height: root.task.due-open ? due-column.value-height : scheduled-column.value-height;
+        published(x, y, w, h) => {
+            DatePickerFacts.anchor-x = x;
+            DatePickerFacts.anchor-y = y;
+            DatePickerFacts.anchor-width = w;
+            DatePickerFacts.anchor-height = h;
+        }
+    }
     // The click-time anchor pushes (D-2): the opener's realized
     // geometry into the facts global in the same handler that opens —
     // the pre-swap-height flip-misbranch is dead because nothing in
@@ -1004,12 +1001,22 @@ export component TaskView inherits FocusScope {
                             root.task-track-entries-clicked();
                         }
                     }
-                    property <length> anchor-x: entries-button.absolute-position.x;
-                    property <length> anchor-y: entries-button.absolute-position.y;
-                    property <length> anchor-height: entries-button.height;
-                    changed anchor-x => { TrackPanelFacts.anchor-x = self.anchor-x; }
-                    changed anchor-y => { TrackPanelFacts.anchor-y = self.anchor-y; }
-                    changed anchor-height => { TrackPanelFacts.anchor-height = self.anchor-height; }
+                    // The keep-alive mirror (the #954 AnchorMirror
+                    // idiom written once).
+                    AnchorMirror {
+                        source-x: entries-button.absolute-position.x;
+                        source-y: entries-button.absolute-position.y;
+                        source-width: entries-button.width;
+                        source-height: entries-button.height;
+                        published(x, y, w, h) => {
+                            TrackPanelFacts.anchor-x = x;
+                            TrackPanelFacts.anchor-y = y;
+                            // No anchor-width fact: the panel's own
+                            // width law never reads it (the roster
+                            // singleton carries the three arms only).
+                            TrackPanelFacts.anchor-height = h;
+                        }
+                    }
                 }
             }
 
