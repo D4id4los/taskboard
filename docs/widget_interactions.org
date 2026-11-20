@@ -41,6 +41,34 @@ in =crates/taskboard-ui-slint/ui/widgets/=.
   caption+value row grammar outside =ui/widgets/= is a
   review-blocker (the F-8 law, lint-by-review). Probe:
   =tests/labeled_value_row_probe_tests.rs=.
+- Dropdown — =widgets/dropdown.slint= (round-9 chunk 15, the
+  de-sited mount law): a closed field + chevron whose flyout renders
+  window-level from the class facts global =DropdownFacts=. Identity
+  is the typed =DropdownConsumer= enum pushed at the open edge — the
+  spike gate (T-0) proved Slint 1.18.1 cannot self-register
+  per-component handlers on a global callback (no parse rule for a
+  qualified =Global.callback =>=; the two-way alias route refuses a
+  handler), so the recorded consumer-kind fallback stands: ONE
+  generic =AnchoredOverlayHost= mount in =app-window.slint=
+  dispatches the flyout's row intents on the consumer kind (no
+  per-site mount arms, no =site: int=; a new consumer adds one enum
+  arm and zero app-window mount edits). The =dismissed()= contract
+  (D-6): every widget-internal close (Escape, Tab, walk-away, the
+  window-side fact close) routes the consumer's dismissal seam when
+  the instance arms =has-dismiss-seam= (the adapter restores the
+  origin focus; the field-refocus is skipped), and stays the silent
+  field-refocusing close otherwise; a flyout row-activated close
+  selects first and never routes the dismissal (=select-close=
+  marker). Legacy sites (settings, board bar) leave the seam
+  unassigned. Single-open class semantics: one =DropdownFacts.open=
+  — two dropdowns cannot coexist statefully (research §4.3.2; homed
+  as backlog). The selected flyout row renders the check glyph — a
+  class-wide law (selected ⇒ emphasized text + check,
+  =dropdown-flyout.slint::check-glyph=, D-5). The adapter-driven
+  open rides =open-routes-external= + =open-requested()= (the #794
+  request-mirror idiom); the keyscope decline arm is
+  =keyscope.rs::LadderGlobal::TaskDetailPriority= (D-7). Probe:
+  =tests/probes/dropdown_probe_tests.rs=.
 - Menu — ActionMenu today; MenuShell in W6 (chunk 17).
 - Palette — search-palette (modal migration candidate, J2 R-5).
 - Inline editor flow — due/recur editors (W2 migration decisions).

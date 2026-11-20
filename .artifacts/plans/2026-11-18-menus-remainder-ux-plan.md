@@ -131,6 +131,8 @@ flowchart LR
 | W-3 | action-menu.slint | chevron in row renderer | — | — | — | — | — | US-3/S1 | crates/taskboard-ui-slint/tests/probes/action_menu_bar_probe_tests.rs::us3_s1 |
 | W-4 | action-menu.slint | hint-keys on bar buttons | — | preset stroke lookup | — | — | — | US-4 | fold test |
 | W-5 | adapter.rs | reconcile disarm | — | MenuKind pin reconcile | — | — | — | US-4 | journeys.rs::us4_s2 |
+| W-6 | dropdown.slint | the de-sited facts mount (DropdownConsumer + the ONE generic AnchoredOverlayHost flyout mount in app-window.slint) | — | — | — | — | — | addendum §10 structural probes; no command variants by design | probes/dropdown_probe_tests.rs (addendum §10) |
+| W-7 | task-view.slint | the two embedded Dropdown fields in the LabeledValueRow content slots (addendum §10, D-4; the adapter seams on_task_importance_edit_asked / on_task_urgency_edit_asked / on_priority_slot_clicked / on_priority_dismiss_requested route D-9-identical; the urgency twin routes ActionId::TaskUrgencyEdit) | — | TaskImportanceEdit / TaskUrgencyEdit routes + the slot-commit seam | ActionId::TaskImportanceEdit | StateCommand::UpdateTask | vocabulary index (unset + 5 levels) | US-6/S1–S4 (addendum §10) | journeys.rs::us6_s1..s4 |
 
 ## 7. Command-contract delta
 
@@ -165,3 +167,45 @@ bound-test: US-3/S2 -> crates/taskboard-ui-slint/tests/journeys.rs::us2_ac4_esca
 - [ ] Walkthrough protocol executed at stage 3; findings resolved or homed
 - [ ] All matrix absences carry rulings; census updated
 - [ ] Non-goals filed as backlog issues
+
+## 10. Addendum (2026-11-20) — US-6: the priority pickers are dropdowns
+
+Added by round-9 chunk 15 (the R-5 ruling's implementation; the
+one-line-amendment pattern research §5.2 sanctioned). The priority
+picker — today's in-layout six-slot quick-list — becomes the shared
+`Dropdown` widget class, per R-5, after the dropdown de-siting
+(round-9 chunk 15's `DropdownFacts` consumer-kind mount; the T-0
+spike proved the primary self-registration path unparsable on Slint
+1.18.1, so the recorded consumer-kind fallback carries the identity).
+R-6 stands untouched: the labels picker stays bespoke (multi-select
+semantics deferred); the time combobox stays bespoke (typed filter +
+nearest-row seek, research §4.2).
+
+### Journey specs (new)
+
+- **US-6 — the priority pickers are dropdowns** (P2, TaskDetail):
+  - `/S1` — the importance edit intent opens the widget's flyout
+    under its consumer kind; a pick commits the exact `UpdateTask`
+    importance mask (D-9 byte-identical).
+  - `/S2` — Escape closes through the widget's dismissal seam and
+    dispatches nothing (the deep focus-restore assertions stay
+    `us1_s1_picker_close_restores_the_invoking_field`, unchanged).
+  - `/S3` — the selector ladder on the detail view: arrows move the
+    highlight (the `DropdownLadder` seam), Return selects, Escape
+    closes only.
+  - `/S4` — the urgency field is the mirror twin (urgency mask).
+
+### Wiring inventory (new rows)
+
+| ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
+|---|---|---|---|---|---|---|---|---|---|
+| W-6 | `ui/widgets/dropdown.slint` | the de-sited facts mount (`DropdownConsumer` + the ONE generic `AnchoredOverlayHost` flyout mount, `app-window.slint`) | — | — | — | — | — | — | `probes/dropdown_probe_tests.rs` (the geometry/ladder suites + the de-sited identity proof + the check-glyph probe) |
+| W-7 | `ui/views/task-view.slint` + `adapter.rs::on_priority_slot_clicked` | the two embedded `Dropdown` fields in the `LabeledValueRow` content slots (D-4); the retired pencil routes nothing | `importance-edit-asked`/`urgency-edit-asked` (unchanged), `priority-dismiss-requested` (the D-6 dismissal seam) | `TaskImportanceEdit`/`TaskUrgencyEdit` (unchanged), `priority_slot_clicked(index)` (D-9: the adapter resolves the level from the row index, `adapter.rs:12710`), `priority_dismiss_requested` (unchanged) | `ActionId::TaskImportanceEdit`/`TaskUrgencyEdit` | `StateCommand::UpdateTask` (masks byte-identical) | vocabulary index (`unset` + 5 levels) | US-6/S1–S4 | `journeys.rs::us6_s1..s4` |
+
+### Command-contract delta
+
+None (D-9): the `UpdateTask` masks, the open actions, and the
+dismissal seam are byte-identical; the J5 R-5 adoption is a
+presentation-layer swap only. The check glyph moves to the class-wide
+selected-row rendering law (D-5) — a visual delta re-baselined per
+chunk 15's D-11, not a contract delta.
