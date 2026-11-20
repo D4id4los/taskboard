@@ -11,6 +11,12 @@
 
 mod support;
 
+/// The one-platform mode this binary standardizes on: the `support`
+/// self-tests read it so their `DriverOptions` agree with the members
+/// sharing the process (`driver::run`'s guard asserts one platform per
+/// process; see #1016).
+pub(crate) const HEADLESS_RENDERER: bool = true;
+
 use slint::{ComponentHandle as _, Model as _};
 use support::driver::{
     DriverOptions, advance_probe_clock, centre, find_all_by_label_on, find_by_label_on,
