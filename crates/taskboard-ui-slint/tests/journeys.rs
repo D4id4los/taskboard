@@ -8913,16 +8913,13 @@ fn current_view(harness: &Harness) -> View {
 /// stepped-`now` push proof.
 #[test]
 fn the_today_view_walks_completes_and_recommits() {
-    // SAFETY: single-threaded journey startup; the driver thread reads
-    // it only inside `run` below.
-    unsafe { std::env::set_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY", "1") };
     let (_fixture, state, [board_one_task, _board_two_task]) = fixture::today_overdue_state();
     support::driver::run(
         support::driver::DriverOptions {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let mut harness = Harness::mount_no_escape(SlintDriver::default(), state);
             // The desktop default: Today, no escape.
             assert_eq!(current_view(&harness), View::Today);
             assert_eq!(
@@ -9011,8 +9008,6 @@ fn the_today_view_walks_completes_and_recommits() {
 /// confirming moves; the chip then reads zero (triage-done).
 #[test]
 fn the_inbox_triage_moves_across_the_board_edge() {
-    // SAFETY: single-threaded journey startup (see the set site).
-    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
     let (fixture, state, caught) = fixture::triage_state();
     support::driver::run(
         support::driver::DriverOptions {
@@ -9084,8 +9079,6 @@ fn the_inbox_triage_moves_across_the_board_edge() {
 /// on the board view (the desktop-only default's scope).
 #[test]
 fn the_kiosk_mount_still_lands_on_the_board() {
-    // SAFETY: single-threaded journey startup (see the set site).
-    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
     let (_fixture, state) = fixture::journey_state();
     support::driver::run(
         support::driver::DriverOptions {
@@ -9239,7 +9232,6 @@ fn us11_s1_roster_absent_while_no_board_is_archived() {
             assert_eq!(bar_model(&harness).archived_rows.row_count(), 0);
         },
     );
-    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
 }
 
 /// US-11/S2 (D-6 T2): activating a roster row dispatches the exact
@@ -13000,8 +12992,6 @@ fn today_section_counts(harness: &Harness) -> Vec<usize> {
 /// witness).
 #[test]
 fn the_kiosk_rotation_flips_modes_on_the_dwell_timer() {
-    // SAFETY: single-threaded journey startup (see the set site).
-    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
     let (_fixture, state, _walked) = fixture::today_overdue_state();
     support::driver::run(
         DriverOptions {
@@ -13065,8 +13055,6 @@ fn the_kiosk_rotation_flips_modes_on_the_dwell_timer() {
 /// the desktop's cross-board two.
 #[test]
 fn the_kiosk_today_mode_renders_only_the_pinned_board() {
-    // SAFETY: single-threaded journey startup (see the set site).
-    unsafe { std::env::remove_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY") };
     let (_fixture, mut state, _walked) = fixture::today_overdue_state();
     // Live and awaiting alarms in the data: the gates must hold
     // against non-empty timer state, not just an empty one.
@@ -13143,18 +13131,13 @@ fn the_kiosk_today_mode_renders_only_the_pinned_board() {
 /// default.
 #[test]
 fn the_desktop_mount_never_rotates() {
-    // SAFETY: single-threaded journey startup (see the set site). The
-    // var stays set: the harness's board escape is suppressed so the
-    // desktop's Today default is the observed surface.
-    unsafe { std::env::set_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY", "1") };
     let (_fixture, state) = fixture::golden_state();
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness =
-                Harness::mount_with_settings(SlintDriver::default(), state, UiSettings::default());
+            let mut harness = Harness::mount_no_escape(SlintDriver::default(), state);
             assert_eq!(current_view(&harness), View::Today);
             for _ in 0..3 {
                 harness.driver.advance_time(30_000);
@@ -21633,16 +21616,13 @@ fn focused_self_carries(harness: &Harness, element_id: &str) -> bool {
 /// one on the crossed board.
 #[test]
 fn us4_s1_cross_board_walk_parks_focus_on_the_row() {
-    // SAFETY: single-threaded journey startup; the driver thread reads
-    // it only inside `run` below.
-    unsafe { std::env::set_var("TASKBOARD_JOURNEYS_STAY_ON_TODAY", "1") };
     let (_fixture, state, [_board_one_task, _board_two_task]) = fixture::today_overdue_state();
     support::driver::run(
         support::driver::DriverOptions {
             headless_renderer: true,
         },
         move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
+            let mut harness = Harness::mount_no_escape(SlintDriver::default(), state);
             // The stay-on-today mount leaves the Today surface holding
             // slint focus (its init grab; the mount dispatch no tail
             // rides it) — the guard's letter is "the walk's focus
