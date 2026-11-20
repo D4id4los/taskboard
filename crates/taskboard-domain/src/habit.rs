@@ -1134,16 +1134,14 @@ mod tests {
             (fixture, steps) in habit_fixture_strategy().prop_flat_map(|fixture| {
                 (
                     Just(fixture.clone()),
-                    // The step clock strictly advances (dt >= 1s): a
-                    // same-instant double +1 collides under the row
-                    // clock's equal-clock LWW tie and loses the second
-                    // increment on replay — a recorded production
-                    // limitation, pinned as debt by
-                    // `log_same_instant_double_currently_pins_the_lww_tie_loss`
-                    // below (the fixture's stamps carry second
-                    // resolution).
+                    // The step clock may hold still (dt = 0 legal,
+                    // 0..=3_600): the degenerate same-instant sequence
+                    // is included since #986's mint rule
+                    // (`max(now, stored + 1s)`) stamps every log's row
+                    // strictly past the stored same-key row, so every
+                    // +1 lands even at a frozen `now`.
                     proptest::collection::vec(
-                        (any::<bool>(), 0_usize..2, 0_u32..=60, 1_i64..=3_600),
+                        (any::<bool>(), 0_usize..2, 0_u32..=60, 0_i64..=3_600),
                         1..8,
                     ),
                 )
@@ -1465,6 +1463,154 @@ mod tests {
             total, 2,
             "both same-instant increments land: the mint bump separates the row clocks"
         );
+    }
+
+    /// Deterministic table for the #986 mint rule (lowest layer): a
+    /// fresh key mints `now`; stored at `now` / ahead of `now` mints
+    /// `stored + 1s`; stored behind `now` mints `now`.
+    #[test]
+    fn mint_log_clock_follows_the_monotone_rule() {
+        let now = ts(1_000);
+        assert_eq!(mint_log_clock(now, None), now, "fresh key mints now");
+        assert_eq!(
+            mint_log_clock(now, Some(ts(1_000))),
+            ts(1_001),
+            "stored at now mints stored + 1s"
+        );
+        assert_eq!(
+            mint_log_clock(now, Some(ts(1_001))),
+            ts(1_002),
+            "stored ahead of now mints stored + 1s"
+        );
+        assert_eq!(
+            mint_log_clock(now, Some(ts(995))),
+            now,
+            "stored behind now mints now"
+        );
+    }
+
+    /// Command-arm pin (#986): two same-instant `LogHabit`s mint
+    /// strictly increasing row clocks — the first at `T`, the second
+    /// (planned against the post-first state) at `T + 1s`.
+    #[test]
+    fn same_instant_double_log_mints_strictly_increasing_clocks() {
+        let fixture = habit_fixture(ts(1_000));
+        let plan1 = log_plan(
+            &fixture,
+            &StateCommand::LogHabit {
+                habit: fixture.habit.id,
+            },
+            fixture.now,
+        )
+        .expect("commandable");
+        let mut after_first = fixture.clone();
+        let mut persisted = crate::persistence::PersistedState {
+            habits: fixture.state(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut persisted, &plan1.actions);
+        after_first.log = persisted.habits.log;
+        let plan2 = log_plan(
+            &after_first,
+            &StateCommand::LogHabit {
+                habit: fixture.habit.id,
+            },
+            fixture.now,
+        )
+        .expect("commandable");
+        let clock1 = minted_clock(&plan1);
+        let clock2 = minted_clock(&plan2);
+        assert_eq!(clock1, fixture.now, "the first log stamps now");
+        assert_eq!(
+            clock2,
+            fixture.now + chrono::TimeDelta::try_seconds(1).expect("1s"),
+            "the second same-instant log stamps strictly past the first row"
+        );
+    }
+
+    /// The adjust-survives pin (#986): after a 3-burst of same-instant
+    /// logs at `T` (row clock `T + 2s`), an `AdjustHabitLog` at `T + 1s`
+    /// still lands — the shared bump stamps it `T + 3s`, strictly past
+    /// the burst row, preserving the adjust's newest-write intent.
+    #[test]
+    fn adjust_after_a_same_instant_burst_stamps_past_the_burst_row() {
+        let mut fixture = habit_fixture(ts(1_000));
+        let mut persisted = crate::persistence::PersistedState {
+            habits: fixture.state(),
+            ..crate::persistence::PersistedState::default()
+        };
+        let mut burst_clock = None;
+        for _ in 0..3 {
+            let plan = log_plan(
+                &fixture,
+                &StateCommand::LogHabit {
+                    habit: fixture.habit.id,
+                },
+                fixture.now,
+            )
+            .expect("commandable");
+            crate::persistence::apply_actions(&mut persisted, &plan.actions);
+            fixture.log = std::mem::take(&mut persisted.habits.log);
+            burst_clock = Some(minted_clock(&plan));
+        }
+        let burst_clock = burst_clock.expect("the burst ran");
+        let plan = log_plan(
+            &fixture,
+            &StateCommand::AdjustHabitLog {
+                habit: fixture.habit.id,
+                window: log_window(&fixture.habit, &fixture.log, fixture.now, fixture.day),
+                count: 7,
+            },
+            fixture.now + chrono::TimeDelta::try_seconds(1).expect("1s"),
+        )
+        .expect("commandable");
+        let adjust_clock = minted_clock(&plan);
+        assert_eq!(
+            burst_clock,
+            ts(1_002),
+            "the 3-burst advances the row clock two seconds past now"
+        );
+        assert!(
+            adjust_clock > burst_clock,
+            "the adjust stamps strictly past the burst row"
+        );
+        let mut final_state = crate::persistence::PersistedState {
+            habits: fixture.state(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut final_state, &plan.actions);
+        let window = log_window(&fixture.habit, &fixture.log, fixture.now, fixture.day);
+        assert_eq!(
+            final_state
+                .habits
+                .log
+                .get(&HabitLogKey {
+                    habit: fixture.habit.id,
+                    window
+                })
+                .map(|entry| entry.count),
+            Some(7),
+            "the adjust lands over the burst"
+        );
+    }
+
+    fn habit_fixture(now: DateTime<Utc>) -> HabitFixture {
+        HabitFixture {
+            habit: habit(1, HabitTarget::PerWeek(NonZeroCount::new(1).expect("1"))),
+            log: std::collections::BTreeMap::new(),
+            now,
+            day: DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).expect("utc"),
+            },
+        }
+    }
+
+    fn minted_clock(plan: &crate::command::CommandPlan) -> DateTime<Utc> {
+        match &plan.actions[0] {
+            crate::persistence::PersistenceAction::RecordHabitLog(_, entry) => entry.clock,
+            other => panic!("unexpected action: {other:?}"),
+        }
     }
 
     // ---- Deterministic streak cases (§5.3) -------------------------------

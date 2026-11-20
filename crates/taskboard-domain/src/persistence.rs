@@ -489,7 +489,14 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             PersistenceAction::RecordHabitLog(key, entry) => {
                 match state.habits.log.get(key) {
                     // Keyed set-union, strictly-newer-clock LWW; the
-                    // equal-clock tie keeps the stored row (deterministic).
+                    // equal-clock tie keeps the stored row
+                    // (deterministic). Unchanged by #986: the mint-side
+                    // monotone clock bump (`habit::mint_log_clock`)
+                    // guarantees freshly minted rows stamp strictly
+                    // past the stored same-key row, so this tie only
+                    // fires for genuinely identical/replayed clocks —
+                    // uniqueness is the mint's premise now, not this
+                    // apply's.
                     Some(stored) if stored.clock >= entry.clock => {}
                     _ => {
                         state.habits.log.insert(*key, *entry);
