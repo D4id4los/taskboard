@@ -4246,12 +4246,17 @@ impl Adapter {
             ) => Vec::new(),
             // -- the move flows (D8/D9; round 2 adds the stack move;
             //    round 9 chunk 9 adds the directional kept arms — the
-            //    same keys move the drop target mid-move, US-2) --
+            //    same keys move the drop target mid-move, US-2;
+            //    #1033 joins the legacy stack-walk verbs — the chords
+            //    behind `StackNext`/`StackPrev` must hop the drop
+            //    column mid-move, never settle the flow) --
             (
                 flow @ (Flow::Move { .. } | Flow::MoveStack { .. }),
                 effect @ (UiEffect::FocusNext
                 | UiEffect::FocusPrev
                 | UiEffect::FocusDirectional(_)
+                | UiEffect::StackNext
+                | UiEffect::StackPrev
                 | UiEffect::Activate
                 | UiEffect::RequestMove
                 | UiEffect::CancelMove
@@ -5627,12 +5632,22 @@ impl Adapter {
             // clamped); during a stack move they hop the insertion
             // slot (the same ring the FocusNext/Prev kept arm runs —
             // the slot domain is horizontal there). The move survives
-            // every hop (US-2/AC-1).
-            (_, effect @ UiEffect::FocusDirectional(Direction::Left | Direction::Right)) => {
-                let direction = if effect == UiEffect::FocusDirectional(Direction::Right) {
-                    1
-                } else {
-                    -1
+            // every hop (US-2/AC-1). #1033: the legacy stack-walk
+            // verbs (`StackNext`/`StackPrev` — the `g l`/`g h` ViNormal
+            // chords and the Standard/emacs `Ctrl+Shift+Left/Right`
+            // rows in `actions.rs`) join the kept arms with the same
+            // reading: `StackNext` → +1, `StackPrev` → -1. The
+            // `(Flow::None, StackNext/Prev)` arms below stay verbatim
+            // — outside a move flow the stack walk steps as before.
+            (
+                _,
+                effect @ (UiEffect::FocusDirectional(Direction::Left | Direction::Right)
+                | UiEffect::StackNext
+                | UiEffect::StackPrev),
+            ) => {
+                let direction = match effect {
+                    UiEffect::FocusDirectional(Direction::Right) | UiEffect::StackNext => 1,
+                    _ => -1,
                 };
                 let outcomes = match flow {
                     Flow::Move { .. } => self.view_state.cycle_move_stack_column(state, direction),
