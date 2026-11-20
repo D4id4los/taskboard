@@ -327,6 +327,22 @@ impl PtySession {
 /// it — the marker-gated pacing — per-test extras verbatim). The wrapper's
 /// backstop is the runaway bound derived at [`PTY_SESSION_BACKSTOP`]; wedge
 /// detection is the seam's idle budget, not this number.
+/// Strips every inherited `TASKBOARD_*` variable from the child's env
+/// (#984): the spawned binary composes ambient env exactly as
+/// production does, so a hostile operator ambient must not leak into
+/// the fixture — the child's configuration is the seeded config file
+/// plus this call's explicit additions, never machine state. (The
+/// `it_cli` suite's documented premise, applied at every spawn site.)
+fn strip_taskboard_env(command: &mut std::process::Command) {
+    let keys: Vec<std::ffi::OsString> = std::env::vars_os()
+        .filter(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
+        .map(|(key, _)| key)
+        .collect();
+    for key in keys {
+        command.env_remove(&key);
+    }
+}
+
 fn spawn_pty_session(
     inner: &str,
     data_home: &std::path::Path,
@@ -334,6 +350,7 @@ fn spawn_pty_session(
     extra: &[(&str, &str)],
 ) -> PtySession {
     let mut command = std::process::Command::new("timeout");
+    strip_taskboard_env(&mut command);
     command
         .arg(PTY_SESSION_BACKSTOP.as_secs().to_string())
         .arg("script")
@@ -1045,15 +1062,19 @@ fn tty_explicit_daemon_stays_the_daemon_and_serves_standalone() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-    let stop = std::process::Command::new(binary)
-        .args([
-            "--config",
-            config.to_str().expect("utf8 path"),
-            "daemon",
-            "stop",
-        ])
-        .output()
-        .expect("daemon stop runs");
+    let stop = {
+        let mut command = std::process::Command::new(binary);
+        strip_taskboard_env(&mut command);
+        command
+    }
+    .args([
+        "--config",
+        config.to_str().expect("utf8 path"),
+        "daemon",
+        "stop",
+    ])
+    .output()
+    .expect("daemon stop runs");
     assert_eq!(
         stop.status.code(),
         Some(0),

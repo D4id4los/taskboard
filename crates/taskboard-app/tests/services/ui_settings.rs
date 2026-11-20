@@ -120,6 +120,7 @@ fn send_detached_reply(
 /// second Save with the same name is an edit.
 #[tokio::test]
 async fn the_save_ceremony_persists_stores_and_attaches_without_leaking_the_secret() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards_ok().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -212,6 +213,7 @@ async fn the_save_ceremony_persists_stores_and_attaches_without_leaking_the_secr
 /// A6's failure half — a 401 verify persists nothing and replies typed.
 #[tokio::test]
 async fn a_failing_verify_persists_nothing_and_replies_typed() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_auth_reject(401).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "https://unused.example");
@@ -260,6 +262,7 @@ async fn a_failing_verify_persists_nothing_and_replies_typed() {
 /// still landed, the forwarder stays alive.
 #[tokio::test]
 async fn a_dropped_reply_receiver_never_wedges_the_forwarder() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "https://unused.example");
     let (_app, workspace) =
@@ -304,6 +307,7 @@ async fn a_dropped_reply_receiver_never_wedges_the_forwarder() {
 /// pre-image), the store holds the new secret.
 #[tokio::test]
 async fn a_legacy_file_migrates_ahead_of_the_save_ceremony() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards_ok().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("taskboard.toml");
@@ -369,6 +373,8 @@ async fn a_legacy_file_migrates_ahead_of_the_save_ceremony() {
 #[tokio::test]
 async fn a_legacy_file_on_unwritable_media_refuses_persist_failed() {
     use std::os::unix::fs::PermissionsExt as _;
+
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards_ok().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("taskboard.toml");
@@ -426,6 +432,7 @@ async fn a_legacy_file_on_unwritable_media_refuses_persist_failed() {
 /// the secret, the connector is attached live.
 #[tokio::test]
 async fn a_save_on_a_config_without_a_sync_section_creates_the_subtree_and_attaches() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards_ok().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("taskboard.toml");
@@ -486,6 +493,7 @@ async fn a_save_on_a_config_without_a_sync_section_creates_the_subtree_and_attac
 /// the file, its directory, and the entry end to end.
 #[tokio::test]
 async fn a_save_with_no_config_file_at_all_creates_file_directory_and_entry() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards_ok().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("conf").join("taskboard.toml");
@@ -572,6 +580,7 @@ async fn an_env_injected_identity_still_refuses_persist_rejected() {
         forwarder.await.expect("forwarder joins cleanly");
     }
 
+    let _env = crate::common::taskboard_env_lock();
     let _env = common::env_lock();
     let server = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__SERVER_URL", "https://env.example");
     let user = common::EnvOverride::set("TASKBOARD_NEXTCLOUD__USERNAME", "env-user");
@@ -597,6 +606,7 @@ async fn an_env_injected_identity_still_refuses_persist_rejected() {
 /// array-less file.
 #[tokio::test]
 async fn remove_on_a_legacy_file_migrates_then_removes_the_sole_entry() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("taskboard.toml");
     std::fs::write(
@@ -704,6 +714,7 @@ fn fixture_state() -> (
 /// (the chunk-2 debounce semantics byte-for-byte).
 #[tokio::test]
 async fn a_settings_request_inside_a_quiet_window_is_never_debounced() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("taskboard.toml");
     std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
@@ -763,6 +774,7 @@ async fn a_settings_request_inside_a_quiet_window_is_never_debounced() {
 /// rebuilt keymap (vi resolves the colon in the vi-normal context).
 #[tokio::test]
 async fn the_preset_flow_persists_and_replies_with_the_rebuilt_keymap() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = dir.path().join("taskboard.toml");
     std::fs::write(
@@ -830,6 +842,7 @@ async fn the_preset_flow_persists_and_replies_with_the_rebuilt_keymap() {
 /// fresh list.
 #[tokio::test]
 async fn the_remove_choreography_persists_detaches_and_deletes_the_secret() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards_ok().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -993,6 +1006,7 @@ fn bound_connector_of(
 /// op, never a config op).
 #[tokio::test]
 async fn attach_binds_the_chosen_remote_through_the_engine() {
+    let _env = crate::common::taskboard_env_lock();
     // The full standard pull harness (listing + detail + stacks): the
     // post-bind settle must see a servable remote, not a half-mocked
     // one whose 404 detail reads as a remote tombstone.
@@ -1054,6 +1068,7 @@ async fn attach_binds_the_chosen_remote_through_the_engine() {
 /// (the unreachable server proves no IO ran).
 #[tokio::test]
 async fn attach_to_another_remote_on_the_same_connector_refuses_before_any_io() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -1100,6 +1115,7 @@ async fn attach_to_another_remote_on_the_same_connector_refuses_before_any_io() 
 /// listing was attempted.
 #[tokio::test]
 async fn attach_to_a_board_bound_elsewhere_refuses_before_any_io() {
+    let _env = crate::common::taskboard_env_lock();
     // The target connector's server is unreachable: any listing would
     // fail VerifyUnreachable, not BindRefused — the typed refusal
     // proves the early arm fired.
@@ -1150,6 +1166,7 @@ async fn attach_to_a_board_bound_elsewhere_refuses_before_any_io() {
 /// `Ok`.
 #[tokio::test]
 async fn attach_reissue_on_the_same_remote_is_idempotent() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -1191,6 +1208,7 @@ async fn attach_reissue_on_the_same_remote_is_idempotent() {
 /// its typed refusals are pinned by the listing tests.)
 #[tokio::test]
 async fn attach_refuses_typed_on_a_missing_secret() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards(&[(7, "home")]).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -1226,6 +1244,7 @@ async fn attach_refuses_typed_on_a_missing_secret() {
 /// remains bound to it (the recorded multi-board guard).
 #[tokio::test]
 async fn detach_unbinds_and_stops_the_actor_only_when_the_last_binding_leaves() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -1298,6 +1317,7 @@ async fn detach_unbinds_and_stops_the_actor_only_when_the_last_binding_leaves() 
 /// panic, the actor state untouched).
 #[tokio::test]
 async fn detach_of_an_unbound_board_is_an_accepted_no_op() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -1332,6 +1352,7 @@ async fn detach_of_an_unbound_board_is_an_accepted_no_op() {
 /// alive for the next request.
 #[tokio::test]
 async fn a_dropped_attach_reply_receiver_never_wedges_the_forwarder() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards(&[(7, "home")]).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -1379,6 +1400,7 @@ async fn a_dropped_attach_reply_receiver_never_wedges_the_forwarder() {
 /// maps through the existing `AttachBusy` arm (re-pinned).
 #[tokio::test]
 async fn attach_on_a_stale_board_id_is_gone_typed() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards(&[(7, "home")]).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -1448,6 +1470,7 @@ async fn mount_mixed_boards() -> wiremock::MockServer {
 /// file write.
 #[tokio::test]
 async fn the_listing_projects_live_rows_and_changes_nothing() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_mixed_boards().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -1490,6 +1513,7 @@ async fn the_listing_projects_live_rows_and_changes_nothing() {
 /// stored secret, a vanished connector, an unreachable server.
 #[tokio::test]
 async fn the_listing_refuses_typed_without_state_change() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::default());
@@ -1534,6 +1558,7 @@ async fn the_listing_refuses_typed_without_state_change() {
 /// duplicate); a different user on the same host gets its own name.
 #[tokio::test]
 async fn a_sign_in_derives_the_connector_name_and_a_re_sign_in_reuses_it() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_boards_ok().await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -1616,6 +1641,7 @@ fn boards_titled(app: &App, title: &str) -> Vec<taskboard_domain::BoardId> {
 /// connector; a remote that is not live is `Gone` with no board made.
 #[tokio::test]
 async fn create_local_board_mints_and_binds_the_remote() {
+    let _env = crate::common::taskboard_env_lock();
     let server = wiremock::MockServer::start().await;
     common::mount_standard_pull(&server, serde_json::json!([])).await;
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1666,6 +1692,7 @@ async fn create_local_board_mints_and_binds_the_remote() {
 /// `BindRefused` and the minted local board stays, unbound.
 #[tokio::test]
 async fn a_refused_bind_after_create_leaves_the_local_board() {
+    let _env = crate::common::taskboard_env_lock();
     let server = wiremock::MockServer::start().await;
     common::mount_standard_pull(&server, serde_json::json!([])).await;
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1699,6 +1726,7 @@ async fn a_refused_bind_after_create_leaves_the_local_board() {
 /// every connector sharing the identity leaves together.
 #[tokio::test]
 async fn account_removal_is_guarded_by_bindings_and_removes_the_identity() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("taskboard.toml");
     std::fs::write(
@@ -1768,6 +1796,7 @@ async fn account_removal_is_guarded_by_bindings_and_removes_the_identity() {
 /// listing is the credential check).
 #[tokio::test]
 async fn a_rejected_listing_is_a_typed_verify_refusal() {
+    let _env = crate::common::taskboard_env_lock();
     let server = mount_auth_reject(401).await;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), &server.uri());
@@ -1815,6 +1844,7 @@ fn send_publish(
 /// implies the adoption wait; terminal state, no wall-clock).
 #[tokio::test]
 async fn publish_creates_the_remote_board_and_binds_the_local_one() {
+    let _env = crate::common::taskboard_env_lock();
     let server = wiremock::MockServer::start().await;
     common::mount_standard_pull(&server, serde_json::json!([])).await;
     // The create: the ceremony must derive title/color from the local
@@ -1881,6 +1911,7 @@ async fn publish_creates_the_remote_board_and_binds_the_local_one() {
 /// intact, and the unreachable server proves the create never ran.
 #[tokio::test]
 async fn publish_refuses_a_bound_board_before_any_io() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -1921,6 +1952,7 @@ async fn publish_refuses_a_bound_board_before_any_io() {
 /// refusal of a name that resolves to no config entry).
 #[tokio::test]
 async fn publish_against_an_unknown_connector_refuses_gone() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -2005,6 +2037,7 @@ fn seed_files_config(dir: &std::path::Path, server: &str) -> PathBuf {
 /// server proves nothing was contacted.
 #[tokio::test]
 async fn move_refuses_a_files_bound_board_before_any_io() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_files_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -2044,6 +2077,7 @@ async fn move_refuses_a_files_bound_board_before_any_io() {
 /// only via a stale pick; the world refuses typed.
 #[tokio::test]
 async fn move_refuses_an_unbound_board_before_any_io() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_files_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -2079,6 +2113,7 @@ async fn move_refuses_an_unbound_board_before_any_io() {
 /// unreachable server is never contacted).
 #[tokio::test]
 async fn move_refuses_when_files_sync_is_disabled() {
+    let _env = crate::common::taskboard_env_lock();
     let dir = tempfile::tempdir().expect("tempdir");
     let config = seed_array_config(dir.path(), "http://127.0.0.1:9");
     let store = Arc::new(FakeCredentialStore::with(
@@ -2184,6 +2219,7 @@ async fn mount_dav_memory(server: &wiremock::MockServer, mem: DavMemory) {
 /// Terminal-state assertions only — the reply implies settlement.
 #[tokio::test]
 async fn move_commits_a_deck_board_onto_files() {
+    let _env = crate::common::taskboard_env_lock();
     let server = wiremock::MockServer::start().await;
     // The WebDAV substrate: an in-memory filesystem over wiremock so
     // the ceremony's GETs serve exactly what its own PUTs wrote (a
@@ -2265,6 +2301,7 @@ async fn move_commits_a_deck_board_onto_files() {
 /// pull's cycle still completes, deterministically.
 #[tokio::test]
 async fn move_reports_a_queued_outbox_typed() {
+    let _env = crate::common::taskboard_env_lock();
     let server = wiremock::MockServer::start().await;
     // Only the Deck-pull endpoints: the quiescence guard fires before
     // the floor publish, so no WebDAV grammar is mounted.
