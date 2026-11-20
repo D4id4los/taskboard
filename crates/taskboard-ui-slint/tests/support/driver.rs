@@ -32,6 +32,18 @@
 //! enabled bit, the seam write guard, the focused-seam property),
 //! never raw `has-focus` on a possibly-disabled scope; the upstream
 //! invalidation/exclusion fix is #954's chunk-17 focus work.
+//!
+//! Second known quirk (#1023, also a #954 facet, pinned in the
+//! stale-remount probe): element-query geometry on **freshly
+//! remounted conditional subtrees** may read stale (pre-attach zeros
+//! / mid-layout reads), and a conditional mount's `changed panel-*`
+//! mirrors may not deliver (the mount's init write can read
+//! pre-attach values). Journey oracles therefore use **typed root
+//! seams** on conditionally remounted subtrees — the unconditional
+//! mount pushes its realized geometry through a root property and
+//! the test reads that — never element queries or changed-mirrors
+//! from a conditional mount; the invalidation fix is #954's chunk-17
+//! / W6 home.
 
 #![allow(clippy::missing_panics_doc)] // harness-internal invariants
 
