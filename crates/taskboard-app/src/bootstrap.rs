@@ -1957,6 +1957,7 @@ mod shutdown_outcome_tests {
 mod connector_module_tests {
     use super::*;
     use crate::connectors::{ConnectorModule, SpawnedConnector};
+    use crate::test_support::refusing_store;
     use chrono::TimeZone as _;
     use std::collections::VecDeque;
     use std::sync::Mutex;
@@ -2092,7 +2093,7 @@ mod connector_module_tests {
 
         let app = bootstrap_with_modules(
             config,
-            Arc::new(RefusingStore),
+            refusing_store(),
             Arc::new(crate::notifications::LogSink),
             vec![module],
         )
@@ -2179,7 +2180,7 @@ mod connector_module_tests {
 
         let app = bootstrap_with_modules(
             config,
-            Arc::new(RefusingStore),
+            refusing_store(),
             Arc::new(crate::notifications::LogSink),
             Vec::new(),
         )
@@ -2266,7 +2267,7 @@ mod connector_module_tests {
 
         let app = bootstrap_with_modules(
             config,
-            Arc::new(RefusingStore),
+            refusing_store(),
             Arc::new(crate::notifications::LogSink),
             modules,
         )
@@ -2366,7 +2367,7 @@ mod connector_module_tests {
 
         let app = bootstrap_with_modules(
             config,
-            Arc::new(RefusingStore),
+            refusing_store(),
             Arc::new(crate::notifications::LogSink),
             modules,
         )
@@ -2450,7 +2451,7 @@ mod connector_module_tests {
         config.validate().expect("valid");
         let app = bootstrap_with_modules(
             config,
-            Arc::new(RefusingStore),
+            refusing_store(),
             Arc::new(crate::notifications::LogSink),
             Vec::new(),
         )
@@ -2508,7 +2509,7 @@ mod connector_module_tests {
         let config = files_sync_enabled_config(dir.path());
         let outcome = bootstrap_with_modules(
             config,
-            Arc::new(RefusingStore),
+            refusing_store(),
             Arc::new(crate::notifications::LogSink),
             Vec::new(),
         )
@@ -2595,30 +2596,6 @@ mod connector_module_tests {
         app.shutdown().await;
     }
 
-    #[derive(Debug)]
-    struct RefusingStore;
-
-    impl crate::secrets::CredentialStore for RefusingStore {
-        fn load(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<crate::secrets::AppPassword, crate::secrets::CredentialError> {
-            Err(crate::secrets::CredentialError::NotFound)
-        }
-        fn store(
-            &self,
-            _: &str,
-            _: &str,
-            _: crate::secrets::AppPassword,
-        ) -> Result<(), crate::secrets::CredentialError> {
-            Err(crate::secrets::CredentialError::Unsupported)
-        }
-        fn delete(&self, _: &str, _: &str) -> Result<(), crate::secrets::CredentialError> {
-            Err(crate::secrets::CredentialError::Unsupported)
-        }
-    }
-
     #[tokio::test]
     async fn module_build_failure_maps_onto_the_typed_bootstrap_error() {
         let mut config = AppConfig::default();
@@ -2631,7 +2608,7 @@ mod connector_module_tests {
         // credential load refuses: the loop maps the error and unwinds.
         let err = bootstrap(
             config,
-            Arc::new(RefusingStore),
+            refusing_store(),
             Arc::new(crate::notifications::LogSink),
         )
         .await
