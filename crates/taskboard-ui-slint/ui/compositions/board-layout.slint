@@ -10,6 +10,7 @@
 
 import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
+import { TabStop } from "../widgets/focus-stops.slint";
 import { Responsive, Breakpoint } from "../responsive.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
@@ -801,14 +802,13 @@ export component BoardLayout inherits Rectangle {
                     root.switcher-card-dropped(column-index);
                     return event.proposed-action;
                 }
-                segment := FocusScope {
+                segment := TabStop {
                 width: 100%;
                 height: 100%;
                 // A real tab stop (D15); the keyboard path for switching
                 // is the action layer's selection-follows-focus (D8).
-                focus-on-tab-navigation: true;
-                accessible-role: AccessibleRole.tab;
-                accessible-label: column.title;
+                // The scope's grammar lives in `TabStop` (#1065).
+                stop-label: column.title;
                 Rectangle {
                     width: 100%;
                     height: 100%;

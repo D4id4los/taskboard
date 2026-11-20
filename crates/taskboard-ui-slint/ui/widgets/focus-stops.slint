@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The centralized widgets' shared focus-stop grammar (#1065): the
+// FocusScope/Return-Space skeleton the segment, board-bar tab, and
+// board-layout stack-segment stops each re-derived, deduplicated
+// into two thin components. The gold-standard base is
+// `activation-stop.slint` (the C class); these stops carry no latch
+// and no key handler beyond what each role already had — the
+// keyboard switch paths stay the action layer's
+// selection-follows-focus (D8/D15).
+//
+// Static roles by runtime constraint (`accessible-role` rejects
+// property bindings — the constraint recorded on `ActivationStop`):
+// a further role variant is a new component in this same file,
+// never a binding.
+
+// The radio-button stop: the segmented control's per-option scope.
+// The modifier-guarded Return/Space body is verbatim from the
+// segmented `seg-focus` it replaced, including the disabled-stroke
+// absorption rule (r2 D32: the stroke is swallowed, not passed on);
+// the pick gate lives in the consumer's `activated` closure.
+export component RadioStop inherits FocusScope {
+    in property <string> stop-label;
+    in property <bool> stop-checked;
+    in property <bool> stop-enabled: true;
+    callback activated();
+    focus-on-tab-navigation: true;
+    accessible-role: AccessibleRole.radio-button;
+    accessible-label: root.stop-label;
+    accessible-checked: root.stop-checked;
+    accessible-enabled: root.stop-enabled;
+    accessible-action-default => { root.activated(); }
+    key-pressed(event) => {
+        if ((event.text == Key.Return || event.text == " ")
+                && !event.modifiers.control && !event.modifiers.alt
+                && !event.modifiers.shift && !event.modifiers.meta) {
+            root.activated();
+            accept
+        } else {
+            reject
+        }
+    }
+}
+
+// The tab stop: the two tab-strip cousins (the board bar's tab, the
+// board layout's stack segment) — the a11y label and the tab-stop
+// walk bit only, no key handler (neither cousin had one; adding one
+// would be a behavior change, not a dedup).
+export component TabStop inherits FocusScope {
+    in property <string> stop-label;
+    focus-on-tab-navigation: true;
+    accessible-role: AccessibleRole.tab;
+    accessible-label: root.stop-label;
+}
