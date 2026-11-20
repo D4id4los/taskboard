@@ -191,13 +191,19 @@ flowchart LR
 | W-1 | compositions/habits.slint | TaskCard substrate | habits-log-clicked | RowSubject::Habit router | habit.log | StateCommand::LogHabit | ItemAddr habit row | US-1/S2 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us1_s2 |
 | W-2 | menu.rs | HabitRow context menu | habits-context-requested | MenuKind stays {Main, Object} (D4 deviation) | habit.log | — | — | US-2/S1 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us2_s1 |
 | W-3 | menu.rs | convert submenu | — | — | habit.convert | StateCommand::ConvertHabitToSeries | — | US-2/S2 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us2_s2 |
-| W-4 | habit editor (shared task-view variant) | fields | habit-save-clicked | UpdateHabit seam | habit.edit | StateCommand::UpdateHabit | — | US-5/S2 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us5_s2 |
+| W-4 | habit editor (shared task-view variant) | fields | habit-save-clicked | UpdateHabit seam | habit.edit | StateCommand::UpdateHabit | — | US-5/S2 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us5_s2_habit_editor_round_trips_time_and_day + crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us5_s2_invalid_edit_stays_mounted_without_dispatch |
 | W-5 | habit card | time chip | — | presentation | — | — | — | US-5/S2 | fold test |
 | W-6 | adapter.rs | traversal | — | RowSubject walk | nav.focus-board | — | ItemAddr | US-3/S1 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us3_s1 |
+| W-10 | adapter.rs + menu.rs (the editor/menu negative legs) | editor surface, armed menu | habit-save-clicked | save-gate refusal, remove staging | MenuDismiss | — | — | US-5/S2, US-5/S3, US-5/S4 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us5_s3_escape_cancels_the_armed_menu + crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us5_s4_escape_cancels_the_editor + crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::h4_kiosk_remove_arm_is_inert |
 
 (W-6's action cell spelled the wildcard `nav.focus-*`; chunk 8 landed
 the concrete `nav.focus-board` id — cell corrected 2026-11-19, H4
 review, the gate greps the cell verbatim.)
+(W-10 added 2026-11-20, round-3 chunk B4b #1059: the §4 US-5 table's
+Escape cells and the kiosk arm refusal get their landing evidence —
+exact test names, the gate's nomination grammar; the legs compose
+through the shared B4a journey harness.)
+
 
 ## 7. Command-contract delta
 
@@ -219,7 +225,9 @@ above stays the editor-tier evidence when H2/H4 land it.
 bound-test: US-6/S1 -> crates/taskboard-state/tests/habits.rs::us6_s1_update_habit_stores_the_day_inside_the_canonical_window
 
 - **Journey tests** (step-ID-named): us1_s1 us1_s2 us2_s1 us2_s2 us3_s1
-  us3_s2 us5_s1 us5_s2 us6_s1 us6_s2 (crates/taskboard-ui-slint/tests/).
+  us3_s2 us5_s1 us5_s2 us5_s3 us5_s4 us6_s1 us6_s2
+  (crates/taskboard-ui-slint/tests/; us5_s3/us5_s4 landed 2026-11-20,
+  round-3 B4b #1059 — the §4 US-5 table's Escape cells).
 - **Seam tests**: UpdateHabit changeset round-trip incl. description +
   anchor day; ConvertHabitToTask unchanged semantics.
 - **Fold/presentation tests**: time chip presence flag; card row shape.
