@@ -2355,6 +2355,10 @@ fn push_task_detail(
                 )),
                 detail: SharedString::from(texts.detail),
                 armed: texts.armed,
+                // The cursor's emphasis (J3 US-6 D-4): derived from
+                // the view state's cursor — never stored (the
+                // habit-card emphasis pattern).
+                selected: vs.rule_cursor() == Some(rule.id),
             }
         })
         .collect();

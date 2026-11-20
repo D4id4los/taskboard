@@ -317,6 +317,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "task_recur_resume_clicked",
     "task_rule_jump_to_due_clicked",
     "task_rule_remove_clicked",
+    "task_rule_row_clicked",
     "task_rule_unmute_clicked",
     "task_scheduled_edit_opened",
     "task_title_committed",
