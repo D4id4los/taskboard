@@ -19,11 +19,11 @@ import { TimeSlotRow } from "../widgets/time-field.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { DatePickerFacts } from "../menu-facts.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
-import { ActivationStop } from "../widgets/activation-stop.slint";
+import { LabeledValueRow, RowMode } from "../widgets/labeled-value-row.slint";
+import { ToggleStrip } from "../widgets/toggle-strip.slint";
 import { EditingFacts } from "../editing-facts.slint";
 import { TaskViewWalkFacts } from "../walk-facts.slint";
 import { TrackPanelFacts } from "../track-panel-facts.slint";
-import { FocusFacts } from "../focus-facts.slint";
 import { TrackEntryRowModel } from "../compositions/track-entries.slint";
 
 // One priority-picker slot row (UX R-3 D-1, #788): the level's
@@ -377,17 +377,17 @@ export component TaskView inherits FocusScope {
     out property <length> description-rect-height: description-section.height;
 
     private property <length> date-anchor-x: root.task.due-open
-        ? due-cell.absolute-position.x
-        : scheduled-cell.absolute-position.x;
+        ? due-column.value-x
+        : scheduled-column.value-x;
     private property <length> date-anchor-y: root.task.due-open
-        ? due-cell.absolute-position.y
-        : scheduled-cell.absolute-position.y;
+        ? due-column.value-y
+        : scheduled-column.value-y;
     private property <length> date-anchor-width: root.task.due-open
-        ? due-cell.width
-        : scheduled-cell.width;
+        ? due-column.value-width
+        : scheduled-column.value-width;
     private property <length> date-anchor-height: root.task.due-open
-        ? due-cell.height
-        : scheduled-cell.height;
+        ? due-column.value-height
+        : scheduled-column.value-height;
     // The mirrors (changed handlers — the row-selection mirror
     // precedent; they fire when the layout resolves the positions
     // after mount).
@@ -400,16 +400,16 @@ export component TaskView inherits FocusScope {
     // the pre-swap-height flip-misbranch is dead because nothing in
     // the view's layout changes on open.
     function push-due-anchor() {
-        DatePickerFacts.anchor-x = due-cell.absolute-position.x;
-        DatePickerFacts.anchor-y = due-cell.absolute-position.y;
-        DatePickerFacts.anchor-width = due-cell.width;
-        DatePickerFacts.anchor-height = due-cell.height;
+        DatePickerFacts.anchor-x = due-column.value-x;
+        DatePickerFacts.anchor-y = due-column.value-y;
+        DatePickerFacts.anchor-width = due-column.value-width;
+        DatePickerFacts.anchor-height = due-column.value-height;
     }
     function push-scheduled-anchor() {
-        DatePickerFacts.anchor-x = scheduled-cell.absolute-position.x;
-        DatePickerFacts.anchor-y = scheduled-cell.absolute-position.y;
-        DatePickerFacts.anchor-width = scheduled-cell.width;
-        DatePickerFacts.anchor-height = scheduled-cell.height;
+        DatePickerFacts.anchor-x = scheduled-column.value-x;
+        DatePickerFacts.anchor-y = scheduled-column.value-y;
+        DatePickerFacts.anchor-width = scheduled-column.value-width;
+        DatePickerFacts.anchor-height = scheduled-column.value-height;
     }
 
     focus-on-tab-navigation: true;
@@ -520,14 +520,23 @@ export component TaskView inherits FocusScope {
                 // The anchor-day row (D5's variant gating): PerWeek
                 // mounts the 7-slot picker, PerMonth the 1..=31 field,
                 // PerDay none — the UI never mints a mismatched day.
-                if (root.habit.kind == 1): HorizontalLayout {
-                    spacing: Theme.space-1;
-                    for day[day-index] in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]: IconButton {
-                        icon: IconKind.check;
-                        tone: root.habit.weekday == day-index ? Tone.success : Tone.neutral;
-                        label: "Anchor " + day;
-                        clicked => { root.habit-weekday-picked(day-index); }
-                    }
+                if (root.habit.kind == 1): ToggleStrip {
+                    // The anchor-day strip (D5's variant gating; the
+                    // W4 D-4 ruling): the recur editor's retired
+                    // pre-W3 grammar re-expressed over the ToggleStrip
+                    // primitive — single-select-over-multi is the same
+                    // mask mechanism (one true slot).
+                    options: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+                    checked-mask: [
+                        root.habit.weekday == 0,
+                        root.habit.weekday == 1,
+                        root.habit.weekday == 2,
+                        root.habit.weekday == 3,
+                        root.habit.weekday == 4,
+                        root.habit.weekday == 5,
+                        root.habit.weekday == 6,
+                    ];
+                    picked(index) => { root.habit-weekday-picked(index); }
                 }
                 if (root.habit.kind == 2): TextField {
                     placeholder: "1-31";
@@ -628,83 +637,28 @@ export component TaskView inherits FocusScope {
                     edited(text) => root.title-edited(text);
                     focus-lost() => root.text-flow-focus-lost();
                 }
-                if (!root.task.edit-open): title-display := Rectangle {
-                    border-radius: Theme.radius-small;
+                if (!root.task.edit-open): title-display := LabeledValueRow {
                     horizontal-stretch: 1;
-                    // The D18 ring: the focused closed cell visibly
-                    // indicates the active element (the ring width 0
-                    // keeps the hover surface the rest-state
-                    // differentiator).
-                    border-width: title-stop.has-focus
-                        || TaskViewWalkFacts.stop-id == 3
-                        || root.task.title-armed
-                        ? Theme.focus-ring-width
-                        : 0;
-                    border-color: Semantic.focus-ring;
-                    // The activation stop first (z-under the text):
-                    // the closed-cell grammar's walk stop; the a11y
-                    // triple rides the scope (the click ≡ key seam).
-                    title-stop := ActivationStop {
-                        width: 100%;
-                        height: 100%;
-                        stop-label: "Edit title";
-                        stop-description: "Arms the title editor for the viewed task.";
-                        stop-id: 3;
-                        activated => { root.title-edit-opened(); }
-                        // The focus-origin restore (US-1/W-1): an
-                        // overlay opened from the detail restores into
-                        // the title cell — kind 4 in `FocusFacts`. The
-                        // init leg covers the mount-after-push order
-                        // (the editor unmounts and the display
-                        // remounts in the same pass). The wrapper
-                        // property is the `changed`-on-global idiom
-                        // (the walk probe's recorded watch shape).
-                        property <int> watch-restore-nonce: FocusFacts.nonce;
-                        init => {
-                            if (FocusFacts.anchor-kind == 4) { self.focus(); }
-                        }
-                        changed watch-restore-nonce => {
-                            if (FocusFacts.anchor-kind == 4) { self.focus(); }
-                        }
-                    }
-                    // The hover surface (z-over the stop, z-under the
-                    // text): the due-cell grammar's hover affordance.
-                    if (title-touch.has-hover): Rectangle {
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-small;
-                    }
-                    RoleText {
-                        role: Typography.title;
-                        text: root.task.title;
-                        overflow: elide;
-                        width: parent.width - 2 * Theme.space-2;
-                        x: Theme.space-2;
-                    }
-                    title-touch := TouchArea {
-                        mouse-cursor: MouseCursor.pointer;
-                        // The tooltip arm (blanket rule a): the cell's
-                        // a11y strings verbatim, the activation
-                        // binding projected per refresh.
-                        changed has-hover => {
-                            if (self.has-hover) {
-                                TooltipState.hover(
-                                    "Edit title",
-                                    "Arms the title editor for the viewed task.",
-                                    root.task-title-edit-hint,
-                                    self.absolute-position.x,
-                                    self.absolute-position.y,
-                                    self.width,
-                                    self.height,
-                                );
-                            } else {
-                                TooltipState.unhover();
-                            }
-                        }
-                        clicked => {
-                            TooltipState.unhover();
-                            root.title-edit-opened();
-                        }
-                    }
+                    // The closed title cell (the grammar's origin, r4
+                    // D16a): the widget carries the stop (stop-id 3),
+                    // the ring (armed/walk latch view-side), the
+                    // restore law (kind 4) and the tooltip arm — the
+                    // hand-rolled cell anatomy is the widget's.
+                    mode: RowMode.cell;
+                    value: root.task.title;
+                    value-role: Typography.title;
+                    value-elide: true;
+                    value-inset: Theme.space-2;
+                    placeholder-em-dash: false;
+                    hover-surface: Theme.surface-raised;
+                    ring-latched: TaskViewWalkFacts.stop-id == 3
+                        || root.task.title-armed;
+                    stop-label: "Edit title";
+                    stop-description: "Arms the title editor for the viewed task.";
+                    stop-id: 3;
+                    restore-kind: 4;
+                    hint-keys: root.task-title-edit-hint;
+                    edit-asked() => { root.title-edit-opened(); }
                 }
                 // The tracking verbs (r4 D16c, F11): moved here from
                 // the metadata row's State column — exactly one verb
@@ -733,154 +687,54 @@ export component TaskView inherits FocusScope {
             HorizontalLayout {
                 visible: !root.task.is-habit;
                 spacing: Theme.space-3;
-                stack-column := VerticalLayout {
-                    RoleText {
-                        role: Typography.caption;
-                        text-color: Theme.text-secondary;
-                        text: "Stack";
-                    }
-                    RoleText {
-                        role: Typography.body;
-                        text: root.task.stack-title;
-                    }
+                // The metadata columns (the W4 absorption, R1–R4):
+                // the display rows and the two clickable closed date
+                // cells are the widget's modes now — the caption/value
+                // grammar, the em-dash placeholder, the stop identity
+                // (5/6 preserved), the tooltip arms and the hover
+                // surfaces ride `LabeledValueRow`.
+                stack-column := LabeledValueRow {
+                    mode: RowMode.display;
+                    label: "Stack";
+                    value: root.task.stack-title;
+                    placeholder-em-dash: false;
                 }
-                due-column := VerticalLayout {
-                    // The due-date region (D16). Editing is r2 D25
-                    // (W2 closed; #227): the collapsed cell is the
-                    // display RoleText, clickable into the DueEditor
-                    // — typed entry and the calendar picker, one
-                    // commit seam.
-                    RoleText {
-                        role: Typography.caption;
-                        text-color: Theme.text-secondary;
-                        text: "Due date";
-                    }
-                    // The closed cell reads interactive (round-3
-                    // D7/F13): hover surface + pointer, the title
-                    // cell's grammar. Always mounted — the in-flow
-                    // editor swap is dead (the overlay migration, M1):
-                    // the editor opens as a window-level overlay off
-                    // this cell's anchor, shifting no sibling.
-                    due-cell := Rectangle {
-                        border-radius: Theme.radius-small;
-                        border-width: due-stop.has-focus ? Theme.focus-ring-width : 0;
-                        border-color: Semantic.focus-ring;
-                        due-stop := ActivationStop {
-                            width: 100%;
-                            height: 100%;
-                            stop-label: "Edit due date";
-                            stop-description: "Opens the due-date editor.";
-                            stop-id: 5;
-                            activated => {
-                                root.push-due-anchor();
-                                root.due-edit-opened();
-                            }
-                        }
-                        if (due-touch.has-hover): Rectangle {
-                            background: Theme.surface-hover;
-                            border-radius: Theme.radius-small;
-                        }
-                        due-touch := TouchArea {
-                            mouse-cursor: MouseCursor.pointer;
-                            changed has-hover => {
-                                if (self.has-hover) {
-                                    TooltipState.hover(
-                                        "Edit due date",
-                                        "Opens the due-date editor.",
-                                        [],
-                                        self.absolute-position.x,
-                                        self.absolute-position.y,
-                                        self.width,
-                                        self.height,
-                                    );
-                                } else {
-                                    TooltipState.unhover();
-                                }
-                            }
-                            clicked => {
-                                TooltipState.unhover();
-                                root.push-due-anchor();
-                                root.due-edit-opened();
-                            }
-                        }
-                        RoleText {
-                            role: Typography.mono;
-                            text-color: root.due-color();
-                            text: root.task.due-phrase == "" ? "—" : root.task.due-phrase;
-                        }
+                due-column := LabeledValueRow {
+                    mode: RowMode.cell;
+                    label: "Due date";
+                    value: root.task.due-phrase;
+                    value-role: Typography.mono;
+                    value-color: root.due-color();
+                    stop-label: "Edit due date";
+                    stop-description: "Opens the due-date editor.";
+                    stop-id: 5;
+                    edit-asked() => {
+                        root.push-due-anchor();
+                        root.due-edit-opened();
                     }
                 }
                 // The start-date column (round-3 D8/F14): the due
-                // column's grammar, one look — same closed cell, the
-                // same editor composition.
-                scheduled-column := VerticalLayout {
-                    RoleText {
-                        role: Typography.caption;
-                        text-color: Theme.text-secondary;
-                        text: "Start date";
-                    }
-                    // The due cell's grammar (always mounted — the
-                    // overlay migration, M1: no in-flow swap).
-                    scheduled-cell := Rectangle {
-                        border-radius: Theme.radius-small;
-                        border-width: scheduled-stop.has-focus ? Theme.focus-ring-width : 0;
-                        border-color: Semantic.focus-ring;
-                        scheduled-stop := ActivationStop {
-                            width: 100%;
-                            height: 100%;
-                            stop-label: "Edit start date";
-                            stop-description: "Opens the start-date editor.";
-                            stop-id: 6;
-                            activated => {
-                                root.push-scheduled-anchor();
-                                root.scheduled-edit-opened();
-                            }
-                        }
-                        if (scheduled-touch.has-hover): Rectangle {
-                            background: Theme.surface-hover;
-                            border-radius: Theme.radius-small;
-                        }
-                        scheduled-touch := TouchArea {
-                            mouse-cursor: MouseCursor.pointer;
-                            changed has-hover => {
-                                if (self.has-hover) {
-                                    TooltipState.hover(
-                                        "Edit start date",
-                                        "Opens the start-date editor.",
-                                        [],
-                                        self.absolute-position.x,
-                                        self.absolute-position.y,
-                                        self.width,
-                                        self.height,
-                                    );
-                                } else {
-                                    TooltipState.unhover();
-                                }
-                            }
-                            clicked => {
-                                TooltipState.unhover();
-                                root.push-scheduled-anchor();
-                                root.scheduled-edit-opened();
-                            }
-                        }
-                        RoleText {
-                            role: Typography.mono;
-                            text-color: root.scheduled-color();
-                            text: root.task.scheduled-phrase == "" ? "—" : root.task.scheduled-phrase;
-                        }
+                // column's twin, one look.
+                scheduled-column := LabeledValueRow {
+                    mode: RowMode.cell;
+                    label: "Start date";
+                    value: root.task.scheduled-phrase;
+                    value-role: Typography.mono;
+                    value-color: root.scheduled-color();
+                    stop-label: "Edit start date";
+                    stop-description: "Opens the start-date editor.";
+                    stop-id: 6;
+                    edit-asked() => {
+                        root.push-scheduled-anchor();
+                        root.scheduled-edit-opened();
                     }
                 }
-                state-column := VerticalLayout {
-                    RoleText {
-                        role: Typography.caption;
-                        text-color: Theme.text-secondary;
-                        text: "State";
-                    }
-                    RoleText {
-                        role: Typography.body;
-                        text-color: root.task.done ? Semantic.success : Theme.text-primary;
-                        text: root.task.done ? "Completed" : "Open";
-                    }
+                state-column := LabeledValueRow {
+                    mode: RowMode.display;
+                    label: "State";
+                    value: root.task.done ? "Completed" : "Open";
+                    value-color: root.task.done ? Semantic.success : Theme.text-primary;
+                    placeholder-em-dash: false;
                 }
             }
 
@@ -939,50 +793,37 @@ export component TaskView inherits FocusScope {
                     && !root.task.importance-open
                     && !root.task.urgency-open;
                 spacing: Theme.space-3;
-                VerticalLayout {
-                    RoleText {
-                        role: Typography.caption;
-                        text-color: Theme.text-secondary;
-                        text: "Importance";
-                    }
-                    HorizontalLayout {
-                        spacing: Theme.space-1;
-                        RoleText {
-                            role: Typography.mono;
-                            text-color: Theme.text-secondary;
-                            text: root.task.importance-echo == "" ? "—" : root.task.importance-echo;
-                            vertical-alignment: center;
-                        }
-                        IconButton {
-                            icon: IconKind.pencil;
-                            tone: Tone.neutral;
-                            label: "Edit importance";
-                            description: "Opens the importance picker: six levels, commit on pick.";
-                            clicked => root.importance-edit-asked();
-                        }
+                // The importance/urgency echoes (UX R-3 D-1): display
+                // mode + the trailing pencil affordance (grammar (a) —
+                // the echo is data, the pencil routes the picker).
+                LabeledValueRow {
+                    mode: RowMode.display;
+                    label: "Importance";
+                    value: root.task.importance-echo;
+                    value-role: Typography.mono;
+                    value-color: Theme.text-secondary;
+                    trailing-gap: Theme.space-1;
+                    IconButton {
+                        icon: IconKind.pencil;
+                        tone: Tone.neutral;
+                        label: "Edit importance";
+                        description: "Opens the importance picker: six levels, commit on pick.";
+                        clicked => root.importance-edit-asked();
                     }
                 }
-                VerticalLayout {
-                    RoleText {
-                        role: Typography.caption;
-                        text-color: Theme.text-secondary;
-                        text: "Urgency";
-                    }
-                    HorizontalLayout {
-                        spacing: Theme.space-1;
-                        RoleText {
-                            role: Typography.mono;
-                            text-color: Theme.text-secondary;
-                            text: root.task.urgency-echo == "" ? "—" : root.task.urgency-echo;
-                            vertical-alignment: center;
-                        }
-                        IconButton {
-                            icon: IconKind.pencil;
-                            tone: Tone.neutral;
-                            label: "Edit urgency";
-                            description: "Opens the urgency picker: six levels, commit on pick.";
-                            clicked => root.urgency-edit-asked();
-                        }
+                LabeledValueRow {
+                    mode: RowMode.display;
+                    label: "Urgency";
+                    value: root.task.urgency-echo;
+                    value-role: Typography.mono;
+                    value-color: Theme.text-secondary;
+                    trailing-gap: Theme.space-1;
+                    IconButton {
+                        icon: IconKind.pencil;
+                        tone: Tone.neutral;
+                        label: "Edit urgency";
+                        description: "Opens the urgency picker: six levels, commit on pick.";
+                        clicked => root.urgency-edit-asked();
                     }
                 }
             }
@@ -994,15 +835,18 @@ export component TaskView inherits FocusScope {
             // the D-5 guard dispatches nothing for unchanged values).
             // The clear is the field's empty commit (= Some(None) —
             // the walk placement's posture, unchanged).
-            effort-row := HorizontalLayout {
+            // The effort row (the overlay migration, M9; US-3/S2's
+            // always-on one-line row): the caption and the field on
+            // one line — the widget's editor mode with the field at
+            // the mount (Rule E: the commit-on-Return-and-focus-loss
+            // semantics (R-9), the D-5 guard and the re-seed idiom
+            // stay view-side verbatim).
+            effort-row := LabeledValueRow {
                 visible: !root.task.is-habit;
-                spacing: Theme.space-2;
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: "Effort Estimate";
-                    vertical-alignment: center;
-                }
+                mode: RowMode.editor;
+                caption-beside: true;
+                content-gap: Theme.space-2;
+                label: "Effort Estimate";
                 effort-field := TextField {
                     horizontal-stretch: 1;
                     placeholder: "30 or 1h30m";
@@ -1097,43 +941,25 @@ export component TaskView inherits FocusScope {
             // per-second tick is the adapter's seam (decision 5). The
             // value carries a hover tip (blanket rule a); the row is
             // not itself clickable.
-            HorizontalLayout {
+            // The tracked-time summary row (r4 D17): display mode with
+            // the tooltip arm (the value is the tip's label — blanket
+            // rule a) and the value's a11y data-presence; the row is
+            // not itself clickable. Refresh-static while no entry is
+            // open — the per-second tick is the adapter's seam.
+            LabeledValueRow {
                 visible: !root.task.is-habit;
-                spacing: Theme.space-3;
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: "Tracked";
-                }
-                Rectangle {
-                    horizontal-stretch: 1;
-                    // The a11y presence (the value is data, not a
-                    // control): the addressable label the screen
-                    // reader and the element lookup read.
-                    accessible-role: AccessibleRole.text;
-                    accessible-label: "Tracked time total";
-                    RoleText {
-                        role: Typography.mono;
-                        text: root.task.tracked-total;
-                    }
-                    total-touch := TouchArea {
-                        changed has-hover => {
-                            if (self.has-hover) {
-                                TooltipState.hover(
-                                    root.task.tracked-total,
-                                    "Total tracked time on this task, including any running entry.",
-                                    [],
-                                    self.absolute-position.x,
-                                    self.absolute-position.y,
-                                    self.width,
-                                    self.height,
-                                );
-                            } else {
-                                TooltipState.unhover();
-                            }
-                        }
-                    }
-                }
+                mode: RowMode.display;
+                caption-beside: true;
+                content-gap: Theme.space-3;
+                trailing-gap: Theme.space-3;
+                label: "Tracked";
+                value: root.task.tracked-total;
+                value-role: Typography.mono;
+                placeholder-em-dash: false;
+                value-hstretch: 1;
+                value-hint-label: root.task.tracked-total;
+                value-hint-description: "Total tracked time on this task, including any running entry.";
+                value-a11y-label: "Tracked time total";
                 // The entries affordance (r4 chunk 10, D-TS8): a
                 // history icon — deliberately NOT the snooze clock
                 // (F1's shared-icon class). Model-side kiosk gate;
@@ -1317,47 +1143,28 @@ export component TaskView inherits FocusScope {
             description-section := VerticalLayout {
                 visible: !root.task.is-habit;
                 vertical-stretch: 1;
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: "Description";
-                }
-                if (!root.task.description-edit-open): description-display := Rectangle {
-                    border-radius: Theme.radius-small;
-                    horizontal-stretch: 1;
+                // The display branch: the widget's cell mode hosting
+                // the read-only MultiLineEditor (the wrap/height law
+                // the built-in value cannot carry — `value-hosted`).
+                // The stop identity (11), the ring's armed/walk latch,
+                // the restore law (kind 5) and the tooltip arm are the
+                // widget's; the em-dash rides the editor's placeholder
+                // slot (the empty-display convention, unchanged).
+                if (!root.task.description-edit-open): LabeledValueRow {
                     vertical-stretch: 1;
-                    border-width: description-stop.has-focus
-                        || TaskViewWalkFacts.stop-id == 11
-                        || root.task.description-armed
-                        ? Theme.focus-ring-width
-                        : 0;
-                    border-color: Semantic.focus-ring;
-                    description-stop := ActivationStop {
-                        width: 100%;
-                        height: 100%;
-                        stop-label: "Edit description";
-                        stop-description: "Opens the description editor.";
-                        stop-id: 11;
-                        activated => { root.description-edit-opened(); }
-                        // The focus-origin restore's description twin
-                        // (US-1/W-1, kind 5): same grammar as the
-                        // title cell.
-                        property <int> watch-restore-nonce: FocusFacts.nonce;
-                        init => {
-                            if (FocusFacts.anchor-kind == 5) { self.focus(); }
-                        }
-                        changed watch-restore-nonce => {
-                            if (FocusFacts.anchor-kind == 5) { self.focus(); }
-                        }
-                    }
-                    if (description-touch.has-hover): Rectangle {
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-small;
-                    }
-                    // The view mount (F2/F5/F6): the inset and the
-                    // pinned width live in the widget; the em-dash
-                    // rides the placeholder slot (the empty-display
-                    // convention, unchanged).
+                    mode: RowMode.cell;
+                    value-hosted: true;
+                    label: "Description";
+                    value-hstretch: 1;
+                    value-vstretch: 1;
+                    hover-surface: Theme.surface-raised;
+                    ring-latched: TaskViewWalkFacts.stop-id == 11
+                        || root.task.description-armed;
+                    stop-label: "Edit description";
+                    stop-description: "Opens the description editor.";
+                    stop-id: 11;
+                    restore-kind: 5;
+                    edit-asked() => { root.description-edit-opened(); }
                     MultiLineEditor {
                         editing: false;
                         text: root.task.description;
@@ -1367,53 +1174,37 @@ export component TaskView inherits FocusScope {
                         width: 100%;
                         height: 100%;
                     }
-                    description-touch := TouchArea {
-                        mouse-cursor: MouseCursor.pointer;
-                        changed has-hover => {
-                            if (self.has-hover) {
-                                TooltipState.hover(
-                                    "Edit description",
-                                    "Opens the description editor.",
-                                    [],
-                                    self.absolute-position.x,
-                                    self.absolute-position.y,
-                                    self.width,
-                                    self.height,
-                                );
-                            } else {
-                                TooltipState.unhover();
-                            }
-                        }
-                        clicked => {
-                            TooltipState.unhover();
-                            root.description-edit-opened();
-                        }
-                    }
                 }
-                // The edit mount (D-MLE-8): the TippedField visual
-                // grammar composed manually — the multiline flavour
-                // this pair carried is retired with the adoption.
-                if (root.task.description-edit-open): HorizontalLayout {
+                // The edit mount (D-MLE-8): the widget's editor mode —
+                // the pair stays at the mount (Rule E). The M8 stretch
+                // fix: the editor absorbs the section's leftover
+                // height (the display mount's geometry law — the edit
+                // mount keeps its size).
+                if (root.task.description-edit-open): LabeledValueRow {
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
-                    // The M8 stretch fix: the editor absorbs the
-                    // section's leftover height (the display mount's
-                    // geometry law — the edit mount keeps its size).
-                    MultiLineEditor {
-                        editing: true;
-                        height: 100%;
-                        label: "Description";
-                        placeholder: "Describe the task";
-                        commit-affordance: true;
-                        initial-text: root.task.description-initial;
+                    mode: RowMode.editor;
+                    label: "Description";
+                    value-vstretch: 1;
+                    HorizontalLayout {
                         horizontal-stretch: 1;
-                        accepted(text) => root.description-committed(text);
-                        edited(text) => root.description-edited(text);
-                        focus-lost() => root.text-flow-focus-lost();
-                    }
-                    description-help-tip := InfoTip {
-                        about: "Description";
-                        help: "The task's longer body text; rendered as plain text.";
+                        vertical-stretch: 1;
+                        MultiLineEditor {
+                            editing: true;
+                            height: 100%;
+                            label: "Description";
+                            placeholder: "Describe the task";
+                            commit-affordance: true;
+                            initial-text: root.task.description-initial;
+                            horizontal-stretch: 1;
+                            accepted(text) => root.description-committed(text);
+                            edited(text) => root.description-edited(text);
+                            focus-lost() => root.text-flow-focus-lost();
+                        }
+                        description-help-tip := InfoTip {
+                            about: "Description";
+                            help: "The task's longer body text; rendered as plain text.";
+                        }
                     }
                 }
             }

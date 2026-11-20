@@ -19,6 +19,7 @@ import { StatBars, StatBarModel } from "../widgets/stat-bars.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { Tone } from "../theme.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
+import { LabeledValueRow } from "../widgets/labeled-value-row.slint";
 
 export struct ReviewWindowModel {
     estimated: string,
@@ -132,24 +133,22 @@ export struct ReviewModel {
 
 // One aggregate stat cell: the label over the value; a collapsed
 // window renders the dash for every value (D-9 tier 2).
+// One aggregate stat cell: the label over the value; a collapsed
+// window renders the dash for every value (D-9 tier 2). The W4
+// re-host: the display row is the widget's — the caption/value gap is
+// StatCell's space-1 exception (`caption-gap`), the collapse dash
+// rides the value binding and the elide law the widget's value knob.
 component StatCell inherits VerticalLayout {
     in property <string> label;
     in property <string> value;
     in property <bool> collapsed;
-    VerticalLayout {
-        spacing: Theme.space-1;
-        vertical-stretch: 0;
-        RoleText {
-            role: Typography.caption;
-            text-color: Theme.text-secondary;
-            text: root.label;
-        }
-        RoleText {
-            role: Typography.body;
-            text: root.collapsed ? "—" : root.value;
-            wrap: no-wrap;
-            overflow: elide;
-        }
+    vertical-stretch: 0;
+    LabeledValueRow {
+        label: root.label;
+        value: root.collapsed ? "—" : root.value;
+        placeholder-em-dash: false;
+        value-elide: true;
+        caption-gap: Theme.space-1;
     }
 }
 
