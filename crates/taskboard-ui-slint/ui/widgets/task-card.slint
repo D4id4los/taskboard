@@ -9,6 +9,7 @@
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { TooltipState } from "tooltip.slint";
 import { Icon, IconKind } from "icon.slint";
+import { CheckBox } from "check-box.slint";
 
 // The rule-D decoration vocabulary (D21): future surfaces (W1
 // importance/urgency, habits, reminders) ride this slot.
@@ -99,7 +100,7 @@ export component TaskCard inherits Rectangle {
     // The done checkbox's hover flag (UX-R8 chunk-5 D-8, US-6): the
     // house hover treatment's input — a model fact the probes read,
     // never styling text. N-15's hover half.
-    out property <bool> done-hover: done-hit.has-hover;
+    out property <bool> done-hover: done-box.hovered;
     out property <length> title-preferred-width: title-text.preferred-width;
     callback activated();
     callback clicked();
@@ -200,39 +201,21 @@ export component TaskCard inherits Rectangle {
         // so it cannot desync from the model (the refresh push is the
         // single writer). Untouched on the ghost: the runtime
         // suppresses hover/press over the drag ghost.
-        done-box := Rectangle {
+        // The done checkbox (r3 D6): the CheckBox primitive (W3,
+        // #953) — the card posture is `focusable: false` (the
+        // per-card focus law); the box stays state-less (the model
+        // push is the single writer). Untouched on the ghost: the
+        // runtime suppresses hover/press over the drag ghost.
+        done-box := CheckBox {
             visible: root.model.can-done;
-            width: Theme.space-4;
-            height: Theme.space-4;
             y: (parent.height - self.height) / 2;
-            border-radius: Theme.radius-small;
-            border-width: Theme.focus-ring-width;
-            border-color: root.model.done ? Semantic.success : Theme.text-secondary;
-            // The house hover treatment (the r1 R-1 posture — the
-            // Theme's existing hover token, no new primitive).
-            background: done-hit.has-hover && !root.model.done ? Theme.surface-hover : transparent;
-            accessible-role: AccessibleRole.checkbox;
+            focusable: false;
+            checked: root.model.done;
             // The done/undone verb pair (a presentation literal; the
             // role + label pair is what the a11y tree announces).
-            accessible-label: root.model.done ? "Mark task not done" : "Mark task done";
-            // The AT/keyboard activation lands on the same seam the
-            // TouchArea's click hits (the FocusScope-pattern address).
-            accessible-action-default => root.done-toggled();
-            done-hit := TouchArea {
-                clicked => root.done-toggled();
-            }
-            if (root.model.done): Path {
-                width: Theme.space-4 - 2 * Theme.space-1;
-                height: Theme.space-4 - 2 * Theme.space-1;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                commands: "M 2 6 L 5 9 L 10 3";
-                stroke: Semantic.success;
-                stroke-width: Theme.focus-ring-width;
-                fill: transparent;
-                viewbox-width: 12;
-                viewbox-height: 12;
-            }
+            checked-label: "Mark task not done";
+            unchecked-label: "Mark task done";
+            toggled => root.done-toggled();
         }
 
         // The card's play/pause tracking control (UX-R8 chunk-5 D-6,
