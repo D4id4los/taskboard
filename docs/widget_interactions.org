@@ -27,7 +27,8 @@ in =crates/taskboard-ui-slint/ui/widgets/=.
   internal ActivationStop — walk stop + a11y triple + the
   EditingFacts activation discipline in their single copy — the hover
   surface, the focus ring and the focus-origin restore law
-  (=restore-kind=); activation reports =edit-asked()=), =editor=
+  (the mount's nonce watch calls =request-value-focus=); activation
+  reports =edit-asked()=), =editor=
   (caption + =@children= value slot — Rule E: the field stays at the
   mount, all commit/re-seed/validity semantics view-side). The
   geometry seams (=out value-x/y/width/height=) are the

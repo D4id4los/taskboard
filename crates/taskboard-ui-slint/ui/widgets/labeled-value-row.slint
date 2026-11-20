@@ -17,8 +17,9 @@
 //   (click or key) reports `edit-asked()`. The ring renders on the
 //   stop's focus OR the view-supplied `ring-latched` (the armed/walk
 //   stop-id latch stays view-side model data). The focus-origin
-//   restore law (US-1/W-1) rides the stop internally, parameterized
-//   by `restore-kind` (0 = not a restore target).
+//   restore law (US-1/W-1) rides the stop internally: the mount's
+//   nonce watch (`changed`-on-global idiom) calls
+//   `request-value-focus()` to focus it.
 // - `editor` — caption + `@children` value slot (Rule E: the field
 //   stays at the mount; all commit/re-seed/validity semantics remain
 //   view-side). The children are THE value region; no built-in value

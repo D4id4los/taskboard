@@ -18,7 +18,7 @@ at UX-plan level — never a chunk-local surprise.
   `task-view.slint::due-column` / `::scheduled-column` → cell (stop
   ids 5/6 preserved), `::state-column` → display,
   `task-view.slint::title-display` → cell (stop id 3, the restore law
-  riding the widget's =restore-kind=), the importance/urgency echo
+  riding the widget's =request-value-focus= seam), the importance/urgency echo
   rows → display + trailing pencil, `task-view.slint::effort-row` →
   editor (the R-9 commit/re-seed semantics stay view-side, Rule E),
   the description section (`::description-section`, stop id 11: the
@@ -41,10 +41,25 @@ at UX-plan level — never a chunk-local surprise.
   caption IS the content), the labels chip row (W5 ActionChip
   scope). Census evidence addresses re-point to
   `ui/widgets/labeled-value-row.slint::LabeledValueRow` with symbol
-  anchors per #775. Zero behavior deltas sanctioned — goldens,
-  journeys, walk/focus/overlay probes and the habit gates re-passed
-  unchanged (zero golden delta, no re-blessing); closes #951 at
-  merge. Previously:
+  anchors per #775. Zero behavior deltas sanctioned — journeys,
+  walk/focus/overlay probes and the habit gates re-passed unchanged;
+  closes #951 at merge. *Golden re-baseline ruling (stage-3
+  reviewed, 2026-11-20)*: 10 goldens re-blessed —
+  `track-entries-1.0-1000` plus nine sub-pixel text anti-aliasing
+  shifts (`task-view-*`, `today-*`, `kiosk-*`). The track-entries
+  delta is a law repair, not a regression: the old shallow row tree
+  pushed the entries-anchor facts pre-vertical-solve, so the panel
+  pinned at the window top (overlapping the nav bar) instead of its
+  tracked-row anchor; the W4 encapsulation
+  (`task-view.slint::entries-anchor` mirroring the widget-realized
+  button, `labeled-value-row.slint::LabeledValueRow` =out value-*=
+  seams) resolves the true mount-time position and the panel now
+  sits below its anchor — the anchored-overlay placement law the old
+  golden violated. The track-form quick-list journeys assert the
+  placement law itself (non-overlap: below with the gap, or flipped
+  above with the gap;
+  `journeys.rs::assert_quick_list_placement_law`) per the chunk-5
+  re-derived-pin precedent. Previously:
 - *Status*: =round 9 W3 button primitives landed (2026-11-20, chunk
   13, branch =refactor/ui-button-primitives=)= — the O-6
   centralization: =ui/widgets/text-button.slint= (the F-1 button
