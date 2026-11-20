@@ -23653,7 +23653,7 @@ fn us3_s2_invalid_effort_keeps_the_buffer() {
 /// series dispatches `UpdateTask { recur: Some(Some(rule)) }` whose
 /// minted rule carries the existing `paused_until` — fixing a pattern
 /// never silently resumes the series. The CLI twin lives in
-/// `taskboard-app/tests/cli_repeat.rs::us4_s1_cli_rule_replace_preserves_paused_until`.
+/// `taskboard-app/tests/cli/cli_repeat.rs::us4_s1_cli_rule_replace_preserves_paused_until`.
 #[test]
 fn us4_s1_rule_replace_preserves_paused_until() {
     let (fx, mut state) = fixture::golden_state();

@@ -15696,7 +15696,7 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 ///
 /// This seam is permanent pub surface, deliberately not
 /// `#[cfg(test)]`-gated (audit F7-04): the integration tier
-/// (`tests/usability_components.rs`) compiles this crate externally and
+/// (`tests/journeys/usability_components.rs`) compiles this crate externally and
 /// drives the settings surface through it, so a `#[cfg(test)]` gate —
 /// invisible to an externally-compiled crate — would break the
 /// integration build. Production code calls neither method

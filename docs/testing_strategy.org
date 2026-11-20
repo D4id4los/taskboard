@@ -417,7 +417,7 @@ Mechanics that make the binary tests safe to run in a shared suite:
 
 The app-level counterpart to tier 3's live Nextcloud runs:
 =it_keyring_local_round_trip=
-(=crates/taskboard-app/tests/secrets.rs=) drives the production
+(=crates/taskboard-app/tests/core/secrets.rs=) drives the production
 =KeyringStore= (ADR 0008) against the /developer's own/ OS credential
 store — the only executed proof of the credential store's real OS
 I/O. It is manual-only for the same reason tier 3 is: it dirties a

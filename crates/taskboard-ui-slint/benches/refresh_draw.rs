@@ -87,7 +87,7 @@
 //! (recorded decision, #461 stage-1 plan D-4): the detection duty a
 //! live eager lane would carry is carried by the structural
 //! engagement probes (`the_today_sections_virtualise` and the
-//! ListView-contract probes in `tests/virtualisation.rs` — a silent
+//! ListView-contract probes in `tests/probes/virtualisation.rs` — a silent
 //! de-virtualisation fails a named test loudly), and the magnitude
 //! duty by the recorded pre/post baselines above; an eager Today lane
 //! would be dead markup shipping in the binary, and a size-scaled

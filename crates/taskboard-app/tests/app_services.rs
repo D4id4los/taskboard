@@ -3,7 +3,7 @@
 //! The long-running service surfaces, grouped into one binary (#1070,
 //! plan §3.2): ipc, files-sync convergence, ui settings (cold + live),
 //! the web dashboard. Members are verbatim moves living under
-//! `tests/services/`; each keeps its own `common` include.
+//! `tests/services/`. The shared `common` module resolves once at this root.
 
 // The shared helpers module, declared exactly once per merged binary:
 // a per-member `mod common` copy (each member's old standalone
