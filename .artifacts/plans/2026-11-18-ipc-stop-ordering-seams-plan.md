@@ -352,3 +352,35 @@ change to the escalation ladder.
 - Any wire-level `stopping` state (#886 candidate (b) — rejected for
   now; reopen only if the drain window grows past one budget).
 - The C7 `commands/` mutation remainder (#327).
+
+## Amendment (2026-11-20, #994) — the fallback-site count is corrected
+
+D-2.3 (and the echoes at R-5 and at implementation step 3, "the wiring
+is a three-line conditional") over-counted the fallback sites: **the
+single site that can boot a fallback daemon is the `main.rs` IpcOrLocal
+transport arm**, which probes `client::fallback_blocked_by_lock` and
+exits typed `Bootstrap(InstanceLocked)` on a blocked fallback (landed
+as `exit_blocked_fallback` on this plan's branch). The other two sites
+the step named — `logout.rs` `nudge_daemon` and `connect.rs`
+`nudge_daemon_attach` — are **best-effort nudges, not fallback sites**:
+on `try_connect → None` they degrade to the honest `NoDaemon` /
+`map_attach_nudge` outcome within their ~1 s budgets; no in-process
+bootstrap exists on those paths, so there is nothing for the lock probe
+to gate, and their contract (#570 semantics) is never to fail the
+logout/connect ceremony. The D-2.3 acceptance clause (typed
+`instance-locked`, never a doomed boot race) remains satisfied at the
+one real site; the review grep of `try_connect → None` arms closes with
+the nudge arms recorded as no-bootstrap by design. Per-site
+disposition: `main.rs` — plan right, code right, no change;
+`logout.rs` / `connect.rs` — code right, plan wrong, this amendment
+corrects the plan.
+
+Considered and closed alongside (#994's optional re-examination): a
+distinct `NudgeOutcome` variant for "drain window hit" was **rejected**
+— it would add a wire-adjacent variant whose only consumer is a warning
+upgrade, while the nudge's contract is explicitly never-to-fail and its
+budget burn lands on the honest `NoDaemon`. If a future UX round wants
+the distinction, it is a fresh journey-gated decision, not a
+ride-along. Related: the wire-level typed drain fact for `status` is
+#991 (landed additively as `StatusView.draining`; the human-readable
+line is backlog #1111).
