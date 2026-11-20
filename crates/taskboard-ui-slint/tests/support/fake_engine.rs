@@ -140,6 +140,27 @@ impl FakeEngine {
                         if let Some(scheduled) = changes.scheduled {
                             task.scheduled = scheduled;
                         }
+                        // #1024: the ratings/series/kind masks fold too
+                        // (fixture continuity with the engine's
+                        // `UpdateTask` application in
+                        // `taskboard-domain/src/command.rs` — the
+                        // oracle; each double-option field unwraps the
+                        // outer layer only, `Some(None)` clears).
+                        if let Some(effort) = changes.effort {
+                            task.effort = effort;
+                        }
+                        if let Some(importance) = changes.importance {
+                            task.importance = importance;
+                        }
+                        if let Some(urgency) = changes.urgency {
+                            task.urgency = urgency;
+                        }
+                        if let Some(recur) = changes.recur {
+                            task.recur = recur;
+                        }
+                        if let Some(kind) = changes.kind {
+                            task.kind = kind.unwrap_or_default();
+                        }
                         if let Some(archived) = changes.archived {
                             task.archived = archived;
                         }

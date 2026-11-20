@@ -21595,6 +21595,68 @@ fn us3_s1_effort_commit_routes_the_sparse_mask() {
     });
 }
 
+/// The fake-engine settle's fixture continuity (#1024): the
+/// `UpdateTask` arm folds the effort and recur mask fields the way
+/// the engine's own application does (`command.rs`'s `UpdateTask` arm
+/// is the oracle) — the next journey step's precondition reads the
+/// changed value, not the stale one. Fixture continuity, not an
+/// oracle (`fake_engine.rs`'s contract comment).
+#[test]
+fn the_fake_engine_settle_folds_the_update_task_mask() {
+    let (fx, mut state) = fixture::golden_state();
+    let paused_until = chrono::NaiveDate::from_ymd_opt(2026, 12, 1).expect("fixture date");
+    if let Some(task) = state.tasks.get_mut(&fx.task0) {
+        task.recur = Some(taskboard_domain::RecurRule {
+            series: taskboard_domain::ids::SeriesId::from_uuid(uuid::Uuid::from_u128(42)),
+            anchor: chrono::NaiveDate::from_ymd_opt(2026, 10, 5).expect("fixture date"),
+            pattern: taskboard_domain::RecurPattern::Daily {
+                every: taskboard_domain::EveryDays::new(2).expect("valid interval"),
+            },
+            bound: taskboard_domain::RecurBound::None,
+            continued_from: None,
+            paused_until: Some(paused_until),
+        });
+    }
+    support::harness::run_journey(state, move |harness| {
+        label_journey_mount(&mut *harness);
+        let window = harness.handle.window();
+        // Two sparse masks in one drain: the effort commit (US-3/S1's
+        // seam) and the recur re-set (US-4/S1's seam — paused_until
+        // preserved).
+        window.invoke_task_effort_edited(slint::SharedString::from("1h30m"));
+        window.invoke_task_effort_committed();
+        harness.handle.dispatch_action(ActionId::SeriesEdit);
+        harness.driver.advance_time(0);
+        assert!(window.get_recur_editor_open(), "the recur editor arms");
+        window.invoke_recur_commit_clicked();
+        harness.driver.advance_time(0);
+        let drained = harness.engine.drain();
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [
+                    taskboard_domain::StateCommand::UpdateTask { .. },
+                    taskboard_domain::StateCommand::UpdateTask { .. }
+                ]
+            ),
+            "both sparse writes reached the boundary, got {drained:?}"
+        );
+        harness.engine.settle(&harness.handle);
+        let snap = harness.engine.snapshot();
+        let task = snap.tasks.get(&fx.task0).expect("the addressed task");
+        assert_eq!(
+            task.effort,
+            Some(taskboard_domain::Effort::new(5400)),
+            "the settle folded the effort mask"
+        );
+        assert_eq!(
+            task.recur.as_ref().map(|rule| rule.paused_until),
+            Some(Some(paused_until)),
+            "the settle folded the recur mask"
+        );
+    });
+}
+
 /// US-3/S2 (AC-2): an invalid value keeps the buffer and dispatches
 /// nothing (the date-editor refusal posture); the focus-loss settle
 /// discards it afterwards (the shared rule — the prior value
