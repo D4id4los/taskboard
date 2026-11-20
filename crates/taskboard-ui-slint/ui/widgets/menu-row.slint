@@ -1,0 +1,189 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The menu-row primitive (round-9 W6, O-6 / #954): the ONE row
+// anatomy for the menu family — the action menu's rows (D-3: rows
+// only, the composition machinery stays), the dropdown flyout's rows
+// (D-4), and the quick-list flyout's rows. Absorbed verbatim from
+// the three grammars; every knob is backed by a live consumer (the
+// no-speculative-generality law).
+//
+// Visual law (D-12): the background rides `highlighted` ONLY — the
+// hover union is the consumer's binding (`self.hovered || <ladder
+// match>`), so the quick-list's highlight-only rows keep their exact
+// today's paint (hover adds nothing there), and the action menu's
+// cursor fill stays on the composition's wrapper (its own arm, the
+// D-3 split). The check glyph renders only where `selected` is
+// pushed — the dropdown class's law (chunk-15 D-5); menus pass
+// nothing.
+
+import { Theme, TextRole, Typography, RoleText, Semantic } from "../theme.slint";
+import { Icon, IconKind } from "icon.slint";
+import { KbdHint } from "kbd-hint.slint";
+import { DropdownTone, DropdownFacts } from "dropdown.slint";
+
+export component MenuRow inherits Rectangle {
+    // The row's label — the element's address (§7.1).
+    in property <string> label;
+    // The row's tooltip / a11y description (round-1 D7).
+    in property <string> description: "";
+    // Disabled grey + a dead TouchArea (has-hover cannot engage).
+    in property <bool> enabled: true;
+    // The hover-union background driver (F29's feedback): the
+    // consumer binds the union of the ladder/highlight match and
+    // `self.hovered` per its own grammar.
+    in property <bool> highlighted: false;
+    // The check glyph (the dropdown class's selected-row law).
+    in property <bool> selected: false;
+    // The submenu affordance: the right chevron (J5 US-3 AC-1).
+    in property <bool> submenu: false;
+    // The mid-ceremony pulse dot (the r2 D34 marker); wins over the
+    // leading glyph.
+    in property <bool> busy: false;
+    // The tone-coloured leading indicator glyph; `none` collapses the
+    // slot entirely (menus — no leading slot at all).
+    in property <IconKind> leading-glyph: IconKind.none;
+    // The indicator's tone (the DropdownTone vocabulary per D-7 —
+    // the menu family's tone language pending the stay ruling).
+    in property <DropdownTone> leading-tone: DropdownTone.neutral;
+    // The preset binding hint (D19's projection); empty renders
+    // nothing.
+    in property <[string]> hint-keys: [];
+    // The a11y posture is the instantiation's contract (Slint 1.18
+    // keeps `accessible-role`/`accessible-*` constant-expression
+    // properties that only combine at the same element): the action
+    // menu's rows declare the button role + registry label +
+    // description + default action; the dropdown flyout's rows
+    // declare the list-item role (the plain list container's
+    // children — the ladder lives at the field's scope and the rows
+    // never hold focus); the quick-list's rows carry no role (the
+    // flyout-scope FocusScope is their a11y boundary). This component
+    // renders the anatomy and routes the intents only.
+    // The label's typography (the quick-list's mono time labels; the
+    // menu family's body-emphasized default).
+    in property <TextRole> text-role: Typography.body-emphasized;
+    // The inter-part gap: space-2 in the action menu's anatomy,
+    // space-1 in the dropdown flyout's, 0 in the quick-list's
+    // (single-label) grammar.
+    in property <length> spacing: Theme.space-2;
+    // The dropdown flyout's shipped geometry keeps the collapsed
+    // slot's spacing contribution (a 0-width slot between the
+    // spacing gaps — today's inset); the other grammars collapse the
+    // slot entirely.
+    in property <bool> leading-gap: false;
+
+    // The intents. `hovered` reports the row's realized window-space
+    // rect (the tooltip trigger's payload, verbatim today's shape);
+    // `context` the right-button-down pointer position in logical
+    // pixels. Unassigned callbacks are no-ops (the D-6 precedent).
+    callback invoked();
+    callback hovered(length, length, length, length);
+    callback unhovered();
+    callback context(int, int);
+
+    // The hover read for the consumer's union binding (the action
+    // menu's cursor fill and the dropdown's ladder highlight are the
+    // consumers' arms).
+    out property <bool> hover-now: row-touch.has-hover;
+
+    height: Theme.space-6;
+    background: root.highlighted ? Theme.surface-hover : transparent;
+
+    // The focus/overlay pair (the action menu row's exact shape): the
+    // TouchArea owns the mouse — hover, click, and the right-button
+    // context seam — while the FocusScope carries the a11y surface.
+    // Declared BEFORE the content layout: the later sibling wins the
+    // hit test, so the content's own affordances stay reachable.
+    row-scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        row-touch := TouchArea {
+            width: 100%;
+            height: 100%;
+            enabled: root.enabled;
+            changed has-hover => {
+                if (self.has-hover) {
+                    root.hovered(self.absolute-position.x, self.absolute-position.y,
+                        self.width, self.height);
+                } else {
+                    root.unhovered();
+                }
+            }
+            clicked => { root.invoked(); }
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.right) {
+                    root.context(
+                        (self.absolute-position.x + self.mouse-x) / 1px,
+                        (self.absolute-position.y + self.mouse-y) / 1px);
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-2;
+        padding-right: Theme.space-2;
+        spacing: root.spacing;
+        // The leading slot: busy wins (the r2 D34 ceremony), then the
+        // tone-coloured indicator glyph; `leading-gap` keeps the
+        // collapsed slot's spacing contribution (the dropdown flyout's
+        // shipped inset). A plain Rectangle holder — a layout would
+        // own the cross-axis and forbid the children's vertical
+        // centering.
+        if (root.busy || root.leading-glyph != IconKind.none
+                || root.leading-gap): leading-slot := Rectangle {
+            width: (root.busy || root.leading-glyph != IconKind.none)
+                ? Theme.space-2 : 0;
+            if root.busy: busy-dot := Rectangle {
+                width: Theme.space-2;
+                height: self.width;
+                y: (parent.height - self.height) / 2;
+                border-radius: self.width / 2;
+                background: Semantic.sync-active;
+                states [
+                    pulse when true: {
+                        opacity: 0.45;
+                        in { animate opacity { duration: 600ms; iteration-count: -1; } }
+                    }
+                ]
+            }
+            if !root.busy && root.leading-glyph != IconKind.none: leading-glyph-icon := Icon {
+                kind: root.leading-glyph;
+                colorize: DropdownFacts.tone-color(root.leading-tone);
+                y: (parent.height - self.height) / 2;
+            }
+        }
+        row-label := RoleText {
+            role: root.text-role;
+            // The disabled grey (the action menu's law); the enabled
+            // rows ride the RoleText default primary.
+            text-color: root.enabled ? Theme.text-primary : Theme.text-secondary;
+            text: root.label;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        // The selected row's check glyph (the dropdown class's law,
+        // chunk-15 D-5): the exact `Path` the bespoke priority slot
+        // rows carried over.
+        if (root.selected): check-glyph := Path {
+            width: Theme.space-3;
+            height: Theme.space-3;
+            commands: "M 2 6 L 5 9 L 10 3";
+            stroke: Semantic.success;
+            stroke-width: Theme.focus-ring-width;
+            fill: transparent;
+            viewbox-width: 12;
+            viewbox-height: 12;
+        }
+        VerticalLayout {
+            kbd-hint := KbdHint {
+                keys: root.hint-keys;
+            }
+        }
+        // The submenu affordance (J5 US-3 AC-1): one component, all
+        // menus inherit it.
+        if (root.submenu): submenu-chevron := Icon {
+            kind: IconKind.chevron-right;
+        }
+    }
+}

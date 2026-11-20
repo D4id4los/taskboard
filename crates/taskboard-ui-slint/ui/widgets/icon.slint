@@ -68,6 +68,11 @@ export enum IconKind {
     // US-7, #834): the archive box — hover-independent, the
     // icon-button glyph vocabulary.
     archive,
+    // The slot-collapse sentinel (round-9 W6): no asset, no mapping
+    // arm — MenuRow's leading-glyph `none` collapses its slot before
+    // any Icon mounts. If it ever reaches the renderer it hits the
+    // loud warn fallback below, like any unmapped future kind.
+    none,
 }
 
 export component Icon inherits Image {

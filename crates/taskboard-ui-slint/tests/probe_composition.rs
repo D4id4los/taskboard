@@ -34,6 +34,8 @@ mod dropdown_probe_tests;
 mod editor_viewport_probe_tests;
 #[path = "probes/focus_seam_probe_tests.rs"]
 mod focus_seam_probe_tests;
+#[path = "probes/menu_shell_probe_tests.rs"]
+mod menu_shell_probe_tests;
 #[path = "probes/overlay_migration_probe_tests.rs"]
 mod overlay_migration_probe_tests;
 #[path = "probes/plan_window_max_probe_tests.rs"]

@@ -34,6 +34,40 @@
 import { Theme } from "../theme.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
 
+// The anchor-facts mirroring idiom, written ONCE (round-9 W6, F-5 /
+// #954, plan D-8): a zero-render component the producer binds its
+// anchor's realized window-space rect into, which invokes the single
+// `published` callback from `init` plus a `changed` on every source.
+// The init edge lands the mount-time publish, the `changed` edges
+// are the keep-alives that keep the facts live across host scrolls,
+// and the stale-while-closed / testing-backend lore is this one
+// comment. Slint 1.18.1 cannot parameterize globals, so each
+// family's producer assigns `published` to its own facts-global
+// writes — one assignment block per producer, down from the hand
+// written handler plumbing this replaces. The widget-internal
+// mirrors (DropdownFacts / TimeFieldFacts) stay put per D-10: they
+// are already single copies inside their widgets.
+export component AnchorMirror {
+    in property <length> source-x: 0;
+    in property <length> source-y: 0;
+    in property <length> source-width: 0;
+    in property <length> source-height: 0;
+    callback published(length, length, length, length);
+
+    width: 0;
+    height: 0;
+
+    public function emit() {
+        root.published(self.source-x, self.source-y,
+            self.source-width, self.source-height);
+    }
+    init => { self.emit(); }
+    changed source-x => { self.emit(); }
+    changed source-y => { self.emit(); }
+    changed source-width => { self.emit(); }
+    changed source-height => { self.emit(); }
+}
+
 // The vertical preference: `auto` applies the below-then-flip law;
 // `below`/`above` pin one side (clamped per law 3 either way).
 export enum OverlayPlacement {

@@ -52,6 +52,7 @@ fn main() {
         "stale_remount_probe",
         "habit_entry_height_probe",
         "small_widget_probe",
+        "menu_shell_probe",
     ];
     for name in probes {
         compile_probe(&manifest.join(format!("tests/{name}.slint")), &out);

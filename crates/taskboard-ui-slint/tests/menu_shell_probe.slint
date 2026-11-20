@@ -1,0 +1,174 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The menu-shell probe (round-9 W6, plan §4): the three new
+// primitives (MenuRow, MenuShell, AnchorMirror) mounted with
+// controlled fixtures. The catalogue's assertions read the typed
+// root seams from Rust (`probes/menu_shell_probe_tests.rs`);
+// element-presence evidence goes through the debug-info id queries.
+// Every intent lands in a counter. No text assertions, no clocks.
+
+import { Theme, Semantic, TextRole, Typography } from "../ui/theme.slint";
+import { MenuRow } from "../ui/widgets/menu-row.slint";
+import { MenuShell } from "../ui/widgets/menu-shell.slint";
+import { AnchorMirror } from "../ui/widgets/anchored-overlay.slint";
+import { IconKind } from "../ui/widgets/icon.slint";
+import { DropdownTone } from "../ui/widgets/dropdown.slint";
+
+export { IconKind, DropdownTone }
+
+export component MenuShellProbe inherits Window {
+    width: Theme.space-15 * 8;
+    height: Theme.space-15 * 8;
+    background: Theme.background;
+
+    // ---- T1: MenuRow ---------------------------------------------------
+    // The intent counters (one row family per grammar posture).
+    in-out property <int> plain-invoked-count: 0;
+    in-out property <int> plain-hovered-count: 0;
+    in-out property <int> plain-unhovered-count: 0;
+    in-out property <int> plain-context-count: 0;
+    in-out property <int> disabled-invoked-count: 0;
+    in-out property <int> a11y-invoked-count: 0;
+    // The hover payload's rect (the tooltip trigger's shape).
+    in-out property <length> plain-hover-x: Theme.space-1 * 0;
+    in-out property <length> plain-hover-y: Theme.space-1 * 0;
+    in-out property <length> plain-hover-width: Theme.space-1 * 0;
+    in-out property <length> plain-hover-height: Theme.space-1 * 0;
+    // The typed seams: the row's own paint/hover surface, its
+    // realized rect, and the context payload.
+    in-out property <bool> plain-row-highlight-driver: false;
+    out property <color> plain-row-background: plain-row.background;
+    out property <bool> plain-row-hovered: plain-row.hover-now;
+    out property <bool> plain-row-highlighted: plain-row.highlighted;
+    out property <length> plain-row-x: plain-row.absolute-position.x;
+    out property <length> plain-row-y: plain-row.absolute-position.y;
+    out property <length> plain-row-width: plain-row.width;
+    out property <length> plain-row-height: plain-row.height;
+    out property <int> plain-context-x: 0;
+    out property <int> plain-context-y: 0;
+    // The theme seams the typed colour/geometry assertions read
+    // (equality against the token, never a pin of its value).
+    out property <color> theme-surface-raised: Theme.surface-raised;
+    out property <color> theme-surface-hover: Theme.surface-hover;
+    out property <length> theme-focus-ring-width: Theme.focus-ring-width;
+    out property <length> theme-radius-small: Theme.radius-small;
+    out property <length> theme-space-6: Theme.space-6;
+    // The disabled row's grey law reads the label colour through the
+    // row's public text seam.
+    out property <bool> disabled-row-hoverable: disabled-row.hover-now;
+    // The in-list posture's row (the flyouts' list-item shape).
+    out property <length> list-row-height: list-row.height;
+
+    VerticalLayout {
+        // The plain row: label + preset hint + submenu chevron — the
+        // action menu's anatomy.
+        plain-row := MenuRow {
+            label: "Plain probe row";
+            description: "The plain row's description.";
+            accessible-role: AccessibleRole.button;
+            accessible-label: "Plain probe row";
+            accessible-description: "The plain row's description.";
+            accessible-action-default => { self.invoked(); }
+            highlighted: root.plain-row-highlight-driver;
+            hint-keys: ["Ctrl", "P"];
+            submenu: true;
+            invoked => { root.plain-invoked-count += 1; }
+            hovered(x, y, w, h) => {
+                root.plain-hovered-count += 1;
+                root.plain-hover-x = x;
+                root.plain-hover-y = y;
+                root.plain-hover-width = w;
+                root.plain-hover-height = h;
+            }
+            unhovered => { root.plain-unhovered-count += 1; }
+            context(x, y) => {
+                root.plain-context-count += 1;
+                root.plain-context-x = x;
+                root.plain-context-y = y;
+            }
+        }
+        // The disabled row: grey label, dead touch (has-hover cannot
+        // engage, invoked stays silent).
+        disabled-row := MenuRow {
+            label: "Disabled probe row";
+            enabled: false;
+            invoked => { root.disabled-invoked-count += 1; }
+        }
+        // The selected row (the dropdown class's check-glyph law) in
+        // the list-item posture.
+        list-row := MenuRow {
+            label: "Selected probe row";
+            selected: true;
+            accessible-role: AccessibleRole.list-item;
+            spacing: Theme.space-1;
+            leading-gap: true;
+            invoked => { root.a11y-invoked-count += 1; }
+        }
+        // The leading-glyph row (the dropdown's indicator slot) and
+        // the busy row (the pulse dot wins over the glyph).
+        glyph-row := MenuRow {
+            label: "Glyph probe row";
+            leading-glyph: IconKind.link;
+            leading-tone: DropdownTone.success;
+            accessible-role: AccessibleRole.list-item;
+            spacing: Theme.space-1;
+            leading-gap: true;
+        }
+        busy-row := MenuRow {
+            label: "Busy probe row";
+            busy: true;
+            leading-glyph: IconKind.link;
+            accessible-role: AccessibleRole.list-item;
+            spacing: Theme.space-1;
+            leading-gap: true;
+        }
+        // The mono row (the quick-list's time-label grammar): collapsed
+        // slot, no gaps.
+        mono-row := MenuRow {
+            label: "12:34";
+            text-role: Typography.mono;
+            accessible-role: AccessibleRole.list-item;
+            spacing: Theme.space-1 * 0;
+        }
+    }
+
+    // ---- T2: MenuShell ---------------------------------------------------
+    in-out property <int> shell-row-count: 3;
+    out property <length> shell-height: probe-shell.height;
+    out property <color> shell-background: probe-shell.background;
+    out property <length> shell-border-width: probe-shell.border-width;
+    out property <length> shell-radius: probe-shell.border-radius;
+    out property <bool> shell-clips: probe-shell.clip;
+    probe-shell := MenuShell {
+        row-count: root.shell-row-count;
+        corner-radius: Theme.radius-small;
+        Rectangle {
+            height: Theme.space-15;
+        }
+    }
+
+    // ---- T3: AnchorMirror -------------------------------------------------
+    // The initial rect rides token arithmetic (the lint's token rule);
+    // the tests read the values through the getters, never literals.
+    in-out property <length> mirror-source-x: Theme.space-1 * 3;
+    in-out property <length> mirror-source-y: Theme.space-2 * 2;
+    in-out property <length> mirror-source-width: Theme.space-15;
+    in-out property <length> mirror-source-height: Theme.space-15 * 2;
+    in-out property <int> mirror-publish-count: 0;
+    in-out property <length> mirror-last-x: Theme.space-1 * 0;
+    in-out property <length> mirror-last-y: Theme.space-1 * 0;
+    in-out property <length> mirror-last-width: Theme.space-1 * 0;
+    in-out property <length> mirror-last-height: Theme.space-1 * 0;
+    AnchorMirror {
+        source-x: root.mirror-source-x;
+        source-y: root.mirror-source-y;
+        source-width: root.mirror-source-width;
+        source-height: root.mirror-source-height;
+        published(x, y, w, h) => {
+            root.mirror-publish-count += 1;
+            root.mirror-last-x = x;
+            root.mirror-last-y = y;
+            root.mirror-last-width = w;
+            root.mirror-last-height = h;
+        }
+    }
+}
