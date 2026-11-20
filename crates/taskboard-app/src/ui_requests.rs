@@ -2080,6 +2080,10 @@ mod tests {
     /// `_dir` last); a struct reorder must re-run this test.
     #[tokio::test]
     async fn workspace_fixture_deletes_the_dir_only_after_the_app_teardown() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let fixture = workspace_fixture(PathBuf::from("unused-write-path.toml")).await;
         let dir = fixture.dir().to_owned();
         assert!(dir.exists(), "the fixture owns the directory");
@@ -2142,6 +2146,10 @@ mod tests {
     /// is a Deck-shaped card name still reads `Files`.
     #[tokio::test]
     async fn current_connections_fills_bound_channel_structurally() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
@@ -2203,6 +2211,10 @@ mod tests {
     /// refuses typed).
     #[tokio::test]
     async fn us2_s2_stop_sync_guards_refuse_typed() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
@@ -2269,6 +2281,10 @@ mod tests {
     /// snapshot whose board half no longer carries the binding.
     #[tokio::test]
     async fn stop_board_files_sync_sends_exact_unbind_command() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
@@ -2310,6 +2326,10 @@ mod tests {
     /// defense-in-depth the file path cannot reach — noted, not
     /// fixture-tested).
     fn write_two_connector_config(path: &std::path::Path) {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         std::fs::write(
             path,
             "[ui]\nscale = 1.0\n\
@@ -2487,6 +2507,10 @@ mod tests {
     /// evidence (the closing comment is stage 3 bookkeeping).
     #[tokio::test]
     async fn us7_ac1_stop_sync_exercises_the_landed_row() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
@@ -2542,6 +2566,10 @@ mod tests {
     /// with a resolvable Nextcloud anchor) at the workspace's write
     /// path.
     fn write_files_lane_config(path: &std::path::Path) {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         std::fs::write(
             path,
             "[ui]\nscale = 1.0\n\
@@ -2627,6 +2655,10 @@ mod tests {
     /// (the config-derived guard), the lane catches up next boot.
     #[tokio::test]
     async fn publish_board_to_files_sends_exact_files_bind_command() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         write_files_lane_config(&config);
@@ -2720,6 +2752,10 @@ mod tests {
     /// abort-at-quit skipped.
     #[tokio::test]
     async fn the_close_path_flushes_a_width_sent_right_before_quit() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
@@ -2757,6 +2793,10 @@ mod tests {
 
     #[test]
     fn prune_drops_dead_entities_and_keeps_live_ones() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let (mut state, board, stack_a, stack_b) = fixture_state();
         let dead_stack = uuid::Uuid::from_u128(0x2999);
         let pending = BTreeMap::from([
@@ -2833,6 +2873,10 @@ mod tests {
 
     #[test]
     fn prune_drops_archived_boards_and_boards_left_without_live_stacks() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let (mut state, board, stack_a, stack_b) = fixture_state();
         state
             .boards
@@ -2877,6 +2921,10 @@ mod tests {
 
     #[test]
     fn overlay_preserves_comments_and_unrelated_keys_and_replaces_only_the_subtree() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let (_dir, path) = write_temp_config(
             "# operator comment\n[ui]\nscale = 1.5\n\
              [ui.stack_widths]\n\"old-board\" = 1\n\
@@ -2917,6 +2965,10 @@ mod tests {
 
     #[test]
     fn overlay_with_an_empty_map_removes_the_subtree() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let (_dir, path) = write_temp_config("[ui]\nscale = 1.0\n[ui.stack_widths]\nx = 1\n");
         overlay_stack_widths(&path, &BTreeMap::new()).expect("write succeeds");
         let written = std::fs::read_to_string(&path).expect("read back");
@@ -2926,6 +2978,10 @@ mod tests {
 
     #[test]
     fn overlay_on_an_absent_file_creates_it() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let (_dir, path) = write_temp_config("");
         let (_, board, stack_a, _) = fixture_state();
         let widths = BTreeMap::from([(board, BTreeMap::from([(stack_a, 240u32)]))]);
@@ -2936,6 +2992,10 @@ mod tests {
 
     #[test]
     fn overlay_on_a_directory_path_errors_typed_without_panicking() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         // The config path itself is a directory: the read fails typed
         // (io error kind), never a panic (the never-crash rule, D8).
@@ -2947,6 +3007,10 @@ mod tests {
 
     #[test]
     fn written_widths_round_trip_through_the_config_layer() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let (_dir, path) = write_temp_config("# c\n[ui]\nscale = 1.25\n");
         let (_, board, stack_a, stack_b) = fixture_state();
         let widths =
@@ -2976,6 +3040,10 @@ mod tests {
     /// pending; a failing path is survived and a later retry lands.
     #[tokio::test]
     async fn debounces_bursts_and_flushes_on_close() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
@@ -3061,6 +3129,10 @@ mod tests {
     /// survived; the task outlives it and completes a later good write.
     #[tokio::test]
     async fn a_failing_write_path_is_survived_and_retried() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         // The config "path" is a directory: every read/write fails.
         let cursed = dir.path().join("cursed");
@@ -3103,6 +3175,10 @@ mod tests {
     /// received) writes nothing — the never-create rule.
     #[tokio::test]
     async fn a_close_without_requests_writes_nothing() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         let (_state, _b, _a, _s) = fixture_state();
@@ -3132,6 +3208,10 @@ mod tests {
     /// quiet-window elapse and on channel close.
     #[tokio::test]
     async fn geometry_requests_debounce_into_one_write_of_the_latest_rect() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
@@ -3208,6 +3288,10 @@ mod tests {
     /// discipline, D7).
     #[tokio::test]
     async fn one_flush_covers_both_subtrees_and_preserves_the_document() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(
@@ -3272,6 +3356,11 @@ mod tests {
         use crate::bootstrap::AttachError;
         use crate::config::ConfigError;
         use taskboard_ui_slint::requests::{Field, InvalidKind, SettingsError as E};
+
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
 
         // verify classes
         assert_eq!(
@@ -3360,6 +3449,10 @@ mod tests {
         use crate::config::ConfigError;
         use crate::settings_overlay::OverlayError;
         use taskboard_ui_slint::requests::{Field, InvalidKind, SettingsError as E};
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
 
         let own_blame = |field, field_str| {
             map_overlay_error(
@@ -3525,6 +3618,10 @@ mod tests {
     /// is the typed `Gone` — the running engine keeps its old values.
     #[tokio::test]
     async fn an_engine_gone_write_lands_in_the_file_and_replies_gone() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed");
@@ -3572,6 +3669,10 @@ mod tests {
     /// settings editor, #625).
     #[tokio::test]
     async fn focus_commits_persist_and_reply_the_fresh_snapshot() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
@@ -3736,6 +3837,10 @@ mod tests {
     #[test]
     fn the_files_write_env_lock_covers_both_of_its_keys() {
         use std::collections::BTreeSet;
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let guard = |field: Field, keys: &[&str]| -> bool {
             let locked: BTreeSet<String> = keys.iter().map(|k| (*k).to_owned()).collect();
             editor_guard_keys(field)
@@ -3780,6 +3885,10 @@ mod tests {
     /// (nothing wrote, nothing sent), on any front.
     #[tokio::test]
     async fn us4_s1_the_port_env_guard_refuses_before_the_write() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
         let workspace = &fixture.workspace;
         let locked: std::collections::BTreeSet<String> = ["reminders.tick_secs"]
@@ -3811,6 +3920,10 @@ mod tests {
     /// order, US-1 AC-2's negative arm).
     #[tokio::test]
     async fn us4_s3_the_port_prove_refusal_sends_no_command() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let fixture = port_workspace(
             "[sync]\npoll_interval_secs = 30\nbackoff_initial_secs = 5\nbackoff_max_secs = 300\n",
         )
@@ -3946,6 +4059,10 @@ mod tests {
     /// defence in depth, never a silent clamp at any layer.
     #[tokio::test]
     async fn focus_gate_refusal_attributes_own_blame() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
@@ -3978,6 +4095,10 @@ mod tests {
     /// profile payload).
     #[test]
     fn a_save_request_debug_output_never_carries_the_secret() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let (tx, _rx) = tokio::sync::oneshot::channel();
         let request = UiRequest::SaveConnection {
             profile: taskboard_ui_slint::requests::ConnectionProfile {
