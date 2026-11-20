@@ -68,3 +68,94 @@ fn us2_s1_the_move_survives_directional_column_hops() {
         }
     });
 }
+
+/// US-2/S2 (#1033) — the legacy stack-walk chords join the kept arms:
+/// `StackNext` (the `g l` `ViNormal` chord, the Standard/emacs
+/// `Ctrl+Shift+…` rows) dispatched mid-`Flow::Move` hops the drop
+/// column instead of settling the flow — the settle matrix never sees
+/// the stroke, the aim badge follows the hop, and the boundary stays
+/// silent. The `Flow::None` counterpart (the stack walk itself) is
+/// pinned by `journeys.rs::the_stack_walk_wraps_at_both_ends` — this
+/// journey pins only the move-flow kept arms.
+#[test]
+fn us2_s2_the_stack_chords_hop_the_drop_column_mid_move() {
+    golden_state_journey(|state| {
+        // The Standard preset carries the chords' Board rows
+        // (Ctrl+Shift+Left/Right — the issue's repro spelling).
+        let preset = Preset::Standard;
+        let mut harness = JourneyHarness::mount(state, preset);
+        harness.press_preset(preset, ActionId::NavFocusDown);
+        harness.advance();
+        harness.press_preset(preset, ActionId::TaskMove);
+        harness.advance();
+        assert_eq!(aim(&harness), Some(0), "the move arms on the home column");
+
+        // The stack-walk chord hops the drop column right; the move
+        // is alive and dispatches nothing (the kept arm — the settle
+        // matrix never cancels the flow).
+        harness.press_preset(preset, ActionId::StackNext);
+        harness.advance();
+        assert_eq!(aim(&harness), Some(1), "the chord hopped the drop column");
+        harness.assert_commands(&[]);
+
+        // The twin chord hops back (StackPrev → -1, the clamp edge).
+        harness.press_preset(preset, ActionId::StackPrev);
+        harness.advance();
+        assert_eq!(aim(&harness), Some(0), "the twin chord hopped back");
+
+        // The flow still completes: exactly one MoveTask.
+        harness.press_preset(preset, ActionId::TaskEdit);
+        harness.advance();
+        match harness.engine.drain().as_slice() {
+            [StateCommand::MoveTask { .. }] => {}
+            other => panic!("the move completes after the chord hops, got {other:?}"),
+        }
+    });
+}
+
+/// US-2/S2 (#1033, the stack-move half) — the same chord rides the
+/// insertion-slot ring mid-`Flow::MoveStack`: `StackNext` steps the
+/// slot (the highlight follows `min(slot, len-1)`), the moving
+/// stack's selection never changes, and the boundary stays silent —
+/// pre-fix the stroke settled the flow and re-ran the stack walk.
+#[test]
+fn us2_s2_the_stack_chords_step_the_insertion_slot_mid_stack_move() {
+    golden_state_journey(|state| {
+        let preset = Preset::Standard;
+        let mut harness = JourneyHarness::mount(state, preset);
+        harness.press_preset(preset, ActionId::StackMove);
+        harness.advance();
+        let board = harness.handle.window().get_board_model();
+        assert_eq!(board.move_target, 0, "the stack move arms at its own slot");
+
+        // The chord steps the insertion slot; the flow survives.
+        harness.press_preset(preset, ActionId::StackNext);
+        harness.advance();
+        let board = harness.handle.window().get_board_model();
+        assert_eq!(board.move_target, 1, "the chord stepped the insertion slot");
+        harness.assert_commands(&[]);
+
+        // The twin chord steps back.
+        harness.press_preset(preset, ActionId::StackPrev);
+        harness.advance();
+        let board = harness.handle.window().get_board_model();
+        assert_eq!(board.move_target, 0, "the twin chord stepped back");
+
+        // The wrap-back lands the append slot (slot 0 wraps to 2 of
+        // 0..=2 — after the last stack, a real reorder; slot 1 is the
+        // stack's own position and dispatches nothing on confirm by
+        // the minimal-set design), then Return completes the stack
+        // move — the flow was alive under the chords.
+        harness.press_preset(preset, ActionId::StackPrev);
+        harness.advance();
+        harness.stroke(taskboard_ui_slint::keymap::stroke::parse("Return").expect("Return parses"));
+        harness.advance();
+        let drained = harness.engine.drain();
+        assert!(
+            drained
+                .iter()
+                .any(|c| matches!(c, StateCommand::MoveStack { .. })),
+            "the stack move completes after the chord steps"
+        );
+    });
+}
