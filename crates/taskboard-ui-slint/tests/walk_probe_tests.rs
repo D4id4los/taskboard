@@ -195,3 +195,31 @@ fn p4_tab_descends_from_a_focused_container_into_its_child() {
         );
     });
 }
+
+// ---- B-1 (round-9 W3, plan §5): the walk verb row's keyboard ------
+// The walk overlay's verb buttons are the only button-grammar copy
+// without a tab stop + Return/Space (inventory Q-A). The probe pins
+// the sanctioned gain, named for the walk's tab order: from the
+// overlay's first stop, one synthetic tab reaches the verb row and
+// Return activates the focused verb.
+
+/// B-1: the verb row is tab-reachable and Return-activatable.
+#[test]
+fn b1_walk_tab_reaches_the_verb_row_and_return_activates() {
+    run_probe(|window| {
+        window.invoke_focus_b1_first();
+        advance_probe_clock(0);
+        let before = window.get_b1_verb_clicked();
+        key(window, "\t", true);
+        advance_probe_clock(0);
+        let ret: slint::SharedString = Key::into(slint::platform::Key::Return);
+        key(window, ret.as_str(), true);
+        key(window, ret.as_str(), false);
+        advance_probe_clock(0);
+        assert_eq!(
+            window.get_b1_verb_clicked() - before,
+            1,
+            "the tab lands on the verb row and Return activates the focused verb"
+        );
+    });
+}

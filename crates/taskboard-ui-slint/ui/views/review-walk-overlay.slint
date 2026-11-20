@@ -17,6 +17,7 @@
 // layer's (the walk context binds it), never a widget handler.
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TextButton, TextButtonSize } from "../widgets/text-button.slint";
 import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { ListView } from "../widgets/listview.slint";
@@ -108,29 +109,22 @@ component StripRow inherits VerticalLayout {
     }
 }
 
-component VerbButton inherits Rectangle {
+// The walk's verb row (W3, #950): the compact TextButton variant —
+// the surface bg, the hover/pressed lift, the always-on border and
+// the caption typography all live in the primitive now, and B-1
+// (plan §5, the sanctioned behavior change) rides it: the verb row
+// gains the FocusScope tab stop + Return/Space it was the only F-1
+// copy to lack (inventory Q-A; the walk probe's b1 test pins it).
+// `export` stays: the walk probe mounts it for the B-1 gate.
+export component VerbButton inherits Rectangle {
     in property <string> label;
     callback clicked();
-    min-width: label-text.preferred-width + 2 * Theme.space-2;
-    height: Theme.space-5;
     vertical-stretch: 0;
-    background: touch.pressed || touch.has-hover ? Theme.surface-hover : Theme.surface;
-    border-radius: Theme.radius-small;
-    border-width: Theme.focus-ring-width;
-    border-color: Semantic.focus-ring;
-    label-text := RoleText {
-        role: Typography.caption;
-        text-color: Theme.text-primary;
-        text: root.label;
-        text-halign: center;
-        vertical-alignment: center;
+    btn := TextButton {
+        size: TextButtonSize.compact;
+        label: root.label;
+        clicked => { root.clicked(); }
     }
-    touch := TouchArea {
-        clicked => root.clicked();
-    }
-    accessible-role: AccessibleRole.button;
-    accessible-label: root.label;
-    accessible-action-default => { root.clicked(); }
 }
 
 export component ReviewWalkOverlay inherits Rectangle {

@@ -10,6 +10,10 @@
 
 import { Theme } from "../ui/theme.slint";
 import { ListView } from "../ui/widgets/listview.slint";
+// The B-1 probe's mount (round-9 W3): the walk overlay's real verb
+// button — the only F-1 copy without a keyboard, under migration to
+// the TextButton primitive (the sanctioned behavior change B-1).
+import { VerbButton } from "../ui/views/review-walk-overlay.slint";
 
 export global WalkProbeFacts {
     in-out property <int> first-gained: 0;
@@ -200,4 +204,27 @@ export component WalkProbeWindow inherits Window {
     // The ListView page-arithmetic probe (P3, plan §12): the page()
     // function's clamp and one-row-context overlap, driven directly
     // from the test.
+
+    // ---- The B-1 mount (round-9 W3, plan §5): the walk's verb row ---
+    // Declared last so the synthetic tab from the first stop walks
+    // straight into the verb row (the walk's tab order under test).
+    // Pre-migration the verb button has no tab stop — the probe is
+    // the B-1 gate and starts red.
+    in-out property <int> b1-verb-clicked: 0;
+    b1-first := FocusScope {
+        x: Theme.space-6 * 2;
+        y: 0;
+        width: Theme.space-6;
+        height: Theme.space-5;
+        focus-on-tab-navigation: true;
+    }
+    b1-verb := VerbButton {
+        x: Theme.space-8;
+        y: 0;
+        label: "File it";
+        clicked => { root.b1-verb-clicked += 1; }
+    }
+    public function focus-b1-first() {
+        b1-first.focus();
+    }
 }
