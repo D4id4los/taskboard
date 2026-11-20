@@ -160,7 +160,11 @@ export component WidgetFrameworkProbeWindow inherits Window {
             width: Theme.space-8;
             height: Theme.space-6;
             enabled: !root.restore-scope-disabled;
-            focus-on-tab-navigation: true;
+            // Grabbed programmatically only (`probe-request-restore-
+            // focus`): never a tab stop — the G-catalogue's tab walks
+            // count the window's stops and this witness must not join
+            // them.
+            focus-on-tab-navigation: false;
         }
     }
     out property <bool> restore-scope-focused: restore-focusable.has-focus;
