@@ -24,6 +24,8 @@ mod support;
 /// platform per process; see #1016).
 pub(crate) const HEADLESS_RENDERER: bool = true;
 
+#[path = "probes/habit_entry_height_probe_tests.rs"]
+mod habit_entry_height_probe_tests;
 #[path = "probes/icon_probe_tests.rs"]
 mod icon_probe_tests;
 #[path = "probes/stale_remount_probe_tests.rs"]

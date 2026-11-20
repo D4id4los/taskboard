@@ -50,6 +50,7 @@ fn main() {
         "overlay_migration_probe",
         "labeled_value_row_probe",
         "stale_remount_probe",
+        "habit_entry_height_probe",
     ];
     for name in probes {
         compile_probe(&manifest.join(format!("tests/{name}.slint")), &out);

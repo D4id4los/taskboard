@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The habit entry-height probe (#1018, the task-card-title precedent):
+// the real `HabitsSection` with one habit row mounted beside a bare
+// `TaskCard` — the parity pin reads the two cards' realized heights.
+// The strip-below-keeps-ladder-step law (H2 D3: the strip keeps the
+// row's entry height — a task row's, no fixed px, the card's own
+// min-height governs) IS the equality's meaning: the habit card and
+// the task card resolve to the same ladder step. The substrate-
+// identity argument (the same widget, Theme-token spacing only)
+// stays prose here — the geometry equality is the pin.
+
+import { HabitsSection, HabitCardModel } from "../ui/compositions/habits.slint";
+import { TaskCard, TaskCardModel, TrackCardState } from "../ui/widgets/task-card.slint";
+import { Theme, DueKind } from "../ui/theme.slint";
+
+export component HabitEntryHeightProbe inherits Window {
+    width: Theme.space-15 * 6;
+    height: Theme.space-15 * 4;
+    background: Theme.background;
+
+    in property <[HabitCardModel]> rows;
+
+    // The bare task card's realized height (the reference read).
+    out property <length> task-card-height: reference-card.preferred-height;
+
+    reference-card := TaskCard {
+        x: Theme.space-2;
+        y: Theme.space-2;
+        width: Theme.space-15 * 2;
+        model: {
+            title: "reference card",
+            due-phrase: "",
+            scheduled-phrase: "",
+            effort-phrase: "",
+            due-kind: DueKind.none,
+            done: false,
+            can-done: true,
+            emphasis: false,
+            dragging-source: false,
+            selected: false,
+            anchor: false,
+            track-state: TrackCardState.none,
+            decorations: [],
+            label-chips: [],
+            label-chips-overflow: 0,
+        };
+    }
+
+    section := HabitsSection {
+        x: Theme.space-15 * 2 + Theme.space-4;
+        y: Theme.space-2;
+        width: Theme.space-15 * 3;
+        height: Theme.space-15 * 3;
+        habits: root.rows;
+        editing-enabled: true;
+    }
+}
