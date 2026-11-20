@@ -185,8 +185,9 @@ export component BoardBar inherits Rectangle {
         height: parent.height - 2 * Theme.space-1;
         rows: root.bar.rows;
         selected-index: root.bar.selected;
-        // The class-facts site discriminator (round-5 D6): the
-        // switcher's flyout renders window-level, keyed on site 1.
+        // The class-facts consumer kind (round-5 D6, de-sited round-9
+        // chunk 15): the switcher's flyout renders window-level from
+        // the ONE generic mount, keyed on `board-switcher`.
         consumer: DropdownConsumer.board-switcher;
         field-text: root.bar.segments.length > 0
             ? root.bar.segments[root.bar.selected].title

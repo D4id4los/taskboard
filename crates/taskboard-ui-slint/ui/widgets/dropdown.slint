@@ -255,11 +255,10 @@ export component Dropdown inherits Rectangle {
     // The window-mirror loop (round-5 D6): widget → window (open) via
     // the derived-property wrap (the `SettingsBoardFacts` mirroring
     // idiom, moved inside the widget so every mount site gets it), and
-    // window → widget (close) via the site-guarded fact read — a
-    // window-side close lands as `close()`, which refocuses the field
-    // before the panel unmounts (the recorded walk contract). Both
-    // directions are site-guarded; the loop converges (a close write
-    // re-enters as an already-false no-op).
+    // window → widget (close) via the fact read — a window-side close
+    // lands as the widget's close, which settles before the panel
+    // unmounts (the recorded walk contract). The loop converges (a
+    // close write re-enters as an already-false no-op).
     property <bool> open-mirrored: root.open;
     changed open-mirrored => {
         // The de-sited identity + model push (round-9 chunk 15): the
@@ -569,10 +568,6 @@ export component Dropdown inherits Rectangle {
     // adapter's origin restore must win the walk (the focus contract
     // the priority journeys pin). Legacy sites have no seam: the close
     // is the silent, field-refocusing widget-internal close of record.
-    // The dismissal-routing close (D-6): when the consumer owns the
-    // dismissal (`has-dismiss-seam`), the close routes `dismiss-asked()`
-    // and skips the field refocus — the adapter's origin restore must
-    // win the walk. Legacy sites close silently field-refocusing.
     public function close-dismissing() {
         if (root.has-dismiss-seam) {
             root.dismiss-asked();
