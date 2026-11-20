@@ -19,7 +19,7 @@
 //     (verified against i-slint-common-1.18.1 enums.rs); the panel
 //     root takes the landmark treatment (region + description).
 
-import { Theme } from "../theme.slint";
+import { Theme, Semantic } from "../theme.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
 import { TextButton, TextButtonEmphasis } from "text-button.slint";
 
@@ -131,11 +131,21 @@ export component ModalDialogHost inherits Rectangle {
     property <int> focus-slot: -1;
 
     // The observation seams (the probe/test pattern): the realized
-    // panel rect, the scrim paint, and the mask push.
+    // panel rect, the panel chrome (#1004), the scrim paint, and the
+    // mask push.
     out property <length> panel-x: panel.x;
     out property <length> panel-y: panel.y;
     out property <length> panel-width: panel.width;
     out property <length> panel-height: panel.height;
+    // slint: properties — the dialog chrome's observation seams
+    // (#1004 probe): the focus-ring border and the elevation shadow
+    // (the shadow rides a host mirror — Rectangle's drop-shadow-*
+    // properties are write-only, so the blur can't be read back off
+    // the panel).
+    out property <length> panel-border-width: panel.border-width;
+    out property <color> panel-border-color: panel.border-color;
+    property <length> shadow-blur: Theme.shadow-blur;
+    out property <length> panel-shadow-blur: shadow-blur;
     out property <color> scrim-color: scrim.background;
     out property <int> mask-extent: MaskWalkFacts.extent;
     out property <int> mask-cursor: MaskWalkFacts.cursor;
@@ -216,6 +226,15 @@ export component ModalDialogHost inherits Rectangle {
                     body-col.preferred-height);
         background: Theme.surface-raised;
         border-radius: Theme.radius-medium;
+        // The dialog chrome (#1004): the capture composition's
+        // pre-migration border, restored on the base widget so every
+        // dialog gains it (the recorded decision — no per-consumer
+        // restyle, the O-6 duplication ban). The shadow rides the
+        // theme's shadow tokens (tuning lives there).
+        border-width: Theme.focus-ring-width;
+        border-color: Semantic.focus-ring;
+        drop-shadow-blur: root.shadow-blur;
+        drop-shadow-color: Theme.shadow-color;
         accessible-role: AccessibleRole.region;
         accessible-description: root.title;
 
