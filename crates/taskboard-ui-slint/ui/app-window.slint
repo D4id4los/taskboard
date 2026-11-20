@@ -1559,7 +1559,10 @@ export component AppWindow inherits Window {
             walk-stops: 1 + root.palette-model.length;
             viewport-floor: status.y;
             dismissed => root.palette-dismiss-requested();
-            accepted => root.palette-dismiss-requested();
+            // No `accepted` wiring (#1026): confirm-kind with an empty
+            // button model can never fire it (R-4 routes confirm
+            // outside-clicks to `dismissed`; the edit-kind arm never
+            // sees this mount) — the palette has no accept seam.
             palette-panel := SearchPalette {
             rows: root.palette-model;
             selected-index: root.palette-selected-index;
