@@ -19,8 +19,9 @@
 //     (verified against i-slint-common-1.18.1 enums.rs); the panel
 //     root takes the landmark treatment (region + description).
 
-import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { Theme } from "../theme.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
+import { TextButton, TextButtonEmphasis } from "text-button.slint";
 
 // The button's role (US-4/R-4 adjacency): layout clusters
 // dismiss-role left and accept/destructive right; the widget never
@@ -35,7 +36,8 @@ export enum DialogButtonRole {
 // One button row model entry (D-W1-2). `autofocus` is declarative
 // metadata mirrored by the site's `initial-focus` index (Slint
 // functions have no model reduce, so the index computation lives at
-// the mount site; W3's TextButton absorbs the refinement).
+// the mount site; the adapter forwards it through TextButton's
+// `request-focus()`).
 export struct DialogButtonModel {
     label: string,
     role: DialogButtonRole,
@@ -49,89 +51,40 @@ export enum DialogKind {
     confirm,
 }
 
-// One dialog button (the CtaButtonArea shape, D-W1-2): focus + click
-// with an enabled gate. `initial-focus-index` matching `index`
-// focuses the button at mount (the autofocus half); the host passes
-// its own index down. A disabled button is never focusable
-// (the FocusScope's `enabled` gate) and never invokes.
+// One dialog button (D-W1-2, re-expressed over the W3 TextButton
+// primitive — the J2 W-1 amend: the button model is rendered by
+// TextButton): the adapter keeps the row model's index, the mount
+// autofocus (through TextButton's `request-focus()` grab seam) and
+// the `host-open` re-arm; the paint/keyboard/a11y grammar lives in
+// the primitive (emphasis=cta: the space-6 floor, the 4·space-6
+// min-width, the always-on border whose focused lift is the
+// focus-ring colour, the disabled `Theme.border` label law).
+// `initial-focus-index` matching `index` focuses the button at mount;
+// the host passes its own index down.
 component DialogButton inherits Rectangle {
     in property <DialogButtonModel> model;
     in property <int> index;
     in property <int> initial-focus-index: -1;
     in property <bool> host-open: true;
     callback invoked(int);
-    out property <bool> focused: press-focus.has-focus;
-    height: Theme.space-6;
-    min-width: Theme.space-6 * 4;
-    border-radius: Theme.radius-small;
-    border-width: Theme.focus-ring-width;
-    border-color: press-focus.has-focus && root.model.enabled
-        ? Semantic.focus-ring : Theme.border;
-    background: !root.model.enabled ? Theme.surface
-        : press-hit.has-hover ? Theme.surface-hover : Theme.surface-raised;
-    accessible-role: AccessibleRole.button;
-    accessible-label: root.model.label;
-    accessible-enabled: root.model.enabled;
-    accessible-action-default => {
-        if (root.model.enabled) { root.invoked(root.index); }
-    }
+    out property <bool> focused: btn.focused;
     // The mount-focus edge: the open transition (not init — the
     // caller's `initial-focus` may not be bound yet at creation; a
     // conditional mount starts open, so init covers that arm too).
     function take-initial-focus() {
         if (root.initial-focus-index == self.index && self.model.enabled) {
-            press-focus.focus();
+            btn.request-focus();
         }
     }
     init => { self.take-initial-focus(); }
     changed host-open => {
         if (root.host-open) { self.take-initial-focus(); }
     }
-    press-focus := FocusScope {
-        width: 100%;
-        height: 100%;
+    btn := TextButton {
+        emphasis: TextButtonEmphasis.cta;
+        label: root.model.label;
         enabled: root.model.enabled;
-        focus-on-tab-navigation: true;
-        accessible-role: AccessibleRole.button;
-        accessible-label: root.model.label;
-        accessible-enabled: root.model.enabled;
-        accessible-action-default => {
-            if (root.model.enabled) { root.invoked(root.index); }
-        }
-        key-pressed(event) => {
-            if ((event.text == Key.Return || event.text == " ")
-                    && !event.modifiers.control
-                    && !event.modifiers.alt
-                    && !event.modifiers.shift
-                    && !event.modifiers.meta) {
-                if (root.model.enabled) {
-                    root.invoked(root.index);
-                }
-                accept
-            } else {
-                reject
-            }
-        }
-    }
-    press-hit := TouchArea {
-        // A disabled click swallows — the gate reads the same bit.
-        clicked => {
-            if (root.model.enabled) {
-                root.invoked(root.index);
-            }
-        }
-    }
-    HorizontalLayout {
-        padding-left: Theme.space-3;
-        padding-right: Theme.space-3;
-        alignment: center;
-        RoleText {
-            role: Typography.body;
-            text-color: root.model.enabled ? Theme.text-primary : Theme.border;
-            text: root.model.label;
-            vertical-alignment: center;
-            overflow: elide;
-        }
+        clicked => { root.invoked(root.index); }
     }
 }
 
