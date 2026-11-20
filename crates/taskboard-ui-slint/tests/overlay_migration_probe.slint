@@ -58,6 +58,11 @@ export component OverlayMigrationProbe inherits Window {
     out property <length> picker-panel-width: picker-host.panel-width;
     out property <length> picker-panel-height: picker-host.panel-height;
     out property <bool> picker-flipped: picker-host.flipped;
+    // The fold row's open-bit seams (#1027): each host's gate read
+    // directly, so the exclusivity pin asserts the hosts themselves.
+    out property <bool> editor-open: editor-host.open;
+    out property <bool> picker-open: picker-host.open;
+    out property <length> editor-panel-width: editor-host.panel-width;
 
     tv := TaskView {
         width: 100%;
