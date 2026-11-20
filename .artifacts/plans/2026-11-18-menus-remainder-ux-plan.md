@@ -126,9 +126,9 @@ flowchart LR
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | action-menu.slint | quick-bar row mount | menu_quick_bar_invoked | task_quick_bar seam (menu.rs:559; the on_menu_quick_bar_invoked install) | ActionId::TaskScheduleToday | StateCommand::UpdateTask; StateCommand::StartTracking | — | US-1/S1 | action_menu_bar_probe_tests.rs::us1_s1 |
+| W-1 | action-menu.slint | quick-bar row mount | menu_quick_bar_invoked | task_quick_bar seam (menu.rs:559; the on_menu_quick_bar_invoked install) | ActionId::TaskScheduleToday | StateCommand::UpdateTask; StateCommand::StartTracking | — | US-1/S1 | crates/taskboard-ui-slint/tests/probes/action_menu_bar_probe_tests.rs::us1_s1 |
 | W-2 | adapter.rs | multi-path bar | — | open_context_menu multi arm (multi_quick_bar builder) | — | — | — | US-2 | journeys.rs::us2_s1_the_multi_bar_routes_per_member |
-| W-3 | action-menu.slint | chevron in row renderer | — | — | — | — | — | US-3/S1 | action_menu_bar_probe_tests.rs::us3_s1 |
+| W-3 | action-menu.slint | chevron in row renderer | — | — | — | — | — | US-3/S1 | crates/taskboard-ui-slint/tests/probes/action_menu_bar_probe_tests.rs::us3_s1 |
 | W-4 | action-menu.slint | hint-keys on bar buttons | — | preset stroke lookup | — | — | — | US-4 | fold test |
 | W-5 | adapter.rs | reconcile disarm | — | MenuKind pin reconcile | — | — | — | US-4 | journeys.rs::us4_s2 |
 
@@ -144,7 +144,7 @@ Stage-2 resolution (2026-11-18, recorded at review): the journey tests
 land in `tests/journeys.rs` (the harness is journeys-local — a separate
 `menus_remainder_journeys.rs` would have duplicated the ~300-line
 Harness) and the structural probe in
-`tests/action_menu_bar_probe_tests.rs`. US-3/S2's activation behavior
+`crates/taskboard-ui-slint/tests/probes/action_menu_bar_probe_tests.rs`. US-3/S2's activation behavior
 (submenu parent opens the family page, Esc closes the submenu only) is
 already covered by the UX-R8 chunk-5 escape-ladder journey, so the step
 binds there rather than duplicating it (#768's retro map):

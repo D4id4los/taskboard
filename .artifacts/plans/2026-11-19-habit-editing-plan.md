@@ -283,7 +283,7 @@ untouched, clocks preserved — messages.rs:794):
 
 ### Phase 3 — the editor surface (UI)
 
-6. **Journey tests** (`habits_journey.rs`, step-ID tokens, on
+6. **Journey tests** (`crates/taskboard-ui-slint/tests/journeys/habits_journey.rs`, step-ID tokens, on
    `on_slint_thread` rig):
    - `us5_s1_habit_editor_opens_and_cancel_discards` — menu row and
      `habit.edit` key both open the surface; cancel/escape discards

@@ -188,12 +188,12 @@ flowchart LR
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | compositions/habits.slint | TaskCard substrate | habits-log-clicked | RowSubject::Habit router | habit.log | StateCommand::LogHabit | ItemAddr habit row | US-1/S2 | habits_journey.rs::us1_s2 |
-| W-2 | menu.rs | HabitRow context menu | habits-context-requested | MenuKind stays {Main, Object} (D4 deviation) | habit.log | — | — | US-2/S1 | habits_journey.rs::us2_s1 |
-| W-3 | menu.rs | convert submenu | — | — | habit.convert | StateCommand::ConvertHabitToSeries | — | US-2/S2 | habits_journey.rs::us2_s2 |
-| W-4 | habit editor (shared task-view variant) | fields | habit-save-clicked | UpdateHabit seam | habit.edit | StateCommand::UpdateHabit | — | US-5/S2 | habits_journey.rs::us5_s2 |
+| W-1 | compositions/habits.slint | TaskCard substrate | habits-log-clicked | RowSubject::Habit router | habit.log | StateCommand::LogHabit | ItemAddr habit row | US-1/S2 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us1_s2 |
+| W-2 | menu.rs | HabitRow context menu | habits-context-requested | MenuKind stays {Main, Object} (D4 deviation) | habit.log | — | — | US-2/S1 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us2_s1 |
+| W-3 | menu.rs | convert submenu | — | — | habit.convert | StateCommand::ConvertHabitToSeries | — | US-2/S2 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us2_s2 |
+| W-4 | habit editor (shared task-view variant) | fields | habit-save-clicked | UpdateHabit seam | habit.edit | StateCommand::UpdateHabit | — | US-5/S2 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us5_s2 |
 | W-5 | habit card | time chip | — | presentation | — | — | — | US-5/S2 | fold test |
-| W-6 | adapter.rs | traversal | — | RowSubject walk | nav.focus-board | — | ItemAddr | US-3/S1 | habits_journey.rs::us3_s1 |
+| W-6 | adapter.rs | traversal | — | RowSubject walk | nav.focus-board | — | ItemAddr | US-3/S1 | crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us3_s1 |
 
 (W-6's action cell spelled the wildcard `nav.focus-*`; chunk 8 landed
 the concrete `nav.focus-board` id — cell corrected 2026-11-19, H4
@@ -254,7 +254,7 @@ bound-test: US-6/S1 -> crates/taskboard-state/tests/habits.rs::us6_s1_update_hab
 US-1/S1 carries no wiring row of its own, so the #768 mapping binds
 the substrate journey to its landing file:
 
-bound-test: US-1/S1 -> habits_journey.rs::us1_s1_habit_rows_render_on_the_task_card_substrate
+bound-test: US-1/S1 -> crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us1_s1_habit_rows_render_on_the_task_card_substrate
 
 ## 9. Stage-landing deviations (2026-11-19, chunk 10 H4 — recorded)
 
@@ -283,12 +283,12 @@ remove into the round). Per the H2 precedent (§8) the steps bind here:
 | US-5/S3 | habit context menu | click remove (arm) | — (adapter staging) | confirm flips enabled inside the open menu; another subject's menu disarms | Esc dismisses |
 | US-5/S4 | armed menu | click confirm | StateCommand::DeleteHabit | row leaves the section; the log survives | — |
 
-bound-test: US-5/S1 -> habits_journey.rs::us5_s1_habit_editor_opens_and_cancel_discards
-bound-test: US-5/S2 -> habits_journey.rs::us5_s2_habit_editor_round_trips_time_and_day
-bound-test: US-6/S2 -> habits_journey.rs::us6_s2_snooze_offers_hours_and_days
-bound-test: US-5/S3 -> habits_journey.rs::h4_remove_s1_remove_arms_and_the_confirm_flips
-bound-test: US-5/S4 -> habits_journey.rs::h4_remove_s2_confirm_tombstones_and_closes
-bound-test: US-3/S2 -> habits_journey.rs::us3_s2_the_task_complete_stroke_and_shift_up_route_the_habit_verbs
+bound-test: US-5/S1 -> crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us5_s1_habit_editor_opens_and_cancel_discards
+bound-test: US-5/S2 -> crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us5_s2_habit_editor_round_trips_time_and_day
+bound-test: US-6/S2 -> crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us6_s2_snooze_offers_hours_and_days
+bound-test: US-5/S3 -> crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::h4_remove_s1_remove_arms_and_the_confirm_flips
+bound-test: US-5/S4 -> crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::h4_remove_s2_confirm_tombstones_and_closes
+bound-test: US-3/S2 -> crates/taskboard-ui-slint/tests/journeys/habits_journey.rs::us3_s2_the_task_complete_stroke_and_shift_up_route_the_habit_verbs
   (bound 2026-11-19, H4 review: the step's habit-side evidence was
   unbound, so the gate read AMBIGUOUS over the six task-journey
   `us3_s2_*` homonyms; chunk 8 landed the test, the binding rides the

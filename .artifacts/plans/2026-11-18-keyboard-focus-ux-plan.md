@@ -185,9 +185,9 @@ flowchart LR
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | keymap stroke parse | — | — | to_stroke/from_event case-fold | — | — | — | US-3/S1 | keymap_case_seam.rs::us3_s1 |
-| W-2 | interpret table | — | — | UiEffect::FocusDirectional table | nav.focus-up | — | — | US-1/S1-S2 | focus_law_journeys.rs::us1_s1 |
-| W-3 | adapter settle matrix | — | — | Flow::Move kept arms | nav.focus-right | — | — | US-2/S1 | board_move_journeys.rs::us2_s1 |
+| W-1 | keymap stroke parse | — | — | to_stroke/from_event case-fold | — | — | — | US-3/S1 | crates/taskboard-ui-slint/tests/journeys/keymap_case_seam.rs::us3_s1 |
+| W-2 | interpret table | — | — | UiEffect::FocusDirectional table | nav.focus-up | — | — | US-1/S1-S2 | crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs::us1_s1 |
+| W-3 | adapter settle matrix | — | — | Flow::Move kept arms | nav.focus-right | — | — | US-2/S1 | crates/taskboard-ui-slint/tests/journeys/board_move_journeys.rs::us2_s1 |
 | W-4 | task-view widgets | done/tracker/entries/effort/back | on activation | detail shortcut map | task.toggle-done, TaskToggleTracker, task.entries.open, task.effort.set, task.back | StateCommand variants | — | US-4/S1-S2 | detail_shortcuts_journeys.rs::us4_s1 |
 | W-5 | board view | tracker verbs | — | board-context keymap arm | TaskStartTracker/TaskStopTracker/TaskToggleTracker | StateCommand | ItemAddr card | US-5 | tracker_journeys.rs::us5_s1 |
 | W-6 | rule-list.slint rows | selected-rule cursor | — | on_task_rule_row_clicked (adapter.rs install_task_seam) — slint callback task-rule-row-clicked; the directional TaskDetail arm + Activate resolution (adapter.rs::interpret_directional / activate_rule_cursor) | nav.focus-down | — | — | US-6/S1 | focus_law_journeys.rs::us6_s1 |
@@ -249,12 +249,12 @@ flowchart LR
 - **The detail's item walk is retired** (R-3, census-dated
   supersession in `docs/ux-surface-census.org` `nav.item_walk`);
   US-1/S1's TaskDetail step reads as the control ladder with the
-  subject pinned (`focus_law_journeys.rs::us1_s1_taskdetail_
+  subject pinned (`crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs::us1_s1_taskdetail_
   directional_rows_walk_the_ladder_subject_pinned`).
 - **Evidence files**: the journeys live in the nominated
-  `focus_law_journeys.rs` / `board_move_journeys.rs`; the per-view
+  `crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs` / `crates/taskboard-ui-slint/tests/journeys/board_move_journeys.rs`; the per-view
   steps beyond the W-2-nominated token carry their step ids in the
   test doc comments, and the two un-nominated steps map here:
 
-  bound-test: US-1/S2 -> focus_law_journeys.rs::today_horizontal_is_the_control_walk_first_cut
-  bound-test: US-1/S3 -> focus_law_journeys.rs::the_text_entry_guards_own_the_directional_keys
+  bound-test: US-1/S2 -> crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs::today_horizontal_is_the_control_walk_first_cut
+  bound-test: US-1/S3 -> crates/taskboard-ui-slint/tests/journeys/focus_law_journeys.rs::the_text_entry_guards_own_the_directional_keys
