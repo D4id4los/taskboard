@@ -9,7 +9,7 @@ use crate::common;
 
 use std::sync::Arc;
 
-use common::{EnvOverride, env_lock, forbidden_store, standalone_config, tempdir};
+use common::{EnvOverride, forbidden_store, standalone_config, tempdir};
 use taskboard_app::bootstrap::bootstrap_in;
 use taskboard_app::notifications::LogSink;
 use taskboard_app::ui_requests::{ConnectionWorkspace, spawn_ui_request_forwarder};
@@ -56,7 +56,7 @@ async fn forwarder(
 /// not move.
 #[tokio::test]
 async fn an_env_locked_field_is_refused_and_nothing_moves() {
-    let _env = env_lock();
+    let _env = common::taskboard_env_lock();
     let _pin = EnvOverride::set("TASKBOARD_REMINDERS__TICK_SECS", "77");
     let dir = tempdir();
     let path = dir.path().join("taskboard.toml");
@@ -98,7 +98,7 @@ async fn an_env_locked_field_is_refused_and_nothing_moves() {
 /// echoes the engine — not the file.
 #[tokio::test]
 async fn a_write_beside_an_env_pin_keeps_the_pin_in_the_engine() {
-    let _env = env_lock();
+    let _env = common::taskboard_env_lock();
     let _pin = EnvOverride::set("TASKBOARD_REMINDERS__TICK_SECS", "77");
     let dir = tempdir();
     let path = dir.path().join("taskboard.toml");

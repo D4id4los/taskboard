@@ -1407,6 +1407,7 @@ fn cancelling_peer(
 /// pre-persist.
 #[tokio::test]
 async fn an_interrupted_prompt_fails_the_ceremony_typed() {
+    let _env = common::taskboard_env_lock();
     let dir = tempdir();
     let db = dir.path().join("interrupted-prompt.db");
     let (live, signals) = live_signals();
@@ -1445,6 +1446,7 @@ async fn an_interrupted_prompt_fails_the_ceremony_typed() {
 
 #[tokio::test]
 async fn a_cancel_fired_mid_dispatch_reports_cancelled_and_continues() {
+    let _env = common::taskboard_env_lock();
     // The 401 server: the ceremony never reaches verify (it is
     // cancelled at the masked prompt), and nothing can persist.
     let server = wiremock::MockServer::start().await;
@@ -1586,6 +1588,7 @@ async fn a_terminate_event_ends_the_session_like_ctrl_d() {
 /// output and ends the session: no `Next` ever follows the prompt.
 #[tokio::test]
 async fn a_terminate_mid_dispatch_drops_the_line_and_shuts_down() {
+    let _env = common::taskboard_env_lock();
     let server = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
         .respond_with(wiremock::ResponseTemplate::new(401))
