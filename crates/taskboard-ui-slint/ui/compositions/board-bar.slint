@@ -8,6 +8,7 @@
 
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
+import { TabStop } from "../widgets/focus-stops.slint";
 import { Dropdown, DropdownConsumer, DropdownRow, DropdownIndicator, DropdownTone } from "../widgets/dropdown.slint";
 import { AnchorMirror } from "../widgets/anchored-overlay.slint";
 
@@ -267,12 +268,11 @@ export component BoardBar inherits Rectangle {
         spacing: Theme.space-1;
         accessible-role: AccessibleRole.tab-list;
         accessible-label: "Boards";
-        for segment[segment-index] in root.bar.segments: tab := FocusScope {
+        for segment[segment-index] in root.bar.segments: tab := TabStop {
             // A real tab stop (D15); the keyboard path for switching
-            // is the action layer's board.next/previous.
-            focus-on-tab-navigation: true;
-            accessible-role: AccessibleRole.tab;
-            accessible-label: segment.title;
+            // is the action layer's board.next/previous. The scope's
+            // grammar lives in `TabStop` (#1065).
+            stop-label: segment.title;
             // Round-1 D20b: many boards share the row — a segment
             // caps at 160·scale and elides.
             max-width: 160px * Theme.base-scale;
