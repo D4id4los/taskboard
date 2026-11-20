@@ -6,6 +6,7 @@
 // handlers here.
 
 import { CheckBox } from "../widgets/check-box.slint";
+import { Dropdown, DropdownConsumer, DropdownRow } from "../widgets/dropdown.slint";
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TextField } from "../widgets/text-field.slint";
@@ -27,15 +28,11 @@ import { FocusFacts } from "../focus-facts.slint";
 import { TrackPanelFacts } from "../track-panel-facts.slint";
 import { TrackEntryRowModel } from "../compositions/track-entries.slint";
 
-// One priority-picker slot row (UX R-3 D-1, #788): the level's
-// canonical text form plus the current-value pre-mark. Display parts
-// only — the slot's level resolves Rust-side through the row index
-// into the closed six-value vocabulary (`unset` + the five domain
-// levels, in declaration order).
-export struct PrioritySlotRow {
-    label: string,
-    selected: bool,
-}
+// The priority pickers' slot rows retired (round-9 chunk 15 D-4):
+// the six-value vocabulary rides the shared `DropdownRow` (the
+// widget class's model) — the row's level still resolves Rust-side
+// through the index into the closed vocabulary (`unset` + the five
+// domain levels, in declaration order).
 
 // One label chip (UX R-3 D-2, #789): the live label's title and its
 // lenient color's swatch echo (a typed color — the adapter mints it
@@ -148,17 +145,21 @@ export struct TaskDetailModel {
     date-time-validity: FieldValidity,
     date-time-slots: [TimeSlotRow],
     date-time-nearest-row: int,
-    // The priority rows' pushed halves (UX R-3 D-1, #788): the two
-    // echoes (the domain text forms — the card chips' own labels;
-    // empty where the field is unset) and the picker's open flags
-    // (the flow's, one picker at a time — the editor exclusivity's
-    // shape). The slot rows are the pushed quick-list: the six-value
-    // vocabulary in order, the current value pre-marked.
+    // The priority rows' pushed halves (UX R-3 D-1, #788; round-9
+    // chunk 15 D-4): the two echoes (the domain text forms — the card
+    // chips' own labels; empty where the field is unset), the open
+    // flags (the flow's, one picker at a time — the editor
+    // exclusivity's shape), and each field's pushed DropdownRow
+    // vocabulary (the six-value list, that field's current value
+    // pre-marked) with its selected index (the open-time anchor).
     importance-echo: string,
     urgency-echo: string,
     importance-open: bool,
     urgency-open: bool,
-    priority-slots: [PrioritySlotRow],
+    importance-rows: [DropdownRow],
+    urgency-rows: [DropdownRow],
+    importance-selected-index: int,
+    urgency-selected-index: int,
     // The effort row's pushed half (the overlay migration, M9): the
     // always-on field's seed — the armed buffer when the user typed,
     // the stored value's text form otherwise.
@@ -445,17 +446,11 @@ export component TaskView inherits FocusScope {
         border-color: Semantic.focus-ring;
         border-radius: Theme.radius-medium;
 
-        // The priority pickers' outside-click dismissal (UX R-3 D-1):
-        // an invisible full-view underlay armed exactly while a
-        // picker holds — the earlier sibling is hit-tested last, so
-        // the layout's own controls absorb their clicks and every
-        // non-control region cancels the picker (the track-entries
-        // backdrop's view-local twin).
-        if (root.task.importance-open || root.task.urgency-open): priority-catch := TouchArea {
-            width: 100%;
-            height: 100%;
-            clicked => root.priority-dismiss-requested();
-        }
+        // The priority pickers' outside-click dismissal (UX R-3 D-1,
+        // de-sited round-9 chunk 15 D-4): the in-layout expanding
+        // picker and its catch underlay are gone — the pickers ride
+        // the window-level `AnchoredOverlayHost`, whose dismissal
+        // layer routes `priority-dismiss-requested` (D-6).
 
         VerticalLayout {
             spacing: Theme.space-3;
@@ -770,100 +765,79 @@ export component TaskView inherits FocusScope {
                 }
             }
 
-            // The priority rows (UX R-3 D-1, #788): the two echoes of
-            // the card decorations' own labels (reconciliation by
-            // construction — the same domain text forms), mounted in
-            // the metadata block below the date columns. The picker
-            // block expands under the open row: the pushed six-slot
-            // quick-list, the current value pre-marked.
-            if (root.task.importance-open || root.task.urgency-open): VerticalLayout {
-                spacing: Theme.space-1;
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Theme.text-secondary;
-                    text: root.task.importance-open ? "Importance" : "Urgency";
-                }
-                for slot[index] in root.task.priority-slots: Rectangle {
-                    height: Theme.space-5;
-                    border-radius: Theme.radius-small;
-                    background: slot-touch.has-hover ? Theme.surface-hover : transparent;
-                    border-width: slot.selected ? Theme.focus-ring-width : 0;
-                    border-color: Semantic.focus-ring;
-                    HorizontalLayout {
-                        padding-left: Theme.space-2;
-                        padding-right: Theme.space-2;
-                        RoleText {
-                            role: Typography.body;
-                            text: slot.label;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                        }
-                        if (slot.selected): Path {
-                            width: Theme.space-3;
-                            height: Theme.space-3;
-                            commands: "M 2 6 L 5 9 L 10 3";
-                            stroke: Semantic.success;
-                            stroke-width: Theme.focus-ring-width;
-                            fill: transparent;
-                            viewbox-width: 12;
-                            viewbox-height: 12;
-                        }
-                    }
-                    slot-touch := TouchArea {
-                        mouse-cursor: MouseCursor.pointer;
-                        clicked => {
-                            TooltipState.unhover();
-                            root.priority-slot-clicked(index);
-                        }
-                    }
-                }
-            }
+            // The priority rows (UX R-3 D-1, #788; round-9 chunk 15
+            // D-4): the two echoes of the card decorations' own
+            // labels (reconciliation by construction — the same
+            // domain text forms), now each a closed `Dropdown` field
+            // hosted in the `LabeledValueRow`'s content slot (the
+            // effort-row hosting precedent): the echo is the field's
+            // text, the retired pencil's intent is the field's own
+            // click/Return (routed external — the adapter owns the
+            // exclusivity/gates), and the flyout is the window-level
+            // generic mount. The in-layout expanding picker block is
+            // gone (D-11c: no layout shift — the overlay law's gain).
             HorizontalLayout {
-                visible: !root.task.is-habit
-                    && !root.task.importance-open
-                    && !root.task.urgency-open;
+                visible: !root.task.is-habit;
                 spacing: Theme.space-3;
-                // The importance/urgency echoes (UX R-3 D-1): display
-                // mode + the trailing pencil affordance (grammar (a) —
-                // the echo is data, the pencil routes the picker).
                 LabeledValueRow {
                     vertical-stretch: 0;
-                    mode: RowMode.display;
+                    mode: RowMode.editor;
                     label: "Importance";
-                    value: root.task.importance-echo;
                     value-role: Typography.mono;
-                    value-color: Theme.text-secondary;
-                    value-fill: true;
-                    trailing-right: true;
-                    trailing-width: Theme.space-6;
-                    trailing-gap: Theme.space-1;
-                    IconButton {
-                        icon: IconKind.pencil;
-                        tone: Tone.neutral;
-                        label: "Edit importance";
-                        description: "Opens the importance picker: six levels, commit on pick.";
-                        clicked => root.importance-edit-asked();
+                    importance-dd := Dropdown {
+                        horizontal-stretch: 1;
+                        consumer: DropdownConsumer.task-importance;
+                        open-routes-external: true;
+                        has-dismiss-seam: true;
+                        rows: root.task.importance-rows;
+                        selected-index: root.task.importance-selected-index;
+                        field-text: root.task.importance-echo;
+                        field-label: "Importance";
+                        field-description: "Opens the importance picker: six levels, commit on pick.";
+                        external-open-requested() => root.importance-edit-asked();
+                        dismiss-asked() => root.priority-dismiss-requested();
+                        row-activated(index) => root.priority-slot-clicked(index);
                     }
                 }
                 LabeledValueRow {
                     vertical-stretch: 0;
-                    mode: RowMode.display;
+                    mode: RowMode.editor;
                     label: "Urgency";
-                    value: root.task.urgency-echo;
                     value-role: Typography.mono;
-                    value-color: Theme.text-secondary;
-                    value-fill: true;
-                    trailing-right: true;
-                    trailing-width: Theme.space-6;
-                    trailing-gap: Theme.space-1;
-                    IconButton {
-                        icon: IconKind.pencil;
-                        tone: Tone.neutral;
-                        label: "Edit urgency";
-                        description: "Opens the urgency picker: six levels, commit on pick.";
-                        clicked => root.urgency-edit-asked();
+                    urgency-dd := Dropdown {
+                        horizontal-stretch: 1;
+                        consumer: DropdownConsumer.task-urgency;
+                        open-routes-external: true;
+                        has-dismiss-seam: true;
+                        rows: root.task.urgency-rows;
+                        selected-index: root.task.urgency-selected-index;
+                        field-text: root.task.urgency-echo;
+                        field-label: "Urgency";
+                        field-description: "Opens the urgency picker: six levels, commit on pick.";
+                        external-open-requested() => root.urgency-edit-asked();
+                        dismiss-asked() => root.priority-dismiss-requested();
+                        row-activated(index) => root.priority-slot-clicked(index);
+                    }
+                }
+                // The adapter-driven open edge (the #794 request-mirror
+                // idiom): the pushed flag's false->true invokes the
+                // field's open arms; the false edge closes a still-open
+                // field (the commit's model flip; the flyout's own
+                // close paths land first, so this is the safety net).
+                property <bool> imp-open-mirror: root.task.importance-open;
+                changed imp-open-mirror => {
+                    if (self.imp-open-mirror) {
+                        importance-dd.open-requested();
+                    } else if (importance-dd.open) {
+                        importance-dd.close-internal(false);
+                    }
+                }
+                property <bool> urg-open-mirror: root.task.urgency-open;
+                changed urg-open-mirror => {
+                    if (self.urg-open-mirror) {
+                        urgency-dd.open-requested();
+                    } else if (urgency-dd.open) {
+                        urgency-dd.close-internal(false);
                     }
                 }
             }

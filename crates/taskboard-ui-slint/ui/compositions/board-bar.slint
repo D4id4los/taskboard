@@ -8,7 +8,7 @@
 
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
-import { Dropdown, DropdownRow, DropdownIndicator, DropdownTone } from "../widgets/dropdown.slint";
+import { Dropdown, DropdownConsumer, DropdownRow, DropdownIndicator, DropdownTone } from "../widgets/dropdown.slint";
 
 // The walk's observation seam (r4 D40): the selector's open state and
 // highlight, mirrored by the mounted dropdown's changed hooks (the
@@ -187,7 +187,7 @@ export component BoardBar inherits Rectangle {
         selected-index: root.bar.selected;
         // The class-facts site discriminator (round-5 D6): the
         // switcher's flyout renders window-level, keyed on site 1.
-        flyout-site: 1;
+        consumer: DropdownConsumer.board-switcher;
         field-text: root.bar.segments.length > 0
             ? root.bar.segments[root.bar.selected].title
             : "";
@@ -238,7 +238,7 @@ export component BoardBar inherits Rectangle {
         // selection (the unarchive does not switch away from the
         // viewed board until the restored board re-selects).
         selected-index: -1;
-        flyout-site: 3;
+        consumer: DropdownConsumer.board-archived;
         field-text: "\{root.bar.archived-rows.length}";
         field-glyph: root.bar.archived-cue;
         field-label: "Archived boards";

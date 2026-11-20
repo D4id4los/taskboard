@@ -2692,17 +2692,24 @@ fn push_task_detail(
         ),
         importance_open: priority.open == Some(crate::router::PriorityField::Importance),
         urgency_open: priority.open == Some(crate::router::PriorityField::Urgency),
-        priority_slots: ModelRc::new(slint::VecModel::from(priority_slot_rows(
-            match priority.open {
-                Some(crate::router::PriorityField::Importance) => subject
-                    .and_then(|t| t.importance)
-                    .map(|level| level as usize + 1),
-                Some(crate::router::PriorityField::Urgency) => subject
-                    .and_then(|t| t.urgency)
-                    .map(|level| level as usize + 1),
-                None => None,
-            },
+        // Each field's own pushed vocabulary (round-9 chunk 15 D-4):
+        // the Dropdown fields are always mounted, so both lists ride
+        // every pass — each marks ITS field's current value (the
+        // widget's selected rows and the open-time anchor read them).
+        importance_rows: ModelRc::new(slint::VecModel::from(dropdown_vocabulary_rows(
+            subject.and_then(|t| t.importance).map(|level| level as usize + 1),
         ))),
+        urgency_rows: ModelRc::new(slint::VecModel::from(dropdown_vocabulary_rows(
+            subject.and_then(|t| t.urgency).map(|level| level as usize + 1),
+        ))),
+        importance_selected_index: i32::try_from(
+            subject.and_then(|t| t.importance).map_or(0, |level| level as usize + 1),
+        )
+        .unwrap_or(0),
+        urgency_selected_index: i32::try_from(
+            subject.and_then(|t| t.urgency).map_or(0, |level| level as usize + 1),
+        )
+        .unwrap_or(0),
         // The labels section's halves (UX R-3 D-2, #789): the
         // subject's live labels as chips in canonical order; the chip
         // ids ride the same pass's table (index-aligned by
@@ -2855,17 +2862,22 @@ fn push_task_detail(
     mutations
 }
 
-/// The priority picker's slot rows (UX R-3 D-1, #788): the
-/// six-value vocabulary in order — `unset` first, then the five
-/// domain levels in declaration order — with the current value
-/// pre-marked (`current` is the vocabulary index of the open field's
-/// level; `None` marks the unset slot).
-fn priority_slot_rows(current: Option<usize>) -> Vec<crate::PrioritySlotRow> {
+/// The priority pickers' vocabulary rows (UX R-3 D-1, #788; round-9
+/// chunk 15 D-4): the six-value vocabulary in order — `unset` first,
+/// then the five domain levels in declaration order — with the
+/// field's current value pre-marked (`current` is the vocabulary
+/// index of the field's level; `None` marks the unset slot), as the
+/// shared `DropdownRow` model (the widget class's row type; the
+/// indicator/tone slots ride the class's neutral defaults).
+fn dropdown_vocabulary_rows(current: Option<usize>) -> Vec<crate::DropdownRow> {
     let mut rows = Vec::with_capacity(6);
     let unset_selected = current.is_none();
-    rows.push(crate::PrioritySlotRow {
+    rows.push(crate::DropdownRow {
         label: SharedString::from("unset"),
+        indicator: crate::DropdownIndicator::None,
+        tone: crate::DropdownTone::Neutral,
         selected: unset_selected,
+        busy: false,
     });
     let levels: [&str; 5] = [
         Importance::VeryLow.text_form(),
@@ -2875,9 +2887,12 @@ fn priority_slot_rows(current: Option<usize>) -> Vec<crate::PrioritySlotRow> {
         Importance::VeryHigh.text_form(),
     ];
     for (index, label) in levels.iter().enumerate() {
-        rows.push(crate::PrioritySlotRow {
+        rows.push(crate::DropdownRow {
             label: SharedString::from(*label),
+            indicator: crate::DropdownIndicator::None,
+            tone: crate::DropdownTone::Neutral,
             selected: current == Some(index + 1),
+            busy: false,
         });
     }
     rows
@@ -4385,12 +4400,12 @@ mod tests {
     /// open field's current level (the unset slot when `None`).
     #[test]
     fn priority_slots_enumerate_the_vocabulary_with_one_mark() {
-        let unset = priority_slot_rows(None);
+        let unset = dropdown_vocabulary_rows(None);
         assert_eq!(unset.len(), 6, "unset + the five domain levels");
         assert!(unset[0].selected, "no level = the unset slot pre-marked");
         assert!(!unset.iter().skip(1).any(|slot| slot.selected));
         // High rides vocabulary index 4 (unset + VeryLow..VeryHigh).
-        let marked = priority_slot_rows(Some(4));
+        let marked = dropdown_vocabulary_rows(Some(4));
         assert_eq!(
             marked.iter().filter(|slot| slot.selected).count(),
             1,
@@ -4413,11 +4428,11 @@ mod tests {
     }
 
     /// Both vocabularies share the slot shape (D-1: one quick-list
-    /// grammar, two fields) — the urgency row's slots are the same
-    /// six-value vocabulary (distinct types, same text forms).
+    /// grammar, two fields) — the urgency field's rows are the same
+    /// six-value vocabulary (same builder, same text forms).
     #[test]
     fn the_urgency_vocabulary_maps_to_the_same_slot_shape() {
-        let marked = priority_slot_rows(Some(1));
+        let marked = dropdown_vocabulary_rows(Some(1));
         for (slot, level) in marked.iter().skip(1).zip([
             Urgency::VeryLow,
             Urgency::Low,

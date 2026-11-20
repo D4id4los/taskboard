@@ -58,17 +58,50 @@ export struct DropdownRow {
     busy: bool,
 }
 
-// The dropdown class's mount-truth facts (round-5 D6): one global for
-// the widget class, `site` discriminating the mounted instances (0 =
-// settings board picker, 1 = board-bar switcher). The widget mirrors
-// its own `open`, the anchor's realized window-space geometry, and the
-// ladder's highlight/seek into it; the window mounts the flyout panel
-// and the dismissal underlay from it. The per-site observation globals
-// (`SettingsBoardFacts`/`BoardBarFacts`) stay the journeys' seams —
-// both are written from the same widget property.
+// The de-sited mount's consumer identity (round-9 chunk 15 D-1/D-fallback):
+// which instance's state the class facts global carries. The spike
+// gate (T-0) proved Slint 1.18.1 cannot self-register per-component
+// handlers on a global callback — the parse grammar accepts only a
+// bare identifier before `=>` (a qualified `Global.callback =>` is no
+// rule), and the `callback foo <=> Global.bar` alias route rejects a
+// handler outright — so the recorded fallback stands: a typed
+// consumer-kind enum, ONE generic mount in the app window dispatching
+// on it (never per-site mount arms; never int sites). New consumers
+// add one enum arm and zero app-window mount edits.
+export enum DropdownConsumer {
+    // The settings remote rows' local-board picker.
+    settings-remote,
+    // The account cards' publish picker.
+    settings-publish,
+    // The board-bar segment switcher.
+    board-switcher,
+    // The board-bar archived-boards roster.
+    board-archived,
+    // The task detail's importance picker (chunk 15's adoption).
+    task-importance,
+    // The task detail's urgency picker.
+    task-urgency,
+}
+
+// The dropdown class's mount-truth facts (round-5 D6, de-sited in
+// round-9 chunk 15): one global for the widget class, `consumer`
+// naming the open instance's kind. The widget mirrors its own `open`,
+// its pushed `rows`, the anchor's realized window-space geometry, and
+// the ladder's highlight/seek into it; the window mounts the flyout
+// panel ONCE on chunk 3's `AnchoredOverlayHost` from it. The per-site
+// observation globals (`SettingsBoardFacts`/`BoardBarFacts`) stay the
+// journeys' seams — both are written from the same widget property.
 export global DropdownFacts {
     in-out property <bool> open: false;
-    in-out property <int> site: -1;
+    in-out property <DropdownConsumer> consumer;
+    // The open instance's pushed rows (D-1): the generic mount's
+    // `DropdownFlyout` model, written at the open edge so the open
+    // instance's own model is always the mounted one.
+    in-out property <[DropdownRow]> rows;
+    // The flyout's select-close marker: a row-activated click closes
+    // by selecting first — the close that does NOT fire the dismissal
+    // seam (D-6). The widget's external-close hook reads and clears it.
+    in-out property <bool> select-close: false;
     in-out property <length> anchor-x;
     in-out property <length> anchor-y;
     in-out property <length> anchor-width;
@@ -139,10 +172,27 @@ export component Dropdown inherits Rectangle {
     // row list is empty; empty string = no caption (the board bar's
     // never-empty dropdown mode renders byte-identical).
     in property <string> empty-hint: "";
-    // The mount-site discriminator (round-5 D6): which instance's
-    // state the class facts global carries (0 = settings board
-    // picker, 1 = board-bar switcher).
-    in property <int> flyout-site: -1;
+    // The de-sited mount's consumer identity (round-9 chunk 15
+    // D-fallback): pushed into the class facts global at the open
+    // edge — the ONE generic mount dispatches the flyout's intents on
+    // it. Replaces the retired `flyout-site` int.
+    in property <DropdownConsumer> consumer;
+    // The adapter-driven open (round-9 chunk 15, the priority
+    // adoption's shape): when armed, the field's open arms route the
+    // intent to the consumer instead of opening widget-internally —
+    // the adapter owns the exclusivity/gates (the kiosk refusal, the
+    // one-picker-at-a-time rule) and flips the flag back; the view's
+    // changed-hook invokes `open-requested()`.
+    in property <bool> open-routes-external: false;
+    callback external-open-requested();
+    // The dismissal seam's arm (round-9 chunk 15 D-6): when true,
+    // every internal close routes `dismiss-asked()` to the consumer
+    // (the adapter restores the origin focus), and the close skips the
+    // field refocus — the field must not steal the walk back from the
+    // adapter's restore. Legacy sites leave it false: close stays the
+    // silent, field-refocusing widget-internal close.
+    in property <bool> has-dismiss-seam: false;
+    callback dismiss-asked();
 
     // The intents (no inline side effects).
     callback row-activated(int);
@@ -164,6 +214,20 @@ export component Dropdown inherits Rectangle {
             root.open = true;
             root.anchor-highlight();
             field-scope.focus();
+        }
+    }
+
+    // The field's own open arms (click / Return / a11y default): the
+    // widget-internal open, or — with `open-routes-external` armed —
+    // the consumer's open intent (the adapter's gates own the flip).
+    public function open-intent() {
+        if (root.open-routes-external) {
+            root.external-open-requested();
+        } else {
+            root.open = !root.open;
+            if (root.open) {
+                root.anchor-highlight();
+            }
         }
     }
 
@@ -198,7 +262,11 @@ export component Dropdown inherits Rectangle {
     // re-enters as an already-false no-op).
     property <bool> open-mirrored: root.open;
     changed open-mirrored => {
-        DropdownFacts.site = root.flyout-site;
+        // The de-sited identity + model push (round-9 chunk 15): the
+        // open instance names its consumer kind and mounts its own
+        // rows — the ONE generic mount reads both from the global.
+        DropdownFacts.consumer = root.consumer;
+        DropdownFacts.rows = root.rows;
         DropdownFacts.open = self.open-mirrored;
         // The anchor geometry rides the open flip too: at click time
         // the absolute position is realized, and the testing backend
@@ -210,10 +278,20 @@ export component Dropdown inherits Rectangle {
         DropdownFacts.anchor-width = flyout-anchor.width;
         DropdownFacts.anchor-height = flyout-anchor.height;
     }
-    property <bool> fact-open: DropdownFacts.open && DropdownFacts.site == root.flyout-site;
+    property <bool> fact-open: DropdownFacts.open;
     changed fact-open => {
         if (!self.fact-open && root.open) {
-            root.close();
+            // The window-side close (round-5 D6; de-sited round-9
+            // chunk 15): the fact write lands as the widget's close —
+            // the field refocuses before the panel unmounts (the
+            // recorded walk contract), UNLESS the consumer owns the
+            // dismissal (has-dismiss-seam: the adapter restores the
+            // origin). The select-close marker (set by the flyout's
+            // row click) suppresses the dismissal routing — that
+            // close selects first (D-6).
+            let was-select = DropdownFacts.select-close;
+            DropdownFacts.select-close = false;
+            root.close-internal(!was-select);
         }
     }
     // The anchor geometry, mirrored one-way: window-space by
@@ -277,8 +355,12 @@ export component Dropdown inherits Rectangle {
         // the icon-button precedent).
         accessible-action-default => {
             if (root.field-enabled && root.rows.length > 0) {
-                root.open = true;
-                root.anchor-highlight();
+                if (root.open-routes-external) {
+                    root.external-open-requested();
+                } else {
+                    root.open = true;
+                    root.anchor-highlight();
+                }
             }
         }
         // The ladder's field arm (the icon-button raw-key half, r3
@@ -303,17 +385,19 @@ export component Dropdown inherits Rectangle {
                     accept
                 } else if (event.text == Key.Return) {
                     root.row-activated(root.highlight);
+                    // The select-close (D-6): selects first, closes
+                    // without the dismissal routing.
                     root.open = false;
                     accept
                 } else if (event.text == Key.Escape) {
-                    root.open = false;
+                    root.close-internal(true);
                     accept
                 } else if (event.text == Key.Tab) {
                     // Close BEFORE the traversal runs: the flyout is
                     // not the focus owner (the field is), so the
                     // unmount is safe, and the walk continues from the
                     // field onto the next stop.
-                    root.open = false;
+                    root.close-internal(true);
                     reject
                 } else {
                     reject
@@ -321,8 +405,12 @@ export component Dropdown inherits Rectangle {
             } else if (!root.open
                     && (event.text == Key.Return || event.text == " ")
                     && root.field-enabled && root.rows.length > 0) {
-                root.open = true;
-                root.anchor-highlight();
+                if (root.open-routes-external) {
+                    root.external-open-requested();
+                } else {
+                    root.open = true;
+                    root.anchor-highlight();
+                }
                 accept
             } else {
                 reject
@@ -334,7 +422,7 @@ export component Dropdown inherits Rectangle {
         // scope that actually holds the walk.
         changed has-focus => {
             if (!self.has-focus && root.open) {
-                root.open = false;
+                root.close-internal(true);
             }
         }
         field-row := HorizontalLayout {
@@ -391,9 +479,17 @@ export component Dropdown inherits Rectangle {
             enabled: root.field-enabled && root.rows.length > 0;
             clicked => {
                 field-scope.focus();
-                root.open = !root.open;
-                if (root.open) {
-                    root.anchor-highlight();
+                if (root.open-routes-external) {
+                    // The consumer's gates own the flip (the adapter
+                    // resolves exclusivity, kiosk, foreign flows).
+                    if (!root.open) {
+                        root.external-open-requested();
+                    }
+                } else {
+                    root.open = !root.open;
+                    if (root.open) {
+                        root.anchor-highlight();
+                    }
                 }
             }
         }
@@ -463,6 +559,22 @@ export component Dropdown inherits Rectangle {
     // post-reject Tab traversal (the walk would stop dead).
     public function close() {
         field-scope.focus();
+        root.open = false;
+    }
+
+    // The internal close with the D-6 routing: `route-dismiss` fires
+    // the consumer's dismissal seam (Escape / Tab / walk-away / the
+    // window-side fact close) — and, when the consumer owns the
+    // dismissal (`has-dismiss-seam`), skips the field refocus: the
+    // adapter's origin restore must win the walk (the focus contract
+    // the priority journeys pin). Legacy sites have no seam: the close
+    // is the silent, field-refocusing widget-internal close of record.
+    public function close-internal(route-dismiss: bool) {
+        if (route-dismiss && root.has-dismiss-seam) {
+            root.dismiss-asked();
+        } else {
+            field-scope.focus();
+        }
         root.open = false;
     }
 }

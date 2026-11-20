@@ -12,8 +12,9 @@
 // declaration order (the Tab walk reaches it first).
 
 import { Theme } from "../ui/theme.slint";
-import { Dropdown, DropdownFacts, DropdownRow, DropdownIndicator, DropdownTone } from "../ui/widgets/dropdown.slint";
+import { Dropdown, DropdownConsumer, DropdownFacts, DropdownRow, DropdownIndicator, DropdownTone } from "../ui/widgets/dropdown.slint";
 import { DropdownFlyout } from "../ui/widgets/dropdown-flyout.slint";
+import { AnchoredOverlayHost } from "../ui/widgets/anchored-overlay.slint";
 import { IconKind } from "../ui/widgets/icon.slint";
 
 export global DropdownProbe {
@@ -24,13 +25,23 @@ export global DropdownProbe {
     in-out property <int> hovered: 0;
     in-out property <int> hovered-index: -1;
     in-out property <int> unhovered: 0;
+    // The T-0 spike's counters (round-9 chunk 15): the de-sited
+    // mount's identity evidence — each probe consumer kind routes to
+    // its own counter through the ONE generic mount's dispatch (the
+    // recorded D-fallback: consumer-kind forwarding; the primary
+    // self-registration path is unparsable on Slint 1.18.1).
+    in-out property <int> reg-activated-a: 0;
+    in-out property <int> reg-activated-b: 0;
+    in-out property <int> reg-index: -1;
 }
 
 component FourRows inherits Dropdown {
     width: Theme.space-8 * 3;
     x: Theme.space-2;
     y: Theme.space-2;
-    flyout-site: 0;
+    // The probe's stand-in consumer kinds (the fixture consumes the
+    // class's enum; the dispatch below reads them).
+    consumer: DropdownConsumer.task-importance;
     field-label: "Probe field";
     field-description: "Opens the probe list.";
     rows: [
@@ -47,7 +58,7 @@ component NineRows inherits Dropdown {
     width: Theme.space-8 * 3;
     x: Theme.space-2;
     y: Theme.space-2 + Theme.space-8;
-    flyout-site: 1;
+    consumer: DropdownConsumer.task-urgency;
     rows: [
         { label: "r0", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
         { label: "r1", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
@@ -61,6 +72,51 @@ component NineRows inherits Dropdown {
     ];
     selected-index: 0;
     field-text: "r0";
+}
+
+// The T-0 spike instances (round-9 chunk 15): two `Dropdown` mounts
+// with distinct consumer kinds — the de-sited identity evidence. The
+// ONE generic mount below dispatches the flyout's activation on the
+// consumer kind (the recorded D-fallback), and the counter each kind
+// routes to is the identity proof: no per-site mount arms, no int
+// sites, two instances, two seams.
+component SpikeA inherits Dropdown {
+    width: Theme.space-8 * 3;
+    x: Theme.space-2;
+    y: Theme.space-2 + Theme.space-8 * 2;
+    consumer: DropdownConsumer.settings-remote;
+    // The consumer wiring (the instantiation-site law — the priority
+    // adoption's shape): the widget's own select intents route to the
+    // kind's counter (the mount dispatches the flyout's clicks).
+    row-activated(index) => {
+        DropdownProbe.reg-activated-a += 1;
+        DropdownProbe.reg-index = index;
+    }
+    rows: [
+        { label: "sa0", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: true, busy: false },
+        { label: "sa1", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+    ];
+    selected-index: 0;
+    field-text: "sa0";
+
+}
+
+component SpikeB inherits Dropdown {
+    width: Theme.space-8 * 3;
+    x: Theme.space-2;
+    y: Theme.space-2 + Theme.space-8 * 3;
+    consumer: DropdownConsumer.settings-publish;
+    row-activated(index) => {
+        DropdownProbe.reg-activated-b += 1;
+        DropdownProbe.reg-index = index + 100;
+    }
+    rows: [
+        { label: "sb0", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: true, busy: false },
+        { label: "sb1", indicator: DropdownIndicator.none, tone: DropdownTone.neutral, selected: false, busy: false },
+    ];
+    selected-index: 0;
+    field-text: "sb0";
+
 }
 
 export component DropdownProbeWindow inherits Window {
@@ -113,56 +169,68 @@ export component DropdownProbeWindow inherits Window {
 
     dd9 := NineRows {}
 
-    // The class's overlay grammar (round-5 D6): the flyout renders
-    // window-level, so the probe mounts the same underlay + panels
-    // the app window does — keyed on the two sites, with the same
-    // below-the-anchor placement (no status bar here; the window
-    // bottom is the clamp).
-    if (DropdownFacts.open): TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => {
+    // The T-0 spike's observation seams + its own generic mount (the
+    // identity test reads the field boxes to click each spike field).
+    in-out property <length> spike-a-y: spike-a.y;
+    in-out property <length> spike-b-y: spike-b.y;
+    in-out property <length> spike-h: spike-a.height;
+    spike-a := SpikeA {}
+    spike-b := SpikeB {}
+    // The class's overlay grammar, de-sited (round-9 chunk 15): the
+    // ONE generic mount on the `AnchoredOverlayHost` — the app
+    // window's mount shape verbatim (the probe has no status bar; the
+    // window bottom is the floor). The consumer dispatch routes each
+    // open instance's rows to its own counters.
+    if (DropdownFacts.open): AnchoredOverlayHost {
+        open: true;
+        anchor-x: DropdownFacts.anchor-x;
+        anchor-y: DropdownFacts.anchor-y;
+        anchor-width: DropdownFacts.anchor-width;
+        anchor-height: DropdownFacts.anchor-height;
+        viewport-width: root.width;
+        viewport-floor: root.height;
+        panel-preferred-width: DropdownFacts.anchor-width;
+        walk-stops: 1;
+        // The probe's consumers have no dismissal seam: the underlay
+        // closes through the fact write (the widget's external-close
+        // hook lands as the field-refocusing close).
+        dismissed => {
             DropdownFacts.open = false;
         }
-    }
-    if (DropdownFacts.open && DropdownFacts.site == 0): DropdownFlyout {
-        rows: dd.rows;
-        x: max(Theme.space-2,
-               min(DropdownFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: min(DropdownFacts.anchor-y + DropdownFacts.anchor-height + Theme.space-1,
-               root.height - self.height - Theme.space-2);
-        width: DropdownFacts.anchor-width;
-        row-activated(i) => {
-            DropdownProbe.activated += 1;
-            DropdownProbe.activated-index = i;
+        changed panel-x => { DropdownFacts.panel-x = self.panel-x; }
+        changed panel-y => { DropdownFacts.panel-y = self.panel-y; }
+        init => {
+            DropdownFacts.panel-x = self.panel-x;
+            DropdownFacts.panel-y = self.panel-y;
         }
-        row-context(i, x, y) => {
-            DropdownProbe.contexts += 1;
-            DropdownProbe.context-index = i;
-        }
-        row-hovered(i, x, y, w, h) => {
-            DropdownProbe.hovered += 1;
-            DropdownProbe.hovered-index = i;
-        }
-        row-unhovered() => {
-            DropdownProbe.unhovered += 1;
-        }
-    }
-    if (DropdownFacts.open && DropdownFacts.site == 1): DropdownFlyout {
-        rows: dd9.rows;
-        x: max(Theme.space-2,
-               min(DropdownFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: min(DropdownFacts.anchor-y + DropdownFacts.anchor-height + Theme.space-1,
-               root.height - self.height - Theme.space-2);
-        width: DropdownFacts.anchor-width;
-        row-activated(i) => {
-            DropdownProbe.activated += 1;
-            DropdownProbe.activated-index = i;
-        }
-        row-unhovered() => {
-            DropdownProbe.unhovered += 1;
+        DropdownFlyout {
+            rows: DropdownFacts.rows;
+            width: DropdownFacts.anchor-width;
+            row-activated(index) => {
+                if (DropdownFacts.consumer == DropdownConsumer.settings-remote) {
+                    DropdownProbe.reg-activated-a += 1;
+                    DropdownProbe.reg-index = index;
+                } else if (DropdownFacts.consumer == DropdownConsumer.settings-publish) {
+                    DropdownProbe.reg-activated-b += 1;
+                    DropdownProbe.reg-index = index + 100;
+                } else {
+                    DropdownProbe.activated += 1;
+                    DropdownProbe.activated-index = index;
+                }
+            }
+            row-context(index, x, y) => {
+                if (DropdownFacts.consumer == DropdownConsumer.task-importance) {
+                    DropdownProbe.contexts += 1;
+                    DropdownProbe.context-index = index;
+                }
+            }
+            row-hovered(index, x, y, w, h) => {
+                DropdownProbe.hovered += 1;
+                DropdownProbe.hovered-index = index;
+            }
+            row-unhovered() => {
+                DropdownProbe.unhovered += 1;
+            }
         }
     }
 

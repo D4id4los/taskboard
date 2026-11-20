@@ -1289,6 +1289,12 @@ impl Adapter {
             Some(crate::keyscope::LadderGlobal::BoardBar)
         } else if window.global::<crate::TimeFieldFacts>().get_open() {
             Some(crate::keyscope::LadderGlobal::TimeField)
+        } else if window.global::<crate::DropdownFacts>().get_open() {
+            // The task detail's pickers (round-9 chunk 15 D-7): the
+            // class facts global's open bit, LAST — the three legacy
+            // globals above win their own flyouts first, so this arm
+            // catches only the detail's dropdown ladders.
+            Some(crate::keyscope::LadderGlobal::TaskDetailPriority)
         } else {
             None
         };
@@ -6124,7 +6130,7 @@ impl Adapter {
                     facts.set_switcher_request(true);
                     facts.set_open(true);
                     let dd = window.global::<crate::DropdownFacts>();
-                    dd.set_site(1);
+                    dd.set_consumer(crate::DropdownConsumer::BoardSwitcher);
                     dd.set_anchor_x(facts.get_anchor_x());
                     dd.set_anchor_y(facts.get_anchor_y());
                     dd.set_anchor_width(facts.get_anchor_width());
@@ -12151,7 +12157,7 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
 fn switcher_flyout_open(window: &AppWindow) -> bool {
     let dd = window.global::<crate::DropdownFacts>();
     dd.get_open()
-        && dd.get_site() == 1
+        && dd.get_consumer() == crate::DropdownConsumer::BoardSwitcher
         && window
             .global::<crate::BoardBarFacts>()
             .get_switcher_request()

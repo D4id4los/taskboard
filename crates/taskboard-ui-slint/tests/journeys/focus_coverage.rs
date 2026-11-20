@@ -105,7 +105,10 @@ const EXEMPT: &[(&str, &str)] = &[
         "modal dismissal surface; the panel closes on Escape",
     ),
     (
-        "TouchArea:AppWindow::dropdown-backdrop",
+        // The dropdown group rides the `AnchoredOverlayHost` now
+        // (round-9 chunk 15 D-3): the dismissal layer is the host's,
+        // not the site's backdrop (the timer-setter precedent above).
+        "TouchArea:AnchoredOverlayHost::dismissal",
         "modal dismissal surface; the flyout closes on Escape",
     ),
     (
@@ -1831,7 +1834,7 @@ fn dropdown_has_no_pointer_only_controls() {
         assert_modal_scan(
             &mounted,
             "DropdownFlyout",
-            &["TouchArea:AppWindow::dropdown-backdrop"],
+            &["TouchArea:AnchoredOverlayHost::dismissal"],
         );
     });
 }

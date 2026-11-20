@@ -20,7 +20,7 @@ export { FieldValidity }
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { Slider } from "../widgets/slider.slint";
 import { SettingsScrollFacts, SettingsBoardFacts } from "../settings-facts.slint";
-import { Dropdown, DropdownRow, DropdownIndicator, DropdownTone } from "../widgets/dropdown.slint";
+import { Dropdown, DropdownConsumer, DropdownRow, DropdownIndicator, DropdownTone } from "../widgets/dropdown.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
 import { InfoTip } from "../widgets/info-tip.slint";
 import { Responsive, Breakpoint } from "../responsive.slint";
@@ -502,7 +502,7 @@ component RemotePicker inherits Dropdown {
     field-text: SettingsBoardCopy.placeholder;
     field-label: SettingsBoardCopy.label;
     field-description: SettingsBoardCopy.description;
-    flyout-site: 0;
+    consumer: DropdownConsumer.settings-remote;
     empty-hint: SettingsBoardCopy.empty-hint;
     row-activated(i) => {
         root.picked(root.item-index, i);
@@ -551,7 +551,7 @@ component DeckPublishPicker inherits Dropdown {
     field-text: SettingsPublishCopy.placeholder;
     field-label: SettingsPublishCopy.label;
     field-description: SettingsPublishCopy.description;
-    flyout-site: 1;
+    consumer: DropdownConsumer.settings-publish;
     empty-hint: SettingsPublishCopy.empty-hint;
     row-activated(i) => {
         root.publish-picked(root.item-index, i);

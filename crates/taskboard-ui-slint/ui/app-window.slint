@@ -67,7 +67,7 @@ import { TextField, FieldValidity } from "widgets/text-field.slint";
 export { FieldValidity }
 import { MenuPanelFacts, DatePickerFacts } from "menu-facts.slint";
 import { SettingsScrollFacts, SettingsBoardFacts } from "settings-facts.slint";
-import { DropdownLadder, DropdownFacts } from "widgets/dropdown.slint";
+import { DropdownConsumer, DropdownFacts, DropdownLadder } from "widgets/dropdown.slint";
 import { DropdownFlyout } from "widgets/dropdown-flyout.slint";
 import { TimeFieldFacts } from "widgets/time-field.slint";
 import { QuickListFlyout } from "widgets/quick-list-flyout.slint";
@@ -79,7 +79,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownLadder, DropdownFacts, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
 export { ReviewWalkModel, DialogButtonModel, DialogButtonRole }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
@@ -1158,120 +1158,103 @@ export component AppWindow inherits Window {
     // geometry is the date-picker mount's exact expression shape:
     // below the anchor when it fits between the anchor and the status
     // bar, else flipped above, both clamped into the window margins.
-    if (DropdownFacts.open): dropdown-backdrop := TouchArea {
-        width: 100%;
-        height: 100%;
-        clicked => {
-            DropdownFacts.open = false;
-        }
-        pointer-event(event) => {
-            if (event.kind == PointerEventKind.down
-                    && event.button == PointerEventButton.right) {
+    // The ONE generic dropdown flyout mount (round-9 chunk 15, D-1's
+    // de-sited grammar via the recorded D-fallback): the class facts
+    // global carries the open instance's consumer kind, its pushed
+    // rows, and the anchor geometry; this mount rides chunk 3's
+    // `AnchoredOverlayHost` (the last hand clamp/flip family dies —
+    // chunk 17's #954 absorption map loses this family), and
+    // dispatches the flyout's intents on the consumer kind. New
+    // dropdown consumers add one `DropdownConsumer` arm and zero
+    // app-window mount edits.
+    if (DropdownFacts.open): dropdown-host := AnchoredOverlayHost {
+        open: true;
+        anchor-x: DropdownFacts.anchor-x;
+        anchor-y: DropdownFacts.anchor-y;
+        anchor-width: DropdownFacts.anchor-width;
+        anchor-height: DropdownFacts.anchor-height;
+        viewport-width: root.width;
+        viewport-floor: status.y;
+        // The anchor-width law preserved: the flyout is as wide as
+        // its closed field (the panel's explicit width below pins the
+        // layout child; the host's floor keeps the minimum).
+        panel-preferred-width: DropdownFacts.anchor-width;
+        walk-stops: 1;
+        // The dismissal layer's routing (D-6): the priority consumers
+        // own their close (the adapter's origin restore); the legacy
+        // sites close through the fact write alone.
+        dismissed => {
+            if (DropdownFacts.consumer == DropdownConsumer.task-importance
+                    || DropdownFacts.consumer == DropdownConsumer.task-urgency) {
+                // The priority consumers own their close (the adapter's
+                // origin restore; D-6).
+                root.priority-dismiss-requested();
+            } else {
+                // The legacy sites close through the fact write — the
+                // retired backdrop's exact grammar (the widget's
+                // external-close hook lands as the field-refocusing
+                // close).
                 DropdownFacts.open = false;
             }
         }
-    }
-    if (DropdownFacts.open && DropdownFacts.site == 0): DropdownFlyout {
-        rows: SettingsModel.board-options;
-        x: max(Theme.space-2,
-               min(DropdownFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((DropdownFacts.anchor-y + DropdownFacts.anchor-height
-                        + Theme.space-1 + self.height <= status.y
-                    ? DropdownFacts.anchor-y + DropdownFacts.anchor-height
-                        + Theme.space-1
-                    : DropdownFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
-        width: DropdownFacts.anchor-width;
-        row-activated(i) => root.settings-remote-bind-picked(SettingsBoardFacts.active-item, i);
-        row-hovered(i, x, y, w, h) => {
-            TooltipState.hover(
-                SettingsModel.board-options[i].label,
-                SettingsBoardCopy.row-description,
-                [],
-                x, y, w, h);
+        changed panel-x => { DropdownFacts.panel-x = self.panel-x; }
+        changed panel-y => { DropdownFacts.panel-y = self.panel-y; }
+        init => {
+            // The mount-time seed (a `changed` hook alone misses the
+            // initial placement — the flyout's old `init` idiom,
+            // moved to the mount with the host).
+            DropdownFacts.panel-x = self.panel-x;
+            DropdownFacts.panel-y = self.panel-y;
         }
-        row-unhovered() => {
-            TooltipState.unhover();
-        }
-    }
-    if (DropdownFacts.open && DropdownFacts.site == 2): DropdownFlyout {
-        rows: SettingsModel.board-options;
-        x: max(Theme.space-2,
-               min(DropdownFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((DropdownFacts.anchor-y + DropdownFacts.anchor-height
-                        + Theme.space-1 + self.height <= status.y
-                    ? DropdownFacts.anchor-y + DropdownFacts.anchor-height
-                        + Theme.space-1
-                    : DropdownFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
-        width: DropdownFacts.anchor-width;
-        row-activated(i) => root.settings-publish-picked(SettingsBoardFacts.active-item, i);
-        row-hovered(i, x, y, w, h) => {
-            TooltipState.hover(
-                SettingsModel.board-options[i].label,
-                SettingsPublishCopy.row-description,
-                [],
-                x, y, w, h);
-        }
-        row-unhovered() => {
-            TooltipState.unhover();
-        }
-    }
-    if (DropdownFacts.open && DropdownFacts.site == 1): DropdownFlyout {
-        rows: root.board-bar-model.rows;
-        x: max(Theme.space-2,
-               min(DropdownFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((DropdownFacts.anchor-y + DropdownFacts.anchor-height
-                        + Theme.space-1 + self.height <= status.y
-                    ? DropdownFacts.anchor-y + DropdownFacts.anchor-height
-                        + Theme.space-1
-                    : DropdownFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
-        width: DropdownFacts.anchor-width;
-        row-activated(i) => root.board-bar-segment-activated(i);
-        row-hovered(i, x, y, w, h) => {
-            TooltipState.hover(
-                root.board-bar-model.rows[i].label,
-                "Switches to this board.",
-                root.board-segment-hint,
-                x, y, w, h);
-        }
-        row-unhovered() => {
-            TooltipState.unhover();
-        }
-    }
-    // The archived-boards roster's flyout (UX R-1 D-1, #785): site 3
-    // — the bar's trailing indicator; activating a row routes the
-    // unarchive seam.
-    if (DropdownFacts.open && DropdownFacts.site == 3): DropdownFlyout {
-        rows: root.board-bar-model.archived-rows;
-        x: max(Theme.space-2,
-               min(DropdownFacts.anchor-x,
-                   root.width - self.width - Theme.space-2));
-        y: max(Theme.space-2,
-               min((DropdownFacts.anchor-y + DropdownFacts.anchor-height
-                        + Theme.space-1 + self.height <= status.y
-                    ? DropdownFacts.anchor-y + DropdownFacts.anchor-height
-                        + Theme.space-1
-                    : DropdownFacts.anchor-y - self.height - Theme.space-1),
-                   status.y - self.height - Theme.space-2));
-        width: DropdownFacts.anchor-width;
-        row-activated(i) => root.board-bar-archived-activated(i);
-        row-hovered(i, x, y, w, h) => {
-            TooltipState.hover(
-                root.board-bar-model.archived-rows[i].label,
-                "Restores this archived board to the bar.",
-                [],
-                x, y, w, h);
-        }
-        row-unhovered() => {
-            TooltipState.unhover();
+        DropdownFlyout {
+            rows: DropdownFacts.rows;
+            width: DropdownFacts.anchor-width;
+            row-activated(index) => {
+                if (DropdownFacts.consumer == DropdownConsumer.settings-remote) {
+                    root.settings-remote-bind-picked(SettingsBoardFacts.active-item, index);
+                } else if (DropdownFacts.consumer == DropdownConsumer.settings-publish) {
+                    root.settings-publish-picked(SettingsBoardFacts.active-item, index);
+                } else if (DropdownFacts.consumer == DropdownConsumer.board-switcher) {
+                    root.board-bar-segment-activated(index);
+                } else if (DropdownFacts.consumer == DropdownConsumer.board-archived) {
+                    root.board-bar-archived-activated(index);
+                } else {
+                    // The task detail's pickers (D-9): the slot index
+                    // routes verbatim; the adapter resolves the field
+                    // from `priority_open`.
+                    root.priority-slot-clicked(index);
+                }
+            }
+            row-hovered(index, x, y, w, h) => {
+                if (DropdownFacts.consumer == DropdownConsumer.settings-remote) {
+                    TooltipState.hover(
+                        SettingsModel.board-options[index].label,
+                        SettingsBoardCopy.row-description,
+                        [],
+                        x, y, w, h);
+                } else if (DropdownFacts.consumer == DropdownConsumer.settings-publish) {
+                    TooltipState.hover(
+                        SettingsModel.board-options[index].label,
+                        SettingsPublishCopy.row-description,
+                        [],
+                        x, y, w, h);
+                } else if (DropdownFacts.consumer == DropdownConsumer.board-switcher) {
+                    TooltipState.hover(
+                        root.board-bar-model.rows[index].label,
+                        "Switches to this board.",
+                        root.board-segment-hint,
+                        x, y, w, h);
+                } else if (DropdownFacts.consumer == DropdownConsumer.board-archived) {
+                    TooltipState.hover(
+                        root.board-bar-model.archived-rows[index].label,
+                        "Restores this archived board to the bar.",
+                        [],
+                        x, y, w, h);
+                }
+            }
+            row-unhovered() => {
+                TooltipState.unhover();
+            }
         }
     }
     // The board color strip (UX R-4 D-1, #791): the dismissal

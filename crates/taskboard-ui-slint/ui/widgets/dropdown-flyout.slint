@@ -36,23 +36,13 @@ export component DropdownFlyout inherits Rectangle {
     drop-shadow-color: Theme.surface-hover;
     clip: true;
 
-    // The realized-geometry mirror into the class facts (the
-    // action-menu's mirror-facts shape): `init` writes the mount-time
-    // value (a `changed` hook alone misses it — the initial binding
-    // evaluation fires no change), the derived-property wraps cover
-    // every later re-layout.
-    init => {
-        DropdownFacts.panel-x = self.x;
-        DropdownFacts.panel-y = self.y;
-    }
-    property <length> panel-x-mirrored: self.x;
-    property <length> panel-y-mirrored: self.y;
-    changed panel-x-mirrored => {
-        DropdownFacts.panel-x = self.panel-x-mirrored;
-    }
-    changed panel-y-mirrored => {
-        DropdownFacts.panel-y = self.panel-y-mirrored;
-    }
+    // The realized-geometry mirror into the class facts moved to the
+    // mount (round-9 chunk 15 D-3): the panel now rides the
+    // `AnchoredOverlayHost`, which owns the placement — the mount
+    // wires the host's `panel-x/panel-y` observation outs into the
+    // facts (`changed` + `init` at the mount site), so this panel no
+    // longer mirrors its own position (it sits at 0,0 inside the
+    // host's panel wrapper).
 
     // A plain a11y list container — the ladder's keys arrive at the
     // field (the widget's scope), the window's capture decline hands
@@ -90,9 +80,14 @@ export component DropdownFlyout inherits Rectangle {
                     clicked => {
                         root.row-activated(row-index);
                         // The window-side close (round-5 D6): the
-                        // fact write lands as the widget's `close()`
-                        // — the field refocuses before the panel
-                        // unmounts (the recorded walk contract).
+                        // fact write lands as the widget's close —
+                        // the field refocuses before the panel
+                        // unmounts (the recorded walk contract). The
+                        // select-close marker (round-9 chunk 15 D-6):
+                        // this close SELECTS first, so the widget's
+                        // external-close hook skips the dismissal
+                        // routing.
+                        DropdownFacts.select-close = true;
                         DropdownFacts.open = false;
                     }
                     pointer-event(event) => {
@@ -142,6 +137,22 @@ export component DropdownFlyout inherits Rectangle {
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
+                    }
+                    // The selected row's check glyph (round-9 chunk 15
+                    // D-5, a class-wide rendering law: selected ⇒
+                    // emphasized text + check — no per-row flag, the
+                    // model's `selected` is the only input). The exact
+                    // `Path` chunk 13's stay list carried over from
+                    // the bespoke priority slot rows.
+                    if (row.selected): check-glyph := Path {
+                        width: Theme.space-3;
+                        height: Theme.space-3;
+                        commands: "M 2 6 L 5 9 L 10 3";
+                        stroke: Semantic.success;
+                        stroke-width: Theme.focus-ring-width;
+                        fill: transparent;
+                        viewbox-width: 12;
+                        viewbox-height: 12;
                     }
                 }
             }

@@ -240,23 +240,29 @@ pub enum LadderGlobal {
     BoardBar,
     /// `TimeFieldFacts.open` — the quick-list flyout.
     TimeField,
+    /// `DropdownFacts.open` with a task-detail consumer (round-9
+    /// chunk 15 D-7): the detail's importance/urgency dropdown
+    /// flyout. Checked LAST — the settings/board-bar globals are
+    /// read first, so this arm only catches the detail's own pickers
+    /// (a settings dropdown's open fact never reaches it).
+    TaskDetailPriority,
 }
 
 /// The dropdown ladders' decline arm (special case D): while a
 /// flyout is open, its keys decline the single key path — the
 /// focused widget's modal arm owns them. Reproduces the retired
-/// closure's stroke sets verbatim: the two selector ladders decline
-/// the arrows (any modifiers), emacs' C-n/C-p, and Escape/Return;
-/// the quick-list ladder declines the arrows, Escape and Return
-/// (no chords).
+/// closure's stroke sets verbatim: the three selector ladders
+/// decline the arrows (any modifiers), emacs' C-n/C-p, and
+/// Escape/Return; the quick-list ladder declines the arrows, Escape
+/// and Return (no chords).
 #[must_use]
 pub fn dropdown_ladder_declines(open: Option<LadderGlobal>, stroke: crate::keymap::Stroke) -> bool {
     let arrow = matches!(stroke.named_name(), Some("Up" | "Down"));
     let escape_or_return = matches!(stroke.named_name(), Some("Escape" | "Return"));
     match open {
-        Some(LadderGlobal::SettingsBoard | LadderGlobal::BoardBar) => {
-            arrow || escape_or_return || (stroke.ctrl && (stroke.key == 'n' || stroke.key == 'p'))
-        }
+        Some(
+            LadderGlobal::SettingsBoard | LadderGlobal::BoardBar | LadderGlobal::TaskDetailPriority,
+        ) => arrow || escape_or_return || (stroke.ctrl && (stroke.key == 'n' || stroke.key == 'p')),
         Some(LadderGlobal::TimeField) => arrow || escape_or_return,
         None => false,
     }

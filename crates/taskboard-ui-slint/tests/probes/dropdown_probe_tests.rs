@@ -17,7 +17,7 @@ use crate::support;
 
 use slint::ComponentHandle as _;
 
-use support::driver::advance_probe_clock;
+use support::driver::{advance_probe_clock, find_all_by_id_on};
 
 include!(concat!(env!("OUT_DIR"), "/dropdown_probe.rs"));
 
@@ -238,6 +238,56 @@ fn row_hover_reports_the_consumer_seam() {
         assert_eq!(window.global::<DropdownProbe>().get_hovered_index(), 0);
         move_pointer(window, 2.0, 2.0);
         assert_eq!(window.global::<DropdownProbe>().get_unhovered(), 1);
+    });
+}
+
+/// T-0 spike (round-9 chunk 15): the primary self-registration path is
+/// UNPARSABLE on Slint 1.18.1 (a global-callback handler assignment
+/// needs a bare identifier before `=>`; the alias route refuses a
+/// handler) — the recorded D-fallback stands, and this is its proof:
+/// two Dropdown instances with distinct consumer kinds, ONE generic
+/// mount dispatching on the kind, each instance's own counter
+/// incrementing. Return-on-open selects row 0 without pointer
+/// geometry.
+#[test]
+fn the_de_sited_mount_routes_each_consumer_to_its_own_seam() {
+    run_probe(|window| {
+        // Instance A opens and selects.
+        let (x, y) = (
+            window.get_field_x() / 1.0 + window.get_field_h() / 2.0,
+            window.get_spike_a_y() / 1.0 + window.get_spike_h() / 2.0,
+        );
+        click(window, x, y);
+        key(window, K::Return);
+        assert_eq!(window.global::<DropdownProbe>().get_reg_activated_a(), 1);
+        assert_eq!(window.global::<DropdownProbe>().get_reg_activated_b(), 0);
+        assert_eq!(window.global::<DropdownProbe>().get_reg_index(), 0);
+
+        // Instance B opens and selects: its own seam fires.
+        let yb = window.get_spike_b_y() / 1.0 + window.get_spike_h() / 2.0;
+        click(window, x, yb);
+        key(window, K::Return);
+        assert_eq!(window.global::<DropdownProbe>().get_reg_activated_b(), 1);
+        assert_eq!(window.global::<DropdownProbe>().get_reg_index(), 100);
+    });
+}
+
+/// The check glyph (round-9 chunk 15 D-5): the flyout's selected row
+/// renders the check `Path` — a class-wide rendering law (selected ⇒
+/// emphasized text + check glyph), structural evidence only: exactly
+/// one glyph for the one selected row, none when no row is selected.
+#[test]
+fn the_flyout_selected_row_renders_the_check_glyph() {
+    run_probe(|window| {
+        // Closed at mount: the flyout is not mounted, no glyphs.
+        assert!(
+            find_all_by_id_on(window, "DropdownFlyout::check-glyph").is_empty(),
+            "no glyph while closed"
+        );
+        let (x, y) = field_center(window);
+        click(window, x, y);
+        let glyphs = find_all_by_id_on(window, "DropdownFlyout::check-glyph");
+        assert_eq!(glyphs.len(), 1, "exactly the one selected row's glyph");
     });
 }
 
