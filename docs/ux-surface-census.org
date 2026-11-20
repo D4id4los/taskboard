@@ -27,7 +27,20 @@ at UX-plan level — never a chunk-local surprise.
   `ui/widgets/toggle-strip.slint` absorbs the recur editor's seven
   weekday check-glyph IconButtons. Goldens and journeys re-passed
   unchanged (zero golden delta, no re-blessing); closes #950/#953 at
-  merge. Previously:
+  merge. Stage-3 rulings on the three deltas the unification carried
+  (all intentional-change-with-recorded-reason, none reverted):
+  (1) the empty-board CTAs' border resolves to the plan §3 ladder's
+  always-on cta hairline (=Theme.border=, focus-ring lift when
+  focused) — =CtaButton= was the only cta-family copy without it, and
+  no golden captures the empty-board state; (2) disabled dialog
+  buttons become tab-reachable — TextButton's contract (plan §3) gates
+  *activation* only (=enabled || click-through=), never focusability,
+  so the old "disabled button is never focusable" posture of
+  =DialogButton= dies with its bespoke copy (=accessible-enabled=
+  still announces the disabled state); (3) the card's done checkbox
+  shows the hover surface in the done state too — CheckBox unifies on
+  the view-side done-box grammar (hover regardless of =checked=); the
+  card's old =&& !done= suppression was the divergent copy. Previously:
 - *Status*: =round 9 W1 in flight (2026-11-18)= — the widget
   framework base landed on its branch
   (=feat/ui-widget-framework-base=): =ui/widgets/modal-dialog-host.slint=
