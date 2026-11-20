@@ -93,13 +93,7 @@ export component IconButton inherits Rectangle {
             !root.enabled ? Theme.text-secondary
             : root.tone == Tone.neutral
                 ? (touch.has-hover ? Theme.text-primary : Theme.text-secondary)
-            : root.tone == Tone.info ? Theme.text-primary
-            : root.tone == Tone.success ? Semantic.success
-            : root.tone == Tone.warning ? Semantic.warning
-            : root.tone == Tone.danger ? Semantic.danger
-            : root.tone == Tone.overdue ? Semantic.overdue
-            : root.tone == Tone.sync-active ? Semantic.sync-active
-            : Semantic.offline
+            : Semantic.tone-color(root.tone)
         }
 
         Icon {

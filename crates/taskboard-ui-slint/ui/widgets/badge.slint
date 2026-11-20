@@ -19,24 +19,16 @@ export component Badge inherits Rectangle {
     // the `surface` column card and toolbar it must read as a chip,
     // not dissolve into the parent. Translucent semantic tones below
     // are unaffected.
-    background: root.tone == Tone.neutral ? Theme.surface-raised
-        : root.tone == Tone.info ? Theme.surface-raised
-        : root.tone == Tone.success ? Semantic.success.with-alpha(0.2)
-        : root.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)
-        : root.tone == Tone.danger ? Semantic.danger.with-alpha(0.2)
-        : root.tone == Tone.overdue ? Semantic.overdue.with-alpha(0.2)
-        : root.tone == Tone.sync-active ? Semantic.sync-active.with-alpha(0.2)
-        : Semantic.offline.with-alpha(0.2);
+    // The chip fill: the neutral/info chip rides the surface-raised
+    // chip step (r2 D35 — on the `surface` column card and toolbar it
+    // must read as a chip, not dissolve); the semantic tones use the
+    // ladder's translucent `tone-fill` derivation (F-3, #952).
+    background: root.tone == Tone.neutral || root.tone == Tone.info
+        ? Theme.surface-raised
+        : Semantic.tone-fill(root.tone);
 
     pure function tone-color() -> color {
-        root.tone == Tone.neutral ? Theme.text-secondary
-        : root.tone == Tone.info ? Theme.text-primary
-        : root.tone == Tone.success ? Semantic.success
-        : root.tone == Tone.warning ? Semantic.warning
-        : root.tone == Tone.danger ? Semantic.danger
-        : root.tone == Tone.overdue ? Semantic.overdue
-        : root.tone == Tone.sync-active ? Semantic.sync-active
-        : Semantic.offline
+        return Semantic.tone-color(root.tone);
     }
 
     accessible-role: AccessibleRole.text;

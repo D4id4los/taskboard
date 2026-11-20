@@ -18,14 +18,12 @@ export component ListRow inherits Rectangle {
     border-color: Semantic.focus-ring;
 
     pure function tone-color() -> color {
-        root.tone == Tone.neutral ? Theme.text-primary
-        : root.tone == Tone.info ? Theme.text-primary
-        : root.tone == Tone.success ? Semantic.success
-        : root.tone == Tone.warning ? Semantic.warning
-        : root.tone == Tone.danger ? Semantic.danger
-        : root.tone == Tone.overdue ? Semantic.overdue
-        : root.tone == Tone.sync-active ? Semantic.sync-active
-        : Semantic.offline
+        // The row-text neutral step (the ladder's one documented
+        // override — a row's body text reads primary, not secondary;
+        // F-3 #952): the synchronized arms delegate to the ladder.
+        root.tone == Tone.neutral || root.tone == Tone.info
+            ? Theme.text-primary
+            : Semantic.tone-color(root.tone)
     }
 
     HorizontalLayout {

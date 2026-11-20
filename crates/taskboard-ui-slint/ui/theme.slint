@@ -158,18 +158,6 @@ export global Typography {
     out property <TextRole> mono: { size: 12.5px * Theme.base-scale, weight: 400, family: family-mono };
 }
 
-// State colours mapped onto palette entries (§3.1): nothing outside the
-// theme names palette colours. `offline` maps to text-secondary.
-export global Semantic {
-    out property <color> success: #6fd98b;
-    out property <color> warning: #e8c268;
-    out property <color> danger: #e8756f;
-    out property <color> overdue: #ff9e64;
-    out property <color> sync-active: #7aa2f7;
-    out property <color> offline: Theme.text-secondary;
-    out property <color> focus-ring: Theme.focus-ring;
-}
-
 // The D18 tone vocabulary: the theme-level closed state-colour
 // vocabulary (rule A's property surface). Primitives map `Tone` onto
 // `Semantic` internally via conditionals — views never name colours.
@@ -183,6 +171,44 @@ export enum Tone {
     overdue,
     sync-active,
     offline,
+}
+
+// State colours mapped onto palette entries (§3.1): nothing outside the
+// theme names palette colours. `offline` maps to text-secondary.
+export global Semantic {
+    out property <color> success: #6fd98b;
+    out property <color> warning: #e8c268;
+    out property <color> danger: #e8756f;
+    out property <color> overdue: #ff9e64;
+    out property <color> sync-active: #7aa2f7;
+    out property <color> offline: Theme.text-secondary;
+    out property <color> focus-ring: Theme.focus-ring;
+
+    // The F-3 tone-ladder functions (#952, round-9 W5): the canonical
+    // Tone→colour mapping in exactly one copy — every primitive's
+    // ladder chain delegates here; no new conditional chain may
+    // re-state the mapping (the anti-ad-hoc law, ux-surface-census
+    // small-widget family). `tone-color` is the canonical content
+    // mapping (neutral→text-secondary, info→text-primary, the
+    // semantic tones verbatim); `tone-fill` is the translucent chip
+    // fill derived from it (the 0.2 alpha the Badge family paints).
+    // Per-consumer overrides that are interaction or site state
+    // (IconButton's hover lift, ListRow's row-text neutral step,
+    // Badge's surface-raised neutral/info chip fill) stay site-side —
+    // the function owns the ladder, not the site's local deviations.
+    public pure function tone-color(tone: Tone) -> color {
+        return tone == Tone.neutral ? Theme.text-secondary
+            : tone == Tone.info ? Theme.text-primary
+            : tone == Tone.success ? success
+            : tone == Tone.warning ? warning
+            : tone == Tone.danger ? danger
+            : tone == Tone.overdue ? overdue
+            : tone == Tone.sync-active ? sync-active
+            : offline;
+    }
+    public pure function tone-fill(tone: Tone) -> color {
+        return tone-color(tone).with-alpha(0.2);
+    }
 }
 
 // The due classification as the markup vocabulary (models maps the

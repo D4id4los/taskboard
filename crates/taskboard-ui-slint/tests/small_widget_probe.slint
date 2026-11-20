@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The small-widget probe (round-9 W5, plan §4): the five new
+// primitives (StatusNotice, ConfirmStrip, ActionChip, SectionHeader,
+// GhostOpener) plus the theme's tone-ladder functions mounted with
+// controlled fixtures. The probe catalogue's assertions read the
+// typed root seams from Rust (`small_widget_probe_tests.rs`); every
+// intent lands in a counter. No text assertions, no clocks.
+
+import { Theme, Semantic, Tone } from "../ui/theme.slint";
+
+// ---- T1: the tone ladder (F-3, #952) -----------------------------
+// Pure-function equality against the Semantic constants: each arm
+// mirrors `Semantic.tone-color`/`tone-fill`'s own expression so the
+// probe asserts identity, not a pinned literal.
+export component SmallWidgetProbe inherits Window {
+    width: Theme.space-15 * 8;
+    height: Theme.space-15 * 6;
+    background: Theme.background;
+
+    // Tone-color arms (typed colour equality against the constants).
+    out property <color> tone-neutral: Semantic.tone-color(Tone.neutral);
+    out property <color> tone-info: Semantic.tone-color(Tone.info);
+    out property <color> tone-success: Semantic.tone-color(Tone.success);
+    out property <color> tone-warning: Semantic.tone-color(Tone.warning);
+    out property <color> tone-danger: Semantic.tone-color(Tone.danger);
+    out property <color> tone-overdue: Semantic.tone-color(Tone.overdue);
+    out property <color> tone-sync-active: Semantic.tone-color(Tone.sync-active);
+    out property <color> tone-offline: Semantic.tone-color(Tone.offline);
+    // The named constants the arms must equal.
+    out property <color> semantic-success: Semantic.success;
+    out property <color> semantic-warning: Semantic.warning;
+    out property <color> semantic-danger: Semantic.danger;
+    out property <color> semantic-overdue: Semantic.overdue;
+    out property <color> semantic-sync-active: Semantic.sync-active;
+    out property <color> semantic-offline: Semantic.offline;
+    // Tone-fill arms (the derived translucent fill) beside the
+    // literal 0.2-alpha derivations of the same constants.
+    out property <color> fill-success: Semantic.tone-fill(Tone.success);
+    out property <color> fill-danger: Semantic.tone-fill(Tone.danger);
+    out property <color> literal-success-fill: Semantic.success.with-alpha(0.2);
+    out property <color> literal-danger-fill: Semantic.danger.with-alpha(0.2);
+    // The theme mirror (the colour-forwarding evidence reads equality
+    // against the token, not a pin of the token's value).
+    out property <color> theme-text-secondary: Theme.text-secondary;
+    out property <color> theme-text-primary: Theme.text-primary;
+}
