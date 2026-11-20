@@ -8,7 +8,7 @@
 //! Assertion discipline is the journeys suite's: typed commands at
 //! the fake-engine boundary, never text oracles.
 
-mod support;
+use crate::support;
 
 use support::focus_journey::{JourneyHarness, golden_state_journey};
 

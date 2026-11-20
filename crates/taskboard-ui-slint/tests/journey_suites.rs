@@ -23,6 +23,8 @@ pub(crate) const HEADLESS_RENDERER: bool = true;
 
 #[path = "journeys/board_move_journeys.rs"]
 mod board_move_journeys;
+#[path = "journeys/detail_shortcuts_journeys.rs"]
+mod detail_shortcuts_journeys;
 #[path = "journeys/focus_coverage.rs"]
 mod focus_coverage;
 #[path = "journeys/focus_law_journeys.rs"]
@@ -33,5 +35,7 @@ mod golden_visuals;
 mod habits_journey;
 #[path = "journeys/keymap_case_seam.rs"]
 mod keymap_case_seam;
+#[path = "journeys/tracker_journeys.rs"]
+mod tracker_journeys;
 #[path = "journeys/usability_components.rs"]
 mod usability_components;
