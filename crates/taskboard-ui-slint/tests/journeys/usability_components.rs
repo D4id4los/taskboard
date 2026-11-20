@@ -6,8 +6,7 @@
 //! Pixel assertions scan for uniform runs of known token colours —
 //! no element-geometry API exists on the testing backend (plan §1.7).
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fixture;

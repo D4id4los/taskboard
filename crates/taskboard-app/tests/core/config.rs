@@ -14,8 +14,7 @@ use taskboard_app::config::{
     DEFAULT_BACKOFF_MAX_SECS, DEFAULT_POLL_INTERVAL_SECS,
 };
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")

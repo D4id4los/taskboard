@@ -16,8 +16,7 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

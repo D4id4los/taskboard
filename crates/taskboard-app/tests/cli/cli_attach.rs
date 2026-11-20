@@ -14,8 +14,7 @@ use taskboard_app::commands::tasks;
 use taskboard_app::config::AppConfig;
 use taskboard_app::secrets::CredentialStore;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{FakeCredentialStore, STACK, tempdir};
 

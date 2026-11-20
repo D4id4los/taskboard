@@ -7,8 +7,7 @@
 //! the pre-fix collapse clamped the OS window to the empty state's
 //! content width once the refresh settled.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use slint::ComponentHandle as _;
 

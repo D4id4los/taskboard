@@ -13,8 +13,7 @@
 //! total, and the six-row geometry cap. Deterministic: every event
 //! dispatches inside one platform turn on the mock clock.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use slint::ComponentHandle as _;
 

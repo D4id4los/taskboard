@@ -9,8 +9,7 @@
 
 #![cfg(feature = "pdf-export")]
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{binary_command, tempdir};
 

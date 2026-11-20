@@ -12,8 +12,7 @@
 //! this file is the window-level ride-along the W-1 wiring row
 //! names.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fake_engine::FakeEngine;

@@ -7,6 +7,13 @@
 //! link as a standalone binary. Members are verbatim moves living
 //! under `tests/inventory/` (the `include_str!` depth adjusted).
 
+// The bench fixture module, declared once at the binary root so the
+// member's `use support::…` paths resolve (edition-2018 `use` paths
+// are crate-root-relative) and only one copy of the fixture is
+// instantiated. Members consume it via `crate::support`.
+#[path = "../benches/support/mod.rs"]
+mod support;
+
 #[path = "inventory/bench_fixture_contract.rs"]
 mod bench_fixture_contract;
 #[path = "inventory/icon_mapping.rs"]

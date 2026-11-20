@@ -14,8 +14,7 @@ use taskboard_app::commands::{CommandError, output::ConnectReceipt};
 use taskboard_app::config::AppConfig;
 use taskboard_app::secrets::{CredentialError, CredentialStore, EnvCredentialStore};
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{FakeCredentialStore, FakePrompts, taskboard_env_lock, tempdir};
 

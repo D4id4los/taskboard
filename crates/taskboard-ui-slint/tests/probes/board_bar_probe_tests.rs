@@ -5,8 +5,7 @@
 //! the switcher role — picking routes `segment-activated` (zero
 //! adapter changes), the ladder switches boards, Escape closes.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use slint::ComponentHandle as _;
 

@@ -9,8 +9,7 @@
 //! commands that reached the fake-engine boundary; titles are
 //! element addresses, never text oracles.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use support::focus_journey::{JourneyHarness, golden_state_journey};
 

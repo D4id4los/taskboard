@@ -14,8 +14,7 @@ use taskboard_app::commands::stacks;
 use taskboard_app::commands::sync;
 use taskboard_app::commands::tasks;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{forbidden_store, standalone_config, tempdir};
 

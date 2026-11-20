@@ -6,6 +6,23 @@
 //! and drives it with `headless_renderer: false`, so a merged binary
 //! keeps the one-platform invariant (options are per test binary).
 //! Members are verbatim moves living under `tests/probes/`.
+//! (`virtualisation.rs` was mapped here by the plan but genuinely
+//! needs the software renderer for one golden capture — it lives in
+//! `probe_pixel.rs` instead, keeping the mode partition strict.)
+
+// The shared harness module, declared exactly once per merged binary:
+// `driver.rs`'s platform dispatch runs off process-global `OnceLock`s,
+// so a per-member `mod support` copy (each member's old standalone
+// preamble) would multiply the platform init and deadlock plain
+// `cargo test` on this target. Members consume it via `crate::support`.
+#[path = "support/mod.rs"]
+mod support;
+
+/// The one-platform mode this merged binary standardizes on: the
+/// `support` self-tests read it so their `DriverOptions` agree with
+/// the members sharing the process (`driver::run`'s guard asserts one
+/// platform per process; see #1016).
+pub(crate) const HEADLESS_RENDERER: bool = false;
 
 #[path = "probes/action_menu_bar_probe_tests.rs"]
 mod action_menu_bar_probe_tests;
@@ -23,8 +40,6 @@ mod overlay_migration_probe_tests;
 mod plan_window_max_probe_tests;
 #[path = "probes/slider_grab_probe_tests.rs"]
 mod slider_grab_probe_tests;
-#[path = "probes/virtualisation.rs"]
-mod virtualisation;
 #[path = "probes/walk_probe_tests.rs"]
 mod walk_probe_tests;
 #[path = "probes/widget_framework_probe_tests.rs"]

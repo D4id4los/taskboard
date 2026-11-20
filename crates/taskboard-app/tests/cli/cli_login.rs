@@ -10,8 +10,7 @@ use std::sync::Arc;
 
 use taskboard_app::secrets::{CredentialError, CredentialStore};
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{FakeCredentialStore, tempdir};
 

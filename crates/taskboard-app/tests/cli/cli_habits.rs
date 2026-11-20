@@ -18,8 +18,7 @@ use taskboard_app::commands::output::{
 };
 use taskboard_app::config::AppConfig;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{forbidden_store, standalone_config, tempdir};
 

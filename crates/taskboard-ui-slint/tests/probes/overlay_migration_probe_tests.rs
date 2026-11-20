@@ -7,8 +7,7 @@
 //! embeds its J2 journey token; every observation is a typed root
 //! seam; no text assertions, no clocks, no quality ceilings.
 
-#[path = "../support/mod.rs"]
-mod support;
+use crate::support;
 
 use slint::ComponentHandle as _;
 

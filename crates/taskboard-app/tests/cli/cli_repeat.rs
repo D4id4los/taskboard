@@ -17,8 +17,7 @@ use taskboard_app::commands::{BasicSession, CommandIo, dispatch_line, repeat};
 use taskboard_app::config::AppConfig;
 use taskboard_domain::{EveryDays, EveryWeeks, MonthlyAnchor, OccurrenceCount};
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{forbidden_store, standalone_config, tempdir};
 

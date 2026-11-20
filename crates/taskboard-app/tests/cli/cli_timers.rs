@@ -16,8 +16,7 @@ use taskboard_app::commands::timers::{self, TimersInvocation};
 use taskboard_app::commands::{BasicSession, CommandError, CommandIo, dispatch_line};
 use taskboard_app::config::AppConfig;
 
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{forbidden_store, standalone_config, tempdir};
 
