@@ -30,6 +30,22 @@ mod common;
 
 use common::{LiveCfg, binary_command, tempdir, write_test_config};
 
+/// Strips every inherited `TASKBOARD_*` variable from the child's env
+/// (#984): the spawned binary composes ambient env exactly as
+/// production does, so a hostile operator ambient must not leak into
+/// the fixture — the child's configuration is the seeded config file
+/// plus this call's explicit additions (`binary_command` does the same
+/// for one-shot spawns).
+fn strip_taskboard_env(command: &mut std::process::Command) {
+    let keys: Vec<std::ffi::OsString> = std::env::vars_os()
+        .filter(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
+        .map(|(key, _)| key)
+        .collect();
+    for key in keys {
+        command.env_remove(&key);
+    }
+}
+
 /// Runs the real binary once and waits for it.
 fn run_cli(config: &Path, args: &[&str], stdin: Option<&str>, password: Option<&str>) -> Output {
     let mut cmd = binary_command();
@@ -529,7 +545,9 @@ fn j5_gui_verb_reaches_config_load_without_a_tty() {
 /// configuration, not `std::env` mutation).
 fn spawn_headless(config: &Path, args: &[&str]) -> Child {
     let binary = env!("CARGO_BIN_EXE_taskboard");
-    std::process::Command::new("timeout")
+    let mut command = std::process::Command::new("timeout");
+    strip_taskboard_env(&mut command);
+    command
         .arg("30")
         .arg(binary)
         .arg("--config")
@@ -576,7 +594,9 @@ fn wait_for_socket(socket: &Path) {
 fn assert_graceful_remote_stop(child: Child, config: &Path, what: &str) {
     wait_for_socket(&config.with_file_name("taskboard.sock"));
     let binary = env!("CARGO_BIN_EXE_taskboard");
-    let stop = std::process::Command::new(binary)
+    let mut stop_command = std::process::Command::new(binary);
+    strip_taskboard_env(&mut stop_command);
+    let stop = stop_command
         .arg("--config")
         .arg(config)
         .args(["daemon", "stop"])

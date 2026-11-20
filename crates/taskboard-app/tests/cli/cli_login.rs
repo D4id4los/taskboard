@@ -36,6 +36,8 @@ async fn l9_explicit_standalone_refuses_login_before_prompting() {
     use taskboard_app::cli::Command;
     use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
 
+    let _env = common::taskboard_env_lock();
+
     let dir = tempdir();
     let config_path = dir.path().join("taskboard.toml");
     std::fs::write(&config_path, "[sync]\nbackend = 'standalone'\n").expect("write toml");
@@ -272,6 +274,8 @@ async fn l12_login_overlays_an_existing_xdg_config() {
 async fn l9b_connect_under_explicit_standalone_refuses_at_the_dispatch_tier() {
     use taskboard_app::cli::Command;
     use taskboard_app::commands::{CommandCtx, CommandIo, dispatch};
+
+    let _env = common::taskboard_env_lock();
 
     let dir = tempdir();
     let config_path = dir.path().join("taskboard.toml");
