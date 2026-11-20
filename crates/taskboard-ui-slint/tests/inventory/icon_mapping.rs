@@ -9,8 +9,8 @@
 //! mapping exists on disk (no missing file → silent warn fallback);
 //! every vendored SVG is referenced (no dead vendored files).
 
-const ICON_SOURCE: &str = include_str!("../ui/widgets/icon.slint");
-const ICON_BUTTON_SOURCE: &str = include_str!("../ui/widgets/icon-button.slint");
+const ICON_SOURCE: &str = include_str!("../../ui/widgets/icon.slint");
+const ICON_BUTTON_SOURCE: &str = include_str!("../../ui/widgets/icon-button.slint");
 
 fn enum_rows() -> Vec<String> {
     let start = ICON_SOURCE

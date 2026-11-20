@@ -16,6 +16,7 @@
 //! dispatch sequence lands inside the thresholds by construction, no
 //! sleeps, the mock clock advances explicitly.
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use support::driver::{DriverOptions, advance_probe_clock};

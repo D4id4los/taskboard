@@ -9,6 +9,7 @@
 //! is the zero-binding-loop-warning check over the same sources
 //! (recorded in the slice-1 commit body; re-checked by stage 3).
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use support::driver::{DriverOptions, advance_probe_clock};

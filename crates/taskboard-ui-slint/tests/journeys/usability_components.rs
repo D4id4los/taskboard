@@ -6,6 +6,7 @@
 //! Pixel assertions scan for uniform runs of known token colours —
 //! no element-geometry API exists on the testing backend (plan §1.7).
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
@@ -148,7 +149,7 @@ fn the_menu_icon_holds_its_token_derived_geometry_at_every_geometry() {
 /// strip — the sub-pixel extreme's ink-presence floor (the shared
 /// counter).
 fn strip_pixels_beyond_background(image: &Rgba8Image, strip_height: u32, bg: [u8; 3]) -> u32 {
-    crate::support::pixel_probe::count_off_background(image, 0, 0, image.width, strip_height, bg)
+    support::pixel_probe::count_off_background(image, 0, 0, image.width, strip_height, bg)
 }
 
 /// G4 — the tooltip state machine (plan D3): hover arms a 600 ms

@@ -10,6 +10,7 @@
 //! floors only ("glyph present", "full-tint cores exist at 3.0") —
 //! never ceilings.
 
+#[path = "../support/mod.rs"]
 mod support;
 
 use support::driver::{DriverOptions, SlintDriver};

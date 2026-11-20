@@ -13,7 +13,7 @@
 //! constructs them, so it keeps guarding every future chunk
 //! regardless of macro vs explicit wiring.
 
-const ADAPTER_SOURCE: &str = include_str!("../src/adapter.rs");
+const ADAPTER_SOURCE: &str = include_str!("../../src/adapter.rs");
 
 /// The 175 installed window callbacks in `adapter.rs` as of the
 /// focus-settings-editor chunk (plan §2.1 census; the #275 close
