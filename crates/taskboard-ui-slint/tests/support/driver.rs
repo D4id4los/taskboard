@@ -23,6 +23,15 @@
 //! press and release their modifier keys around the character event;
 //! a stroke is one physical press — held modifiers are plumbing and
 //! contribute no count (§9.2 accounting).
+//!
+//! Known backend quirk (#995, pinned in the widget-framework probe's
+//! `..._currently_pins_...` test): raw focus restoration after a
+//! visibility toggle can land on a **disabled** `FocusScope` —
+//! `has-focus` reads true on an element the walk must never enter.
+//! Walk/focus oracles therefore assert the *widget-level gates* (the
+//! enabled bit, the seam write guard, the focused-seam property),
+//! never raw `has-focus` on a possibly-disabled scope; the upstream
+//! invalidation/exclusion fix is #954's chunk-17 focus work.
 
 #![allow(clippy::missing_panics_doc)] // harness-internal invariants
 
