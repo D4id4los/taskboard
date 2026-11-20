@@ -9,6 +9,65 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
+- *Status*: =round 9 W6 menu shell landed (2026-11-20,
+  chunk 17, branch =refactor/ui-menu-shell=)= — the O-6
+  centralization's W6 wave (#954): =ui/widgets/menu-shell.slint::MenuShell=
+  is the menu family's panel chrome (raised surface, focus-ring
+  border, drop shadow, clip, the row-count height cap
+  =min(row-count·space-6, space-6·6)= behind =cap-rows=; the
+  corner radius rides the consumer — both flyouts ship
+  =radius-small=, D-12's byte-identity bar) and
+  =ui/widgets/menu-row.slint::MenuRow= is the one row anatomy,
+  absorbing the ActionMenu rows (=compositions/action-menu.slint=
+  — rows only per D-3: entries/submenu-entries/quick-bar/page
+  routing, the compact back row, the facts mirror, the fill-to-floor
+  height law, the scroll indicator and the scroll-into-view watch
+  stay at the composition; the cursor's ring + inset fill stay on
+  the wrapper, the hover arm rides =MenuRow.highlighted=), the
+  =widgets/dropdown-flyout.slint::DropdownFlyout= rows+chrome and
+  the =widgets/quick-list-flyout.slint::QuickListFlyout=
+  rows+chrome (both flyouts inherit the shell; the ListView
+  virtualisation seam, the seek seams, the select-close write, the
+  quick-list's FocusScope ladder and =typed= forwarding stay; the
+  mono labels ride =text-role=; the row height pin moved to the
+  consumers so the menu rows stay content-sized). The a11y posture
+  is the instantiation's contract (Slint 1.18 keeps
+  =accessible-role= a constant expression): the menu rows declare
+  button + registry label + description + default action, the
+  dropdown rows declare list-item, the quick-list rows carry no
+  role (today's shape). Stay-recorded: the labels roster rows
+  (D-5 — form rows with pointer verbs + armed strip + swatch, not a
+  menu grammar), the menu window mount (D-6 — the pointer-anchored
+  mode and the fill-to-floor law are outside the host's anchor-rect
+  contract), =DropdownTone= (D-7 — distinct enum, settled; see
+  =docs/widget_interactions.org=), and the widget-internal mirrors
+  (D-10 — =DropdownFacts= / =TimeFieldFacts= are already single
+  copies inside their widgets; =SettingsBoardFacts.field-*= and
+  =MenuPanelFacts= are journey observation seams). The anchor-facts
+  mirroring idiom lands ONCE as
+  =widgets/anchored-overlay.slint::AnchorMirror= (D-8, F-5: init +
+  per-source =changed= edges; the producers assign =published= to
+  their facts-global writes) and the four families convert: the
+  timers setter, the task-view due/scheduled anchors, the
+  tracked-entries opener, the track-entries form-grid date row, and
+  the board bar (the hand changed-handler keep-alive plumbing dies
+  per site; the click-time pushes stay the deterministic open edge).
+  The last two hand mounts join =AnchoredOverlayHost= (D-9): the
+  track-entries panel and the board color strip — the hand backdrops
+  and clamp/flip expressions die, the G-4 probe law tests
+  (=tests/probes/menu_shell_probe_tests.rs=) assert the host's
+  placed rect equals the retired expressions at the below/flip/clamp
+  legs. Dispatch byte-identical (D-11 — zero Rust changes); visual
+  deltas: none intended (D-12; the check glyph stays
+  dropdown-selected-only; =IconKind= gains the =none= slot-collapse
+  sentinel, no asset, no mapping arm). The debug seams re-point to
+  the landed ids per the chunk-16 precedent
+  (=MenuRow::submenu-chevron=, =MenuRow::check-glyph=,
+  =MenuRow::row-touch=; the =flyout-row= delegates stay at the
+  flyout instances). Probes: =tests/probes/menu_shell_probe_tests.rs=
+  (G-1..G-4); journeys of record re-passed unchanged. Closes #954 at
+  merge.
+
 - *Status*: =round 9 W5 small-widget primitives landed (2026-11-20,
   chunk 16, branch =refactor/ui-small-widget-primitives=)= — the O-6
   centralization's W5 wave: =ui/widgets/action-chip.slint= (the F-4

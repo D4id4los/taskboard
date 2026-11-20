@@ -67,9 +67,36 @@ in =crates/taskboard-ui-slint/ui/widgets/=.
   =dropdown-flyout.slint::check-glyph=, D-5). The adapter-driven
   open rides =open-routes-external= + =open-requested()= (the #794
   request-mirror idiom); the keyscope decline arm is
-  =keyscope.rs::LadderGlobal::TaskDetailPriority= (D-7). Probe:
+  =keyscope.rs::LadderGlobal::TaskDetailPriority= (D-7). The
+  =DropdownTone= vocabulary STAYS a distinct enum (round-9 W6 D-7
+  ruling, settling chunk 16's W6 note): =Semantic.tone-color='s
+  =Tone= ladder has no =accent= arm (=DropdownTone.accent →
+  Semantic.focus-ring=), and unification would grow the Tone
+  vocabulary for exactly one consumer — the
+  anti-speculative-generality law says stay. Probe:
   =tests/probes/dropdown_probe_tests.rs=.
-- Menu — ActionMenu today; MenuShell in W6 (chunk 17).
+- Menu — =widgets/menu-shell.slint::MenuShell= (chrome: raised
+  surface, focus-ring border, drop shadow, clip, the row-count
+  height cap behind =cap-rows=) + =widgets/menu-row.slint::MenuRow=
+  (the one row anatomy: the =highlighted=-driven hover-union
+  background — the consumer binds the union of its ladder/highlight
+  match and the row's =hover-now=; busy-over-glyph leading slot with
+  the collapse law; the check glyph only where =selected= is pushed
+  — the dropdown class's law, never on menus; the KbdHint wrapper,
+  the submenu chevron, the =text-role= typography, the right-button
+  context seam and the tooltip-rect hover payload). Ladder ownership
+  is per consumer contract and never merges into the shell: the
+  dropdown's keys stay at the field's scope, the quick-list's at its
+  panel FocusScope, and the action menu has none (the cursor is
+  actions, D3). The a11y posture is the instantiation's (Slint 1.18
+  keeps =accessible-role= constant): button + label + default action
+  on menu rows, list-item on dropdown rows, none on quick-list rows.
+  ActionMenu renders =MenuRow= internally (rows only); its
+  composition machinery, placement and fill-to-floor height law stay
+  at =compositions/action-menu.slint=. Anti-ad-hoc rule: a menu-row
+  grammar outside =ui/widgets/menu-row.slint= is a review-blocker;
+  the labels roster rows are the recorded form-row stay. Probe:
+  =tests/probes/menu_shell_probe_tests.rs=.
 - Palette — search-palette (modal migration candidate, J2 R-5).
 - Inline editor flow — due/recur editors (W2 migration decisions).
 - Toast / status notice — status-bar compositions (W7).
