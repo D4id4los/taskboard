@@ -257,7 +257,12 @@ pub enum CommandError {
 }
 
 /// Typed receipt of an accepted command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Carries serde derives (externally tagged, field keys as declared) so
+/// persisted/mirrored surfaces can decode receipts byte-stably — the
+/// shape is pinned by the round-trip + hand-written-literal tests in
+/// this module's test block (issue #993).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CommandOutcome {
     /// The command created a task with this id.
     CreatedTask(TaskId),
@@ -9628,6 +9633,230 @@ mod tests {
             err,
             CommandError::TimeEntryAlreadyPresent(id) if id == entry.id
         ));
+    }
+
+    // ---- CommandOutcome serde stability (#993) ---------------------------
+
+    /// The compile-exhaustive witness: no wildcard arm, so adding a
+    /// `CommandOutcome` variant is a compile error here — the author
+    /// must extend both this match and [`every_variant_sample`] (the
+    /// sample list cannot drift silently, issue #993).
+    fn assert_every_variant_is_round_tripped(outcome: &CommandOutcome) {
+        // One no-wildcard arm per variant, or-patterned into a single
+        // body (clippy::match_same_arms); exhaustiveness — and thus the
+        // compile error on a new variant — is preserved by the or-pattern
+        // listing every variant explicitly.
+        match outcome {
+            CommandOutcome::CreatedTask(_)
+            | CommandOutcome::CreatedStack(_)
+            | CommandOutcome::CreatedLabel(_)
+            | CommandOutcome::CreatedBoard(_)
+            | CommandOutcome::ReminderCleared { .. }
+            | CommandOutcome::ReminderRuleAdded { .. }
+            | CommandOutcome::ReminderRuleRemoved { .. }
+            | CommandOutcome::AdhocAlarmCreated { .. }
+            | CommandOutcome::AdhocAlarmCancelled { .. }
+            | CommandOutcome::BreakRuleCreated { .. }
+            | CommandOutcome::BreakRuleDeleted { .. }
+            | CommandOutcome::TrackingStarted { .. }
+            | CommandOutcome::TrackingStopped { .. }
+            | CommandOutcome::TimeLogged { .. }
+            | CommandOutcome::EntryAdjusted { .. }
+            | CommandOutcome::EntryDeleted { .. }
+            | CommandOutcome::HabitCreated(_)
+            | CommandOutcome::HabitLogged { .. }
+            | CommandOutcome::HabitLogAdjusted { .. }
+            | CommandOutcome::ReflectionRecorded { .. }
+            | CommandOutcome::ReflectionUpdated { .. }
+            | CommandOutcome::ReflectionDeleted { .. }
+            | CommandOutcome::ReminderMuted { .. }
+            | CommandOutcome::Applied
+            | CommandOutcome::Bound { .. }
+            | CommandOutcome::Unbound { .. }
+            | CommandOutcome::Reconciled { .. }
+            | CommandOutcome::NoOp
+            | CommandOutcome::Undone { .. }
+            | CommandOutcome::Redone { .. }
+            | CommandOutcome::TaskRestored { .. }
+            | CommandOutcome::StackRestored { .. }
+            | CommandOutcome::SyncRequested
+            | CommandOutcome::SettingsApplied
+            | CommandOutcome::LabelRestored { .. }
+            | CommandOutcome::HabitRestored { .. }
+            | CommandOutcome::EntryRestored { .. } => (),
+        }
+    }
+
+    /// Constructs every variant exactly once (synthetic ids/timestamps;
+    /// entity carriers use minimal valid rows).
+    #[allow(clippy::too_many_lines)]
+    fn every_variant_sample() -> Vec<CommandOutcome> {
+        fn raw_id<T: From<uuid::Uuid>>(raw: u64) -> T {
+            T::from(uuid::Uuid::from_u128(u128::from(raw)))
+        }
+        let entry = tracked_entry(3_901, task_id(), T0 - 600, Some(T0 - 500));
+        let reflection = crate::reflection::ReflectionEntry {
+            id: raw_id(7_902),
+            cadence: crate::reflection::ReviewCadence::Day,
+            day: chrono::NaiveDate::from_ymd_opt(2026, 11, 20).expect("valid"),
+            window_start: ts(T0),
+            window_end: ts(T0 + 3_600),
+            text: "r".into(),
+            attributes: crate::reflection::ReflectionAttributes::default(),
+            created_at: ts(T0),
+            updated_at: ts(T0),
+            deleted: false,
+        };
+        vec![
+            CommandOutcome::CreatedTask(raw_id(7_001)),
+            CommandOutcome::CreatedStack(raw_id(7_002)),
+            CommandOutcome::CreatedLabel(raw_id(7_003)),
+            CommandOutcome::CreatedBoard(raw_id(7_004)),
+            CommandOutcome::ReminderCleared { removed: 2 },
+            CommandOutcome::ReminderRuleAdded {
+                rule: raw_id(7_005),
+                added: true,
+            },
+            CommandOutcome::ReminderRuleRemoved {
+                rule: raw_id(7_006),
+            },
+            CommandOutcome::AdhocAlarmCreated {
+                alarm: raw_id(7_007),
+            },
+            CommandOutcome::AdhocAlarmCancelled {
+                alarm: raw_id(7_008),
+            },
+            CommandOutcome::BreakRuleCreated {
+                rule: raw_id(7_009),
+            },
+            CommandOutcome::BreakRuleDeleted {
+                rule: raw_id(7_010),
+            },
+            CommandOutcome::TrackingStarted {
+                entry: entry.clone(),
+                closed: vec![raw_id(7_011)],
+            },
+            CommandOutcome::TrackingStopped {
+                entries: vec![entry.clone()],
+            },
+            CommandOutcome::TimeLogged {
+                entry: entry.clone(),
+            },
+            CommandOutcome::EntryAdjusted {
+                entry: entry.clone(),
+            },
+            CommandOutcome::EntryDeleted { id: raw_id(7_012) },
+            CommandOutcome::HabitCreated(habit_id()),
+            CommandOutcome::HabitLogged {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::from_stored(
+                    chrono::NaiveDate::from_ymd_opt(2026, 11, 17).expect("valid"),
+                ),
+                count: 3,
+            },
+            CommandOutcome::HabitLogAdjusted {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::from_stored(
+                    chrono::NaiveDate::from_ymd_opt(2026, 11, 17).expect("valid"),
+                ),
+                count: 4,
+            },
+            CommandOutcome::ReflectionRecorded {
+                entry: reflection.clone(),
+            },
+            CommandOutcome::ReflectionUpdated {
+                entry: reflection.clone(),
+            },
+            CommandOutcome::ReflectionDeleted { id: raw_id(7_013) },
+            CommandOutcome::ReminderMuted {
+                task: task_id(),
+                muted: true,
+            },
+            CommandOutcome::Applied,
+            CommandOutcome::Bound { wiped_refs: 1 },
+            CommandOutcome::Unbound { stranded_ops: 2 },
+            CommandOutcome::Reconciled {
+                stacks: 1,
+                labels: 2,
+                tasks: 3,
+                cancelled_ops: 4,
+            },
+            CommandOutcome::NoOp,
+            CommandOutcome::Undone {
+                entry: raw_id(7_014),
+            },
+            CommandOutcome::Redone {
+                entry: raw_id(7_015),
+            },
+            CommandOutcome::TaskRestored { id: task_id() },
+            CommandOutcome::StackRestored { stack: stack_id() },
+            CommandOutcome::SyncRequested,
+            CommandOutcome::SettingsApplied,
+            CommandOutcome::LabelRestored { label: label_id() },
+            CommandOutcome::HabitRestored { habit: habit_id() },
+            CommandOutcome::EntryRestored {
+                id: entry_id(3_901),
+            },
+        ]
+    }
+
+    #[test]
+    fn command_outcome_round_trips_serde_over_every_variant() {
+        let samples = every_variant_sample();
+        // The witness's compile exhaustiveness forces a variant addition
+        // to extend both the match and this list; the count pin closes
+        // the remaining drift — a silently *dropped* sample line (the
+        // tag-uniqueness check below only catches duplicates) fails here.
+        assert_eq!(samples.len(), 37);
+        for outcome in &samples {
+            assert_every_variant_is_round_tripped(outcome);
+            let json = serde_json::to_string(outcome).expect("serializes");
+            let back: CommandOutcome = serde_json::from_str(&json).expect("decodes");
+            assert_eq!(&back, outcome);
+        }
+        // Structural completeness: the sample list covers each variant
+        // exactly once — the external tag (the leading variant name of
+        // each encoding) is unique per variant.
+        let mut seen = std::collections::BTreeSet::new();
+        for outcome in &samples {
+            let json = serde_json::to_string(outcome).expect("serializes");
+            // A unit variant encodes as the bare `"Name"` string; a
+            // payload variant as `{"Name":...}`.
+            let tagged = json.strip_prefix('{').unwrap_or(json.as_str());
+            let tag = tagged
+                .trim_start_matches('"')
+                .split('"')
+                .next()
+                .expect("externally tagged");
+            assert!(seen.insert(tag.to_string()), "duplicate tag: {tag}");
+        }
+    }
+
+    #[test]
+    fn the_three_restore_receipts_decode_byte_stably() {
+        // Hand-written literals pin the variant names and field keys
+        // against silent rename (the round-trip covers the forward
+        // direction).
+        let label: CommandOutcome = serde_json::from_str(
+            r#"{"LabelRestored":{"label":"00000000-0000-0000-0000-0000000001f4"}}"#,
+        )
+        .expect("decodes");
+        assert_eq!(label, CommandOutcome::LabelRestored { label: label_id() });
+        let habit: CommandOutcome = serde_json::from_str(
+            r#"{"HabitRestored":{"habit":"00000000-0000-0000-0000-000000000258"}}"#,
+        )
+        .expect("decodes");
+        assert_eq!(habit, CommandOutcome::HabitRestored { habit: habit_id() });
+        let restored: CommandOutcome = serde_json::from_str(
+            r#"{"EntryRestored":{"id":"00000000-0000-0000-0000-000000002a95"}}"#,
+        )
+        .expect("decodes");
+        assert_eq!(
+            restored,
+            CommandOutcome::EntryRestored {
+                id: entry_id(3_901),
+            }
+        );
     }
 
     // ---- Single-global convergence (DR-5/1, §5.18) -----------------------
