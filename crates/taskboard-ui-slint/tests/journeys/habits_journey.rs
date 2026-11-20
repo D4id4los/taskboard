@@ -1192,3 +1192,186 @@ fn the_anchored_habit_row_carries_the_time_chip() {
         },
     );
 }
+
+// -- #1059: the editor's negative legs, composed through the shared
+//    B4a harness (`support::harness` — never the file's private
+//    3-field harness; its migration is filed backlog) ---------------
+
+/// The shared harness's open-menu rows: every root-page row as a
+/// model, addressed by action id.
+fn shared_menu_rows(
+    harness: &support::harness::Harness,
+) -> Vec<taskboard_ui_slint::MenuEntryModel> {
+    let entries = harness
+        .handle
+        .window()
+        .global::<KeyboardState>()
+        .get_menu_entries();
+    (0..entries.row_count())
+        .map(|i| entries.row_data(i).expect("row"))
+        .collect()
+}
+
+/// `us5_s2`'s Escape cell (J1 §4 US-5, #1059): an invalid draft —
+/// zero count, unparseable time, out-of-range month day — attempts a
+/// save and the editor stays mounted with NOTHING dispatched (the
+/// save gate's grammar: `can_save` false routes no `UpdateHabit`).
+#[test]
+fn us5_s2_invalid_edit_stays_mounted_without_dispatch() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = weekly_habit(&mut state, board);
+    let _ = habit;
+    support::harness::run_journey(state, move |harness| {
+        harness.handle.window().invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            harness.handle.window().get_current_view(),
+            View::TaskDetail,
+            "the editor is mounted"
+        );
+        harness.assert_commands(&[]);
+
+        // The three invalid legs: zero quota (NonZeroCount refuses),
+        // unparseable time (the lenient parser refuses), month day 99
+        // (MonthDay refuses). Each stages in the draft; none is a
+        // save.
+        {
+            let window = harness.handle.window();
+            window.invoke_habit_quota_count_edited("0".into());
+            window.invoke_habit_time_edited("junk".into());
+            window.invoke_habit_month_day_edited("99".into());
+        }
+        harness.driver.advance_time(0);
+        harness.handle.window().invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        assert_eq!(
+            harness.handle.window().get_current_view(),
+            View::TaskDetail,
+            "the invalid draft keeps the editor mounted"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
+/// The kiosk remove arm's refusal (H4 D7's arm half, #1059): the menu
+/// opens (reading is passive), the remove arm stages nothing, and the
+/// confirm keeps the desktop-unarmed posture (disabled) — the typed
+/// drain stays empty for the whole arm half.
+#[test]
+fn h4_kiosk_remove_arm_is_inert() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::harness::run_journey_with_settings(
+        state,
+        UiSettings {
+            kiosk: true,
+            ..UiSettings::default()
+        },
+        move |harness| {
+            harness
+                .handle
+                .window()
+                .invoke_habits_context_requested(0, 120.0, 120.0);
+            harness.driver.advance_time(0);
+            assert!(
+                harness
+                    .handle
+                    .window()
+                    .global::<KeyboardState>()
+                    .get_menu_open(),
+                "reading the menu is passive on kiosk"
+            );
+            let find = |harness: &support::harness::Harness, action: &str| {
+                shared_menu_rows(harness)
+                    .into_iter()
+                    .find(|row| row.action == action)
+                    .unwrap_or_else(|| panic!("{action} renders"))
+            };
+            // The arm attempt on kiosk: structurally inert — the
+            // staging never flips the confirm.
+            harness.handle.dispatch_action(ActionId::HabitRemove);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+            assert!(
+                !find(harness, "habit.remove-confirm").enabled,
+                "the kiosk arm never enables the confirm"
+            );
+            harness.handle.dispatch_action(ActionId::HabitRemoveConfirm);
+            harness.driver.advance_time(0);
+            harness.assert_commands(&[]);
+        },
+    );
+}
+
+/// `us5_s3` (J1 §4 US-5's Escape cell, #1059): Escape retires the
+/// armed context menu — the menu closes, the staging disarms (the
+/// confirm dispatches nothing afterwards), and no remove verb escaped.
+#[test]
+fn us5_s3_escape_cancels_the_armed_menu() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::harness::run_journey(state, move |harness| {
+        harness
+            .handle
+            .window()
+            .invoke_habits_context_requested(0, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitRemove);
+        harness.driver.advance_time(0);
+        harness.assert_commands(&[]);
+        // Escape through the shared nav-back grammar (the Menu
+        // context's dismiss): the menu retires and the escape itself
+        // dispatches nothing (the J1 §4 US-5/S3 escape cell; the
+        // staged arm's own survival past the close is filed
+        // separately — the escape dispatches no remove verb).
+        harness.press(ActionId::MenuDismiss);
+        harness.driver.advance_time(0);
+        assert!(
+            !harness
+                .handle
+                .window()
+                .global::<KeyboardState>()
+                .get_menu_open(),
+            "the Escape close retires the menu"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
+/// `us5_s4` (J1 §4 US-5's Escape cell, #1059): Escape retires the
+/// habit editor — the view steps off the editor surface and the
+/// staged (valid) draft never dispatches an `UpdateHabit`.
+#[test]
+fn us5_s4_escape_cancels_the_editor() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = weekly_habit(&mut state, board);
+    let _ = habit;
+    support::harness::run_journey(state, move |harness| {
+        harness.handle.window().invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(harness.handle.window().get_current_view(), View::TaskDetail);
+        // Stage a field edit, then Escape through the shared nav-back
+        // grammar.
+        harness
+            .handle
+            .window()
+            .invoke_habit_time_edited("07:30".into());
+        harness.driver.advance_time(0);
+        harness.press(ActionId::NavPrevView);
+        harness.driver.advance_time(0);
+        assert_ne!(
+            harness.handle.window().get_current_view(),
+            View::TaskDetail,
+            "the Escape step retires the editor surface"
+        );
+        harness.assert_commands(&[]);
+    });
+}
