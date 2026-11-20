@@ -35,6 +35,31 @@ fn settle() {
     advance_probe_clock(0);
 }
 
+/// Dispatches a synthetic left click at the window coordinates (the
+/// labeled-value-row probe's recorded dispatch pattern): the mock
+/// platform delivers the click on the tick between press and
+/// release.
+fn click_at(window: &SmallWidgetProbe, x: f32, y: f32) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let p = slint::LogicalPosition::new(x, y);
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerMoved { position: p });
+    advance_probe_clock(1);
+    window.window().dispatch_event(WindowEvent::PointerPressed {
+        position: p,
+        button: PointerEventButton::Left,
+    });
+    advance_probe_clock(1);
+    window
+        .window()
+        .dispatch_event(WindowEvent::PointerReleased {
+            position: p,
+            button: PointerEventButton::Left,
+        });
+    advance_probe_clock(1);
+}
+
 // ---- T1: the tone ladder (F-3, #952) ------------------------------
 
 /// `Semantic.tone-color` maps every `Tone` arm onto the canonical
@@ -176,5 +201,147 @@ fn the_convert_strip_paints_the_success_grammar() {
             window.get_convert_confirm_color(),
             window.get_semantic_success()
         );
+    });
+}
+
+// ---- T4: ActionChip -------------------------------------------------
+
+/// The swatch chip (the label-chip grammar): the space-3 echo square
+/// rides the ladder's text colour, the trailing remove affordance
+/// routes `removed`, and the passive body never invokes.
+#[test]
+fn the_swatch_chip_renders_the_echo_square_and_routes_removed() {
+    run_probe(|window| {
+        settle();
+        assert_eq!(window.get_chip_swatch_width(), window.get_theme_space_3());
+        assert_eq!(
+            window.get_chip_text_color(),
+            window.get_theme_text_primary()
+        );
+        let remove = support::driver::find_by_label_on(window, "Remove label probe")
+            .expect("the remove affordance mounts");
+        remove.invoke_default_action();
+        settle();
+        assert_eq!(window.get_chip_removed_count(), 1);
+        assert_eq!(window.get_chip_invoked_count(), 0);
+    });
+}
+
+/// The preset chip (the `ActivationStop` grammar): the token floor pin
+/// holds and the FIRST physical click invokes (the F8 hit-test law —
+/// the touch hit-tests before the scope overlay).
+#[test]
+fn the_preset_chip_holds_its_floor_pin_and_invokes_on_the_first_click() {
+    run_probe(|window| {
+        settle();
+        assert!(window.get_preset_chip_height() >= window.get_theme_space_5());
+        assert!(window.get_preset_chip_width() >= window.get_theme_space_6());
+        click_at(
+            window,
+            window.get_preset_chip_x() + window.get_preset_chip_width() / 2.0,
+            window.get_preset_chip_y() + window.get_preset_chip_height() / 2.0,
+        );
+        settle();
+        assert_eq!(window.get_chip_invoked_count(), 1);
+    });
+}
+
+/// The plain-scope chip (the timers-chip grammar): the first click
+/// invokes through the raw scope posture too.
+#[test]
+fn the_plain_scope_chip_invokes_on_the_first_click() {
+    run_probe(|window| {
+        settle();
+        click_at(
+            window,
+            window.get_plain_chip_x() + window.get_plain_chip_width() / 2.0,
+            window.get_plain_chip_y() + window.get_plain_chip_height() / 2.0,
+        );
+        settle();
+        assert_eq!(window.get_plain_scope_chip_count(), 1);
+    });
+}
+
+/// The passive chip (the paused-chip posture): no scope, no touch —
+/// a click lands on nothing and the invoked counter stays at zero.
+#[test]
+fn the_passive_chip_never_invokes() {
+    run_probe(|window| {
+        settle();
+        click_at(
+            window,
+            window.get_passive_chip_x() + window.get_passive_chip_width() / 2.0,
+            window.get_passive_chip_y() + window.get_passive_chip_height() / 2.0,
+        );
+        settle();
+        assert_eq!(window.get_chip_invoked_count(), 0);
+        assert_eq!(window.get_plain_scope_chip_count(), 0);
+    });
+}
+
+// ---- T5: SectionHeader ----------------------------------------------
+
+/// The header row's anatomy order: title < count < badge < trailing
+/// action; the bare fixture (the habits grammar) hides the count and
+/// the badge (the driver finds neither label).
+#[test]
+fn the_header_row_orders_title_count_badge_actions_and_hides_empties() {
+    run_probe(|window| {
+        settle();
+        let title_x = window.get_header_title_x();
+        let count_x = window.get_header_count_x();
+        let badge_x = window.get_header_badge_x();
+        let actions_x = window.get_header_actions_x();
+        assert!(title_x < count_x, "the count follows the title");
+        assert!(count_x < badge_x, "the badge follows the count");
+        assert!(badge_x < actions_x, "the actions follow the stretch");
+        // The empty count/badge slots hide on the bare fixture (the
+        // conditional hide's structural read).
+        assert!(window.get_full_count_shown());
+        assert!(window.get_full_badge_shown());
+        assert!(!window.get_bare_count_shown());
+        assert!(!window.get_bare_badge_shown());
+    });
+}
+
+// ---- T6: GhostOpener -------------------------------------------------
+
+/// The ghost fixtures' orientation geometry (§2.6): the row band is
+/// the space-6 + 2·space-1 control row; the column sliver is
+/// space-6 + space-2 wide and fills its host's height.
+#[test]
+fn the_ghosts_carry_their_orientation_geometry() {
+    run_probe(|window| {
+        settle();
+        assert_eq!(
+            window.get_row_ghost_height(),
+            window.get_theme_space_6() + 2.0 * window.get_theme_space_1()
+        );
+        assert_eq!(
+            window.get_column_ghost_width(),
+            window.get_theme_space_6() + window.get_theme_space_2()
+        );
+    });
+}
+
+/// The F8 first-click law (R-1): the first physical click on each
+/// ghost invokes — the touch hit-tests before the scope overlay.
+#[test]
+fn the_ghosts_invoke_on_the_first_physical_click() {
+    run_probe(|window| {
+        settle();
+        click_at(
+            window,
+            window.get_row_ghost_x() + window.get_row_ghost_width() / 2.0,
+            window.get_row_ghost_y() + window.get_row_ghost_height() / 2.0,
+        );
+        click_at(
+            window,
+            window.get_column_ghost_x() + window.get_column_ghost_width() / 2.0,
+            window.get_column_ghost_y() + window.get_column_ghost_height() / 2.0,
+        );
+        settle();
+        assert_eq!(window.get_row_ghost_count(), 1);
+        assert_eq!(window.get_column_ghost_count(), 1);
     });
 }

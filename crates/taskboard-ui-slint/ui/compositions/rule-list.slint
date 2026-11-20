@@ -7,12 +7,11 @@
 // seam (D2). A parse-missed custom entry dispatches nothing: the
 // adapter absorbs it (the CLI owns typed failures, D12).
 
-import { Theme, Typography, Semantic, RoleText } from "../theme.slint";
+import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
-import { ActivationStop } from "../widgets/activation-stop.slint";
-import { TooltipState } from "../widgets/tooltip.slint";
+import { ActionChip } from "../widgets/action-chip.slint";
 
 // One rule row: the offset text form and the created stamp — display
 // strings only (D12: ids stay in the adapter's tables).
@@ -32,66 +31,6 @@ export struct RuleRowModel {
     // `rule_cursor` (never stored, the habit-card `emphasis`
     // pattern), rendered as the house focus-ring row highlight.
     selected: bool,
-}
-
-// One preset chip (r4 D18): the chip body's activation stop is a
-// real tab stop with Return/Space activation onto the same
-// `add-preset-clicked` seam the TouchArea clicks, the focus ring on
-// the chip border, and the activation publish — the shared
-// ActivationStop grammar (the chip keeps its own token floor pin).
-component PresetChip inherits Rectangle {
-    in property <string> label;
-    in property <int> chip-index;
-    callback chip-clicked(int);
-    border-radius: Theme.radius-small;
-    border-width: Theme.focus-ring-width;
-    border-color: chip-focus.has-focus || touch.has-hover
-        ? Semantic.focus-ring
-        : Theme.text-secondary;
-    min-height: Theme.space-5;
-    min-width: Theme.space-6;
-    chip-focus := ActivationStop {
-        width: 100%;
-        height: 100%;
-        stop-label: root.label;
-        stop-description: "Adds this reminder offset.";
-        stop-id: 90 + root.chip-index;
-        activated => { root.chip-clicked(root.chip-index); }
-    }
-    touch := TouchArea {
-        // The tooltip arm (blanket rule a): the chip's label is the
-        // a11y label verbatim.
-        changed has-hover => {
-            if (self.has-hover) {
-                TooltipState.hover(
-                    root.label,
-                    "Adds this reminder offset.",
-                    [],
-                    self.absolute-position.x,
-                    self.absolute-position.y,
-                    self.width,
-                    self.height,
-                );
-            } else {
-                TooltipState.unhover();
-            }
-        }
-        clicked => {
-            TooltipState.unhover();
-            root.chip-clicked(root.chip-index);
-        }
-    }
-    HorizontalLayout {
-        padding-left: Theme.space-2;
-        padding-right: Theme.space-2;
-        RoleText {
-            role: Typography.mono;
-            text-color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-            text: root.label;
-            vertical-alignment: center;
-            horizontal-alignment: center;
-        }
-    }
 }
 
 export component RuleList inherits VerticalLayout {
@@ -224,11 +163,27 @@ export component RuleList inherits VerticalLayout {
     // preferred width and defeat the stretch).
     HorizontalLayout {
         spacing: Theme.space-2;
-        for label[i] in root.presets: preset-chip := PresetChip {
-            label: label;
-            chip-index: i;
+        for label[i] in root.presets: preset-chip := ActionChip {
+            text: label;
+            // The PresetChip's identity (r4 D18): the mono role, the
+            // bordered posture, the own token floor pin, and the
+            // ActivationStop walk-facts publish (stop-id 90 + index,
+            // the D18 convention) — the index closes over in the
+            // delegate (R-2), the seam byte-identical.
+            tone: Tone.neutral;
+            value-role: Typography.mono;
+            text-halign: center;
+            bordered: true;
+            chip-min-height: Theme.space-5;
+            chip-min-width: Theme.space-6;
+            pad-left: Theme.space-2;
+            pad-right: Theme.space-2;
+            use-stop: true;
+            stop-id: 90 + i;
+            stop-description: "Adds this reminder offset.";
+            description: "Adds this reminder offset.";
             horizontal-stretch: 0;
-            chip-clicked(index) => { root.add-preset-clicked(index); }
+            invoked => { root.add-preset-clicked(i); }
         }
         custom-field := TippedField {
             placeholder: "Custom offset, e.g. 45m";

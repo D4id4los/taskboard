@@ -16,6 +16,7 @@ import { TextField } from "../widgets/text-field.slint";
 import { TimerSetterFacts } from "../menu-facts.slint";
 import { StatusNotice } from "../widgets/status-notice.slint";
 import { ConfirmStrip } from "../widgets/confirm-strip.slint";
+import { SectionHeader } from "../widgets/section-header.slint";
 
 // One active timer row: the label snapshot, the two-part countdown
 // (r4 D32: d/h/m/s remaining), the `@`-prefixed local fire instant,
@@ -136,26 +137,12 @@ export component TimersSection inherits Rectangle {
         // The header row (D-P3): always renders on the desktop today
         // view — the creation affordance needs a permanent home; only
         // the rows collapse.
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            RoleText {
-                role: Typography.caption;
-                text: "Timers";
-                vertical-alignment: center;
-            }
-            RoleText {
-                role: Typography.caption;
-                text-color: Theme.text-secondary;
-                text: root.timers.length;
-                vertical-alignment: center;
-            }
-            if (root.timers-awaiting > 0 && !root.absence-hint): Badge {
-                text: "\{root.timers-awaiting} awaiting";
-                tone: Tone.info;
-            }
-            Rectangle {
-                horizontal-stretch: 1;
-            }
+        SectionHeader {
+            title: "Timers";
+            count: root.timers.length;
+            status-badge-text: root.timers-awaiting > 0 && !root.absence-hint
+                ? "\{root.timers-awaiting} awaiting" : "";
+            status-badge-tone: Tone.info;
             setter-button := IconButton {
                 icon: IconKind.timer;
                 tone: Tone.info;

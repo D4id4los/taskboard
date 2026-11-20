@@ -45,8 +45,12 @@ export component GhostOpener inherits Rectangle {
         ? Theme.space-6 + 2 * Theme.space-1 : 0;
     max-height: root.orientation == GhostOrientation.row
         ? Theme.space-6 + 2 * Theme.space-1 : 99999px;
-    width: root.orientation == GhostOrientation.column
-        ? Theme.space-6 + Theme.space-2 : 100%;
+    // (The column sliver's width rides the min/max lock; the row
+    // ghost stretches to its layout cell.)
+    min-width: root.orientation == GhostOrientation.column
+        ? Theme.space-6 + Theme.space-2 : 0;
+    max-width: root.orientation == GhostOrientation.column
+        ? Theme.space-6 + Theme.space-2 : Theme.layout-severing-max-width;
 
     // F8 (r4 D4): the FocusScope is declared FIRST — the TouchArea
     // after it is hit-tested first, because a FocusScope overlay

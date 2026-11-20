@@ -67,8 +67,13 @@ const EXEMPT: &[(&str, &str)] = &[
          stop; the overlay never intercepts keys",
     ),
     (
-        "TouchArea:Toolbar::inbox-chip",
-        "chrome chip, AT-operable; a focused chrome FocusScope is a key \
+        // The chip converted to `ActionChip` (round-9 W5): the
+        // TouchArea moved into the widget (the a11y TouchArea-only
+        // posture, `keyboard-activatable: false` — the same
+        // no-tab-stop grammar, one id now).
+        "TouchArea:ActionChip::touch",
+        "the toolbar inbox chip (was `TouchArea:Toolbar::inbox-chip`): \
+         chrome chip, AT-operable; a focused chrome FocusScope is a key \
          sink (the D-T16 recorded deviation) — `view.inbox` is its key path",
     ),
     (

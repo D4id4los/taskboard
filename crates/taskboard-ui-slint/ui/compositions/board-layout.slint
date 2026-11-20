@@ -19,6 +19,7 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TextButton, TextButtonEmphasis } from "../widgets/text-button.slint";
 import { PlusGlyph } from "../widgets/plus-glyph.slint";
 import { ConfirmStrip } from "../widgets/confirm-strip.slint";
+import { GhostOpener, GhostOrientation } from "../widgets/ghost-opener.slint";
 import { BoardBar, BoardBarModel } from "board-bar.slint";
 import { DragState } from "../drag-state.slint";
 import { FocusScrollHint } from "../focus-scroll.slint";
@@ -664,50 +665,13 @@ export component BoardLayout inherits Rectangle {
                             // empty stacks show it instead of blank space.
                             // Below the viewport (see the note on `lv`), never
                             // stretched into the surplus.
-                            add-task := Rectangle {
+                            add-task := GhostOpener {
                                 vertical-stretch: 0;
-                                min-height: Theme.space-6 + 2 * Theme.space-1;
-                                max-height: Theme.space-6 + 2 * Theme.space-1;
-                                border-radius: Theme.radius-small;
-                                background: add-task-hit.has-hover ? Theme.surface-hover : transparent;
-                                // F8 (r4 D4): the FocusScope is declared
-                                // FIRST — the TouchArea after it is
-                                // hit-tested first, because a FocusScope
-                                // overlay eats the first physical click
-                                // (the two-click repro); the a11y role,
-                                // label and tab stop stay on the
-                                // FocusScope.
-                                add-task-focus := FocusScope {
-                                    width: 100%;
-                                    height: 100%;
-                                    focus-on-tab-navigation: true;
-                                    accessible-role: AccessibleRole.button;
-                                    accessible-label: "Add task";
-                                    accessible-action-default => root.add-task-activated(column-index);
-                                }
-                                add-task-hit := TouchArea {
-                                    clicked => root.add-task-activated(column-index);
-                                    // The ghost tooltip (r3 D3): the standard
-                                    // enter-arms/leave-dismiss wiring; the label
-                                    // is the accessible tree's own, the
-                                    // description is a presentation literal.
-                                    changed has-hover => {
-                                        if (self.has-hover) {
-                                            TooltipState.hover("Add task",
-                                                "Creates a task in this stack.",
-                                                root.task-create-hint,
-                                                self.absolute-position.x, self.absolute-position.y,
-                                                self.width, self.height);
-                                        } else {
-                                            TooltipState.unhover();
-                                        }
-                                    }
-                                }
-                                PlusGlyph {
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                    glyph-color: add-task-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
-                                }
+                                orientation: GhostOrientation.row;
+                                label: "Add task";
+                                description: "Creates a task in this stack.";
+                                hint-keys: root.task-create-hint;
+                                invoked => { root.add-task-activated(column-index); }
                             }
                         }
                     }
@@ -764,43 +728,21 @@ export component BoardLayout inherits Rectangle {
             // New-stack button's regular/expansive home — a slim
             // full-height column after the last stack, the click
             // equivalent of stack.create (§7.1).
-            Rectangle {
-                width: Theme.space-6 + Theme.space-2;
-                border-radius: Theme.radius-small;
-                background: add-col-hit.has-hover ? Theme.surface-hover : transparent;
-                add-col-hit := TouchArea {
-                    clicked => root.new-stack-activated();
-                    // The generalized tooltip trigger (r2 D6): the
-                    // standard enter-arms/leave-dismiss wiring, the
-                    // same property the a11y layer reads as the label.
-                    changed has-hover => {
-                        if (self.has-hover) {
-                            TooltipState.hover("New stack",
-                                "Adds a new stack to this board.",
-                                root.stack-create-hint,
-                                self.absolute-position.x, self.absolute-position.y,
-                                self.width, self.height);
-                        } else {
-                            TooltipState.unhover();
-                        }
-                    }
-                }
-                add-col-focus := FocusScope {
-                    width: 100%;
-                    height: 100%;
-                    focus-on-tab-navigation: true;
-                    accessible-role: AccessibleRole.button;
-                    accessible-label: "New stack";
-                    accessible-action-default => root.new-stack-activated();
-                }
-                // The square plus (r2 D5): the glyph is locked to
-                // space-6 on both axes and centred — the affordance
-                // stays a full-height hit target.
-                icon-box := PlusGlyph {
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                    glyph-color: add-col-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
-                }
+            // The square plus (r2 D5): the glyph is locked to
+            // space-6 on both axes and centred — the affordance
+            // stays a full-height hit target. The F8 order is baked
+            // in the widget (the scope-first dodge in one copy); the
+            // add-column mount gains it here (its hand-copy had the
+            // TouchArea declared first — the scope overlay on top —
+            // so the first physical click ate into a focus gain; the
+            // widget's order is the recorded fix, probed at both
+            // orientations).
+            add-col-ghost := GhostOpener {
+                orientation: GhostOrientation.column;
+                label: "New stack";
+                description: "Adds a new stack to this board.";
+                hint-keys: root.stack-create-hint;
+                invoked => { root.new-stack-activated(); }
             }
         }
 

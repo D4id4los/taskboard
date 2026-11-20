@@ -4,10 +4,11 @@
 // menu click routes the `app.menu` action via the caller (§7.1: every
 // click affordance has an action equivalent).
 
-import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { Badge } from "../widgets/badge.slint";
+import { ActionChip } from "../widgets/action-chip.slint";
 
 export component Toolbar inherits Rectangle {
     in property <string> title;
@@ -74,16 +75,26 @@ export component Toolbar inherits Rectangle {
             }
         }
 
-        if (root.compact == false): inbox-chip := TouchArea {
+        if (root.compact == false): inbox-chip := ActionChip {
             // Every click has an action equivalent (§7.1): the chip
-            // routes `view.inbox`.
-            clicked => root.inbox-clicked();
-            accessible-role: AccessibleRole.button;
-            accessible-label: "Go to inbox";
-            badge := Badge {
-                text: root.inbox-count;
-                tone: root.inbox-count > 0 ? Tone.warning : Tone.neutral;
-            }
+            // routes `view.inbox`. The Badge's costume rides along:
+            // the tinted warning fill / the neutral surface-raised
+            // chip step, the badge typography, the space-1 padding.
+            // No tab stop existed here — the a11y TouchArea-only
+            // posture keeps the keyboard grammar byte-identical.
+            interactive: true;
+            keyboard-activatable: false;
+            text: root.inbox-count;
+            a11y-label: "Go to inbox";
+            tone: root.inbox-count > 0 ? Tone.warning : Tone.neutral;
+            value-role: Typography.badge;
+            fit-height: true;
+            chip-background: root.inbox-count > 0
+                ? Semantic.tone-fill(Tone.warning)
+                : Theme.surface-raised;
+            pad-left: Theme.space-1;
+            pad-right: Theme.space-1;
+            invoked => { root.inbox-clicked(); }
         }
 
         // Round-3 D27d (R3-F33): the always-visible kbd chip left the

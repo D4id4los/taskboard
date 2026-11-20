@@ -24,21 +24,34 @@ export component SectionHeader inherits HorizontalLayout {
     in property <string> status-badge-text: "";
     in property <Tone> status-badge-tone: Tone.info;
 
+    // The anatomy-order evidence (the probe's catalogue): the
+    // children's realized x offsets.
+    out property <length> title-x-out: title-role.x;
+    out property <length> count-x-out: count-role.x;
+    out property <length> badge-x-out: awaiting-badge.x;
+    out property <bool> count-shown-out: count-role.visible;
+    out property <bool> badge-shown-out: awaiting-badge.visible;
+
     spacing: Theme.space-2;
-    RoleText {
+    title-role := RoleText {
         role: Typography.caption;
         text: root.title;
         vertical-alignment: center;
     }
-    if (root.count != ""): RoleText {
+    // `visible` (not `if`) so the x-offset seams stay addressable;
+    // layouts skip invisible children, so the paint is the
+    // conditional mount's exact shape.
+    count-role := RoleText {
         role: Typography.caption;
         text-color: Theme.text-secondary;
         text: root.count;
         vertical-alignment: center;
+        visible: root.count != "";
     }
-    if (root.status-badge-text != ""): Badge {
+    awaiting-badge := Badge {
         text: root.status-badge-text;
         tone: root.status-badge-tone;
+        visible: root.status-badge-text != "";
     }
     Rectangle {
         horizontal-stretch: 1;

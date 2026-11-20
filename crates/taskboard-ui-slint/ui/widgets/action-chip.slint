@@ -17,7 +17,7 @@
 // stop existed). No chip grammar outside `ui/widgets/` (the census's
 // anti-ad-hoc law).
 
-import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
+import { Theme, Typography, RoleText, Tone, Semantic, TextRole } from "../theme.slint";
 import { ActivationStop } from "activation-stop.slint";
 import { IconButton, IconKind } from "icon-button.slint";
 import { TooltipState } from "tooltip.slint";
@@ -61,11 +61,19 @@ export component ActionChip inherits Rectangle {
     in property <bool> bordered: false;
     // Geometry customizations (the §2.2 identity set: PresetChip's
     // min pin, the label-chip padding, the passive surface).
-    in property <length> min-height: 0;
-    in property <length> min-width: 0;
+    // (The built-in min-height/min-width/background names cannot be
+    // re-declared on a Rectangle derivative — the chip-prefixed
+    // aliases.)
+    in property <length> chip-min-height: 0;
+    in property <length> chip-min-width: 0;
     in property <length> pad-left: Theme.space-2;
     in property <length> pad-right: Theme.space-1;
-    in property <color> background: transparent;
+    in property <color> chip-background: transparent;
+    // The badge-costume posture (the status bar/toolbar chips): the
+    // old Badge-inside composite sized to the Badge's preferred
+    // height inside the touch fill — the chip pins its own height to
+    // the body's preferred instead of stretching to the row.
+    in property <bool> fit-height: false;
     callback invoked();
     callback removed();
 
@@ -78,9 +86,10 @@ export component ActionChip inherits Rectangle {
             ? Semantic.focus-ring
             : Theme.text-secondary)
         : Semantic.focus-ring;
-    background: root.background;
-    min-height: root.min-height;
-    min-width: root.min-width;
+    background: root.chip-background;
+    min-height: root.chip-min-height;
+    min-width: root.chip-min-width;
+    max-height: root.fit-height ? body.preferred-height : Theme.layout-severing-max-width;
 
     // The observation seams (the probe's catalogue).
     out property <length> swatch-x-out: swatch.swatch-x;

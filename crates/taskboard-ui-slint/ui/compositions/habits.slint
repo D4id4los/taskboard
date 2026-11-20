@@ -23,6 +23,7 @@ import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { FieldValidity, TextField } from "../widgets/text-field.slint";
 import { DragState } from "../drag-state.slint";
 import { StatusNotice } from "../widgets/status-notice.slint";
+import { SectionHeader } from "../widgets/section-header.slint";
 
 // One tracker row on the card substrate (H2 D2): the card slots are
 // the model derivation's (models::habit_card); the strip facts ride
@@ -117,22 +118,9 @@ export component HabitsSection inherits Rectangle {
         vertical-stretch: 0;
         spacing: Theme.space-1;
 
-        HorizontalLayout {
-            spacing: Theme.space-2;
-            RoleText {
-                role: Typography.caption;
-                text: "Habits";
-                vertical-alignment: center;
-            }
-            RoleText {
-                role: Typography.caption;
-                text-color: Theme.text-secondary;
-                text: root.habits.length;
-                vertical-alignment: center;
-            }
-            Rectangle {
-                horizontal-stretch: 1;
-            }
+        SectionHeader {
+            title: "Habits";
+            count: root.habits.length;
             // The create affordance (round-7 D-7.2): editing-gated
             // exactly like the row actions (D-T16 — kiosk renders
             // rows, never actions). The label ≡ hover tip ≡ walk name.

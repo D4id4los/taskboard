@@ -12,6 +12,7 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { Icon } from "../widgets/icon.slint";
 import { KbdHint } from "../widgets/kbd-hint.slint";
 import { StatusNotice } from "../widgets/status-notice.slint";
+import { ActionChip } from "../widgets/action-chip.slint";
 
 // The files-sync chip's state vocabulary (DR-8 chunk 4, D-FH5): the
 // precedence ladder's rungs, fork loudest. Markup maps the state onto
@@ -304,43 +305,27 @@ export component StatusBar inherits Rectangle {
             // A tab stop since #665 (the IconButton grammar): the
             // scope rejects every key but bare Return/Space, and the
             // key root's capture phase still sees every stroke first.
-            if (root.timers-chip-visible): timers-chip := Rectangle {
-                min-width: timers-chip-badge.preferred-width + 2 * Theme.space-1;
-                border-radius: Theme.radius-small;
-                border-width: timers-chip-focus.has-focus ? Theme.focus-ring-width : 0;
-                border-color: Semantic.focus-ring;
-                timers-chip-focus := FocusScope {
-                    width: 100%;
-                    height: 100%;
-                    focus-on-tab-navigation: true;
-                    accessible-role: AccessibleRole.button;
-                    accessible-label: "Nearest timer";
-                    accessible-action-default => root.timers-chip-clicked();
-                    key-pressed(event) => {
-                        if ((event.text == Key.Return || event.text == " ")
-                            && !event.modifiers.control
-                            && !event.modifiers.alt
-                            && !event.modifiers.shift
-                            && !event.modifiers.meta) {
-                            root.timers-chip-clicked();
-                            accept
-                        } else {
-                            reject
-                        }
-                    }
-                }
-                timers-chip-touch := TouchArea {
-                    clicked => {
-                        timers-chip-focus.focus();
-                        root.timers-chip-clicked();
-                    }
-                }
-                timers-chip-badge := Badge {
-                    x: Theme.space-1;
-                    y: (parent.height - self.height) / 2;
-                    text: root.timers-chip;
-                    tone: Tone.info;
-                }
+            if (root.timers-chip-visible): timers-chip := ActionChip {
+                // D-1 (the recorded costume delta): the Badge-inside
+                // Rectangle composite becomes the ActionChip's native
+                // badge-typography pill — the surface-raised fill and
+                // the space-1 padding the Badge carried, the #665
+                // FocusScope/TouchArea/border grammar (the raw
+                // filtered scope, no facts publish), the "Nearest
+                // timer" a11y label, no tooltip arm (the empty
+                // description). `timers-chip-clicked()` unchanged.
+                text: root.timers-chip;
+                tone: Tone.info;
+                a11y-label: "Nearest timer";
+                value-role: Typography.badge;
+                interactive: true;
+                keyboard-activatable: true;
+                use-stop: false;
+                fit-height: true;
+                chip-background: Theme.surface-raised;
+                pad-left: Theme.space-1;
+                pad-right: Theme.space-1;
+                invoked => { root.timers-chip-clicked(); }
             }
 
             // The tracking chip (DR-5/4, D-T16): the title snapshot +

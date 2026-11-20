@@ -1404,8 +1404,12 @@ fn every_task_view_cell_and_chip_carries_its_info_tip() {
             1,
             "exactly one hover arm at the tracked row"
         );
+        // The W5 absorption: the preset chips are `ActionChip`
+        // instances (`RuleList::preset-chip`); one chip per offset,
+        // four distinct spots (each carries the widget's tip-armed
+        // TouchArea — the probe asserts the posture itself).
         assert_eq!(
-            distinct_spots(&*harness, "PresetChip::touch"),
+            distinct_spots(&*harness, "RuleList::preset-chip"),
             4,
             "each preset chip carries its own tip trigger"
         );
@@ -2218,7 +2222,7 @@ fn compact_mounts_exactly_one_add_stack_entry() {
         assert!(
             harness
                 .driver
-                .find_all_by_id("BoardLayout::add-col-hit")
+                .find_all_by_id("BoardLayout::add-col-ghost")
                 .is_empty(),
             "the regular add-column unmounts in compact"
         );
@@ -2233,7 +2237,7 @@ fn compact_mounts_exactly_one_add_stack_entry() {
         assert!(
             !harness
                 .driver
-                .find_all_by_id("BoardLayout::add-col-hit")
+                .find_all_by_id("BoardLayout::add-col-ghost")
                 .is_empty(),
             "the regular add-column is mounted"
         );

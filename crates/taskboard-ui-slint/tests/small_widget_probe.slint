@@ -6,9 +6,15 @@
 // typed root seams from Rust (`small_widget_probe_tests.rs`); every
 // intent lands in a counter. No text assertions, no clocks.
 
-import { Theme, Semantic, Tone } from "../ui/theme.slint";
+import { Theme, Semantic, Tone, Typography } from "../ui/theme.slint";
+import { IconButton, IconKind } from "../ui/widgets/icon-button.slint";
 import { StatusNotice, NoticeShape } from "../ui/widgets/status-notice.slint";
 import { ConfirmStrip } from "../ui/widgets/confirm-strip.slint";
+import { ActionChip } from "../ui/widgets/action-chip.slint";
+import { SectionHeader } from "../ui/widgets/section-header.slint";
+import { GhostOpener, GhostOrientation } from "../ui/widgets/ghost-opener.slint";
+
+export { GhostOrientation }
 
 export { NoticeShape }
 
@@ -52,6 +58,9 @@ export component SmallWidgetProbe inherits Window {
     out property <length> theme-space-1: Theme.space-1;
     out property <length> theme-space-2: Theme.space-2;
     out property <length> theme-space-15: Theme.space-15;
+    out property <length> theme-space-3: Theme.space-3;
+    out property <length> theme-space-5: Theme.space-5;
+    out property <length> theme-space-6: Theme.space-6;
 
     // ---- T2: StatusNotice --------------------------------------------
     // The boxed shape (the ErrorLine grammar): raised box, border,
@@ -86,6 +95,58 @@ export component SmallWidgetProbe inherits Window {
     out property <color> destructive-confirm-color: destructive-strip.confirm-color-out;
     out property <color> convert-message-color: convert-strip.message-color-out;
     out property <color> convert-confirm-color: convert-strip.confirm-color-out;
+
+    // ---- T4: ActionChip ----------------------------------------------
+    in-out property <int> chip-invoked-count: 0;
+    in-out property <int> chip-removed-count: 0;
+    in-out property <int> passive-chip-clicked-count: 0;
+    in-out property <int> plain-scope-chip-count: 0;
+    // The swatch chip's echo square geometry (the label-chip rect).
+    out property <length> chip-swatch-x: swatch-chip.swatch-x-out;
+    out property <length> chip-swatch-width: swatch-chip.swatch-width-out;
+    out property <color> chip-text-color: swatch-chip.text-color-out;
+    // The preset chip's min pin + geometry seams (the first-click
+    // probe aims at the chip's realized rect).
+    out property <length> preset-chip-x: preset-chip.absolute-position.x;
+    out property <length> preset-chip-y: preset-chip.absolute-position.y;
+    out property <length> preset-chip-width: preset-chip.width;
+    out property <length> preset-chip-height: preset-chip.height;
+    out property <length> plain-chip-x: plain-chip.absolute-position.x;
+    out property <length> plain-chip-y: plain-chip.absolute-position.y;
+    out property <length> plain-chip-width: plain-chip.width;
+    out property <length> plain-chip-height: plain-chip.height;
+    out property <length> passive-chip-x: passive-chip.absolute-position.x;
+    out property <length> passive-chip-y: passive-chip.absolute-position.y;
+    out property <length> passive-chip-width: passive-chip.width;
+    out property <length> passive-chip-height: passive-chip.height;
+
+    // ---- T5: SectionHeader -------------------------------------------
+    // The anatomy-order evidence reads the children's realized x
+    // offsets (title < count < badge < actions).
+    out property <length> header-title-x: probe-header.title-x-out;
+    out property <length> header-count-x: probe-header.count-x-out;
+    out property <length> header-badge-x: probe-header.badge-x-out;
+    out property <length> header-actions-x: header-action.absolute-position.x;
+    // The bare fixture (empty count/badge): the Rust side reads the
+    // absence through the driver's label queries.
+    out property <length> bare-header-y: bare-header.absolute-position.y;
+    out property <bool> full-count-shown: probe-header.count-shown-out;
+    out property <bool> full-badge-shown: probe-header.badge-shown-out;
+    out property <bool> bare-count-shown: bare-header.count-shown-out;
+    out property <bool> bare-badge-shown: bare-header.badge-shown-out;
+
+    // ---- T6: GhostOpener ---------------------------------------------
+    in-out property <int> row-ghost-count: 0;
+    in-out property <int> column-ghost-count: 0;
+    out property <bool> row-ghost-hovered: row-ghost.hovered;
+    out property <length> row-ghost-height: row-ghost.height;
+    out property <length> row-ghost-x: row-ghost.absolute-position.x;
+    out property <length> row-ghost-y: row-ghost.absolute-position.y;
+    out property <length> row-ghost-width: row-ghost.width;
+    out property <length> column-ghost-width: column-ghost.width;
+    out property <length> column-ghost-height: column-ghost.height;
+    out property <length> column-ghost-x: column-ghost.absolute-position.x;
+    out property <length> column-ghost-y: column-ghost.absolute-position.y;
 
     VerticalLayout {
         // The boxed fixture (the settings form's grammar): fixed
@@ -131,6 +192,95 @@ export component SmallWidgetProbe inherits Window {
             cancel-label: "Cancel conversion";
             confirmed() => { root.convert-confirm-count += 1; }
             cancelled() => { root.convert-cancel-count += 1; }
+        }
+
+        // The swatch chip (the label-chip fixture): passive body,
+        // swatch echo, trailing remove affordance.
+        swatch-chip := ActionChip {
+            interactive: false;
+            tone: Tone.info;
+            chip-background: Theme.surface;
+            has-swatch: true;
+            swatch: Semantic.sync-active;
+            removable: true;
+            remove-label: "Remove label probe";
+            removed => { root.chip-removed-count += 1; }
+        }
+        // The preset chip (the ActivationStop fixture): bordered,
+        // mono, the token floor pin.
+        preset-chip := ActionChip {
+            text: "5m";
+            tone: Tone.neutral;
+            value-role: Typography.mono;
+            text-halign: center;
+            bordered: true;
+            chip-min-height: Theme.space-5;
+            chip-min-width: Theme.space-6;
+            pad-left: Theme.space-2;
+            pad-right: Theme.space-2;
+            use-stop: true;
+            stop-id: 90;
+            stop-description: "Adds this reminder offset.";
+            description: "Adds this reminder offset.";
+            invoked => { root.chip-invoked-count += 1; }
+        }
+        // The plain-scope chip (the timers-chip fixture): the raw
+        // filtered Return/Space scope, no facts publish.
+        plain-chip := ActionChip {
+            tone: Tone.info;
+            a11y-label: "Nearest timer";
+            value-role: Typography.badge;
+            use-stop: false;
+            chip-background: Theme.surface-raised;
+            pad-left: Theme.space-1;
+            pad-right: Theme.space-1;
+            invoked => { root.plain-scope-chip-count += 1; }
+        }
+        // The passive chip (the paused-chip fixture): invoked()
+        // unreachable — the click counter must stay at zero.
+        passive-chip := ActionChip {
+            interactive: false;
+            tone: Tone.info;
+            chip-background: Theme.surface;
+            pad-right: Theme.space-2;
+            text: "paused";
+        }
+
+        // The header fixture (the timers grammar): title + count +
+        // mid-row badge + stretch + trailing action.
+        probe-header := SectionHeader {
+            title: "Timers";
+            count: "2";
+            status-badge-text: "1 awaiting";
+            status-badge-tone: Tone.info;
+            header-action := IconButton {
+                icon: IconKind.plus;
+                label: "probe header action";
+            }
+        }
+        // The bare header (the habits grammar): count/badge empty.
+        bare-header := SectionHeader {
+            title: "Habits";
+        }
+
+        // The ghost fixtures: the row band and the column sliver.
+        row-host := HorizontalLayout {
+            height: Theme.space-15;
+            row-ghost := GhostOpener {
+                orientation: GhostOrientation.row;
+                label: "Add task";
+                description: "Creates a task in this stack.";
+                invoked => { root.row-ghost-count += 1; }
+            }
+        }
+        column-host := HorizontalLayout {
+            height: Theme.space-15;
+            column-ghost := GhostOpener {
+                orientation: GhostOrientation.column;
+                label: "New stack";
+                description: "Adds a new stack to this board.";
+                invoked => { root.column-ghost-count += 1; }
+            }
         }
     }
 }
