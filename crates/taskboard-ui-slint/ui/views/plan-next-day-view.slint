@@ -45,6 +45,13 @@ export component PlanNextDayView inherits FocusScope {
     // must never clobber a field the user is typing into.
     in property <string> time-text;
     in property <string> effort-text;
+    // slint: property — the mount-focus gate (#1036): the standalone
+    // surface keeps the default `true` (byte-identical init grab);
+    // the walk embed (#716's stage-3 mount) sets `false` so the
+    // planner never steals the walk dialog's initial focus at mount —
+    // it still receives focus deliberately (Tab into the body keeps
+    // `focus-on-tab-navigation`), it just never grabs it on init.
+    in property <bool> take-focus-on-init: true;
     callback box-activated(int);
     callback pool-activated(int);
     callback box-earlier(int);
@@ -58,7 +65,11 @@ export component PlanNextDayView inherits FocusScope {
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
     accessible-label: "Plan next day";
-    init => self.focus();
+    init => {
+        if (root.take-focus-on-init) {
+            self.focus();
+        }
+    }
     // The severing cap (J4 US-3 AC-2; the task-view precedent): the
     // root's layout merge must never bound the OS window's max width
     // — the empty EmptyState mount would otherwise collapse it.
