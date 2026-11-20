@@ -25,6 +25,7 @@ import { TooltipState } from "../widgets/tooltip.slint";
 import { InfoTip } from "../widgets/info-tip.slint";
 import { Responsive, Breakpoint } from "../responsive.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { TextButton } from "../widgets/text-button.slint";
 export enum SettingsRowStatus {
     idle,
     syncing,
@@ -369,65 +370,10 @@ component BusyDot inherits Rectangle {
     ]
 }
 
-component SettingsButton inherits Rectangle {
-    in property <string> text;
-    in property <bool> enabled: true;
-    // The visible-ceremony variant (r2 D34, F21): when true, the click
-    // fires *regardless of enablement* — the adapter renders the
-    // refusal. Default false: every other consumer keeps the gate.
-    in property <bool> click-through: false;
-    callback clicked();
-    border-radius: Theme.radius-small;
-    background: enabled ? Theme.surface-raised : Theme.surface;
-    border-width: touch.has-hover || focus-surface.has-focus ? Theme.focus-ring-width : 0;
-    border-color: Semantic.focus-ring;
-    min-width: Theme.space-6;
-    min-height: label.preferred-height + 2 * Theme.space-2;
-    // The tab stop (round-5 F13, the IconButton grammar — deliberately
-    // not ActivationStop: its reservation count would make bare Return
-    // yield to a cell handler that does not exist here, and steal vi
-    // Normal's Return). Pointer, raw keys and the AT action share one
-    // gate.
-    focus-surface := FocusScope {
-        width: 100%;
-        height: 100%;
-        focus-on-tab-navigation: true;
-        accessible-role: AccessibleRole.button;
-        accessible-label: root.text;
-        accessible-enabled: root.enabled;
-        accessible-action-default => {
-            if (root.enabled || root.click-through) {
-                root.clicked();
-            }
-        }
-        key-pressed(event) => {
-            if ((event.text == Key.Return || event.text == " ")
-                    && !event.modifiers.control && !event.modifiers.alt
-                    && !event.modifiers.shift && !event.modifiers.meta) {
-                if (root.enabled || root.click-through) {
-                    root.clicked();
-                }
-                accept
-            } else {
-                reject
-            }
-        }
-    }
-    touch := TouchArea {
-        clicked => {
-            focus-surface.focus();
-            if (root.enabled || root.click-through) {
-                root.clicked();
-            }
-        }
-    }
-    label := RoleText {
-        role: Typography.body;
-        text: root.text;
-        text-color: root.enabled ? Theme.text-primary : Theme.text-secondary;
-        horizontal-alignment: center;
-    }
-}
+// The settings buttons (W3, #950): the sites mount the TextButton
+// primitive directly — size=regular carries the content-sized height
+// law, the hover-or-focus border, the enabled/click-through gate and
+// the disabled text-secondary label (B-2: unchanged for settings).
 
 // The inline error line (round-3 D19): hover-box styling under a
 // field, carrying the field's reason sentence. The text is
@@ -979,8 +925,8 @@ export component SettingsView inherits FocusScope {
         // render the refusal through the status line instead of
         // absorbing silently. The password rides the callback args
         // only — it never lands on any pushed model property (D26b).
-        SettingsButton {
-            text: "Sign in";
+        TextButton {
+            label: "Sign in";
             enabled: SettingsModel.save-enabled;
             click-through: true;
             clicked => {
@@ -1026,8 +972,8 @@ export component SettingsView inherits FocusScope {
                         overflow: elide;
                         horizontal-stretch: 1;
                     }
-                    SettingsButton {
-                        text: "Remove";
+                    TextButton {
+                        label: "Remove";
                         enabled: !SettingsModel.busy;
                         clicked => {
                             root.remove-clicked(index);
@@ -1045,13 +991,13 @@ export component SettingsView inherits FocusScope {
                             horizontal-stretch: 1;
                             overflow: elide;
                         }
-                        SettingsButton {
-                            text: "Confirm remove";
+                        TextButton {
+                            label: "Confirm remove";
                             enabled: !SettingsModel.busy;
                             clicked => { root.remove-confirmed(index); }
                         }
-                        SettingsButton {
-                            text: "Cancel";
+                        TextButton {
+                            label: "Cancel";
                             enabled: true;
                             clicked => { root.remove-cancelled(); }
                         }
@@ -1168,8 +1114,8 @@ export component SettingsView inherits FocusScope {
                             : item.badge-tone == SettingsBadgeTone.info ? Tone.info
                             : Tone.neutral;
                     }
-                    if item.action-label != "": SettingsButton {
-                        text: item.action-label;
+                    if item.action-label != "": TextButton {
+                        label: item.action-label;
                         enabled: item.action-enabled && !SettingsModel.busy;
                         clicked => {
                             root.files-board-action-clicked(index);
@@ -1178,8 +1124,8 @@ export component SettingsView inherits FocusScope {
                     // The undo-window Restore (US-6, D-7): mounts only
                     // inside the window's candidate set — withheld
                     // outside, never greyed (the C-4 bar).
-                    if item.restore-offerable: SettingsButton {
-                        text: "Restore";
+                    if item.restore-offerable: TextButton {
+                        label: "Restore";
                         enabled: !SettingsModel.busy;
                         clicked => {
                             root.files-board-restore-clicked(index);
@@ -1198,13 +1144,13 @@ export component SettingsView inherits FocusScope {
                         horizontal-stretch: 1;
                         overflow: elide;
                     }
-                    SettingsButton {
-                        text: "Confirm stop";
+                    TextButton {
+                        label: "Confirm stop";
                         enabled: !SettingsModel.busy;
                         clicked => { root.files-action-confirmed(index); }
                     }
-                    SettingsButton {
-                        text: "Cancel";
+                    TextButton {
+                        label: "Cancel";
                         enabled: true;
                         clicked => { root.files-action-cancelled(); }
                     }
@@ -1243,8 +1189,8 @@ export component SettingsView inherits FocusScope {
                         Rectangle {
                             horizontal-stretch: 1;
                         }
-                        SettingsButton {
-                            text: "Refresh";
+                        TextButton {
+                            label: "Refresh";
                             enabled: !SettingsModel.busy;
                             clicked => {
                                 root.refresh-clicked(index);
@@ -1290,8 +1236,8 @@ export component SettingsView inherits FocusScope {
                         overflow: elide;
                         horizontal-stretch: 1;
                     }
-                    if item.bound: SettingsButton {
-                        text: "Disconnect";
+                    if item.bound: TextButton {
+                        label: "Disconnect";
                         enabled: !SettingsModel.busy;
                         clicked => {
                             root.disconnect-clicked(index);
@@ -1309,13 +1255,13 @@ export component SettingsView inherits FocusScope {
                             horizontal-stretch: 1;
                             overflow: elide;
                         }
-                        SettingsButton {
-                            text: "Confirm disconnect";
+                        TextButton {
+                            label: "Confirm disconnect";
                             enabled: !SettingsModel.busy;
                             clicked => { root.remove-confirmed(index); }
                         }
-                        SettingsButton {
-                            text: "Cancel";
+                        TextButton {
+                            label: "Cancel";
                             enabled: true;
                             clicked => { root.remove-cancelled(); }
                         }
@@ -1328,8 +1274,8 @@ export component SettingsView inherits FocusScope {
                             root.remote-bind-picked(item-index, option);
                         }
                     }
-                    if !item.bound: SettingsButton {
-                        text: "Create local board";
+                    if !item.bound: TextButton {
+                        label: "Create local board";
                         enabled: !SettingsModel.busy;
                         clicked => {
                             root.create-clicked(index);
