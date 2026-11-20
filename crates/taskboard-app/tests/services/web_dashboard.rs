@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use taskboard_app::bootstrap::{App, bootstrap};
+use taskboard_app::bootstrap::{App, bootstrap_in};
 use taskboard_app::config::{AppConfig, AppSection, CredentialStoreKind, WebSection};
 use taskboard_app::secrets::CredentialStore;
 use taskboard_domain::StateCommand;
@@ -63,12 +63,13 @@ fn config_for(dir: &tempfile::TempDir) -> AppConfig {
 
 /// Boots a standalone core with a dashboard that would never be
 /// consulted for credentials.
-async fn boot(config: AppConfig) -> App {
+async fn boot(config: AppConfig, identity: taskboard_app::bootstrap::BootIdentity) -> App {
     let store: Arc<dyn CredentialStore> = Arc::new(FakeCredentialStore::default());
-    bootstrap(
+    bootstrap_in(
         config,
         store,
         Arc::new(taskboard_app::notifications::LogSink),
+        identity,
     )
     .await
     .expect("standalone boot")
@@ -88,7 +89,11 @@ async fn w1_the_dashboard_journey_over_the_real_server() {
     let dir = tempdir();
     let config = config_for(&dir);
     config.validate().expect("the journey config validates");
-    let app = boot(config).await;
+    let app = boot(
+        config,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     // One live board: the board page journey has a real target.
     let outcome = app
@@ -276,7 +281,11 @@ async fn w2_a_generated_token_never_secures_a_lan_bind() {
     let mut config = config_for(&dir);
     config.web.bind = "192.0.2.10:8787".to_owned(); // TEST-NET, never loopback
     config.web.token = None; // nothing resolvable → generation would run
-    let app = boot(config).await;
+    let app = boot(
+        config,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     let outcome = taskboard_app::web::spawn_dashboard(
         &app.config,
@@ -297,7 +306,11 @@ async fn w2_a_generated_token_never_secures_a_lan_bind() {
     let mut config = config_for(&dir);
     config.storage.db_path = Some(dir.path().join("other.db"));
     config.web.bind = "192.0.2.10:8787".to_owned();
-    let app = boot(config).await;
+    let app = boot(
+        config,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
     // The explicit token is decodable; the bind itself may still fail
     // on hosts without the address — assert the *typed* refusal class
     // only (Bind, not UnsecuredLanBind).
@@ -328,7 +341,11 @@ async fn w3_a_disabled_table_spawns_nothing() {
         token: None,
     };
     let bind = config.web.bind.clone();
-    let app = boot(config).await;
+    let app = boot(
+        config,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     // The off table's placeholder spawns nothing: the config's `web`
     // section decodes disabled, so the lifecycle never calls the spawn.
@@ -358,7 +375,11 @@ async fn w4_the_generated_token_persists_beside_the_db() {
     let dir = tempdir();
     let mut config = config_for(&dir);
     config.web.token = None;
-    let app = boot(config).await;
+    let app = boot(
+        config,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     let web = taskboard_app::web::spawn_dashboard(
         &app.config,
@@ -387,7 +408,11 @@ async fn w4_the_generated_token_persists_beside_the_db() {
 async fn w5_a_conflicting_bind_is_the_typed_refusal() {
     let dir = tempdir();
     let config = config_for(&dir);
-    let app = boot(config).await;
+    let app = boot(
+        config,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await;
 
     let first = taskboard_app::web::spawn_dashboard(
         &app.config,

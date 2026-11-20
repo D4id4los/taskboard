@@ -1519,10 +1519,11 @@ mod ceremonies {
             .await
             .expect("unbound");
 
-        let app = taskboard_app::bootstrap::bootstrap(
+        let app = taskboard_app::bootstrap::bootstrap_in(
             config.clone(),
             Arc::clone(&store),
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("booted");
@@ -1776,9 +1777,14 @@ async fn boards_move_refuses_unknown_boards() {
     let config = config_for(&server.uri(), dir.path(), "move.db");
     let store = store_for(&server.uri());
     let sink = taskboard_app::bootstrap::resolve_notifier_sink(&config);
-    let app = taskboard_app::bootstrap::bootstrap(config, Arc::clone(&store), sink)
-        .await
-        .expect("boots");
+    let app = taskboard_app::bootstrap::bootstrap_in(
+        config,
+        Arc::clone(&store),
+        sink,
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await
+    .expect("boots");
     let unknown = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0xdead));
     let budget = Duration::from_secs(1);
     // The refusals below fire before the world reads the config; the

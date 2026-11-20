@@ -250,10 +250,11 @@ async fn t5_session_lane_serves_the_family() {
     let dir = tempdir();
     let config = seeded_config(dir.path(), "t5.db").await;
     let store = forbidden_store();
-    let app = taskboard_app::bootstrap::bootstrap(
+    let app = taskboard_app::bootstrap::bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("session boots");

@@ -23,7 +23,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use taskboard_app::bootstrap::bootstrap;
+use taskboard_app::bootstrap::bootstrap_in;
 use taskboard_domain::persistence::TaskRepository as _;
 use taskboard_sync_nextcloud::{DeckClient, NewCard, StackFilter, Validators};
 
@@ -94,10 +94,11 @@ async fn daemon_journey(cfg: &common::LiveCfg) {
 
     // Bootstrap the daemon with the env credential store.
     let config = live_config(cfg, &db_path);
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         Arc::new(taskboard_app::secrets::EnvCredentialStore),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("bootstrap");
@@ -199,10 +200,11 @@ async fn shutdown_mid_cycle(cfg: &common::LiveCfg) {
     // bounded-abort path.
     let mut config = live_config(cfg, &db_path);
     config.app.shutdown_timeout_secs = 0;
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         Arc::new(taskboard_app::secrets::EnvCredentialStore),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("bootstrap");
@@ -806,10 +808,11 @@ async fn v0_1_x_additive_upgrade_boot_settles_offline_without_a_server() {
     );
     config.validate().expect("config valid");
 
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         Arc::new(taskboard_app::secrets::EnvCredentialStore),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("the v0.1.x db boots");
@@ -896,10 +899,11 @@ async fn v0_1_x_additive_upgrade(cfg: &common::LiveCfg) {
         common::write_v01x_db(&db_path, board.id, stack.id, server_card.id, &local_title).await;
 
     let config = common::live_config(cfg, &db_path);
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         Arc::new(taskboard_app::secrets::EnvCredentialStore),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("the v0.1.x db boots");
@@ -1125,10 +1129,11 @@ async fn two_connector_body(
 
     let mut store = common::KeyedFixedStore::with(&a.url, &a.user, &a.token);
     store.add(&b.url, &b.user, &b.token);
-    let app = bootstrap(
+    let app = bootstrap_in(
         config,
         std::sync::Arc::new(store),
         std::sync::Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await?;
     let mut events = app.system.subscribe();
@@ -1364,10 +1369,11 @@ async fn move_board_body(
     store.add(&b.url, &b.user, &b.token);
     let store: Arc<dyn taskboard_app::secrets::CredentialStore> = Arc::new(store);
 
-    let app = bootstrap(
+    let app = bootstrap_in(
         config.clone(),
         store.clone(),
         Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await?;
     let alpha = ConnectorId::from("alpha");
@@ -1618,10 +1624,11 @@ async fn move_to_files_journey(cfg: &common::LiveCfg) {
         config
     };
     let boot = |config: taskboard_app::config::AppConfig| {
-        taskboard_app::bootstrap::bootstrap(
+        taskboard_app::bootstrap::bootstrap_in(
             config,
             Arc::clone(&store),
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
         )
     };
 

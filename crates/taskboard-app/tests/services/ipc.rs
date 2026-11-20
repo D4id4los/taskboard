@@ -59,10 +59,11 @@ async fn serve_with_config(
     let db = dir.join(db_name);
     let store: Arc<dyn CredentialStore> = Arc::new(EnvCredentialStore);
     let app = Arc::new(
-        taskboard_app::bootstrap::bootstrap(
+        taskboard_app::bootstrap::bootstrap_in(
             config,
             store.clone(),
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.to_owned()),
         )
         .await
         .expect("core boots"),
@@ -557,10 +558,11 @@ async fn served_nextcloud(
     let store: Arc<common::FakeCredentialStore> =
         Arc::new(common::FakeCredentialStore::with(server_url, "alice", "pw"));
     let app = Arc::new(
-        taskboard_app::bootstrap::bootstrap(
+        taskboard_app::bootstrap::bootstrap_in(
             config,
             store.clone(),
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.to_owned()),
         )
         .await
         .expect("core boots"),
@@ -739,10 +741,11 @@ async fn served_with_config_file(
         "pw",
     ));
     let app = Arc::new(
-        taskboard_app::bootstrap::bootstrap(
+        taskboard_app::bootstrap::bootstrap_in(
             config,
             store.clone(),
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.to_owned()),
         )
         .await
         .expect("core boots"),
@@ -775,10 +778,11 @@ async fn served_with_store(
     std::fs::write(&config_path, config_file_body(&db, None, None)).expect("write config file");
     let config = AppConfig::load(Some(config_path.clone())).expect("config parses");
     let app = Arc::new(
-        taskboard_app::bootstrap::bootstrap(
+        taskboard_app::bootstrap::bootstrap_in(
             config,
             store.clone(),
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.to_owned()),
         )
         .await
         .expect("core boots"),
@@ -1024,10 +1028,11 @@ async fn served_with_core(
     let db = dir.join(db_name);
     let store: Arc<dyn CredentialStore> = Arc::new(EnvCredentialStore);
     let app = Arc::new(
-        taskboard_app::bootstrap::bootstrap(
+        taskboard_app::bootstrap::bootstrap_in(
             standalone_config(&db),
             store.clone(),
             Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.to_owned()),
         )
         .await
         .expect("core boots"),

@@ -150,6 +150,37 @@ async fn resolve_device_identity(
     resolve_device_identity_at(dirs::data_dir()?.join("taskboard"), clock).await
 }
 
+/// The device-identity home for one boot (#1013): `Platform` is the
+/// real binary's `<data>/taskboard` — the only arm the production
+/// entry (`bootstrap`) passes; `At(dir)` is a suite's fixture
+/// directory, so an in-process test never mints `device.json` in the
+/// operator's real home.
+pub enum BootIdentity {
+    /// The platform data dir (`dirs::data_dir()/taskboard`).
+    Platform,
+    /// An explicit identity home (the test fixtures' tempdir).
+    At(std::path::PathBuf),
+}
+
+impl BootIdentity {
+    /// Resolves the identity home to a concrete directory: `Platform`
+    /// fails typed (`DataDir` class) when the platform has no data
+    /// dir; `At` is total.
+    fn resolve_dir(&self) -> std::io::Result<std::path::PathBuf> {
+        match self {
+            BootIdentity::Platform => dirs::data_dir()
+                .map(|dir| dir.join("taskboard"))
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "no platform application-data directory",
+                    )
+                }),
+            BootIdentity::At(dir) => Ok(dir.clone()),
+        }
+    }
+}
+
 /// The seam the boot path and the tests share: the explicit home wins
 /// over the platform default.
 async fn resolve_device_identity_at(
@@ -193,6 +224,7 @@ pub struct FilesSyncSpawnSpec {
 #[allow(clippy::too_many_arguments)] // the gate's injected seams, the Deck module's shape
 async fn files_sync_spawn(
     spec: &FilesSyncSpawnSpec,
+    identity_dir: std::path::PathBuf,
     credentials: Arc<dyn CredentialStore>,
     config: &AppConfig,
     system: broadcast::Sender<SystemEvent>,
@@ -211,13 +243,10 @@ async fn files_sync_spawn(
     // resolution stays app-side, the file IO is the transport crate's.
     // The identity itself was minted at boot (`resolve_device_identity`);
     // the actor's load arm finds the existing file — the create arm can
-    // never fire here, a second mint is the fork condition.
-    let data_dir = dirs::data_dir()
-        .map(|dir| dir.join("taskboard"))
-        .ok_or(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "no platform application-data directory",
-        ))?;
+    // never fire here, a second mint is the fork condition. The home
+    // rides in from the boot's [`BootIdentity`] — no platform
+    // re-derivation here (#1013).
+    let data_dir = identity_dir;
     tokio::fs::create_dir_all(&data_dir).await?;
     let device_json = data_dir.join("device.json");
     let password = credentials.load(&spec.server_url, &spec.username)?;
@@ -1066,6 +1095,24 @@ pub async fn bootstrap(
     credentials: Arc<dyn CredentialStore>,
     notifier_sink: Arc<dyn NotificationSink>,
 ) -> Result<App, BootstrapError> {
+    bootstrap_in(config, credentials, notifier_sink, BootIdentity::Platform).await
+}
+
+/// [`bootstrap`] with an explicit device-identity home (#1013): the
+/// test fixtures' seam — `BootIdentity::At(fixture_dir)` keeps every
+/// in-process boot out of the operator's real home. The production
+/// entry passes `BootIdentity::Platform` and nothing else changes.
+///
+/// # Errors
+///
+/// [`BootstrapError`] — typed, see the variant docs.
+#[allow(clippy::result_large_err)] // the error is constructed once at boot
+pub async fn bootstrap_in(
+    config: AppConfig,
+    credentials: Arc<dyn CredentialStore>,
+    notifier_sink: Arc<dyn NotificationSink>,
+    identity: BootIdentity,
+) -> Result<App, BootstrapError> {
     // The module list derives from the legacy scalar config
     // (synthesis-of-one; the loop body below is the seam a second
     // connector kind plugs into — a match arm, nothing else).
@@ -1084,7 +1131,7 @@ pub async fn bootstrap(
             SyncBackend::Standalone => unreachable!("standalone synthesizes no connector"),
         })
         .collect();
-    bootstrap_with_modules(config, credentials, notifier_sink, modules).await
+    bootstrap_with_modules(config, credentials, notifier_sink, modules, identity).await
 }
 
 /// The boot-time notifier sink: `[reminders] sink` resolved against
@@ -1217,6 +1264,7 @@ async fn bootstrap_with_modules(
     credentials: Arc<dyn CredentialStore>,
     notifier_sink: Arc<dyn NotificationSink>,
     modules: Vec<Arc<dyn crate::connectors::ConnectorModule>>,
+    identity: BootIdentity,
 ) -> Result<App, BootstrapError> {
     // No `[app] mode` gate here: the core is mode-agnostic, and the
     // REPL (ADR 0011) serves any mode's console. Main's daemon entry
@@ -1343,7 +1391,13 @@ async fn bootstrap_with_modules(
 
     // The boot-time device identity (F1): resolved before the engine
     // spawns, configuration-independent (see `resolve_device_identity`).
-    let device_identity = resolve_device_identity(&taskboard_domain::SystemClock).await;
+    // `At` bypasses the platform default entirely (#1013).
+    let device_identity = match &identity {
+        BootIdentity::Platform => resolve_device_identity(&taskboard_domain::SystemClock).await,
+        BootIdentity::At(dir) => {
+            resolve_device_identity_at(dir.clone(), &taskboard_domain::SystemClock).await
+        }
+    };
     let author =
         device_identity.map(|device| taskboard_domain::ids::AuthorId::from_uuid(device.as_uuid()));
 
@@ -1539,6 +1593,9 @@ async fn bootstrap_with_modules(
         if let Some(spec) = files_sync_spawn_decision(&config) {
             let gate = files_sync_spawn(
                 &spec,
+                identity
+                    .resolve_dir()
+                    .map_err(FilesSyncGateError::DataDir)?,
                 credentials.clone(),
                 &config,
                 system.clone(),
@@ -2096,6 +2153,7 @@ mod connector_module_tests {
             refusing_store(),
             Arc::new(crate::notifications::LogSink),
             vec![module],
+            BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("boot");
@@ -2183,6 +2241,7 @@ mod connector_module_tests {
             refusing_store(),
             Arc::new(crate::notifications::LogSink),
             Vec::new(),
+            BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("standalone boot");
@@ -2270,6 +2329,7 @@ mod connector_module_tests {
             refusing_store(),
             Arc::new(crate::notifications::LogSink),
             modules,
+            BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("boot");
@@ -2370,6 +2430,7 @@ mod connector_module_tests {
             refusing_store(),
             Arc::new(crate::notifications::LogSink),
             modules,
+            BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("boot");
@@ -2454,6 +2515,7 @@ mod connector_module_tests {
             refusing_store(),
             Arc::new(crate::notifications::LogSink),
             Vec::new(),
+            BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("boot");
@@ -2512,6 +2574,7 @@ mod connector_module_tests {
             refusing_store(),
             Arc::new(crate::notifications::LogSink),
             Vec::new(),
+            BootIdentity::At(dir.path().to_owned()),
         )
         .await;
         match outcome {
@@ -2586,6 +2649,7 @@ mod connector_module_tests {
             Arc::new(AcceptingStore),
             Arc::new(crate::notifications::LogSink),
             Vec::new(),
+            BootIdentity::At(dir.path().to_owned()),
         )
         .await
         .expect("boot");

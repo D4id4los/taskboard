@@ -74,10 +74,11 @@ async fn booted_workspace(
     config.storage.db_path = Some(dir.path().join("taskboard.db"));
     config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
     config.validate().expect("config valid");
-    let app = bootstrap::bootstrap(
+    let app = bootstrap::bootstrap_in(
         config,
         Arc::new(FakeCredentialStore::default()),
         Arc::new(LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
     )
     .await
     .expect("standalone boot");
