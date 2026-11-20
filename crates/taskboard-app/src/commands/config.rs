@@ -887,6 +887,16 @@ pub(crate) async fn handle_daemon(
 
 #[cfg(test)]
 mod set_tests {
+    /// The #984 dated-pin gate (the #865 re-homing debt, tracked in the
+    /// round-3 backlog): true when no `TASKBOARD_*` ambient is present.
+    /// The set verbs' guard/persist reads compose the process env in
+    /// production, and this lib crate forbids the env mutation that
+    /// `taskboard_env_lock` needs — `tests/services/ui_settings.rs` is
+    /// the hostile-oracle home for the re-homed legs.
+    fn clean_ambient() -> bool {
+        !std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
+    }
+
     use super::*;
 
     use crate::config::DEFAULT_FOCUS_WORK_MINS;
@@ -905,6 +915,10 @@ mod set_tests {
     /// re-read through the figment stack sees the value.
     #[tokio::test]
     async fn us2_s3_config_set_writes_the_toml_layer_and_reports_next_start() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("happy");
         let _ = std::fs::remove_file(&path);
         let view = set(Some(path.clone()), "reminders.tick_secs", "45")
@@ -933,6 +947,10 @@ mod set_tests {
     /// seam — the env-diff truth table owns the env half).
     #[tokio::test]
     async fn an_env_overridden_key_refuses_typed_without_writing() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("envlocked");
         std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
         let mut locked = std::collections::BTreeSet::new();
@@ -953,6 +971,10 @@ mod set_tests {
     /// refuse typed and write nothing.
     #[tokio::test]
     async fn unknown_keys_and_malformed_values_refuse_typed_without_writing() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("refusals");
         let _ = std::fs::remove_file(&path);
         let err = set(Some(path.clone()), "not.a.knob", "1")
@@ -980,6 +1002,10 @@ mod set_tests {
     /// gate both lanes share, journey D4).
     #[tokio::test]
     async fn us4_s3_a_validity_crossing_set_refuses_and_touches_nothing() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("proverefusal");
         std::fs::write(
             &path,
@@ -1007,6 +1033,10 @@ mod set_tests {
     /// typed view reports the next-start lane (US-3/S2).
     #[tokio::test]
     async fn us10_s2_config_unset_removes_the_key() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("unset");
         set(Some(path.clone()), "focus.work_mins", "50")
             .await
@@ -1031,6 +1061,10 @@ mod set_tests {
     /// and the lane bit — structural, machine-checkable.
     #[tokio::test]
     async fn us5_s1_the_typed_view_carries_key_value_and_lane_bit() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("view");
         let _ = std::fs::remove_file(&path);
         let view = set(Some(path.clone()), "reminders.tick_secs", "45")
@@ -1053,6 +1087,10 @@ mod set_tests {
     /// written before any engine apply).
     #[tokio::test]
     async fn us5_s2_config_print_stays_truthful_after_a_set() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("print");
         let view = set(Some(path.clone()), "reminders.tick_secs", "45")
             .await
@@ -1073,6 +1111,28 @@ mod set_tests {
     /// `applied_live: true`.
     #[tokio::test]
     async fn us1_s4_the_daemon_lane_write_lands_and_applies_live() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("ac1").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        let view = set_with_locked(&path, "focus.work_mins", "50", &locked, Some(&app.engine))
+            .await
+            .expect("the live write lands");
+        assert!(view.applied_live, "the live lane: {view:?}");
+        assert_eq!(view.value.as_deref(), Some("50"));
+        let published = app.engine.shared_state().load();
+        let focus = published.settings.focus.as_ref().expect("focus on");
+        assert_eq!(
+            focus.work(),
+            chrono::TimeDelta::minutes(50),
+            "the engine took the value"
+        );
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(text.contains("work_mins = 50"), "the file wrote: {text}");
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("ac1").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let locked = std::collections::BTreeSet::new();
@@ -1099,6 +1159,38 @@ mod set_tests {
     /// is one honest line.
     #[tokio::test]
     async fn us1_s6_the_daemon_reply_view_carries_the_lane_bit() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("s6").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut io = crate::commands::CommandIo {
+            out: &mut out,
+            err: &mut err,
+            json: true,
+        };
+        let cmd = ConfigCmd::Set {
+            pairs: vec!["focus.work_mins".to_owned(), "50".to_owned()],
+        };
+        let code = handle_daemon(&cmd, &app, Some(&path), &mut io).await;
+        assert_eq!(code, 0, "a live set is a success");
+        let view: ConfigBatchSetView =
+            serde_json::from_slice(&out).expect("the typed view travels as JSON");
+        assert!(view.applied_live, "the live lane bit");
+        let entries: Vec<_> = view
+            .entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), entry.value.as_deref()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![("focus.work_mins", Some("50"))],
+            "one per-key echo for the single-pair form"
+        );
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("s6").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let mut out = Vec::new();
@@ -1135,6 +1227,35 @@ mod set_tests {
     /// sent).
     #[tokio::test]
     async fn us1_ac2_the_daemon_lane_proves_before_the_engine() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("ac2").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let before = app.engine.shared_state().load().settings.clone();
+        let locked = std::collections::BTreeSet::new();
+        let err = set_with_locked(
+            &path,
+            "sync.backoff_initial_secs",
+            "400",
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect_err("the crossing write refuses");
+        assert!(matches!(err, ConfigSetError::Rejected(_)), "{err:?}");
+        assert_eq!(
+            app.engine.shared_state().load().settings,
+            before,
+            "the engine never saw the refused write"
+        );
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(
+            !text.contains("backoff_initial_secs"),
+            "the file is untouched (no sync section landed): {text}"
+        );
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("ac2").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let before = app.engine.shared_state().load().settings.clone();
@@ -1167,6 +1288,41 @@ mod set_tests {
     /// longer carries the key.
     #[tokio::test]
     async fn us3_s3_the_daemon_lane_unset_propagates_live() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("ac3").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        set_with_locked(&path, "focus.work_mins", "50", &locked, Some(&app.engine))
+            .await
+            .expect("set live");
+        assert_eq!(
+            app.engine
+                .shared_state()
+                .load()
+                .settings
+                .focus
+                .as_ref()
+                .expect("minted")
+                .work(),
+            chrono::TimeDelta::minutes(50)
+        );
+        let view = unset_with_locked(&path, "focus.work_mins", &locked, Some(&app.engine))
+            .await
+            .expect("unset lands");
+        assert!(view.applied_live, "the live lane");
+        assert_eq!(view.value, None);
+        let published = app.engine.shared_state().load();
+        assert_ne!(
+            published.settings.focus.as_ref().map(|focus| focus.work()),
+            Some(chrono::TimeDelta::minutes(50)),
+            "the engine fell back off the override"
+        );
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(!text.contains("work_mins"), "the key left the file: {text}");
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("ac3").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let locked = std::collections::BTreeSet::new();
@@ -1206,6 +1362,27 @@ mod set_tests {
     /// daemon's own env truth — D8's asymmetry).
     #[tokio::test]
     async fn us1_s3_the_daemon_lane_env_guard_refuses_typed() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("ac4").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let mut locked = std::collections::BTreeSet::new();
+        locked.insert("reminders.tick_secs".to_owned());
+        let err = set_with_locked(
+            &path,
+            "reminders.tick_secs",
+            "45",
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect_err("the locked key refuses");
+        assert!(matches!(err, ConfigSetError::EnvLocked { .. }), "{err:?}");
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(text.contains("tick_secs = 30"), "nothing wrote: {text}");
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("ac4").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let mut locked = std::collections::BTreeSet::new();
@@ -1233,6 +1410,36 @@ mod set_tests {
     /// sequence shape the #673 doorbell tests run actor-side).
     #[tokio::test]
     async fn files_sync_poll_secs_set_applies_live_and_mints_the_override() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("poll-lane").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        for secs in [12, 90, 2] {
+            let view = set_with_locked(
+                &path,
+                "files_sync.poll_secs",
+                &secs.to_string(),
+                &locked,
+                Some(&app.engine),
+            )
+            .await
+            .expect("the live write lands");
+            assert!(view.applied_live, "the live lane: {view:?}");
+            assert_eq!(view.value.as_deref(), Some(secs.to_string().as_str()));
+            assert_eq!(
+                app.engine
+                    .shared_state()
+                    .load()
+                    .settings
+                    .files_sync_poll_secs,
+                Some(taskboard_domain::TickSecs::new(secs).expect("secs > 0")),
+                "the engine minted the override"
+            );
+        }
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("poll-lane").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let locked = std::collections::BTreeSet::new();
@@ -1267,6 +1474,39 @@ mod set_tests {
     /// and the key leaves the file.
     #[tokio::test]
     async fn files_sync_poll_secs_unset_propagates_live_to_none() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("poll-unset").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        set_with_locked(
+            &path,
+            "files_sync.poll_secs",
+            "12",
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("set live");
+        let view = unset_with_locked(&path, "files_sync.poll_secs", &locked, Some(&app.engine))
+            .await
+            .expect("unset lands");
+        assert!(view.applied_live, "the live lane");
+        assert_eq!(view.value, None);
+        assert_eq!(
+            app.engine
+                .shared_state()
+                .load()
+                .settings
+                .files_sync_poll_secs,
+            None,
+            "the fallback rule: the override is gone"
+        );
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(!text.contains("poll_secs"), "the key left the file: {text}");
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("poll-unset").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let locked = std::collections::BTreeSet::new();
@@ -1302,6 +1542,25 @@ mod set_tests {
     /// one atomic document write, the value lands in the file.
     #[tokio::test]
     async fn files_sync_poll_secs_batch_set_lands_the_value() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("poll-batch").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        let view = set_batch_with_locked(
+            &path,
+            &["files_sync.poll_secs".to_owned(), "12".to_owned()],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("the batch lands");
+        assert!(view.applied_live, "the live lane: {view:?}");
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(text.contains("poll_secs = 12"), "the file wrote: {text}");
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("poll-batch").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let locked = std::collections::BTreeSet::new();
@@ -1324,6 +1583,10 @@ mod set_tests {
     /// same `> 0` predicate the `[sync]` secs keys run.
     #[tokio::test]
     async fn files_sync_poll_secs_invalid_values_refuse_typed_before_any_write() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("poll-bad");
         let _ = std::fs::remove_file(&path);
         for value in ["0", "-3", "abc"] {
@@ -1345,6 +1608,10 @@ mod set_tests {
     /// write — the lock-set seam, no real env mutation.
     #[tokio::test]
     async fn files_sync_poll_secs_env_pinned_refuses_typed() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("poll-env");
         let _ = std::fs::remove_file(&path);
         let mut locked = std::collections::BTreeSet::new();
@@ -1366,6 +1633,10 @@ mod set_tests {
     /// parse precedes everything, nothing is touched.
     #[tokio::test]
     async fn us2_s1_batch_parse_refusals_name_the_offending_key() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("batch-parse");
         std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
         let before = std::fs::read_to_string(&path).expect("read");
@@ -1429,6 +1700,10 @@ mod set_tests {
     /// key, and NOTHING is written — not even the unpinned pairs.
     #[tokio::test]
     async fn us2_s2_batch_env_guard_names_the_pinned_key() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("batch-env");
         std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
         let mut locked = std::collections::BTreeSet::new();
@@ -1463,6 +1738,10 @@ mod set_tests {
     /// applied silently.
     #[tokio::test]
     async fn us2_s3_duplicate_batch_key_refuses_before_any_write() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("batch-dup");
         std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
         let locked = std::collections::BTreeSet::new();
@@ -1494,6 +1773,10 @@ mod set_tests {
     /// of them; `config print` stays truthful after the batch.
     #[tokio::test]
     async fn us2_s4_a_valid_batch_lands_all_pairs_as_one_document() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
         let path = temp_config("batch-ok");
         std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed config");
         let view = set_batch(
@@ -1530,7 +1813,65 @@ mod set_tests {
     /// applied batch — and the typed view reports `applied_live: true`
     /// with the per-key echoes.
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // the gate's two lines trip the count
     async fn us2_s5_batch_apply_is_one_update_settings() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("batch-live").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let mut doorbells = app.system.subscribe();
+        let locked = std::collections::BTreeSet::new();
+        let view = set_batch_with_locked(
+            &path,
+            &[
+                "focus.work_mins".to_owned(),
+                "50".to_owned(),
+                "reminders.tick_secs".to_owned(),
+                "45".to_owned(),
+            ],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("the live batch lands");
+        assert!(view.applied_live, "the live lane bit: {view:?}");
+        let entries: Vec<_> = view
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key.as_str(),
+                    entry.value.as_deref(),
+                    entry.applied_live,
+                )
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("focus.work_mins", Some("50"), true),
+                ("reminders.tick_secs", Some("45"), true),
+            ],
+            "per-key echoes, one shared lane bit"
+        );
+        // Exactly one engine apply for the whole batch: exactly one
+        // SettingsChanged doorbell for this batch's invocation.
+        let mut applied = 0_u32;
+        while let Ok(event) = doorbells.try_recv() {
+            if matches!(event, taskboard_domain::SystemEvent::SettingsChanged) {
+                applied += 1;
+            }
+        }
+        assert_eq!(applied, 1, "one UpdateSettings for the whole batch");
+        let published = app.engine.shared_state().load();
+        assert_eq!(
+            published.settings.focus.as_ref().expect("minted").work(),
+            chrono::TimeDelta::minutes(50),
+            "the engine took the whole batch's snapshot"
+        );
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("batch-live").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let mut doorbells = app.system.subscribe();
@@ -1591,6 +1932,42 @@ mod set_tests {
     /// file is untouched, and the engine never saw anything.
     #[tokio::test]
     async fn the_batch_prove_gate_refuses_wholesale_on_the_daemon_lane() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("batch-gate").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let before = app.engine.shared_state().load().settings.clone();
+        let locked = std::collections::BTreeSet::new();
+        let err = set_batch_with_locked(
+            &path,
+            &[
+                "reminders.tick_secs".to_owned(),
+                "45".to_owned(),
+                "sync.backoff_initial_secs".to_owned(),
+                "400".to_owned(),
+            ],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect_err("the crossing pair refuses the whole batch");
+        assert!(
+            matches!(err, ConfigBatchError::Rejected(_)),
+            "typed Rejected: {err:?}"
+        );
+        assert_eq!(
+            app.engine.shared_state().load().settings,
+            before,
+            "the engine never saw the refused batch"
+        );
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            !text.contains("tick_secs = 45") && !text.contains("backoff"),
+            "the file is untouched — no half-provisioned batch: {text}"
+        );
+        app.shutdown().await;
         let fixture = crate::test_support::standalone_boot_fixture("batch-gate").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         let before = app.engine.shared_state().load().settings.clone();
@@ -1630,6 +2007,43 @@ mod set_tests {
     /// boot authority) and `applied_live: false`.
     #[tokio::test]
     async fn us1_s5_an_engine_gone_write_reports_the_next_start_lane() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("gone").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        app.system
+            .send(SystemEvent::Shutdown)
+            .expect("the engine subscribes");
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let probe = app.engine.execute(StateCommand::RequestSync).await;
+                if matches!(probe, Err(taskboard_state::ExecuteError::EngineGone)) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the engine drained");
+        let locked = std::collections::BTreeSet::new();
+        let view = set_with_locked(
+            &path,
+            "reminders.tick_secs",
+            "45",
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("the write still lands");
+        assert!(!view.applied_live, "the typed next-start outcome: {view:?}");
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(
+            text.contains("tick_secs = 45"),
+            "the file took the write: {text}"
+        );
+        let _keep = app;
         let fixture = crate::test_support::standalone_boot_fixture("gone").await;
         let (path, app) = (fixture.config_path.clone(), fixture.app);
         app.system

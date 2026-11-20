@@ -604,6 +604,13 @@ mod tests {
         #[test]
         fn a_persist_failure_serves_the_mirror_and_leaves_the_file_untouched() {
             use std::os::unix::fs::PermissionsExt as _;
+            // Dated pin: the ambient gate (the #865 re-homing debt,
+            // #1113): the ladder's reload leg composes the process env
+            // and this crate cannot hold the env lock.
+            if std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
+            {
+                return;
+            }
             let dir = tempfile::tempdir().expect("tempdir");
             let config = dir.path().join("taskboard.toml");
             let before =
@@ -630,6 +637,13 @@ mod tests {
 
         #[test]
         fn the_reload_mix_corner_restores_the_backup_and_serves_scalar() {
+            // Dated pin: the ambient gate (the #865 re-homing debt,
+            // #1113): the ladder's reload leg composes the process env
+            // and this crate cannot hold the env lock.
+            if std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
+            {
+                return;
+            }
             // The corner needs the re-load to fail after the write —
             // reachable only with env-injected identity, which a test
             // process cannot set safely in parallel. The ladder arm is
