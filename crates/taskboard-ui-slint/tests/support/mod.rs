@@ -15,5 +15,6 @@ pub mod fixture;
 pub mod focus_journey;
 pub mod golden_compare;
 pub mod guard;
+pub mod harness;
 pub mod health;
 pub mod pixel_probe;
