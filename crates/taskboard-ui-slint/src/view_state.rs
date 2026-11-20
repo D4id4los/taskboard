@@ -1615,12 +1615,12 @@ impl ViewState {
         // Two panes: the step lands if it stays in `{0, 1}`, else it
         // toggles (a second Left from boxes wraps to the pool — the
         // two-value ring is the pane count's own geometry).
-        let stepped = usize::try_from(
-            i64::try_from(self.plan_focus_pane).unwrap_or(0) + i64::from(direction),
-        )
-        .ok()
-        .filter(|pane| *pane < 2);
-        self.plan_focus_pane = stepped.unwrap_or(1 - self.plan_focus_pane.min(1));
+        let stepped = i64::try_from(self.plan_focus_pane).unwrap_or(0) + i64::from(direction);
+        self.plan_focus_pane = match stepped {
+            0 => 0,
+            1 => 1,
+            _ => 1 - self.plan_focus_pane.min(1),
+        };
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -6775,6 +6775,26 @@ mod tests {
         vs.close_plan_next_day();
         vs.open_plan_next_day();
         assert_eq!(vs.plan_focus_pane(), 0);
+    }
+
+    #[test]
+    fn planner_pane_switch_with_a_zero_direction_is_a_stay() {
+        let (state, _, _, _) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.open_plan_next_day();
+        // The degenerate direction is an in-range step on both panes:
+        // the pane holds (it does not toggle the ring).
+        assert_eq!(vs.switch_plan_pane(0), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(vs.plan_focus_pane(), 0);
+        vs.switch_plan_pane(1);
+        assert_eq!(vs.plan_focus_pane(), 1);
+        assert_eq!(vs.switch_plan_pane(0), vec![FlowOutcome::RefreshNow]);
+        assert_eq!(
+            vs.plan_focus_pane(),
+            1,
+            "the degenerate stroke holds the pool"
+        );
     }
 
     #[test]
