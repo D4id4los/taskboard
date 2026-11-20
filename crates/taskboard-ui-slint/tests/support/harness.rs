@@ -23,6 +23,17 @@ use taskboard_ui_slint::actions::{ActionId, ContextId};
 use taskboard_ui_slint::keymap::stroke;
 use taskboard_ui_slint::{UiSettings, View};
 
+/// Whether the mount performs the central board escape (one
+/// `nav.focus-board` after mount). `Yes` for the board-level journeys
+/// (the default); `No` for the today/kiosk-default legs, which observe
+/// the desktop's Today default. The former env-var seam is gone — see
+/// [`Harness::mount_no_escape`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscapeBoard {
+    Yes,
+    No,
+}
+
 pub struct Harness {
     pub driver: SlintDriver,
     pub handle: taskboard_ui_slint::UiHandle,
@@ -85,6 +96,36 @@ impl Harness {
             tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::FilesSyncChip>,
         >,
     ) -> Self {
+        Self::mount_full_inner(driver, state, settings, files_sync, EscapeBoard::Yes)
+    }
+
+    /// The today legs' variant (chunk 10 D12): the mount stays on the
+    /// desktop's Today default — no central board escape. The former
+    /// `TASKBOARD_JOURNEYS_STAY_ON_TODAY` env seam is gone (#1016
+    /// residue: a process-global env var set by one test leaked into
+    /// every sibling under a threaded plain `cargo test` run); the
+    /// choice is now a per-mount argument, not process state.
+    pub fn mount_no_escape(driver: SlintDriver, state: AppState) -> Self {
+        Self::mount_no_escape_with_settings(driver, state, UiSettings::default())
+    }
+
+    pub fn mount_no_escape_with_settings(
+        driver: SlintDriver,
+        state: AppState,
+        settings: UiSettings,
+    ) -> Self {
+        Self::mount_full_inner(driver, state, settings, None, EscapeBoard::No)
+    }
+
+    fn mount_full_inner(
+        driver: SlintDriver,
+        state: AppState,
+        settings: UiSettings,
+        files_sync: Option<
+            tokio::sync::watch::Receiver<taskboard_ui_slint::presentation::FilesSyncChip>,
+        >,
+        escape: EscapeBoard,
+    ) -> Self {
         let state = Arc::new(ArcSwap::from_pointee(state));
         let (commands, engine) = FakeEngine::channel(Arc::clone(&state));
         let (requests_tx, requests_rx) = tokio::sync::mpsc::channel(16);
@@ -111,7 +152,7 @@ impl Harness {
         // The desktop default is Today (chunk 10 D2); the board-level
         // journeys escape centrally — one `nav.focus-board` after
         // mount (the deliberate regen; the today leg mounts and stays).
-        if !std::env::var("TASKBOARD_JOURNEYS_STAY_ON_TODAY").is_ok_and(|v| v == "1") {
+        if escape == EscapeBoard::Yes {
             // Routed, not `press`ed: the escape must not depend on the
             // harness's preset (press resolves against the standard
             // keymap).
@@ -334,7 +375,7 @@ where
 /// receiver. The `driver::run` `SENDER`/`OPTIONS` `OnceLock`
 /// mechanics are untouched — this wraps them, reading
 /// `crate::HEADLESS_RENDERER` for the one-platform decision.
-pub fn run_journey_full<R>(
+fn run_journey_full<R>(
     state: taskboard_domain::AppState,
     settings: UiSettings,
     files_sync: Option<
