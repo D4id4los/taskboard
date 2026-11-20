@@ -1993,23 +1993,61 @@ mod tests {
     use figment::providers::Format as _;
     use taskboard_domain::{BoardClocks, BoardId, StackClocks, StackId};
 
+    /// The workspace fixture owns everything it borrows from disk
+    /// (#982): the booted core, the workspace over it, and the tempdir
+    /// backing both. **Field order is the contract** — `workspace` and
+    /// `app` drop before `_dir`, so the app's actor teardown (the
+    /// engine join in `App`'s drop) always precedes the directory
+    /// deletion; a field reorder must re-run the ordering pin below.
+    struct WorkspaceFixture {
+        workspace: ConnectionWorkspace,
+        /// The app and the directory, grouped so `owned_workspace` can
+        /// hand out the workspace while the rest keeps the ordering.
+        rest: FixtureRest,
+    }
+
+    /// The `App` plus the db + device-identity home. **Field order is
+    /// the contract**: `app` drops (the engine's actor teardown joins)
+    /// before `_dir` deletes the directory (#982); a reorder must
+    /// re-run the ordering pin below.
+    struct FixtureRest {
+        app: crate::bootstrap::App,
+        /// The db + device-identity home; held for its `Drop` side
+        /// effect as much as for its path.
+        dir: tempfile::TempDir,
+    }
+
+    impl WorkspaceFixture {
+        /// The directory backing the db and the device identity.
+        fn dir(&self) -> &std::path::Path {
+            self.rest.dir.path()
+        }
+    }
+
     /// A workspace over a real (standalone, module-less) booted core:
     /// the width tests never touch the connector path, but the
     /// workspace is a plain value, not a mock — fakes over mocks.
-    async fn test_workspace(path: PathBuf) -> ConnectionWorkspace {
-        // The core deliberately leaks for the test's lifetime (the
-        // actors idle on a standalone, boardless db); the workspace
-        // holds only clones.
-        test_workspace_with_app(path).await.0
+    /// The fixture binding must outlive every use of
+    /// `fixture.workspace`.
+    async fn workspace_fixture(path: PathBuf) -> WorkspaceFixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        workspace_fixture_in(path, dir).await
     }
 
-    /// The workspace plus its booted core (the engine-gone journey
-    /// needs the system bus to drain the engine).
-    async fn test_workspace_with_app(
-        path: PathBuf,
-    ) -> (ConnectionWorkspace, crate::bootstrap::App) {
+    /// A fixture whose workspace is moved out for a consumer that
+    /// takes it by value (the forwarder spawns): the rest of the
+    /// fixture — the app and the tempdir — stays bound at the call
+    /// site and outlives the moved workspace clones.
+    async fn owned_workspace(path: PathBuf) -> (FixtureRest, ConnectionWorkspace) {
+        let WorkspaceFixture { workspace, rest } = workspace_fixture(path).await;
+        (rest, workspace)
+    }
+
+    /// [`workspace_fixture`] over a caller-owned tempdir (the port
+    /// harness seeds its config into the same directory the db and the
+    /// device identity live in).
+    async fn workspace_fixture_in(path: PathBuf, dir: tempfile::TempDir) -> WorkspaceFixture {
         let mut config = AppConfig::default();
-        let dir = tempfile::tempdir().expect("tempdir");
         config.storage.db_path = Some(dir.path().join("taskboard.db"));
         config.sync.backend = Some(SyncBackend::Standalone);
         config.validate().expect("config valid");
@@ -2028,14 +2066,37 @@ mod tests {
             engine: app.engine.clone(),
             // The suite's own identity home: the ceremony's create arm
             // mints there, never the platform default (#751).
-            device_json: Some(
-                tempfile::tempdir()
-                    .expect("tempdir")
-                    .keep()
-                    .join("device.json"),
-            ),
+            device_json: Some(dir.path().join("device.json")),
         };
-        (workspace, app)
+        WorkspaceFixture {
+            workspace,
+            rest: FixtureRest { app, dir },
+        }
+    }
+
+    /// The #982 lifetime pin: the directory survives as long as the
+    /// fixture, and its deletion happens only after the app's
+    /// teardown — guaranteed by the field order (workspace, app, then
+    /// `_dir` last); a struct reorder must re-run this test.
+    #[tokio::test]
+    async fn workspace_fixture_deletes_the_dir_only_after_the_app_teardown() {
+        let fixture = workspace_fixture(PathBuf::from("unused-write-path.toml")).await;
+        let dir = fixture.dir().to_owned();
+        assert!(dir.exists(), "the fixture owns the directory");
+        assert!(dir.join("taskboard.db").exists(), "the db lives there");
+        // Destructure (the fixture's drop-by-field semantics are what
+        // the pin observes): the app's teardown must complete while the
+        // directory still exists, and the deletion must follow it.
+        let WorkspaceFixture { workspace: _, rest } = fixture;
+        let FixtureRest {
+            app,
+            dir: dir_guard,
+        } = rest;
+        let outcome = app.shutdown().await;
+        assert!(!outcome.actor_aborted, "clean teardown");
+        assert!(dir.exists(), "the dir outlives the app's teardown");
+        drop(dir_guard);
+        assert!(!dir.exists(), "the drop deletes the dir");
     }
 
     fn epoch() -> chrono::DateTime<chrono::Utc> {
@@ -2071,11 +2132,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace = test_workspace(config).await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
 
-        let deck_bound = create_board(&workspace, "deck board").await;
-        let files_bound = create_board(&workspace, "files board").await;
-        let _loose = create_board(&workspace, "loose").await;
+        let deck_bound = create_board(workspace, "deck board").await;
+        let files_bound = create_board(workspace, "files board").await;
+        let _loose = create_board(workspace, "loose").await;
         for (board, remote) in [
             (deck_bound, taskboard_domain::RemoteBoardId::deck(7)),
             (
@@ -2096,7 +2158,7 @@ mod tests {
                 .expect("bind lands");
         }
 
-        let snapshot = current_connections(&workspace);
+        let snapshot = current_connections(workspace);
         let by_name = |name: &str| {
             snapshot
                 .boards
@@ -2131,10 +2193,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace = test_workspace(config).await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
 
-        let deck_bound = create_board(&workspace, "deck board").await;
-        let unbound = create_board(&workspace, "loose").await;
+        let deck_bound = create_board(workspace, "deck board").await;
+        let unbound = create_board(workspace, "loose").await;
         workspace
             .engine
             .execute(StateCommand::BindBoard {
@@ -2145,15 +2208,15 @@ mod tests {
             .await
             .expect("deck bind lands");
 
-        let gone = stop_board_files_sync(&workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
+        let gone = stop_board_files_sync(workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
             .await
             .expect_err("a gone board refuses");
         assert_eq!(gone, SettingsError::Gone);
-        let deck = stop_board_files_sync(&workspace, deck_bound)
+        let deck = stop_board_files_sync(workspace, deck_bound)
             .await
             .expect_err("a deck-bound board refuses");
         assert_eq!(deck, SettingsError::BindRefused);
-        let loose = stop_board_files_sync(&workspace, unbound)
+        let loose = stop_board_files_sync(workspace, unbound)
             .await
             .expect_err("an unbound board refuses");
         assert_eq!(loose, SettingsError::BindRefused);
@@ -2169,14 +2232,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace = test_workspace(config).await;
-        let unbound = create_board(&workspace, "loose").await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
+        let unbound = create_board(workspace, "loose").await;
 
-        let gone = undo_board_move(&workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
+        let gone = undo_board_move(workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
             .await
             .expect_err("a gone board refuses");
         assert_eq!(gone, SettingsError::Gone);
-        let refused = undo_board_move(&workspace, unbound)
+        let refused = undo_board_move(workspace, unbound)
             .await
             .expect_err("no files lane configured refuses typed");
         assert_eq!(refused, SettingsError::FilesSyncDisabled);
@@ -2191,8 +2255,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace = test_workspace(config).await;
-        let board = create_board(&workspace, "files board").await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
+        let board = create_board(workspace, "files board").await;
         workspace
             .engine
             .execute(StateCommand::BindBoard {
@@ -2203,7 +2268,7 @@ mod tests {
             .await
             .expect("files bind lands");
 
-        let snapshot = stop_board_files_sync(&workspace, board)
+        let snapshot = stop_board_files_sync(workspace, board)
             .await
             .expect("a files-bound board stops");
         let state = workspace.engine.shared_state().load();
@@ -2248,8 +2313,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         write_two_connector_config(&config);
-        let workspace = test_workspace(config).await;
-        let board = create_board(&workspace, "deck board").await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
+        let board = create_board(workspace, "deck board").await;
         workspace
             .engine
             .execute(StateCommand::BindBoard {
@@ -2269,7 +2335,7 @@ mod tests {
             .await
             .expect("the lane attaches");
 
-        let snapshot = move_board_to_deck(&workspace, board, "other-deck")
+        let snapshot = move_board_to_deck(workspace, board, "other-deck")
             .await
             .expect("the rebind commits");
         let state = workspace.engine.shared_state().load();
@@ -2312,10 +2378,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         write_two_connector_config(&config);
-        let workspace = test_workspace(config).await;
-        let deck_bound = create_board(&workspace, "deck board").await;
-        let files_bound = create_board(&workspace, "files board").await;
-        let unbound = create_board(&workspace, "loose").await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
+        let deck_bound = create_board(workspace, "deck board").await;
+        let files_bound = create_board(workspace, "files board").await;
+        let unbound = create_board(workspace, "loose").await;
         workspace
             .engine
             .execute(StateCommand::BindBoard {
@@ -2335,33 +2402,33 @@ mod tests {
             .await
             .expect("files bind lands");
 
-        let unknown = move_board_to_deck(&workspace, deck_bound, "nope")
+        let unknown = move_board_to_deck(workspace, deck_bound, "nope")
             .await
             .expect_err("an unknown target refuses");
         assert_eq!(unknown, SettingsError::Gone);
         let gone = move_board_to_deck(
-            &workspace,
+            workspace,
             BoardId::from_uuid(uuid::Uuid::now_v7()),
             "other-deck",
         )
         .await
         .expect_err("a gone board refuses");
         assert_eq!(gone, SettingsError::Gone);
-        let unbound_refusal = move_board_to_deck(&workspace, unbound, "other-deck")
+        let unbound_refusal = move_board_to_deck(workspace, unbound, "other-deck")
             .await
             .expect_err("an unbound board refuses");
         assert_eq!(unbound_refusal, SettingsError::BindRefused);
-        let files = move_board_to_deck(&workspace, files_bound, "other-deck")
+        let files = move_board_to_deck(workspace, files_bound, "other-deck")
             .await
             .expect_err("a files-bound board refuses");
         assert_eq!(files, SettingsError::BindRefused);
-        let same = move_board_to_deck(&workspace, deck_bound, "work")
+        let same = move_board_to_deck(workspace, deck_bound, "work")
             .await
             .expect_err("a same-connector pick refuses");
         assert_eq!(same, SettingsError::BindRefused);
         // The dead lane: the target is configured but its actor was
         // never attached — the refusal precedes the engine verb.
-        let dead_lane = move_board_to_deck(&workspace, deck_bound, "other-deck")
+        let dead_lane = move_board_to_deck(workspace, deck_bound, "other-deck")
             .await
             .expect_err("a dead target lane refuses");
         assert_eq!(dead_lane, SettingsError::BindRefused);
@@ -2398,8 +2465,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace = test_workspace(config).await;
-        let board = create_board(&workspace, "files board").await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
+        let board = create_board(workspace, "files board").await;
         workspace
             .engine
             .execute(StateCommand::BindBoard {
@@ -2412,7 +2480,7 @@ mod tests {
 
         // The effect: the exact unbind — the binding goes, the board
         // survives, the reply is the fresh snapshot.
-        let snapshot = stop_board_files_sync(&workspace, board)
+        let snapshot = stop_board_files_sync(workspace, board)
             .await
             .expect("unbind");
         let row = snapshot
@@ -2423,7 +2491,7 @@ mod tests {
         assert_eq!(row.bound_channel, None, "the files binding is gone");
 
         // The guard shape: non-files rows refuse typed.
-        let deck_bound = create_board(&workspace, "deck board").await;
+        let deck_bound = create_board(workspace, "deck board").await;
         workspace
             .engine
             .execute(StateCommand::BindBoard {
@@ -2433,11 +2501,11 @@ mod tests {
             })
             .await
             .expect("deck bind lands");
-        let deck = stop_board_files_sync(&workspace, deck_bound)
+        let deck = stop_board_files_sync(workspace, deck_bound)
             .await
             .expect_err("a deck-bound row refuses");
         assert_eq!(deck, SettingsError::BindRefused);
-        let stale = stop_board_files_sync(&workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
+        let stale = stop_board_files_sync(workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
             .await
             .expect_err("a stale row refuses");
         assert_eq!(stale, SettingsError::Gone);
@@ -2468,10 +2536,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         write_files_lane_config(&config);
-        let workspace = test_workspace(config).await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
 
-        let deck_bound = create_board(&workspace, "deck board").await;
-        let files_bound = create_board(&workspace, "files board").await;
+        let deck_bound = create_board(workspace, "deck board").await;
+        let files_bound = create_board(workspace, "files board").await;
         workspace
             .engine
             .execute(StateCommand::BindBoard {
@@ -2491,15 +2560,15 @@ mod tests {
             .await
             .expect("files bind lands");
 
-        let deck = publish_board_to_files(&workspace, deck_bound)
+        let deck = publish_board_to_files(workspace, deck_bound)
             .await
             .expect_err("a deck-bound board refuses");
         assert_eq!(deck, SettingsError::BindRefused);
-        let files = publish_board_to_files(&workspace, files_bound)
+        let files = publish_board_to_files(workspace, files_bound)
             .await
             .expect_err("a files-bound board refuses");
         assert_eq!(files, SettingsError::BindRefused);
-        let gone = publish_board_to_files(&workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
+        let gone = publish_board_to_files(workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
             .await
             .expect_err("a gone board refuses");
         assert_eq!(gone, SettingsError::Gone);
@@ -2509,9 +2578,10 @@ mod tests {
         let dir_off = tempfile::tempdir().expect("tempdir");
         let config_off = dir_off.path().join("taskboard.toml");
         std::fs::write(&config_off, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace_off = test_workspace(config_off).await;
-        let unbound = create_board(&workspace_off, "loose").await;
-        let disabled = publish_board_to_files(&workspace_off, unbound)
+        let fixture = workspace_fixture(config_off).await;
+        let workspace_off = &fixture.workspace;
+        let unbound = create_board(workspace_off, "loose").await;
+        let disabled = publish_board_to_files(workspace_off, unbound)
             .await
             .expect_err("a lane-off config refuses");
         assert_eq!(disabled, SettingsError::FilesSyncDisabled);
@@ -2531,10 +2601,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         write_files_lane_config(&config);
-        let workspace = test_workspace(config).await;
-        let board = create_board(&workspace, "loose").await;
+        let fixture = workspace_fixture(config).await;
+        let workspace = &fixture.workspace;
+        let board = create_board(workspace, "loose").await;
 
-        let snapshot = publish_board_to_files(&workspace, board)
+        let snapshot = publish_board_to_files(workspace, board)
             .await
             .expect("a local-only board publishes");
         let state = workspace.engine.shared_state().load();
@@ -2623,7 +2694,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = dir.path().join("taskboard.toml");
         std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace = test_workspace(config.clone()).await;
+        let (_rest, workspace) = owned_workspace(config.clone()).await;
         // Live entities in the state: the flush prunes widths against
         // the published projection, so a boardless state would drop the
         // width as dead (the fixture makes the flush observable).
@@ -2881,11 +2952,8 @@ mod tests {
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
         let (state, board, stack_a, stack_b) = fixture_state();
         let (tx, rx) = ui_request_channel();
-        let forwarder = spawn_ui_request_forwarder(
-            rx,
-            Arc::new(ArcSwap::from_pointee(state)),
-            test_workspace(path.clone()).await,
-        );
+        let (_rest, ws) = owned_workspace(path.clone()).await;
+        let forwarder = spawn_ui_request_forwarder(rx, Arc::new(ArcSwap::from_pointee(state)), ws);
         // The debounce is deterministic under the paused clock; the
         // core above booted on the real one (sqlx needs it), so the
         // pause starts here (plan T-17's semantics unchanged).
@@ -2970,11 +3038,8 @@ mod tests {
         std::fs::create_dir(&cursed).expect("dir");
         let (state, board, stack_a, _) = fixture_state();
         let (tx, rx) = ui_request_channel();
-        let forwarder = spawn_ui_request_forwarder(
-            rx,
-            Arc::new(ArcSwap::from_pointee(state)),
-            test_workspace(cursed.clone()).await,
-        );
+        let (_rest, ws) = owned_workspace(cursed.clone()).await;
+        let forwarder = spawn_ui_request_forwarder(rx, Arc::new(ArcSwap::from_pointee(state)), ws);
         tokio::time::pause();
         tx.try_send(UiRequest::StackWidthsChanged {
             board: BoardId::from_uuid(board),
@@ -3013,10 +3078,11 @@ mod tests {
         let path = dir.path().join("taskboard.toml");
         let (_state, _b, _a, _s) = fixture_state();
         let (tx, rx) = ui_request_channel();
+        let (_rest, ws) = owned_workspace(path.clone()).await;
         let forwarder = spawn_ui_request_forwarder(
             rx,
             Arc::new(ArcSwap::from_pointee(AppState::default())),
-            test_workspace(path.clone()).await,
+            ws,
         );
         // The debounce is deterministic under the paused clock; the
         // core above booted on the real one (sqlx needs it), so the
@@ -3042,11 +3108,8 @@ mod tests {
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
         let (state, _, _, _) = fixture_state();
         let (tx, rx) = ui_request_channel();
-        let forwarder = spawn_ui_request_forwarder(
-            rx,
-            Arc::new(ArcSwap::from_pointee(state)),
-            test_workspace(path.clone()).await,
-        );
+        let (_rest, ws) = owned_workspace(path.clone()).await;
+        let forwarder = spawn_ui_request_forwarder(rx, Arc::new(ArcSwap::from_pointee(state)), ws);
         tokio::time::pause();
 
         tx.try_send(UiRequest::WindowGeometryChanged {
@@ -3125,11 +3188,8 @@ mod tests {
         .expect("seed");
         let (state, board, stack_a, _) = fixture_state();
         let (tx, rx) = ui_request_channel();
-        let forwarder = spawn_ui_request_forwarder(
-            rx,
-            Arc::new(ArcSwap::from_pointee(state)),
-            test_workspace(path.clone()).await,
-        );
+        let (_rest, ws) = owned_workspace(path.clone()).await;
+        let forwarder = spawn_ui_request_forwarder(rx, Arc::new(ArcSwap::from_pointee(state)), ws);
         tokio::time::pause();
 
         // One width snapshot and one geometry snapshot, debounced
@@ -3356,10 +3416,11 @@ mod tests {
             "[reminders]\ntick_secs = 30\n[sync]\nbackoff_initial_secs = 5\nbackoff_max_secs = 300\n",
         )
         .expect("seed");
-        let workspace = test_workspace(path.clone()).await;
+        let fixture = workspace_fixture(path.clone()).await;
+        let workspace = &fixture.workspace;
 
         let (reply, reply_rx) = tokio::sync::oneshot::channel();
-        handle_settings(UiRequest::SetReminderTick { secs: 45, reply }, &workspace).await;
+        handle_settings(UiRequest::SetReminderTick { secs: 45, reply }, workspace).await;
         let snapshot = reply_rx
             .await
             .expect("the reply lane is alive")
@@ -3400,11 +3461,7 @@ mod tests {
 
         // The ordering gate: a crossing refuses typed, file untouched.
         let (reply, reply_rx) = tokio::sync::oneshot::channel();
-        handle_settings(
-            UiRequest::SetBackoffInitial { secs: 400, reply },
-            &workspace,
-        )
-        .await;
+        handle_settings(UiRequest::SetBackoffInitial { secs: 400, reply }, workspace).await;
         let outcome = reply_rx.await.expect("the reply lane is alive");
         assert!(
             matches!(
@@ -3438,7 +3495,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[reminders]\ntick_secs = 30\n").expect("seed");
-        let (workspace, app) = test_workspace_with_app(path.clone()).await;
+        let mut fixture = workspace_fixture(path.clone()).await;
+        let (workspace, app) = (&fixture.workspace, &mut fixture.rest.app);
         let before = workspace.engine.shared_state().load().settings.clone();
 
         // Drain the engine: every later `execute` answers `EngineGone`.
@@ -3460,7 +3518,7 @@ mod tests {
         .expect("the engine drained");
 
         let (reply, reply_rx) = tokio::sync::oneshot::channel();
-        handle_settings(UiRequest::SetReminderTick { secs: 45, reply }, &workspace).await;
+        handle_settings(UiRequest::SetReminderTick { secs: 45, reply }, workspace).await;
         let outcome = reply_rx.await.expect("the reply lane is alive");
         assert!(matches!(outcome, Err(SettingsError::Gone)), "{outcome:?}");
         assert!(
@@ -3474,7 +3532,6 @@ mod tests {
             before,
             "the drained engine kept its values"
         );
-        let _keep = app;
     }
 
     /// The focus commits persist through the workspace path and the
@@ -3485,10 +3542,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace = test_workspace(path.clone()).await;
+        let fixture = workspace_fixture(path.clone()).await;
+        let workspace = &fixture.workspace;
 
         let (reply, reply_rx) = tokio::sync::oneshot::channel();
-        handle_settings(UiRequest::SetFocusWorkMins { mins: 45, reply }, &workspace).await;
+        handle_settings(UiRequest::SetFocusWorkMins { mins: 45, reply }, workspace).await;
         let snapshot = reply_rx
             .await
             .expect("the reply lane is alive")
@@ -3507,7 +3565,7 @@ mod tests {
                 enabled: true,
                 reply,
             },
-            &workspace,
+            workspace,
         )
         .await;
         let snapshot = reply_rx
@@ -3533,7 +3591,8 @@ mod tests {
              [files_sync]\npoll_secs = 7\n",
         )
         .expect("seed");
-        let workspace = test_workspace(path.clone()).await;
+        let fixture = workspace_fixture(path.clone()).await;
+        let workspace = &fixture.workspace;
         let (reply, reply_rx) = tokio::sync::oneshot::channel();
         handle_settings(
             UiRequest::SetFilesSyncEnabled {
@@ -3541,7 +3600,7 @@ mod tests {
                 anchor: None,
                 reply,
             },
-            &workspace,
+            workspace,
         )
         .await;
         let snapshot = reply_rx.await.expect("alive").expect("lands");
@@ -3561,7 +3620,8 @@ mod tests {
         let standalone = dir.path().join("standalone.toml");
         std::fs::write(&standalone, "[sync]\nbackend = \"standalone\"\n").expect("seed");
         let before = std::fs::read_to_string(&standalone).expect("read");
-        let workspace = test_workspace(standalone.clone()).await;
+        let fixture = workspace_fixture(standalone.clone()).await;
+        let workspace = &fixture.workspace;
         let (reply, reply_rx) = tokio::sync::oneshot::channel();
         handle_settings(
             UiRequest::SetFilesSyncEnabled {
@@ -3569,7 +3629,7 @@ mod tests {
                 anchor: None,
                 reply,
             },
-            &workspace,
+            workspace,
         )
         .await;
         let outcome = reply_rx.await.expect("alive");
@@ -3600,7 +3660,8 @@ mod tests {
              server_url = \"https://d.example\"\nusername = \"bob\"\n",
         )
         .expect("seed");
-        let workspace = test_workspace(path.clone()).await;
+        let fixture = workspace_fixture(path.clone()).await;
+        let workspace = &fixture.workspace;
         let (reply, reply_rx) = tokio::sync::oneshot::channel();
         handle_settings(
             UiRequest::SetFilesSyncEnabled {
@@ -3608,7 +3669,7 @@ mod tests {
                 anchor: Some("home".into()),
                 reply,
             },
-            &workspace,
+            workspace,
         )
         .await;
         let snapshot = reply_rx.await.expect("alive").expect("lands");
@@ -3658,20 +3719,14 @@ mod tests {
 
     // -- the shared live-write port's truth table (journey W-3) ----------
 
-    /// The port over a seeded file + a real booted core; returns the
-    /// workspace's engine and the seeded path.
-    async fn port_workspace(
-        seed_text: &str,
-    ) -> (
-        tempfile::TempDir,
-        ConnectionWorkspace,
-        crate::bootstrap::App,
-    ) {
+    /// The port over a seeded file + a real booted core: the seeded
+    /// config, the db, and the device identity share the fixture's one
+    /// tempdir (#982, matching `standalone_boot_fixture`).
+    async fn port_workspace(seed_text: &str) -> WorkspaceFixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, seed_text).expect("seed config");
-        let (workspace, app) = test_workspace_with_app(path).await;
-        (dir, workspace, app)
+        workspace_fixture_in(path, dir).await
     }
 
     #[allow(clippy::unnecessary_wraps)] // the port's writer signature
@@ -3684,7 +3739,8 @@ mod tests {
     /// (nothing wrote, nothing sent), on any front.
     #[tokio::test]
     async fn us4_s1_the_port_env_guard_refuses_before_the_write() {
-        let (_dir, workspace, _app) = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let workspace = &fixture.workspace;
         let locked: std::collections::BTreeSet<String> = ["reminders.tick_secs"]
             .into_iter()
             .map(String::from)
@@ -3714,10 +3770,11 @@ mod tests {
     /// order, US-1 AC-2's negative arm).
     #[tokio::test]
     async fn us4_s3_the_port_prove_refusal_sends_no_command() {
-        let (_dir, workspace, _app) = port_workspace(
+        let fixture = port_workspace(
             "[sync]\npoll_interval_secs = 30\nbackoff_initial_secs = 5\nbackoff_max_secs = 300\n",
         )
         .await;
+        let workspace = &fixture.workspace;
         let locked = std::collections::BTreeSet::new();
         let result = run_settings_write(
             workspace.config_write_path.as_path(),
@@ -3754,7 +3811,8 @@ mod tests {
     /// US-1/US-3 choreography in one place.
     #[tokio::test]
     async fn the_port_applies_live_to_a_real_engine() {
-        let (_dir, workspace, _app) = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let workspace = &fixture.workspace;
         let locked = std::collections::BTreeSet::new();
         let outcome = run_settings_write(
             workspace.config_write_path.as_path(),
@@ -3777,7 +3835,8 @@ mod tests {
     /// next-start outcome — the fronts decide how to render it).
     #[tokio::test]
     async fn the_port_engine_gone_reports_the_next_start_lane() {
-        let (_dir, workspace, app) = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let mut fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let (workspace, app) = (&fixture.workspace, &mut fixture.rest.app);
         // Drain the engine (the D-5.3 journey's pattern): every later
         // `execute` answers `EngineGone`.
         app.system
@@ -3813,7 +3872,8 @@ mod tests {
     /// the port reports `NoEngine` — the typed `applied_live: false`.
     #[tokio::test]
     async fn the_port_no_engine_lane_reports_next_start() {
-        let (_dir, workspace, _app) = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
+        let workspace = &fixture.workspace;
         let locked = std::collections::BTreeSet::new();
         let outcome = run_settings_write(
             workspace.config_write_path.as_path(),
@@ -3836,10 +3896,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("taskboard.toml");
         std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
-        let workspace = test_workspace(path.clone()).await;
+        let fixture = workspace_fixture(path.clone()).await;
+        let workspace = &fixture.workspace;
 
         let (reply, reply_rx) = tokio::sync::oneshot::channel();
-        handle_settings(UiRequest::SetFocusWorkMins { mins: 0, reply }, &workspace).await;
+        handle_settings(UiRequest::SetFocusWorkMins { mins: 0, reply }, workspace).await;
         let outcome = reply_rx.await.expect("the reply lane is alive");
         assert!(
             matches!(
