@@ -197,6 +197,9 @@ enum EK {
     /// arm posts `Due`, the description arm posts `Text`.
     BeginDateEdit,
     BeginDescriptionEdit,
+    /// The effort field's focus opener (J3 US-4, chunk 11): the
+    /// begin family's shape, but a pure focus — no editor flow arms.
+    BeginEffortEdit,
     ShowTask,
     ControlNext,
     ControlPrev,
@@ -305,6 +308,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::BeginTitleEdit => EK::BeginTitleEdit,
         UiEffect::BeginDateEdit { .. } => EK::BeginDateEdit,
         UiEffect::BeginDescriptionEdit => EK::BeginDescriptionEdit,
+        UiEffect::BeginEffortEdit => EK::BeginEffortEdit,
         UiEffect::ShowTask => EK::ShowTask,
         UiEffect::ControlNext => EK::ControlNext,
         UiEffect::ControlPrev => EK::ControlPrev,
@@ -876,6 +880,10 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     //    (the same DateField flow).
     row(FK::None, E::BeginDateEdit, exp(Z, K(KDue)));
     row(FK::None, E::BeginDescriptionEdit, exp(Z, K(KTxt)));
+    // -- EFFORT (BeginEffortEdit, J3 US-4): settle-then-run like the
+    //    begin family, but a pure focus — the always-on M9 field owns
+    //    the commit, so the arm posts no editor kind.
+    row(FK::None, E::BeginEffortEdit, exp(Z, K(KNone)));
     for kind in [
         FK::Text,
         FK::Due,
@@ -896,6 +904,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         let cmd = if kind == FK::Text { NZ } else { Z };
         row(kind, E::BeginDateEdit, exp(cmd, K(KDue)));
         row(kind, E::BeginDescriptionEdit, exp(cmd, K(KTxt)));
+        row(kind, E::BeginEffortEdit, exp(cmd, K(KNone)));
     }
     row(FK::Text, E::BeginTitleEdit, exp(NZ, K(KTxt)));
     row(FK::Due, E::BeginTitleEdit, exp(Z, K(KTxt)));
@@ -2588,17 +2597,41 @@ fn the_header_tracking_buttons_route_their_registry_commands() {
 #[test]
 fn the_header_hint_projections_follow_the_mounted_verb() {
     on_slint_thread(|| {
+        // Mounted, unbound verbs: both projections empty (the
+        // established empty-hint rendering). Every preset now binds
+        // the done verb's rows in the detail chain (keymap-parity
+        // US-3; round 9 chunk 11 added the Standard `Space` /
+        // emacs `C-c C-t` detail rows), so the done hint's empty leg
+        // mounts the empty map too — the structural binds-nothing
+        // case, like the tracking verbs' leg below.
+        let empty = crate::keymap::Keymap::default();
         let (state, fx) = fixture();
         let [a_id, _b, _c] = fx.tasks;
         let [s0, _s1] = fx.stacks;
-
-        // Mounted, unbound verbs: both projections empty (the
-        // established empty-hint rendering). The done verb is still
-        // unbound in the standard preset's detail chain (Board/Today
-        // only); the tracking verbs gained preset rows everywhere
-        // (keymap-parity US-3), so their empty leg mounts the empty
-        // map — the structural binds-nothing case.
-        let rig = rig(state);
+        let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+        let (commands_tx, commands_rx) = mpsc::channel(64);
+        let (requests_tx, _requests_rx) = mpsc::channel(16);
+        let (_health_tx, health) =
+            tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+        let handle = mount(
+            state,
+            dummy_receiver(),
+            dummy_receiver(),
+            commands_tx,
+            requests_tx,
+            UiSettings {
+                keymap: empty,
+                keymap_preset: crate::keymap::Preset::Standard,
+                ..UiSettings::default()
+            },
+            health,
+            None,
+        )
+        .expect("mount succeeds on the null platform");
+        let rig = Rig {
+            handle,
+            commands_rx,
+        };
         let adapter = rig.adapter();
         mount_task_detail(&rig, &adapter, a_id, s0);
         assert_eq!(rig.handle.window().get_task_done_hint().row_count(), 0);
@@ -2863,6 +2896,10 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         // mounted detail — no anchor moves.
         | UiEffect::BeginDateEdit { .. }
         | UiEffect::BeginDescriptionEdit
+        // The effort field's focus opener (J3 US-4, chunk 11): same
+        // editor-arm shape — flow arms inside the mounted detail, no
+        // anchor moves.
+        | UiEffect::BeginEffortEdit
         | UiEffect::PickerKey(_)
         // The plan-next-day row verbs (#622): they mutate the model
         // in place, no anchor moves.

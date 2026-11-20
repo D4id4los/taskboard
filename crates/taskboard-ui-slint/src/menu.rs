@@ -963,6 +963,9 @@ mod tests {
             // The entries overlay (r4 chunk 10): the one menu row of
             // the family — rank 186, right after the toggle.
             ActionId::TaskTrackEntries,
+            // The smart toggle (J3 R-8, round 9 chunk 11): rank 187,
+            // between the entries row and the habit section.
+            ActionId::TaskTrackToggle,
             // The habit trio (issue #506): the section-scoped verbs
             // join the Task group at ranks 200..270 (the registry's
             // reviewed rows; the arms route no commands).

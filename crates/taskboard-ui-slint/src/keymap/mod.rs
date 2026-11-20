@@ -1030,7 +1030,11 @@ mod tests {
             }
         }
         let vi = Keymap::from_preset(Preset::Vi);
-        assert_eq!(vi.bindings_in(ContextId::Global).expect("one row").len(), 1);
+        // J3 US-4 (round 9 chunk 11): the vi Global set grew to the
+        // today jump plus the board-return's Alt+Left alternate (the
+        // D-table's Back ruling; the dated supersession of the
+        // one-row pin).
+        assert_eq!(vi.bindings_in(ContextId::Global).expect("rows").len(), 2);
     }
 
     /// The chord-shift normalization (keymap-parity plan D-3, N-17;
@@ -1377,13 +1381,24 @@ mod tests {
     /// stays near-empty, `ViInsert` binds only the return-to-normal
     /// flip. (Chunk 10 D11 put the one-stroke today jump on Global in
     /// every preset — the deliberate, design-ordered exception; this
-    /// test pins it as exactly that one row, not as "no Global".)
+    /// test pins the Global set, not as "no Global". The round-9
+    /// chunk-11 Back ruling added the board-return's alternate as the
+    /// second row — dated in the assertion below.)
     #[test]
     fn vi_preset_shape_matches_the_mode_model() {
         let by_context = rows_by_context(Preset::Vi);
-        let global = by_context.get(&ContextId::Global).expect("the today jump");
-        assert_eq!(global.len(), 1, "Global carries exactly one row");
+        let global = by_context.get(&ContextId::Global).expect("the global rows");
+        // J3 US-4 (round 9 chunk 11, 2026-11-19): the Global row set
+        // grows to two — the today jump plus the board-return's
+        // Alt+Left alternate (the D-table's Back ruling; the dated
+        // supersession of the one-row pin).
+        assert_eq!(
+            global.len(),
+            2,
+            "Global carries the today jump + the back alternate"
+        );
         assert_eq!(global[0].0, ActionId::ViewToday);
+        assert_eq!(global[1].0, ActionId::NavFocusBoard);
         assert_eq!(
             by_context
                 .get(&ContextId::ViInsert)

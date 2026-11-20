@@ -296,6 +296,11 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+PageDown"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+PageUp"]),
     (ActionId::NavFocusBoard, ContextId::Global, &["Alt+1"]),
+    // The board-return's alternate (J3 US-4, round 9 chunk 11 — the
+    // D-table's Back ruling): Alt+Left, the shell's back convention —
+    // the nav-back verb's second spelling (D7 alternates shape; the
+    // primary stays Alt+1 here).
+    (ActionId::NavFocusBoard, ContextId::Global, &["Alt+Left"]),
     // Round 3 (D29, #231): the banner verbs' preset bindings —
     // snooze/bell (Ctrl+Shift+U avoided: the IBus unicode composer);
     // key-reachable exactly when a banner target is armed, NoTarget
@@ -482,6 +487,41 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskTrackStop, ContextId::TaskDetail, &["F10"]),
     (ActionId::TaskTrackStart, ContextId::Today, &["F9"]),
     (ActionId::TaskTrackStop, ContextId::Today, &["F10"]),
+    // --- J3 US-4/US-5, round 9 chunk 11 (the D-table rows; plan
+    // .artifacts/plans/2026-11-19-taskdetail-shortcuts-plan.md §3.2):
+    // the tracker verbs reach Board/StackDetail (US-5, the same
+    // spellings the r8 rows landed at TaskDetail/Today), the ONE
+    // smart toggle binds in all four card contexts (R-8), and the
+    // detail's remaining Tab-only verbs get strokes — Complete/
+    // Reopen mirror this preset's Board/Today spellings, entries
+    // takes F12 (the only free F-key), the effort pair takes the
+    // free Ctrl+e / Ctrl+Shift+E (distinct-from-Ctrl+e per R-6 case
+    // law).
+    (ActionId::TaskComplete, ContextId::TaskDetail, &["Space"]),
+    (ActionId::TaskReopen, ContextId::TaskDetail, &["Ctrl+Space"]),
+    (
+        ActionId::TaskTrackToggle,
+        ContextId::TaskDetail,
+        &["Ctrl+F9"],
+    ),
+    (ActionId::TaskTrackToggle, ContextId::Board, &["Ctrl+F9"]),
+    (
+        ActionId::TaskTrackToggle,
+        ContextId::StackDetail,
+        &["Ctrl+F9"],
+    ),
+    (ActionId::TaskTrackToggle, ContextId::Today, &["Ctrl+F9"]),
+    (ActionId::TaskTrackStart, ContextId::Board, &["F9"]),
+    (ActionId::TaskTrackStop, ContextId::Board, &["F10"]),
+    (ActionId::TaskTrackStart, ContextId::StackDetail, &["F9"]),
+    (ActionId::TaskTrackStop, ContextId::StackDetail, &["F10"]),
+    (ActionId::TaskTrackEntries, ContextId::TaskDetail, &["F12"]),
+    (ActionId::TaskEffortEdit, ContextId::TaskDetail, &["Ctrl+e"]),
+    (
+        ActionId::TaskEffortClear,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+e"],
+    ),
     // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
     // D-10): the CUA F-key family continues after F10 — F11 free in
     // this preset (F1-F10 and F12 were bound; verified). The
@@ -676,6 +716,12 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     ),
     (ActionId::NavNextView, ContextId::Global, &["Ctrl+x", "]"]),
     (ActionId::NavPrevView, ContextId::Global, &["Ctrl+x", "["]),
+    // The board-return (J3 US-4, round 9 chunk 11 — the D-table's
+    // Back ruling): Alt+Left is this preset's PRIMARY (the D-table's
+    // gap fix — emacs bound no board-return row a detail hint could
+    // surface before; the C-x C-b row below is the alternate, the D7
+    // alternates shape).
+    (ActionId::NavFocusBoard, ContextId::Global, &["Alt+Left"]),
     (
         ActionId::NavFocusBoard,
         ContextId::Global,
@@ -856,6 +902,80 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
         ActionId::TaskTrackStop,
         ContextId::Today,
         &["Ctrl+c", "Ctrl+o"],
+    ),
+    // --- J3 US-4/US-5, round 9 chunk 11 (the D-table rows; plan
+    // .artifacts/plans/2026-11-19-taskdetail-shortcuts-plan.md §3.2):
+    // the tracker verbs reach Board/StackDetail (US-5), the ONE smart
+    // toggle binds in all four card contexts (R-8), and the detail's
+    // remaining Tab-only verbs join the org C-c user-namespace —
+    // Complete/Reopen mirror the Board/Today spellings, entries the
+    // free bare e second stroke, the effort pair C-c C-e / C-c X
+    // (bare-shift twin of vi's X; C-c C-x is the unschedule chord).
+    // The R-2 mis-stroke hazard (accepted by the D-table): `C-c i`
+    // (bare, the toggle) vs `C-c C-i` (chorded, the start) are
+    // distinct by the bare/chord rule with the `C-c c` capture
+    // precedent — the contract test pins the pair, tooltips
+    // disambiguate.
+    (
+        ActionId::TaskComplete,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+t"],
+    ),
+    (ActionId::TaskReopen, ContextId::TaskDetail, &["Ctrl+Space"]),
+    (
+        ActionId::TaskTrackToggle,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "i"],
+    ),
+    (
+        ActionId::TaskTrackToggle,
+        ContextId::Board,
+        &["Ctrl+c", "i"],
+    ),
+    (
+        ActionId::TaskTrackToggle,
+        ContextId::StackDetail,
+        &["Ctrl+c", "i"],
+    ),
+    (
+        ActionId::TaskTrackToggle,
+        ContextId::Today,
+        &["Ctrl+c", "i"],
+    ),
+    (
+        ActionId::TaskTrackStart,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+i"],
+    ),
+    (
+        ActionId::TaskTrackStop,
+        ContextId::Board,
+        &["Ctrl+c", "Ctrl+o"],
+    ),
+    (
+        ActionId::TaskTrackStart,
+        ContextId::StackDetail,
+        &["Ctrl+c", "Ctrl+i"],
+    ),
+    (
+        ActionId::TaskTrackStop,
+        ContextId::StackDetail,
+        &["Ctrl+c", "Ctrl+o"],
+    ),
+    (
+        ActionId::TaskTrackEntries,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "e"],
+    ),
+    (
+        ActionId::TaskEffortEdit,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "Ctrl+e"],
+    ),
+    (
+        ActionId::TaskEffortClear,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "X"],
     ),
     // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
     // D-10 with the C-5 re-picks recorded): the plan's C-c C-o and
@@ -1230,6 +1350,16 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     // vi-shape contract).
     (ActionId::ReminderSnooze, ContextId::ViNormal, &["s"]),
     (ActionId::ReminderMute, ContextId::ViNormal, &["m"]),
+    // The ONE smart tracking toggle (J3 R-8, round 9 chunk 11): `c`
+    // = clock, free in ViNormal — one row serves all four card
+    // contexts (TaskDetail/Today/Board/StackDetail fall through to
+    // ViNormal in the chain; no per-context rows needed).
+    (ActionId::TaskTrackToggle, ContextId::ViNormal, &["c"]),
+    // The board-return's alternate (J3 US-4, round 9 chunk 11 — the
+    // D-table's Back ruling): Alt+Left, beside the `g g` primary (the
+    // D7 alternates shape; Global row, the vi-shape contract's Global
+    // stays the Ctrl+Shift+t row + this alternate).
+    (ActionId::NavFocusBoard, ContextId::Global, &["Alt+Left"]),
     // Round 2 (D16): vi's cancel lives in ViNormal, never Global (the
     // vi-shape contract keeps Global empty); Escape conflicts with
     // nothing there — ViInsert's Escape still wins while typing.
@@ -1344,6 +1474,24 @@ static VI_S1: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskTrackStop, ContextId::TaskDetail, &["O"]),
     (ActionId::TaskTrackStart, ContextId::Today, &["I"]),
     (ActionId::TaskTrackStop, ContextId::Today, &["O"]),
+    // --- J3 US-4/US-5, round 9 chunk 11 (the D-table rows; plan
+    // .artifacts/plans/2026-11-19-taskdetail-shortcuts-plan.md §3.2):
+    // the tracker pair reaches Board/StackDetail (US-5 — the same
+    // uppercase twins; the smart toggle rides ViNormal `c` above),
+    // the title re-arm gains `g i` (vim gi = insert at the last edit
+    // position; the g-family's free second stroke), and the detail's
+    // remaining Tab-only verbs take the detail-local letters —
+    // entries the uppercase twin of the description editor's `e`,
+    // the effort pair `f`/`F` (the natural uppercase twin pair; the
+    // bare `c` clock toggle lives in ViNormal).
+    (ActionId::TaskTrackStart, ContextId::Board, &["I"]),
+    (ActionId::TaskTrackStop, ContextId::Board, &["O"]),
+    (ActionId::TaskTrackStart, ContextId::StackDetail, &["I"]),
+    (ActionId::TaskTrackStop, ContextId::StackDetail, &["O"]),
+    (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["g", "i"]),
+    (ActionId::TaskTrackEntries, ContextId::TaskDetail, &["E"]),
+    (ActionId::TaskEffortEdit, ContextId::TaskDetail, &["f"]),
+    (ActionId::TaskEffortClear, ContextId::TaskDetail, &["F"]),
 ];
 
 static VI_S2: &[(ActionId, ContextId, &[&str])] = &[

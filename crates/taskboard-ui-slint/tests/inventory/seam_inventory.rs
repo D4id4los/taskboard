@@ -437,7 +437,6 @@ const INVOKE_INVENTORY: &[&str] = &[
     "focus_task_row",
     "focus_stack_header",
     "focus_board_cell",
-    "focus_detail_cell",
     // The control walk's clamped stop (US-2/W-2, D-W2).
     "mask_focus",
     // The pre-existing timers push (the timers surface's create seam —
@@ -449,7 +448,16 @@ const INVOKE_INVENTORY: &[&str] = &[
 /// pre-framework window functions the adapter already drove (the
 /// D15 hand-off's view refocus lives in the chunk plan's census
 /// note, not this manifest).
-const INVOKE_EXEMPT: &[&str] = &["invoke_refocus_view"];
+const INVOKE_EXEMPT: &[&str] = &[
+    "invoke_refocus_view",
+    // The detail-cell push serves two deliberate callers (round 9
+    // chunk 11, J3 US-4): the focus-origin restore's kinds 4/5 and
+    // the effort field's keyboard opener (BeginEffortEdit's kind 6)
+    // — one push seam, two dispatch origins, so the exactly-once
+    // count does not apply; both invokes are counted in the
+    // no-unlisted side instead.
+    "invoke_focus_detail_cell",
+];
 
 fn invoke_counts() -> Vec<(String, usize)> {
     INVOKE_INVENTORY

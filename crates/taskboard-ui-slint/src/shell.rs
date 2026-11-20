@@ -87,6 +87,16 @@ pub struct KeymapShell {
     /// `task.unschedule`'s route gate, synced by the adapter from the
     /// focused task.
     pub focused_task_scheduled: bool,
+    /// Whether the toggle target holds THE open tracking entry (J3
+    /// R-8, round 9 chunk 11): `task.track-toggle`'s state half,
+    /// synced at dispatch time by the adapter's `route` (after the
+    /// one-shot move — the fact answers about the exact resolved
+    /// target).
+    pub focused_task_tracking: bool,
+    /// Whether the focused task carries an effort estimate (J3 US-4,
+    /// round 9 chunk 11): `task.effort-clear`'s route gate, synced by
+    /// the adapter from the focused task.
+    pub focused_task_effort: bool,
     /// The date-picker grid holds slint focus (round-3 D25): the
     /// `DatePicker` context rides the chain head while it does —
     /// non-masking, event-mirrored from the grid's focus seam.
@@ -153,6 +163,8 @@ impl KeymapShell {
             focused_task_done: self.focused_task_done,
             focused_task_tracker: self.focused_task_tracker,
             focused_task_scheduled: self.focused_task_scheduled,
+            focused_task_tracking: self.focused_task_tracking,
+            focused_task_effort: self.focused_task_effort,
         }
     }
 
@@ -279,6 +291,10 @@ impl KeymapShell {
             | UiEffect::BeginTitleEdit
             | UiEffect::BeginDateEdit { .. }
             | UiEffect::BeginDescriptionEdit
+            // The effort field's focus opener (J3 US-4, chunk 11):
+            // adapter-side like the other editor arms; the shell
+            // records nothing.
+            | UiEffect::BeginEffortEdit
             | UiEffect::BeginCapture
             // The overlay toggle moves no shell state (the flow is the
             // truth; `sync_view_context` mirrors it).

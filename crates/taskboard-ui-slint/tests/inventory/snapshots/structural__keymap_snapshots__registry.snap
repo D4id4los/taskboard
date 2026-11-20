@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
+assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -873,6 +874,15 @@ expression: rows
   menu_rank: 185
   description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card."
   menu_group: task
+- id: task.track-toggle
+  label: Toggle tracking
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 187
+  description: "Starts tracking the target task, or stops its running timer if it holds one."
+  menu_group: task
 - id: task.track-entries
   label: Time entries
   contexts:
@@ -881,6 +891,24 @@ expression: rows
   enabled: true
   menu_rank: 186
   description: "Opens the focused task's time-entries overlay: the tracked history, add, edit, and delete."
+  menu_group: task
+- id: task.effort-edit
+  label: Edit effort estimate
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 104
+  description: "Focuses the viewed task's effort-estimate field: type the estimate, commit on Return."
+  menu_group: task
+- id: task.effort-clear
+  label: Clear effort estimate
+  contexts:
+    - task-detail
+  category: task
+  enabled: true
+  menu_rank: 105
+  description: "Clears the viewed task's effort estimate, confirmation-free."
   menu_group: task
 - id: task.track-entry-log
   label: Log time entry

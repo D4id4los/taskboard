@@ -1667,6 +1667,17 @@ impl Adapter {
             )
             .1,
         );
+        // The smart toggle's state half (J3 R-8, round 9 chunk 11):
+        // synced at dispatch time — the fact must answer about the
+        // exact resolved target, which only exists after the one-shot
+        // move above (the shell sync cannot see it). The read is
+        // `send_card_track_toggle`'s re-rooted (one semantics, one
+        // home — the router arm consumes it).
+        if id == ActionId::TaskTrackToggle {
+            let open = crate::presentation::tracking_open_task(&self.state.load());
+            ctx.focused_task_tracking =
+                open.is_some_and(|open| Some(open) == ctx.track_target.or(ctx.focused_task));
+        }
         let outcome = ActionRouter::dispatch(id, &ctx);
         match outcome {
             DispatchOutcome::Command(command) => {
@@ -2133,6 +2144,14 @@ impl Adapter {
             .focused_task()
             .and_then(|id| state.tasks.get(&id))
             .is_some_and(|task| task.scheduled.is_some());
+        // The effort estimate's presence (J3 US-4, round 9 chunk 11):
+        // task.effort-clear's route gate — the scheduled-day fact's
+        // shape.
+        self.shell.focused_task_effort = self
+            .view_state
+            .focused_task()
+            .and_then(|id| state.tasks.get(&id))
+            .is_some_and(|task| task.effort.is_some());
     }
 
     /// The geometry capture (#412, D4): samples the window's normal
@@ -4632,6 +4651,19 @@ impl Adapter {
                 self.begin_description_edit(window);
                 Vec::new()
             }
+            // The effort field's focus opener (J3 US-4, round 9 chunk
+            // 11): a pure focus verb over the always-on M9 row — the
+            // anchor family's detail-cell seam (kind 6, the effort
+            // field's own anchor). Arms nothing, commits nothing (the
+            // M9 commit-on-focus-loss law keeps the field as commit
+            // owner); inert without a viewed subject (the matrix's
+            // "no subject" cell).
+            (Flow::None, UiEffect::BeginEffortEdit) => {
+                if self.view_state.subject_task().is_some() {
+                    window.invoke_focus_detail_cell(6);
+                }
+                Vec::new()
+            }
             // The habit editor's opener (H4 D1, US-5): the Activate
             // shape over the one-shot habit subject — the shared
             // detail surface mounts the habit variant. Kiosk dispatch
@@ -6107,6 +6139,7 @@ impl Adapter {
             // live in the arms.
             | UiEffect::BeginDateEdit { .. }
             | UiEffect::BeginDescriptionEdit
+            | UiEffect::BeginEffortEdit
             | UiEffect::Activate
             | UiEffect::RequestMove
             | UiEffect::StackWider
@@ -14111,11 +14144,13 @@ fn slot_urgency(slot: usize) -> Option<taskboard_domain::Urgency> {
     }
 }
 
-/// The card play/pause control's routing (UX-R8 chunk-5 D-6, US-4):
-/// the shown half read from the current state — one source with the
-/// menu's bar — routes the existing tracking ids; the Start leg arms
-/// the one-shot `track_target` (the D-TU5 addressing, exact even
-/// off-focus), Stop is payload-free. A running-elsewhere subject's
+/// The card play/pause control's routing (UX-R8 chunk-5 D-6, US-4;
+/// re-rooted onto the smart toggle's registry id — J3 R-8, round 9
+/// chunk 11): the seam only addresses the target (the one-shot
+/// `track_target`, exact even off-focus) and routes
+/// `TaskTrackToggle` — the state read and the Start/Stop outcome
+/// choice live in the router arm (one semantics, one home; the
+/// D-TU5 addressing is unchanged). A running-elsewhere subject's
 /// Start refusal is the engine's typed `NoOps` (the dispatch-time
 /// gating posture).
 fn send_card_track_toggle(
@@ -14123,16 +14158,8 @@ fn send_card_track_toggle(
     window: &AppWindow,
     task: taskboard_domain::TaskId,
 ) {
-    let state = adapter.state.load_full();
-    let running_here =
-        crate::presentation::tracking_open_task(&state).is_some_and(|open| open == task);
-    drop(state);
-    if running_here {
-        adapter.route(window, ActionId::TaskTrackStop);
-    } else {
-        adapter.track_target = Some(task);
-        adapter.route(window, ActionId::TaskTrackStart);
-    }
+    adapter.track_target = Some(task);
+    adapter.route(window, ActionId::TaskTrackToggle);
 }
 
 fn send_toggled_done(adapter: &Adapter, task: taskboard_domain::TaskId) {

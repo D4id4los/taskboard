@@ -376,10 +376,26 @@ pub enum ActionId {
     TaskTrackStart,
     TaskTrackStop,
     TaskToggleTracker,
+    /// The ONE smart tracking toggle (J3 R-8, round 9 chunk 11):
+    /// start-if-idle, stop-if-running over the subject/one-shot
+    /// target — distinct from `TaskToggleTracker` (the tracker-kind
+    /// flag, #492). Routes exactly the two existing tracking ids'
+    /// outcomes (no new domain command); the card play/pause seams
+    /// re-root here (one semantics, one home).
+    TaskTrackToggle,
     /// The entries-overlay open verb (r4 chunk 10, D-TS6): opens
     /// `Flow::TrackEntries` over the subject task; refuses on kiosk
     /// (the view intent's own gate).
     TaskTrackEntries,
+    /// The effort row's keyboard opener (J3 US-4, round 9 chunk 11):
+    /// a *focus* verb — arms nothing, commits nothing; the always-on
+    /// M9 field keeps owning the commit (commit-on-focus-loss law;
+    /// the D-5 guard absorbs the untouched-draft blur).
+    TaskEffortEdit,
+    /// The effort estimate's clear twin (J3 US-4, chunk 11):
+    /// confirmation-free — the `TaskUnschedule` posture; routes the
+    /// sparse `TaskChanges { effort: Some(None) }` mask.
+    TaskEffortClear,
     /// The entries form's add commit (r4 D-TS6): routes the parsed
     /// draft into `LogTime` (`NoTarget` without a valid draft + task).
     TaskTrackEntryLog,
@@ -702,7 +718,10 @@ impl ActionId {
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
             Self::TaskToggleTracker => "task.toggle-tracker",
+            Self::TaskTrackToggle => "task.track-toggle",
             Self::TaskTrackEntries => "task.track-entries",
+            Self::TaskEffortEdit => "task.effort-edit",
+            Self::TaskEffortClear => "task.effort-clear",
             Self::TaskTrackEntryLog => "task.track-entry-log",
             Self::TaskTrackEntryAdjust => "task.track-entry-adjust",
             Self::TaskTrackEntryDelete => "task.track-entry-delete",
@@ -1802,6 +1821,21 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card.",
         menu_group: Some(MenuGroup::Task),
     },
+    // The ONE smart tracking toggle (J3 R-8, round 9 chunk 11): the
+    // state-correct half of Start/Stop over the target — the card
+    // play/pause control's routing re-rooted onto a registry id (one
+    // semantics, one home; the two existing verbs' outcomes, no new
+    // domain command).
+    ActionEntry {
+        id: ActionId::TaskTrackToggle,
+        label: "Toggle tracking",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 187,
+        description: "Starts tracking the target task, or stops its running timer if it holds one.",
+        menu_group: Some(MenuGroup::Task),
+    },
     // The entries overlay (r4 chunk 10, D-TS6/D-TS8): the one
     // menu-reachable row of the family (the DR-5 fence's
     // "menu-reachable" clause); the panel verbs below are
@@ -1816,6 +1850,29 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 186,
         description: "Opens the focused task's time-entries overlay: the tracked history, add, edit, and delete.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    // The effort row's keyboard pair (J3 US-4, round 9 chunk 11): the
+    // focus opener (commit stays the field's, the M9 law) and the
+    // confirmation-free clear twin (the TaskUnschedule posture).
+    ActionEntry {
+        id: ActionId::TaskEffortEdit,
+        label: "Edit effort estimate",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 104,
+        description: "Focuses the viewed task's effort-estimate field: type the estimate, commit on Return.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::TaskEffortClear,
+        label: "Clear effort estimate",
+        contexts: &[ContextId::TaskDetail],
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 105,
+        description: "Clears the viewed task's effort estimate, confirmation-free.",
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
@@ -2699,7 +2756,10 @@ mod tests {
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
             ActionId::TaskToggleTracker,
+            ActionId::TaskTrackToggle,
             ActionId::TaskTrackEntries,
+            ActionId::TaskEffortEdit,
+            ActionId::TaskEffortClear,
             ActionId::TaskTrackEntryLog,
             ActionId::TaskTrackEntryAdjust,
             ActionId::TaskTrackEntryDelete,

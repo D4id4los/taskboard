@@ -254,6 +254,12 @@ pub enum UiEffect {
     /// US-3, D-4): the adapter routes the round-3 D15 arm exactly as
     /// the field's pointer affordance does.
     BeginDescriptionEdit,
+    /// Focus the viewed task's always-on effort field (J3 US-4,
+    /// round 9 chunk 11): a *focus* verb — it arms nothing and
+    /// commits nothing; the M9 field's own seams keep owning the
+    /// commit (commit-on-focus-loss law, the D-5 guard absorbing an
+    /// untouched draft's blur).
+    BeginEffortEdit,
     // --- chunk-7 board dimension (design §3.8): pure view state; the
     // adapter resolves them against the view-state model. Never a
     // `DispatchOutcome::Command`.
@@ -531,7 +537,11 @@ impl UiEffect {
             // settles a live flow first, then arms (dead buttons
             // cannot exist).
             Self::BeginDateEdit { .. } | Self::BeginDescriptionEdit
-            | Self::BeginTitleEdit => EffectClass::Begin,
+            | Self::BeginTitleEdit
+            // The effort field's focus opener (J3 US-4, chunk 11)
+            // shares the Begin cell: settle-then-run — the funnel
+            // settles a live flow first, then focuses.
+            | Self::BeginEffortEdit => EffectClass::Begin,
             Self::PickerKey(_) => EffectClass::Picker,
             Self::CancelMove => EffectClass::Cancel,
             Self::OpenMenu
@@ -763,6 +773,7 @@ pub struct BreakRuleDraft {
 /// [`DispatchOutcome::NoTarget`]); chunk 3's focus architecture sets
 /// them for real.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // one flag per synced router gate (the shell's house shape)
 pub struct DispatchCtx {
     pub focused_task: Option<TaskId>,
     pub focused_stack: Option<StackId>,
@@ -935,6 +946,19 @@ pub struct DispatchCtx {
     /// (`NoTarget`-style inert dispatch; the engine rejection is the
     /// backstop).
     pub focused_task_tracker: bool,
+    /// Whether the toggle target (the one-shot `track_target`, else
+    /// the focused task) holds THE open tracking entry (J3 R-8,
+    /// round 9 chunk 11): the smart toggle's state half — synced at
+    /// dispatch time in the adapter's `route` (after the one-shot
+    /// move, so the fact answers about the exact target).
+    /// `task.track-toggle` reads it to route `StopTracking`;
+    /// otherwise it routes `StartTracking` (the two existing verbs'
+    /// outcomes — no new domain command).
+    pub focused_task_tracking: bool,
+    /// Whether the focused task carries an effort estimate (J3 US-4,
+    /// round 9 chunk 11): `task.effort-clear`'s route gate — the
+    /// `focused_task_scheduled` shape.
+    pub focused_task_effort: bool,
 }
 
 /// The one-shot ctx fields a dispatched action may consume
@@ -1111,7 +1135,10 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::SeriesConvertToHabit => OneShotSet::default().series_target().convert_target(),
         A::SeriesEditCommit => OneShotSet::default().recur_edit_target().recur_draft_rule(),
         A::SeriesEditDetach => OneShotSet::default().recur_edit_target(),
-        A::TaskTrackStart => OneShotSet::default().track_target(),
+        // The smart toggle resolves the same target (J3 R-8): the
+        // one-shot, else the focused task — and the adapter's
+        // dispatch-time tracking fact answers about exactly it.
+        A::TaskTrackStart | A::TaskTrackToggle => OneShotSet::default().track_target(),
         A::TaskTrackEntryLog => OneShotSet::default().track_target().track_entry_draft(),
         A::TaskTrackEntryAdjust => OneShotSet::default()
             .track_entry_target()
@@ -1496,6 +1523,26 @@ impl ActionRouter {
                 None => DispatchOutcome::NoTarget,
             },
             ActionId::TaskTrackStop => DispatchOutcome::Command(StateCommand::StopTracking),
+            // The ONE smart tracking toggle (J3 R-8, round 9 chunk 11):
+            // the state-correct half over the target — a running entry
+            // ON THIS TASK routes `StopTracking`; anything else routes
+            // `StartTracking` (whose own law closes any
+            // running-elsewhere entry first). Exactly the two existing
+            // verbs' outcomes — no new domain command (the fence); the
+            // planner's idempotent NoOps own the refusals.
+            ActionId::TaskTrackToggle => {
+                match (
+                    ctx.track_target.or(ctx.focused_task),
+                    ctx.focused_task_tracking,
+                ) {
+                    (Some(_), true) => DispatchOutcome::Command(StateCommand::StopTracking),
+                    (Some(task), false) => DispatchOutcome::Command(StateCommand::StartTracking {
+                        task,
+                        kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                    }),
+                    (None, _) => DispatchOutcome::NoTarget,
+                }
+            }
             // The entries-overlay family (r4 chunk 10, D-TS6): the
             // open verb is a view intent; the three panel verbs are
             // one-shot — draft + target only, exactly the existing
@@ -1716,6 +1763,23 @@ impl ActionRouter {
                 }),
                 _ => DispatchOutcome::NoTarget,
             },
+            // The effort row's keyboard pair (J3 US-4, round 9 chunk
+            // 11): edit is a *focus* verb — it arms nothing and
+            // commits nothing (the M9 commit-on-focus-loss law; the
+            // always-on field keeps owning the commit); clear routes
+            // the sparse mask, confirmation-free (the TaskUnschedule
+            // posture).
+            ActionId::TaskEffortEdit => DispatchOutcome::UiEffect(UiEffect::BeginEffortEdit),
+            ActionId::TaskEffortClear => match (ctx.focused_task, ctx.focused_task_effort) {
+                (Some(id), true) => DispatchOutcome::Command(StateCommand::UpdateTask {
+                    id,
+                    changes: taskboard_domain::TaskChanges {
+                        effort: Some(None),
+                        ..taskboard_domain::TaskChanges::default()
+                    },
+                }),
+                _ => DispatchOutcome::NoTarget,
+            },
             // The today/inbox view intents + the capture flip (chunk
             // 10): pure view intents; the adapter interprets them.
             ActionId::ViewToday => DispatchOutcome::UiEffect(UiEffect::FocusToday),
@@ -1906,6 +1970,8 @@ mod tests {
             focused_task_done: false,
             focused_task_tracker: false,
             focused_task_scheduled: false,
+            focused_task_tracking: false,
+            focused_task_effort: false,
         }
     }
 

@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
+assertion_line: 115
 expression: rows
 ---
 - preset: standard
@@ -51,6 +52,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+z
           action: app.undo
+        - sequence:
+            - Alt+Left
+          action: nav.focus-board
         - sequence:
             - F1
           action: app.help
@@ -116,6 +120,9 @@ expression: rows
         - sequence:
             - F9
           action: task.track-start
+        - sequence:
+            - Ctrl+F9
+          action: task.track-toggle
         - sequence:
             - F10
           action: task.track-stop
@@ -236,6 +243,15 @@ expression: rows
             - Ctrl+F3
           action: board.color-edit
         - sequence:
+            - F9
+          action: task.track-start
+        - sequence:
+            - Ctrl+F9
+          action: task.track-toggle
+        - sequence:
+            - F10
+          action: task.track-stop
+        - sequence:
             - F11
           action: task.schedule-today
         - sequence:
@@ -280,6 +296,15 @@ expression: rows
             - Right
           action: nav.focus-right
         - sequence:
+            - F9
+          action: task.track-start
+        - sequence:
+            - Ctrl+F9
+          action: task.track-toggle
+        - sequence:
+            - F10
+          action: task.track-stop
+        - sequence:
             - F11
           action: task.schedule-today
         - sequence:
@@ -308,6 +333,18 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - Space
+          action: task.complete
+        - sequence:
+            - Ctrl+Space
+          action: task.reopen
+        - sequence:
+            - Ctrl+e
+          action: task.effort-edit
+        - sequence:
+            - Ctrl+Shift+e
+          action: task.effort-clear
         - sequence:
             - Ctrl+Shift+l
           action: label.manage
@@ -351,6 +388,9 @@ expression: rows
             - F9
           action: task.track-start
         - sequence:
+            - Ctrl+F9
+          action: task.track-toggle
+        - sequence:
             - F10
           action: task.track-stop
         - sequence:
@@ -362,6 +402,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+F11
           action: task.unschedule
+        - sequence:
+            - F12
+          action: task.track-entries
         - sequence:
             - PageUp
           action: view.scroll-up
@@ -630,6 +673,9 @@ expression: rows
             - Ctrl+x
             - u
           action: app.undo
+        - sequence:
+            - Alt+Left
+          action: nav.focus-board
     - context: today
       bindings:
         - sequence:
@@ -647,6 +693,10 @@ expression: rows
         - sequence:
             - Ctrl+b
           action: nav.focus-left
+        - sequence:
+            - Ctrl+c
+            - i
+          action: task.track-toggle
         - sequence:
             - Ctrl+c
             - Ctrl+i
@@ -758,12 +808,24 @@ expression: rows
           action: board.select
         - sequence:
             - Ctrl+c
+            - i
+          action: task.track-toggle
+        - sequence:
+            - Ctrl+c
+            - Ctrl+i
+          action: task.track-start
+        - sequence:
+            - Ctrl+c
             - m
           action: stack.move
         - sequence:
             - Ctrl+c
             - Ctrl+n
           action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+c
+            - Ctrl+o
+          action: task.track-stop
         - sequence:
             - Ctrl+c
             - p
@@ -848,8 +910,20 @@ expression: rows
           action: nav.focus-left
         - sequence:
             - Ctrl+c
+            - i
+          action: task.track-toggle
+        - sequence:
+            - Ctrl+c
+            - Ctrl+i
+          action: task.track-start
+        - sequence:
+            - Ctrl+c
             - Ctrl+n
           action: task.schedule-tomorrow
+        - sequence:
+            - Ctrl+c
+            - Ctrl+o
+          action: task.track-stop
         - sequence:
             - Ctrl+c
             - Ctrl+x
@@ -882,6 +956,9 @@ expression: rows
             - Return
           action: task.title-edit
         - sequence:
+            - Ctrl+Space
+          action: task.reopen
+        - sequence:
             - Ctrl+b
           action: nav.focus-left
         - sequence:
@@ -890,8 +967,24 @@ expression: rows
           action: task.description-edit
         - sequence:
             - Ctrl+c
+            - X
+          action: task.effort-clear
+        - sequence:
+            - Ctrl+c
             - Ctrl+d
           action: task.due-edit
+        - sequence:
+            - Ctrl+c
+            - e
+          action: task.track-entries
+        - sequence:
+            - Ctrl+c
+            - Ctrl+e
+          action: task.effort-edit
+        - sequence:
+            - Ctrl+c
+            - i
+          action: task.track-toggle
         - sequence:
             - Ctrl+c
             - Ctrl+i
@@ -912,6 +1005,10 @@ expression: rows
             - Ctrl+c
             - Ctrl+s
           action: task.scheduled-edit
+        - sequence:
+            - Ctrl+c
+            - Ctrl+t
+          action: task.complete
         - sequence:
             - Ctrl+c
             - Ctrl+u
@@ -1171,6 +1268,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+t
           action: view.today
+        - sequence:
+            - Alt+Left
+          action: nav.focus-board
     - context: today
       bindings:
         - sequence:
@@ -1221,11 +1321,17 @@ expression: rows
             - Shift+Tab
           action: nav.prev-control
         - sequence:
+            - I
+          action: task.track-start
+        - sequence:
             - J
           action: nav.extend-next
         - sequence:
             - K
           action: nav.extend-prev
+        - sequence:
+            - O
+          action: task.track-stop
         - sequence:
             - X
           action: task.unschedule
@@ -1247,6 +1353,12 @@ expression: rows
             - Shift+Tab
           action: nav.prev-control
         - sequence:
+            - I
+          action: task.track-start
+        - sequence:
+            - O
+          action: task.track-stop
+        - sequence:
             - X
           action: task.unschedule
         - sequence:
@@ -1263,6 +1375,12 @@ expression: rows
         - sequence:
             - Shift+Tab
           action: nav.prev-control
+        - sequence:
+            - E
+          action: task.track-entries
+        - sequence:
+            - F
+          action: task.effort-clear
         - sequence:
             - I
           action: task.track-start
@@ -1284,6 +1402,13 @@ expression: rows
         - sequence:
             - e
           action: task.description-edit
+        - sequence:
+            - f
+          action: task.effort-edit
+        - sequence:
+            - g
+            - i
+          action: task.title-edit
         - sequence:
             - Ctrl+Shift+l
           action: label.manage
@@ -1416,6 +1541,9 @@ expression: rows
         - sequence:
             - Ctrl+b
           action: view.scroll-up
+        - sequence:
+            - c
+          action: task.track-toggle
         - sequence:
             - d
             - d

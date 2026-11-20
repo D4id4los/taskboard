@@ -374,6 +374,10 @@ struct HintModels {
     task_done: MirroredRows<SharedString>,
     task_track: MirroredRows<SharedString>,
     task_title_edit: MirroredRows<SharedString>,
+    // The entries opener's + effort row's projections (J3 US-4,
+    // round 9 chunk 11).
+    task_entries: MirroredRows<SharedString>,
+    task_effort: MirroredRows<SharedString>,
 }
 
 /// The persistent model handle of one surface plus its Rust-side
@@ -1648,7 +1652,7 @@ fn empty_review_model() -> ReviewModel {
 /// The toolbar chrome: board title and the `app.menu` binding hint (a
 /// keymap projection, never hand-written — D19). Returns the hint
 /// diff's mutation count.
-#[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // the pass-shaped parameter list; one linear chrome pass (the push family's rule)
 fn push_chrome(
     window: &AppWindow,
     view: crate::view_state::ViewId,
@@ -1779,6 +1783,23 @@ fn push_chrome(
     let track_action = presentation::detail_tracking_verb(state, detail_subject);
     mutations += push_track_hint(window, &mut models.hints, &rows, track_action);
     mutations += push_title_edit_hint(window, &mut models.hints, &rows);
+    // The entries opener's + effort row's projections (J3 US-4,
+    // round 9 chunk 11): view-chain projections like the title's —
+    // empty where the preset binds none (never a fake chord, D19).
+    mutations += push_rows(
+        &mut models.hints.task_entries,
+        |rc| {
+            window.set_task_entries_hint(rc);
+        },
+        &rows(ActionId::TaskTrackEntries),
+    );
+    mutations += push_rows(
+        &mut models.hints.task_effort,
+        |rc| {
+            window.set_task_effort_hint(rc);
+        },
+        &rows(ActionId::TaskEffortEdit),
+    );
     mutations
 }
 

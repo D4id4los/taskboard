@@ -300,6 +300,11 @@ export component TaskView inherits FocusScope {
     // projection the title cell's tip arms with — empty where the
     // action is unbound (vi).
     in property <[string]> task-title-edit-hint;
+    // The entries opener's + effort row's projections (J3 US-4, W-4
+    // tail — round 9 chunk 11): keymap projections pushed per
+    // refresh, never hand-written (the D19 rule).
+    in property <[string]> task-entries-hint;
+    in property <[string]> task-effort-hint;
     // The rule-list composition's seams (chunk 6, D12): forwarded to
     // the window, resolved against the id tables there.
     callback rule-remove-clicked(int);
@@ -865,17 +870,13 @@ export component TaskView inherits FocusScope {
 
             // The effort row (the overlay migration, M9; US-3/S2's
             // always-on one-line row): the caption and the field on
-            // one line, the field always mounted, the commit on
-            // Return and on focus loss (R-9 — no explicit save step;
-            // the D-5 guard dispatches nothing for unchanged values).
-            // The clear is the field's empty commit (= Some(None) —
-            // the walk placement's posture, unchanged).
-            // The effort row (the overlay migration, M9; US-3/S2's
-            // always-on one-line row): the caption and the field on
             // one line — the widget's editor mode with the field at
             // the mount (Rule E: the commit-on-Return-and-focus-loss
             // semantics (R-9), the D-5 guard and the re-seed idiom
-            // stay view-side verbatim).
+            // stay view-side verbatim). The caption's tooltip
+            // affordance (J3 US-4, chunk 11) rides the widget's
+            // caption knobs — the keyboard opener's + clear twin's
+            // projection (one tooltip, both verbs).
             effort-row := LabeledValueRow {
                 visible: !root.task.is-habit;
                 vertical-stretch: 0;
@@ -883,8 +884,14 @@ export component TaskView inherits FocusScope {
                 caption-beside: true;
                 content-gap: Theme.space-2;
                 label: "Effort Estimate";
+                caption-tooltip-text: "The effort estimate: bare digits are minutes, s/m/h components compose.";
+                caption-hint-keys: root.task-effort-hint;
                 effort-field := TextField {
                     horizontal-stretch: 1;
+                    // Focusable: the keyboard opener's anchor (J3
+                    // US-4, chunk 11) — the BeginEffortEdit fact
+                    // writes the anchor-family kind 6; the watcher
+                    // below focuses this field on it.
                     placeholder: "30 or 1h30m";
                     label: "Effort Estimate";
                     description: "The effort estimate: bare digits are minutes, s/m/h components compose.";
@@ -892,6 +899,18 @@ export component TaskView inherits FocusScope {
                     edited(t) => root.effort-edited(t);
                     accepted(t) => root.effort-committed();
                     focus-lost() => root.effort-focus-lost();
+                }
+                // The focus-origin fact for the keyboard opener (J3
+                // US-4, chunk 11): `BeginEffortEdit` writes the
+                // anchor family's kind 6; the nonce watcher focuses
+                // the always-on field (the title-stop's recorded
+                // watch shape).
+                property <int> effort-focus-nonce: FocusFacts.nonce;
+                init => {
+                    if (FocusFacts.anchor-kind == 6) { effort-field.grab-focus(); }
+                }
+                changed effort-focus-nonce => {
+                    if (FocusFacts.anchor-kind == 6) { effort-field.grab-focus(); }
                 }
                 // The push re-seed (the DueEditor idiom): the
                 // adapter's seed wins whenever it differs from the
@@ -1008,6 +1027,10 @@ export component TaskView inherits FocusScope {
                         icon: IconKind.history;
                         label: "Time entries";
                         description: "Opens the task's time-entries overlay: tracked history, add, edit, delete.";
+                        // The keyboard opener's projection (J3 US-4,
+                        // chunk 11): the tooltip shows the real
+                        // preset stroke (the D19 projection).
+                        hint-keys: root.task-entries-hint;
                         clicked => {
                             TooltipState.unhover();
                             root.task-track-entries-clicked();
