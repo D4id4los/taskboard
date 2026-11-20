@@ -8,10 +8,10 @@
 import { Theme, Semantic, Typography, RoleText } from "../theme.slint";
 import { Responsive, Breakpoint } from "../responsive.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
-import { KbdHint } from "../widgets/kbd-hint.slint";
 import { MenuPanelFacts } from "../menu-facts.slint";
-import { Icon, IconKind } from "../widgets/icon.slint";
+import { IconKind } from "../widgets/icon.slint";
 import { IconButton } from "../widgets/icon-button.slint";
+import { MenuRow } from "../widgets/menu-row.slint";
 
 // The quick-bar row (UX-R8 chunk-5 D-2, US-1): the routing id (the
 // Rust vec is the resolver), the icon, and the shown/withheld verdict.
@@ -196,22 +196,29 @@ export component ActionMenu inherits Rectangle {
                 border-width: root.page-cursor == entry-index ? Theme.focus-ring-width : 0;
                 border-color: Semantic.focus-ring;
                 border-radius: Theme.radius-small;
-                // Hover lightens over the raised panel; the selection
-                // keeps its inset + ring (usability D2). Disabled rows
-                // never hover: their TouchArea is disabled, so
-                // has-hover cannot engage.
-                // The row's label is the registry label — the
-                // element's address (§7.1). The FocusScope overlay
-                // carries the a11y role and its default action (the
-                // icon-button precedent); the TouchArea owns the
-                // mouse click — both land on the same callback.
-                row-focus := FocusScope {
-                    width: 100%;
-                    height: 100%;
+                // D-3's split: the composition owns the selection's
+                // ring + inset fill (the cursor's two arms — hover
+                // lightens over the raised panel, the selection keeps
+                // its inset), the row primitive owns the anatomy. The
+                // hover fill rides the MenuRow's `highlighted` (the
+                // row's own hover arm below); the cursor fill yields
+                // to it while hovered — the old three-state
+                // expression's exact truth table.
+                background: root.page-cursor == entry-index && !menu-row.hover-now
+                    ? Theme.surface : transparent;
+                menu-row := MenuRow {
+                    label: entry.label;
+                    description: entry.description;
+                    enabled: entry.enabled;
+                    highlighted: self.hover-now;
+                    hint-keys: entry.hint;
+                    submenu: entry.submenu;
+                    // The a11y posture is the instantiation's
+                    // (MenuRow's recorded contract): the button role
+                    // with the registry label (the element's address,
+                    // §7.1) and the D7 description.
                     accessible-role: AccessibleRole.button;
                     accessible-label: entry.label;
-                    // The D7 description: the AT text and the row
-                    // tooltip's middle part are the same data.
                     accessible-description: entry.description;
                     accessible-action-default => {
                         // A tooltip never outlives the row that spawned
@@ -219,29 +226,21 @@ export component ActionMenu inherits Rectangle {
                         TooltipState.unhover();
                         root.invoke-row(entry-index);
                     }
-                    row-hit := TouchArea {
-                        enabled: entry.enabled;
-                        // The D8 row tooltip (round 1): hover arms the
-                        // generalized trigger with the entry's own
-                        // description and binding hint.
-                        changed has-hover => {
-                            if (self.has-hover) {
-                                TooltipState.hover(entry.label, entry.description, entry.hint,
-                                    self.absolute-position.x, self.absolute-position.y,
-                                    self.width, self.height);
-                            } else {
-                                TooltipState.unhover();
-                            }
-                        }
-                        clicked => {
-                            TooltipState.unhover();
-                            root.invoke-row(entry-index);
-                        }
+                    // The D8 row tooltip (round 1): hover arms the
+                    // generalized trigger with the entry's own
+                    // description and binding hint.
+                    hovered(x, y, w, h) => {
+                        TooltipState.hover(entry.label, entry.description, entry.hint,
+                            x, y, w, h);
+                    }
+                    unhovered() => {
+                        TooltipState.unhover();
+                    }
+                    invoked => {
+                        TooltipState.unhover();
+                        root.invoke-row(entry-index);
                     }
                 }
-                background: row-hit.has-hover ? Theme.surface-hover
-                    : root.page-cursor == entry-index ? Theme.surface
-                    : transparent;
                 // The changed-callback mirror: `changed` only takes a
                 // same-element identifier, so each row mirrors the
                 // root's selection through its own bound property.
@@ -255,31 +254,6 @@ export component ActionMenu inherits Rectangle {
                             flick.content-y = -self.y;
                         } else if (self.y + self.height > -flick.content-y + flick.height) {
                             flick.content-y = flick.height - self.y - self.height;
-                        }
-                    }
-                }
-                VerticalLayout {
-                    padding-left: Theme.space-2;
-                    padding-right: Theme.space-2;
-                    HorizontalLayout {
-                        spacing: Theme.space-2;
-                        RoleText {
-                            role: Typography.body-emphasized;
-                            text-color: entry.enabled ? Theme.text-primary : Theme.text-secondary;
-                            text: entry.label;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                        }
-                        VerticalLayout {
-                            KbdHint {
-                                keys: entry.hint;
-                            }
-                        }
-                        // The submenu affordance (J5 US-3 AC-1): every
-                        // submenu-parent row carries the right chevron —
-                        // one component, all menus inherit it.
-                        if (entry.submenu): submenu-chevron := Icon {
-                            kind: IconKind.chevron-right;
                         }
                     }
                 }

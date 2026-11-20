@@ -94,7 +94,9 @@ fn the_bar_button_routes_by_index() {
 #[test]
 fn us3_s1_the_submenu_chevron_renders_iff_the_row_is_a_parent() {
     run_probe(|window| {
-        let chevrons = find_all_by_id_on(window, "ActionMenu::submenu-chevron");
+        // The chevron lives on the MenuRow primitive now (round-9 W6's
+        // absorption) — the seam re-points to the landed id.
+        let chevrons = find_all_by_id_on(window, "MenuRow::submenu-chevron");
         assert_eq!(
             chevrons.len(),
             1,
