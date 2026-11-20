@@ -23,6 +23,7 @@ import { MaskWalkFacts } from "../mask-walk-facts.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
 import { FieldValidity } from "../widgets/text-field.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
+import { ToggleStrip } from "../widgets/toggle-strip.slint";
 import { IconButton } from "../widgets/icon-button.slint";
 import { IconKind } from "../widgets/icon.slint";
 
@@ -153,54 +154,19 @@ export component RecurEditor inherits Rectangle {
                     edited(text) => root.weekly-interval-edited(text);
                     accepted(text) => root.weekly-interval-edited(text);
                 }
-                HorizontalLayout {
-                    spacing: Theme.space-1;
+                ToggleStrip {
                     // The seven toggles, Mon..Sun (the WeekdaySet
                     // grammar's canonical order): a plain check/clear
                     // pair of tones — checked carries the check glyph
                     // and the info tone, the label is the hover tip.
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: root.model.weekdays-checked[0] ? Tone.info : Tone.neutral;
-                        label: "Repeats on Mondays";
-                        clicked => root.weekday-toggled(0);
-                    }
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: root.model.weekdays-checked[1] ? Tone.info : Tone.neutral;
-                        label: "Repeats on Tuesdays";
-                        clicked => root.weekday-toggled(1);
-                    }
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: root.model.weekdays-checked[2] ? Tone.info : Tone.neutral;
-                        label: "Repeats on Wednesdays";
-                        clicked => root.weekday-toggled(2);
-                    }
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: root.model.weekdays-checked[3] ? Tone.info : Tone.neutral;
-                        label: "Repeats on Thursdays";
-                        clicked => root.weekday-toggled(3);
-                    }
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: root.model.weekdays-checked[4] ? Tone.info : Tone.neutral;
-                        label: "Repeats on Fridays";
-                        clicked => root.weekday-toggled(4);
-                    }
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: root.model.weekdays-checked[5] ? Tone.info : Tone.neutral;
-                        label: "Repeats on Saturdays";
-                        clicked => root.weekday-toggled(5);
-                    }
-                    IconButton {
-                        icon: IconKind.check;
-                        tone: root.model.weekdays-checked[6] ? Tone.info : Tone.neutral;
-                        label: "Repeats on Sundays";
-                        clicked => root.weekday-toggled(6);
-                    }
+                    options: [
+                        "Repeats on Mondays", "Repeats on Tuesdays",
+                        "Repeats on Wednesdays", "Repeats on Thursdays",
+                        "Repeats on Fridays", "Repeats on Saturdays",
+                        "Repeats on Sundays",
+                    ];
+                    checked-mask: root.model.weekdays-checked;
+                    picked(i) => root.weekday-toggled(i);
                 }
             }
 
