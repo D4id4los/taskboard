@@ -9,6 +9,70 @@ standing ruling with its date and authority
 diffs against it. Overturning a ruling is a visible census diff made
 at UX-plan level — never a chunk-local surprise.
 
+- *Status*: =round 9 W5 small-widget primitives landed (2026-11-20,
+  chunk 16, branch =refactor/ui-small-widget-primitives=)= — the O-6
+  centralization's W5 wave: =ui/widgets/action-chip.slint= (the F-4
+  chip family's single copy) absorbs
+  =rule-list.slint::PresetChip= (the =ActivationStop= walk-facts
+  publish, stop-id 90+index preserved; the index closes over in the
+  delegate), the task-view label chips (swatch + remove affordance),
+  the recur-paused chip (the passive posture), the status-bar timers
+  chip (D-1: the native badge-typography pill replaces the
+  Badge-inside-Rectangle composite; the #665 raw-scope grammar and
+  the =timers-chip-clicked()= seam unchanged) and the toolbar inbox
+  chip (the a11y TouchArea-only posture keeps its no-tab-stop
+  grammar; the focus-coverage exemption re-pointed to
+  =TouchArea:ActionChip::touch=); =ui/widgets/section-header.slint=
+  (the F-6 header-row anatomy) absorbs the timers and habits header
+  rows (the TimerSetterFacts click-time push stays consumer-side);
+  =ui/widgets/ghost-opener.slint= (the F-10 ghost family) absorbs
+  the board's add-task row and add-column sliver with the F8
+  scope-first/touch-after dodge baked in one copy — the add-column
+  mount *gains* it (its hand-copy had the scope overlay on top, so
+  the first physical click ate into a focus gain; probed
+  first-click invocation at both orientations); the nine row-height
+  plus =IconButton= openers stay =IconButton= (the Q-E ruling);
+  =ui/widgets/status-notice.slint= (the F-9 single-status-line
+  family, =NoticeShape= inline/boxed) absorbs
+  =settings-view.slint::ErrorLine= (deleted, both mounts), the
+  habits quota hint, the due-editor echo/syntax pair, the time-field
+  invalid hint (site geometry stays), the resurrect notice and the
+  timers kiosk absence caption; =ui/widgets/confirm-strip.slint=
+  (the F-7 armed-confirm grammar) absorbs the board delete, the
+  break-rule remove and the recur convert strips (exactly the two
+  observed grammars: destructive danger / convert success;
+  byte-identical a11y labels and seams); the habit convert strip is
+  RETIRED, not absorbed (the confirm rides the context-menu
+  submenu, O-7 Q3); the theme's canonical tone ladder lands as
+  =Semantic.tone-color=/=tone-fill= (F-3, #952) with the four Tone
+  chains (Badge/StatusDot/ListRow/IconButton) delegating — Badge
+  keeps the r2 D35 surface-raised neutral/info chip fill, ListRow
+  keeps its row-text neutral override, IconButton keeps the
+  hover/disabled interaction steps; the DropdownTone vocabulary
+  stays (a different enum, not a Tone ladder; W6 note). Stay-recorded:
+  =Badge= (the Q-D two-primitive ruling), the tracked-today summary
+  header (a11y-text spacer + mono total — not the actions-header
+  anatomy), the review-view heading-over-grid sections, the status-bar
+  tracking/delivery/files-sync composite lines, the timers break-rules
+  sub-header, and the rule-list hint caption (the survey's
+  "caption row + spacer + affordances" shape does not exist in the
+  post-chunk-15 tree — the hint is a conditional wrapped caption with
+  a muted-conditional colour and the mute/add affordances live in
+  separate rows; a =SectionHeader= conversion would change paint,
+  recorded as the map row 16 deviation). The anti-ad-hoc law: no
+  chip/header/notice/strip/ghost grammar outside =ui/widgets/= (the
+  census evidence addresses re-point to the five widget files with
+  symbol anchors per #775; W7 grows the full taxonomy doc). Golden
+  re-baseline: 22 goldens re-blessed — the toolbar inbox chip and
+  status-bar chips are global chrome (every window: board,
+  board-3.0, kiosk-board, focus-overlay, notification, review-empty,
+  review-ledger, track-entries), plus the D-1 timers-chip costume and
+  the label/preset chip conversions in task-view/today/kiosk-today
+  (per-file reasons for the stage-3 walkthrough). Zero behavior
+  deltas sanctioned beyond D-1 and the add-column first-click fix;
+  journeys, walk/focus/overlay probes and the kiosk gates re-passed;
+  closes #952 at merge.
+
 - *Status*: =round 9 W4 labeled-value-row landed (2026-11-20, chunk
   14, branch =refactor/ui-labeled-value-row=)= — the O-6
   centralization: =ui/widgets/labeled-value-row.slint= (the
