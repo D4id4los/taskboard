@@ -1231,3 +1231,117 @@ async fn b10_mixed_fleet_config_boots_and_covers_its_bindings() {
     );
     app.shutdown().await;
 }
+
+// ---------------------------------------------------------------------
+// Boot-pull settle predicate (#1082, round-3 chunk R2b)
+// ---------------------------------------------------------------------
+
+/// A frozen logical clock: the settle-harness engine never stamps a
+/// moving time — the paused tokio clock governs the settle waits.
+#[derive(Debug)]
+struct FrozenClock;
+
+impl taskboard_domain::Clock for FrozenClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono_t(36_000)
+    }
+}
+
+/// Spawns a bare state engine (no actor graph, no channels in use)
+/// hydrated from `persisted` — the lowest layer the predicate is
+/// testable at (one behavior, one test; AGENTS §5). The engine is idle
+/// after boot: no command is ever sent, so the boot publish is the
+/// only publish and the mounted boards cannot be wiped mid-wait.
+async fn settle_engine(
+    persisted: taskboard_domain::PersistedState,
+) -> (taskboard_state::EngineHandle, tokio::task::JoinHandle<()>) {
+    let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<taskboard_domain::SyncCommand>(8);
+    let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<taskboard_domain::SyncReport>(8);
+    let (system_tx, system_rx) =
+        tokio::sync::broadcast::channel::<taskboard_domain::SystemEvent>(8);
+    let (notifier, _notifications) =
+        tokio::sync::mpsc::channel::<taskboard_domain::NotifierMessage>(8);
+    let (handle, join) = taskboard_state::spawn_state_engine(
+        Arc::new(taskboard_domain::test_support::InMemoryRepository::with_state(persisted)),
+        Arc::new(taskboard_domain::test_support::CountingIds::new()),
+        Arc::new(FrozenClock),
+        sync_out,
+        report_rx,
+        system_tx.clone(),
+        system_rx,
+        notifier,
+        taskboard_domain::SettingsSnapshot::default(),
+        taskboard_state::DayRollConfig::disabled(),
+        None,
+    )
+    .await
+    .expect("engine boots");
+    // Keep the system bus's strong half alive for the test's lifetime
+    // (the engine holds only a weak sender).
+    std::mem::forget(system_tx);
+    (handle, join)
+}
+
+/// One live board with the given remote binding, everything else the
+/// default (sync row `Idle`, `last_success: None`).
+fn settle_state(
+    remote: Option<taskboard_domain::RemoteBoardBinding>,
+) -> taskboard_domain::PersistedState {
+    let mut board = bound_board();
+    board.remote = remote;
+    taskboard_domain::PersistedState {
+        boards: [(board.id, board)].into_iter().collect(),
+        ..taskboard_domain::PersistedState::default()
+    }
+}
+
+/// The settle contract (#1082): a world whose only live board is
+/// locally created (`remote: None`, default sync row) settles the boot
+/// wait immediately — no sync actor anywhere can pull anything for it,
+/// so waiting out the deadline would burn the budget on every verb
+/// invocation. Deterministic under the paused clock: the virtual
+/// elapsed stays strictly below the deadline (a broken predicate can
+/// only exit at the deadline, which tokio's auto-advance carries it to
+/// and the elapsed assertion convicts typed).
+#[tokio::test]
+async fn boot_pull_settles_immediately_when_no_live_board_is_bound() {
+    let (handle, _join) = settle_engine(settle_state(None)).await;
+    tokio::time::pause();
+    let timeout = Duration::from_secs(10);
+    let t0 = tokio::time::Instant::now();
+    taskboard_app::bootstrap::wait_for_boot_pull(&handle, timeout).await;
+    let elapsed = tokio::time::Instant::now() - t0;
+    assert!(
+        elapsed < timeout,
+        "an all-unbound world must settle without burning the deadline \
+         (virtual elapsed {elapsed:?})"
+    );
+}
+
+/// The over-widening control: a live board WITH a remote binding whose
+/// sync row is still the default (`Idle`, `last_success: None`) could
+/// still receive a pull — the wait must NOT settle early; only the
+/// deadline exits it (virtual elapsed >= timeout).
+#[tokio::test]
+async fn boot_pull_does_not_settle_early_while_a_live_board_stays_bound() {
+    let (handle, _join) = settle_engine(settle_state(
+        taskboard_domain::test_support::test_binding(RemoteBoardId::deck(BOARD)),
+    ))
+    .await;
+    tokio::time::pause();
+    let timeout = Duration::from_secs(10);
+    let t0 = tokio::time::Instant::now();
+    let wait = tokio::spawn(async move {
+        taskboard_app::bootstrap::wait_for_boot_pull(&handle, timeout).await;
+    });
+    // Deterministic drive past the deadline (tokio auto-advance would
+    // get there too; the explicit advance keeps the path pinned).
+    tokio::time::advance(timeout + Duration::from_secs(1)).await;
+    wait.await
+        .expect("the settle wait task finishes at the deadline");
+    let elapsed = tokio::time::Instant::now() - t0;
+    assert!(
+        elapsed >= timeout,
+        "a bound-board world must not settle early (virtual elapsed {elapsed:?})"
+    );
+}
