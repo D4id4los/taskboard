@@ -319,3 +319,62 @@ fn om_us3_s1_description_section_keeps_its_height_across_the_edit_mount() {
         );
     });
 }
+
+/// `om_us2_s1`'s promised fold row (#1027): the two overlay hosts'
+/// open bits read the distinct model flags exclusively — arming the
+/// editor realizes the editor host alone, arming the picker realizes
+/// the picker host alone; both directions pinned on the hosts' own
+/// open seams plus the realized panels. The adapter-side funnel half
+/// (the `begin_date_edit` settle arming both, the toggle's close arm)
+/// is the journeys' cover — the om probe binds no adapter, so this
+/// pin states the observable mount facts (the plan's recorded
+/// fallback; no new production seam).
+#[test]
+fn om_us2_s1_arming_the_editor_closes_the_picker_and_vice_versa() {
+    run_probe(|window| {
+        // Leg A: the editor armed (Due), the picker closed.
+        window.set_task(TaskDetailModel {
+            due_open: true,
+            date_picker_open: false,
+            date_caption: "December".into(),
+            date_syntax_hint: "YYYY-MM-DD or +Nd".into(),
+            ..subject_model(true)
+        });
+        settle_geometry(window);
+        assert!(
+            window.get_editor_open(),
+            "the armed editor realizes its host"
+        );
+        assert!(
+            !window.get_picker_open(),
+            "the closed picker flag leaves its host shut"
+        );
+        assert!(
+            window.get_editor_panel_width() > 0.0,
+            "the editor host realizes a panel"
+        );
+
+        // Leg B: the picker armed, the editor closed — the fold's
+        // mirror.
+        window.set_task(TaskDetailModel {
+            due_open: false,
+            date_picker_open: true,
+            date_caption: "December".into(),
+            date_syntax_hint: "YYYY-MM-DD or +Nd".into(),
+            ..subject_model(false)
+        });
+        settle_geometry(window);
+        assert!(
+            window.get_picker_open(),
+            "the armed picker realizes its host"
+        );
+        assert!(
+            !window.get_editor_open(),
+            "the closed editor flag leaves its host shut"
+        );
+        assert!(
+            window.get_picker_panel_width() > 0.0,
+            "the picker host realizes a panel"
+        );
+    });
+}
