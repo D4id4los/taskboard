@@ -1220,8 +1220,7 @@ fn shared_menu_rows(
 fn us5_s2_invalid_edit_stays_mounted_without_dispatch() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
-    let habit = weekly_habit(&mut state, board);
-    let _ = habit;
+    weekly_habit(&mut state, board);
     support::harness::run_journey(state, move |harness| {
         harness.handle.window().invoke_habits_row_activated(0);
         harness.driver.advance_time(0);
@@ -1350,8 +1349,7 @@ fn us5_s3_escape_cancels_the_armed_menu() {
 fn us5_s4_escape_cancels_the_editor() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
-    let habit = weekly_habit(&mut state, board);
-    let _ = habit;
+    weekly_habit(&mut state, board);
     support::harness::run_journey(state, move |harness| {
         harness.handle.window().invoke_habits_row_activated(0);
         harness.driver.advance_time(0);
