@@ -10,7 +10,7 @@
   reproduce**. The fresh R4-method baseline on the un-tuned branch base
   is **63.8 s** — inside the acceptance band (≤ ~90 s) — and the
   `--test-threads` sweep is flat across N ∈ {16, 24, 32, 48}
-  (62.6–66.0 s, all green). **No lever lands**: the sweep's best point
+  (62.9–66.0 s, all green). **No lever lands**: the sweep's best point
   is the default N = 16, so L1 has nothing to change, the L3 trigger
   does not fire, and the acceptance verdict is "band met on the fresh
   base, no residual". Zero code or config changes; the landed delta is
