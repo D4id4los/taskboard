@@ -42,17 +42,24 @@ Run template (per shard, the #327 cap template + the self-caps):
 
 ```sh
 scripts/memory-gate.sh --preflight   # floor-check once, printed; NO lock held across the run
-TMPDIR=/home/viktoria/mutants-tmp SQLX_OFFLINE=true \
-  timeout --signal=INT --kill-after=90s 7200 \
+SQLX_OFFLINE=true timeout --signal=INT --kill-after=90s 7200 \
   cargo mutants -p taskboard-app --in-place --timeout-multiplier 2.0 \
-    --jobs 1 --test-tool nextest \
+    --test-tool nextest \
     --file 'crates/taskboard-app/src/commands/<shard-files>'
 git status --short   # must be clean after each --in-place run
 ```
 
-- **Two-mode gate law**: `--preflight` only; the run never holds the
-  memory-gate lock nor `run-quality-gates.sh`'s flock — the `--jobs 1`
-  + `timeout` self-caps are the protection.
+- **Deviation from the `--jobs 1` dispatch law, recorded**: cargo-mutants
+  27.1.0 rejects `--jobs` in `--in-place` mode ("cannot be used with
+  '--in-place'") — in-place mutation is inherently sequential (one
+  mutated copy of the tree at a time), so the #931 single-worker
+  constraint is satisfied by construction. The first M1 attempt died
+  on exactly this CLI error before any mutant ran.
+- **Two-mode gate law**: `--preflight` only (the floor is checked once
+  and the command is exec'd without holding the gate lock —
+  `memory-gate.sh --preflight -- <cmd>`); the run never holds the
+  memory-gate lock nor `run-quality-gates.sh`'s flock. Note the gate
+  redirects TMPDIR itself when the host /tmp is tmpfs.
 - **Disk-backed `TMPDIR`** (`/home/viktoria/mutants-tmp`): the round-2
   ENOSPC lesson — the mutation copy's debug build needs ~14 G and
   killed run 4d/4e on the 6 G tmpfs `/tmp`.
