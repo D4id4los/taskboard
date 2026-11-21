@@ -1818,6 +1818,9 @@ mod tests {
         .iter()
         .map(|&id| Some(id))
         .collect();
+        // The HF3 History row rides the page body (rank 245, after
+        // the editor row) ahead of the Convert parent.
+        expected.push(Some(ActionId::HabitHistory));
         expected.push(None);
         // The staged remove's pair closes the page (H4 D4, the
         // destructive-last law): the arm enabled, the confirm greyed
