@@ -2221,7 +2221,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 208,
+        menu_rank: 230,
         description: "Routes the parsed inclusive pause-through date to the habit pause verb.",
         // Internal dispatch verb (see HabitLog): the editor's Confirm
         // is its only affordance.
@@ -2233,7 +2233,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 208,
+        menu_rank: 209,
         description: "Clears the habit's pause field (the clear is badge hygiene; not-paused is the accepted no-op).",
         menu_group: Some(MenuGroup::Task),
     },
