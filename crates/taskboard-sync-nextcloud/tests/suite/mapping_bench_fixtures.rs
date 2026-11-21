@@ -5,7 +5,7 @@
 //! guard against rng/strategy/clock ever sneaking into the builder.
 //! Mapping semantics themselves are owned by `mapping.rs`'s unit tests.
 
-#[path = "../benches/support/mod.rs"]
+#[path = "../../benches/support/mod.rs"]
 mod support;
 
 use support::{

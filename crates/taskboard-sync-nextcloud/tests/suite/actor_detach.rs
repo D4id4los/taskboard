@@ -15,9 +15,8 @@ use taskboard_domain::{
 use taskboard_sync_nextcloud::{DeckClient, SyncActorConfig, spawn_sync_actor};
 use tokio::sync::{broadcast, mpsc};
 
-mod common;
-use common::FixedClock;
-use common::hermetic::{T, ts};
+use crate::common::FixedClock;
+use crate::common::hermetic::{T, ts};
 
 /// A boardless engine view: every cycle's read succeeds and finds no
 /// bound board — commanded cycles report `NoBoard` without touching the
