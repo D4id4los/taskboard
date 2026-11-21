@@ -581,13 +581,15 @@ main() {
     FX_ROOT="$script_dir/fixtures/ux-coverage-fixture"
   fi
   local -a slint_files=() adapter_files=() messages_files=() \
-        requests_files=() actions_files=() test_files=() all_rs_files=()
+        requests_files=() actions_files=() test_files=()
   mapfile -t slint_files < <(find_evidence '*.slint')
   mapfile -t adapter_files < <(find_evidence 'adapter.rs')
   mapfile -t messages_files < <(find_evidence 'messages.rs')
   mapfile -t requests_files < <(find_evidence 'requests.rs')
   mapfile -t actions_files < <(find_evidence 'actions.rs')
-  mapfile -t all_rs_files < <(find_evidence '*.rs')
+  # (#1074) the former all_rs_files universe was never consumed — the
+  # step-4 unscoped fallback scans test_files only by design (#920:
+  # ambient hits are AMBIGUOUS, never a credit).
 
   local test_root
   test_root=$(grep -m1 '^Test-root:' "$plan" | sed 's/^Test-root:[[:space:]]*//' || true)
