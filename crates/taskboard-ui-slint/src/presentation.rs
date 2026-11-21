@@ -1055,6 +1055,25 @@ pub fn habit_log_notice_phrase() -> String {
     "Habit logged \u{2014} +1.".to_owned()
 }
 
+/// The habit skip acknowledgement's phrase (HF1, US-1/S2): the typed
+/// fact — the current window is marked, the streak survives. Tests
+/// assert the notice arms, never this sentence.
+#[must_use]
+pub fn habit_skip_notice_phrase() -> String {
+    "Habit window skipped \u{2014} the streak survives.".to_owned()
+}
+
+/// The habit pause draft's typed refusal phrase (HF1, US-2/S2
+/// escape): a through-date before today would cover nothing and read
+/// as a stale badge — the engine's `InvalidHabitPause` law, gated at
+/// the draft seam (the quota-validity posture: the draft is refused
+/// client-side AND the planner still validates). Tests assert the
+/// notice arms, never this sentence.
+#[must_use]
+pub fn habit_pause_invalid_phrase() -> String {
+    "The pause date is before today \u{2014} nothing would be covered.".to_owned()
+}
+
 /// The created-timer acknowledgement's phrase (T-43, #826): the typed
 /// fact (the label plus the created occurrence's target instant) —
 /// the acknowledgement lands with the next render's row as its
