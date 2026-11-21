@@ -179,15 +179,13 @@ const SEAM_INVENTORY: &[&str] = &[
     // The HF1 skip/pause/resume seams (W-1/W-3): the row affordances
     // resolve the IdTables.habits index; the pause editor's commit is
     // the trust boundary (strict %Y-%m-%d); cancel writes nothing.
-    // slint: habits-skip-asked
+    // callbacks "habits-skip-asked", "habits-pause-asked",
+    // "habits-resume-asked", "habits-pause-until-picked",
+    // "habits-pause-cancelled".
     "habits_skip_asked",
-    // slint: habits-pause-asked
     "habits_pause_asked",
-    // slint: habits-resume-asked
     "habits_resume_asked",
-    // slint: habits-pause-until-picked
     "habits_pause_until_picked",
-    // slint: habits-pause-cancelled
     "habits_pause_cancelled",
     "habits_create_asked",
     "habits_create_cancelled",
