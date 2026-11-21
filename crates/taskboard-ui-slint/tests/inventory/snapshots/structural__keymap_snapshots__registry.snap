@@ -1026,6 +1026,15 @@ expression: rows
   menu_rank: 200
   description: "−1 the addressed tracker's current window (the mis-click recovery; count 0 refuses typed as NoTarget)."
   menu_group: ~
+- id: habit.quota-edit
+  label: Edit habit quota…
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 205
+  description: "Opens the inline quota editor over the focused tracker's progress phrase (a one-number edit; the period kind stays)."
+  menu_group: ~
 - id: habit.create
   label: Add habit…
   contexts:
@@ -1043,6 +1052,15 @@ expression: rows
   enabled: true
   menu_rank: 216
   description: "Routes the create form's confirm: CreateHabit with the minted title and quota target."
+  menu_group: ~
+- id: habit.quota-commit
+  label: Save quota
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 206
+  description: "Routes the quota popover's confirm: UpdateHabit with the minted target over the habit's current period kind."
   menu_group: ~
 - id: habit.repair
   label: Add make-up
