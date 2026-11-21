@@ -253,6 +253,35 @@ pub fn add_open_entry(
     id
 }
 
+/// The reminder-roster helper (UF1, #354): mints one armed at-instant
+/// rule over `task` and hands back its id — the journeys address the
+/// rule rows through these, never hand-building the domain row.
+#[must_use]
+pub fn add_armed_rule(
+    state: &mut AppState,
+    task: taskboard_domain::TaskId,
+    ordinal: u128,
+) -> taskboard_domain::ReminderRuleId {
+    use chrono::Timelike as _;
+    let id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(ordinal));
+    let fire =
+        chrono::Utc::now().with_nanosecond(0).expect("whole second") + chrono::Duration::hours(24);
+    let instant = taskboard_domain::AtInstant::whole_second(fire).expect("whole second");
+    state.reminders.rules.insert(
+        id,
+        taskboard_domain::ReminderRule {
+            insistence: taskboard_domain::Insistence::Normal,
+            id,
+            task,
+            kind: taskboard_domain::ReminderKind::At(instant),
+            created_at: fire,
+            updated_at: fire,
+            by: None,
+        },
+    );
+    id
+}
+
 /// The calibration-surface helper (#214): mints one completed task —
 /// optionally estimated, optionally with one closed Work entry — into
 /// `state` and hands back its id. The review goldens/journeys address

@@ -26,6 +26,14 @@ pub struct FakeEngine {
     /// snapshot (assertions drain the channel first; `settle`
     /// applies from the log, not the channel).
     applied: usize,
+    /// The rule rows the settle removed, newest last — the undo
+    /// line's continuity source (UF1's journeys: `Undo` after a rule
+    /// removal restores the row; fixture continuity, not an oracle).
+    removed_rules: Vec<taskboard_domain::ReminderRule>,
+    /// The rule ids the settle minted for an add, newest last — the
+    /// undo line's other continuity face (`Undo` after an add deletes
+    /// the added rule).
+    added_rules: Vec<taskboard_domain::ReminderRuleId>,
 }
 
 impl FakeEngine {
@@ -49,6 +57,8 @@ impl FakeEngine {
                 state,
                 received: Vec::new(),
                 applied: 0,
+                removed_rules: Vec::new(),
+                added_rules: Vec::new(),
             },
         )
     }
@@ -314,8 +324,60 @@ impl FakeEngine {
                 // The rule cursor journeys' continuity half (J3 US-6,
                 // round 9 chunk 12): the removal rejoins the roster on
                 // the settle's refresh — the cursor's prune reads it.
+                // UF1: the row is kept (newest last) so the undo line's
+                // continuity face can restore it verbatim.
                 StateCommand::RemoveReminderRule { rule } => {
+                    if let Some(row) = state.reminders.rules.get(&rule) {
+                        self.removed_rules.push(row.clone());
+                    }
                     state.reminders.rules.remove(&rule);
+                }
+                // The UF1 journeys' continuity half (the `RemoveReminderRule`
+                // precedent): the add mints a rule row so the next journey
+                // step sees it in the presented roster.
+                StateCommand::AddReminderRule {
+                    task, offset, at, ..
+                } => {
+                    let id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::now_v7());
+                    let kind = match at {
+                        None => taskboard_domain::ReminderKind::DueOffset(offset),
+                        Some(taskboard_domain::AdhocWhen::At(at)) => {
+                            taskboard_domain::ReminderKind::At(
+                                taskboard_domain::AtInstant::whole_second(at)
+                                    .expect("whole second"),
+                            )
+                        }
+                        Some(taskboard_domain::AdhocWhen::In(dur)) => {
+                            taskboard_domain::ReminderKind::At(
+                                taskboard_domain::AtInstant::whole_second(chrono::Utc::now() + dur)
+                                    .expect("whole second"),
+                            )
+                        }
+                    };
+                    let now = chrono::Utc::now();
+                    let row = taskboard_domain::ReminderRule {
+                        insistence: taskboard_domain::Insistence::Normal,
+                        id,
+                        task,
+                        kind,
+                        created_at: now,
+                        updated_at: now,
+                        by: None,
+                    };
+                    self.added_rules.push(id);
+                    state.reminders.rules.insert(id, row);
+                }
+                // The UF1 undo-line continuity (fixture continuity,
+                // never an oracle — the state engine's fold suite owns
+                // undo semantics): a rule removal restores its row, an
+                // add deletes the minted rule; neither touches the
+                // delivery records.
+                StateCommand::Undo => {
+                    if let Some(row) = self.removed_rules.pop() {
+                        state.reminders.rules.entry(row.id).or_insert(row);
+                    } else if let Some(added) = self.added_rules.pop() {
+                        state.reminders.rules.remove(&added);
+                    }
                 }
                 // The tracking verbs' continuity (round 9 chunk 11,
                 // J3 US-4/US-5): StartTracking inserts the open
