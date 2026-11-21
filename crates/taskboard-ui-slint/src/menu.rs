@@ -1008,6 +1008,11 @@ mod tests {
             ActionId::HabitRemoveConfirm,
             ActionId::SeriesConvertArm,
             ActionId::SeriesConvertToHabit,
+            // The inline quota edit (HF2, W-5 #961) + its internal
+            // commit verb (ranks 990/995 — section-scoped, the page's
+            // tail).
+            ActionId::HabitQuotaEdit,
+            ActionId::HabitQuotaCommit,
         ];
         assert_eq!(
             ids(&rows),
