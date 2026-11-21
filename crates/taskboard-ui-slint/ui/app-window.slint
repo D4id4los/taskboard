@@ -57,7 +57,7 @@ import {
     SettingsPublishCopy,
 } from "views/settings-view.slint";
 export { SettingsModel, ConnectionRow, ConnectionItem, ConnectionItemKind, SettingsBadgeTone, SettingsRowStatus, SettingsOutcome }
-import { StatusPanel, StatusPanelFacts } from "compositions/status-panel.slint";
+import { StatusPanel, StatusPanelFacts, StatusPanelData, StatusPanelPosture } from "compositions/status-panel.slint";
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { TaskCard } from "widgets/task-card.slint";
 import { DragState } from "drag-state.slint";
@@ -82,7 +82,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, StatusPanelData, StatusPanelPosture, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
 export { ReviewWalkModel, DialogButtonModel, DialogButtonRole }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
@@ -240,6 +240,30 @@ export component AppWindow inherits Window {
     pure callback reflection-remove-confirmed(int);
     pure callback reflection-remove-cancelled();
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
+    // slint: status-panel-open — the mount's snapshot-on-open dispatch
+    // (OP3 W-1, D-3, US-1/S1): the panel fires it once per mount; the
+    // adapter answers with exactly one `UiRequest::StatusQuery`.
+    callback status-panel-open();
+    // slint: status-panel-refresh — the Refresh control's re-query
+    // (OP3 W-1, US-1/S4): keyboard-reachable, never a timer.
+    callback status-panel-refresh();
+    // slint: status-fields-folded — the settled reply's fold (OP3
+    // W-2): the adapter invokes it Rust-side; the body writes the
+    // typed data and clears the busy posture.
+    callback status-fields-folded(StatusPanelData);
+    status-fields-folded(d) => {
+        StatusPanelFacts.data = d;
+        StatusPanelFacts.busy = false;
+        StatusPanelFacts.failure = false;
+    }
+    // slint: status-failure-shown — the dropped reply's typed failure
+    // posture (OP3 W-3, US-1/S3): never a blank panel; Refresh stays
+    // available.
+    callback status-failure-shown();
+    status-failure-shown() => {
+        StatusPanelFacts.failure = true;
+        StatusPanelFacts.busy = false;
+    }
     callback settings-back-clicked();
     callback settings-field-edited(int, string);
     callback settings-save-clicked(string, string, string);
@@ -698,9 +722,11 @@ export component AppWindow inherits Window {
                 place-cancel() => root.plan-place-cancel();
             }
             if (root.current-view == View.status): StatusPanel {
-                // The seams ride the exported StatusPanelFacts global
-                // (open/refresh/fields-folded/failure-shown); the
-                // panel dispatches no command (OP3 R-3).
+                // The panel's moments forward to the window-root
+                // seams (OP3 W-1..W-3); the panel dispatches no
+                // command (OP3 R-3).
+                status-panel-open-requested() => root.status-panel-open();
+                status-panel-refresh-requested() => root.status-panel-refresh();
             }
             if (root.current-view == View.review): ReviewView {
                 review: root.review-model;

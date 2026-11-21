@@ -176,11 +176,7 @@ fn us1_s4_refresh_requeries_and_refolds() {
 
         // Refresh (the panel's own control): one re-query, and the
         // fresh reply re-folds into a different posture.
-        harness
-            .handle
-            .window()
-            .global::<StatusPanelFacts>()
-            .invoke_status_panel_refresh();
+        harness.handle.window().invoke_status_panel_refresh();
         let taskboard_ui_slint::requests::UiRequest::StatusQuery { reply } =
             requests.try_recv().expect("refresh dispatched one query")
         else {
@@ -228,11 +224,7 @@ fn us1_s3_failed_query_renders_failure_posture() {
         );
 
         // Refresh remains available (US-1/S3's escape cell).
-        harness
-            .handle
-            .window()
-            .global::<StatusPanelFacts>()
-            .invoke_status_panel_refresh();
+        harness.handle.window().invoke_status_panel_refresh();
         let request = requests.try_recv().expect("refresh re-queries");
         let taskboard_ui_slint::requests::UiRequest::StatusQuery { reply } = request else {
             panic!("StatusQuery");

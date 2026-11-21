@@ -25,6 +25,11 @@ const SEAM_INVENTORY: &[&str] = &[
     // The priority pickers' seams (UX R-3 D-1, #788): the row
     // openers route the landed actions; the slot commit and the
     // dismissal are the picker's own seams.
+    // The status panel's seams (OP3 W-1): the mount's snapshot-on-open
+    // dispatch and the Refresh control's re-query — the fold/failure
+    // directions are invokes (Rust → slint), not installs.
+    "status_panel_open",
+    "status_panel_refresh",
     "task_importance_edit_asked",
     "task_urgency_edit_asked",
     "priority_slot_clicked",
@@ -459,6 +464,9 @@ const INVOKE_INVENTORY: &[&str] = &[
     "focus_board_cell",
     // The control walk's clamped stop (US-2/W-2, D-W2).
     "mask_focus",
+    // The status panel's settled-reply fold (OP3 W-2): one invoke
+    // (the drain's settled arm).
+    "status_fields_folded",
     // The pre-existing timers push (the timers surface's create seam —
     // the manifest's retrospective rider, caught by the totality side).
     "timers_create_accepted",
@@ -476,7 +484,16 @@ const INVOKE_INVENTORY: &[&str] = &[
 /// pre-framework window functions the adapter already drove (the
 /// D15 hand-off's view refocus lives in the chunk plan's census
 /// note, not this manifest).
-const INVOKE_EXEMPT: &[&str] = &["invoke_refocus_view"];
+const INVOKE_EXEMPT: &[&str] = &[
+    "invoke_refocus_view",
+    // The status panel's failure posture (OP3 W-3): the typed
+    // dropped-reply render serves two deliberate callers — the
+    // dispatch's full/closed lane and the drain's closed arm — so the
+    // exactly-once count does not apply; both occurrences are still
+    // `window.invoke_` pushes, so the no-unlisted totality side
+    // counts them toward the manifest's coverage arithmetic.
+    "invoke_status_failure_shown",
+];
 
 fn invoke_counts() -> Vec<(String, usize)> {
     INVOKE_INVENTORY
