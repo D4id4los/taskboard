@@ -1528,6 +1528,30 @@ pub enum HabitsCmd {
         /// The habit (uuid | prefix | exact live title).
         habit: String,
     },
+    /// Mark the habit's current window skipped (the typed planned skip
+    /// — the streak survives an intentional gap; R-4: current window
+    /// only). The receipt names the marked window.
+    Skip {
+        /// The habit (uuid | prefix | exact live title).
+        habit: String,
+    },
+    /// Pause a habit through an inclusive local date (`YYYY-MM-DD`) —
+    /// covered windows are neither counted nor missed and no nudges
+    /// fire. A past-date through-date is the typed
+    /// `invalid-habit-pause` refusal.
+    Pause {
+        /// The habit (uuid | prefix | exact live title).
+        habit: String,
+        /// The inclusive pause-through date (YYYY-MM-DD).
+        #[arg(long, value_parser = parse_date_flag)]
+        until: chrono::NaiveDate,
+    },
+    /// Resume a paused habit (clears the pause; badge hygiene). A
+    /// not-paused habit is the accepted no-op.
+    Resume {
+        /// The habit (uuid | prefix | exact live title).
+        habit: String,
+    },
     /// Resurrect a tombstoned habit by id (the #901 restore-family
     /// verb's first surface): pre-tombstone values come back verbatim,
     /// the log is never touched (D26). A live target is the accepted

@@ -1463,6 +1463,28 @@ pub struct HabitAdjustReceipt {
     pub reported: u32,
 }
 
+/// The `habits skip` receipt: the marked window plus the streak read
+/// back (the streak survived — US-1's observable).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitSkipReceipt {
+    /// The addressed habit's uuid.
+    pub habit_id: String,
+    /// The marked window's period-start date.
+    pub window: chrono::NaiveDate,
+    /// The streak read back from the published snapshot.
+    pub streak: u32,
+}
+
+/// The `habits pause`/`habits resume` receipt: the pause-through date
+/// read back (`None` = resumed, the badge-hygiene posture).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitPauseReceipt {
+    /// The addressed habit's uuid.
+    pub habit_id: String,
+    /// The stored pause-through date (`None` after a resume).
+    pub until: Option<chrono::NaiveDate>,
+}
+
 /// The `habits update` receipt. `changed: false` is the zero-flag (or
 /// unchanged-mask) no-op carrying the current row.
 #[derive(Debug, Clone, Serialize, PartialEq)]
