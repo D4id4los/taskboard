@@ -2517,6 +2517,69 @@ async fn s53_stack_delete_undo_restores_the_cascade() {
     s.snap("s53");
 }
 
+/// s54: the #354 rule-verb undo family (UF1) — an add undone by the
+/// ordinary remove, a removal undone by the verbatim resurrect; the
+/// persisted contract shows the rule rows' identities and the journal
+/// pre-images the widening records.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s54_reminder_rule_verbs_undo_through_pre_images() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    s.run(StateCommand::CreateStack {
+        board,
+        title: "stack".into(),
+        order: 1,
+    })
+    .await;
+    let stack = *s
+        .handle
+        .shared_state()
+        .load()
+        .stacks
+        .keys()
+        .next()
+        .expect("stack");
+    s.run(StateCommand::CreateTask {
+        title: "reminded".into(),
+        stack,
+        order: 1,
+    })
+    .await;
+    let task = *s
+        .handle
+        .shared_state()
+        .load()
+        .tasks
+        .keys()
+        .next()
+        .expect("task");
+    s.run(StateCommand::AddReminderRule {
+        task,
+        offset: taskboard_domain::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
+            .expect("valid"),
+        at: None,
+        insistence: taskboard_domain::Insistence::Normal,
+    })
+    .await;
+    s.run(StateCommand::Undo).await;
+    s.run(StateCommand::Redo).await;
+    s.run(StateCommand::RemoveReminderRule {
+        rule: *s
+            .handle
+            .shared_state()
+            .load()
+            .reminders
+            .rules
+            .keys()
+            .next()
+            .expect("the redo re-added the rule"),
+    })
+    .await;
+    s.run(StateCommand::Undo).await;
+    s.snap("s54");
+}
+
 // ---------------------------------------------------------------------
 // U-series — the user-data import journeys (DR-8 chunk 3, D-ES3/4):
 // how foreign wire rows enter the disk contract. The rows carry their
