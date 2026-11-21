@@ -45,5 +45,7 @@ mod keymap_case_seam;
 mod status_surface_journeys;
 #[path = "journeys/tracker_journeys.rs"]
 mod tracker_journeys;
+#[path = "journeys/undo_ui_reminder_undo_journeys.rs"]
+mod undo_ui_reminder_undo_journeys;
 #[path = "journeys/usability_components.rs"]
 mod usability_components;
