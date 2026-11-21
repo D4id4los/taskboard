@@ -662,7 +662,7 @@ main() {
   # prune is skipped when the scan root itself is the fixture tree or
   # inside it (--root is the self-test's tree) — the exclusion is
   # evidence-scoped, not a kill switch for explicit roots.
-  local EVID_ROOT=$root
+  local EVID_ROOT
   local FX_ROOT=""
   local script_dir
   # (#1073) realpath both roots: dirname keeps the INVOKED spelling —
@@ -671,8 +671,15 @@ main() {
   # never matches, silently un-pruning the fixture tree (the tiered
   # sort then ranks the fixture's seam_inventory over the real one).
   # `pwd -P` resolves; the evidence-scoped prune actually prunes.
+  # (#1186 follow-up) EVID_ROOT resolves too — it was captured from
+  # the INVOKED spelling before the `pwd -P` pass, so a symlinked
+  # --root left find's walk spelling and the prune spelling in two
+  # trees: the fixture file survived the prune, its tier0 rank (no
+  # /tests/ segment) won `head -n 1`, and every #760 inventory
+  # cross-check read the fixture's seam_inventory (INVENTORY-MISS).
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   root=$(cd "$root" && pwd -P)
+  EVID_ROOT=$root
   if [[ -d "$script_dir/fixtures/ux-coverage-fixture" ]] \
      && ! [[ "$root" -ef "$script_dir/fixtures/ux-coverage-fixture" ]] \
      && [[ "$root/" != "$script_dir/fixtures/ux-coverage-fixture/"* ]]; then
