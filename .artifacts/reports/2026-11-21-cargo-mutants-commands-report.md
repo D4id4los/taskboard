@@ -33,7 +33,7 @@ cap-fit rule wins over the group count, recorded here as a deviation.
 | M1 | mod.rs | 3105 | `--file 'crates/taskboard-app/src/commands/mod.rs'` | **COMPLETED** (105 mutants: 63+4 unviable, 29 caught, 9 missed) across three 7200 s-capped windows + one mis-scoped aborted run | 29 | 9 | 67 | 0 | ~3.0 h across 3 cap windows | cap never tripped (windows ended complete) |
 | M2 | config.rs, capture.rs | 2589 | `config.rs`+`capture.rs` filters | **window 1 complete** (102 mutants: 46 missed, 35 caught, 21 unviable; capture.rs's mutant set folded into the same run) | 35 | 46 | 21 | 0 | 84 m (window 1) | under |
 | M3 | boards.rs, labels.rs, stacks.rs | 2273 | three `--file` args | **COMPLETED across two windows + continuation** (window 1: 90 executed — 54 missed, 18 caught, 18 unviable; continuation: 54 re-executed — 53 missed, 1 caught) | 19 | 54 | 18 | 0 | ~2 h + 83 m | window 1 tripped the 7200 s cap (rc=124, partial results intact — the cap template's designed SIGINT path) |
-| M4 | track.rs, find.rs, repeat.rs | 2762 | `--file 'crates/taskboard-app/src/commands/track.rs' --file 'crates/taskboard-app/src/commands/find.rs' --file 'crates/taskboard-app/src/commands/repeat.rs'` | pending | — | — | — | — | — | — |
+| M4 | track.rs, find.rs, repeat.rs | 2762 | three `--file` args | **COMPLETED across two windows** (window 1 cap-tripped at 52 executed — 45 missed, 7 caught; window 2 finished the remainder: 148-discovered universe minus 396 cumulative excludes) | 8 | 45 | 0 | 0 | 84 m + 84 m | window 1 tripped the cap (rc=124) |
 | M5 | habits.rs, status.rs | 2583 | `--file 'crates/taskboard-app/src/commands/habits.rs' --file 'crates/taskboard-app/src/commands/status.rs'` | pending | — | — | — | — | — | — |
 | M6 | connect.rs, reflection.rs, tasks.rs | 2754 | `--file 'crates/taskboard-app/src/commands/connect.rs' --file 'crates/taskboard-app/src/commands/reflection.rs' --file 'crates/taskboard-app/src/commands/tasks.rs'` | pending | — | — | — | — | — | — |
 | M7 | timers.rs, breaks.rs, reminders.rs, sync.rs, logout.rs, output.rs | 3314 | six `--file` args | pending | — | — | — | — | — | — |
@@ -180,6 +180,24 @@ home.
   stacks.rs/labels.rs render fns — same two disposition classes as
   M2 (structural kills where the fixture is trivial; cluster issues
   for the prose family and the engine-fixture tier).
+
+### M4 survivor census (45 unique)
+
+- Window 1 executed 52 (45 missed / 7 caught), cap-tripped; window 2
+  executed the remaining 17, all missed (`mutants-tmp/logs/M4.log`,
+  snapshot `mutants.out-M4-final`). Union census: **45 unique missed**.
+- Shape: the same recurring classes — the `track.rs` export predicates
+  (`export_on`, `export_reflection_on`, `export_pdf_on` comparison
+  flips), the track/find/repeat `render_text_*` prose family, the
+  `*_command -> u8 1` exit-code family (repeat 388, track 1225 — the
+  same shape as M1's #1175), and `find_on`/`find` wholesale-replacement
+  survivors (the search tier has no unit pins on row projection).
+- Disposition: the render prose family and the exit-code family join
+  the M2-E/M3 cluster issues (one issue per family, not per mutant);
+  the find-tier projection gap and the export-window predicates are
+  recorded in the lane report's final census table with their
+  kill-test sketches.
+
 
 
 
