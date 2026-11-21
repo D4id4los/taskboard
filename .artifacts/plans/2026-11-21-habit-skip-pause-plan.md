@@ -62,7 +62,7 @@
 
 First chunk of the wave (scope report §E: HF1 → HF2 → HF4 → HF3): the
 transparent-window walk is the semantics HF3's grid cells and HF4's
-off-day rule build on.
+scheduled-day rule (weekly/monthly, R-6) build on.
 
 ## Test catalogue (typed outcomes only)
 
