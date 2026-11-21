@@ -243,6 +243,15 @@ const SEAM_INVENTORY: &[&str] = &[
     // ux-coverage greps this inventory for the plan's callback cell).
     // "habit-save-clicked"
     "habit_editor_cancelled",
+    // The habit editor's History row (HF3 W-8): callback
+    // "habit-history-clicked".
+    "habit_editor_history_clicked",
+    // The history dialog's pager flip (HF3 W-8): callback
+    // "habit-history-month-flipped".
+    "habit_history_month_flipped",
+    // The history dialog's read-role dismissal (HF3 W-8): callback
+    // "habit-history-close-requested".
+    "habit_history_close_requested",
     "notification_track_start_clicked",
     "plan_box_activated",
     "plan_box_earlier",
