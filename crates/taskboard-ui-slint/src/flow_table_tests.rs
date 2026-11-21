@@ -3268,10 +3268,12 @@ fn every_view_swapping_effect_dismisses_the_tooltip_and_every_preserving_effect_
         // to the enum fails the `dismiss_class` match; a variant
         // added to a list without a matching placement (or left out)
         // fails here.
+        // The status panel's toggle (OP3 W-1) joined the IdentitySwap
+        // section (the settings opener's row — the mounted-view swap).
         let sections = [
-            (0, 12, DismissClass::IdentitySwap),
-            (12, 19, DismissClass::AnchorOrModal),
-            (19, effects.len(), DismissClass::Survive),
+            (0, 13, DismissClass::IdentitySwap),
+            (13, 20, DismissClass::AnchorOrModal),
+            (20, effects.len(), DismissClass::Survive),
         ];
         for (start, end, class) in sections {
             for effect in &effects[start..end] {
