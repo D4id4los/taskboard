@@ -8075,6 +8075,498 @@ pub fn translate_for_subject(
     }
 }
 
+// ---- The habit history view (HF3, W-8/W-10; US-7/US-9, #957/#963) ----
+
+/// One canonical window's typed state (US-7 AC-1): the month grid's
+/// cells color by THIS enum — never text bits (round law (a)). The
+/// full journey-plan vocabulary ships here; on today's landed
+/// semantics the grid's cells read met / pending / missed (and
+/// `Inert` for D-H12 folds), while `Skipped`, `Paused`, and
+/// `PreSchedule` are the HF1/HF4 named-but-unwired seams — see the
+/// TODOs at `taskboard_domain::habit::statistics_horizon` (plans
+/// `2026-11-21-habit-skip-pause` and `2026-11-21-habit-schedules`);
+/// the classes join the walk when those chunks land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HabitWindowState {
+    /// The window's count reached the quota.
+    Met,
+    /// Under quota, grace still open (the walk's transparent
+    /// pending window).
+    Pending,
+    /// A typed planned skip (HF1 seam — currently unreachable).
+    Skipped,
+    /// Covered by a pause-through span (HF1 seam — currently
+    /// unreachable).
+    Paused,
+    /// Before the window's first scheduled day (HF4 seam — currently
+    /// unreachable; weekly/monthly day sets only, R-6: never a daily
+    /// class).
+    PreSchedule,
+    /// Under quota, grace closed — the only miss posture.
+    Missed,
+    /// Analytically inert (D-H12): a former-kind row never renders
+    /// as a miss.
+    Inert,
+}
+
+/// One grid cell: the canonical window, its typed state, and the
+/// count column (US-9's per-period total).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HabitWindowCell {
+    /// The canonical period-start of the window.
+    pub window: chrono::NaiveDate,
+    /// The typed state the cell colors by.
+    pub state: HabitWindowState,
+    /// The window's stored count.
+    pub count: u32,
+}
+
+/// One visible month of the history grid (pure projection over
+/// `HabitState.log` — W-8's no-command reason per US-7/S2–S4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HabitHistoryMonth {
+    /// The visible month's anchor (its 1st).
+    pub month: chrono::NaiveDate,
+    /// One cell per canonical window of the visible month, in
+    /// chronological order.
+    pub cells: Vec<HabitWindowCell>,
+    /// The pager clamps at the log's edges: `true` while an earlier
+    /// current-kind window exists (US-7 AC-4).
+    pub can_page_back: bool,
+    /// `true` while the visible month is before the current month.
+    pub can_page_forward: bool,
+}
+
+/// The typed statistics model (W-10, US-9/S1): the domain fns'
+/// values, carried verbatim — the empty state rides the domain's
+/// typed `AdherenceRatio::is_empty`, never a 0 % posture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HabitStatistics {
+    /// Met / scheduled windows (the ratio's own typed empty state).
+    pub adherence: taskboard_domain::AdherenceRatio,
+    /// The best historical run.
+    pub best_streak: u32,
+    /// Per-window counts (the grid's count column source).
+    pub totals: std::collections::BTreeMap<taskboard_domain::WindowStart, u32>,
+}
+
+/// The habit's typed statistics over the domain horizon (W-10's
+/// projection seam: pure, total, no commands).
+#[must_use]
+pub fn habit_statistics(
+    habit: &taskboard_domain::habit::Habit,
+    log: &std::collections::BTreeMap<
+        taskboard_domain::HabitLogKey,
+        taskboard_domain::HabitLogEntry,
+    >,
+    now: chrono::DateTime<chrono::Utc>,
+    day: taskboard_domain::DayCalendar,
+) -> HabitStatistics {
+    HabitStatistics {
+        adherence: taskboard_domain::habit::adherence(habit, log, now, day),
+        best_streak: taskboard_domain::habit::best_streak(habit, log, now, day),
+        totals: taskboard_domain::habit::per_period_totals(habit, log),
+    }
+}
+
+/// The visible month's grid (US-7 AC-1/AC-4): one cell per canonical
+/// window of `month`'s calendar month, classified by the walk's
+/// semantics (met / pending / missed; D-H12 rows never render as
+/// misses). Pager bounds clamp at the log's current-kind horizon and
+/// the current month — no wrap (US-7/S3).
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the month's day count — a
+/// programming error, not an input condition.
+#[must_use]
+pub fn habit_history_month(
+    habit: &taskboard_domain::habit::Habit,
+    log: &std::collections::BTreeMap<
+        taskboard_domain::HabitLogKey,
+        taskboard_domain::HabitLogEntry,
+    >,
+    month: chrono::NaiveDate,
+    now: chrono::DateTime<chrono::Utc>,
+    day: taskboard_domain::DayCalendar,
+) -> HabitHistoryMonth {
+    use chrono::Days;
+    let kind = habit.target.kind();
+    let quota = habit.target.quota().get();
+    let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
+    let month_floor =
+        taskboard_domain::habit::period_start(taskboard_domain::PeriodKind::Month, month);
+    let month_ceil =
+        taskboard_domain::habit::period_after(taskboard_domain::PeriodKind::Month, month_floor);
+    // The canonical windows of the current kind whose start falls
+    // inside the visible calendar month.
+    let mut windows = Vec::new();
+    match kind {
+        taskboard_domain::PeriodKind::Day => {
+            let mut cursor = month_floor;
+            while cursor < month_ceil {
+                windows.push(cursor);
+                cursor = cursor
+                    .checked_add_days(Days::new(1))
+                    .expect("in-month day step");
+            }
+        }
+        taskboard_domain::PeriodKind::Week => {
+            // ISO Mondays inside the month: step from the month's
+            // first week's Monday.
+            let mut cursor = taskboard_domain::habit::period_start(
+                taskboard_domain::PeriodKind::Week,
+                month_floor,
+            );
+            while cursor < month_ceil {
+                if cursor >= month_floor {
+                    windows.push(cursor);
+                }
+                cursor = cursor.checked_add_days(Days::new(7)).expect("week step");
+            }
+        }
+        taskboard_domain::PeriodKind::Month => {
+            windows.push(month_floor);
+        }
+    }
+    let cells = windows
+        .iter()
+        .map(|window| {
+            let key = taskboard_domain::HabitLogKey {
+                habit: habit.id,
+                window: taskboard_domain::WindowStart::of_period(kind, *window),
+            };
+            let count = log.get(&key).map_or(0, |entry| entry.count);
+            let state = if count >= quota {
+                HabitWindowState::Met
+            } else {
+                let grace_end = taskboard_domain::habit::period_end(kind, *window, day) + grace;
+                if now >= grace_end {
+                    HabitWindowState::Missed
+                } else {
+                    HabitWindowState::Pending
+                }
+            };
+            HabitWindowCell {
+                window: *window,
+                state,
+                count,
+            }
+        })
+        .collect();
+    // The pager's clamp edges: the earliest current-kind canonical
+    // row's month (below it there is no data — the horizon's floor)
+    // and the current month.
+    let earliest = log
+        .keys()
+        .filter(|key| {
+            key.habit == habit.id
+                && key.window.as_date()
+                    == taskboard_domain::habit::period_start(kind, key.window.as_date())
+        })
+        .map(|key| key.window.as_date())
+        .min();
+    let current_month =
+        taskboard_domain::habit::period_start(taskboard_domain::PeriodKind::Month, day.today(now));
+    let can_page_back = earliest.is_some_and(|earliest| {
+        taskboard_domain::habit::period_start(taskboard_domain::PeriodKind::Month, earliest)
+            < month_floor
+    });
+    let can_page_forward = month_floor < current_month;
+    HabitHistoryMonth {
+        month: month_floor,
+        cells,
+        can_page_back,
+        can_page_forward,
+    }
+}
+
+/// The month header ("November 2026"): the grid's address label.
+/// The caller freezes the clock feeding `month` (committed-artifact
+/// law) — this is a pure month-date formatter, never a wall-clock
+/// read.
+#[must_use]
+pub fn habit_month_label(month: chrono::NaiveDate) -> String {
+    use chrono::Datelike as _;
+    let name = match month.month() {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        _ => "December",
+    };
+    format!("{name} {}", month.year())
+}
+
+/// The pager's month flip: `delta` −1/+1 steps of calendar months,
+/// clamped to chrono's representable range (the ends hold).
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the month arithmetic — a
+/// programming error, not an input condition.
+#[must_use]
+pub fn habit_month_flipped(month: chrono::NaiveDate, delta: i32) -> chrono::NaiveDate {
+    use chrono::Months;
+    if delta < 0 {
+        month
+            .checked_sub_months(Months::new(u32::try_from(-delta).expect("bounded")))
+            .expect("representable month")
+    } else {
+        month
+            .checked_add_months(Months::new(u32::try_from(delta).expect("bounded")))
+            .expect("representable month")
+    }
+}
+
+#[cfg(test)]
+mod habit_history_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn daily_habit(
+        raw: u128,
+        quota: u32,
+    ) -> (
+        taskboard_domain::habit::Habit,
+        std::collections::BTreeMap<taskboard_domain::HabitLogKey, taskboard_domain::HabitLogEntry>,
+        taskboard_domain::DayCalendar,
+    ) {
+        let habit = taskboard_domain::habit::Habit {
+            id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::from_u128(raw)),
+            board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(900)),
+            title: "water".to_owned(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(quota).expect("nonzero"),
+            ),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            clocks: taskboard_domain::habit::HabitClocks::all(
+                chrono::Utc
+                    .with_ymd_and_hms(2026, 10, 1, 0, 0, 0)
+                    .single()
+                    .expect("stamp"),
+            ),
+            continued_from: None,
+            deleted: false,
+            by: None,
+        };
+        (
+            habit,
+            std::collections::BTreeMap::new(),
+            taskboard_domain::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
+            },
+        )
+    }
+
+    fn put(
+        log: &mut std::collections::BTreeMap<
+            taskboard_domain::HabitLogKey,
+            taskboard_domain::HabitLogEntry,
+        >,
+        habit: &taskboard_domain::habit::Habit,
+        window: chrono::NaiveDate,
+        count: u32,
+    ) {
+        log.insert(
+            taskboard_domain::HabitLogKey {
+                habit: habit.id,
+                window: taskboard_domain::WindowStart::from_stored(window),
+            },
+            taskboard_domain::HabitLogEntry {
+                count,
+                clock: chrono::Utc
+                    .with_ymd_and_hms(2026, 11, 1, 0, 0, 0)
+                    .single()
+                    .expect("stamp"),
+                by: None,
+            },
+        );
+    }
+
+    // US-7/S2 (AC-1): the grid enumerates the visible month's
+    // canonical windows and classifies them typed — met, pending
+    // (grace open), missed (grace closed, under quota).
+    #[test]
+    fn us7_s2_history_grid_renders_the_typed_window_states() {
+        let (habit, mut log, day) = daily_habit(1, 2);
+        // now: noon UTC Nov 20 2026 — grace closed for everything
+        // before Nov 19.
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 20, 12, 0, 0)
+            .single()
+            .expect("now");
+        put(
+            &mut log,
+            &habit,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("d"),
+            2,
+        );
+        put(
+            &mut log,
+            &habit,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 10).expect("d"),
+            1,
+        );
+        put(
+            &mut log,
+            &habit,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 20).expect("d"),
+            0,
+        );
+        let month = habit_history_month(
+            &habit,
+            &log,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("month"),
+            now,
+            day,
+        );
+        assert_eq!(month.cells.len(), 30, "November's thirty daily windows");
+        let met = month
+            .cells
+            .iter()
+            .find(|c| c.window.day() == 5)
+            .expect("cell");
+        assert_eq!(met.state, HabitWindowState::Met);
+        assert_eq!(met.count, 2);
+        let missed = month
+            .cells
+            .iter()
+            .find(|c| c.window.day() == 10)
+            .expect("cell");
+        assert_eq!(missed.state, HabitWindowState::Missed);
+        let pending = month
+            .cells
+            .iter()
+            .find(|c| c.window.day() == 20)
+            .expect("cell");
+        assert_eq!(pending.state, HabitWindowState::Pending);
+        // D-H12: the former-kind rows elsewhere never surface here.
+        assert!(
+            month
+                .cells
+                .iter()
+                .all(|c| c.state != HabitWindowState::Inert),
+            "the grid enumerates current-kind windows; inert is the fold's class"
+        );
+    }
+
+    // US-7/S3 (AC-4): the pager clamps at the log's edges — back is
+    // gated by the earliest row's month, forward by the current
+    // month; no wrap.
+    #[test]
+    fn us7_s3_pager_clamps_at_the_edges() {
+        let (habit, mut log, day) = daily_habit(2, 1);
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 20, 12, 0, 0)
+            .single()
+            .expect("now");
+        put(
+            &mut log,
+            &habit,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 5).expect("d"),
+            1,
+        );
+        let october = habit_history_month(
+            &habit,
+            &log,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 15).expect("month"),
+            now,
+            day,
+        );
+        assert!(
+            !october.can_page_back,
+            "the earliest row's month clamps back"
+        );
+        assert!(october.can_page_forward);
+        let november = habit_history_month(
+            &habit,
+            &log,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("month"),
+            now,
+            day,
+        );
+        assert!(november.can_page_back);
+        assert!(
+            !november.can_page_forward,
+            "the current month clamps forward"
+        );
+        // The flip helper is pure month arithmetic, clamped in range.
+        assert_eq!(
+            habit_month_flipped(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("m"), -1),
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 1).expect("m")
+        );
+    }
+
+    // US-9/S1 (AC-1/AC-3): the statistics section renders the domain
+    // fns' typed values — the empty history carries the typed empty
+    // state, never a 0 %.
+    #[test]
+    fn us9_s1_statistics_render_the_typed_values() {
+        let (habit, mut log, day) = daily_habit(3, 1);
+        let now = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 20, 12, 0, 0)
+            .single()
+            .expect("now");
+        let empty = habit_statistics(&habit, &log, now, day);
+        assert!(
+            empty.adherence.is_empty() && empty.adherence.ratio().is_none(),
+            "the typed empty state, never 0 % of nothing"
+        );
+        assert_eq!(empty.best_streak, 0);
+        put(
+            &mut log,
+            &habit,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("d"),
+            1,
+        );
+        put(
+            &mut log,
+            &habit,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 6).expect("d"),
+            0,
+        );
+        let stats = habit_statistics(&habit, &log, now, day);
+        assert_eq!(stats.adherence.met(), 1);
+        // Scheduled = elapsed windows Nov 5..18 (the walk's 24 h
+        // overflow grace keeps Nov 19 pending at this `now`): the met
+        // Nov 5 plus the thirteen missed empty windows — an unmet
+        // unlogged day IS a miss (the walk's own law), never silent.
+        assert_eq!(stats.adherence.scheduled(), 14);
+        assert_eq!(stats.best_streak, 1);
+        assert_eq!(
+            stats
+                .totals
+                .get(&taskboard_domain::WindowStart::from_stored(
+                    chrono::NaiveDate::from_ymd_opt(2026, 11, 5).expect("d")
+                ))
+                .copied(),
+            Some(1)
+        );
+    }
+
+    // The committed-artifact clock law: the month label derives from
+    // the anchor month alone (the caller freezes the clock) —
+    // structural fact asserted, text judged at walkthrough.
+    #[test]
+    fn the_month_label_addresses_the_visible_month() {
+        let label = habit_month_label(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("m"));
+        assert_eq!(label.len(), "November 2026".len());
+        assert!(label.ends_with('6'), "the label names the year");
+    }
+}
+
 #[cfg(test)]
 mod translate_for_subject_tests {
     use super::*;
