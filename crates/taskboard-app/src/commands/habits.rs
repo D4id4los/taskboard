@@ -124,6 +124,11 @@ pub enum HabitsInvocation {
         description: Option<String>,
         /// The anchor day's edit.
         day: Option<DayEdit>,
+        /// The scheduled-day set (HF4): a set replaces, `all` clears.
+        days: Option<taskboard_domain::habit::WeekdaySet>,
+        /// The override's edit: `Some(Some(..))` sets, `Some(None)`
+        /// clears, `None` = untouched (the `anchor_time` twin).
+        reminder: Option<Option<taskboard_domain::habit::HabitReminderOverride>>,
         /// The absolute manual-order slot (routes `MoveHabit`).
         order: Option<i64>,
         /// The seam's edit.
@@ -210,6 +215,9 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             at,
             description,
             day,
+            days,
+            reminder,
+            reminder_clear,
             order,
             continued_from,
         } => HabitsInvocation::Update {
@@ -219,6 +227,8 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             at,
             description,
             day,
+            days,
+            reminder: reminder.map(Some).or(reminder_clear.then_some(None)),
             order,
             continued_from,
         },
@@ -383,6 +393,8 @@ pub async fn run_on(
             at,
             description,
             day,
+            days,
+            reminder,
             order,
             continued_from,
         } => {
@@ -400,6 +412,8 @@ pub async fn run_on(
                     day,
                     order,
                     continued_from,
+                    days,
+                    reminder,
                 )
                 .await?,
             ))
@@ -631,6 +645,8 @@ pub async fn update_on(
     day: Option<DayEdit>,
     order: Option<i64>,
     continued_from: Option<SeamEdit>,
+    days_mask: Option<taskboard_domain::habit::WeekdaySet>,
+    reminder_mask: Option<Option<taskboard_domain::habit::HabitReminderOverride>>,
 ) -> Result<HabitUpdateReceipt, CommandError> {
     let id = resolve_habit(&app.engine.shared_state().load_full(), selector)?;
     let changes = HabitChanges {
@@ -642,6 +658,8 @@ pub async fn update_on(
             AnchorEdit::Clear => None,
         }),
         anchor_day: day.and_then(DayEdit::change),
+        scheduled_days: days_mask,
+        reminder: reminder_mask,
         continued_from: continued_from.map(|edit| match edit {
             SeamEdit::Link(series) => Some(series),
             SeamEdit::Unlink => None,

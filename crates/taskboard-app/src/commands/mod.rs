@@ -772,6 +772,10 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::UnknownHabit(_) | D::HabitDeleted(_) => "unknown-habit",
         D::InvalidHabitWindow { .. } => "invalid-habit-window",
         D::InvalidHabitPause { .. } => "invalid-habit-pause",
+
+        // HF4 R-6: the daily habit's typed refusal (the field is a
+        // weekly/monthly extension by construction).
+        D::ScheduledDaysOnDailyHabit(_) => "scheduled-days-on-daily-habit",
         // The undo line's refusals are their own surface family
         // (ADR 0019); `EngineRouted` is the catalogue's totality arm.
         D::EngineRouted => "engine-routed",

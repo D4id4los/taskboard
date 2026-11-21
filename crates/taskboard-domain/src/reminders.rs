@@ -1372,23 +1372,26 @@ fn break_firings(
 
 /// The tracker nudge's effective occurrence: the anchor reading inside
 /// the current day window (`tracker_anchor_occurrence`), gated by the
-/// nudge-day law (H4 D2, O-1) and snooze-walked like every family.
+/// HF4 arm law (R-6/R-8) and snooze-walked like every family.
 ///
-/// The gate: when the habit carries an anchor day, the nudge is
-/// **silent** on the window's days before [`crate::habit::nudge_day`]
-/// and armed from it through the window's end (each armed day reads
-/// its own day-anchored occurrence, quota-gated as today). Without an
-/// anchor day `nudge_day` returns the period's start — `today` is
-/// never before its own period's start, so the gate is inert and the
-/// derivation is byte-identical to the pre-gate engine. The gate
-/// decides WHEN only (`tracker_eligible` stays the quota gate; the
-/// snooze walk reads the map after the gate). Variant-mismatched
-/// anchor days stay inert for free (`nudge_day` falls through — the
-/// domain's documented leniency, consumed not re-policed).
+/// The gate lives in [`crate::habit::tracker_arm`]: with a
+/// scheduled-day set the nudge is armed **only on the scheduled days**
+/// (US-5 AC-2 — each armed day reads its own day-anchored occurrence,
+/// quota-gated as today; pre-schedule days are by construction not
+/// scheduled); without a set the O-1 anchor-day gate holds
+/// byte-identically. An override re-derives the armed day from its
+/// base ([`NudgeBase::NudgeDay`] default / [`NudgeBase::PeriodStart`])
+/// shifted by its offset, and supplies the fallback time-of-day when
+/// the habit carries no `anchor_time` (US-6 AC-4). The gate decides
+/// WHEN only (`tracker_eligible` stays the quota gate; the snooze walk
+/// reads the map after the gate). Nudges stay disarmed while paused
+/// (HF1's composition seam — the pause field does not exist yet; the
+/// wiring lands with `2026-11-21-habit-skip-pause-plan`).
 ///
-/// `None` ⇔ the habit row is missing or tombstoned, the anchor is
-/// cleared (an unanchored habit has no nudge), or `today` lies before
-/// the window's nudge day — the reader is total on arbitrary input.
+/// `None` ⇔ the habit row is missing or tombstoned, or today is not
+/// an armed day (`tracker_arm`'s `None` legs: no anchor and no
+/// override, or the day gate closed) — the reader is total on
+/// arbitrary input.
 fn tracker_effective_occurrence(
     habit: &Habit,
     day: DayCalendar,
@@ -1398,14 +1401,21 @@ fn tracker_effective_occurrence(
     if !habit.is_live() {
         return None;
     }
-    let anchor_time = habit.anchor_time?;
-    let today = day.today(now);
-    let window = crate::habit::WindowStart::of_period(habit.target.kind(), today);
-    let arm = crate::habit::nudge_day(habit, window);
-    if today < arm {
-        return None;
-    }
-    let base = crate::habit::tracker_anchor_occurrence(anchor_time, today, day);
+    // HF4 (R-6/R-8): the whole WHEN decision is the domain's pure
+    // `tracker_arm` — the day-set membership gate (each scheduled day,
+    // no other), the override's base/offset, and the time-of-day
+    // fallback (`anchor_time` else the override's own `time`). With no
+    // day set and no override it is byte-identical to the pre-HF4
+    // gate (`today ≥ nudge_day` at the `anchor_time`); a habit with
+    // neither anchor nor override never arms (`tracker_arm` → `None`).
+    // The quota gate stays here (WHETHER); the snooze walk reads the
+    // map after the gate.
+    let arm_time = crate::habit::tracker_arm(
+        habit,
+        crate::habit::WindowStart::of_period(habit.target.kind(), day.today(now)),
+        day.today(now),
+    )?;
+    let base = crate::habit::tracker_anchor_occurrence(arm_time, day.today(now), day);
     Some(walk_chain(
         base,
         ReminderRef::Tracker(habit.id),
@@ -1700,7 +1710,7 @@ pub fn next_due_instant(
     if habits
         .habits
         .values()
-        .any(|habit| habit.is_live() && habit.anchor_time.is_some())
+        .any(|habit| habit.is_live() && crate::habit::tracker_arm_time(habit).is_some())
     {
         consider(day.next_boundary(now));
     }
@@ -6309,5 +6319,141 @@ mod tests {
                 prop_assert_eq!(armed, today >= arm, "arming is the window suffix");
             }
         }
+    }
+    // ---- HF4: the engine arm over the scheduled-day set / override ----
+
+    /// US-5 AC-2 engine arm (`nudge_arms_on_each_scheduled_day_only_
+    /// engine_arm`): a weekly habit with a day set fires on each
+    /// scheduled day (quota-gated) and on no other day of the window —
+    /// the composed `due_firings` read, not just the pure gate.
+    #[test]
+    fn nudge_arms_on_each_scheduled_day_only_engine_arm() {
+        let mut habit = tracker_habit(
+            1,
+            HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        habit.scheduled_days = Some(
+            crate::habit::WeekdaySet::new([
+                chrono::Weekday::Mon,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Fri,
+            ])
+            .expect("three days"),
+        );
+        let habits = habits_of(&[habit]);
+        let reminders = ReminderState::default();
+        let defaults = ReminderDefaults::default();
+        // ISO week Mon 2026-11-16 .. Sun 2026-11-22, day5-style
+        // UTC-midnight calendar.
+        let d = |dd: u32| stamp(2026, 11, dd, 10, 0);
+        let armed = |day: u32| {
+            !due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                crate::days::DayCalendar {
+                    day_start_time: chrono::NaiveTime::MIN,
+                    offset: chrono::FixedOffset::east_opt(0).unwrap(),
+                },
+                &reminders,
+                &defaults,
+                d(day),
+            )
+            .is_empty()
+        };
+        assert!(armed(16), "Mon: armed");
+        assert!(!armed(17), "Tue: silent");
+        assert!(armed(18), "Wed: armed again (distinct occurrence)");
+        assert!(!armed(19), "Thu: silent");
+        assert!(armed(20), "Fri: armed");
+        assert!(!armed(21), "Sat: silent");
+        assert!(!armed(22), "Sun: silent");
+    }
+
+    /// US-5 AC-1 engine arm (`preschedule_window_arms_no_nudge`): a
+    /// weekly habit whose scheduled days have not begun arms no nudge —
+    /// the pre-schedule window is silent (and the off-days stay silent
+    /// forever; the armed day arms).
+    #[test]
+    fn preschedule_window_arms_no_nudge() {
+        let mut habit = tracker_habit(
+            1,
+            HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        // Only Friday scheduled; the week of Mon 2026-11-16.
+        habit.scheduled_days =
+            Some(crate::habit::WeekdaySet::new([chrono::Weekday::Fri]).expect("one day"));
+        let habits = habits_of(&[habit]);
+        let reminders = ReminderState::default();
+        let defaults = ReminderDefaults::default();
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let read = |y: i32, m: u32, dd: u32, h: u32| {
+            due_firings(
+                &BTreeMap::new(),
+                &TrackingState::default(),
+                &habits,
+                day,
+                &reminders,
+                &defaults,
+                stamp(y, m, dd, h, 0),
+            )
+        };
+        // Wednesday 10:00 — before the first scheduled day: silent even
+        // after the day's anchor time has passed.
+        assert_eq!(read(2026, 11, 18, 10), Vec::new());
+        // Friday at the anchor: armed.
+        assert_eq!(read(2026, 11, 20, 9).len(), 1);
+        // Saturday — past the scheduled day, not itself scheduled:
+        // silent (the day-set gate is membership, not "from the arm
+        // day on"; US-5 AC-2's "no other day of the window").
+        assert_eq!(read(2026, 11, 21, 10), Vec::new());
+    }
+
+    /// US-6 AC-2 engine arm: the tracker snooze honors the habit's
+    /// chosen unit — a `Days` snooze moves the effective occurrence by
+    /// whole days, an `Hours` one by hours (the `ReminderRef::Tracker`
+    /// chain walk is unit-agnostic; the habit's grammar selects the
+    /// duration the snooze affordance applies).
+    #[test]
+    fn tracker_snooze_applies_the_habits_chosen_unit() {
+        let unit_duration = |snooze: crate::habit::HabitSnooze| snooze.duration();
+        assert_eq!(
+            unit_duration(crate::habit::HabitSnooze::Hours(2)),
+            chrono::TimeDelta::try_hours(2).unwrap()
+        );
+        assert_eq!(
+            unit_duration(crate::habit::HabitSnooze::Days(1)),
+            chrono::TimeDelta::try_days(1).unwrap()
+        );
+        // The chain walk: a snoozed tracker occurrence moves to the
+        // snooze target and the walk preserves it.
+        let habit = tracker_habit(
+            1,
+            HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            Some(at(9, 0)),
+        );
+        let habits = habits_of(&[habit]);
+        let mut reminders = ReminderState::default();
+        let base = stamp(2026, 11, 5, 9, 0);
+        reminders.snoozes.insert(
+            ReminderSnoozeKey {
+                reminder: tracker_ref(1),
+                occurrence: base,
+            },
+            base + chrono::TimeDelta::try_days(1).unwrap(),
+        );
+        let day = day5();
+        let got = tracker_effective_occurrence(
+            &habits.habits[&crate::ids::HabitId::from(uuid::Uuid::from_u128(1))],
+            day,
+            &reminders,
+            stamp(2026, 11, 5, 9, 30),
+        );
+        assert_eq!(got, Some(base + chrono::TimeDelta::try_days(1).unwrap()));
     }
 }
