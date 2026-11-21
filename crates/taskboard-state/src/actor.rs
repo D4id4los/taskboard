@@ -1250,6 +1250,14 @@ async fn ingest_sync_report(
             features,
             ..
         } => {
+            // The cycle's board: the report names it, and the per-board
+            // sync bookkeeping attributes to it (plan
+            // 2026-11-21-sync-report-attribution §2). The report's board
+            // is in the remote id space; resolve it against the pre-cycle
+            // state. Unresolvable (board-less or unbound) — no row: the
+            // same vanish-from-the-map rule the counters lane applies.
+            let cycle_board =
+                board.and_then(|remote| resolve_board(&core.app(), &connector, remote));
             let (merged, mut batch) = apply_push_report(
                 &core.app(),
                 core.outbox(),
@@ -1257,6 +1265,7 @@ async fn ingest_sync_report(
                 read_at,
                 ids,
                 now,
+                cycle_board,
                 features,
             );
             append_status_if_changed(core, &mut batch, &merged.sync);
