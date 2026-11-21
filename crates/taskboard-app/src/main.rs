@@ -913,6 +913,7 @@ async fn run_kiosk(
                     // data dir — degrades to the arms' typed refusal
                     // (bootstrap boots authorless there, plan D-2).
                     device_json: taskboard_app::board_move_ceremony::default_device_json().ok(),
+                    connector_owners: app.connector_owners.clone(),
                 },
             );
 

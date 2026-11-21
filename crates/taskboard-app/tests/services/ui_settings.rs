@@ -96,6 +96,7 @@ async fn booted_workspace(
                 .keep()
                 .join("device.json"),
         ),
+        connector_owners: app.connector_owners.clone(),
     };
     (app, workspace)
 }

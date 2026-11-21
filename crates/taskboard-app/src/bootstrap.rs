@@ -650,6 +650,12 @@ pub struct App {
     /// beside the two broadcasts. Cloneable (the watch half pattern);
     /// the tracker's half dies with the notifier consumer.
     pub delivery_health: watch::Receiver<DeliveryHealth>,
+    /// The boot-computed connector-owner set (D-BF5 enforcement point
+    /// 2): the configured module connectors plus `files-sync`'s id when
+    /// `[files_sync]` is enabled. Computed once at boot; consumers of
+    /// the boot-pull settle predicate hand it back in verbatim — the
+    /// app layer never re-derives config ownership (#1120).
+    pub connector_owners: std::collections::BTreeSet<taskboard_domain::ConnectorId>,
 }
 
 impl std::fmt::Debug for App {
@@ -836,6 +842,8 @@ impl App {
             // clone outlives the shutdown tail harmlessly — a closed
             // watch reads the last snapshot).
             delivery_health: _,
+            // Bookkeeping only: no owner set is consulted at teardown.
+            connector_owners: _,
         } = self;
         let timeout = Duration::from_secs(config.app.shutdown_timeout_secs);
         tracing::info!("shutdown: flushing the engine");
@@ -1335,13 +1343,14 @@ async fn bootstrap_with_modules(
     // standalone world (no configured connectors) is exempt: its
     // bindings predate the `connect` ceremony's attach (ADR 0011), and
     // the legacy scalar tag decodes as-is there (D-3).
+    let connector_owners: std::collections::BTreeSet<taskboard_domain::ConnectorId> = modules
+        .iter()
+        .map(|module| module.id().clone())
+        .chain(files_sync_spawn_decision(&config).map(|spec| spec.identity))
+        .collect();
     if !modules.is_empty() {
         let persisted = repo.load().await.map_err(BootstrapError::StorageRead)?;
-        let configured: std::collections::BTreeSet<taskboard_domain::ConnectorId> = modules
-            .iter()
-            .map(|module| module.id().clone())
-            .chain(files_sync_spawn_decision(&config).map(|spec| spec.identity))
-            .collect();
+        let configured = connector_owners.clone();
         let ownership =
             taskboard_domain::ownership::BoardOwnershipMap::from_boards(&persisted.boards);
         for (board, connector) in ownership.bindings() {
@@ -1669,6 +1678,7 @@ async fn bootstrap_with_modules(
         authority_join,
         _lock: lock,
         delivery_health,
+        connector_owners,
     })
 }
 
@@ -1805,14 +1815,24 @@ pub fn spawn_config_watcher(
 /// state. Only a cycle *in flight right now* is awaited; a settled
 /// hydrated status (the common case) returns immediately — freshness
 /// beyond the last sync is `taskboard sync`'s job. A world with
-/// nothing pullable — a board-less db (skips silently, `NoBoard`) or
-/// one whose every live board lacks a remote binding (no sync actor
-/// can pull it) — also returns immediately; a deadline expiry degrades
-/// gracefully — offline-first: local data serves the command.
+/// nothing pullable — no live board carrying a remote binding whose
+/// connector is in `owners` (#1120: a board-less db skips silently,
+/// `NoBoard`; an unbound world has no pullable board; a world bound
+/// only to *deconfigured* connectors — no live actor owns those
+/// bindings — provably has nothing to settle either) — also returns
+/// immediately; a deadline expiry degrades gracefully — offline-first:
+/// local data serves the command. `owners` is the boot-computed
+/// configured-connector set (the D-BF5 enforcement-point-2 owner set:
+/// configured module connectors plus `files-sync` when enabled) — the
+/// app layer never re-derives config ownership from state.
 /// Public for the hermetic bootstrap suite's settle-contract pins
 /// (`tests/core/bootstrap.rs`): the predicate is an in-process seam
 /// and that suite is its lowest-layer tester (AGENTS §5).
-pub async fn wait_for_boot_pull(engine: &EngineHandle, timeout: Duration) {
+pub async fn wait_for_boot_pull(
+    engine: &EngineHandle,
+    owners: &std::collections::BTreeSet<taskboard_domain::ConnectorId>,
+    timeout: Duration,
+) {
     let mut signals = engine.subscribe();
     let deadline = tokio::time::Instant::now() + timeout;
     let mut seen_syncing = false;
@@ -1830,24 +1850,20 @@ pub async fn wait_for_boot_pull(engine: &EngineHandle, timeout: Duration) {
             {
                 return;
             }
-            // No live board, or every live board is locally created
-            // with no remote binding: no sync actor anywhere can pull
-            // anything for this world — the boot cycle provably has
-            // nothing to settle. (A board-less db is the degenerate
-            // case and can only skip silently, `NoBoard`; a locally
-            // created board is `remote: None` until the connector
-            // ceremony binds it, and its cycle is a silent poll-tick
-            // skip — decision 10.) Deliberate leniency (AGENTS §2 A1):
-            // a live board bound to a *deconfigured* connector still
-            // waits out the deadline — the predicate cannot
-            // distinguish "bound and being synced" from "bound but
-            // orphaned" from state alone, and the deadline backstop
-            // bounds it (#1120).
-            _ if !state
-                .boards
-                .values()
-                .any(|b| !b.deleted && b.remote.is_some()) =>
-            {
+            // No live board bound to a connector the configured set
+            // owns (#1120): no sync actor anywhere can pull anything
+            // for this world — the boot cycle provably has nothing to
+            // settle. (A board-less db is the degenerate case and can
+            // only skip silently, `NoBoard`; a locally created board is
+            // `remote: None` until the connector ceremony binds it, and
+            // its cycle is a silent poll-tick skip — decision 10; a
+            // world bound only to *deconfigured* connectors is the
+            // #1120 widening — the empty-ownership case, settled the
+            // same way.) The D-BF5 refusal at boot makes the orphaned
+            // class boot-fatal for *configured* worlds, so the leniency
+            // the old arm documented cannot recur: any surviving
+            // deconfigured-only world provably has no owning actor.
+            _ if !state.live_ownable_bindings_exist(owners) => {
                 return;
             }
             _ => {}
