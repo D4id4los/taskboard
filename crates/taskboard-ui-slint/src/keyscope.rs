@@ -137,6 +137,17 @@ pub fn scope_stack(inputs: &ScopeInputs) -> Vec<ContextId> {
         // keyboard exactly while the surface is engaged.
         return vec![ContextId::NotificationSurface];
     }
+    if shell.export_dialog {
+        // The export dialog's mask (the J2 export plan W-1): the
+        // adapter-owned VM's modal context — the dialog's fields
+        // ride `ViInsert` masking and the Escape close lives in the
+        // head context.
+        return vec![
+            ContextId::ExportDialog,
+            ContextId::ViInsert,
+            ContextId::Global,
+        ];
+    }
     let mut chain = Vec::with_capacity(5);
     // D-δ2: the editor element scope rides the head (non-masking,
     // keymap-unbound — its verbs are the command tables, not rows).

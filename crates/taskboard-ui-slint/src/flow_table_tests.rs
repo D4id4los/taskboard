@@ -203,6 +203,10 @@ enum EK {
     FocusFirst,
     FocusLast,
     OpenSettings,
+    /// The export dialog's pair (the J2 export plan W-1): the open
+    /// is a modal takeover, the close the modal's own exit arm.
+    ExportOpen,
+    ExportClose,
     BeginTitleEdit,
     /// The keymap-parity D-4 editor arms: their own keys — the date
     /// arm posts `Due`, the description arm posts `Text`.
@@ -321,6 +325,8 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::FocusFirst => EK::FocusFirst,
         UiEffect::FocusLast => EK::FocusLast,
         UiEffect::OpenSettings => EK::OpenSettings,
+        UiEffect::ExportDialogOpen => EK::ExportOpen,
+        UiEffect::ExportDialogClose => EK::ExportClose,
         UiEffect::BeginTitleEdit => EK::BeginTitleEdit,
         UiEffect::BeginDateEdit { .. } => EK::BeginDateEdit,
         UiEffect::BeginDescriptionEdit => EK::BeginDescriptionEdit,
@@ -1628,6 +1634,8 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         // before the table (the picker keys' exclusion).
         UiEffect::FocusLast,
         UiEffect::OpenSettings,
+        UiEffect::ExportDialogOpen,
+        UiEffect::ExportDialogClose,
         UiEffect::BeginTitleEdit,
         // The keymap-parity D-4 editor arms (US-3): the subject is
         // entered by the driver, so both arms arm their flows.
@@ -2964,7 +2972,11 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::TrackEntryDismiss
         // The labels ladder closes the overlay (UX R-3 D-2): the
         // entries ladder's class.
-        | UiEffect::LabelsDismiss => DismissClass::AnchorOrModal,
+        | UiEffect::LabelsDismiss
+        // The export dialog (the J2 export plan W-1): the open is a
+        // modal takeover, the close the modal's own exit arm.
+        | UiEffect::ExportDialogOpen
+        | UiEffect::ExportDialogClose => DismissClass::AnchorOrModal,
         UiEffect::Exit
         | UiEffect::MenuBack
         | UiEffect::MenuNext

@@ -63,6 +63,7 @@ pub mod web;
 // `pdf-export` feature — the default (kiosk) tree carries none of it
 // (no krilla, no font bytes, no `--what pdf` variant). Private: the
 // module serves this crate's export verb only.
+pub(crate) mod export_paths;
 #[cfg(feature = "pdf-export")]
 mod pdf;
 

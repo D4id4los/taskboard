@@ -96,6 +96,7 @@ impl Preset {
             ContextId::Labels,
             ContextId::ReviewWalk,
             ContextId::RecurEditor,
+            ContextId::ExportDialog,
             // The alarm window (T-22, #805): a total mask like the
             // other modal surfaces — while the window holds, it owns
             // the keyboard exactly as a modal should (the window's
@@ -583,6 +584,14 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Labels,
         &["Escape"],
     ),
+    // The export dialog's Escape rung (the J2 export plan W-1's
+    // close callback): the dialog context is a total mask; the
+    // close dispatches nothing (US-1/AC-2).
+    (
+        ActionId::ExportDialogClose,
+        ContextId::ExportDialog,
+        &["Escape"],
+    ),
 ];
 
 static STANDARD_S1: &[(ActionId, ContextId, &[&str])] = &[
@@ -1048,6 +1057,14 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     (
         ActionId::LabelOverlayDismiss,
         ContextId::Labels,
+        &["Escape"],
+    ),
+    // The export dialog's Escape rung (the J2 export plan W-1's
+    // close callback): the dialog context is a total mask; the
+    // close dispatches nothing (US-1/AC-2).
+    (
+        ActionId::ExportDialogClose,
+        ContextId::ExportDialog,
         &["Escape"],
     ),
 ];
@@ -1548,6 +1565,14 @@ static VI_S6: &[(ActionId, ContextId, &[&str])] = &[
     (
         ActionId::LabelOverlayDismiss,
         ContextId::Labels,
+        &["Escape"],
+    ),
+    // The export dialog's Escape rung (the J2 export plan W-1's
+    // close callback): the dialog context is a total mask; the
+    // close dispatches nothing (US-1/AC-2).
+    (
+        ActionId::ExportDialogClose,
+        ContextId::ExportDialog,
         &["Escape"],
     ),
 ];

@@ -295,6 +295,22 @@ const SEAM_INVENTORY: &[&str] = &[
     "task_description_edit_opened",
     "task_done_toggled",
     "task_due_edit_opened",
+    // The export dialog's seams (the J2 export plan W-1..W-5): the
+    // Settings row's opener, the close, the pickers'/fields' mirrors,
+    // the open-after toggle, and the Run dispatch. The plan's §6
+    // tokens (the ux-coverage cross-check; slint's hyphens are Rust's
+    // underscores here): the W-1 pair "export-dialog-open / export-dialog-close"
+    // (one seam each),
+    // "export-settings-open", "export-spec-picked", "export-field-edited",
+    // "export-open-after-toggled", "export-run", "export-outcome-shown".
+    "export_dialog_open",
+    "export_settings_open",
+    "export_dialog_close",
+    "export_spec_picked",
+    "export_field_edited",
+    "export_open_after_toggled",
+    "export_run",
+    "export_outcome_shown",
     "recur_bound_picked",
     "recur_commit_clicked",
     "recur_count_edited",

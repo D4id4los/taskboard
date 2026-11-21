@@ -97,6 +97,7 @@ async fn booted_workspace(
                 .join("device.json"),
         ),
         connector_owners: app.connector_owners.clone(),
+        export: taskboard_app::ui_requests::ExportWorkspace::default(),
     };
     (app, workspace)
 }

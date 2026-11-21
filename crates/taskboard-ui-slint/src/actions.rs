@@ -64,6 +64,11 @@ pub enum ContextId {
     /// masking and the editor's own verbs (commit, cancel, the
     /// detach strip) live here.
     RecurEditor,
+    /// The export dialog (the J2 export plan W-1): a total mask like
+    /// `RecurEditor` — the modal context while the adapter's export
+    /// VM holds; the dialog's fields ride `ViInsert` masking and the
+    /// dialog's own verb (the Escape close) lives here.
+    ExportDialog,
     /// The labels overlay (UX R-3 D-2, #789): a total mask like
     /// `TrackEntries` — the modal context while `Flow::Labels`
     /// holds; the form's fields ride `ViInsert` masking and the
@@ -107,6 +112,7 @@ impl ContextId {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Global => "global",
+            Self::ExportDialog => "export-dialog",
             Self::Today => "today",
             Self::Board => "board",
             Self::StackDetail => "stack-detail",
@@ -244,6 +250,14 @@ pub enum ActionId {
     AppRedo,
     AppSettings,
     AppHelp,
+    /// The export dialog's opener (the J2 export plan US-1, D-1):
+    /// mounts the settings/menu-anchored export dialog. A kiosk
+    /// dispatch refuses at the adapter (R-2 — no kiosk affordance).
+    ExportDialogOpen,
+    /// The export dialog's Escape close (W-1's close callback, the
+    /// `LabelOverlayDismiss` precedent): the dialog context's total
+    /// mask owns Escape; the close dispatches nothing (US-1/AC-2).
+    ExportDialogClose,
     CaptureQuick,
     ViewToday,
     ViewInbox,
@@ -664,6 +678,8 @@ impl ActionId {
             Self::AppRedo => "app.redo",
             Self::AppSettings => "app.settings",
             Self::AppHelp => "app.help",
+            Self::ExportDialogOpen => "app.export-dialog",
+            Self::ExportDialogClose => "app.export-dialog-close",
             Self::CaptureQuick => "capture.quick",
             Self::ViewToday => "view.today",
             Self::ViewInbox => "view.inbox",
@@ -978,6 +994,30 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 10,
         description: "Opens or closes the settings view: sync connections, keymap preset, UI scale.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ExportDialogOpen,
+        label: "Export…",
+        contexts: GLOBAL,
+        category: Category::Application,
+        enabled: true,
+        // The root page's data-verb row (the plan's D-1 action-menu
+        // entry point); rank between the quick rows and the menu verb.
+        menu_rank: 25,
+        description: "Opens the export dialog: tracking csv/json and the pdf today sheet, with the CLI verb's filters.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ExportDialogClose,
+        label: "Close export dialog",
+        contexts: &[ContextId::ExportDialog],
+        category: Category::Application,
+        enabled: true,
+        // Never a rendered menu row (the dialog's own verb; the
+        // `LabelOverlayDismiss` shape).
+        menu_rank: 990,
+        description: "Closes the export dialog; nothing dispatches and any running export completes independently.",
         menu_group: None,
     },
     ActionEntry {
@@ -2911,6 +2951,11 @@ mod tests {
             ActionId::HabitRemove,
             ActionId::HabitRemoveConfirm,
             ActionId::HabitRemoveCancel,
+            // The export dialog's pair (the J2 export plan D-1/W-1):
+            // the opener routes the mount, the close is the dialog
+            // context's Escape rung.
+            ActionId::ExportDialogOpen,
+            ActionId::ExportDialogClose,
         ];
         for id in ALL {
             assert_eq!(REGISTRY.iter().filter(|e| e.id == *id).count(), 1);

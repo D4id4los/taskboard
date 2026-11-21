@@ -126,44 +126,16 @@ impl PdfDestination {
     }
 }
 
-/// The default destination directory: the config's `[export]
-/// pdf_dir`, else `~/Documents/taskboard` (the desktop default), else
-/// the data dir (a kiosk has no documents dir).
-#[must_use]
-pub fn default_pdf_dir(config_dir: Option<&Path>, data_dir: Option<&Path>) -> PathBuf {
-    if let Some(dir) = config_dir {
-        return dir.to_path_buf();
-    }
-    dirs::document_dir().map_or_else(
-        || {
-            data_dir
-                .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
-                .join("pdf")
-        },
-        |docs| docs.join("taskboard"),
-    )
-}
+// The destination-path helpers live in the always-compiled
+// `export_paths` module (the csv/json leg's GUI default and the `~`
+// convention compile in every build); the pdf leg consumes the same
+// two — the one-resolution rule.
+pub(crate) use crate::export_paths::{default_pdf_dir, expand_tilde};
 
 /// The pdf file name: `taskboard-<YYYY-MM-DD>-<layout>.pdf`.
 #[must_use]
 pub fn pdf_file_name(date: chrono::NaiveDate, sheet: SheetName) -> String {
     format!("taskboard-{}-{}.pdf", date.format("%Y-%m-%d"), sheet.text())
-}
-
-/// Expands a leading `~` to the home directory (the config file and
-/// `--out` share the convention); the path passes through unchanged
-/// when it has none or the home is unknown.
-#[must_use]
-pub fn expand_tilde(path: &Path) -> PathBuf {
-    let Some(text) = path.to_str() else {
-        return path.to_path_buf();
-    };
-    if let Some(rest) = text.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest);
-    }
-    path.to_path_buf()
 }
 
 /// Why the viewer could not be opened — a typed outcome, non-fatal by

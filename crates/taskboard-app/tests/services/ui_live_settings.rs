@@ -46,6 +46,7 @@ async fn forwarder(
         // this suite, but the workspace is a plain value.
         device_json: Some(tempdir().keep().join("device.json")),
         connector_owners: app.connector_owners.clone(),
+        export: taskboard_app::ui_requests::ExportWorkspace::default(),
     };
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let _join = spawn_ui_request_forwarder(rx, app.engine.shared_state(), workspace);

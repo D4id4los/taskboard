@@ -23,6 +23,7 @@ pub mod actions;
 pub mod adapter;
 pub mod board_presets;
 pub mod due_edit;
+pub(crate) mod export_dialog;
 pub mod fonts;
 pub mod geometry;
 pub mod keymap;
@@ -134,6 +135,11 @@ pub struct UiSettings {
     /// typed fact). Seeded from the resolved config at hand-over;
     /// refreshed only from write replies.
     pub general: requests::SettingsSnapshot,
+    /// The export dialog's config defaults (the J2 export plan
+    /// D-2/D-3): minted app-side at hand-over (the `general`
+    /// snapshot precedent), desktop and kiosk alike — the kiosk
+    /// never *mounts* the dialog (R-2), the defaults ride anyway.
+    pub export: requests::ExportDialogDefaults,
 }
 
 impl Default for UiSettings {
@@ -152,6 +158,7 @@ impl Default for UiSettings {
             boot_offset: chrono::FixedOffset::east_opt(0).expect("zero"),
             clock: None,
             general: requests::SettingsSnapshot::default(),
+            export: requests::ExportDialogDefaults::default(),
         }
     }
 }
@@ -358,6 +365,7 @@ pub fn mount(
         settings.clock,
         settings.kiosk_rotation,
         settings.general,
+        settings.export,
         Arc::clone(&state),
         Rc::clone(&status_timer),
         Rc::clone(&rotation_timer),
@@ -644,6 +652,15 @@ fn start_repaint_driver(
             // same non-blocking poll — a settled reply lands the
             // letter's counts (or the typed failure fact disarms).
             adapter.borrow_mut().drain_reconcile_preview(&window);
+            // The export run reply drain (the J2 export plan W-5,
+            // D-5): the same non-blocking poll — a settled typed
+            // outcome lifts the busy posture and the
+            // `export-outcome-shown` fold lands it (the callback
+            // fires OUTSIDE the adapter borrow — the re-entrancy
+            // law).
+            if adapter.borrow_mut().poll_export_run() {
+                window.invoke_export_outcome_shown();
+            }
             // One clock read per tick feeds both boundaries (r4
             // decision 5). The second boundary fires only while the
             // adapter's `seconds_surfaces_active` gate holds; the cell
@@ -956,6 +973,20 @@ impl UiHandle {
     pub fn drain_auto_listings(&self) {
         if let Some(window) = self.window.as_weak().upgrade() {
             self.adapter.borrow_mut().drain_auto_listings(&window);
+        }
+    }
+
+    /// The export run reply drain (the J2 export plan W-5, D-5): the
+    /// same non-blocking poll the repaint timer runs every cadence
+    /// tick. Public for the component journeys (the established
+    /// [`UiHandle`]-seam pattern): the test plays the app half by
+    /// answering a drained request's oneshot, then drives the drain.
+    pub fn drain_export_run(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            let settled = self.adapter.borrow_mut().poll_export_run();
+            if settled {
+                window.invoke_export_outcome_shown();
+            }
         }
     }
 

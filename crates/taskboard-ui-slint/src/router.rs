@@ -324,6 +324,13 @@ pub enum UiEffect {
     // excluded from the view cycle; the adapter toggles it.
     /// Open the settings view (or close it — toggle semantics).
     OpenSettings,
+    /// Open the export dialog (the J2 export plan US-1, D-1): a
+    /// pure presentation mount — the adapter seeds the dialog VM
+    /// from the hand-over defaults; a kiosk dispatch is inert (R-2).
+    ExportDialogOpen,
+    /// Close the export dialog (W-1's close callback): nothing
+    /// dispatches; the pending reply drops (US-2/S2's escape law).
+    ExportDialogClose,
     // --- the plan-next-day surface (#622, D-4/D-3): the routed
     // reachability seam plus the placement interaction. All pure
     // view intents (never a parallel write path — the placement
@@ -477,6 +484,8 @@ impl UiEffect {
             | Self::FocusToday
             | Self::OpenInbox
             | Self::OpenSettings
+            | Self::ExportDialogOpen
+            | Self::ExportDialogClose
             | Self::FocusNext
             | Self::FocusPrev
             | Self::FocusDirectional(_)
@@ -1839,6 +1848,11 @@ impl ActionRouter {
             ActionId::StackNarrower => DispatchOutcome::UiEffect(UiEffect::StackNarrower),
             // Round-1 chunk 3 (D28b): the settings opener is live.
             ActionId::AppSettings => DispatchOutcome::UiEffect(UiEffect::OpenSettings),
+            // The export dialog's opener (the J2 export plan, D-1):
+            // the action-menu entry point rides the same adapter arm
+            // the Settings row drives.
+            ActionId::ExportDialogOpen => DispatchOutcome::UiEffect(UiEffect::ExportDialogOpen),
+            ActionId::ExportDialogClose => DispatchOutcome::UiEffect(UiEffect::ExportDialogClose),
             // The plan-next-day surface (#622, D-4/D-6): the opener is
             // the routed reachability seam; the row verbs resolve
             // their one-shot target (`NoTarget` without one).

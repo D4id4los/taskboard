@@ -33,8 +33,9 @@ use taskboard_state::{EngineHandle, ExecuteError};
 use taskboard_sync_nextcloud::DeckClient;
 use taskboard_ui_slint::geometry::WindowGeometry;
 use taskboard_ui_slint::requests::{
-    ConnectionProfile, ConnectionsSnapshot, ConnectorInfo, Field, InvalidKind, KeymapUpdate,
-    ReminderSink, RemoteBoardRow, SettingsError, SettingsSnapshot, UiRequest,
+    ConnectionProfile, ConnectionsSnapshot, ConnectorInfo, ExportFamily, ExportFileFormat,
+    ExportRefusal, ExportRunOutcome, ExportSpec, Field, InvalidKind, KeymapUpdate, ReminderSink,
+    RemoteBoardRow, SettingsError, SettingsSnapshot, UiRequest,
 };
 
 use crate::bootstrap::ConnectorControl;
@@ -71,6 +72,19 @@ pub fn ui_request_channel() -> (mpsc::Sender<UiRequest>, mpsc::Receiver<UiReques
     mpsc::channel(UI_REQUEST_CAPACITY)
 }
 
+/// The export run's drain dependencies (the J2 export plan W-6):
+/// the boot-resolved config (the pdf leg's destination/layout
+/// postures and the day calendar the engine reads) plus the
+/// typed-permission flag for the open-after-export viewer open.
+#[derive(Debug, Clone, Default)]
+pub struct ExportWorkspace {
+    /// The resolved, validated configuration.
+    pub config: std::sync::Arc<crate::config::AppConfig>,
+    /// Whether the drain may open the system viewer after a pdf run
+    /// (the desktop lifecycle's permission; kiosk `false`).
+    pub may_open_viewer: bool,
+}
+
 /// The settings handlers' dependencies (round-1 chunk 3, plan D3): the
 /// config write target, the credential store, and the connector
 /// lifecycle — everything a spawned task can own without an `App`
@@ -98,6 +112,12 @@ pub struct ConnectionWorkspace {
     /// workspace carries it so the settings ceremonies never re-derive
     /// config ownership.
     pub connector_owners: std::collections::BTreeSet<taskboard_domain::ConnectorId>,
+    /// The export family's workspace (the J2 export plan W-6, D-5):
+    /// the resolved config the drain's engine calls read, and the
+    /// typed viewer-open permission — `true` only on the desktop
+    /// lifecycle (the kiosk workspace never shells out, R-2's trap-c
+    /// law; the kiosk UI never mounts the dialog anyway).
+    pub export: ExportWorkspace,
 }
 
 /// Spawns the UI request forwarder: width snapshots merge into the
@@ -463,6 +483,17 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
         }
         UiRequest::PublishBoardToFiles { board, reply } => {
             let outcome = publish_board_to_files(workspace, board).await;
+            let _ = reply.send(outcome);
+        }
+        UiRequest::ExportRun { spec, reply } => {
+            // The W-6 arm (the J2 export plan D-5): the SAME export
+            // engine the CLI verb drives (one engine, two frontends)
+            // on the forwarder's engine handle; the typed reply is
+            // fire-and-forget-honest (a dropped receiver is a log
+            // line, never a panic).
+            let state = workspace.engine.shared_state().load_full();
+            let outcome = run_export(&state, &workspace.export, &spec);
+            tracing::info!(?outcome, "the export run settled");
             let _ = reply.send(outcome);
         }
         UiRequest::SetKeymapPreset { preset, reply } => {
@@ -2043,6 +2074,197 @@ fn map_io_error(err: &std::io::Error) -> SettingsError {
     }
 }
 
+// -- the export run's drain executor (the J2 export plan W-6) ------
+
+/// The W-6 executor: the SAME export engine the CLI `export` verb
+/// drives (one engine, two frontends — the O-5 parity law), on the
+/// forwarder's engine handle. The csv/json leg adds the GUI's file
+/// write (D-3 — the CLI's pipes stay byte-compatible and untouched);
+/// the pdf leg rides the engine's session lane and the typed
+/// permission flag owns the viewer open (the trap-c law).
+#[must_use]
+pub fn run_export(
+    state: &taskboard_domain::AppState,
+    workspace: &ExportWorkspace,
+    spec: &ExportSpec,
+) -> ExportRunOutcome {
+    match spec.what {
+        ExportFamily::Tracking => run_tracking_export(state, workspace, spec),
+        ExportFamily::Pdf => run_pdf_export(state, workspace, spec),
+    }
+}
+
+/// The tracking leg (US-2): the engine renders the payload (the D-T15
+/// body), the drain writes it to the destination — the spec's explicit
+/// file, else the export dir's dated default (D-3).
+fn run_tracking_export(
+    state: &taskboard_domain::AppState,
+    workspace: &ExportWorkspace,
+    spec: &ExportSpec,
+) -> ExportRunOutcome {
+    let query = crate::commands::track::ExportQuery {
+        what: crate::cli::ExportWhat::Tracking,
+        format: Some(match spec.format {
+            ExportFileFormat::Csv => crate::cli::ExportFormat::Csv,
+            ExportFileFormat::Json => crate::cli::ExportFormat::Json,
+        }),
+        since: spec.since,
+        until: spec.until,
+        task: spec.task.clone(),
+        board: spec.board.clone(),
+        #[cfg(feature = "pdf-export")]
+        layout: None,
+        #[cfg(feature = "pdf-export")]
+        out: None,
+        #[cfg(feature = "pdf-export")]
+        no_open: false,
+    };
+    match crate::commands::track::export_tracking_state(state, &query) {
+        Err(err) => refusal_of(&err),
+        Ok(payload) => {
+            let bytes = crate::commands::track::render_payload(&payload);
+            let destination = if let Some(path) = &spec.out {
+                resolve_destination(path)
+            } else {
+                let extension = match spec.format {
+                    ExportFileFormat::Csv => "csv",
+                    ExportFileFormat::Json => "json",
+                };
+                export_home(workspace).join(format!(
+                    "tracking-{}.{}",
+                    chrono::Utc::now().date_naive(),
+                    extension
+                ))
+            };
+            match std::fs::write(&destination, bytes.as_bytes()) {
+                Ok(()) => ExportRunOutcome::Written { path: destination },
+                Err(_) => ExportRunOutcome::Refused(ExportRefusal::DestinationUnwritable),
+            }
+        }
+    }
+}
+
+/// The pdf leg (US-3): the engine's session lane writes the file (the
+/// destination resolved absolute — the GUI drain's cwd is the
+/// daemon's); the viewer open rides the typed permission flag and the
+/// spec's open-after posture, best-effort (the written file is the
+/// deliverable). Feature-absent builds refuse typed (D-4's
+/// trust-boundary arm).
+fn run_pdf_export(
+    state: &taskboard_domain::AppState,
+    workspace: &ExportWorkspace,
+    spec: &ExportSpec,
+) -> ExportRunOutcome {
+    #[cfg(not(feature = "pdf-export"))]
+    {
+        let _ = (state, workspace, spec);
+        ExportRunOutcome::Refused(ExportRefusal::PdfUnavailable)
+    }
+    #[cfg(feature = "pdf-export")]
+    {
+        use taskboard_ui_slint::requests::PdfLayoutChoice;
+        let query = crate::commands::track::ExportQuery {
+            what: crate::cli::ExportWhat::Pdf,
+            format: None,
+            since: None,
+            until: None,
+            task: None,
+            board: None,
+            layout: spec.layout.map(|layout| match layout {
+                PdfLayoutChoice::Fold => crate::cli::PdfLayout::Fold,
+                PdfLayoutChoice::A4 => crate::cli::PdfLayout::A4,
+                PdfLayoutChoice::A5 => crate::cli::PdfLayout::A5,
+                PdfLayoutChoice::A6 => crate::cli::PdfLayout::A6,
+            }),
+            out: spec.out.as_ref().map(|path| resolve_destination(path)),
+            // The session lane never opens; the drain's permission
+            // arm below owns the open (the typed-permission law).
+            no_open: true,
+        };
+        match crate::commands::track::export_pdf_state(
+            state,
+            &workspace.config,
+            &query,
+            crate::commands::track::PdfLane::Session,
+        ) {
+            Err(err) => refusal_of(&err),
+            Ok(receipt) => {
+                if spec.open_after && workspace.may_open_viewer {
+                    // Best-effort (the CLI's posture): an open
+                    // failure keeps the written-file fact honest.
+                    let _ = crate::pdf::deliver::open_in_viewer(&receipt.path);
+                }
+                ExportRunOutcome::Written { path: receipt.path }
+            }
+        }
+    }
+}
+
+/// The csv/json destination's default home (D-3): the export family's
+/// resolved directory — the same resolution the pdf leg's default
+/// uses (`[export] pdf_dir`, else `~/Documents/taskboard`, else the
+/// platform data dir).
+fn export_home(workspace: &ExportWorkspace) -> std::path::PathBuf {
+    let config_dir = workspace
+        .config
+        .export
+        .pdf_dir
+        .as_deref()
+        .map(crate::export_paths::expand_tilde);
+    crate::export_paths::default_pdf_dir(config_dir.as_deref(), dirs::data_dir().as_deref())
+}
+
+/// The destination's resolution: `~` expanded, a relative path
+/// resolved against the daemon's cwd (the GUI drain runs in-process —
+/// the session lane's no-cwd wire constraint does not apply).
+fn resolve_destination(path: &std::path::Path) -> std::path::PathBuf {
+    let expanded = crate::export_paths::expand_tilde(path);
+    if expanded.is_absolute() {
+        return expanded;
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(expanded),
+        Err(_) => expanded,
+    }
+}
+
+/// The typed refusal map (D-5): the engine's typed errors fold onto
+/// the dialog's closed kind set — the dialog renders the kind, never
+/// the engine's message text.
+fn refusal_of(err: &crate::commands::CommandError) -> ExportRunOutcome {
+    // The pdf-family arms are feature-gated (the variants do not
+    // compile in a default build — where the pdf leg can never run
+    // and the kinds are unreachable).
+    #[cfg(feature = "pdf-export")]
+    let kind = match err {
+        crate::commands::CommandError::ExportOptionsNotApplicable => {
+            ExportRefusal::OptionsNotApplicable
+        }
+        crate::commands::CommandError::UnknownPdfLayout => ExportRefusal::UnknownPdfLayout,
+        crate::commands::CommandError::ExportPdfPath(_) => ExportRefusal::PdfPath,
+        crate::commands::CommandError::ExportPdfRender => ExportRefusal::PdfRender,
+        err => refusal_of_data(err),
+    };
+    #[cfg(not(feature = "pdf-export"))]
+    let kind = refusal_of_data(err);
+    ExportRunOutcome::Refused(kind)
+}
+
+/// The data families' refusal arms (the feature-blind subset).
+fn refusal_of_data(err: &crate::commands::CommandError) -> ExportRefusal {
+    match err {
+        crate::commands::CommandError::ExportFiltersNotApplicable => {
+            ExportRefusal::FiltersNotApplicable
+        }
+        crate::commands::CommandError::UnknownTask(_)
+        | crate::commands::CommandError::AmbiguousTask { .. } => ExportRefusal::BadTaskFilter,
+        crate::commands::CommandError::UnknownBoardSelector { .. }
+        | crate::commands::CommandError::UnknownBoard(_)
+        | crate::commands::CommandError::BoardArchived { .. } => ExportRefusal::BadBoardFilter,
+        _ => ExportRefusal::EngineRefused,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2125,6 +2347,7 @@ mod tests {
             // mints there, never the platform default (#751).
             device_json: Some(dir.path().join("device.json")),
             connector_owners: app.connector_owners.clone(),
+            export: crate::ui_requests::ExportWorkspace::default(),
         };
         WorkspaceFixture {
             workspace,

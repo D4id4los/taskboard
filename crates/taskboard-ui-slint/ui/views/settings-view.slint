@@ -180,6 +180,11 @@ export global SettingsModel {
     // The busy machine (r2 D34): any op in flight disables every
     // settings op; busy-target names the connector/board the spinner
     // markers render on.
+    // The export row's mount gate (the J2 export plan W-2, R-2): the
+    // kiosk hand-over's model-side gate — the Settings view renders
+    // on kiosk, the export affordance does not (the dialog's absence
+    // ruling; the adapter mints it once at install).
+    in-out property <bool> export-affordance: false;
     in-out property <bool> busy: false;
     in-out property <string> busy-target: "";
     in-out property <string> draft-server: "";
@@ -623,6 +628,9 @@ export component SettingsView inherits FocusScope {
     // D6.6: the back affordance routes the same close path as Escape
     // (the adapter's dedicated `settings-back-clicked` seam).
     callback back-clicked();
+    // The export dialog's Settings-row opener (the J2 export plan
+    // W-2). slint: export-settings-open
+    callback export-settings-open();
     // The mount seam (r3 D20a): the fields' two-way text bindings
     // clobber the model's echo/draft strings at instantiation (the
     // TextField init writes its empty initial-text through the
@@ -1797,6 +1805,27 @@ export component SettingsView inherits FocusScope {
             }
             focus-lost(i) => {
                 root.general-focus-lost(i);
+            }
+        }
+
+        // -- export (the J2 export plan W-2): the dialog's Settings
+        //    entry point — one row, the same mount arm the action
+        //    menu's Export… item routes. The kiosk gate (R-2) is
+        //    model-side: the section is absent on the appliance. --
+        if (SettingsModel.export-affordance): VerticalLayout {
+            spacing: Theme.space-2;
+            RoleText {
+                role: Typography.title;
+                text: "Export";
+            }
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                TextButton {
+                    label: "Export…";
+                    clicked => {
+                        root.export-settings-open();
+                    }
+                }
             }
         }
 
