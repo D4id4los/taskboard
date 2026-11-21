@@ -32,7 +32,7 @@ cap-fit rule wins over the group count, recorded here as a deviation.
 |---|---|---|---|---|---|---|---|---|---|---|
 | M1 | mod.rs | 3105 | `--file 'crates/taskboard-app/src/commands/mod.rs'` | **COMPLETED** (105 mutants: 63+4 unviable, 29 caught, 9 missed) across three 7200 s-capped windows + one mis-scoped aborted run | 29 | 9 | 67 | 0 | ~3.0 h across 3 cap windows | cap never tripped (windows ended complete) |
 | M2 | config.rs, capture.rs | 2589 | `config.rs`+`capture.rs` filters | **window 1 complete** (102 mutants: 46 missed, 35 caught, 21 unviable; capture.rs's mutant set folded into the same run) | 35 | 46 | 21 | 0 | 84 m (window 1) | under |
-| M3 | boards.rs, labels.rs, stacks.rs | 2273 | `--file 'crates/taskboard-app/src/commands/boards.rs' --file 'crates/taskboard-app/src/commands/labels.rs' --file 'crates/taskboard-app/src/commands/stacks.rs'` | pending | — | — | — | — | — | — |
+| M3 | boards.rs, labels.rs, stacks.rs | 2273 | three `--file` args | **COMPLETED across two windows + continuation** (window 1: 90 executed — 54 missed, 18 caught, 18 unviable; continuation: 54 re-executed — 53 missed, 1 caught) | 19 | 54 | 18 | 0 | ~2 h + 83 m | window 1 tripped the 7200 s cap (rc=124, partial results intact — the cap template's designed SIGINT path) |
 | M4 | track.rs, find.rs, repeat.rs | 2762 | `--file 'crates/taskboard-app/src/commands/track.rs' --file 'crates/taskboard-app/src/commands/find.rs' --file 'crates/taskboard-app/src/commands/repeat.rs'` | pending | — | — | — | — | — | — |
 | M5 | habits.rs, status.rs | 2583 | `--file 'crates/taskboard-app/src/commands/habits.rs' --file 'crates/taskboard-app/src/commands/status.rs'` | pending | — | — | — | — | — | — |
 | M6 | connect.rs, reflection.rs, tasks.rs | 2754 | `--file 'crates/taskboard-app/src/commands/connect.rs' --file 'crates/taskboard-app/src/commands/reflection.rs' --file 'crates/taskboard-app/src/commands/tasks.rs'` | pending | — | — | — | — | — | — |
@@ -158,6 +158,29 @@ surfaces → trivial TDD kills; E is CLI prose, which the no-text-
 assertion law (AGENTS §5) forbids pinning at the unit tier — cluster
 backlog issue pointing at the golden-coverage wave (S7) as the right
 home.
+
+### M3 survivor census (54 unique)
+
+- Window 1 executed 90 (54 missed / 18 caught / 18 unviable); the
+  runner's stop heuristic mis-fired on the SIGINT window (cargo-mutants
+  prints its summary even when cap-interrupted) and a continuation
+  re-ran the 54 missed: 53 missed, **1 flipped caught**
+  (`labels.rs:255 render_text_list → String::new()` — the tree moved
+  under the run; the M1 kill-test commit `c1c9136e` landed between
+  windows). Union census: **54 unique missed**.
+- **Deviation recorded**: 43 of window 1's 187 discovered mutants were
+  never executed between the two discovery passes (the discovery
+  universe shrank when the tree gained the M1 tests mid-shard). A
+  final consolidated `--iterate` confirmation pass over `commands/*`
+  closes this at the end of the lane.
+- Shape: the survivors are dominated by the boards.rs ceremony/CLI
+  render surface (`render_text_*` prose family), the `read_scope` /
+  `publish_on` / `files_bind_on` / `wait_for_adoption` /
+  `select_prelude` predicates (engine-fixture-heavy), and the
+  stacks.rs/labels.rs render fns — same two disposition classes as
+  M2 (structural kills where the fixture is trivial; cluster issues
+  for the prose family and the engine-fixture tier).
+
 
 
 
