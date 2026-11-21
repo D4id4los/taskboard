@@ -404,6 +404,33 @@ journeys.
   the §2.3 gate's journey-step token rows stay MISSING on this plan;
   the per-step verification evidence is §6's Test column and §4's
   Escape column (all cited tests exist and pass).
+- **Bound-test mapping (#1108 re-row, 2026-11-21)**: the post-R4
+  journey consolidation multiplied this plan's bare `us<n>_s<k>` tokens
+  across the merged journeys file — the retro cohort's bound-test
+  grammar names the post-consolidation fn's actual location per step
+  (plan-format migration; no test renamed):
+  bound-test: US-1/S1 -> journeys.rs::one_ghost_click_opens_the_create_field_in_the_clicked_column
+  bound-test: US-1/S2 -> view_state.rs::create_flow_commits_an_appended_create_task
+  bound-test: US-1/S3 -> view_state.rs::create_flow_commits_an_appended_create_task
+  bound-test: US-2/S1 -> journeys.rs::the_card_checkbox_toggles_the_addressed_task
+  bound-test: US-2/S2 -> journeys.rs::the_today_view_walks_completes_and_recommits
+  bound-test: US-2/S3 -> journeys/detail_shortcuts_journeys.rs::us4_s1_done_pair_through_the_detail_strokes
+  bound-test: US-2/S4 -> journeys.rs::the_today_view_walks_completes_and_recommits
+  bound-test: US-3/S1 -> journeys.rs::the_today_view_walks_completes_and_recommits
+  bound-test: US-3/S2 -> journeys.rs::the_today_view_walks_completes_and_recommits
+  bound-test: US-4/S1 -> journeys.rs::the_pointer_drag_drops_the_keyboard_move_command
+  bound-test: US-4/S2 -> journeys.rs::the_pointer_drag_drops_the_keyboard_move_command
+  bound-test: US-4/S3 -> view_state.rs::the_drag_drop_and_the_keyboard_confirm_produce_the_same_move_command
+  bound-test: US-4/S4 -> view_state.rs::the_drag_drop_and_the_keyboard_confirm_produce_the_same_move_command
+  bound-test: US-5/S1 -> journeys.rs::us5_s2_menu_delete_row_arms_and_confirm_click_commits
+  bound-test: US-5/S2 -> journeys.rs::us5_s2_menu_delete_row_arms_and_confirm_click_commits
+  bound-test: US-6/S1 -> journeys.rs::the_today_view_walks_completes_and_recommits
+  bound-test: US-6/S2 -> flow_table_tests.rs::the_today_context_menu_extends_with_due_today_and_the_card_menus_do_not
+  bound-test: US-7/S1 -> journeys/golden_visuals.rs::the_today_goldens_hold_across_the_scale_breakpoint_matrix
+  bound-test: US-7/S2 -> journeys/golden_visuals.rs::the_today_goldens_hold_across_the_scale_breakpoint_matrix
+  bound-test: US-8/S1 -> journeys.rs::invoking_the_undo_rows_sends_the_engine_verbs
+  bound-test: US-8/S2 -> journeys.rs::invoking_the_undo_rows_sends_the_engine_verbs
+  bound-test: US-8/S3 -> journeys.rs::move_cancel_routes_through_escape_and_emacs_c_g
 - **Seam tests (existing)**: exact-command drains and funnel
   equivalence — `view_state.rs::the_drag_drop_and_the_keyboard_confirm_
   produce_the_same_move_command`, `journeys.rs::the_card_checkbox_

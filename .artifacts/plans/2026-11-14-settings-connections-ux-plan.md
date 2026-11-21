@@ -405,7 +405,7 @@ Commands column carries the request-lane tokens the gate checks. -->
 | W-4 | ui/views/settings-view.slint (connector card) | Files pick (sync enable + re-anchor) | — | op settings_files_picked (adapter.rs:6052-6110, request at 6085) | — | UiRequest::SetFilesSyncEnabled | the connector card's account target | US-6/S1-US-6/S2 | — |
 | W-5 | ui/views/settings-view.slint (pickers 672-696 + general fields) | knob pickers and fields | — | on_settings_preset_picked family (adapter.rs:10373-10480); general fields commit (adapter.rs:10416-10434) | — | UiRequest::SetKeymapPreset; UiRequest::SetScale; UiRequest::SetDayStart; UiRequest::SetRemindersEnabled; UiRequest::SetReminderTick; UiRequest::SetReminderBefore; UiRequest::SetReminderSink; UiRequest::SetPollInterval; UiRequest::SetBackoffInitial; UiRequest::SetBackoffMax; UiRequest::SetDueSoonDays; UiRequest::SetFocusEnabled; UiRequest::SetFocusWorkMins; UiRequest::SetFocusBreakMins; UiRequest::SetFocusChain; UiRequest::SetFocusLongBreakMins; UiRequest::SetFocusLongBreakEvery; UiRequest::SetFocusNotify | the knob's request variant | US-7/S1-US-7/S2 | — |
 | W-6 | ui/views/settings-view.slint (facts 22,50-56) | facts + env-override display | — | — (display only; the snapshot push) | — | — | per-fact render | US-8/S1 | — |
-| W-7 | ui/views/settings-view.slint (rosters 92-133,1012) | connections + board rosters | — | — (display only; roster push adapter.rs:5155) | — | — | per-card render | US-9/S1 | journeys.rs::us1_s1; journeys.rs::us1_s2 |
+| W-7 | ui/views/settings-view.slint (rosters 92-133,1012) | connections + board rosters | — | — (display only; roster push adapter.rs:5155) | — | — | per-card render | US-9/S1 | — (the roster journeys' bare step tokens were ambiguous post-R4; the display evidence is §8's bound-test mapping for US-9/S1) |
 | W-8 | ui/app-window.slint / menu | settings opener (AppSettings GLOBAL; back closes 643) | — | on_menu_settings / the open seam (adapter.rs:8284-8309) | ActionId::AppSettings | — | — (view-level) | — (US-1..US-9's entry) | — |
 | W-CLI (T-18, 2026-11-15) | crates/taskboard-app/src/commands/config.rs | `config set`/`unset` verbs (the knob table `ConfigKey::from_dotted` — the GUI's dotted-key vocabulary; figment-respecting, env never touched) | — | — (a pre-core command handler, not a UI seam) | — | — | the CLI's typed refusal classes (ConfigSetError::EnvLocked / UnknownKey / BadValue — the app crate's own error taxonomy); the atomic overlay write (`write_config_atomic` in `crate::config`) | US-10/S1, US-10/S2 (the journeys live in the app crate's own test module — outside this plan's default Test-root; the recorded posture, the same lib-root note the timers plan carries) | us10_s1_config_set_writes_the_toml_layer_and_rereads; us10_s2_config_unset_removes_the_key; an_env_overridden_key_refuses_typed_without_writing; unknown_keys_and_malformed_values_refuse_typed_without_writing |
 
@@ -434,6 +434,29 @@ for greppability (chunk-2 plan D-1):
   step-token test law (chunk-2 plan D-7; backlog #768). The pilot
   roster journeys (`journeys.rs::us1_s1/us1_s2/us3_s1`) exist and are
   cited via the pilot rows.
+- **Bound-test mapping (#1108 re-row, 2026-11-21)**: the post-R4
+  journey consolidation multiplied this plan's bare `us<n>_s<k>` tokens
+  across the merged journeys file — the retro cohort's bound-test
+  grammar names the post-consolidation fn's actual location per step
+  (plan-format migration; no test renamed):
+  bound-test: US-1/S1 -> journeys.rs::the_settings_form_routes_the_save_ceremony
+  bound-test: US-1/S2 -> journeys.rs::the_busy_gate_holds_one_op_and_the_reply_clears_the_row_marker
+  bound-test: US-2/S1 -> journeys.rs::us2_s1_remove_arms_then_confirm_sends_exact_request_once
+  bound-test: US-2/S2 -> journeys.rs::us2_s2_stop_sync_confirm_dispatches_once
+  bound-test: US-3/S1 -> journeys.rs::a_refresh_lists_remotes_and_a_pick_binds_explicitly
+  bound-test: US-3/S2 -> journeys.rs::a_refresh_lists_remotes_and_a_pick_binds_explicitly
+  bound-test: US-3/S3 -> journeys.rs::us3_s1_switch_action_dispatches_move_board_to_files
+  bound-test: US-4/S1 -> journeys.rs::create_local_board_routes_and_the_row_renders_bound
+  bound-test: US-5/S1 -> journeys.rs::disconnect_routes_detach_from_the_bound_remote_row
+  bound-test: US-5/S2 -> journeys.rs::a_deck_publish_pick_routes_publish_board
+  bound-test: US-6/S1 -> journeys.rs::the_files_pick_reanchors_only_when_turning_on_a_non_anchor_card
+  bound-test: US-6/S2 -> journeys.rs::the_files_toggle_commits_on_pick_and_echoes_the_reply
+  bound-test: US-7/S1 -> journeys.rs::the_preset_pick_routes_and_the_reply_swaps_the_keymap_live
+  bound-test: US-7/S2 -> journeys.rs::the_settings_form_routes_the_save_ceremony
+  bound-test: US-8/S1 -> journeys.rs::the_apply_badges_follow_the_registry_verdicts
+  bound-test: US-9/S1 -> journeys.rs::us1_s2_roster_badges_sort_and_tones
+  bound-test: US-10/S1 -> config.rs::us2_s3_config_set_writes_the_toml_layer_and_reports_next_start
+  bound-test: US-10/S2 -> config.rs::us10_s2_config_unset_removes_the_key
 - **Seam tests (existing, cited per row)**: the pilot's
   exact-effect tests (`ui_requests.rs::stop_board_files_sync_sends_exact_unbind_command`,
   `ui_requests.rs::publish_board_to_files_sends_exact_files_bind_command`);
