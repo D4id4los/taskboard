@@ -19,7 +19,8 @@
 1. **Domain (pure statistics, `taskboard-domain/src/habit.rs`)**:
    - `adherence(habit, log, scheduled, now, day) -> AdherenceRatio` —
      met windows ÷ scheduled windows; transparent windows (skipped /
-     paused / off-schedule, HF1+HF4's semantics) leave both numerator
+     paused / pre-schedule (weekly/monthly, R-6), HF1+HF4's
+     semantics) leave both numerator
      and denominator; **empty history ⇒ the typed empty state** (no
      0%-of-nothing posture, US-9 AC-3).
    - `best_streak(habit, log, ..) -> u32` — max over historical runs
@@ -34,7 +35,7 @@
    dismissal law's read-dialog posture):
    - month grid: one cell per canonical window of the visible month,
      colored by the typed per-window state (met / unmet-pending /
-     skipped / paused / off-schedule / missed / inert) — the states
+     skipped / paused / pre-schedule / missed / inert) — the states
      are an enum in the presentation model, tones via the Theme
      tone-ladder (O-6), never text-bits;
    - month pager (back/forward, clamped at the log's edges);

@@ -66,8 +66,11 @@ What the user can now do that they couldn't:
   the `NotUndoable(HabitSurface)` fence superseded for `LogHabit` only
   (recorded ruling R-7 below, with the dated census note).
 - **Edit the quota inline** by clicking the row's "3/8" phrase (#961).
-- **Schedule a daily habit per weekday** (#960) — non-scheduled days
-  are planned-off, never misses; and give a habit a **reminder
+- **Schedule a weekly/monthly habit's days** (#960) — the nudge arms
+  on the habit's scheduled weekdays inside the canonical window and
+  the window reads as due only from its first scheduled day (R-6: a
+  daily habit happens every day — day sets are a weekly/monthly
+  extension, never a daily one); and give a habit a **reminder
   override** (#959) riding O-1's nudge law (day-relative or
   period-start base, snooze in hours/days).
 - **Open a history view** per habit (#957 — the prime motivator):
@@ -94,7 +97,7 @@ Non-goals, each with a home:
 | habit.pause | — (R-1) | E (desktop) (US-2, editor field) | E (desktop; kiosk: disabled) (US-2, context menu + badge) | — (R-9) | — (R-1) | — (R-1) | E (US-2, `habits pause`/`habits resume`) |
 | habit.undo_completion | — (R-1) | — (R-2) | E (desktop; kiosk: disabled) (US-3, global undo) | — (R-9) | — (R-1) | — (R-1) | E (US-3, global `undo`) |
 | habit.quota_edit | — (R-1) | E (desktop) (US-4, editor target field) | E (desktop; kiosk: disabled) (US-4, click the 3/8 phrase) | — (R-9) | — (R-1) | — (R-1) | E (pre-existing, `habits update --target`) |
-| habit.schedule | — (R-1) | E (desktop) (US-5, weekday picker) | D (US-5, off-day transparency shown) | — (R-9) | — (R-1) | — (R-1) | E (US-5, `habits update --days`) |
+| habit.schedule | — (R-1) | E (desktop) (US-5, weekday picker, week/month habits) | D (US-5, scheduled/off-day display) | — (R-9) | — (R-1) | — (R-1) | E (US-5, `habits update --days`) |
 | habit.reminder_override | — (R-1) | E (desktop) (US-6, override editor) | D (US-6, armed-chip display) | — (R-9) | — (R-1) | — (R-1) | E (US-6, `habits update --reminder`) |
 | habit.history | — (R-1) | E (desktop) (US-7, open from editor) | D (desktop-only dialog; kiosk: absent) (US-7) | — (R-9) | — (R-1) | — (R-1) | E (US-7, `habits history`) |
 | habit.streak_badge | — (R-1) | D (US-8) | D (US-8, badge replaces 🔥N) | — (R-9) | — (R-1) | — (R-1) | D (US-8, `habits list` streak column unchanged data) |
@@ -113,7 +116,7 @@ Non-goals, each with a home:
 | R-3 | Kiosk: skip/pause/quota/schedule/override actions render disabled (visible-disabled posture), history dialog absent | HAB-14 + D7 kiosk law: rows render, actions gate; dialogs unmountable on kiosk | Kiosk gates §8 |
 | R-4 | Skip targets the **current canonical window only**; past windows are reachable only through the audited `AdjustHabitLog` valve | The log is the window's state (`habit.rs` "nothing ticks" law); a retroactive skip would forge history without audit; skip is a *decision*, adjust is a *correction* | Ruling recorded here; engine law in HF1 chunk plan |
 | R-5 | Skip is **period-grain** (one skip per canonical window), not per-day inside weekly/monthly windows | The log key is `(habit, window)` — the window is the module's grain (habit.rs §DR-6/5); a per-day skip inside a period would need a second key family (validate-and-forget risk, type-driven policy §2.1) | HF1 chunk plan §domain |
-| R-6 | `scheduled_days` is **inert for PerWeek/PerMonth habits** (documented leniency at the field) | Week/month windows are already period-grain; O-1's supersession keeps windows ISO-Monday/calendar-1st — per-weekday day sets only refine the daily grain | HF4 chunk plan §domain; backlog issue for the week/month generalization |
+| R-6 | Per-weekday day sets apply to **PerWeek/PerMonth habits only**; `scheduled_days` is inert for PerDay (documented leniency at the field) | Operator ruling (2026-11-21 gate feedback): a daily habit happens *every day* — scheduling it on weekdays is a *weekly* habit, and a daily habit with weekday subsets would work identically to a weekly habit with the same days (redundant terminology and behavior). Day sets refine the week/month grain instead: they pick the scheduled days *inside* the canonical window (windows stay ISO-Monday / calendar-1st — O-1 untouched); before the window's first scheduled day the window is transparent; the nudge arms on each scheduled day | HF4 chunk plan §domain; #1145 updated, not duplicated |
 | R-7 | `NotUndoable(HabitSurface)` is **superseded for `LogHabit` only** — `LogHabit` becomes journal-invertible (pre-image: prior row count+clock); `AdjustHabitLog` and skip-mint stay NotUndoable | #956's parity ask integrates habit logging into the *global undo line*; the audited correction valve keeps its fence (an undo-of-a-correction would double-forge); **census note (dated 2026-11-21)**: the habit.undo/repair fence cells' "NotUndoable(HabitSurface)" text gains the dated supersession "LogHabit journal-invertible since 2026-11-21 (habit-family UX plan R-7)" | HF2 chunk plan §undo |
 | R-8 | Reminder override base defaults to **the nudge day (O-1)**; `PeriodStart` is the explicit alternative; snooze units are hours/days per O-1 | O-1's nudge law binds verbatim — the override parameterizes it, never contradicts it | HF4 chunk plan §nudge |
 | R-9 | No habit cells on the Review view | Review reviews *tasks* (day-review grammar, O-3); habit history has its own dedicated dialog | §1 non-goals |
@@ -226,34 +229,39 @@ Non-goals, each with a home:
     rows exist Then they stay (D-H12 inertness; no deletion) —
     verified by existing domain test, re-run green.
 
-### US-5 — Schedule a daily habit per weekday
+### US-5 — Schedule a weekly/monthly habit's days
 
-- **Story**: As a desktop user whose habit belongs on specific days
-  (Mon/Wed/Fri) I want to pick the scheduled weekdays, so off-days are
-  planned-off — the streak never counts nor breaks on them and no
-  nudge fires.
-- **Platforms**: desktop (kiosk: action disabled; off-day
-  transparency still displays).
+- **Story**: As a desktop user whose weekly habit belongs on specific
+  days (Mon/Wed/Fri) I want to pick the scheduled weekdays, so the
+  nudge fires on the days I actually do the habit and the week doesn't
+  read as due before its first scheduled day.
+- **Platforms**: desktop (kiosk: action disabled; scheduled/off-day
+  display still renders).
 - **Entry points**: habit editor weekday picker (TaskDetail), habit
   context menu (Edit → opens the editor), keyboard
   `ActionId::HabitScheduleEdit`, CLI `habits update --days <mo,we,fr>`.
 - **Priority**: P1.
 - **Acceptance**:
-  - AC-1: Given scheduled weekdays set on a PerDay habit When a
-    non-scheduled day's window elapses unmet Then it is transparent in
-    the streak walk — verified by domain property (Σ extension).
-  - AC-2: Given a non-scheduled day When the nudge pass runs Then no
-    nudge arms — verified by engine test.
+  - AC-1: Given scheduled weekdays set on a PerWeek/PerMonth habit
+    When the window's scheduled days have not yet begun Then the
+    window is transparent in the streak walk (no due posture, no
+    miss) — verified by domain property (Σ extension).
+  - AC-2: Given a scheduled day inside a week/month window When the
+    nudge pass runs Then the nudge arms on that day (quota-gated) and
+    on no other day of the window — verified by engine test.
   - AC-3: Given the picker with zero weekdays selected When commit is
-    attempted Then commit stays blocked (an all-off habit is
-    meaningless; the empty set is a typed invalid draft, not a
-    validate-and-forget) — verified by journey test.
-  - AC-4: Given `scheduled_days` set on a PerWeek/PerMonth habit Then
-    the field is inert (R-6) and the editor does not offer the picker
-    for those kinds — verified by presentation fold test.
-  - AC-5: Given adherence computed over a scheduled habit Then the
-    denominator counts scheduled windows only — verified by domain
-    unit test (US-9 dependency).
+    attempted Then commit stays blocked (the empty set is a typed
+    invalid draft, not a validate-and-forget) — verified by journey
+    test.
+  - AC-4: Given a PerDay habit Then the editor does not offer the
+    picker and the field is inert (R-6: a daily habit happens every
+    day; day-set scheduling is a weekly/monthly extension) — verified
+    by presentation fold test.
+  - AC-5: Given adherence computed over a weekly/monthly habit Then
+    the denominator derives from its day sets: a window joins the
+    denominator once its first scheduled day has elapsed (with no day
+    set, at period start — today's posture) — verified by domain unit
+    test (US-9 dependency).
 
 ### US-6 — Give a habit a reminder override
 
@@ -296,7 +304,7 @@ Non-goals, each with a home:
   - AC-1: Given a habit with log rows over several windows When the
     history dialog mounts Then the current and past canonical windows
     render as month-grid cells with the per-window state (met / unmet
-    / pending / skipped / paused / off-schedule / missed) — verified
+    / pending / skipped / paused / pre-schedule / missed) — verified
     by journey test `us7_s2_`.
   - AC-2: Given a window of a former target kind in the log (D-H12)
     Then it renders as inert/absent (never as a miss) — verified by
@@ -343,7 +351,9 @@ Non-goals, each with a home:
 - **Priority**: P2.
 - **Acceptance**:
   - AC-1: Given a habit's log When statistics compute Then adherence
-    % = met windows ÷ scheduled windows (US-5's denominator), best
+    % = met windows ÷ scheduled windows (the denominator derives from
+    the weekly/monthly day sets per R-6, never from a daily habit),
+    best
     streak = max over historical runs, per-period totals per current
     target kind — verified by domain unit/property tests.
   - AC-2: Given a habit with a paused or skipped span When statistics
@@ -394,9 +404,9 @@ Non-goals, each with a home:
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-5/S1 | Habit editor (TaskDetail, habit variant) | Open; locate the weekday picker (PerDay habits only, R-6) | — display only | Picker shows the seven weekdays with the current set | Kiosk: editor unmountable (D7) |
-| US-5/S2 | Weekday picker rows | Toggle weekdays; save | `StateCommand::UpdateHabit { changes: HabitChanges { scheduled_days: Some(set) } }` | Set saved; off-day transparency applies from the next window | Empty set → commit blocked (typed invalid draft) |
-| US-5/S3 | Today row on an off-day | Observe | — display only | Row renders the off-schedule state (no miss posture, no nudge) | — display only |
+| US-5/S1 | Habit editor (TaskDetail, habit variant) | Open; locate the weekday picker (PerWeek/PerMonth habits only, R-6) | — display only | Picker shows the seven weekdays with the current set | Kiosk: editor unmountable (D7) |
+| US-5/S2 | Weekday picker rows | Toggle weekdays; save | `StateCommand::UpdateHabit { changes: HabitChanges { scheduled_days: Some(set) } }` | Set saved; pre-schedule transparency and per-scheduled-day nudges apply from the next window | Empty set → commit blocked (typed invalid draft) |
+| US-5/S3 | Today row on a non-scheduled day of a week/month window | Observe | — display only | Row renders the off-day state (no due posture, no nudge) | — display only |
 
 ### US-6 — Reminder override
 
@@ -411,7 +421,7 @@ Non-goals, each with a home:
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
 | US-7/S1 | Context menu History row / editor History row / `ActionId::HabitHistory` | Activate | — (mounts `habit-history-view.slint`, W1 `ModalDialog`, read role) | Month grid of canonical windows with typed per-window states | Tombstoned habit → dialog still renders (log outlives); kiosk → absent |
-| US-7/S2 | History grid | Observe | — display only | Cells: met / unmet-pending / skipped / paused / off-schedule / missed / inert (D-H12) | — display only |
+| US-7/S2 | History grid | Observe | — display only | Cells: met / unmet-pending / skipped / paused / pre-schedule / missed / inert (D-H12) | — display only |
 | US-7/S3 | Dialog month pager | Page back | — display only | Prior month grids render | Oldest month → pager clamps (no wrap) |
 | US-7/S4 | Dialog | Close | — (W1 dismiss, no command) | Dialog closes, zero state change | Escape / outside-click (read-role dismissal) |
 
@@ -495,7 +505,7 @@ stateDiagram-v2
 |---|---|---|---|
 | StateCommand | `SkipHabit` | `{ habit: HabitId }` — window minted planner-side from the day calendar (the `LogHabit` posture; current canonical window only, R-4) | US-1/S2 |
 | StateCommand | `PauseHabit` | `{ habit: HabitId, until: Option<NaiveDate> }` — inclusive pause-through local date; `None` resumes (the `PauseSeries` twin, D-C10 shape) | US-2/S2, US-2/S3 |
-| StateCommand | `UpdateHabit` (changed payload, pre-existing command) | `HabitChanges` gains `scheduled_days: Option<WeekdaySet>` and `reminder: Option<Option<HabitReminderOverride>>` (double-option clear leg, the `anchor_time` test twin) | US-4/S2, US-5/S2, US-6/S2, US-6/S3 |
+| StateCommand | `UpdateHabit` (changed payload, pre-existing command) | `HabitChanges` gains `scheduled_days: Option<WeekdaySet>` (PerWeek/PerMonth habits only, R-6) and `reminder: Option<Option<HabitReminderOverride>>` (double-option clear leg, the `anchor_time` test twin) | US-4/S2, US-5/S2, US-6/S2, US-6/S3 |
 | StateCommand | `LogHabit` (changed classification only) | classification: `NotUndoable(HabitSurface)` → journal-invertible pre-image (prior count+clock); command shape unchanged | US-3/S2 (R-7) |
 | StateCommand | `UndoLast` (pre-existing, unchanged) | global undo pops the habit-log entry | US-3/S2, US-1/S4 |
 | ActionId | `HabitSkip` | Today context, presets keyed | US-1/S2 |
@@ -518,15 +528,18 @@ stateDiagram-v2
   dispatch (W-1, W-3, W-5, W-6, W-7); the `UpdateHabit` double-option
   clear legs (US-6/S3).
 - **Engine/domain tests** (typed outcomes; no text assertions):
-  - Domain: skip/paused/off-schedule transparency properties — the Σ
+  - Domain: skip/paused/pre-schedule transparency properties — the Σ
     property family extended (`habit.rs` proptest module): the window
     walk's classification becomes four-valued (counting / pending /
-    missed / **transparent**); the pinned properties extend to assert
-    (a) a transparent window never increments a count, (b) it never
-    breaks a streak, (c) at most two pending windows for any `now`
-    (existing), (d) transparency composes (skip ∧ pause ∧ off-day are
-    one transparent outcome, not three behaviors), (e) the Σ log
-    invariant (each increment lands in exactly one window) unchanged.
+    missed / **transparent**); the transparent class's subjects are
+    skipped windows, pause-covered windows, and weekly/monthly windows
+    whose scheduled days have not yet begun (R-6 — there is no daily
+    off-day class); the pinned properties extend to assert (a) a
+    transparent window never increments a count, (b) it never breaks a
+    streak, (c) at most two pending windows for any `now` (existing),
+    (d) transparency composes (skip ∧ pause ∧ pre-schedule are one
+    transparent outcome, not three behaviors), (e) the Σ log invariant
+    (each increment lands in exactly one window) unchanged.
   - Domain: `adherence`/`best_streak`/`per_period_totals` unit +
     property tests (US-9), including the scheduled-window denominator
     and the empty-history typed state.
@@ -534,12 +547,13 @@ stateDiagram-v2
     (typed `UnknownHabit`/`HabitDeleted`/`InvalidHabitPause`
     rejections), the R-7 undo classification change (snapshot tests:
     `LogHabit` invertible, `AdjustHabitLog` fenced), pause disarming
-    nudges, off-day nudge disarm.
+    nudges, per-scheduled-day nudge shaping (arms on each scheduled
+    day, on no other day of the window).
   - Reminder engine: override occurrence derivation over
     `nudge_day`/`tracker_anchor_occurrence` (O-1 law verbatim, shifted
     by the override).
 - **Fold/presentation tests**: `presentation.rs::habit_row_model`
-  typed state bits (skip / paused / off-schedule), the badge model
+  typed state bits (skip / paused / scheduled-off), the badge model
   value, the editor's kind-gated picker visibility (US-5 AC-4),
   statistics projection values.
 - **Kiosk gates**: W-1/W-3/W-5/W-6/W-7 actions render disabled
