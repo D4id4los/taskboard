@@ -10,8 +10,8 @@ use std::sync::Arc;
 use taskboard_domain::{AppState, CommandOutcome, LabelChanges, LabelId, StateCommand};
 
 pub(crate) use crate::cli::DEFAULT_LABEL_COLOR;
-use crate::commands::CommandError;
 use crate::commands::output::{LabelReceipt, LabelRow};
+use crate::commands::{CommandError, outcome_mismatch};
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 
@@ -270,6 +270,101 @@ pub fn render_text_receipt(receipt: &LabelReceipt) -> String {
     )
 }
 
+/// Resolves a *restore* target: exact uuid → unique ≥8-char uuid
+/// prefix, tombstones included, and deliberately **no title leg** —
+/// tombstoned rows may share titles, so ids are the restore family's
+/// only address (journey D-2). A full uuid that names nothing is the
+/// typed rejection (never a live-only miss).
+///
+/// # Errors
+///
+/// [`CommandError::UnknownLabel`] / [`CommandError::AmbiguousLabel`] —
+/// typed, never text-matched.
+pub(crate) fn resolve_restorable_label(
+    state: &AppState,
+    selector: &str,
+) -> Result<LabelId, CommandError> {
+    if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
+        let id = LabelId::from_uuid(uuid);
+        return if state.labels.contains_key(&id) {
+            Ok(id)
+        } else {
+            Err(CommandError::UnknownLabel(selector.to_owned()))
+        };
+    }
+    if selector.len() >= 8 {
+        let needle = selector.to_lowercase();
+        let hits: Vec<LabelId> = state
+            .labels
+            .values()
+            .filter(|l| l.id.as_uuid().to_string().starts_with(&needle))
+            .map(|l| l.id)
+            .collect();
+        if let [id] = hits.as_slice() {
+            return Ok(*id);
+        }
+        if !hits.is_empty() {
+            return Err(CommandError::AmbiguousLabel {
+                candidates: hits.iter().map(|id| id.as_uuid().to_string()).collect(),
+            });
+        }
+    }
+    Err(CommandError::UnknownLabel(selector.to_owned()))
+}
+
+/// Restores a label by id (the one-shot lane): dispatches
+/// [`StateCommand::RestoreLabel`] and returns the engine's pinned
+/// receipt (`LabelRestored`, or `NoOp` for the accepted live-target
+/// no-op) — the `--json` payload is the serde-pinned `CommandOutcome`
+/// itself (journey D-3/W-5).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn restore(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    selector: &str,
+) -> Result<CommandOutcome, CommandError> {
+    let selector = selector.to_owned();
+    crate::commands::tasks::with_core(config, store, async |app| restore_on(app, &selector).await)
+        .await
+}
+
+/// The `labels restore` steps on a booted core (the REPL/session seam).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) async fn restore_on(
+    app: &crate::App,
+    selector: &str,
+) -> Result<CommandOutcome, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let id = resolve_restorable_label(&state, selector)?;
+    drop(state);
+    match app
+        .engine
+        .execute(StateCommand::RestoreLabel { id })
+        .await?
+    {
+        // The pinned receipt family: the restore fact, or the accepted
+        // live-target no-op. Anything else is an engine contract break.
+        outcome @ (CommandOutcome::LabelRestored { .. } | CommandOutcome::NoOp) => Ok(outcome),
+        _ => Err(outcome_mismatch()),
+    }
+}
+
+/// The human render of the restore receipt (D-3: the typed fact).
+#[must_use]
+pub fn render_text_restore(outcome: &CommandOutcome) -> String {
+    match outcome {
+        CommandOutcome::LabelRestored { label } => format!("restored label {}", label.as_uuid()),
+        CommandOutcome::NoOp => "label is already live (nothing to restore)".to_owned(),
+        _ => "unexpected restore receipt".to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +426,48 @@ mod tests {
             resolve_label(&state_with(vec![dead]), "gone"),
             Err(CommandError::UnknownLabel(_))
         ));
+    }
+
+    #[test]
+    fn restore_selector_hits_tombstones_by_uuid_then_unique_prefix() {
+        let mut dead = label(0x100, "gone");
+        dead.deleted = true;
+        let id = dead.id;
+        let state = state_with(vec![dead]);
+        // The tombstone is the restore surface's addressable row.
+        assert!(matches!(
+            resolve_restorable_label(&state, &id.as_uuid().to_string()),
+            Ok(got) if got == id
+        ));
+        assert!(matches!(
+            resolve_restorable_label(&state, &id.as_uuid().to_string()[..8]),
+            Ok(got) if got == id
+        ));
+        // No title leg: tombstoned rows may share titles (journey D-2).
+        assert!(matches!(
+            resolve_restorable_label(&state, "gone"),
+            Err(CommandError::UnknownLabel(sel)) if sel == "gone"
+        ));
+        // An unknown full uuid is the typed rejection, never a miss.
+        assert!(matches!(
+            resolve_restorable_label(&state, &Uuid::from_u128(0x999).to_string()),
+            Err(CommandError::UnknownLabel(_))
+        ));
+    }
+
+    #[test]
+    fn restore_prefix_collision_is_typed_ambiguous() {
+        let mut a = label(0x100, "one");
+        a.deleted = true;
+        let mut b = label(0x100_0000_0000_0000_0000, "two");
+        b.deleted = true;
+        // Two tombstones sharing the 8-char prefix window.
+        let shared = a.id.as_uuid().to_string()[..8].to_owned();
+        assert_eq!(b.id.as_uuid().to_string()[..8], shared, "fixture prefix");
+        let err =
+            resolve_restorable_label(&state_with(vec![a, b]), &shared).expect_err("ambiguous");
+        assert!(
+            matches!(err, CommandError::AmbiguousLabel { ref candidates } if candidates.len() == 2)
+        );
     }
 }

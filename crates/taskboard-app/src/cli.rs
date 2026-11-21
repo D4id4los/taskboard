@@ -522,6 +522,13 @@ fn parse_board_id(raw: &str) -> Result<taskboard_domain::BoardId, String> {
         .map_err(|_| "expected a board uuid".to_owned())
 }
 
+/// A bare uuid — the `track restore --id` flag. A malformed value is a
+/// clap usage error (exit 2), the `parse_board_id` precedent: the id
+/// must be typed before any dispatch, never mid-assembly.
+fn parse_uuid_flag(raw: &str) -> Result<uuid::Uuid, String> {
+    uuid::Uuid::parse_str(raw).map_err(|_| "expected a uuid".to_owned())
+}
+
 #[test]
 fn boards_move_demands_exactly_one_direction() {
     // The collapsed grammar (D-1 of the cli-verb-grammar-hygiene
@@ -1330,6 +1337,40 @@ pub enum TrackCmd {
         /// The entry (uuid | unique ≥8-char uuid prefix).
         entry: String,
     },
+    /// Re-materialize one hard-deleted time entry from its verbatim
+    /// facts (the #901 restore-family verb's first surface): whatever
+    /// the flags carry is what the engine restores. A present same-id
+    /// row is the typed divergence refusal; a gone owner task the
+    /// typed rejection before any dispatch. The restore verbs are the
+    /// recovery path — undoable via the journal pre-images (the #1187
+    /// ruling): the undo line's inverse re-deletes the restored row.
+    Restore {
+        /// The restored entry's id slot: a full uuid names the payload
+        /// id verbatim; a prefix is refused typed (a hard-deleted row
+        /// cannot prefix-resolve — ids are the restore family's
+        /// address). `--id` overrides; a fresh v7 mints when neither
+        /// names one.
+        entry: Option<String>,
+        /// The owner task (uuid | unique ≥8-char uuid prefix | exact
+        /// live title); a gone owner is the typed rejection.
+        #[arg(long)]
+        task: String,
+        /// Span start (RFC-3339 with an explicit offset, or
+        /// YYYY-MM-DD = midnight UTC).
+        #[arg(long, value_parser = parse_span_stamp)]
+        start: chrono::DateTime<chrono::Utc>,
+        /// Span end; omitted = the entry re-materializes open.
+        #[arg(long, value_parser = parse_span_stamp)]
+        end: Option<chrono::DateTime<chrono::Utc>>,
+        /// What the entry counts as (`work|respite`); `work` when
+        /// omitted.
+        #[arg(long, value_parser = parse_kind_flag)]
+        kind: Option<taskboard_domain::tracking::TimeEntryKind>,
+        /// The restored entry's id (overrides the positional slot);
+        /// a fresh v7 when neither names one.
+        #[arg(long, value_parser = parse_uuid_flag)]
+        id: Option<uuid::Uuid>,
+    },
 }
 
 /// `habits` subcommands (D-12's six verbs). The target grammar
@@ -1485,6 +1526,17 @@ pub enum HabitsCmd {
     /// queryable, and the receipt names the surviving row count).
     Rm {
         /// The habit (uuid | prefix | exact live title).
+        habit: String,
+    },
+    /// Resurrect a tombstoned habit by id (the #901 restore-family
+    /// verb's first surface): pre-tombstone values come back verbatim,
+    /// the log is never touched (D26). A live target is the accepted
+    /// no-op; an unknown id is the typed rejection. The restore verbs
+    /// are the recovery path — undoable via the journal pre-images
+    /// (the #1187 ruling): undo re-deletes the tombstone.
+    Restore {
+        /// The habit (uuid | unique ≥8-char uuid prefix; tombstones
+        /// resolve — no title leg, tombstoned rows may share titles).
         habit: String,
     },
 }
@@ -1768,6 +1820,18 @@ pub enum LabelsCmd {
     /// Delete a label (detaches it from all tasks; idempotent).
     Delete {
         /// The label (uuid | exact title).
+        label: String,
+    },
+    /// Resurrect a tombstoned label by id (the #901 restore-family
+    /// verb's first surface): pre-tombstone values come back verbatim
+    /// with a fresh tombstone clock, which re-opens the membership
+    /// recovery surface (`tasks label`). A live target is the accepted
+    /// no-op; an unknown id is the typed rejection. The restore verbs
+    /// are the recovery path — undoable via the journal pre-images
+    /// (the #1187 ruling): undo re-deletes the tombstone.
+    Restore {
+        /// The label (uuid | unique ≥8-char uuid prefix; tombstones
+        /// resolve — no title leg, tombstoned rows may share titles).
         label: String,
     },
 }

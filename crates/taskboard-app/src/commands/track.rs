@@ -21,11 +21,11 @@ use taskboard_domain::{
 };
 
 use crate::cli::{ExportFormat, ExportWhat, TrackCmd};
-use crate::commands::CommandError;
 use crate::commands::output::{
     ExportRow, TrackAdjustReceipt, TrackDeleteReceipt, TrackEntryRow, TrackListView,
     TrackLogReceipt, TrackStartReceipt, TrackStatusView, TrackStopReceipt,
 };
+use crate::commands::{CommandError, outcome_mismatch};
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 
@@ -402,6 +402,114 @@ pub async fn delete_on(
     }
 }
 
+/// Boots the core and re-materializes the flag payload (the one-shot
+/// lane).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+#[allow(clippy::too_many_arguments)] // the D-4 flag bag, one parameter per flag
+pub async fn restore(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    entry: Option<String>,
+    task_selector: &str,
+    start: DateTime<Utc>,
+    end: Option<DateTime<Utc>>,
+    kind: taskboard_domain::tracking::TimeEntryKind,
+    id: Option<uuid::Uuid>,
+) -> Result<CommandOutcome, CommandError> {
+    let selector = task_selector.to_owned();
+    super::tasks::with_core(config, store, async |app| {
+        restore_on(app, entry.as_deref(), &selector, start, end, kind, id).await
+    })
+    .await
+}
+
+/// The `track restore` steps on a booted core (both dispatch lanes):
+/// resolve the owner task, assemble the payload verbatim from the
+/// flags (D-4 — the id slot: `--id` override, positional full uuid,
+/// or a fresh v7; the row stamps are the assembler's `now`), execute
+/// [`StateCommand::RestoreTimeEntry`], and return the engine's pinned
+/// receipt (`EntryRestored`, or `NoOp` for the exact already-restored
+/// fact) — the `--json` payload is the serde-pinned `CommandOutcome`
+/// itself (journey D-3/W-5). A positional prefix is the typed refusal
+/// before any dispatch: a hard-deleted row cannot prefix-resolve
+/// (ids are the restore family's address, D-2).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) async fn restore_on(
+    app: &crate::App,
+    entry: Option<&str>,
+    task_selector: &str,
+    start: DateTime<Utc>,
+    end: Option<DateTime<Utc>>,
+    kind: taskboard_domain::tracking::TimeEntryKind,
+    id: Option<uuid::Uuid>,
+) -> Result<CommandOutcome, CommandError> {
+    // The id slot resolves before the task does — the positional is
+    // the entry's own address, and a prefix is a typed refusal, never
+    // a fresh-mint fallback for a half-typed id.
+    let positional_id = match entry {
+        Some(selector) => match uuid::Uuid::parse_str(selector) {
+            Ok(uuid) => Some(uuid),
+            Err(_) => {
+                return Err(CommandError::UnknownTimeEntry {
+                    selector: selector.to_owned(),
+                });
+            }
+        },
+        None => None,
+    };
+    let state = app.engine.shared_state().load_full();
+    let task = super::tasks::resolve_task(&state, task_selector)?;
+    // The snapshot rides the payload: the engine restores verbatim and
+    // stamps nothing, so the title travels with the flags.
+    let task_title = state
+        .tasks
+        .get(&task)
+        .map(|t| t.title.clone())
+        .expect("resolve_task guarantees the live row");
+    drop(state);
+    let restored_id = id.or(positional_id).unwrap_or_else(uuid::Uuid::now_v7);
+    let payload = taskboard_domain::tracking::TimeEntry {
+        id: TimeEntryId::from_uuid(restored_id),
+        task,
+        task_title,
+        start,
+        end,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        kind,
+        by: None,
+    };
+    match app
+        .engine
+        .execute(StateCommand::RestoreTimeEntry {
+            entry: Box::new(payload),
+        })
+        .await?
+    {
+        // The pinned receipt family: the restore fact, or the exact
+        // already-restored no-op. Anything else is an engine contract
+        // break (the divergence refusal surfaces typed through `?`).
+        outcome @ (CommandOutcome::EntryRestored { .. } | CommandOutcome::NoOp) => Ok(outcome),
+        _ => Err(outcome_mismatch()),
+    }
+}
+
+/// The human render of the restore receipt (D-3: the typed fact).
+#[must_use]
+pub fn render_text_restore(outcome: &CommandOutcome) -> String {
+    match outcome {
+        CommandOutcome::EntryRestored { id } => format!("restored entry {}", id.as_uuid()),
+        CommandOutcome::NoOp => "entry is already present (nothing to restore)".to_owned(),
+        _ => "unexpected restore receipt".to_owned(),
+    }
+}
+
 /// The `track list` steps on a booted core: resolve the optional task
 /// selector (live tasks only — `resolve_task`'s existing contract),
 /// project the canonical rows.
@@ -666,6 +774,24 @@ pub enum TrackInvocation {
         /// The entry selector.
         entry: String,
     },
+    /// `restore [--id] --task <task> --start <stamp> …` — the #901
+    /// restore-family verb's first surface: the payload assembles from
+    /// flags (journey D-4) and rides `RestoreTimeEntry` verbatim.
+    Restore {
+        /// The restored entry's id slot (positional uuid, `--id`
+        /// override, or a fresh v7).
+        entry: Option<String>,
+        /// The owner-task selector.
+        task: String,
+        /// The span start.
+        start: DateTime<Utc>,
+        /// The span end (`None` = open).
+        end: Option<DateTime<Utc>>,
+        /// What the entry counts as (`Work` when omitted).
+        kind: taskboard_domain::tracking::TimeEntryKind,
+        /// The `--id` override.
+        id: Option<uuid::Uuid>,
+    },
 }
 
 /// The collapsed `log` span mode: a length ending at the command
@@ -727,6 +853,21 @@ pub fn collapse(cmd: TrackCmd) -> Option<TrackInvocation> {
             kind,
         }),
         TrackCmd::Delete { entry } => Some(TrackInvocation::Delete { entry }),
+        TrackCmd::Restore {
+            entry,
+            task,
+            start,
+            end,
+            kind,
+            id,
+        } => Some(TrackInvocation::Restore {
+            entry,
+            task,
+            start,
+            end,
+            kind: kind.unwrap_or_default(),
+            id,
+        }),
     }
 }
 
@@ -1043,13 +1184,6 @@ fn entry_row(entry: &taskboard_domain::TimeEntry, now: DateTime<Utc>) -> TrackEn
     }
 }
 
-/// The planner's reply contract pins one outcome per tracking command
-/// (plus `NoOp`); any other reply is an engine contract bug — surfaced
-/// as the generic engine kind, never misreported as a user error.
-fn outcome_mismatch() -> CommandError {
-    CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone))
-}
-
 /// The human-readable `status` render: open rows (title, elapsed
 /// phrase, entry id) and the tracked-today total in phrase and
 /// whole-seconds forms — state truth read back, never an input echo.
@@ -1290,6 +1424,24 @@ pub async fn track_command(
             )
             .await
         }
+        TrackInvocation::Restore {
+            entry,
+            task,
+            start,
+            end,
+            kind,
+            id,
+        } => {
+            super::run_core(
+                io,
+                config_path,
+                render_text_restore,
+                move |config, store| async move {
+                    restore(config, store, entry, &task, start, end, kind, id).await
+                },
+            )
+            .await
+        }
     }
 }
 
@@ -1334,6 +1486,18 @@ pub async fn track_line(
         TrackInvocation::Delete { entry } => {
             crate::commands::emit_result(io, delete_on(app, &entry).await, render_text_delete)
         }
+        TrackInvocation::Restore {
+            entry,
+            task,
+            start,
+            end,
+            kind,
+            id,
+        } => crate::commands::emit_result(
+            io,
+            restore_on(app, entry.as_deref(), &task, start, end, kind, id).await,
+            render_text_restore,
+        ),
     }
 }
 

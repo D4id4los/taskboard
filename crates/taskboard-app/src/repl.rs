@@ -827,7 +827,7 @@ pub(crate) fn prefill_boards(
             LabelsCmd::List { board } | LabelsCmd::Add { board, .. } => {
                 board.get_or_insert(current);
             }
-            LabelsCmd::Edit { .. } | LabelsCmd::Delete { .. } => {}
+            LabelsCmd::Edit { .. } | LabelsCmd::Delete { .. } | LabelsCmd::Restore { .. } => {}
         },
         _ => {}
     }
