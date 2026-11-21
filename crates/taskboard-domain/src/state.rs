@@ -566,6 +566,28 @@ impl AppState {
         Self::sorted_tasks(self.tasks.values().filter(|t| t.is_live()))
     }
 
+    /// Whether any live (non-deleted) board carries a remote binding
+    /// whose connector is in `owners` (#1120): the boot-pull settle
+    /// predicate's typed fact. The *ownership set* is an argument —
+    /// now-as-data, so the pure state layer never derives who owns what
+    /// from config (the app layer computes the configured-connector set
+    /// once at boot and hands it in). The now-as-data analog keeps the
+    /// SRP line: the state derives which bindings are ownable *given*
+    /// owners; the app derives *who the owners are*.
+    #[must_use]
+    pub fn live_ownable_bindings_exist(
+        &self,
+        owners: &std::collections::BTreeSet<ConnectorId>,
+    ) -> bool {
+        self.boards.values().any(|board| {
+            !board.deleted
+                && board
+                    .remote
+                    .as_ref()
+                    .is_some_and(|binding| owners.contains(&binding.connector))
+        })
+    }
+
     /// Live tasks of one stack, in canonical order.
     #[must_use]
     pub fn tasks_in_stack(&self, stack: StackId) -> Vec<&Task> {

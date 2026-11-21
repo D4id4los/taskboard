@@ -1309,7 +1309,12 @@ async fn boot_pull_settles_immediately_when_no_live_board_is_bound() {
     tokio::time::pause();
     let timeout = Duration::from_secs(10);
     let t0 = tokio::time::Instant::now();
-    taskboard_app::bootstrap::wait_for_boot_pull(&handle, timeout).await;
+    taskboard_app::bootstrap::wait_for_boot_pull(
+        &handle,
+        &std::collections::BTreeSet::new(),
+        timeout,
+    )
+    .await;
     let elapsed = tokio::time::Instant::now() - t0;
     assert!(
         elapsed < timeout,
@@ -1331,8 +1336,12 @@ async fn boot_pull_does_not_settle_early_while_a_live_board_stays_bound() {
     tokio::time::pause();
     let timeout = Duration::from_secs(10);
     let t0 = tokio::time::Instant::now();
+    let owners: std::collections::BTreeSet<taskboard_domain::ConnectorId> =
+        [taskboard_domain::test_support::test_connector()]
+            .into_iter()
+            .collect();
     let wait = tokio::spawn(async move {
-        taskboard_app::bootstrap::wait_for_boot_pull(&handle, timeout).await;
+        taskboard_app::bootstrap::wait_for_boot_pull(&handle, &owners, timeout).await;
     });
     // Deterministic drive past the deadline (tokio auto-advance would
     // get there too; the explicit advance keeps the path pinned).
@@ -1343,5 +1352,36 @@ async fn boot_pull_does_not_settle_early_while_a_live_board_stays_bound() {
     assert!(
         elapsed >= timeout,
         "a bound-board world must not settle early (virtual elapsed {elapsed:?})"
+    );
+}
+
+/// The #1120 widening: a live board bound to a connector *outside* the
+/// owner set (the standalone-after-attach shape — a deconfigured-only
+/// world) settles the boot wait immediately, without the deadline
+/// expiring — no live actor owns that binding, so no cycle can pull
+/// anything for it. Deterministic under the paused clock: the call
+/// returns before any clock advance (a broken predicate can only exit
+/// at the deadline, and the deadline passes only on an explicit
+/// advance that this test never performs).
+#[tokio::test]
+async fn boot_pull_settles_immediately_when_no_ownable_binding_is_live() {
+    let (handle, _join) = settle_engine(settle_state(
+        taskboard_domain::test_support::test_binding(RemoteBoardId::deck(BOARD)),
+    ))
+    .await;
+    tokio::time::pause();
+    let timeout = Duration::from_secs(10);
+    let t0 = tokio::time::Instant::now();
+    taskboard_app::bootstrap::wait_for_boot_pull(
+        &handle,
+        &std::collections::BTreeSet::new(),
+        timeout,
+    )
+    .await;
+    let elapsed = tokio::time::Instant::now() - t0;
+    assert!(
+        elapsed < timeout,
+        "a deconfigured-only world must settle without burning the deadline \
+         (virtual elapsed {elapsed:?})"
     );
 }

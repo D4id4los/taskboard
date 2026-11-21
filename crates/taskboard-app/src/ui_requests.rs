@@ -93,6 +93,11 @@ pub struct ConnectionWorkspace {
     /// the arms (the pre-injection `app_world` outcome): bootstrap
     /// degrades authorless there, so this is not a boot invariant.
     pub device_json: Option<PathBuf>,
+    /// The boot-computed connector-owner set (D-BF5 point 2, #1120),
+    /// handed verbatim to the boot-pull settle predicate — the
+    /// workspace carries it so the settings ceremonies never re-derive
+    /// config ownership.
+    pub connector_owners: std::collections::BTreeSet<taskboard_domain::ConnectorId>,
 }
 
 /// Spawns the UI request forwarder: width snapshots merge into the
@@ -1003,7 +1008,12 @@ async fn save_connection(
         .attach_connector(id, client)
         .await
         .map_err(map_attach_error)?;
-    crate::bootstrap::wait_for_boot_pull(&workspace.engine, SAVE_SETTLE).await;
+    crate::bootstrap::wait_for_boot_pull(
+        &workspace.engine,
+        &workspace.connector_owners,
+        SAVE_SETTLE,
+    )
+    .await;
     tracing::info!(
         connector = %profile.name,
         host = %url_host(&profile.server_url),
@@ -1277,7 +1287,12 @@ async fn bind_through(
         })
         .await
         .map_err(|e| map_execute_error(&e))?;
-    crate::bootstrap::wait_for_boot_pull(&workspace.engine, SAVE_SETTLE).await;
+    crate::bootstrap::wait_for_boot_pull(
+        &workspace.engine,
+        &workspace.connector_owners,
+        SAVE_SETTLE,
+    )
+    .await;
     Ok(())
 }
 
@@ -2083,6 +2098,7 @@ mod tests {
             // The suite's own identity home: the ceremony's create arm
             // mints there, never the platform default (#751).
             device_json: Some(dir.path().join("device.json")),
+            connector_owners: app.connector_owners.clone(),
         };
         WorkspaceFixture {
             workspace,

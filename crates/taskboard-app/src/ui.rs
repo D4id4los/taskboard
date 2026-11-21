@@ -815,6 +815,7 @@ pub async fn run_desktop(
             // dir — degrades to the arms' typed refusal (bootstrap
             // boots authorless there, plan D-2).
             device_json: crate::board_move_ceremony::default_device_json().ok(),
+            connector_owners: app.connector_owners.clone(),
         },
     );
 

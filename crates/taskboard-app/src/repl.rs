@@ -1140,7 +1140,7 @@ pub async fn run_session_with_parts(
     // connector-less core can never run a cycle; skip the wait).
     if connectors_configured {
         let timeout = Duration::from_secs(app.config.app.shutdown_timeout_secs.max(1));
-        crate::bootstrap::wait_for_boot_pull(&app.engine, timeout).await;
+        crate::bootstrap::wait_for_boot_pull(&app.engine, &app.connector_owners, timeout).await;
     }
     // The banner is human surface: under a `--json` session default it
     // goes to stderr so stdout stays a pure machine stream (every
