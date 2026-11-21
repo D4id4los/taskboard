@@ -63,6 +63,10 @@ pub enum FlowTag {
     Labels,
     /// The board color picker (UX R-4 D-1, #791).
     BoardColorPick,
+    /// The board ceremony strips (O-5 parity chunk OP1): the armed
+    /// consent strips — the `ConfirmDelete` shape's row (one armed
+    /// subject, the strips' own seams own the confirm).
+    BoardCeremony,
 }
 
 impl Flow {
@@ -96,6 +100,11 @@ impl Flow {
             Flow::WalkFilePick { .. } => FlowTag::WalkFilePick,
             Flow::WalkDatePick => FlowTag::WalkDatePick,
             Flow::ConfirmDelete(_) => FlowTag::ConfirmDelete,
+            // The board ceremony strips (OP1): the armed-delete's
+            // tag row (the once-per-chain rule's one surface).
+            Flow::ConfirmBoardArchive { .. }
+            | Flow::ConfirmBoardReset { .. }
+            | Flow::ConfirmBoardReconcile { .. } => FlowTag::BoardCeremony,
             Flow::Labels { .. } => FlowTag::Labels,
             Flow::BoardColorPick { .. } => FlowTag::BoardColorPick,
         }
@@ -574,6 +583,9 @@ mod tests {
                 Flow::ConfirmDelete(crate::view_state::DeleteTarget::Stack(STACK))
             }
             FlowTag::BoardColorPick => Flow::BoardColorPick { board: BOARD },
+            // The board ceremony strips (OP1): the reset strip stands for
+            // the family (the identity is the tag, not the data).
+            FlowTag::BoardCeremony => Flow::ConfirmBoardReset { board: BOARD },
         }
     }
 

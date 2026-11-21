@@ -336,6 +336,30 @@ pub enum ActionId {
     /// gate is the adapter's arm (the typed no-op on a non-empty
     /// board).
     BoardDefaultPreset,
+    /// The GUI board-archive verb (O-5 parity chunk OP1, US-1, #945):
+    /// arms the archive consent caption strip over the selected board
+    /// — the consent caption is the letter's `ArchiveCaption` mode
+    /// (D-1: a single row with a consent caption, no counts letter).
+    /// The verb stays `NotUndoable(BoardCeremony)` in the engine (the
+    /// r1 erratum law); its typed escape is the re-archive path (the
+    /// archived roster's restore row), never `AppUndo`. Click ≡ key:
+    /// the board context menu's row routes the same id.
+    BoardArchive,
+    /// The GUI board-reset verb (OP1, US-2, #946): arms
+    /// `Flow::ConfirmBoardReset` — the armed strip mounts with the
+    /// consequence letter (the live stack/task/label counts, D-3);
+    /// Confirm routes the exact `ResetBoard`. The r1 erratum law
+    /// holds: `NotUndoable(BoardCeremony)` — the typed escape is the
+    /// re-pull path for a bound board. Click ≡ key with the menu row.
+    BoardReset,
+    /// The GUI board-reconcile verb (OP1, US-3, #947): arms
+    /// `Flow::ConfirmBoardReconcile` and requests the oneshot preview
+    /// (`UiRequest::BoardReconcilePreview`, D-4) — the strip mounts
+    /// with the planner's match counts (the letter's `ReconcilePreview`
+    /// mode). Confirm routes the exact `ReconcileByTitle`; the merge
+    /// is irreversible (no undo), a zero-count pass is an accepted
+    /// idempotent no-op. Click ≡ key with the menu row.
+    BoardReconcile,
     NavFirstItem,
     NavLastItem,
     ReminderSnooze,
@@ -692,6 +716,9 @@ impl ActionId {
             Self::BoardRename => "board.rename",
             Self::BoardColorEdit => "board.color-edit",
             Self::BoardDefaultPreset => "board.default-preset",
+            Self::BoardArchive => "board.archive",
+            Self::BoardReset => "board.reset",
+            Self::BoardReconcile => "board.reconcile",
 
             Self::NavFirstItem => "nav.first-item",
             Self::NavLastItem => "nav.last-item",
@@ -1277,6 +1304,44 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 110,
         description: "Deletes the current board and all its content: the first press arms the confirm strip, the repeat or the strip's Confirm commits; typed refusals are the engine's.",
+        menu_group: Some(MenuGroup::Board),
+    },
+    // The board ceremony verbs (O-5 parity chunk OP1, US-1/US-2/US-3,
+    // #945/#946/#947): pointer-driven context-menu rows + keyboard ids,
+    // no preset bindings (the habit verbs' rule). The ceremony fences
+    // hold — all three stay `NotUndoable(BoardCeremony)` engine-side;
+    // the surfaces are informed-consent confirmations (the r1 erratum
+    // law, board-stack plan PC-5/PC-1). The rows' captions carry the
+    // consent letter's typed facts (D-1 caption, D-3 counts, D-4
+    // preview); the letters themselves mount in the armed strips.
+    ActionEntry {
+        id: ActionId::BoardArchive,
+        label: "Archive board",
+        contexts: &[ContextId::Board],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 112,
+        description: "Archives the current board: the strip's caption carries the archive fact and the typed escape — the archived-boards roster's restore row brings the board back; the verb is not undoable and no undo affordance is offered. (The `ActionId::BoardArchive` id routes the exact `StateCommand::SetBoardArchived` (archived: true).)",
+        menu_group: Some(MenuGroup::Board),
+    },
+    ActionEntry {
+        id: ActionId::BoardReconcile,
+        label: "Reconcile board…",
+        contexts: &[ContextId::Board],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 114,
+        description: "Arms the reconcile confirm for the current board: the strip's preview letter carries the same-title match counts the merge will adopt (the planner's facts, not prose); the merge is irreversible — survivors keep the local ids and no undo affordance is offered. (The `ActionId::BoardReconcile` id routes the exact `StateCommand::ReconcileByTitle`.)",
+        menu_group: Some(MenuGroup::Board),
+    },
+    ActionEntry {
+        id: ActionId::BoardReset,
+        label: "Reset board…",
+        contexts: &[ContextId::Board],
+        category: Category::Navigation,
+        enabled: true,
+        menu_rank: 119,
+        description: "Arms the reset confirm for the current board: the strip's consequence letter carries the live stack, task, and label counts the reset clears; the board row and its binding survive and a bound board re-materializes on the next pull; not undoable. (The `ActionId::BoardReset` id routes the exact `StateCommand::ResetBoard`.)",
         menu_group: Some(MenuGroup::Board),
     },
     ActionEntry {
@@ -2731,6 +2796,9 @@ mod tests {
             ActionId::BoardRename,
             ActionId::BoardColorEdit,
             ActionId::BoardDefaultPreset,
+            ActionId::BoardArchive,
+            ActionId::BoardReconcile,
+            ActionId::BoardReset,
             ActionId::NavFirstItem,
             ActionId::NavLastItem,
             ActionId::ReminderSnooze,

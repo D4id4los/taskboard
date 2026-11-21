@@ -8,6 +8,9 @@ import { Theme, Semantic, Typography, RoleText, Tone } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { BoardLayout, StackColumnModel } from "../compositions/board-layout.slint";
 import { BoardBarModel } from "../compositions/board-bar.slint";
+// The board ceremony letter (O-5 parity chunk OP1, W-2/W-4/W-7): the
+// informed-consent letters the armed ceremony strips mount.
+import { BoardCeremonyLetter, CeremonyLetterModel, CeremonyLetterMode } from "../compositions/board-ceremony-letter.slint";
 
 // The board model (D22): the kanban geometry. The board title renders
 // in the toolbar (the window's `toolbar-title`), not in this model.
@@ -101,6 +104,18 @@ export component BoardView inherits FocusScope {
     callback board-delete-cancelled();
     callback stack-delete-confirmed(int);
     callback stack-delete-cancelled(int);
+    // The armed ceremony letter's fact + pair (OP1, W-2/W-4/W-7): the
+    // letter's mode gates the mount (archive caption / reset counts /
+    // reconcile preview / pending); Confirm routes the armed verb,
+    // Cancel disarms — the board-delete strip's grammar, one pair for
+    // the three ceremonies (the armed subject is surface-wide).
+    in property <CeremonyLetterModel> ceremony-letter;
+    // slint: board-ceremony-confirmed (OP1 W-1/W-3/W-6): the strip's
+    // confirm seam — routes the armed verb (click ≡ key).
+    callback board-ceremony-confirmed();
+    // slint: board-ceremony-cancelled (OP1 W-1/W-3/W-6): the strip's
+    // disarm — nothing dispatched.
+    callback board-ceremony-cancelled();
     // The pointer drag-to-move seams (r2 chunk-8), threaded window →
     // view → layout; index-only, the D2 convention.
     callback card-drag-armed(int, int);
@@ -166,6 +181,17 @@ export component BoardView inherits FocusScope {
                     label: "Cancel delete board";
                     clicked => root.board-delete-cancelled();
                 }
+            }
+
+            // The armed ceremony letter (OP1, W-2/W-4/W-7): the
+            // board-bar region's informed-consent strip — the letter's
+            // mode gates the mount; the Confirm/Cancel pair routes
+            // through the window seams (the board-delete strip's
+            // grammar, one pair for the three ceremonies).
+            if (root.ceremony-letter.mode != CeremonyLetterMode.none): BoardCeremonyLetter {
+                letter: root.ceremony-letter;
+                confirmed => root.board-ceremony-confirmed();
+                cancelled => root.board-ceremony-cancelled();
             }
 
             // The armed multi-delete strip (UX-R8 chunk-5 D-9, #882):

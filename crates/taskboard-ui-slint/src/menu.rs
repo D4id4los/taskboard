@@ -641,6 +641,16 @@ pub const BOARD_CONTEXT: &[ActionId] = &[
     ActionId::BoardColorEdit,
     ActionId::LabelManage,
     ActionId::BoardDelete,
+    // The board ceremony verbs (O-5 parity chunk OP1, US-1/US-2/US-3,
+    // #945/#946/#947): the destructive tail's new rows (BF-W-N2 — the
+    // informed-consent confirmations ride the ceremony fences; the r1
+    // erratum law holds). Archive's typed escape is the roster
+    // restore; the reset row is the tail's last (the most destructive
+    // local repair); the reconcile row precedes it (the irreversible
+    // merge above the total clear).
+    ActionId::BoardArchive,
+    ActionId::BoardReconcile,
+    ActionId::BoardReset,
 ];
 
 /// The quick-bar icon vocabulary (UX-R8 chunk-5 D-2, US-1): the
@@ -802,10 +812,15 @@ pub fn multi_quick_bar(
 /// gating is dispatch-time (`NoTarget`/inert), the established
 /// `task.complete`-on-no-focus machinery.
 #[must_use]
-pub fn object_entries(keymap: &Keymap, chain: &[ContextId], ids: &[ActionId]) -> Vec<MenuEntry> {
+pub fn object_entries(
+    keymap: &Keymap,
+    chain: &[ContextId],
+    ids: &[ActionId],
+    states: &std::collections::BTreeMap<ActionId, bool>,
+) -> Vec<MenuEntry> {
     ids.iter()
         .filter_map(|id| REGISTRY.iter().find(|entry| entry.id == *id))
-        .map(|entry| row(keymap, chain, &std::collections::BTreeMap::new(), entry))
+        .map(|entry| row(keymap, chain, states, entry))
         .collect()
 }
 
@@ -1074,7 +1089,7 @@ mod tests {
         let keymap = standard_keymap();
         let chain = [ContextId::Board, ContextId::Global];
         for list in [TASK_CONTEXT, STACK_CONTEXT, BOARD_CONTEXT] {
-            let rows = object_entries(&keymap, &chain, list);
+            let rows = object_entries(&keymap, &chain, list, &BTreeMap::new());
             assert_eq!(rows.len(), list.len(), "one row per id");
             assert_eq!(
                 ids(&rows),
@@ -1102,7 +1117,7 @@ mod tests {
         // *group* over the board chain — the board surface's
         // roster-only opener — but stays off the per-card context
         // list; the origin plan's W-2 names BOARD_CONTEXT only).
-        let task_rows = object_entries(&keymap, &chain, TASK_CONTEXT);
+        let task_rows = object_entries(&keymap, &chain, TASK_CONTEXT, &BTreeMap::new());
         let task_page = group_page(
             &keymap,
             &chain,

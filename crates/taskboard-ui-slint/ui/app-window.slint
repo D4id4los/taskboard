@@ -8,6 +8,7 @@
 // All user-visible verbs route through the action layer — the
 // callbacks below are the dispatch seams, no key handlers (§5.1).
 
+import { BoardCeremonyLetter, CeremonyLetterModel, CeremonyLetterMode } from "compositions/board-ceremony-letter.slint";
 import { Theme, Typography, Semantic, RoleText } from "theme.slint";
 import { Responsive, Breakpoint } from "responsive.slint";
 import { ActionMenu, MenuEntryModel, QuickBarEntryModel } from "compositions/action-menu.slint";
@@ -429,6 +430,14 @@ export component AppWindow inherits Window {
     // view state's `Flow::ConfirmDelete` arms the board — the strip
     // mounts in the board-bar region; pushed by the models pass.
     in-out property <bool> board-delete-armed: false;
+    // The armed board-ceremony letter's fact (OP1, W-2/W-4/W-7): the
+    // letter's mode gates the ceremony strip's mount (archive caption
+    // / reset counts / reconcile preview / pending — the typed fold).
+    in-out property <CeremonyLetterModel> ceremony-letter;
+    // The letter's confirm/cancel pair (one pair, three ceremonies —
+    // the armed subject is surface-wide; the adapter routes per flow).
+    pure callback board-ceremony-confirmed();
+    pure callback board-ceremony-cancelled();
 
     // The rendering fact for tests and reviews (§6 test 2): compact
     // mode is active (board degeneration, D8/D17).
@@ -530,6 +539,9 @@ export component AppWindow inherits Window {
                 board-delete-armed: root.board-delete-armed;
                 board-delete-confirmed() => root.board-delete-strip-confirmed();
                 board-delete-cancelled() => root.board-delete-strip-cancelled();
+                ceremony-letter: root.ceremony-letter;
+                board-ceremony-confirmed() => root.board-ceremony-confirmed();
+                board-ceremony-cancelled() => root.board-ceremony-cancelled();
                 stack-delete-confirmed(c) => root.stack-delete-strip-confirmed(c);
                 stack-delete-cancelled(c) => root.stack-delete-strip-cancelled(c);
             }

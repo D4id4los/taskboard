@@ -309,6 +309,13 @@ pub enum UiEffect {
     /// The empty-board preset's dispatch (UX R-4 D-5, #795): the
     /// adapter's arm owns the empty-board gate.
     BoardDefaultPreset,
+    /// The board ceremony verbs (O-5 parity chunk OP1, US-1/US-2/US-3):
+    /// arm the consent strips over the selected board — the adapter's
+    /// interpretation owns the arm/commit split and the reconcile
+    /// preview request. The ceremony fences hold engine-side.
+    BoardArchive,
+    BoardReset,
+    BoardReconcile,
     /// Focus the first card in reading order.
     FocusFirst,
     /// Focus the last card in reading order.
@@ -515,7 +522,10 @@ impl UiEffect {
             | Self::BoardDelete
             | Self::BoardRename
             | Self::BoardColorEdit
-            | Self::BoardDefaultPreset => EffectClass::Lifecycle,
+            | Self::BoardDefaultPreset
+            | Self::BoardArchive
+            | Self::BoardReset
+            | Self::BoardReconcile => EffectClass::Lifecycle,
             Self::BeginCreate { .. } | Self::BeginCreateStack | Self::RequestMove => {
                 EffectClass::Begin
             }
@@ -1699,6 +1709,9 @@ impl ActionRouter {
             ActionId::BoardRename => DispatchOutcome::UiEffect(UiEffect::BoardRename),
             ActionId::BoardColorEdit => DispatchOutcome::UiEffect(UiEffect::BoardColorEdit),
             ActionId::BoardDefaultPreset => DispatchOutcome::UiEffect(UiEffect::BoardDefaultPreset),
+            ActionId::BoardArchive => DispatchOutcome::UiEffect(UiEffect::BoardArchive),
+            ActionId::BoardReset => DispatchOutcome::UiEffect(UiEffect::BoardReset),
+            ActionId::BoardReconcile => DispatchOutcome::UiEffect(UiEffect::BoardReconcile),
             ActionId::NavFirstItem => DispatchOutcome::UiEffect(UiEffect::FocusFirst),
             ActionId::NavLastItem => DispatchOutcome::UiEffect(UiEffect::FocusLast),
             // The today re-commit (chunk 10, D-V4 rider): a fresh
@@ -2577,6 +2590,9 @@ mod tests {
             (ActionId::StackMove, UiEffect::StackMove),
             (ActionId::BoardCreate, UiEffect::BoardCreate),
             (ActionId::BoardDelete, UiEffect::BoardDelete),
+            (ActionId::BoardArchive, UiEffect::BoardArchive),
+            (ActionId::BoardReset, UiEffect::BoardReset),
+            (ActionId::BoardReconcile, UiEffect::BoardReconcile),
             (ActionId::BoardRename, UiEffect::BoardRename),
             (ActionId::NavFirstItem, UiEffect::FocusFirst),
             (ActionId::NavLastItem, UiEffect::FocusLast),

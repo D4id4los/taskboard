@@ -21,6 +21,8 @@ mod support;
 /// platform per process; see #1016).
 pub(crate) const HEADLESS_RENDERER: bool = true;
 
+#[path = "journeys/board_ceremonies_journeys.rs"]
+mod board_ceremonies_journeys;
 #[path = "journeys/board_move_journeys.rs"]
 mod board_move_journeys;
 #[path = "journeys/detail_shortcuts_journeys.rs"]
