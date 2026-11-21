@@ -30,7 +30,7 @@ import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
 import { ModalDialogHost, DialogKind, DialogButtonModel, DialogButtonRole } from "widgets/modal-dialog-host.slint";
 import { AnchoredOverlayHost, OverlayPlacement, OverlayMenuWidth } from "widgets/anchored-overlay.slint";
-import { HabitCardModel } from "compositions/habits.slint";
+import { HabitCardModel, HabitQuotaEditor } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
@@ -68,7 +68,7 @@ import { TodayAnchorFacts } from "today-anchor.slint";
 import { ScrollPageHint } from "scroll-page.slint";
 import { TextField, FieldValidity } from "widgets/text-field.slint";
 export { FieldValidity }
-import { MenuPanelFacts, DatePickerFacts } from "menu-facts.slint";
+import { MenuPanelFacts, DatePickerFacts, HabitQuotaFacts } from "menu-facts.slint";
 import { SettingsScrollFacts, SettingsBoardFacts } from "settings-facts.slint";
 import { DropdownConsumer, DropdownFacts, DropdownLadder } from "widgets/dropdown.slint";
 import { DropdownFlyout } from "widgets/dropdown-flyout.slint";
@@ -650,6 +650,7 @@ export component AppWindow inherits Window {
                 habits-row-activated(r) => root.habits-row-activated(r);
                 habits-log-clicked(r) => root.habits-log-clicked(r);
                 habits-undo-log-clicked(r) => root.habits-undo-log-clicked(r);
+                habits-quota-edit-asked(r) => root.habits-quota-edit-asked(r);
                 habits-repair-clicked(r) => root.habits-repair-clicked(r);
                 habits-context-requested(r, x, y) => root.habits-context-requested(r, x, y);
                 habits-drop-asked(r, g) => root.habits-drop-asked(r, g);
@@ -987,6 +988,33 @@ export component AppWindow inherits Window {
         // host's now — the site mirrors the anchor facts and wires its
         // seams. Behavior-preserving (the identical below/flip/clamp
         // laws, deduplicated).
+        // The habit quota popover (W-5, #961) on the AnchoredOverlayHost
+        // base: the timer-setter's exact mount shape — the anchor facts
+        // ride the HabitQuotaFacts global (the clicked row's phrase
+        // button publishes them through the AnchorMirror), the dismissal
+        // (Escape/outside) is the host's, the commit routes through the
+        // adapter's trust-boundary seam. Kiosk never mounts: the
+        // affordance renders disabled there (R-3) and the opener effect
+        // is structurally inert.
+        if (root.habits-quota-open): AnchoredOverlayHost {
+            open: true;
+            anchor-x: HabitQuotaFacts.anchor-x;
+            anchor-y: HabitQuotaFacts.anchor-y;
+            anchor-width: HabitQuotaFacts.anchor-width;
+            anchor-height: HabitQuotaFacts.anchor-height;
+            viewport-width: root.width;
+            viewport-floor: status.y;
+            panel-preferred-width: 300px * Theme.base-scale;
+            walk-stops: 1;
+            dismissed => root.habits-quota-dismissed();
+            HabitQuotaEditor {
+                count: root.habits-quota-count;
+                valid: root.habits-quota-valid;
+                kind-phrase: root.habits-quota-kind-phrase;
+                stepped(d) => root.habits-quota-stepped(d);
+                committed() => root.habits-quota-committed();
+            }
+        }
         if (root.timer-setter-open): AnchoredOverlayHost {
             open: true;
             anchor-x: TimerSetterFacts.anchor-x;
@@ -2172,6 +2200,13 @@ export component AppWindow inherits Window {
     // two views: the popover edits and the inline text form's
     // validity mirror share the same `timer_when_draft`).
     in-out property <bool> timer-setter-open: false;
+    // The quota popover's pushed halves (W-5, #961): the mount flag,
+    // the adapter-held stepper draft, its typed validity (0 = the
+    // invalid draft — commit blocked), and the locked kind phrase.
+    in-out property <bool> habits-quota-open: false;
+    in-out property <int> habits-quota-count: 1;
+    in-out property <bool> habits-quota-valid: true;
+    in-out property <string> habits-quota-kind-phrase: "";
     // The armed delete row's index (D-TS5): the adapter's mirror over
     // the id table (−1 = nothing armed).
     in-out property <int> track-armed-index: -1;
@@ -2253,6 +2288,15 @@ export component AppWindow inherits Window {
     // audited AdjustHabitLog over the row's current window (count
     // n−1; count 0 is the typed NoTarget).
     pure callback habits-undo-log-clicked(int);
+    // The inline quota edit's seams (W-5, #961): the phrase click
+    // resolves the row (index) and routes the same opener effect the
+    // key routes; the rungs edit the adapter-held draft; commit mints
+    // the one-shot `UpdateHabit` draft at the trust boundary; the
+    // host's dismissal (Escape/outside) hits the disarm funnel.
+    pure callback habits-quota-edit-asked(int);
+    pure callback habits-quota-stepped(int);
+    pure callback habits-quota-committed();
+    pure callback habits-quota-dismissed();
     // The make-up valve (issue #506): the exact (window, count) the
     // row source resolved.
     pure callback habits-repair-clicked(int);

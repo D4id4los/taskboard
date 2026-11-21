@@ -1,12 +1,10 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-
-//! The habit family's HF1 journeys (skip + pause, #955/#958; the
-//! journey plan's §6 wiring rows W-1..W-4): the skip menu row and
-//! keyboard route, the typed skip chip, the pause editor's
-//! mount/commit/cancel grammar, and the paused badge. Assertion
-//! discipline is the journeys suite's: terminal state + the typed
-//! commands that reached the fake-engine boundary; labels are
-//! addresses, never text oracles.
+//! The habit family's journeys (HF1's skip + pause, #955/#958, the
+//! journey plan's §6 wiring rows W-1..W-4; HF2's global-undo leg of a
+//! logged completion, US-3/S2, and the inline quota popover,
+//! US-4/S1-S3, the 2026-11-21 habit-family UX plan's W-5/W-12
+//! evidence). Assertion discipline is the journeys suite's: terminal
+//! state + the typed commands that reached the fake-engine boundary;
+//! labels are addresses, never text oracles.
 
 use crate::support;
 
@@ -18,14 +16,18 @@ use slint::ComponentHandle as _;
 use slint::Model as _;
 use taskboard_domain::{AppState, StateCommand};
 use taskboard_ui_slint::KeyboardState;
+use taskboard_ui_slint::actions::ActionId;
 
 fn keyboard(harness: &Harness) -> KeyboardState<'_> {
     harness.handle.window().global::<KeyboardState>()
 }
 
 /// The journeys' habit fixture (the lib fixture's twin): one live
-/// daily habit on the fixture board.
-fn state_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
+/// daily habit (quota 2) on the fixture board.
+fn state_habit(
+    state: &mut AppState,
+    board: taskboard_domain::BoardId,
+) -> taskboard_domain::HabitId {
     let habit = taskboard_domain::habit::Habit {
         id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
         board,
@@ -43,7 +45,9 @@ fn state_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
         paused_until: None,
         by: None,
     };
+    let id = habit.id;
     state.habits.habits.insert(habit.id, habit);
+    id
 }
 
 /// The habit fixture's paused twin (US-2/S4): the same habit with a
@@ -363,4 +367,150 @@ fn kiosk_gates_the_hf1_affordances_disabled() {
             );
         },
     );
+}
+
+/// US-3/S2 (R-7, #956): the logged completion reverts through the
+/// GLOBAL undo line — the pre-existing `AppUndo` verb routes
+/// `StateCommand::Undo` after the log; no parallel undo path exists.
+#[test]
+fn us3_s2_undo_reverts_the_logged_completion() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        window.invoke_habits_log_clicked(0);
+        harness.driver.advance_time(0);
+        // The global undo verb (the pre-existing affordance, W-12's
+        // changed classification): the same line every other verb
+        // undoes through.
+        harness.press(ActionId::AppUndo);
+        harness.driver.advance_time(0);
+        harness.assert_commands(&[StateCommand::LogHabit { habit }, StateCommand::Undo]);
+    });
+}
+
+/// US-4/S1 (AC-1, #961): clicking the row's progress phrase mounts
+/// the quota popover seeded AT the current quota, over the phrase as
+/// the anchor; the kind phrase is the row's own (locked picker).
+#[test]
+fn us4_s1_quota_popover_mounts_from_the_row_phrase() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        assert!(
+            harness.driver.find_by_label("0/2").is_some(),
+            "the row renders the clickable progress phrase"
+        );
+        window.invoke_habits_quota_edit_asked(0);
+        harness.driver.advance_time(0);
+        assert!(
+            window.get_habits_quota_open(),
+            "the popover mounted over the phrase"
+        );
+        assert_eq!(window.get_habits_quota_count(), 2, "seeded at the quota");
+        assert!(window.get_habits_quota_valid(), "the seeded draft is valid");
+    });
+}
+
+/// US-4/S2 (AC-2, #961): the stepper's commit routes the EXISTING
+/// `UpdateHabit` with `HabitChanges { target: Some(..) }` — the
+/// period kind locked to the stored row's kind (no new command).
+#[test]
+fn us4_s2_quota_commit_routes_update_habit() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        {
+            let window = harness.handle.window();
+            window.invoke_habits_quota_edit_asked(0);
+            window.invoke_habits_quota_stepped(1);
+            assert_eq!(window.get_habits_quota_count(), 3, "the rung stepped");
+            window.invoke_habits_quota_committed();
+        }
+        harness.driver.advance_time(0);
+        let expected = [StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::messages::HabitChanges {
+                target: Some(taskboard_domain::HabitTarget::PerDay(
+                    taskboard_domain::NonZeroCount::new(3).unwrap(),
+                )),
+                ..Default::default()
+            },
+        }];
+        harness.assert_commands(&expected);
+        assert!(
+            !harness.handle.window().get_habits_quota_open(),
+            "the popover closed on commit"
+        );
+    });
+}
+
+/// US-4/S2's escape failure (AC-3, #961): a zero draft blocks the
+/// commit — the typed invalid-draft state renders, no route fires,
+/// the popover stays open (the rungs are the recovery).
+#[test]
+fn us4_s3_zero_draft_blocks_commit() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        window.invoke_habits_quota_edit_asked(0);
+        harness.driver.advance_time(0);
+        // 2 → 1 → 0: the floor of the stepper is the invalid draft.
+        window.invoke_habits_quota_stepped(-1);
+        window.invoke_habits_quota_stepped(-1);
+        harness.driver.advance_time(0);
+        assert_eq!(window.get_habits_quota_count(), 0);
+        assert!(
+            !window.get_habits_quota_valid(),
+            "the zero draft is the typed invalid state"
+        );
+        window.invoke_habits_quota_committed();
+        harness.driver.advance_time(0);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the zero draft never routes"
+        );
+        assert!(
+            window.get_habits_quota_open(),
+            "commit blocked keeps the popover open"
+        );
+        // The escape rung (the host's dismissal funnel): Escape/
+        // outside lands the disarm with zero state change.
+        window.invoke_habits_quota_dismissed();
+        harness.driver.advance_time(0);
+        assert!(!window.get_habits_quota_open());
+    });
+}
+
+/// The key twin (O-8 parity, W-11): the focused row's
+/// `HabitQuotaEdit` key routes the same opener the click routes.
+#[test]
+fn us4_s1_quota_key_routes_over_the_focused_row() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        {
+            let window = harness.handle.window();
+            window.invoke_habits_row_activated(0);
+        }
+        harness.driver.advance_time(0);
+        harness.press(ActionId::HabitQuotaEdit);
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_habits_quota_open(),
+            "the key routes the same opener (click ≡ key)"
+        );
+    });
 }

@@ -139,6 +139,9 @@ export component TodayView inherits FocusScope {
     callback habits-log-clicked(int);
     // The row's −1 recovery (UX R-2 D-3, #786).
     callback habits-undo-log-clicked(int);
+    // The inline quota edit's opener (W-5, #961): the phrase click
+    // (the row index rides to the window like every row seam).
+    callback habits-quota-edit-asked(int);
     callback habits-repair-clicked(int);
     // The row's focus fact (cross-surface friction plan D-2, #832).
     callback habits-row-activated(int);
@@ -242,6 +245,7 @@ export component TodayView inherits FocusScope {
                     row-activated(r) => root.habits-row-activated(r);
                     log-clicked(r) => root.habits-log-clicked(r);
                     undo-log-clicked(r) => root.habits-undo-log-clicked(r);
+                    quota-edit-asked(r) => root.habits-quota-edit-asked(r);
                     repair-clicked(r) => root.habits-repair-clicked(r);
                     context-requested(r, x, y) => root.habits-context-requested(r, x, y);
                     drop-asked(r, g) => root.habits-drop-asked(r, g);

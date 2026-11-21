@@ -391,6 +391,16 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
     (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
     (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
+    // The inline quota edit (W-5/O-8, #961): the focused row's key
+    // twin of the phrase click — one stroke per preset (the O-8
+    // parity law). The rebase moved it off HF2's original Ctrl+Shift+w
+    // (HF1's HabitResume landed there first; a duplicated chord
+    // cross-consumes) to the free q — the quota mnemonic.
+    (
+        ActionId::HabitQuotaEdit,
+        ContextId::Today,
+        &["Ctrl+Shift+q"],
+    ),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     // The switcher flyout's opener (UX R-4 D-4, #794): the jump-to
@@ -840,6 +850,16 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
     (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
     (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
+    // The inline quota edit (W-5/O-8, #961): the focused row's key
+    // twin of the phrase click — one stroke per preset (the O-8
+    // parity law). The rebase moved it off HF2's original Ctrl+Shift+w
+    // (HF1's HabitResume landed there first; a duplicated chord
+    // cross-consumes) to the free q — the quota mnemonic.
+    (
+        ActionId::HabitQuotaEdit,
+        ContextId::Today,
+        &["Ctrl+Shift+q"],
+    ),
     // Round 3 (W-SM-d, F26): the title re-arm — Return at detail is
     // unambiguous once task-detail entry no longer auto-arms (emacs
     // binds Return only at Board/Today for `task.edit`).
@@ -1359,6 +1379,16 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
     (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
     (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
+    // The inline quota edit (W-5/O-8, #961): the focused row's key
+    // twin of the phrase click — one stroke per preset (the O-8
+    // parity law). The rebase moved it off HF2's original Ctrl+Shift+w
+    // (HF1's HabitResume landed there first; a duplicated chord
+    // cross-consumes) to the free q — the quota mnemonic.
+    (
+        ActionId::HabitQuotaEdit,
+        ContextId::Today,
+        &["Ctrl+Shift+q"],
+    ),
     // The today re-commit (UX R-4 D-8, #796): the bare mnemonic in
     // the Today context (the HabitCreate row's pattern — the view
     // context resolves before ViNormal); free in both contexts.

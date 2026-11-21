@@ -167,6 +167,12 @@ pub enum UiEffect {
     /// the habits section's inline pause editor over the resolved
     /// habit subject (the `SeriesPauseOpen` shape).
     HabitPauseOpen,
+    /// The quota popover's open intent (W-5, #961): the adapter arms
+    /// the draft over the resolved subject (the focused row's fact —
+    /// click ≡ key) and flips the window's popover flag; kiosk stays
+    /// inert (R-3) and a subjectless dispatch surfaces the typed
+    /// refusal (the T-19 twin).
+    HabitQuotaEdit,
     /// Arm the recur row's conversion confirm strip (issue #506).
     SeriesConvertArm,
     /// Open the recurrence-rule editor overlay (round-7 D-7.1): the
@@ -522,6 +528,7 @@ impl UiEffect {
             // then the surface opens over the resolved subject).
             | Self::HabitEdit
             | Self::HabitCreateToggle
+            | Self::HabitQuotaEdit
             | Self::SeriesConvertArm
             | Self::SeriesEditorOpen
             | Self::SeriesDetachArm
@@ -624,6 +631,19 @@ pub struct TimerDraft {
 pub struct HabitCreateDraft {
     pub board: taskboard_domain::BoardId,
     pub title: String,
+    pub target: taskboard_domain::HabitTarget,
+}
+
+/// The quota popover's one-shot draft (W-5, #961): the addressed
+/// habit and the commit target — the new quota over the habit's
+/// **current** period kind (the inline edit is a one-number edit; the
+/// kind is locked, UX plan §2 `habit.quota_edit`). The adapter mints it
+/// at the popover's commit seam (the trust boundary); the internal
+/// `HabitQuotaCommit` verb consumes it (`NoTarget` without one — the
+/// stale/disarmed popover commits nothing).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HabitQuotaDraft {
+    pub habit: taskboard_domain::HabitId,
     pub target: taskboard_domain::HabitTarget,
 }
 
@@ -937,6 +957,10 @@ pub struct DispatchCtx {
     /// fresh at commit, the minted quota target) — `habit.create-commit`
     /// consumes it, then it is gone (the one-shot take law).
     pub habit_create_draft: Option<HabitCreateDraft>,
+    /// The quota popover's one-shot draft (W-5, #961): minted at the
+    /// commit seam, consumed by the `HabitQuotaCommit` dispatch
+    /// (`NoTarget` without one — the one-shot take law).
+    pub habit_quota_draft: Option<HabitQuotaDraft>,
     /// The conversion's pattern draft (issue #506, D-2): the quota's
     /// default mapping the adapter computed from the row; consumed by
     /// the confirm dispatch.
@@ -1034,6 +1058,10 @@ impl OneShotSet {
     // see it).
     pub(crate) const HABIT_REMOVE_TARGET: u32 = 1 << 27;
     pub(crate) const HABIT_PAUSE_TARGET: u32 = 1 << 28;
+    // The quota popover's one-shot draft (W-5, #961): the first free
+    // bit past the HF1 pause addition (bit 28 landed with HF1; sharing
+    // one would cross-consume — the OR-based pin can't see it).
+    pub(crate) const HABIT_QUOTA_DRAFT: u32 = 1 << 29;
     pub(crate) const PATTERN_DRAFT: u32 = 1 << 19;
     pub(crate) const SERIES_TARGET: u32 = 1 << 20;
     pub(crate) const PAUSE_DRAFT: u32 = 1 << 21;
@@ -1117,6 +1145,9 @@ impl OneShotSet {
     pub(crate) const fn habit_create_draft(self) -> Self {
         self.set(Self::HABIT_CREATE_DRAFT)
     }
+    pub(crate) const fn habit_quota_draft(self) -> Self {
+        self.set(Self::HABIT_QUOTA_DRAFT)
+    }
     pub(crate) const fn pattern_draft(self) -> Self {
         self.set(Self::PATTERN_DRAFT)
     }
@@ -1167,6 +1198,7 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::HabitPauseCommit => OneShotSet::default().habit_pause_target().pause_draft(),
         A::HabitResume => OneShotSet::default().habit_pause_target(),
         A::HabitCreateCommit => OneShotSet::default().habit_create_draft(),
+        A::HabitQuotaCommit => OneShotSet::default().habit_quota_draft(),
         A::SeriesPauseCommit => OneShotSet::default().series_target().pause_draft(),
         A::SeriesResume => OneShotSet::default().series_target(),
         A::SeriesConvertToHabit => OneShotSet::default().series_target().convert_target(),
@@ -1443,6 +1475,22 @@ impl ActionRouter {
             // shared surface (subjectless dispatch is the adapter's
             // typed refusal).
             ActionId::HabitEdit => DispatchOutcome::UiEffect(UiEffect::HabitEdit),
+            // The inline quota edit (W-5, #961): the opener is a view
+            // intent (the adapter arms over the resolved subject); the
+            // commit routes the domain verb from the one-shot draft
+            // (`NoTarget` without one — the stale/disarmed popover
+            // commits nothing).
+            ActionId::HabitQuotaEdit => DispatchOutcome::UiEffect(UiEffect::HabitQuotaEdit),
+            ActionId::HabitQuotaCommit => match ctx.habit_quota_draft.clone() {
+                Some(draft) => DispatchOutcome::Command(StateCommand::UpdateHabit {
+                    habit: draft.habit,
+                    changes: taskboard_domain::messages::HabitChanges {
+                        target: Some(draft.target),
+                        ..Default::default()
+                    },
+                }),
+                None => DispatchOutcome::NoTarget,
+            },
             // The staged remove (H4 D4, #944): the arm routes the
             // adapter's staging effect; the confirm routes the domain
             // verb from the one-shot armed subject (`NoTarget`
@@ -2030,6 +2078,7 @@ mod tests {
             habit_convert_target: None,
             habit_remove_target: None,
             habit_create_draft: None,
+            habit_quota_draft: None,
             pattern_draft: None,
             plan_target: None,
             series_target: None,
