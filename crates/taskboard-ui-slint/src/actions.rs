@@ -2218,7 +2218,13 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::HabitPauseCommit,
         label: "Commit pause",
-        contexts: GLOBAL,
+        // Today-scoped (the HabitCreateCommit internal-verb shape): the
+        // commit row must never join the root quick page — a Global
+        // context with menu_group None would grow the toolbar menu by
+        // one row and clip the panel's bottom border at the kiosk
+        // geometry (the rank-spacing law caught the rank, this context
+        // keeps the page shape).
+        contexts: &[ContextId::Today],
         category: Category::Task,
         enabled: true,
         menu_rank: 230,

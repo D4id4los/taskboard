@@ -991,6 +991,11 @@ mod tests {
             // join the Task group at ranks 200..270 (the registry's
             // reviewed rows; the arms route no commands).
             ActionId::HabitRepair,
+            // The HF1 trio joins at ranks 206/207/209 (the registry's
+            // reviewed rows) — between the repair and the Convert arm.
+            ActionId::HabitSkip,
+            ActionId::HabitPause,
+            ActionId::HabitResume,
             ActionId::HabitConvertArm,
             ActionId::HabitConvertToSeries,
             // The H4 family joins at ranks 240..254 (the registry's

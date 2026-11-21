@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-ui-slint/tests/inventory/keymap_snapshots.rs
-assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -1120,7 +1119,7 @@ expression: rows
 - id: habit.pause-commit
   label: Commit pause
   contexts:
-    - global
+    - today
   category: task
   enabled: true
   menu_rank: 230
