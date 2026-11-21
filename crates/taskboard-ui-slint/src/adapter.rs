@@ -13817,16 +13817,19 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 month
                     .zip(habit)
                     .is_some_and(|(month, habit)| {
-                        let flipped = crate::presentation::habit_month_flipped(month, delta);
-                        let next = crate::presentation::habit_history_month(
+                        // The clamp reads the CURRENT month's can-page
+                        // facts: a flip is legal exactly when the side
+                        // being paged toward has room (US-7/S3 — no
+                        // wrap, the ends hold).
+                        let visible = crate::presentation::habit_history_month(
                             state.habits.habits.get(&habit).expect("open target"),
                             &state.habits.log,
-                            flipped,
+                            month,
                             now,
                             day,
                         );
-                        (delta < 0 && next.can_page_back)
-                            || (delta > 0 && next.can_page_forward)
+                        (delta < 0 && visible.can_page_back)
+                            || (delta > 0 && visible.can_page_forward)
                     })
             };
             if clamped {
