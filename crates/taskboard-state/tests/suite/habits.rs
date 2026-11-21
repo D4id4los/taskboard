@@ -574,10 +574,10 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
 
 // ---- HF1: skip + pause (#955, #958; plan 2026-11-21-habit-skip-pause) --
 
-/// US-1/S2 (engine leg): SkipHabit routes the exact typed mark onto the
+/// US-1/S2 (engine leg): `SkipHabit` routes the exact typed mark onto the
 /// current canonical window's log row — count preserved, receipt names
 /// the window — and the repeat is the accepted no-op (no clock churn).
-/// UnskipHabit (the undo inverse) clears the mark and keeps the count.
+/// `UnskipHabit` (the undo inverse) clears the mark and keeps the count.
 #[tokio::test(start_paused = true)]
 async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
@@ -661,7 +661,7 @@ async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
 /// US-2/AC-4 + AC-5 (engine leg): a past through-date is the typed
 /// `InvalidHabitPause`; a valid pause lands on the row (badge + through
 /// date); the unchanged value no-ops; the explicit `None` resume clears
-/// for badge hygiene (the PauseSeries posture verbatim).
+/// for badge hygiene (the `PauseSeries` posture verbatim).
 #[tokio::test(start_paused = true)]
 async fn pause_round_trips_resume_clears_and_past_date_is_typed_invalid() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
