@@ -3818,6 +3818,262 @@ fn undo_of_delete_task_resurrects_its_rules_and_a_rule_readded_since_is_skipped(
     );
 }
 
+// ---- the rule-verb undo family (#354, UF1) ---------------------------------
+
+/// Fixture: one reminder rule on a task, the exact outcome id returned
+/// (unambiguous beside other rules). `seq` varies the offset so
+/// consecutive calls never dedup into a survivor.
+fn added_rule(
+    h: &mut Harness,
+    task: crate::ids::TaskId,
+    seq: i64,
+) -> crate::reminders::ReminderRule {
+    let offset = crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30 - seq))
+        .expect("valid offset");
+    match h
+        .exec(&StateCommand::AddReminderRule {
+            task,
+            offset,
+            at: None,
+            insistence: crate::reminders::Insistence::Normal,
+        })
+        .expect("rule added")
+    {
+        CommandOutcome::ReminderRuleAdded { rule, added: true } => {
+            h.disk.reminders.rules[&rule].clone()
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
+/// US-1/S4 (AC-1, W-1/W-2): a journaled rule removal inverts through
+/// the #900 verbatim resurrect — same id, same `created_at`, whole row
+/// — never a re-added fresh identity.
+#[test]
+fn us1_s4_removed_rule_resurrects_verbatim() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let rule = added_rule(&mut h, task, 1);
+    let original = rule.clone();
+    h.exec(&StateCommand::RemoveReminderRule { rule: rule.id })
+        .expect("removed");
+    assert!(
+        !h.disk.reminders.rules.contains_key(&rule.id),
+        "the removal removed the row"
+    );
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert_eq!(
+        h.disk.reminders.rules.get(&rule.id),
+        Some(&original),
+        "the resurrect restores the exact stored fact"
+    );
+    assert!(
+        h.disk
+            .reminders
+            .deliveries
+            .iter()
+            .all(|d| d.reminder != crate::reminders::ReminderRef::Rule(rule.id)),
+        "no delivery proofs were forged back"
+    );
+}
+
+/// US-1/S4 (AC-2, the D-U2 pushed class): past the push boundary the
+/// undo keeps the inverse's document-lane flush — the resurrect's
+/// trigger restores the server document, never a retraction.
+#[test]
+fn us1_s4b_pushed_removal_enqueues_flush_not_retraction() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let rule = added_rule(&mut h, task, 1);
+    h.exec(&StateCommand::RemoveReminderRule { rule: rule.id })
+        .expect("removed");
+    mark_journal_pushed(&mut h);
+    let plan = h.exec_plan(&StateCommand::Undo).expect("undone");
+    assert!(
+        plan.actions
+            .iter()
+            .any(|a| matches!(a, PersistenceAction::EnqueueOp(_))),
+        "the flushed undo keeps an enqueue"
+    );
+    assert!(
+        !plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, PersistenceAction::FailOp(_))),
+        "a pushed entry's undo fails nothing"
+    );
+    assert!(
+        h.disk.outbox.iter().any(
+            |pending| matches!(pending.op, crate::outbox::LocalOp::UpdateAppData(t) if t == task)
+        ),
+        "the resurrect's document-lane flush survived the push boundary"
+    );
+    assert_eq!(
+        h.disk.reminders.rules.get(&rule.id),
+        Some(&rule),
+        "the rule came back verbatim"
+    );
+}
+
+/// US-1/S4 (AC-3, the D-U2 unpushed class): the server never knew the
+/// removal — the undo fails the entry's own ops and leaves no enqueue
+/// of its own (the resurrect's upsert stays action-level; only its
+/// flush trigger is dropped).
+#[test]
+fn us1_s4c_unpushed_removal_retracts() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let rule = added_rule(&mut h, task, 1);
+    h.exec_plan(&StateCommand::RemoveReminderRule { rule: rule.id })
+        .expect("removed");
+    let entry_ops: Vec<_> = h
+        .journal
+        .entries
+        .last()
+        .map(|entry| entry.ops.clone())
+        .expect("the removal journaled");
+    assert!(!entry_ops.is_empty(), "the removal enqueued its flush");
+    let undo_plan = h.exec_plan(&StateCommand::Undo).expect("undone");
+    assert_eq!(
+        h.disk.reminders.rules.get(&rule.id),
+        Some(&rule),
+        "the resurrect restores the row"
+    );
+    assert!(
+        !undo_plan
+            .actions
+            .iter()
+            .any(|a| matches!(a, PersistenceAction::EnqueueOp(_))),
+        "the unpushed undo enqueues nothing of its own"
+    );
+    let retracted = undo_plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            PersistenceAction::FailOp(op) => Some(*op),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retracted, entry_ops,
+        "the entry's own ops are failed, each once"
+    );
+}
+
+/// US-2/S4 (AC-1, W-1/W-2): the add's head inverts through the
+/// ordinary remove over the minted id — the plan carries the
+/// delete-rule action for exactly the added rule.
+#[test]
+fn us2_s4_added_rule_deletes_again() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let rule = added_rule(&mut h, task, 1);
+    let add_parent = h
+        .journal
+        .entries
+        .last()
+        .map(|entry| entry.parent)
+        .expect("the add journaled");
+    let plan = h.exec_plan(&StateCommand::Undo).expect("undone");
+    assert!(
+        plan.actions
+            .iter()
+            .any(|a| matches!(a, PersistenceAction::DeleteReminderRule(id) if *id == rule.id)),
+        "the inverse deletes the added rule's id"
+    );
+    assert!(
+        !h.disk.reminders.rules.contains_key(&rule.id),
+        "the undo removed the rule"
+    );
+    // The journal head moved to the entry's parent (the undo line).
+    assert_eq!(h.journal.head, add_parent, "the line popped past the add");
+}
+
+/// US-2/S4 (AC-2, the hard constraint): a delivery that fired between
+/// the add and the undo changes nothing about the plan — the plan pins
+/// the same `DeleteReminderRule` inverse with **no action addressing
+/// the delivery record** (the record's own prune-on-rule-delete is the
+/// pre-existing `DeleteReminderRule` action contract, the same shape a
+/// hand removal takes; the undo adds no delivery-addressing action of
+/// its own).
+#[test]
+fn us2_s4b_delivery_proof_untouched() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let rule = added_rule(&mut h, task, 1);
+    h.disk
+        .reminders
+        .deliveries
+        .insert(crate::reminders::ReminderDelivery {
+            reminder: crate::reminders::ReminderRef::Rule(rule.id),
+            occurrence: ts(h.now + 60),
+            delivered_at: ts(h.now + 60),
+        });
+    h.sync();
+    let plan = h.exec_plan(&StateCommand::Undo).expect("undone");
+    assert!(
+        plan.actions
+            .iter()
+            .any(|a| matches!(a, PersistenceAction::DeleteReminderRule(id) if *id == rule.id)),
+        "the rule edit still inverts"
+    );
+    assert!(
+        !plan.actions.iter().any(|a| matches!(
+            a,
+            PersistenceAction::RecordReminderDismissal(_)
+                | PersistenceAction::RecordReminderSnooze(_)
+                | PersistenceAction::RecordReminderDelivery(_)
+        )),
+        "no action addresses the delivery record"
+    );
+}
+
+/// US-3/S4 (AC-1, the catalogue-only verb): a journaled clear inverts
+/// through one verbatim resurrect per cleared rule, id-ascending.
+#[test]
+fn us3_s4_cleared_set_resurrects_id_ascending() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let mut rules = Vec::new();
+    for seq in 1..=3 {
+        rules.push(added_rule(&mut h, task, i64::from(seq)));
+    }
+    rules.sort_by_key(|rule| rule.id);
+    h.exec(&StateCommand::ClearReminderRules { task })
+        .expect("cleared");
+    assert!(h.disk.reminders.rules.is_empty(), "the clear cleared");
+    let plan = h.exec_plan(&StateCommand::Undo).expect("undone");
+    let resurrected: Vec<_> = plan
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            PersistenceAction::UpsertReminderRule(rule) => Some(rule.id),
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<_> = rules.iter().map(|rule| rule.id).collect();
+    assert_eq!(resurrected, expected, "id-ascending verbatim resurrect");
+    for rule in &rules {
+        assert_eq!(
+            h.disk.reminders.rules.get(&rule.id),
+            Some(rule),
+            "each cleared rule came back verbatim"
+        );
+    }
+}
+
 #[test]
 fn delete_label_journals_pre_images_and_undo_restores_label_and_memberships() {
     let mut h = Harness::new();
@@ -4488,6 +4744,11 @@ fn ceremony_and_surface_fences_hold() {
     let board = h.board();
     let stack = h.stack(board);
     let task = h.task(stack, "t");
+    // The #354 reclassification (UF1) moved Add/Remove/ClearReminderRule
+    // out of the fenced family into the PreImages catalogue — their
+    // coverage lives in the us1/us2/us3 fold tests below. The fence
+    // keeps the delivery-surface representatives (the hard-constraint
+    // rows) plus mute (R-1).
     let reminder_surface = [
         StateCommand::SnoozeReminder {
             reminder: crate::reminders::ReminderRef::Default(task),
@@ -4495,14 +4756,11 @@ fn ceremony_and_surface_fences_hold() {
             postpone: chrono::TimeDelta::minutes(5),
         },
         StateCommand::SetTaskRemindersMuted { task, muted: true },
-        StateCommand::AddReminderRule {
-            task,
-            offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
-                .expect("valid"),
-            at: None,
+        StateCommand::CreateAdhocAlarm {
+            label: "a".into(),
+            when: crate::reminders::AdhocWhen::In(chrono::TimeDelta::minutes(9)),
             insistence: crate::reminders::Insistence::Normal,
         },
-        StateCommand::ClearReminderRules { task },
     ];
     let reflection_surface = [StateCommand::RecordReflection {
         cadence: crate::reflection::ReviewCadence::Day,
