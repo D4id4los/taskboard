@@ -189,19 +189,20 @@ flowchart TD
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/compositions/status-panel.slint (new) | panel mount + `Refresh` control | `status-panel-open` / `status-panel-refresh` | `install_status_panel_seam` (adapter.rs) | `ActionId::StatusPanelOpen` | `UiRequest::StatusQuery` | Panel-scoped state (no list rows) | US-1/S1, US-1/S4 | crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us1_s1_panel_open_dispatches_status_query |
-| W-2 | ui/compositions/status-panel.slint | field fold area | `status-fields-folded` | same seam (oneshot reply → presentation fold) | — | — (display only — R-3) | Panel-scoped | US-1/S2, US-2/S1, US-2/S2 | crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us2_s1_draining_view_folds_to_draining_posture |
-| W-3 | ui/compositions/status-panel.slint | failure posture | `status-failure-shown` | same seam | — | — (display only) | Panel-scoped | US-1/S3 | crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us1_s3_failed_query_renders_failure_posture |
-| W-4 | crates/taskboard-ui-slint/src/requests.rs | — | — | app-side drain answers from the same `StatusView` the CLI builds | — | `UiRequest::StatusQuery` | — | US-1/S1 | crates/taskboard-app/tests/it_status_surface.rs::status_query_reply_mirrors_status_view |
-| W-5 | crates/taskboard-app/src/commands/status.rs | CLI text renderer | — (no slint callback — terminal surface) | the renderer's draining branch (D-4) | — | — (CLI verb, unchanged payload; §7 lists no domain delta) | — | US-3/S1, US-3/S2 | crates/taskboard-app/tests/it_status_surface.rs::us3_s1_draining_view_renders_the_draining_line_committed_artifact |
+| W-1 | ui/compositions/status-panel.slint (new) | panel mount | status_panel_open | install_status_panel_seam (adapter.rs) | ActionId::StatusPanelOpen | UiRequest::StatusQuery | Panel-scoped state (no list rows) | US-1/S1 | crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us1_s1_panel_open_dispatches_status_query |
+| W-1b | ui/compositions/status-panel.slint | Refresh control | status_panel_refresh | same seam | — | — | Panel-scoped | US-1/S4 | crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us1_s4_refresh_requeries_and_refolds |
+| W-2 | ui/compositions/status-panel.slint | field fold area | status_fields_folded | same seam (oneshot reply → presentation fold) | — | — | Panel-scoped | US-1/S2 (the settled reply folds — evidence rides us1_s1's fold asserts), US-2/S1, US-2/S2 (display only — R-3) | crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us1_s1_panel_open_dispatches_status_query, crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us2_s1_draining_view_folds_to_draining_posture, crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us2_s2_draining_none_folds_to_plain_no_daemon_posture |
+| W-3 | ui/compositions/status-panel.slint | failure posture | status_failure_shown | same seam | — | — | Panel-scoped | US-1/S3 (display only) | crates/taskboard-ui-slint/tests/journeys/status_surface_journeys.rs::us1_s3_failed_query_renders_failure_posture |
+| W-4 | crates/taskboard-ui-slint/src/requests.rs | — | — | app-side drain answers from the same StatusView the CLI builds | — | UiRequest::StatusQuery | — | US-1/S1 | crates/taskboard-app/tests/it_status_surface.rs::status_query_reply_mirrors_status_view |
+| W-5 | crates/taskboard-app/src/commands/status.rs | CLI text renderer | — | the renderer's draining branch (D-4) | — | — | — | US-3/S1, US-3/S2 (CLI verb, unchanged payload — no slint callback, terminal surface; §7 lists no domain delta) | crates/taskboard-app/tests/it_status_surface.rs::us3_s1_draining_view_renders_the_draining_line_committed_artifact, crates/taskboard-app/tests/it_status_surface.rs::us3_s2_draining_none_no_daemon_rendering_is_byte_identical, crates/taskboard-app/tests/it_status_surface.rs::us3_s3_the_json_payload_stays_the_byte_additive_b6_shape |
 
 ## 7. Command-contract delta
 
 | Kind | Name | Payload sketch | Journeys |
 |---|---|---|---|
-| UiRequest | `StatusQuery` | new — no payload + oneshot reply carrying the `StatusView` fields (D-2: the same typed view the CLI verb builds; draining rides B6's additive `Option<bool>`) | US-1/S1, US-1/S4, US-2/S1 |
+| UiRequest | StatusQuery | new — no payload + oneshot reply carrying the StatusView fields (D-2: the same typed view the CLI verb builds; draining rides B6's additive `Option<bool>`) | US-1/S1, US-1/S4, US-2/S1 |
 | StateCommand | — | none: the panel is read-only (R-3) | — |
-| ActionId | `StatusPanelOpen` | new — no payload (mounts the panel) | US-1/S1 |
+| ActionId | StatusPanelOpen | new — no payload (mounts the panel) | US-1/S1 |
 
 ## 8. Verification plan
 
@@ -224,6 +225,10 @@ flowchart TD
 - **Kiosk gates**: the panel mounts read-only on kiosk (D-5); the
   structural inventory asserts no command dispatch exists on the
   kiosk panel (R-3, US-1/AC-4).
+- **Bound-test nominations** (the #768 grammar): the steps whose
+  evidence rides a descriptive test name rather than a step-token
+  name map explicitly —
+  bound-test: US-1/S2 -> status_surface_journeys.rs::us1_s1_panel_open_dispatches_status_query
 - **Manual**: whether the panel *reads* as the diagnostic whole
   (recognition of posture semantics — judged at walkthrough); who:
   the stage-3 review agent.
@@ -237,3 +242,33 @@ flowchart TD
       `status` entry resolves (the CP-10 verdict closes with the panel,
       not a waiver)
 - [ ] Non-goals filed as backlog issues (panel actions; live-refresh lane)
+
+## 10. Implementation erratum (OP3 stage 3, 2026-11-21)
+
+Mechanical, decision-free amendments this chunk landed against the
+accepted text (the tokens are unchanged — the gate grammar and the
+per-step nomination law):
+
+1. **Gate grammar** (#1181's parser classes): §6/§7 token cells are
+   unbackticked (the ux-coverage token matcher is boundary-anchored
+   over raw source — the template's example rows are unbackticked);
+   the callback cells spell the generated underscore form
+   (`status_panel_open` etc. — the slint callback is hyphenated, the
+   adapter handler and seam manifest are underscored; #1181 variant
+   1); W-1's two callbacks split into one row per token (W-1/W-1b —
+   #1181 variant 2); the `— (prose)` Commands/Callback cells move
+   their prose into the Journey-steps cell (a cell must be exactly
+   `—` for the absence check; #1181 variant 3).
+2. **Per-step nominations** (#920's law): the W-row Test cells gain
+   the nominations for the §4 steps whose evidence rides descriptive
+   test names — US-1/S2 (us1_s1's fold asserts, the bound-test
+   mapping), US-1/S4 (us1_s4), US-2/S2 (us2_s2), US-3/S2 (us3_s2),
+   US-3/S3 (us3_s3) — one nomination per step even where one test
+   pins several.
+3. **Menu-entry placement** (the recorded deviation): `Status…`
+   rides the Help group page (rank 75, the diagnostics row) instead
+   of a fifth root quick row — the root page's curated four (menu.rs
+   T-1) are exactly the G6 geometry budget at the kiosk panel's
+   1024×600; a fifth quick row clipped the menu box's bottom border.
+   The entry point is still the action menu (§3 US-1's entry-point
+   wording reads as the action menu's Status affordance).
