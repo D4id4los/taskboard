@@ -23,8 +23,9 @@ use crate::cli::DayEdit;
 
 use crate::cli::{AnchorEdit, HabitsCmd, SeamEdit};
 use crate::commands::output::{
-    HabitAddReceipt, HabitAdjustReceipt, HabitDeleteReceipt, HabitListView, HabitLogReceipt,
-    HabitPauseReceipt, HabitRow, HabitSkipReceipt, HabitUpdateReceipt,
+    HabitAddReceipt, HabitAdjustReceipt, HabitDeleteReceipt, HabitHistoryView, HabitListView,
+    HabitLogReceipt, HabitPauseReceipt, HabitRow, HabitSkipReceipt, HabitStatsView,
+    HabitUpdateReceipt, HabitWindowRow, HabitWindowStateView,
 };
 use crate::commands::{CommandError, outcome_mismatch};
 use crate::config::AppConfig;
@@ -164,6 +165,16 @@ pub enum HabitsInvocation {
         /// tombstones resolve, no title leg).
         habit: String,
     },
+    /// `history <habit>` (HF3, US-7).
+    History {
+        /// The habit selector (tombstones match too).
+        habit: String,
+    },
+    /// `stats <habit>` (HF3, US-9).
+    Stats {
+        /// The habit selector (tombstones match too).
+        habit: String,
+    },
 }
 
 /// Collapses the clap subcommand into exactly one invocation.
@@ -237,6 +248,8 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
         HabitsCmd::Pause { habit, until } => HabitsInvocation::Pause { habit, until },
         HabitsCmd::Resume { habit } => HabitsInvocation::Resume { habit },
         HabitsCmd::Restore { habit } => HabitsInvocation::Restore { habit },
+        HabitsCmd::History { habit } => HabitsInvocation::History { habit },
+        HabitsCmd::Stats { habit } => HabitsInvocation::Stats { habit },
     }
 }
 
@@ -278,6 +291,10 @@ pub enum HabitOutcome {
     Skipped(HabitSkipReceipt),
     /// `pause` / `resume`.
     Paused(HabitPauseReceipt),
+    /// `history` (HF3, US-7).
+    History(HabitHistoryView),
+    /// `stats` (HF3, US-9).
+    Stats(HabitStatsView),
 }
 
 /// The `habits skip` steps: resolve, mark the current canonical window
@@ -429,6 +446,8 @@ pub async fn run_on(
         HabitsInvocation::Restore { habit } => {
             Ok(HabitOutcome::Restored(restore_on(app, &habit).await?))
         }
+        HabitsInvocation::History { habit } => Ok(HabitOutcome::History(history_on(app, &habit)?)),
+        HabitsInvocation::Stats { habit } => Ok(HabitOutcome::Stats(stats_on(app, &habit)?)),
     }
 }
 
@@ -928,6 +947,65 @@ fn habit_view(id: HabitId, habit: &taskboard_domain::Habit) -> HabitRow {
     }
 }
 
+/// The `habits history` render.
+#[must_use]
+pub fn render_history(view: &HabitHistoryView) -> String {
+    if view.windows.is_empty() {
+        return format!("history of \"{}\" — no windows yet", view.title);
+    }
+    let rows: Vec<String> = view
+        .windows
+        .iter()
+        .map(|row| {
+            format!(
+                "{} {} (count {})",
+                row.window,
+                row_state_label(row.state),
+                row.count
+            )
+        })
+        .collect();
+    format!(
+        "history of \"{}\" [{}] ({} windows)\n{}",
+        view.title,
+        view.habit_id,
+        view.windows.len(),
+        rows.join("\n")
+    )
+}
+
+/// The `habits stats` render.
+#[must_use]
+pub fn render_stats(view: &HabitStatsView) -> String {
+    let adherence = if view.adherence_empty {
+        "no windows yet".to_owned()
+    } else {
+        format!(
+            "{}/{} scheduled",
+            view.adherence_met, view.adherence_scheduled
+        )
+    };
+    format!(
+        "stats of \"{}\" [{}] — adherence {}, best streak {}, {} window totals",
+        view.title,
+        view.habit_id,
+        adherence,
+        view.best_streak,
+        view.totals.len()
+    )
+}
+
+/// The typed state's address label (the variant's own name — an
+/// address, never a prose oracle).
+#[must_use]
+pub const fn row_state_label(state: HabitWindowStateView) -> &'static str {
+    match state {
+        HabitWindowStateView::Met => "met",
+        HabitWindowStateView::Pending => "pending",
+        HabitWindowStateView::Missed => "missed",
+    }
+}
+
 /// The human render of any [`HabitOutcome`].
 #[must_use]
 pub fn render_text(outcome: &HabitOutcome) -> String {
@@ -1000,6 +1078,8 @@ pub fn render_text(outcome: &HabitOutcome) -> String {
                 format!("habit {} resumed", receipt.habit_id)
             }
         }
+        HabitOutcome::History(view) => render_history(view),
+        HabitOutcome::Stats(view) => render_stats(view),
         HabitOutcome::Removed(receipt) => {
             if receipt.deleted {
                 format!(
@@ -1047,6 +1127,186 @@ pub async fn habits_line(
     crate::commands::emit_result(io, run_on(app, invocation).await, render_text)
 }
 
+||||||| parent of 1b68f3e2 (feat(app): habits history/stats CLI verbs (HF3, US-7/US-9, O-5 parity))
+/// The reply contract pins one outcome per habit command (plus
+/// `NoOp`); any other reply is an engine contract bug — surfaced as
+/// the generic engine kind, never misreported as a user error.
+fn outcome_mismatch() -> CommandError {
+    CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone))
+}
+
+// ---- History + stats (HF3, US-7/US-9) --------------------------------------
+
+/// The projection verbs' resolver: the same uuid/prefix/title ladder
+/// as [`resolve_habit`] but **tombstones match** — the log outlives
+/// the tracker (US-7 AC-5), so a deleted habit's history and stats
+/// still render. Exact-title candidates consider every stored row.
+///
+/// # Errors
+///
+/// [`CommandError::UnknownHabit`] / [`CommandError::AmbiguousHabit`] —
+/// typed, never text-matched.
+pub fn resolve_habit_with_tombstones(
+    state: &AppState,
+    selector: &str,
+) -> Result<HabitId, CommandError> {
+    let habits = &state.habits.habits;
+    if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
+        let id = HabitId::from(uuid);
+        if habits.contains_key(&id) {
+            return Ok(id);
+        }
+    }
+    if selector.len() >= 8 {
+        let needle = selector.to_lowercase();
+        let hits: Vec<HabitId> = habits
+            .values()
+            .filter(|h| h.id.as_uuid().to_string().starts_with(&needle))
+            .map(|h| h.id)
+            .collect();
+        match hits.as_slice() {
+            [id] => return Ok(*id),
+            [] => {}
+            [_, ..] => {
+                return Err(CommandError::AmbiguousHabit {
+                    candidates: hits.iter().map(|id| id.as_uuid().to_string()).collect(),
+                });
+            }
+        }
+    }
+    let by_title: Vec<HabitId> = habits
+        .values()
+        .filter(|h| h.title == selector)
+        .map(|h| h.id)
+        .collect();
+    match by_title.as_slice() {
+        [id] => Ok(*id),
+        [] => Err(CommandError::UnknownHabit {
+            selector: selector.to_owned(),
+        }),
+        [_, ..] => Err(CommandError::AmbiguousHabit {
+            candidates: by_title.iter().map(|id| id.as_uuid().to_string()).collect(),
+        }),
+    }
+}
+
+/// One canonical window's typed state (the walk's classification,
+/// verbatim semantics — met / pending / missed).
+fn window_state_view(
+    kind: taskboard_domain::PeriodKind,
+    quota: u32,
+    count: u32,
+    window: chrono::NaiveDate,
+    now: DateTime<Utc>,
+    day: taskboard_domain::DayCalendar,
+) -> HabitWindowStateView {
+    if count >= quota {
+        HabitWindowStateView::Met
+    } else {
+        let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
+        let grace_end = taskboard_domain::habit::period_end(kind, window, day) + grace;
+        if now >= grace_end {
+            HabitWindowStateView::Missed
+        } else {
+            HabitWindowStateView::Pending
+        }
+    }
+}
+
+/// The `habits history` steps (HF3, US-7): the canonical log windows
+/// chronological, typed states. Pure projection — no command.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see [`resolve_habit_with_tombstones`].
+pub fn history_on(app: &crate::App, selector: &str) -> Result<HabitHistoryView, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let id = resolve_habit_with_tombstones(&state, selector)?;
+    let habit = state
+        .habits
+        .habits
+        .get(&id)
+        .ok_or(CommandError::UnknownHabit {
+            selector: selector.to_owned(),
+        })?;
+    let day = app.config.resolved_day_calendar();
+    let now = Utc::now();
+    let kind = habit.target.kind();
+    let quota = habit.target.quota().get();
+    let windows: Vec<HabitWindowRow> =
+        taskboard_domain::habit::statistics_horizon(habit, &state.habits.log, now, day)
+            .into_iter()
+            .map(|window| {
+                let count = state
+                    .habits
+                    .log
+                    .get(&taskboard_domain::HabitLogKey {
+                        habit: id,
+                        window: taskboard_domain::habit::WindowStart::of_period(kind, window),
+                    })
+                    .map_or(0, |entry| entry.count);
+                HabitWindowRow {
+                    window,
+                    count,
+                    state: window_state_view(kind, quota, count, window, now, day),
+                }
+            })
+            .collect();
+    Ok(HabitHistoryView {
+        habit_id: id.as_uuid().to_string(),
+        title: habit.title.clone(),
+        windows,
+    })
+}
+
+/// The `habits stats` steps (HF3, US-9): the domain fns' typed
+/// values. Pure projection — no command.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see [`resolve_habit_with_tombstones`].
+pub fn stats_on(app: &crate::App, selector: &str) -> Result<HabitStatsView, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let id = resolve_habit_with_tombstones(&state, selector)?;
+    stats_projection(&state, id, Utc::now(), app.config.resolved_day_calendar())
+}
+
+/// The typed stats projection over a resolved habit (pure — the
+/// verb's engine step is only resolve + this).
+///
+/// # Errors
+///
+/// [`CommandError::UnknownHabit`] — typed.
+pub fn stats_projection(
+    state: &AppState,
+    id: HabitId,
+    now: DateTime<Utc>,
+    day: taskboard_domain::DayCalendar,
+) -> Result<HabitStatsView, CommandError> {
+    let habit = state
+        .habits
+        .habits
+        .get(&id)
+        .ok_or(CommandError::UnknownHabit {
+            selector: id.as_uuid().to_string(),
+        })?;
+    let ratio = taskboard_domain::habit::adherence(habit, &state.habits.log, now, day);
+    let best = taskboard_domain::habit::best_streak(habit, &state.habits.log, now, day);
+    let totals = taskboard_domain::habit::per_period_totals(habit, &state.habits.log);
+    Ok(HabitStatsView {
+        habit_id: id.as_uuid().to_string(),
+        title: habit.title.clone(),
+        adherence_empty: ratio.is_empty(),
+        adherence_met: ratio.met(),
+        adherence_scheduled: ratio.scheduled(),
+        best_streak: best,
+        totals: totals
+            .into_iter()
+            .map(|(window, count)| (window.as_date(), count))
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1089,6 +1349,76 @@ mod tests {
 
             paused_until: None,
         }
+    }
+
+    // US-9/S2 (HF3, W-10): the stats projection carries the domain
+    // fns' typed values — the empty history is the typed empty
+    // state, the populated one the met/scheduled pair.
+    #[test]
+    fn us9_s2_cli_stats_renders_the_typed_values() {
+        let mut state = AppState::default();
+        let h = habit(11, 1, 0, false, None);
+        let mut log = std::collections::BTreeMap::new();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+        for (d, count) in [(18, 3_u32), (19, 0_u32)] {
+            log.insert(
+                taskboard_domain::HabitLogKey {
+                    habit: h.id,
+                    window: taskboard_domain::habit::WindowStart::of_period(
+                        PeriodKind::Day,
+                        today
+                            - chrono::Duration::days(
+                                today
+                                    .signed_duration_since(
+                                        chrono::NaiveDate::from_ymd_opt(2026, 11, d).unwrap(),
+                                    )
+                                    .num_days(),
+                            ),
+                    ),
+                },
+                HabitLogEntry {
+                    count,
+                    clock: ts(10),
+                    by: None,
+                },
+            );
+        }
+        state.habits = HabitState {
+            habits: std::collections::BTreeMap::from([(h.id, h.clone())]),
+            log,
+        };
+        // The empty twin: same shape, no rows.
+        let empty = habit(12, 1, 0, false, None);
+        let empty_id = empty.id;
+        state.habits.habits.insert(empty.id, empty);
+        let numbers =
+            crate::commands::habits::stats_projection(&state, h.id, ts(1_795_440_000), day())
+                .unwrap();
+        assert_eq!(numbers.adherence_met, 1);
+        assert!(numbers.adherence_scheduled >= 2);
+        assert!(!numbers.adherence_empty);
+        let vacant =
+            crate::commands::habits::stats_projection(&state, empty_id, ts(1_795_440_000), day())
+                .unwrap();
+        assert!(vacant.adherence_empty);
+        assert_eq!(vacant.best_streak, 0);
+    }
+
+    // US-7 AC-5 (HF3, W-8): a tombstoned habit's log outlives the
+    // tracker — the projection verbs resolve it.
+    #[test]
+    fn us7_tombstoned_history_still_projects() {
+        let mut state = AppState::default();
+        let h = habit(13, 1, 0, true, None);
+        let id = h.id;
+        state.habits = HabitState {
+            habits: std::collections::BTreeMap::from([(id, h)]),
+            log: std::collections::BTreeMap::new(),
+        };
+        let resolved =
+            resolve_habit_with_tombstones(&state, &format!("{}", id.as_uuid())).expect("resolves");
+        assert_eq!(resolved, id);
+        assert!(resolve_habit(&state, &format!("{}", id.as_uuid())).is_err());
     }
 
     #[test]

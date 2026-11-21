@@ -1340,7 +1340,8 @@ impl AdherenceRatio {
 /// and `paused_until`): today the only transparent class is the
 /// walk's own pending window (grace still open), which leaves both
 /// numerator and denominator exactly per US-9 AC-2's law.
-fn statistics_horizon(
+#[must_use]
+pub fn statistics_horizon(
     habit: &Habit,
     log: &BTreeMap<HabitLogKey, HabitLogEntry>,
     now: DateTime<Utc>,

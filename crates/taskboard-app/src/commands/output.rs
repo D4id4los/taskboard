@@ -1435,6 +1435,66 @@ pub struct HabitListView {
     pub habits: Vec<HabitRow>,
 }
 
+/// One history window's typed row (HF3, US-7 AC-1): the state is the
+/// typed projection (met / pending / missed — the transparent
+/// skipped / paused / pre-schedule classes join when HF1/HF4 land;
+/// see the TODOs in `taskboard_domain::habit::statistics_horizon`),
+/// never a text bit.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitWindowRow {
+    /// The canonical period-start.
+    pub window: chrono::NaiveDate,
+    /// The stored count.
+    pub count: u32,
+    /// The typed state (`met` | `pending` | `missed`).
+    pub state: HabitWindowStateView,
+}
+
+/// The typed per-window state (the grid vocabulary's CLI projection).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HabitWindowStateView {
+    /// Count reached the quota.
+    Met,
+    /// Under quota, grace open.
+    Pending,
+    /// Under quota, grace closed.
+    Missed,
+}
+
+/// The `habits history` view (HF3, US-7): the habit's canonical log
+/// windows, chronological — the log outlives the tracker (US-7 AC-5:
+/// tombstoned habits still render).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitHistoryView {
+    /// The habit's uuid.
+    pub habit_id: String,
+    /// The display title (a tombstone keeps its stored title).
+    pub title: String,
+    /// The canonical windows, chronological.
+    pub windows: Vec<HabitWindowRow>,
+}
+
+/// The `habits stats` view (HF3, US-9): the domain fns' typed values.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HabitStatsView {
+    /// The habit's uuid.
+    pub habit_id: String,
+    /// The display title.
+    pub title: String,
+    /// The typed empty state (US-9 AC-3): no scheduled windows —
+    /// `met`/`scheduled` are both 0 and no percentage exists.
+    pub adherence_empty: bool,
+    /// Met windows.
+    pub adherence_met: u32,
+    /// Scheduled (elapsed, non-transparent) windows.
+    pub adherence_scheduled: u32,
+    /// The best historical run.
+    pub best_streak: u32,
+    /// Per-window totals (the count column), chronological.
+    pub totals: Vec<(chrono::NaiveDate, u32)>,
+}
+
 /// The `habits log` receipt: the window the increment landed in and
 /// the *stored* post-increment count (a surplus repair is visible),
 /// plus the outcome's reported value for the contract pin.
