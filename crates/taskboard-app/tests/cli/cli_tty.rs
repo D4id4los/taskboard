@@ -616,7 +616,7 @@ fn tty_in_session_connect_prompts_masked_and_persists() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let binary = env!("CARGO_BIN_EXE_taskboard");
@@ -702,7 +702,7 @@ fn tty_ctrl_c_during_the_masked_read_never_persists_and_never_wedges() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let binary = env!("CARGO_BIN_EXE_taskboard");
@@ -776,7 +776,7 @@ fn tty_bare_invocation_opens_a_repl_session_and_persists() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let binary = env!("CARGO_BIN_EXE_taskboard");
@@ -876,7 +876,7 @@ fn tty_repl_exit_hands_the_line_discipline_back_intact() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     // The non-interactive `sh` between `script` and the binary leaves
@@ -1119,7 +1119,7 @@ fn tty_repl_completion_expands_verbs_and_live_titles() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let binary = env!("CARGO_BIN_EXE_taskboard");
@@ -1396,7 +1396,7 @@ fn tty_repl_history_recalls_the_previous_sessions_line() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let binary = env!("CARGO_BIN_EXE_taskboard");
@@ -1633,7 +1633,7 @@ fn tty_ctrl_c_during_the_masked_read_fails_typed_and_the_session_survives() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let mut session = spawn_session_pty_exec(&config, dir.path(), &[]);
@@ -1730,7 +1730,7 @@ fn tty_ctrl_c_during_a_stalled_line_cancels_and_the_next_line_executes() {
     toml.push_str(
         "[sync]\npoll_interval_secs = 3600\nbackoff_initial_secs = 1\nbackoff_max_secs = 5\n",
     );
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let mut session = spawn_session_pty_exec(
@@ -1856,7 +1856,7 @@ fn tty_sigterm_mid_readline_restores_the_pane_and_exits_gracefully() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let (mut session, stty_path) = spawn_session_pty_probe(&config, &[]);
@@ -1946,7 +1946,9 @@ fn tty_second_sigterm_during_the_drain_forces_143_and_the_pane_is_sane() {
         "[sync]\npoll_interval_secs = 3600\nbackoff_initial_secs = 1\nbackoff_max_secs = 5\n",
     );
     // The drain's bounded join holds the process alive against the
-    // 30 s request — the second SIGTERM's window.
+    // 30 s request — the second SIGTERM's window. The 20 s budget is
+    // the drain-hold contract pin (#1075's sweep leaves it at 20; only
+    // the '= 5' teardown seeds dropped to the 1 s floor).
     toml.push_str("[app]\nshutdown_timeout_secs = 20\n");
     std::fs::write(&config, toml).expect("write config");
 
@@ -2010,7 +2012,7 @@ fn tty_ctrl_c_at_the_prompt_clears_the_line_and_the_session_continues() {
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let mut session = spawn_session_pty_exec(&config, dir.path(), &[]);
@@ -2090,7 +2092,7 @@ fn tty_in_session_flagless_connect_prompts_ride_the_editor_and_stay_out_of_histo
     let db = dir.path().join("taskboard.db");
     let mut toml = String::from("[nextcloud]\ncredential_store = 'env'\n");
     let _ = write!(toml, "[storage]\ndb_path = '{}'\n", db.display());
-    toml.push_str("[app]\nshutdown_timeout_secs = 5\n");
+    toml.push_str("[app]\nshutdown_timeout_secs = 1\n");
     std::fs::write(&config, toml).expect("write config");
 
     let mut session = spawn_session_pty_exec(&config, dir.path(), &[]);
