@@ -20,7 +20,7 @@ use taskboard_domain::reflection::{
 use taskboard_domain::test_support::CountingIds;
 use taskboard_storage_sqlite::{SqliteTaskRepository, open, open_memory};
 
-mod common;
+use crate::common;
 
 fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
     chrono::Utc.timestamp_opt(secs, 0).unwrap()

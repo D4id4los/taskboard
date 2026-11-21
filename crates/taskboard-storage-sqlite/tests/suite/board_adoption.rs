@@ -2,7 +2,7 @@
 //! `AdoptMovedBoard` on disk: parity with the in-memory definition, and
 //! no old id left in any text column of any table.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 

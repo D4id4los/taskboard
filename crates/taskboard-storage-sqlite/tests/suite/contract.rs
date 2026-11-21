@@ -3,9 +3,7 @@
 //! on `:memory:` and on a file-backed database (the plan's Phase 2 exit
 //! criterion).
 
-mod common;
-
-use common::FileDb;
+use crate::common::FileDb;
 use taskboard_domain::test_support::contract::assert_task_repository_contract_async;
 use taskboard_storage_sqlite::open_memory;
 

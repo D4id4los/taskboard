@@ -5,9 +5,7 @@
 //! Both tests check only the exact sibling paths of the fixture's own
 //! file — never a `/tmp` scan.
 
-mod common;
-
-use common::{FileDb, sidecar_paths};
+use crate::common::{FileDb, sidecar_paths};
 use taskboard_domain::persistence::{PersistenceAction, TaskRepository};
 
 /// One write so sqlite actually materializes the WAL sidecars.
