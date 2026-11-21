@@ -171,6 +171,31 @@ pub fn plan_journaled_command(
     }
 }
 
+/// The `PreImages` facts literal shared by every undoable §3 row: the
+/// arm-agnostic capture over the plan's actions plus the post-write
+/// watermark. The classification arms keep their own constraint
+/// comments and distinct dispatch — only the shared mint is factored.
+fn journaled_pre_images(app: &AppState, actions: &[PersistenceAction]) -> UndoFacts {
+    UndoFacts::PreImages {
+        images: pre_images(app, actions),
+        watermark: watermark_of(actions),
+    }
+}
+
+/// The recorded post-write row for one habit-log window, or `None`
+/// when the watermark holds no stamp for it (the caller refuses with
+/// the entity in hand — `refuse` names entity + field). Shared by the
+/// the `SkipHabit` / `AdjustHabitLog` / `LoggedHabit` inverse classes.
+fn habit_log_post(
+    watermark: &UndoWatermark,
+    key: crate::habit::HabitLogKey,
+) -> Option<&crate::habit::HabitLogEntry> {
+    match watermark.0.get(&JournalEntity::HabitLog(key)) {
+        Some(EntityStamps::HabitLog(post)) => Some(post),
+        _ => None,
+    }
+}
+
 /// Assembles the journal entry for one accepted mutating command: the
 /// classification decides `PreImages` vs `NotUndoable` (the §3 table;
 /// the synthesis match in [`synthesize_undo`] is the same table's other
@@ -223,10 +248,7 @@ fn record_entry(
         // The pause is a one-field task edit under the recur clock
         // (issue #506): the recur pre-image inverts it exactly (the
         // UpdateTask class restores the whole rule verbatim).
-        | StateCommand::PauseSeries { .. } => UndoFacts::PreImages {
-            images: pre_images(app, actions),
-            watermark: watermark_of(actions),
-        },
+        | StateCommand::PauseSeries { .. } => journaled_pre_images(app, actions),
         // ---- the typed families (§3 rows; the lockstep's other half)
         StateCommand::CreateBoard { .. }
         | StateCommand::BindBoard { .. }
@@ -256,10 +278,7 @@ fn record_entry(
         // 35′–42′; three record-time dynamic rules per §6/§7) ----------
         StateCommand::LogTime { .. }
         | StateCommand::CreateHabit { .. }
-        | StateCommand::MoveHabit { .. } => UndoFacts::PreImages {
-            images: pre_images(app, actions),
-            watermark: watermark_of(actions),
-        },
+        | StateCommand::MoveHabit { .. } => journaled_pre_images(app, actions),
         StateCommand::AdjustTimeEntry { id, .. } => {
             // D23/§7.1: an adjust that stamps an end onto an open entry
             // is inexpressible to invert — the change mask structurally
@@ -279,10 +298,7 @@ fn record_entry(
             if closes_open_entry {
                 UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
             } else {
-                UndoFacts::PreImages {
-                    images: pre_images(app, actions),
-                    watermark: watermark_of(actions),
-                }
+                journaled_pre_images(app, actions)
             }
         }
         StateCommand::UpdateHabit { changes, .. } => {
@@ -293,10 +309,7 @@ fn record_entry(
             if changes.continued_from.is_some() {
                 UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
             } else {
-                UndoFacts::PreImages {
-                    images: pre_images(app, actions),
-                    watermark: watermark_of(actions),
-                }
+                journaled_pre_images(app, actions)
             }
         }
         StateCommand::AdjustHabitLog { habit, window, .. } => {
@@ -313,10 +326,7 @@ fn record_entry(
                 window: *window,
             };
             if app.habits.log.contains_key(&key) {
-                UndoFacts::PreImages {
-                    images: pre_images(app, actions),
-                    watermark: watermark_of(actions),
-                }
+                journaled_pre_images(app, actions)
             } else {
                 UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
             }
@@ -343,10 +353,7 @@ fn record_entry(
             // same-second burst pops one increment per undo (the
             // bump's monotone clocks distinguish rows). `AdjustHabitLog`
             // (D24) and the conversion seam (D25) keep their fences.
-            UndoFacts::PreImages {
-                images: pre_images(app, actions),
-                watermark: watermark_of(actions),
-            }
+            journaled_pre_images(app, actions)
         }
         StateCommand::SkipHabit { .. } | StateCommand::UnskipHabit { .. } => {
             // Journal-invertible (HF1, 2026-11-21 — the habit-family UX
@@ -354,10 +361,7 @@ fn record_entry(
             // **or none** (`PreImage::HabitLogRow` before: Option); the
             // inverse flips the typed mark via the mirror verb, never
             // forging a row shape. The count stays untouched either way.
-            UndoFacts::PreImages {
-                images: pre_images(app, actions),
-                watermark: watermark_of(actions),
-            }
+            journaled_pre_images(app, actions)
         }
         StateCommand::PauseHabit { .. } => {
             // The pause lives on the habit row, but `HabitChanges` has
@@ -1168,6 +1172,17 @@ fn synthesize_undo(
             Err(refuse(entity, field))
         }
     };
+    // The habit-log window key from the journal entry's
+    // `PreImage::HabitLogRow` for `habit` — never recomputed from
+    // "today" (the day may have rolled over since the write). Shared
+    // by the SkipHabit and LoggedHabit classes.
+    let habit_log_key =
+        |images: &[PreImage], habit: crate::ids::HabitId| -> Option<crate::habit::HabitLogKey> {
+            images.iter().find_map(|image| match image {
+                PreImage::HabitLogRow { key, .. } if key.habit == habit => Some(*key),
+                _ => None,
+            })
+        };
     match class {
         InverseClass::CreatedTask => {
             // Undo deletes the created task. The checked scope: the
@@ -2011,16 +2026,13 @@ fn synthesize_undo(
             }) else {
                 return Err(CommandError::NothingToUndo);
             };
-            let Some(key) = images.iter().find_map(|image| match image {
-                PreImage::HabitLogRow { key, .. } if key.habit == habit => Some(*key),
-                _ => None,
-            }) else {
+            let Some(key) = habit_log_key(images, habit) else {
                 // Unreachable for a journaled skip (the mark always
                 // records the row pre-image); defensive.
                 return Err(CommandError::NothingToUndo);
             };
             let entity = JournalEntity::HabitLog(key);
-            let Some(EntityStamps::HabitLog(recorded_post)) = watermark.0.get(&entity) else {
+            let Some(recorded_post) = habit_log_post(watermark, key) else {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             };
             if app.habits.log.get(&key) != Some(recorded_post) {
@@ -2057,7 +2069,7 @@ fn synthesize_undo(
                 return Err(CommandError::NothingToUndo);
             };
             let entity = JournalEntity::HabitLog(key);
-            let Some(EntityStamps::HabitLog(recorded_post)) = watermark.0.get(&entity) else {
+            let Some(recorded_post) = habit_log_post(watermark, key) else {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             };
             if app.habits.log.get(&key) != Some(recorded_post) {
@@ -2092,10 +2104,7 @@ fn synthesize_undo(
             }) else {
                 return Err(CommandError::NothingToUndo);
             };
-            let Some(key) = images.iter().find_map(|image| match image {
-                PreImage::HabitLogRow { key, .. } if key.habit == habit => Some(*key),
-                _ => None,
-            }) else {
+            let Some(key) = habit_log_key(images, habit) else {
                 // Unreachable for a journaled log (every LogHabit
                 // records the row pre-image); defensive.
                 return Err(CommandError::NothingToUndo);
@@ -2108,7 +2117,7 @@ fn synthesize_undo(
                 _ => None,
             });
             let entity = JournalEntity::HabitLog(key);
-            let Some(EntityStamps::HabitLog(recorded_post)) = watermark.0.get(&entity) else {
+            let Some(recorded_post) = habit_log_post(watermark, key) else {
                 return Err(refuse(entity, UndoField::HabitLogCount));
             };
             // Count-only guard (not the AdjustHabitLog class's

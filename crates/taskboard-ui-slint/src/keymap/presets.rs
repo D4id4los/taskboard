@@ -44,6 +44,8 @@ impl Preset {
         match self {
             Self::Standard => chained(&[
                 STANDARD_S0,
+                HABIT_TODAY_ROWS,
+                STANDARD_S0B,
                 LABELS_CONTROL_WALK_ROWS,
                 STANDARD_S1,
                 CONTROL_WALK_ROWS,
@@ -57,6 +59,8 @@ impl Preset {
             ]),
             Self::Emacs => chained(&[
                 EMACS_S0,
+                HABIT_TODAY_ROWS,
+                EMACS_S0B,
                 LABELS_CONTROL_WALK_ROWS,
                 EMACS_S1,
                 ALARM_WINDOW_ROWS,
@@ -64,6 +68,8 @@ impl Preset {
             ]),
             Self::Vi => chained(&[
                 VI_S0,
+                HABIT_TODAY_ROWS,
+                VI_S0B,
                 CONTROL_WALK_ROWS,
                 VI_S1,
                 CONTROL_WALK_SETTINGS_ROWS,
@@ -110,6 +116,45 @@ impl Preset {
 const LABELS_CONTROL_WALK_ROWS: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavNextControl, ContextId::Labels, &["Tab"]),
     (ActionId::NavPrevControl, ContextId::Labels, &["Shift+Tab"]),
+];
+
+/// The habit family's Today-context rows (all presets — the O-8
+/// parity law, D4/D7 + HF1/W-11 + W-5): the chunk-8 reorder pair and
+/// arm/undo keys, the HF1 skip/pause/resume trio, and the W-5 inline
+/// quota edit. The per-preset `HabitCreate` opener keeps its own
+/// preset-specific comment upstream of this block.
+const HABIT_TODAY_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    // Chunk 8 (D4/D7, #934): keyboard reorder through the chunk-6
+    // one-shot pair — the row-scoped movement grammar; Today's
+    // shifted arrows are free (the board's shift-walk selection
+    // extension is Board-scoped) and the arrows' shift-fold leniency
+    // covers printable rows only, so the shifted arrows reach the
+    // keymap intact. The arm/undo keys are the free chords (the
+    // chunk-1 case-law spelling).
+    (ActionId::HabitMoveUp, ContextId::Today, &["Shift+Up"]),
+    (ActionId::HabitMoveDown, ContextId::Today, &["Shift+Down"]),
+    (
+        ActionId::HabitConvertArm,
+        ContextId::Today,
+        &["Ctrl+Shift+c"],
+    ),
+    (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
+    // HF1 (W-11, #955/#958): the skip/pause/resume trio — Today
+    // context rows in every preset (the O-8 parity law; the free
+    // Ctrl+Shift chords, the chunk-1 case-law spelling).
+    (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
+    (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
+    (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
+    // The inline quota edit (W-5/O-8, #961): the focused row's key
+    // twin of the phrase click — one stroke per preset (the O-8
+    // parity law). The rebase moved it off HF2's original Ctrl+Shift+w
+    // (HF1's HabitResume landed there first; a duplicated chord
+    // cross-consumes) to the free q — the quota mnemonic.
+    (
+        ActionId::HabitQuotaEdit,
+        ContextId::Today,
+        &["Ctrl+Shift+q"],
+    ),
 ];
 
 /// The control walk's Tab/Shift+Tab pairs over the four view contexts (the standard/vi letter) — the Settings pair chains separately where each preset's textual position puts it.
@@ -370,37 +415,10 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // the accessibility ledger's demand, so all three presets carry
     // it (the habit family's deliberate exception).
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
-    // Chunk 8 (D4/D7, #934): keyboard reorder through the chunk-6
-    // one-shot pair — the row-scoped movement grammar; Today's
-    // shifted arrows are free (the board's shift-walk selection
-    // extension is Board-scoped) and the arrows' shift-fold leniency
-    // covers printable rows only, so the shifted arrows reach the
-    // keymap intact. The arm/undo keys are the free chords (the
-    // chunk-1 case-law spelling).
-    (ActionId::HabitMoveUp, ContextId::Today, &["Shift+Up"]),
-    (ActionId::HabitMoveDown, ContextId::Today, &["Shift+Down"]),
-    (
-        ActionId::HabitConvertArm,
-        ContextId::Today,
-        &["Ctrl+Shift+c"],
-    ),
-    (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
-    // HF1 (W-11, #955/#958): the skip/pause/resume trio — Today
-    // context rows in every preset (the O-8 parity law; the free
-    // Ctrl+Shift chords, the chunk-1 case-law spelling).
-    (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
-    (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
-    (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
-    // The inline quota edit (W-5/O-8, #961): the focused row's key
-    // twin of the phrase click — one stroke per preset (the O-8
-    // parity law). The rebase moved it off HF2's original Ctrl+Shift+w
-    // (HF1's HabitResume landed there first; a duplicated chord
-    // cross-consumes) to the free q — the quota mnemonic.
-    (
-        ActionId::HabitQuotaEdit,
-        ContextId::Today,
-        &["Ctrl+Shift+q"],
-    ),
+];
+
+/// `standard` continued after the shared [`HABIT_TODAY_ROWS`] block.
+static STANDARD_S0B: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     // The switcher flyout's opener (UX R-4 D-4, #794): the jump-to
@@ -829,37 +847,10 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Round 7 (D-7.2): the create form's opener — the CUA chord, free
     // in this preset's Today (the accessibility ledger's parity row).
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
-    // Chunk 8 (D4/D7, #934): keyboard reorder through the chunk-6
-    // one-shot pair — the row-scoped movement grammar; Today's
-    // shifted arrows are free (the board's shift-walk selection
-    // extension is Board-scoped) and the arrows' shift-fold leniency
-    // covers printable rows only, so the shifted arrows reach the
-    // keymap intact. The arm/undo keys are the free chords (the
-    // chunk-1 case-law spelling).
-    (ActionId::HabitMoveUp, ContextId::Today, &["Shift+Up"]),
-    (ActionId::HabitMoveDown, ContextId::Today, &["Shift+Down"]),
-    (
-        ActionId::HabitConvertArm,
-        ContextId::Today,
-        &["Ctrl+Shift+c"],
-    ),
-    (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
-    // HF1 (W-11, #955/#958): the skip/pause/resume trio — Today
-    // context rows in every preset (the O-8 parity law; the free
-    // Ctrl+Shift chords, the chunk-1 case-law spelling).
-    (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
-    (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
-    (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
-    // The inline quota edit (W-5/O-8, #961): the focused row's key
-    // twin of the phrase click — one stroke per preset (the O-8
-    // parity law). The rebase moved it off HF2's original Ctrl+Shift+w
-    // (HF1's HabitResume landed there first; a duplicated chord
-    // cross-consumes) to the free q — the quota mnemonic.
-    (
-        ActionId::HabitQuotaEdit,
-        ContextId::Today,
-        &["Ctrl+Shift+q"],
-    ),
+];
+
+/// `emacs` continued after the shared [`HABIT_TODAY_ROWS`] block.
+static EMACS_S0B: &[(ActionId, ContextId, &[&str])] = &[
     // Round 3 (W-SM-d, F26): the title re-arm — Return at detail is
     // unambiguous once task-detail entry no longer auto-arms (emacs
     // binds Return only at Board/Today for `task.edit`).
@@ -1358,37 +1349,10 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     // parity row; the Today context is chain-visible in vi too
     // (the `[Today, ViNormal, Global]` chain shape).
     (ActionId::HabitCreate, ContextId::Today, &["Ctrl+Shift+h"]),
-    // Chunk 8 (D4/D7, #934): keyboard reorder through the chunk-6
-    // one-shot pair — the row-scoped movement grammar; Today's
-    // shifted arrows are free (the board's shift-walk selection
-    // extension is Board-scoped) and the arrows' shift-fold leniency
-    // covers printable rows only, so the shifted arrows reach the
-    // keymap intact. The arm/undo keys are the free chords (the
-    // chunk-1 case-law spelling).
-    (ActionId::HabitMoveUp, ContextId::Today, &["Shift+Up"]),
-    (ActionId::HabitMoveDown, ContextId::Today, &["Shift+Down"]),
-    (
-        ActionId::HabitConvertArm,
-        ContextId::Today,
-        &["Ctrl+Shift+c"],
-    ),
-    (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
-    // HF1 (W-11, #955/#958): the skip/pause/resume trio — Today
-    // context rows in every preset (the O-8 parity law; the free
-    // Ctrl+Shift chords, the chunk-1 case-law spelling).
-    (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
-    (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
-    (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
-    // The inline quota edit (W-5/O-8, #961): the focused row's key
-    // twin of the phrase click — one stroke per preset (the O-8
-    // parity law). The rebase moved it off HF2's original Ctrl+Shift+w
-    // (HF1's HabitResume landed there first; a duplicated chord
-    // cross-consumes) to the free q — the quota mnemonic.
-    (
-        ActionId::HabitQuotaEdit,
-        ContextId::Today,
-        &["Ctrl+Shift+q"],
-    ),
+];
+
+/// `vi` continued after the shared [`HABIT_TODAY_ROWS`] block.
+static VI_S0B: &[(ActionId, ContextId, &[&str])] = &[
     // The today re-commit (UX R-4 D-8, #796): the bare mnemonic in
     // the Today context (the HabitCreate row's pattern — the view
     // context resolves before ViNormal); free in both contexts.
