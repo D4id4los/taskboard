@@ -578,3 +578,128 @@ async fn us3_s3_present_same_id_refuses_typed() {
     .expect_err("a present same-id row refuses");
     assert_eq!(err.error_kind(), "time-entry-already-present");
 }
+
+/// US-1/S3 (W-1, the superseded-D-5 leg): the global undo line offers
+/// the inverse of the restore, and undoing re-deletes — the label is
+/// tombstoned again (not hard-deleted), proven by the re-restore
+/// answering the pinned `LabelRestored` fact.
+#[tokio::test]
+async fn us1_s3_labels_restore_undo_redeletes_the_restored_row() {
+    let (config, _dir) = config_for("us1_s3");
+    let label_id = seed_tombstoned_label(&config, "urgent").await;
+
+    labels::restore(config.clone(), forbidden_store(), &label_id)
+        .await
+        .expect("restore boots");
+    // The undo line synthesizes the inverse and lands it.
+    tasks::undo(config.clone(), forbidden_store())
+        .await
+        .expect("the undo line offers the restore's inverse");
+    // The re-delete tombstoned the row: it is gone from the live list,
+    // and the restore verb still addresses it (tombstones resolve).
+    let rows = labels::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list boots");
+    assert!(
+        rows.iter().all(|r| r.id != label_id),
+        "the undo re-deleted the restored label"
+    );
+    let again = labels::restore(config.clone(), forbidden_store(), &label_id)
+        .await
+        .expect("re-restore boots");
+    assert!(
+        matches!(again, CommandOutcome::LabelRestored { .. }),
+        "the undo tombstoned rather than hard-deleted the row"
+    );
+}
+
+/// US-2/S3 (W-2, the superseded-D-5 leg): the undo line re-deletes the
+/// restored habit (tombstone; the log stays untouched, D26), proven by
+/// the re-restore answering the pinned `HabitRestored` fact.
+#[tokio::test]
+async fn us2_s3_habits_restore_undo_redeletes_the_restored_row() {
+    let (config, _dir) = config_for("us2_s3");
+    let habit_id = seed_tombstoned_habit(&config, "stretch").await;
+
+    habits::run(
+        config.clone(),
+        forbidden_store(),
+        HabitsInvocation::Restore {
+            habit: habit_id.clone(),
+        },
+    )
+    .await
+    .expect("restore boots");
+    tasks::undo(config.clone(), forbidden_store())
+        .await
+        .expect("the undo line offers the restore's inverse");
+    let again = habits::run(
+        config.clone(),
+        forbidden_store(),
+        HabitsInvocation::Restore {
+            habit: habit_id.clone(),
+        },
+    )
+    .await
+    .expect("re-restore boots");
+    assert!(
+        matches!(
+            again,
+            HabitOutcome::Restored(CommandOutcome::HabitRestored { .. })
+        ),
+        "the undo tombstoned rather than hard-deleted the row"
+    );
+}
+
+/// US-3/S4 (W-3, the superseded-D-5 leg): the undo line re-removes the
+/// restored entry row (the hard-deleted row's inverse), proven by the
+/// row disappearing from the ledger and the same-flags re-restore
+/// answering the pinned `EntryRestored` fact.
+#[tokio::test]
+async fn us3_s4_track_restore_undo_redeletes_the_restored_row() {
+    let (config, _dir) = config_for("us3_s4");
+    let task_id = seed_task(&config, "undoable").await;
+    let start = chrono::DateTime::parse_from_rfc3339(START_STAMP)
+        .expect("the stamp parses")
+        .with_timezone(&chrono::Utc);
+    let id = uuid::Uuid::now_v7();
+
+    track::restore(
+        config.clone(),
+        forbidden_store(),
+        None,
+        &task_id,
+        start,
+        None,
+        TimeEntryKind::Work,
+        Some(id),
+    )
+    .await
+    .expect("restore boots");
+    tasks::undo(config.clone(), forbidden_store())
+        .await
+        .expect("the undo line offers the restore's inverse");
+    let view = track::list(config.clone(), forbidden_store(), Some(&task_id), None)
+        .await
+        .expect("list boots");
+    assert!(
+        view.entries.iter().all(|r| r.entry_id != id.to_string()),
+        "the undo re-removed the restored entry row"
+    );
+    let again = track::restore(
+        config,
+        forbidden_store(),
+        None,
+        &task_id,
+        start,
+        None,
+        TimeEntryKind::Work,
+        Some(id),
+    )
+    .await
+    .expect("re-restore boots");
+    assert!(
+        matches!(again, CommandOutcome::EntryRestored { .. }),
+        "the undo removed rather than retained the row"
+    );
+}
