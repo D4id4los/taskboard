@@ -13,7 +13,7 @@ use taskboard_domain::journal::{
     UndoFacts, UndoWatermark,
 };
 use taskboard_domain::messages::StateCommand;
-use taskboard_domain::persistence::{PersistenceAction, RepositoryError, TaskRepository};
+use taskboard_domain::persistence::{PersistenceAction, TaskRepository};
 use taskboard_domain::test_support::CountingIds;
 use taskboard_storage_sqlite::{SqliteTaskRepository, open_memory};
 
@@ -206,29 +206,8 @@ async fn an_undoable_payload_round_trips_through_the_json_blob() {
     assert_eq!(reloaded.journal.entries, vec![entry]);
 }
 
-#[tokio::test]
-async fn a_corrupt_payload_is_typed_corrupted_at_load() {
-    // The real corruption path: file-backed db, one row, payload
-    // mangled through raw SQL.
-    let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
-    let connector = taskboard_domain::ids::ConnectorId::from("test");
-    let repo = taskboard_storage_sqlite::open(file.path(), connector.clone())
-        .await
-        .expect("open");
-    let ids = CountingIds::new();
-    repo.apply(vec![PersistenceAction::RecordJournal(entry(
-        &ids, None, 100,
-    ))])
-    .await
-    .expect("apply");
-    let raw = sqlx::SqlitePool::connect(&format!("sqlite://{}", file.path().display()))
-        .await
-        .expect("raw connect");
-    sqlx::query("UPDATE command_journal SET payload = 'not json'")
-        .execute(&raw)
-        .await
-        .expect("corrupt");
-    raw.close().await;
-    let err = repo.load().await.expect_err("corruption is typed");
-    assert!(matches!(err, RepositoryError::Corrupted(_)));
-}
+// The corrupt-payload pin now lives in `corrupt_row_matrix.rs`
+// (journal payload quarantine, #1039's accepted policy — the former
+// `a_corrupt_payload_is_typed_corrupted_at_load` abort pin recorded the
+// pre-quarantine semantics and is superseded there, one behavior one
+// test).
