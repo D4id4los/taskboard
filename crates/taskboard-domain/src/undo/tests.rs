@@ -4554,13 +4554,6 @@ fn a_skip_journal_entry_inverts_through_the_mirror_verb() {
     h.exec(&StateCommand::LogHabit { habit }).expect("accepted");
     h.exec(&StateCommand::SkipHabit { habit })
         .expect("accepted");
-    let key = crate::habit::HabitLogKey {
-        habit,
-        window: crate::habit::WindowStart::of_period(
-            crate::habit::PeriodKind::Day,
-            chrono::NaiveDate::from_ymd_opt(1970, 1, 2).expect("valid"),
-        ),
-    };
     // The window date derives from the harness clock; find the touched
     // window from the journal entry instead of hardcoding.
     let entry = h.journal.entries.last().expect("journaled").clone();
