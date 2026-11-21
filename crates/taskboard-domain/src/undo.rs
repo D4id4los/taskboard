@@ -1565,13 +1565,14 @@ fn synthesize_undo(
             // Undoing a restore re-deletes the entry through the
             // ordinary `DeleteTimeEntry`; the checked scope: the row
             // present and its `updated_at` stamp == the entry's
-            // watermark stamp (the `CreatedTimeEntry` scope).
+            // watermark stamp (the `CreatedTimeEntry` scope). The
+            // pre-image's `before` leg is by-construction `None` — the
+            // row was hard-absent pre-restore, so the arm-agnostic
+            // capture has no prior to carry; the class is only ever
+            // produced by a `RestoreTimeEntry` head (#1187: demanding
+            // `Some` here made the verb's own undo unreachable).
             let Some(id) = images.iter().find_map(|image| match image {
-                PreImage::TimeEntry {
-                    id,
-                    before: Some(_),
-                    ..
-                } => Some(*id),
+                PreImage::TimeEntry { id, .. } => Some(*id),
                 _ => None,
             }) else {
                 return Err(CommandError::NothingToUndo);
