@@ -21,7 +21,7 @@ use taskboard_domain::{
     TaskChanges, TaskId, plan_command,
 };
 
-mod common;
+use crate::common;
 
 fn ts(secs: i64) -> chrono::DateTime<Utc> {
     Utc.timestamp_opt(secs, 0).unwrap()

@@ -29,9 +29,9 @@ use taskboard_domain::{
 };
 use taskboard_state::{EngineHandle, spawn_state_engine};
 
-mod common;
+use crate::common;
 
-use common::{CountingRepository, FixedClock, FlakyRepository, T0, ts};
+use crate::common::{CountingRepository, FixedClock, FlakyRepository, T0, ts};
 
 /// The enabled tick settings used by the R-series: a 1 s cadence (many
 /// ticks per advance window) and an at-due implicit default.

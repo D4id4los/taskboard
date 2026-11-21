@@ -30,9 +30,9 @@ use taskboard_state::{
     spawn_state_engine_with_user_data,
 };
 
-mod common;
+use crate::common;
 
-use common::{
+use crate::common::{
     FixedClock, FlakyRepository, T0, seed_board_state, seed_bound_board_state, test_validators, ts,
 };
 

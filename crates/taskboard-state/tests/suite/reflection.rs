@@ -20,9 +20,9 @@ use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
 use taskboard_domain::{CommandOutcome, NotifierMessage, StateCommand, SyncCommand, SystemEvent};
 use taskboard_state::{EngineHandle, ExecuteError, spawn_state_engine};
 
-mod common;
+use crate::common;
 
-use common::{FixedClock, T0, seed_board_state};
+use crate::common::{FixedClock, T0, seed_board_state};
 
 struct Harness {
     handle: EngineHandle,

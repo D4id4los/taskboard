@@ -19,9 +19,7 @@ use taskboard_domain::{
 };
 use taskboard_state::{DayRollConfig, EngineHandle, spawn_state_engine};
 
-mod common;
-
-use common::{CountingRepository, FixedClock, T0, seed_stack_with_due_task, ts};
+use crate::common::{CountingRepository, FixedClock, T0, seed_stack_with_due_task, ts};
 
 fn enabled(tick_secs: u64) -> SettingsSnapshot {
     SettingsSnapshot {

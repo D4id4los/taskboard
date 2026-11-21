@@ -24,9 +24,9 @@ use taskboard_domain::{
 };
 use taskboard_state::{EngineHandle, spawn_state_engine};
 
-mod common;
+use crate::common;
 
-use common::{FixedClock, T0, seed_board_state};
+use crate::common::{FixedClock, T0, seed_board_state};
 
 struct Harness {
     handle: EngineHandle,

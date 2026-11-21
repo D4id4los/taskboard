@@ -15,9 +15,9 @@ use taskboard_domain::{
 };
 use taskboard_state::{DayRollConfig, ExecuteError, spawn_state_engine};
 
-mod common;
+use crate::common;
 
-use common::{FixedClock, T0, seed_bound_board_state};
+use crate::common::{FixedClock, T0, seed_bound_board_state};
 
 /// A repo whose `apply` always fails (the storage-failure arm's seam):
 /// a handwritten fake, `InMemoryRepository`'s shape with a tripwire.
