@@ -122,7 +122,8 @@ benchmark lanes fire at 03:00/04:00 UTC).
 2. *Injected =Arc<dyn Clock>=* — for actors that stamp time as data
    across a long life: the state engine, the sync actors, escalation,
    focus. Tests inject =FixedClock=/=SteppingClock= + paused tokio
-   time (the =advance_both= lockstep, =tests/reminders.rs=).
+   time (the =advance_both= lockstep, =tests/state_features.rs='s
+   =reminders= member).
 3. *The render-pass content freeze* — =UiSettings::clock=
    (=Some= freezes =Adapter::day_ctx='s =now=; every production
    hand-over passes =None=). Freezes *content*, never *cadence*: the
@@ -594,7 +595,8 @@ are outside these jobs), and no assertion is weakened or skipped.
   =clock.rs= (SystemClock) and =idgen.rs= (production
   =UuidV7Generator=). Each gated test runs natively unchanged;
   existing gates follow the same pattern (insta S-series socketpair,
-  =sqlite_smoke= tempdir+FFI, P4/P5 live-engine properties).
+  =state_engine='s =sqlite_smoke= member tempdir+FFI, P4/P5
+  live-engine properties).
 
 - *Same-config walls drift window-to-window on the rolling nightly*,
   and the drift swamps the caps themselves: pipeline 24 → 72 min at
