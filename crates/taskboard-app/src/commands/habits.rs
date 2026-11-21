@@ -24,7 +24,7 @@ use crate::cli::DayEdit;
 use crate::cli::{AnchorEdit, HabitsCmd, SeamEdit};
 use crate::commands::output::{
     HabitAddReceipt, HabitAdjustReceipt, HabitDeleteReceipt, HabitListView, HabitLogReceipt,
-    HabitRow, HabitUpdateReceipt,
+    HabitPauseReceipt, HabitRow, HabitSkipReceipt, HabitUpdateReceipt,
 };
 use crate::commands::{CommandError, outcome_mismatch};
 use crate::config::AppConfig;
@@ -134,6 +134,23 @@ pub enum HabitsInvocation {
         /// The habit selector.
         habit: String,
     },
+    /// `skip <habit>`.
+    Skip {
+        /// The habit selector.
+        habit: String,
+    },
+    /// `pause <habit> --until <date>`.
+    Pause {
+        /// The habit selector.
+        habit: String,
+        /// The inclusive pause-through date.
+        until: NaiveDate,
+    },
+    /// `resume <habit>`.
+    Resume {
+        /// The habit selector.
+        habit: String,
+    },
     /// `restore <habit>` — the #901 restore-family verb's first
     /// surface (tombstone-only resurrect; the log is never touched,
     /// D26).
@@ -206,6 +223,9 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             continued_from,
         },
         HabitsCmd::Rm { habit } => HabitsInvocation::Rm { habit },
+        HabitsCmd::Skip { habit } => HabitsInvocation::Skip { habit },
+        HabitsCmd::Pause { habit, until } => HabitsInvocation::Pause { habit, until },
+        HabitsCmd::Resume { habit } => HabitsInvocation::Resume { habit },
         HabitsCmd::Restore { habit } => HabitsInvocation::Restore { habit },
     }
 }
@@ -244,6 +264,83 @@ pub enum HabitOutcome {
     /// or the accepted live-target `NoOp`; the serde-pinned
     /// `CommandOutcome` is the `--json` contract, journey D-3/W-5).
     Restored(CommandOutcome),
+    /// `skip`.
+    Skipped(HabitSkipReceipt),
+    /// `pause` / `resume`.
+    Paused(HabitPauseReceipt),
+}
+
+/// The `habits skip` steps: resolve, mark the current canonical window
+/// skipped, read the streak back (US-1: the receipt shows the streak
+/// survived — display data, never an input echo).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn skip_on(app: &crate::App, selector: &str) -> Result<HabitSkipReceipt, CommandError> {
+    let id = resolve_habit(&app.engine.shared_state().load_full(), selector)?;
+    match app
+        .engine
+        .execute(StateCommand::SkipHabit { habit: id })
+        .await?
+    {
+        CommandOutcome::HabitSkipped { habit, window } => {
+            let state = app.engine.shared_state().load_full();
+            let row = state.habits.habits[&habit].clone();
+            Ok(HabitSkipReceipt {
+                habit_id: habit.as_uuid().to_string(),
+                window: window.as_date(),
+                streak: taskboard_domain::habit::streak(
+                    &row,
+                    &state.habits.log,
+                    Utc::now(),
+                    app.config.resolved_day_calendar(),
+                ),
+            })
+        }
+        _ => Err(outcome_mismatch()),
+    }
+}
+
+/// The `habits pause` steps: resolve, execute the pause (a past-date
+/// through-date is the planner's typed `invalid-habit-pause` refusal
+/// passed through structurally), read the field back.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn pause_on(
+    app: &crate::App,
+    selector: &str,
+    until: Option<NaiveDate>,
+) -> Result<HabitPauseReceipt, CommandError> {
+    let id = resolve_habit(&app.engine.shared_state().load_full(), selector)?;
+    match app
+        .engine
+        .execute(StateCommand::PauseHabit { habit: id, until })
+        .await?
+    {
+        CommandOutcome::Applied | CommandOutcome::NoOp => {
+            let state = app.engine.shared_state().load_full();
+            Ok(HabitPauseReceipt {
+                habit_id: id.as_uuid().to_string(),
+                until: state.habits.habits[&id].paused_until,
+            })
+        }
+        _ => Err(outcome_mismatch()),
+    }
+}
+
+/// The `habits resume` steps: the pause's explicit `None` clear leg.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn resume_on(
+    app: &crate::App,
+    selector: &str,
+) -> Result<HabitPauseReceipt, CommandError> {
+    pause_on(app, selector, None).await
 }
 
 /// The `habits` steps on a booted core (the session seam).
@@ -308,6 +405,13 @@ pub async fn run_on(
             ))
         }
         HabitsInvocation::Rm { habit } => Ok(HabitOutcome::Removed(rm_on(app, &habit).await?)),
+        HabitsInvocation::Skip { habit } => Ok(HabitOutcome::Skipped(skip_on(app, &habit).await?)),
+        HabitsInvocation::Pause { habit, until } => Ok(HabitOutcome::Paused(
+            pause_on(app, &habit, Some(until)).await?,
+        )),
+        HabitsInvocation::Resume { habit } => {
+            Ok(HabitOutcome::Paused(resume_on(app, &habit).await?))
+        }
         HabitsInvocation::Restore { habit } => {
             Ok(HabitOutcome::Restored(restore_on(app, &habit).await?))
         }
@@ -866,6 +970,17 @@ pub fn render_text(outcome: &HabitOutcome) -> String {
                 line.push_str(" — nothing to change");
             }
             line
+        }
+        HabitOutcome::Skipped(receipt) => format!(
+            "skipped habit {} — window {} marked (streak {})",
+            receipt.habit_id, receipt.window, receipt.streak
+        ),
+        HabitOutcome::Paused(receipt) => {
+            if let Some(until) = receipt.until {
+                format!("habit {} paused through {until}", receipt.habit_id)
+            } else {
+                format!("habit {} resumed", receipt.habit_id)
+            }
         }
         HabitOutcome::Removed(receipt) => {
             if receipt.deleted {
