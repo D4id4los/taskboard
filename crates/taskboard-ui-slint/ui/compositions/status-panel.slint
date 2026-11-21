@@ -64,41 +64,25 @@ export global StatusPanelFacts {
     };
     in-out property <bool> busy: false;
     in-out property <bool> failure: false;
-
-    // slint: status-panel-open — the mount's snapshot-on-open dispatch
-    // (D-3, US-1/S1): the panel fires this once per mount; the adapter
-    // answers with exactly one `UiRequest::StatusQuery`.
-    callback status-panel-open();
-    // slint: status-panel-refresh — the Refresh control's re-query
-    // (US-1/S4): keyboard-reachable (the TextButton grammar), never a
-    // timer.
-    callback status-panel-refresh();
-    // slint: status-fields-folded — the settled reply's fold (W-2):
-    // the adapter invokes it Rust-side; the body writes the typed
-    // data and clears the busy posture.
-    callback status-fields-folded(StatusPanelData);
-    status-fields-folded(d) => {
-        data = d;
-        busy = false;
-        failure = false;
-    }
-    // slint: status-failure-shown — the dropped reply's typed failure
-    // posture (W-3, US-1/S3): never a blank panel; Refresh stays
-    // available.
-    callback status-failure-shown();
-    status-failure-shown() => {
-        failure = true;
-        busy = false;
-    }
 }
 
+// The panel's four seams live on the AppWindow root (the census's
+// `window.on_` shape); the composition forwards its own moments:
 export component StatusPanel inherits Rectangle {
     background: Theme.surface;
     // The mount's snapshot-on-open dispatch (D-3): one query per
-    // mount, never a timer.
+    // mount, never a timer — forwarded to the window root seam.
     init => {
-        StatusPanelFacts.status-panel-open();
+        root.status-panel-open-requested();
     }
+    // slint: status-panel-open-requested — the mount's snapshot-on-open
+    // moment (US-1/S1); the window root forwards it to the
+    // `status-panel-open` seam.
+    callback status-panel-open-requested();
+    // slint: status-panel-refresh — the Refresh control's re-query
+    // (US-1/S4): keyboard-reachable (the TextButton grammar), never a
+    // timer; forwarded to the window root seam.
+    callback status-panel-refresh-requested();
 
     pure function headline() -> string {
         if (StatusPanelFacts.failure) {
@@ -177,7 +161,7 @@ export component StatusPanel inherits Rectangle {
         TextButton {
             label: "Refresh";
             clicked => {
-                StatusPanelFacts.status-panel-refresh();
+                root.status-panel-refresh-requested();
             }
         }
     }

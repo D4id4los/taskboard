@@ -11936,37 +11936,23 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// projection reads is the real one on every open.
 /// The status panel's seams (OP3 W-1..W-3): the mount's
 /// snapshot-on-open dispatch and the Refresh control's re-query ride
-/// the exported `StatusPanelFacts` global (the composition owns the
-/// callbacks, the adapter owns the dispatch). The panel dispatches no
-/// `StateCommand` — R-3's read-only contract is structural here: no
-/// seam body touches the command lane.
+/// the `AppWindow` root callbacks (the seam census's manifest shape —
+/// both listed in `seam_inventory.rs`). The fold/failure directions
+/// are invokes (Rust → slint). The panel dispatches no `StateCommand`
+/// — R-3's read-only contract is structural here: no seam body touches
+/// the command lane.
 fn install_status_panel_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    let facts = window.global::<crate::StatusPanelFacts>();
     // slint: status-panel-open — the mount's snapshot-on-open dispatch
     // (D-3, US-1/S1).
-    {
-        let seam_adapter = Rc::clone(adapter);
-        let seam_weak = window.as_weak();
-        facts.on_status_panel_open(move || {
-            let Some(window) = seam_weak.upgrade() else {
-                return;
-            };
-            let mut a = seam_adapter.borrow_mut();
-            a.dispatch_status_query(&window);
-        });
-    }
+    install_seam!(window: window.on_status_panel_open, adapter: adapter;
+    bind mut (a, window), args (), {        a.dispatch_status_query(&window);
+
+    });
     // slint: status-panel-refresh — the explicit re-query (US-1/S4).
-    {
-        let seam_adapter = Rc::clone(adapter);
-        let seam_weak = window.as_weak();
-        facts.on_status_panel_refresh(move || {
-            let Some(window) = seam_weak.upgrade() else {
-                return;
-            };
-            let mut a = seam_adapter.borrow_mut();
-            a.dispatch_status_query(&window);
-        });
-    }
+    install_seam!(window: window.on_status_panel_refresh, adapter: adapter;
+    bind mut (a, window), args (), {        a.dispatch_status_query(&window);
+
+    });
 }
 
 /// Folds one settled [`StatusSnapshot`] into the panel's presentation
