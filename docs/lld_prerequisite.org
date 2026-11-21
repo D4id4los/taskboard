@@ -1,0 +1,64 @@
+#+title: lld Linker Prerequisite — Local Development Setup
+
+#+options: toc:nil
+
+This workspace links with =ld.lld= on Linux x86_64 (the dev platform).
+The requirement is enforced *by design*: since the =.cargo/config.toml=
+stanza landed (#1069, chunk R1 of round 3), a local build fails loudly
+unless =ld.lld= is on =PATH=. This document is the one-time setup note
+the loud failure points at.
+
+* The one-time prerequisite
+
+#+begin_src sh
+sudo apt install lld
+#+end_src
+
+Debian/Ubuntu package name: =lld= (provides =/usr/bin/ld.lld=). No
+other configuration is needed — =.cargo/config.toml= already passes
+=-Clink-arg=-fuse-ld=lld= for =x86_64-unknown-linux-gnu=.
+
+* Why lld
+
+Measured on the dev box (rustc 1.99.0, Ubuntu 26.04 LTS, x86_64,
+4 logical CPUs, warm incremental; R1 stage-2 report,
+=.artifacts/reports/2026-11-19-dev-lld-linker-stage2-report.md=):
+
+| Metric            | bfd (before) | lld (after)  | Δ             |
+|-------------------+--------------+--------------+---------------|
+| full-link wall    | 3:09.36      | 1:50.12      | −42%          |
+| CPU utilization   | 365%         | 575%         | +210 pp       |
+| Max RSS           | —            | 3.88 GB      | recorded      |
+
+Release builds link successfully through lld as well (verified once in
+the chunk report).
+
+* Version baseline (dev platform)
+
+- rustc / cargo: 1.99.0 (workspace MSRV is enforced by the CI MSRV
+  check; any rustc at or above MSRV works — the linker flag is
+  toolchain-agnostic)
+- OS: Ubuntu 26.04 LTS, x86_64 (the dev platform; first-class release
+  targets are x86_64 Linux & Windows)
+- =ld.lld= version observed working: the distro =lld= package (LLVM
+  21 line via =/usr/lib/llvm-21/bin= was verified equivalent before
+  the apt install)
+
+* CI parity
+
+CI runners install the same package. The apt addition =lld= is first
+in the install list of (10 steps across 5 files, R1 stage-2 report):
+
+- =.github/workflows/ci.yml= — 5 steps
+- =.github/workflows/benchmark.yml= — 1 step
+- =.github/workflows/nextcloud-integration.yml= — 1 step
+- =.github/workflows/mutation-testing.yml= — 2 steps
+- =.github/workflows/release.yml= — linux job, 1 step
+
+=miri.yml= and =kani.yml= are deliberately untouched (their toolchains
+do not take the =-fuse-ld=lld= flag).
+
+* Windows / macOS
+
+Out of scope: the stanza applies to =x86_64-unknown-linux-gnu= only.
+Windows (msvc) and macOS use their platform linkers unchanged.
