@@ -673,7 +673,10 @@ fn resolve_words_impl(words: &[String], json_default: bool, config_relay: bool) 
         Some(Command::Daemon { .. }) => LineAction::Refuse(LineRefusal::Daemon),
         Some(Command::Gui) => LineAction::Refuse(LineRefusal::Gui),
         parsed @ Some(Command::Config {
-            cmd: crate::cli::ConfigCmd::Set { .. } | crate::cli::ConfigCmd::Unset { .. },
+            cmd:
+                crate::cli::ConfigCmd::Set { .. }
+                | crate::cli::ConfigCmd::Unset { .. }
+                | crate::cli::ConfigCmd::Reload,
         }) if config_relay => {
             LineAction::Execute(command_from_config_relay(parsed), cli.json || json_default)
         }
@@ -692,10 +695,13 @@ fn command_from_config_relay(command: Option<Command>) -> Command {
     match command {
         Some(
             command @ Command::Config {
-                cmd: crate::cli::ConfigCmd::Set { .. } | crate::cli::ConfigCmd::Unset { .. },
+                cmd:
+                    crate::cli::ConfigCmd::Set { .. }
+                    | crate::cli::ConfigCmd::Unset { .. }
+                    | crate::cli::ConfigCmd::Reload,
             },
         ) => command,
-        _ => unreachable!("the relay resolver proved a config set/unset"),
+        _ => unreachable!("the relay resolver proved a config set/unset/reload"),
     }
 }
 
@@ -2015,10 +2021,10 @@ mod argv_tests {
         match resolve_words_with_config_relay(&words, false) {
             LineAction::Execute(
                 Command::Config {
-                    cmd: ConfigCmd::Unset { key },
+                    cmd: ConfigCmd::Unset { keys },
                 },
                 _,
-            ) => assert_eq!(key, "focus.work_mins"),
+            ) => assert_eq!(keys, vec!["focus.work_mins".to_owned()]),
             other => panic!("the relay parses config unset, got {other:?}"),
         }
         for line in ["config print", "config path", "config set k 1"] {
@@ -2034,6 +2040,34 @@ mod argv_tests {
         let words: Vec<String> = "config print".split(' ').map(str::to_owned).collect();
         assert!(matches!(
             resolve_words_with_config_relay(&words, false),
+            LineAction::Refuse(LineRefusal::ConfigCommand)
+        ));
+    }
+
+    /// `us2_s2_reload_rides_the_config_relay` (US-2/S2, W-6, D-REPL):
+    /// the relay resolver's config-verb set widens to include
+    /// `reload` — one parse authority, the daemon's arm executes —
+    /// while the plain REPL resolver keeps refusing the whole config
+    /// family (reload has no local semantic; the client's `IpcOnly` lane
+    /// answers with the typed `NoDaemon` class without a daemon).
+    #[test]
+    fn us2_s2_reload_rides_the_config_relay() {
+        use crate::cli::{Command, ConfigCmd};
+        use crate::repl::{LineRefusal, resolve_words_with_config_relay};
+        let words: Vec<String> = "config reload".split(' ').map(str::to_owned).collect();
+        match resolve_words_with_config_relay(&words, false) {
+            LineAction::Execute(
+                Command::Config {
+                    cmd: ConfigCmd::Reload,
+                },
+                _,
+            ) => {}
+            other => panic!("the relay parses config reload, got {other:?}"),
+        }
+        // The plain (REPL-local) resolver: reload refuses with the
+        // config family's standing posture.
+        assert!(matches!(
+            crate::repl::resolve_words(&words, false),
             LineAction::Refuse(LineRefusal::ConfigCommand)
         ));
     }

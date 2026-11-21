@@ -1689,15 +1689,36 @@ pub enum ConfigCmd {
         #[arg(value_name = "KEY VALUE", num_args = 0..)]
         pairs: Vec<String>,
     },
-    /// Remove one knob's override (T-18, #801; live propagation
-    /// #845) — the way a set value returns to the default (or to its
-    /// env layer). Same vocabulary, layering, atomicity, and lane
-    /// behavior as `config set`: a running app drops the override
-    /// immediately, otherwise the removal applies at the next start.
+    /// Remove one or more knobs' overrides in ONE atomic write (T-18,
+    /// #801; live propagation #845; batch #1014) — the way set values
+    /// return to their defaults (or env layers). Same vocabulary,
+    /// layering, atomicity, and lane behavior as `config set`: the
+    /// whole key list lands as one document — one prove verdict, one
+    /// write, one apply — so either every override is gone or nothing
+    /// changed (`config unset reminders.tick_secs focus.work_mins`).
+    /// A running app drops the overrides immediately, otherwise the
+    /// removals apply at the next start. Removing an already-absent
+    /// key succeeds idempotently; a zero-key invocation, an unknown
+    /// key, an env-overridden key, or a duplicated key is a typed
+    /// refusal naming the key — nothing writes.
     Unset {
-        /// The dotted config key (the settings editor's vocabulary).
-        key: String,
+        /// One or more dotted config keys (the settings editor's
+        /// vocabulary); zero keys is a typed refusal.
+        #[arg(value_name = "KEY", num_args = 0..)]
+        keys: Vec<String>,
     },
+    /// Reload the config file into the running app NOW (#1015) — the
+    /// live-reload watcher's apply half with a human finger on the
+    /// trigger. The escape hatch for a session whose watcher could not
+    /// start (no inotify descriptor, an exotic filesystem): an
+    /// external edit reaches the running app without a restart.
+    /// Daemon-only: needs a running app (`no-daemon` otherwise — a
+    /// stopped session's file is already its boot authority). Reports
+    /// the same typed outcome the watcher lane reports (`applied`,
+    /// `unchanged`, or the typed refusal class when the file is
+    /// mid-save or unbootable; the running app keeps its
+    /// last-known-good settings then).
+    Reload,
 }
 
 /// The `labels edit` flags: at least one is required per line —
@@ -2608,5 +2629,70 @@ mod tests {
 
         // The verb takes no arguments of its own.
         assert!(Cli::try_parse_from(["taskboard", "gui", "extra"]).is_err());
+    }
+
+    /// `us1_s1_batch_unset_arity_parse` (US-1/S1, W-4): the widened
+    /// `config unset` grammar — one key parses exactly as before, more
+    /// keys parse positionally, and zero keys parses too (the typed
+    /// `BadArity` refusal is the command layer's, not clap's).
+    #[test]
+    fn us1_s1_batch_unset_arity_parse() {
+        let cli = Cli::try_parse_from(["taskboard", "config", "unset", "focus.work_mins"])
+            .expect("the one-key form parses");
+        let Some(Command::Config {
+            cmd: ConfigCmd::Unset { keys },
+        }) = cli.command
+        else {
+            panic!("config unset parses");
+        };
+        assert_eq!(keys, vec!["focus.work_mins".to_owned()]);
+
+        let cli = Cli::try_parse_from([
+            "taskboard",
+            "config",
+            "unset",
+            "focus.work_mins",
+            "reminders.tick_secs",
+        ])
+        .expect("the batch form parses");
+        let Some(Command::Config {
+            cmd: ConfigCmd::Unset { keys },
+        }) = cli.command
+        else {
+            panic!("config unset parses");
+        };
+        assert_eq!(
+            keys,
+            vec![
+                "focus.work_mins".to_owned(),
+                "reminders.tick_secs".to_owned()
+            ]
+        );
+
+        let cli = Cli::try_parse_from(["taskboard", "config", "unset"]).expect("zero keys parses");
+        let Some(Command::Config {
+            cmd: ConfigCmd::Unset { keys },
+        }) = cli.command
+        else {
+            panic!("config unset parses");
+        };
+        assert!(
+            keys.is_empty(),
+            "arity is the command layer's typed refusal"
+        );
+    }
+
+    /// `us2_s1_reload_parses_bare` (US-2/S1, W-4): the `config reload`
+    /// verb parses with no arguments and nothing else.
+    #[test]
+    fn us2_s1_reload_parses_bare() {
+        let cli = Cli::try_parse_from(["taskboard", "config", "reload"]).expect("bare reload");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Config {
+                cmd: ConfigCmd::Reload,
+            })
+        ));
+        assert!(Cli::try_parse_from(["taskboard", "config", "reload", "extra"]).is_err());
     }
 }

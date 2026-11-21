@@ -2468,6 +2468,11 @@ pub enum IpcOnlyVerb {
     Status,
     /// `daemon stop` — the graceful daemon shutdown request.
     DaemonStop,
+    /// `config reload` (#1015, journey US-2/S1, D-RELOAD-ROUTE) — the
+    /// manual reload trigger; only meaningful against a running
+    /// daemon's engine (a stopped session's file is already its boot
+    /// authority — no local fallback fiction).
+    ConfigReload,
 }
 
 /// The per-`Command` routing table (pure; unit-pinned).
@@ -2504,6 +2509,13 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
             cmd: Some(DaemonCmd::Stop),
             ..
         } => IpcRoute::IpcOnly(IpcOnlyVerb::DaemonStop),
+        // `config reload` is daemon-only (journey US-2/S1,
+        // D-RELOAD-ROUTE): the reload only means something against a
+        // running engine; without one the standing typed `NoDaemon`
+        // refusal fires.
+        Command::Config {
+            cmd: crate::cli::ConfigCmd::Reload,
+        } => IpcRoute::IpcOnly(IpcOnlyVerb::ConfigReload),
         Command::Boards { .. }
         | Command::Stacks { .. }
         | Command::Labels { .. }
@@ -2543,6 +2555,7 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         | Command::Config {
             cmd: crate::cli::ConfigCmd::Set { .. } | crate::cli::ConfigCmd::Unset { .. },
         }
+        // (`config reload` above: `IpcOnly` — daemon-only, D-RELOAD-ROUTE.)
         | Command::Sync { .. } => IpcRoute::IpcOrLocal,
     }
 }
@@ -2793,7 +2806,7 @@ mod ipc_routing_tests {
             },
             Command::Config {
                 cmd: crate::cli::ConfigCmd::Unset {
-                    key: "focus.work_mins".to_owned(),
+                    keys: vec!["focus.work_mins".to_owned()],
                 },
             },
             Command::Labels {
@@ -2899,7 +2912,7 @@ mod ipc_routing_tests {
         assert_eq!(
             route_for_ipc(&Command::Config {
                 cmd: crate::cli::ConfigCmd::Unset {
-                    key: "focus.work_mins".to_owned(),
+                    keys: vec!["focus.work_mins".to_owned()],
                 },
             }),
             IpcRoute::IpcOrLocal
@@ -3066,5 +3079,21 @@ mod task_field_mapping_tests {
         assert_eq!(changes.importance, Some(Some(Importance::VeryLow)));
         assert_eq!(changes.urgency, None, "urgency is a distinct slot");
         assert_eq!(changes.archived, Some(true));
+    }
+
+    /// `us2_s1_reload_routes_ipc_only` (US-2/S1, W-5, D-RELOAD-ROUTE):
+    /// `config reload` joins the `IpcOnly` verbs — only meaningful
+    /// against a running daemon; the standing typed `NoDaemon` refusal
+    /// rides the existing lane without one.
+    #[test]
+    fn us2_s1_reload_routes_ipc_only() {
+        use crate::cli::Command;
+        use crate::commands::{IpcOnlyVerb, IpcRoute, route_for_ipc};
+        assert_eq!(
+            route_for_ipc(&Command::Config {
+                cmd: crate::cli::ConfigCmd::Reload,
+            }),
+            IpcRoute::IpcOnly(IpcOnlyVerb::ConfigReload)
+        );
     }
 }

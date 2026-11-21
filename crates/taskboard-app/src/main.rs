@@ -144,12 +144,7 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
                 // The verb is data from `route_for_ipc`: a new IpcOnly
                 // verb must extend `IpcOnlyVerb` and is then a compile
                 // error here until dispatched — no unreachable arm.
-                let code = match verb {
-                    IpcOnlyVerb::Status => status_command(cli.config.take(), cli.json).await,
-                    IpcOnlyVerb::DaemonStop => {
-                        daemon_stop_command(cli.config.take(), cli.json).await
-                    }
-                };
+                let code = run_ipc_only_verb(verb, &mut cli, &raw_argv).await;
                 std::process::exit(i32::from(code));
             }
             IpcRoute::IpcOrLocal => {
@@ -432,6 +427,56 @@ async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool
     tokio::select! {
         outcome = conn.shutdown(read_budget) => match outcome {
             Ok(()) => 0,
+            Err(err) => report(json, &err),
+        },
+        () = taskboard_app::signals::changed_or_never(&mut cancel) => {
+            let cancelled = CommandError::Cancelled;
+            let _ = report(json, &cancelled);
+            130
+        }
+    }
+}
+
+/// The `IpcOnly` verb dispatch (the lane table's data-driven twin, ADR
+/// 0012): a new `IpcOnlyVerb` is a compile error here until routed.
+async fn run_ipc_only_verb(verb: IpcOnlyVerb, cli: &mut Cli, raw_argv: &[String]) -> u8 {
+    match verb {
+        IpcOnlyVerb::Status => status_command(cli.config.take(), cli.json).await,
+        IpcOnlyVerb::DaemonStop => daemon_stop_command(cli.config.take(), cli.json).await,
+        IpcOnlyVerb::ConfigReload => {
+            config_reload_command(raw_argv, cli.config.take(), cli.json).await
+        }
+    }
+}
+
+/// `taskboard config reload` (#1015, journey US-2, D-RELOAD-ROUTE):
+/// the manual reload trigger — daemon-only, the typed `no-daemon`
+/// refusal without one. The verb rides the relay lane's Exec payload
+/// (the argv IS the wire, ADR 0012): the daemon's config arm runs the
+/// watcher lane's own `reload_once` and the typed outcome travels back
+/// to this terminal verbatim. `IpcOnly`, never a local fallback: a
+/// non-running session's file is already its boot authority.
+async fn config_reload_command(
+    raw_argv: &[String],
+    config_path: Option<std::path::PathBuf>,
+    json: bool,
+) -> u8 {
+    // IpcOnly verbs are never ceremonies: the watcher installs
+    // unconditionally (Q10, the `daemon stop` posture verbatim).
+    let mut cancel = taskboard_app::signals::install_oneshot_watcher();
+    let config = match AppConfig::load(config_path) {
+        Ok(config) => config,
+        Err(err) => return report(json, &CommandError::from(err)),
+    };
+    let Some(conn) = client::try_connect(config.db_path()).await else {
+        return report(json, &CommandError::NoDaemon);
+    };
+    // The verb carries no budget flag: the flag-less ceiling (or the
+    // operator's override) bounds only the wedged daemon.
+    let read_budget = client::client_read_budget(None, config.ipc.client_read_timeout_secs);
+    tokio::select! {
+        outcome = conn.exec(raw_argv, read_budget) => match outcome {
+            Ok(outcome) => relay(&outcome),
             Err(err) => report(json, &err),
         },
         () = taskboard_app::signals::changed_or_never(&mut cancel) => {

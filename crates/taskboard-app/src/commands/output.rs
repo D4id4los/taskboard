@@ -946,6 +946,33 @@ pub struct ConfigBatchSetView {
     pub applied_live: bool,
 }
 
+/// The `config unset` batch receipt (#1014, journey US-1/S6): the same
+/// wire shape as [`ConfigBatchSetView`] — per-key echoes (each
+/// [`ConfigSetView`] with `value: none`) plus the ONE lane bit for the
+/// whole invocation — so the alias is the honest type: a distinct
+/// struct would duplicate serde and rendering for an identical payload
+/// (D-VIEW). `render_batch_set_text` serves both (its `(…, None)` arm
+/// already renders the removed-value line). An empty `entries` never
+/// reaches this view: the zero-keys grammar refuses (`BadArity`)
+/// before anything is touched.
+pub type ConfigBatchUnsetView = ConfigBatchSetView;
+
+/// The `config reload` receipt (#1015, journey US-2/S3): the watcher
+/// lane's typed outcome verbatim (no new classes, D-RELOAD-OUTCOME)
+/// plus the resolved file path that was reloaded — the diagnostic half
+/// of `config path`'s honesty posture. `WatcherDisabled` never reaches
+/// the manual verb (the manual path never touches `notify`); the
+/// variant stays a boot-time broadcast.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+pub struct ConfigReloadView {
+    /// The attempt's typed outcome (the same enum the watcher lane
+    /// produces — manual and watcher convergence share one function).
+    pub outcome: taskboard_domain::ConfigReloadOutcome,
+    /// The resolved config file the reload attempt read.
+    pub path: std::path::PathBuf,
+}
+
 /// The `connect` (and deprecated `login` alias) receipt. No secret ever
 /// appears in any projection.
 // The bools are independent, documented receipt facts (what the
@@ -1631,5 +1658,61 @@ mod tests {
                 .and_then(serde_json::Value::as_bool),
             Some(false)
         );
+    }
+
+    /// `us1_s6_batch_unset_view_carries_none_entries_and_the_lane_bit`
+    /// (US-1/S6, W-8): the unset batch view's JSON carries one
+    /// `value: none` entry per key plus the single lane bit; the
+    /// `ConfigBatchUnsetView` alias round-trips through the same wire
+    /// shape as the set batch (D-VIEW).
+    #[test]
+    fn us1_s6_batch_unset_view_carries_none_entries_and_the_lane_bit() {
+        let view = ConfigBatchUnsetView {
+            entries: vec![
+                ConfigSetView {
+                    key: "focus.work_mins".to_owned(),
+                    value: None,
+                    applied_live: true,
+                },
+                ConfigSetView {
+                    key: "reminders.tick_secs".to_owned(),
+                    value: None,
+                    applied_live: true,
+                },
+            ],
+            applied_live: true,
+        };
+        let back: ConfigBatchSetView =
+            serde_json::from_str(&serde_json::to_string(&view).expect("serializes"))
+                .expect("deserializes");
+        assert_eq!(back, view, "the alias is the same wire shape");
+        let entries: Vec<_> = back
+            .entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), entry.value.as_deref()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![("focus.work_mins", None), ("reminders.tick_secs", None)],
+            "one value:none echo per key, argv order"
+        );
+        assert!(back.applied_live, "one lane bit for the whole invocation");
+    }
+
+    /// `us2_s3_reload_view_carries_outcome_and_path` (US-2/S3, W-8):
+    /// the reload view's JSON carries the typed outcome and the
+    /// resolved path — no new outcome classes (D-RELOAD-OUTCOME).
+    #[test]
+    fn us2_s3_reload_view_carries_outcome_and_path() {
+        let view = ConfigReloadView {
+            outcome: taskboard_domain::ConfigReloadOutcome::Applied,
+            path: std::path::PathBuf::from("/tmp/taskboard.toml"),
+        };
+        let back: ConfigReloadView =
+            serde_json::from_str(&serde_json::to_string(&view).expect("serializes"))
+                .expect("deserializes");
+        assert_eq!(back, view);
+        assert_eq!(back.path, std::path::PathBuf::from("/tmp/taskboard.toml"));
+        assert_eq!(back.outcome, taskboard_domain::ConfigReloadOutcome::Applied);
     }
 }
