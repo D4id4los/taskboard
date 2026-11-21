@@ -359,7 +359,9 @@ fn key_of(effect: &UiEffect) -> EK {
         | UiEffect::SeriesConvertArm => EK::RecurIntent,
         // The H4 editor opener (H4 D1): the settle-then-open view
         // intent — the Nav class cells, no pair overrides.
-        UiEffect::HabitEdit => EK::HabitEditorOpen,
+        // The HF3 history opener shares the editor opener's matrix
+        // key (the same settle-then-open view-intent class).
+        UiEffect::HabitEdit | UiEffect::HabitHistoryOpen => EK::HabitEditorOpen,
         // The recur editor's intents (round-7 D-7.1): the opener and
         // the detach strip's symmetric flag flips.
         UiEffect::SeriesEditorOpen => EK::SeriesEditOpen,
@@ -1678,6 +1680,9 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::HabitRemoveArm,
         UiEffect::HabitRemoveCancel,
         UiEffect::HabitEdit,
+        // The HF3 history opener: the same view-intent class as the
+        // editor opener (the read-role dialog's flag flip).
+        UiEffect::HabitHistoryOpen,
         UiEffect::HabitCreateToggle,
         UiEffect::SeriesConvertArm,
         // The recur editor's intents (round-7 D-7.1).
@@ -2969,6 +2974,7 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             // (the Nav family's class) — no modal takeover beyond the
             // settle.
             | UiEffect::HabitEdit
+            | UiEffect::HabitHistoryOpen
             | UiEffect::HabitCreateToggle
             | UiEffect::HabitQuotaEdit
             | UiEffect::SeriesConvertArm

@@ -7,6 +7,7 @@
 // selection ring uses the focus tokens while never holding focus.
 
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
+import { Badge } from "badge.slint";
 import { TooltipState } from "tooltip.slint";
 import { Icon, IconKind } from "icon.slint";
 import { CheckBox } from "check-box.slint";
@@ -377,22 +378,15 @@ export component TaskCard inherits Rectangle {
                 height: deco-layout.preferred-height;
                 deco-layout := HorizontalLayout {
                     spacing: Theme.space-1;
-                    for decoration in root.model.decorations: Rectangle {
-                        border-radius: Theme.radius-small;
-                        background: decoration.tone == Tone.success ? Semantic.success.with-alpha(0.2)
-                            : decoration.tone == Tone.warning ? Semantic.warning.with-alpha(0.2)
-                            : decoration.tone == Tone.danger ? Semantic.danger.with-alpha(0.2)
-                            : decoration.tone == Tone.overdue ? Semantic.overdue.with-alpha(0.2)
-                            : Theme.surface-raised;
-                        HorizontalLayout {
-                            padding-left: Theme.space-1;
-                            padding-right: Theme.space-1;
-                            RoleText {
-                                role: Typography.badge;
-                                text-color: Theme.text-secondary;
-                                text: decoration.label;
-                            }
-                        }
+                    // The badge base widget (HF3 W-9, O-6's
+                    // centralization law): the hand-rolled chip was
+                    // the Badge's own paint re-stated — the primitive
+                    // owns the tone ladder (Semantic.tone-fill /
+                    // tone-color), the chip radius, and the a11y
+                    // label; the card never re-declares it.
+                    for decoration in root.model.decorations: Badge {
+                        text: decoration.label;
+                        tone: decoration.tone;
                     }
                 }
             }

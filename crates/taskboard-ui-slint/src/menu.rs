@@ -457,6 +457,7 @@ pub const HABIT_CONTEXT: &[ActionId] = &[
     ActionId::HabitMoveUp,
     ActionId::HabitMoveDown,
     ActionId::HabitEdit,
+    ActionId::HabitHistory,
     ActionId::HabitConvertArm,
     ActionId::HabitRemove,
     ActionId::HabitRemoveConfirm,

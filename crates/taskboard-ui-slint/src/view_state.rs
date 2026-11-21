@@ -689,6 +689,15 @@ pub struct ViewState {
     /// the detail (the same one-subject law the task subject's
     /// death pass speaks).
     subject_habit: Option<taskboard_domain::HabitId>,
+    /// The history dialog's one-shot subject (HF3 W-8, US-7/S1): set
+    /// by [`Self::open_habit_history`], consumed by the adapter's
+    /// projection pass, cleared on close (the one-shot grammar). The
+    /// paired month anchor is the visible month's any-date; the pager
+    /// flips it (US-7/S3) and the clamps live in the presentation's
+    /// can-page facts. Adapter-owned presentation state — never
+    /// synced, never journaled.
+    habit_history_target: Option<taskboard_domain::HabitId>,
+    habit_history_month: Option<chrono::NaiveDate>,
     /// The board's focused card (selection, not slint focus).
     focused_task: Option<TaskId>,
     /// The today walk's focused habit row (chunk 8 D2, #934): the
@@ -929,6 +938,8 @@ impl ViewState {
             subject_stack: None,
             subject_task: None,
             subject_habit: None,
+            habit_history_target: None,
+            habit_history_month: None,
             focused_task: None,
             focused_habit: None,
             rule_cursor: None,
@@ -1443,6 +1454,51 @@ impl ViewState {
     #[must_use]
     pub const fn subject_habit(&self) -> Option<taskboard_domain::HabitId> {
         self.subject_habit
+    }
+
+    /// The history dialog's one-shot subject + visible-month anchor
+    /// (HF3 W-8). Read accessor — the adapter's projection pass
+    /// consumes it.
+    #[must_use]
+    pub const fn habit_history(
+        &self,
+    ) -> (Option<taskboard_domain::HabitId>, Option<chrono::NaiveDate>) {
+        (self.habit_history_target, self.habit_history_month)
+    }
+
+    /// The history dialog's open (US-7/S1): the one-shot subject is
+    /// minted, the visible month anchors at `now`'s month. No flow
+    /// arms; the dismissal is the host's own (read role).
+    pub fn open_habit_history(
+        &mut self,
+        habit: taskboard_domain::HabitId,
+        today: chrono::NaiveDate,
+    ) -> Vec<FlowOutcome> {
+        self.habit_history_target = Some(habit);
+        self.habit_history_month = Some(today);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The pager's month flip (US-7/S3): the presentation's
+    /// can-page facts clamp the adapter's dispatch, so this flip is
+    /// the pure arithmetic (no wrap — the ends hold).
+    pub fn flip_habit_history_month(&mut self, delta: i32) -> Vec<FlowOutcome> {
+        if let Some(month) = self.habit_history_month {
+            self.habit_history_month = Some(crate::presentation::habit_month_flipped(month, delta));
+            return vec![FlowOutcome::RefreshNow];
+        }
+        Vec::new()
+    }
+
+    /// The history dialog's close (US-7/S4): clears the one-shot
+    /// subject and the month anchor — zero engine state change.
+    pub fn close_habit_history(&mut self) -> Vec<FlowOutcome> {
+        if self.habit_history_target.is_none() {
+            return Vec::new();
+        }
+        self.habit_history_target = None;
+        self.habit_history_month = None;
+        vec![FlowOutcome::RefreshNow]
     }
 
     /// The rule list's selected-rule cursor (J3 US-6, round 9 chunk

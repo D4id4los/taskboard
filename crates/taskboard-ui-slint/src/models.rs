@@ -850,10 +850,15 @@ pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
             Tone::Neutral
         },
     });
+    // The streak rides the Badge base widget now (HF3 W-9, US-8/S1):
+    // the decoration carries the typed streak value (the test oracle
+    // — `HabitRow.streak`); the old 🔥 emoji slot is gone (the
+    // badge's label text is judged at the stage-3 walkthrough, never
+    // asserted).
     if row.streak > 0 {
         decorations.push(TaskDecoration {
             kind: DecorationKind::Habit,
-            label: SharedString::from(format!("\u{1F525}{}", row.streak)),
+            label: SharedString::from(row.streak.to_string()),
             tone: Tone::Success,
         });
     }
@@ -1291,6 +1296,7 @@ pub fn push(
         models,
     );
     mutations += push_habits(window, state, vs, now, calendar, kiosk, &mut tables, models);
+    mutations += push_habit_history(window, state, vs, now, calendar);
     push_focus_overlay(window, state, vs, focus, now, models);
     push_review_walk(window, state, vs, day, calendar, kiosk, models);
     // The decoration handles of tasks this pass dropped from every
@@ -6550,4 +6556,76 @@ fn board_content_counts(
     {
         (stacks.len() as i32, tasks as i32, labels as i32)
     }
+}
+
+/// The habit history dialog's projection pass (HF3 W-8/W-10, US-7 /
+/// US-9): while the view state holds a one-shot history target, the
+/// month-grid model and the statistics ride the window globals —
+/// pure projection over `HabitState.log`, zero commands (the plan's
+/// no-command reason per US-7/S2–S4). The target may be tombstoned:
+/// the log outlives the tracker (US-7 AC-5), so the lookup reads the
+/// full habit map, live rows and tombstones alike. Returns the diff's
+/// mutation count.
+fn push_habit_history(
+    window: &AppWindow,
+    state: &AppState,
+    vs: &ViewState,
+    now: chrono::DateTime<chrono::Utc>,
+    calendar: taskboard_domain::DayCalendar,
+) -> usize {
+    let (target, month) = vs.habit_history();
+    let Some((habit, month)) = target.zip(month) else {
+        if window.get_habit_history_open() {
+            window.set_habit_history_open(false);
+            return 1;
+        }
+        return 0;
+    };
+    let Some(habit) = state.habits.habits.get(&habit) else {
+        // The subject died mid-session (a concurrent tombstone): the
+        // dialog cannot project — it closes (the stale-subject
+        // posture, never a wrong grid).
+        if window.get_habit_history_open() {
+            window.set_habit_history_open(false);
+            return 1;
+        }
+        return 0;
+    };
+    let shown =
+        crate::presentation::habit_history_month(habit, &state.habits.log, month, now, calendar);
+    let numbers = crate::presentation::habit_statistics(habit, &state.habits.log, now, calendar);
+    let cells: Vec<crate::HabitCellModel> = shown
+        .cells
+        .iter()
+        .map(|cell| crate::HabitCellModel {
+            label: SharedString::from(cell.window.day().to_string()),
+            count: i32::try_from(cell.count).unwrap_or(i32::MAX),
+            state: match cell.state {
+                crate::presentation::HabitWindowState::Met => crate::HabitCellState::Met,
+                crate::presentation::HabitWindowState::Pending => crate::HabitCellState::Pending,
+                crate::presentation::HabitWindowState::Skipped => crate::HabitCellState::Skipped,
+                crate::presentation::HabitWindowState::Paused => crate::HabitCellState::Paused,
+                crate::presentation::HabitWindowState::PreSchedule => {
+                    crate::HabitCellState::PreSchedule
+                }
+                crate::presentation::HabitWindowState::Missed => crate::HabitCellState::Missed,
+                crate::presentation::HabitWindowState::Inert => crate::HabitCellState::Inert,
+            },
+        })
+        .collect();
+    let model = crate::HabitHistoryModel {
+        month_label: SharedString::from(crate::presentation::habit_month_label(shown.month)),
+        cells: ModelRc::new(VecModel::from(cells)),
+        can_page_back: shown.can_page_back,
+        can_page_forward: shown.can_page_forward,
+        stats: crate::HabitStatsModel {
+            adherence_empty: numbers.adherence.is_empty(),
+            adherence_met: i32::try_from(numbers.adherence.met()).unwrap_or(i32::MAX),
+            adherence_scheduled: i32::try_from(numbers.adherence.scheduled()).unwrap_or(i32::MAX),
+            best_streak: i32::try_from(numbers.best_streak).unwrap_or(i32::MAX),
+        },
+    };
+    window.set_habit_history(model);
+    window.set_habit_history_open(true);
+    1
 }

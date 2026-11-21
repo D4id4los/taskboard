@@ -155,6 +155,11 @@ const HABIT_TODAY_ROWS: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Today,
         &["Ctrl+Shift+q"],
     ),
+    // HF3 (W-11, US-7/S1, O-8 parity): the history opener is bound in
+    // every preset (the no-second-class gate) — the Today-context
+    // chord is free (Ctrl+Shift+t is ViewToday's global row; the
+    // Today chain resolves Today first, so no shadow).
+    (ActionId::HabitHistory, ContextId::Today, &["Ctrl+Shift+i"]),
 ];
 
 /// The control walk's Tab/Shift+Tab pairs over the four view contexts (the standard/vi letter) — the Settings pair chains separately where each preset's textual position puts it.

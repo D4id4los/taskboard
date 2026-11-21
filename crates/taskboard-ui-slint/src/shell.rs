@@ -323,6 +323,7 @@ impl KeymapShell {
             | UiEffect::HabitRemoveArm
             | UiEffect::HabitRemoveCancel
             | UiEffect::HabitEdit
+            | UiEffect::HabitHistoryOpen
             | UiEffect::HabitCreateToggle
             | UiEffect::HabitQuotaEdit
             | UiEffect::SeriesConvertArm

@@ -10,6 +10,7 @@ import { Dropdown, DropdownConsumer, DropdownRow } from "../widgets/dropdown.sli
 import { AnchorMirror } from "../widgets/anchored-overlay.slint";
 import { Theme, Typography, Semantic, RoleText, Tone, DueKind } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { TextButton } from "../widgets/text-button.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
 import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
@@ -285,6 +286,10 @@ export component TaskView inherits FocusScope {
     callback habit_reminder_clear_clicked();
     callback habit_save_clicked();
     callback habit-editor-cancelled();
+    // slint: habit-history-clicked (the HF3 W-8 editor History row
+    // seam, US-7/S1 — opens the read-role history dialog over the
+    // editor's subject).
+    callback habit-history-clicked();
     // The tracking verbs (DR-5/4, D-T16): route the matching action
     // over the focused task (the subject IS the focused task).
     callback task-track-start-clicked();
@@ -506,6 +511,10 @@ export component TaskView inherits FocusScope {
                         label: "Title";
                         text: root.habit.title;
                         edited(text) => { root.habit-title-edited(text); }
+                    }
+                    TextButton {
+                        label: "History";
+                        clicked => { root.habit-history-clicked(); }
                     }
                 }
                 TextField {
