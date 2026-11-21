@@ -2,6 +2,30 @@
 //! journey plan's §6 wiring rows W-1..W-4; HF2's global-undo leg of a
 //! logged completion, US-3/S2, and the inline quota popover,
 //! US-4/S1-S3, the 2026-11-21 habit-family UX plan's W-5/W-12
+//! evidence; HF3's history dialog, streak badge and statistics,
+//! W-8/W-9/W-10, US-7/US-8/US-9). Assertion discipline is the
+//! journeys suite's: terminal state + the typed commands that reached
+//! the fake-engine boundary; labels are addresses, never text oracles.
+
+// SPDX-License-Identifier: AGPL-3.0-only
+
+use crate::support;
+
+use chrono::Datelike as _;
+use support::driver::JourneyDriver as _;
+use support::fixture;
+use support::harness::Harness;
+
+use slint::ComponentHandle as _;
+use slint::Model as _;
+use taskboard_domain::{AppState, HabitLogEntry, HabitLogKey, StateCommand};
+use taskboard_ui_slint::KeyboardState;
+use taskboard_ui_slint::UiSettings;
+use taskboard_ui_slint::actions::ActionId;
+//! The habit family's journeys (HF1's skip + pause, #955/#958, the
+//! journey plan's §6 wiring rows W-1..W-4; HF2's global-undo leg of a
+//! logged completion, US-3/S2, and the inline quota popover,
+//! US-4/S1-S3, the 2026-11-21 habit-family UX plan's W-5/W-12
 //! evidence). Assertion discipline is the journeys suite's: terminal
 //! state + the typed commands that reached the fake-engine boundary;
 //! labels are addresses, never text oracles.
@@ -515,4 +539,353 @@ fn us4_s1_quota_key_routes_over_the_focused_row() {
             "the key routes the same opener (click ≡ key)"
         );
     });
+}
+
+/// The journeys' settings: the render clock frozen at the fixture's
+/// pinned instant (the clock law's committed-artifact anchor — the
+/// `habits_journey` twin), the desktop posture.
+fn pinned_settings(kiosk: bool) -> UiSettings {
+    UiSettings {
+        kiosk,
+        clock: Some(fixture::PINNED_NOW),
+        ..UiSettings::default()
+    }
+}
+
+/// The journeys' habit fixture: one live daily habit (quota 2) with
+/// a log over the past days — a met window two days back, a missed
+/// one three days back (both grace-closed for a daily kind), the
+/// current window pending.
+fn state_habit_with_history(state: &mut AppState) -> taskboard_domain::HabitId {
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = taskboard_domain::habit::Habit {
+        id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "water".to_owned(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerDay(
+            taskboard_domain::NonZeroCount::new(2).unwrap(),
+        ),
+        order: 0,
+        anchor_time: None,
+        anchor_day: None,
+        paused_until: None,
+        scheduled_days: None,
+        reminder: None,
+        clocks: taskboard_domain::habit::HabitClocks::all(fixture::PINNED_NOW),
+        continued_from: None,
+        deleted: false,
+        by: None,
+    };
+    let id = habit.id;
+    let today = fixture::PINNED_NOW.date_naive();
+    let put = |log: &mut std::collections::BTreeMap<HabitLogKey, HabitLogEntry>,
+               window: chrono::NaiveDate,
+               count: u32| {
+        log.insert(
+            HabitLogKey {
+                habit: id,
+                window: taskboard_domain::habit::WindowStart::of_period(
+                    taskboard_domain::PeriodKind::Day,
+                    window,
+                ),
+            },
+            HabitLogEntry {
+                count,
+                clock: fixture::PINNED_NOW,
+                by: None,
+                skip: false,
+            },
+        );
+    };
+    let mut log = std::collections::BTreeMap::new();
+    let met = today - chrono::Duration::days(2);
+    let missed = today - chrono::Duration::days(3);
+    put(&mut log, met, 2);
+    put(&mut log, missed, 0);
+    // An October row: the pager's back edge lives in a prior month.
+    put(
+        &mut log,
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 30).expect("date"),
+        2,
+    );
+    state.habits.log = log;
+    state.habits.habits.insert(id, habit);
+    id
+}
+
+/// Opens the habit context menu and walks to the History row (the
+/// menu's rank-245 `habit.history` entry), then invokes it.
+fn open_history_from_menu(harness: &mut Harness) {
+    let window = harness.handle.window();
+    window.invoke_habits_context_requested(0, 120.0, 120.0);
+    harness.driver.advance_time(0);
+    assert!(keyboard(harness).get_menu_open(), "the menu opened");
+    let entries = keyboard(harness).get_menu_entries();
+    let history_index = (0..entries.row_count())
+        .find(|i| entries.row_data(*i).expect("row").action.as_str() == "habit.history")
+        .expect("the History row renders on the habit page");
+    for _ in 0..history_index {
+        harness.handle.dispatch_action(ActionId::MenuNext);
+    }
+    harness.handle.dispatch_action(ActionId::MenuInvoke);
+    harness.driver.advance_time(0);
+}
+
+/// US-7/S1 (AC-1): the context menu's History row mounts the
+/// read-role dialog — the month grid model carries the visible
+/// month's typed cells, and nothing ever reached the command
+/// boundary (the projection is zero-command per US-7/S2–S4).
+#[test]
+fn us7_s1_history_dialog_mounts_from_the_menu() {
+    let (_fx, mut state) = fixture::golden_state();
+    state_habit_with_history(&mut state);
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        pinned_settings(false),
+        move |harness| {
+            harness.driver.advance_time(0);
+            open_history_from_menu(harness);
+            let window = harness.handle.window();
+            assert!(
+                window.get_habit_history_open(),
+                "the history dialog mounted from the menu row"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the mount dispatches nothing (pure projection)"
+            );
+            // The grid model: the visible (current) month's daily
+            // windows, typed.
+            let model = window.get_habit_history();
+            assert!(
+                model.cells.row_count() >= 28,
+                "a month's daily windows render as cells"
+            );
+        },
+    );
+}
+
+/// US-7/S2 (AC-1/AC-2): the grid cells color by the typed state —
+/// the met, missed, and pending windows classify per the walk's
+/// semantics; the D-H12 class never surfaces as a miss on the
+/// current-kind grid.
+#[test]
+fn us7_s2_history_grid_renders_the_typed_window_states() {
+    use taskboard_ui_slint::HabitCellState as S;
+    let (_fx, mut state) = fixture::golden_state();
+    state_habit_with_history(&mut state);
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        pinned_settings(false),
+        move |harness| {
+            harness.driver.advance_time(0);
+            open_history_from_menu(harness);
+            let window = harness.handle.window();
+            assert!(window.get_habit_history_open());
+            let model = window.get_habit_history();
+            let today = fixture::PINNED_NOW.date_naive();
+            let met_day = (today - chrono::Duration::days(2)).day().to_string();
+            let missed_day = (today - chrono::Duration::days(3)).day().to_string();
+            let today_label = today.day().to_string();
+            let mut saw_met = false;
+            let mut saw_missed = false;
+            let mut saw_pending = false;
+            for index in 0..model.cells.row_count() {
+                let cell = model.cells.row_data(index).expect("cell");
+                match cell.state {
+                    S::Met if cell.label.as_str() == met_day => {
+                        assert_eq!(cell.count, 2);
+                        saw_met = true;
+                    }
+                    S::Missed if cell.label.as_str() == missed_day => {
+                        assert_eq!(cell.count, 0);
+                        saw_missed = true;
+                    }
+                    S::Pending if cell.label.as_str() == today_label => {
+                        saw_pending = true;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(saw_met, "the met window renders typed");
+            assert!(
+                saw_missed,
+                "the grace-closed unmet window renders as the miss class"
+            );
+            assert!(saw_pending, "the current window renders pending");
+        },
+    );
+}
+
+/// US-7/S3 (AC-4): the pager clamps at the log's edges — back is
+/// gated by the earliest row's month, forward by the current month;
+/// no wrap, and the dialog stays open (pure display navigation).
+#[test]
+fn us7_s3_pager_clamps_at_the_edges() {
+    let (_fx, mut state) = fixture::golden_state();
+    state_habit_with_history(&mut state);
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        pinned_settings(false),
+        move |harness| {
+            harness.driver.advance_time(0);
+            open_history_from_menu(harness);
+            let window = harness.handle.window();
+            assert!(window.get_habit_history_open());
+            let model = window.get_habit_history();
+            // Current month: back possible (two rows behind), forward
+            // impossible.
+            assert!(model.can_page_back, "the rows' months page back");
+            assert!(!model.can_page_forward, "the current month clamps forward");
+            // Forward past the clamp is refused: the dialog holds, the
+            // model's month label unchanged (the label is an address —
+            // the clamp is the typed fact).
+            window.invoke_habit_history_month_flipped(1);
+            harness.driver.advance_time(0);
+            assert!(
+                window.get_habit_history_open(),
+                "the clamp keeps the dialog"
+            );
+            // Back flips to the previous month and arms the forward side.
+            window.invoke_habit_history_month_flipped(-1);
+            harness.driver.advance_time(0);
+            let flipped = window.get_habit_history();
+            assert!(flipped.can_page_forward, "the previous month arms forward");
+        },
+    );
+}
+
+/// US-7/S4 (AC-3): the read-role close leaves zero state change —
+/// the dialog unmounts, nothing dispatched, the engine untouched.
+#[test]
+fn us7_s4_close_leaves_zero_state_change() {
+    let (_fx, mut state) = fixture::golden_state();
+    state_habit_with_history(&mut state);
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        pinned_settings(false),
+        move |harness| {
+            harness.driver.advance_time(0);
+            open_history_from_menu(harness);
+            let window = harness.handle.window();
+            assert!(window.get_habit_history_open());
+            let before = harness.engine.drain();
+            window.invoke_habit_history_close_requested();
+            harness.driver.advance_time(0);
+            assert!(
+                !window.get_habit_history_open(),
+                "the read-role close unmounts the dialog"
+            );
+            assert!(
+                harness.engine.drain().is_empty(),
+                "the close dispatches nothing (zero state change)"
+            );
+            assert!(
+                before.is_empty(),
+                "the whole journey stayed projection-only"
+            );
+        },
+    );
+}
+
+/// US-8/S1 (AC-1): the row renders the streak badge — the typed
+/// streak value rides the decoration row (the Badge base widget's
+/// model); the emoji slot is gone (the label is the value; the
+/// wording is judged at walkthrough, never asserted).
+#[test]
+fn us8_s1_row_renders_the_streak_badge() {
+    let (_fx, mut state) = fixture::golden_state();
+    let id = state_habit_with_history(&mut state);
+    // Give the current window a met count so the streak is >= 1.
+    let today = fixture::PINNED_NOW.date_naive();
+    state.habits.log.insert(
+        HabitLogKey {
+            habit: id,
+            window: taskboard_domain::habit::WindowStart::of_period(
+                taskboard_domain::PeriodKind::Day,
+                today,
+            ),
+        },
+        HabitLogEntry {
+            count: 2,
+            clock: fixture::PINNED_NOW,
+            by: None,
+            skip: false,
+        },
+    );
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        pinned_settings(false),
+        move |harness| {
+            harness.driver.advance_time(0);
+            let row = harness
+                .handle
+                .window()
+                .get_habits_model()
+                .row_data(0)
+                .expect("row");
+            let mut decorations = Vec::new();
+            for index in 0..row.card.decorations.row_count() {
+                decorations.push(row.card.decorations.row_data(index).expect("decoration"));
+            }
+            let streaks: Vec<_> = decorations
+                .iter()
+                .filter(|d| d.label.as_str().chars().all(|c| c.is_ascii_digit()))
+                .collect();
+            assert_eq!(
+                streaks.len(),
+                1,
+                "exactly one streak badge rides the row, got {decorations:?}"
+            );
+            let parsed: u32 = streaks[0].label.as_str().parse().expect("the streak value");
+            assert!(
+                parsed >= 1,
+                "the badge carries the typed streak value (the met today + the met window back)"
+            );
+            assert!(
+                decorations
+                    .iter()
+                    .all(|d| !d.label.as_str().contains('\u{1F525}')),
+                "the emoji slot is retired"
+            );
+        },
+    );
+}
+
+/// The kiosk gate (R-3): the history dialog is absent on the
+/// appliance — the opener dispatch is structurally inert and the
+/// mount bit never arms; the badge (W-9) still renders (display
+/// only, the D-P13 posture).
+#[test]
+fn kiosk_history_dialog_is_absent_and_the_badge_renders() {
+    let (_fx, mut state) = fixture::golden_state();
+    state_habit_with_history(&mut state);
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        pinned_settings(true),
+        move |harness| {
+            harness.driver.advance_time(0);
+            let window = harness.handle.window();
+            // The opener dispatch: structurally inert on kiosk.
+            window.invoke_habit_editor_history_clicked();
+            harness.driver.advance_time(0);
+            assert!(
+                !window.get_habit_history_open(),
+                "the kiosk never mounts the history dialog (R-3)"
+            );
+            // The badge renders display-only.
+            let row = window.get_habits_model().row_data(0).expect("row");
+            let mut decorations = Vec::new();
+            for index in 0..row.card.decorations.row_count() {
+                decorations.push(row.card.decorations.row_data(index).expect("decoration"));
+            }
+            assert!(
+                decorations
+                    .iter()
+                    .any(|d| d.label.as_str().chars().all(|c| c.is_ascii_digit())),
+                "the streak badge renders on kiosk (display only)"
+            );
+        },
+    );
 }
