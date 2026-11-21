@@ -981,7 +981,13 @@ fn streak_with_break(
         } else if preschedule_window(habit, WindowStart(cursor), today) {
             // Pre-schedule (R-6/US-5 AC-1): the window's scheduled days
             // have not begun — transparent regardless of grace (no due
-            // posture, no miss), walk on.
+            // posture, no miss), walk on. HF1 composition seam
+            // (named-but-unwired): skip and pause are the transparent
+            // class's other subjects — the composition arm
+            // (`transparency_composes_across_skip_pause_preschedule`)
+            // lands with HF1 (plan
+            // 2026-11-21-habit-skip-pause-plan); a skip/pause field
+            // does not exist yet.
         } else {
             let grace_end = period_end(kind, cursor, day) + grace;
             if now >= grace_end {
