@@ -595,7 +595,7 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
 /// file *is* written, the next start applies it (the editor's `Gone`
 /// precedent — the file stays the boot authority, no partial repair).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LiveApply {
+pub enum LiveApply {
     Applied,
     NoEngine,
     EngineGone,
@@ -605,7 +605,7 @@ pub(crate) enum LiveApply {
 /// effective config (file + standing env — the boot provider chain)
 /// plus which front applied.
 #[derive(Debug)]
-pub(crate) struct SettingsWriteOutcome {
+pub struct SettingsWriteOutcome {
     pub effective: AppConfig,
     pub apply: LiveApply,
 }
@@ -616,7 +616,7 @@ pub(crate) struct SettingsWriteOutcome {
 /// own lattices (the editor's `SettingsError`, the CLI's
 /// `ConfigSetError`).
 #[derive(Debug)]
-pub(crate) enum SettingsWriteError {
+pub enum SettingsWriteError {
     /// One of `guard_keys` is pinned by a `TASKBOARD_*` override.
     EnvLocked,
     /// The writer refused (IO, or the prove gate's typed rejection) —
@@ -646,7 +646,12 @@ pub(crate) enum SettingsWriteError {
 ///    snapshot; a failed apply is the typed `EngineGone` next-start
 ///    outcome, not an error — the file is written and the boot is
 ///    its authority.
-pub(crate) async fn run_settings_write(
+/// # Errors
+///
+/// Typed refusals: `EnvLocked` (a guarded key pinned by a
+/// `TASKBOARD_*` override), `Overlay` (the writer's own IO/prove
+/// classes), `Config` (the effective re-decode/validate failure).
+pub async fn run_settings_write(
     path: &std::path::Path,
     locked: &std::collections::BTreeSet<String>,
     guard_keys: &[&str],
@@ -1784,7 +1789,13 @@ async fn move_board_to_deck(
 /// and refuses typed outside the window (`NothingToUndo` /
 /// `UndoClosed` / `UndoCoordinatesLost`); the reply is the fresh
 /// snapshot so the standard drain re-pushes settings.
-async fn undo_board_move(
+/// # Errors
+///
+/// Typed refusals: `Gone` (the board is absent or deleted),
+/// `NothingToUndo` / `UndoClosed` / `UndoCoordinatesLost` (the
+/// ceremony's stage gate), `FilesSyncDisabled`, plus the identity
+/// and overlay classes of the undo leg.
+pub async fn undo_board_move(
     workspace: &ConnectionWorkspace,
     board: BoardId,
 ) -> Result<ConnectionsSnapshot, SettingsError> {
@@ -1868,7 +1879,12 @@ async fn stop_board_files_sync(
 /// `remote()` law, so publish and move cannot mint differently) and
 /// connector = `FILES_SYNC_CONNECTOR_NAME`. The files actor re-derives
 /// its lanes from `BoardOwnershipMap` next cycle — no nudge needed.
-async fn publish_board_to_files(
+/// # Errors
+///
+/// Typed refusals: `FilesSyncDisabled` (no spawnable files lane),
+/// `BindRefused` (the board is deck- or files-bound), `Gone` (the
+/// board is absent), plus the bind command's own typed classes.
+pub async fn publish_board_to_files(
     workspace: &ConnectionWorkspace,
     board: BoardId,
 ) -> Result<ConnectionsSnapshot, SettingsError> {
@@ -2103,15 +2119,16 @@ mod tests {
         assert!(!dir.exists(), "the drop deletes the dir");
     }
 
-    /// The #984 dated-pin gate (the #865 re-homing debt, tracked in
-    /// the round-3 backlog): true when no `TASKBOARD_*` ambient is
-    /// present. The settings-editor/port guard and persist reads
-    /// compose the process env in production, and this lib crate
+    /// The #984 dated-pin gate (the #865 re-homing debt; the residual
+    /// class is the `backlog:` issue #1157): true when no `TASKBOARD_*`
+    /// ambient is present. The settings-editor/port guard and persist
+    /// reads compose the process env in production, and this lib crate
     /// forbids the env mutation that `taskboard_env_lock` needs — so
     /// under a hostile ambient the composed read refuses before the
-    /// fact under test. The integration suite
-    /// `tests/services/ui_settings.rs` is the hostile-oracle home for
-    /// the re-homed legs.
+    /// fact under test. The three env-composing legs that composed the
+    /// read directly (#1113) were re-homed into
+    /// `tests/services/ui_settings.rs`; the remaining gated legs here
+    /// still need the gate until they re-home too (#1157).
     fn clean_ambient() -> bool {
         !std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
     }
@@ -2245,34 +2262,6 @@ mod tests {
             .await
             .expect_err("an unbound board refuses");
         assert_eq!(loose, SettingsError::BindRefused);
-    }
-
-    /// US-6 (the files-sync-status plan D-7) — the undo-window
-    /// Restore arm's guards refuse typed: a gone board is `Gone`;
-    /// with no files lane configured the ceremony refuses typed
-    /// (`FilesSyncDisabled`) — the ceremony's own undo leg is the
-    /// stage gate, never a reimplemented undo.
-    #[tokio::test]
-    async fn us6_ac1_restore_guards_refuse_typed_currently_pins_the_clean_ambient_read() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("taskboard.toml");
-        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let fixture = workspace_fixture(config).await;
-        let workspace = &fixture.workspace;
-        let unbound = create_board(workspace, "loose").await;
-
-        let gone = undo_board_move(workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
-            .await
-            .expect_err("a gone board refuses");
-        assert_eq!(gone, SettingsError::Gone);
-        let refused = undo_board_move(workspace, unbound)
-            .await
-            .expect_err("no files lane configured refuses typed");
-        assert_eq!(refused, SettingsError::FilesSyncDisabled);
     }
 
     /// The Stop arm's exact effect (US-2/S3): the engine receives the
@@ -2578,70 +2567,6 @@ mod tests {
              [files_sync]\nenabled = true\nanchor = \"work\"\n",
         )
         .expect("seed files-lane config");
-    }
-
-    /// US-4/S2 — the Publish arm's guards refuse typed: deck-bound
-    /// and files-bound boards are `BindRefused` (a stale row's
-    /// mis-target), a disabled files lane is `FilesSyncDisabled`, a
-    /// gone board is `Gone`.
-    #[tokio::test]
-    async fn us4_s2_publish_guards_refuse_deck_bound_currently_pins_the_clean_ambient_read() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("taskboard.toml");
-        write_files_lane_config(&config);
-        let fixture = workspace_fixture(config).await;
-        let workspace = &fixture.workspace;
-
-        let deck_bound = create_board(workspace, "deck board").await;
-        let files_bound = create_board(workspace, "files board").await;
-        workspace
-            .engine
-            .execute(StateCommand::BindBoard {
-                board: deck_bound,
-                remote: taskboard_domain::RemoteBoardId::deck(7),
-                connector: taskboard_domain::ConnectorId::from("work"),
-            })
-            .await
-            .expect("deck bind lands");
-        workspace
-            .engine
-            .execute(StateCommand::BindBoard {
-                board: files_bound,
-                remote: taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
-                connector: taskboard_domain::ConnectorId::from("files-sync"),
-            })
-            .await
-            .expect("files bind lands");
-
-        let deck = publish_board_to_files(workspace, deck_bound)
-            .await
-            .expect_err("a deck-bound board refuses");
-        assert_eq!(deck, SettingsError::BindRefused);
-        let files = publish_board_to_files(workspace, files_bound)
-            .await
-            .expect_err("a files-bound board refuses");
-        assert_eq!(files, SettingsError::BindRefused);
-        let gone = publish_board_to_files(workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
-            .await
-            .expect_err("a gone board refuses");
-        assert_eq!(gone, SettingsError::Gone);
-
-        // A lane-off config refuses before the board guards touch the
-        // state (D7's guard order — the cheap config check first).
-        let dir_off = tempfile::tempdir().expect("tempdir");
-        let config_off = dir_off.path().join("taskboard.toml");
-        std::fs::write(&config_off, "[ui]\nscale = 1.0\n").expect("seed");
-        let fixture = workspace_fixture(config_off).await;
-        let workspace_off = &fixture.workspace;
-        let unbound = create_board(workspace_off, "loose").await;
-        let disabled = publish_board_to_files(workspace_off, unbound)
-            .await
-            .expect_err("a lane-off config refuses");
-        assert_eq!(disabled, SettingsError::FilesSyncDisabled);
     }
 
     /// The Publish arm's exact ceremony (US-4/S3): the engine receives
@@ -3958,34 +3883,6 @@ mod tests {
             text.contains("backoff_initial_secs = 5"),
             "the file is untouched: {text}"
         );
-    }
-
-    /// The live lane: a hand-to-the-port write lands in the file AND
-    /// the engine publishes the new snapshot (`Applied`) — the
-    /// US-1/US-3 choreography in one place.
-    #[tokio::test]
-    async fn the_port_applies_live_to_a_real_engine_currently_pins_the_clean_ambient_read() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
-        let workspace = &fixture.workspace;
-        let locked = std::collections::BTreeSet::new();
-        let outcome = run_settings_write(
-            workspace.config_write_path.as_path(),
-            &locked,
-            &["reminders.tick_secs"],
-            |path| crate::settings_overlay::set_reminder_tick(path, 45),
-            Some(&workspace.engine),
-        )
-        .await
-        .expect("the write lands");
-        assert_eq!(outcome.apply, LiveApply::Applied, "the live lane");
-        let published = workspace.engine.shared_state().load();
-        assert_eq!(u64::from(published.settings.tick_secs), 45);
-        let text = std::fs::read_to_string(workspace.config_write_path.as_path()).expect("file");
-        assert!(text.contains("tick_secs = 45"), "the file wrote: {text}");
     }
 
     /// A stopped engine (`EngineGone`) is NOT an error at the port:
