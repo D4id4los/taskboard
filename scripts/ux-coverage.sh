@@ -291,7 +291,24 @@ find_evidence() { # find_evidence <name>
          -name node_modules -prune -o
          -path "$EVID_ROOT/.git" -prune -o
          -type f -name "$name" -print)
-  "${args[@]}" 2>/dev/null
+  # (#1073) determinism: `find` order is arbitrary, and the by-name
+  # consumers (first_match / adapter_match / nom_file's fallback) credit
+  # the first hit — so a token present in both a production file and a
+  # test-support twin resolved on whichever find emitted first. Post-
+  # filter into two tiers: tier 0 = paths NOT under a test-support
+  # location (a /test_support/ or /tests/ path segment — structural, so
+  # new crates' fakes de-prioritize for free), tier 1 = the rest; each
+  # tier LC_ALL=C sort -u (byte order, dedup). Test-support files stay
+  # in the universe — a token that only exists there still resolves,
+  # FOUND citing the test-support file (deliberate leniency, the #965/
+  # #967 posture); only the nondeterminism is removed.
+  local raw tier0 tier1
+  raw=$("${args[@]}" 2>/dev/null || true)
+  tier0=$(grep -vE '/(test_support|tests)/' <<<"$raw" | LC_ALL=C sort -u || true)
+  tier1=$(grep -E '/(test_support|tests)/' <<<"$raw" | LC_ALL=C sort -u || true)
+  [[ -n $tier0 ]] && printf '%s\n' "$tier0"
+  [[ -n $tier1 ]] && printf '%s\n' "$tier1"
+  return 0
 }
 
 # Boundary fn-name match: `fn <name>` not followed by another name
@@ -523,6 +540,53 @@ self_test() {
     rc=1
   fi
 
+  # 11. #1073 tier determinism: the token lives in BOTH the production
+  #     and the test-support messages twin; the command citation must
+  #     be the production file, identically across 3 runs (the old bug
+  #     was find-order luck — the assertion is stability itself).
+  local cmd_ev run_i
+  local -a runs=()
+  for run_i in 1 2 3; do
+    bash "${BASH_SOURCE[0]}" "$fx/plan-tiersort.md" --gate --root "$fx/tree" \
+      >"$tmp/tiersort-$run_i.out" 2>&1 && code=0 || code=$?
+    cmd_ev=$(grep -oE 'command TierProbe → FOUND \([^)]*\)' "$tmp/tiersort-$run_i.out" || true)
+    runs+=("$cmd_ev")
+    if [[ $code -ne 0 || $cmd_ev != *"/src/messages.rs:"* ]]; then
+      echo "self-test 11 (#1073 production-tier citation, run $run_i): FAIL (exit $code, evidence: ${cmd_ev:-none})"
+      sed 's/^/    /' "$tmp/tiersort-$run_i.out"
+      rc=1
+    fi
+  done
+  if [[ ${runs[0]} == "${runs[1]}" && "${runs[1]}" == "${runs[2]}" && -n ${runs[0]:-} ]]; then
+    [[ $rc -eq 0 ]] && echo "self-test 11 (#1073 production-tier citation stable across 3 runs): PASS"
+  elif [[ $rc -eq 0 ]]; then
+    echo "self-test 11 (#1073 production-tier citation stable across 3 runs): FAIL (runs differ: ${runs[*]})"
+    rc=1
+  fi
+
+  # 12. #1076 bound-test grep excludes the fixture tree: a nomination
+  #     matching fn us1_s1_fixture_create — present ONLY inside a
+  #     copied scripts/fixtures/ux-coverage-fixture under the scan root
+  #     — reads MISSING (pre-#1076 it read BOUND out of the fixture),
+  #     while the honest bound row stays BOUND.
+  local repo11="$tmp/repo11"
+  mkdir -p "$repo11/scripts/fixtures" "$repo11/tests"
+  cp "${BASH_SOURCE[0]}" "$repo11/scripts/"
+  cp -r "$fx" "$repo11/scripts/fixtures/"
+  printf '#[test]\nfn us1_s2_toast_shown() {}\n\n#[test]\nfn us2_s1_badge_renders() {}\n' \
+    >"$repo11/tests/fixture_journeys.rs"
+  bash "$repo11/scripts/ux-coverage.sh" "$fx/plan-targetpin.md" --gate --root "$repo11" \
+    >"$tmp/fxbound.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c ' journey test → MISSING$' "$tmp/fxbound.out" || true)
+  b=$(grep -c ' BOUND (' "$tmp/fxbound.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 && $b -eq 1 ]]; then
+    echo "self-test 12 (#1076 fixture-only bound row MISSING, honest row BOUND): PASS"
+  else
+    echo "self-test 12 (#1076 fixture-only bound row MISSING, honest row BOUND): FAIL (exit $code, $c journey MISSING, $b BOUND)"
+    sed 's/^/    /' "$tmp/fxbound.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -748,7 +812,21 @@ main() {
     # 3. Bound-test mapping (retro cohort).
     if [[ -n ${bound_nom[$sid]:-} ]]; then
       name=${bound_nom[$sid]}
-      mapfile -t hits < <(grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=node_modules --exclude-dir=.git "fn ${name}(_|\\()" "$root" 2>/dev/null | head -n 1 || true)
+      # (#1076) mirror find_evidence's evidence-scoped fixture prune:
+      # when the script-relative fixture tree exists and the scan root
+      # is not inside it (FX_ROOT is set exactly then), exclude the
+      # fixture root by its basename (grep matches --exclude-dir per
+      # path level, so a slash-bearing path would never match) — a
+      # bound-test nomination must not read BOUND out of the miniature
+      # fixture tree. When the root IS the fixture tree (self-tests
+      # 1/5/8 posture) FX_ROOT is unset and the grep is unchanged.
+      local -a grep_args=(grep -rnE --include='*.rs'
+                          --exclude-dir=target --exclude-dir=node_modules
+                          --exclude-dir=.git)
+      if [[ -n ${FX_ROOT:-} ]]; then
+        grep_args+=(--exclude-dir="$(basename "$FX_ROOT")")
+      fi
+      mapfile -t hits < <("${grep_args[@]}" "fn ${name}(_|\\()" "$root" 2>/dev/null | head -n 1 || true)
       if (( ${#hits[@]} > 0 )); then
         FOUND_EV=$(ev_fileline "${hits[0]}")
         emit_bound "$label"
