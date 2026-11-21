@@ -233,6 +233,36 @@ fn us2_s2_pause_commit_routes_the_exact_command() {
     });
 }
 
+/// US-2/S2 (W-3, the escape leg): a through-date before today is the
+/// typed draft refusal — the notice arms, nothing reaches the
+/// boundary, and the editor stays open for the correction.
+#[test]
+fn us2_s2_pause_past_date_refuses_and_stays_open() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        window.invoke_habits_pause_asked(0);
+        harness.driver.advance_time(0);
+        window.invoke_habits_pause_until_picked("2000-01-01".into());
+        harness.driver.advance_time(0);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the refused draft routes nothing"
+        );
+        assert!(
+            window.get_habits_pause_open(),
+            "the editor stays open for the correction"
+        );
+        assert!(
+            window.get_notice_visible(),
+            "the typed invalid-pause refusal surfaced"
+        );
+    });
+}
+
 /// US-2/S3 (W-3, AC-4): the resume affordance routes the `None` clear
 /// leg (badge hygiene; the `PauseSeries` posture).
 #[test]

@@ -6715,6 +6715,16 @@ impl Adapter {
                 });
                 true
             }
+            // HF1 (US-1/S2): the skip's acknowledgement rides the same
+            // lane — the chip renders the standing state (US-1/S3),
+            // the notice is the dispatch-time event stamp.
+            taskboard_domain::StateCommand::SkipHabit { .. } => {
+                self.notice = Some(Notice {
+                    text: crate::presentation::habit_skip_notice_phrase(),
+                    until: chrono::Utc::now() + crate::presentation::OUTCOME_NOTICE_HORIZON,
+                });
+                true
+            }
             taskboard_domain::StateCommand::CreateAdhocAlarm { label, when, .. } => {
                 self.notice = Some(Notice {
                     text: crate::presentation::adhoc_alarm_notice_phrase(label, when),
@@ -11667,6 +11677,19 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return; // an unparseable draft dispatches nothing
     };
+    // The draft gate (US-2/S2's escape leg; the quota-validity
+    // posture): a through-date before today covers nothing and reads
+    // as a stale badge — the draft is refused here (typed notice, the
+    // editor stays open) AND the planner still validates
+    // (`InvalidHabitPause` remains authoritative across a rollover).
+    if date < a.calendar().today(a.day_ctx().now) {
+        a.notice = Some(crate::adapter::Notice {
+            text: crate::presentation::habit_pause_invalid_phrase(),
+            until: chrono::Utc::now() + crate::presentation::MENU_NOTICE_HORIZON,
+        });
+        a.push_notice(&window);
+        return;
+    }
     a.pause_draft = Some(date);
     a.habit_pause_open = false;
     a.route(&window, ActionId::HabitPauseCommit);
