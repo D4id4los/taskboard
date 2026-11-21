@@ -1777,6 +1777,20 @@ export component AppWindow inherits Window {
         FocusFacts.nonce += 1;
     }
 
+    // The effort field's keyboard opener (J3 US-4, round 9 chunk 11;
+    // the seam split, #1100): the per-origin push seam for
+    // BeginEffortEdit — the same FocusFacts tuple as
+    // focus-detail-cell(6) (the fact contract is per-anchor, the seam
+    // is per-origin), so kinds 4/5 journeys and the M9 commit law are
+    // untouched.
+    // slint: focus-effort-opener
+    public function focus-effort-opener() {
+        FocusFacts.anchor-kind = 6;
+        FocusFacts.target-a = -1;
+        FocusFacts.target-b = -1;
+        FocusFacts.nonce += 1;
+    }
+
     // The control walk's clamped stop (US-2/W-2, D-W2): under a
     // masked site the walk's cursor steps within the host's extent;
     // this seam publishes the stop — the mounted host consumes it and

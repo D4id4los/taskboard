@@ -442,22 +442,21 @@ const INVOKE_INVENTORY: &[&str] = &[
     // The pre-existing timers push (the timers surface's create seam —
     // the manifest's retrospective rider, caught by the totality side).
     "timers_create_accepted",
+    // The detail-cell push, per dispatch origin (#1100 — the round-9
+    // chunk-11 exemption split back into exactly-once seams): the
+    // focus-origin restore's kinds 4/5 ride `focus_detail_cell`; the
+    // effort field's keyboard opener (BeginEffortEdit's kind 6) rides
+    // its own `focus_effort_opener` — the *seam* is per-origin, the
+    // *fact* is per-anchor (both publish the same FocusFacts shape).
+    "focus_detail_cell",
+    "focus_effort_opener",
 ];
 
 /// The push functions the manifest deliberately does not count: the
 /// pre-framework window functions the adapter already drove (the
 /// D15 hand-off's view refocus lives in the chunk plan's census
 /// note, not this manifest).
-const INVOKE_EXEMPT: &[&str] = &[
-    "invoke_refocus_view",
-    // The detail-cell push serves two deliberate callers (round 9
-    // chunk 11, J3 US-4): the focus-origin restore's kinds 4/5 and
-    // the effort field's keyboard opener (BeginEffortEdit's kind 6)
-    // — one push seam, two dispatch origins, so the exactly-once
-    // count does not apply; both invokes are counted in the
-    // no-unlisted side instead.
-    "invoke_focus_detail_cell",
-];
+const INVOKE_EXEMPT: &[&str] = &["invoke_refocus_view"];
 
 fn invoke_counts() -> Vec<(String, usize)> {
     INVOKE_INVENTORY

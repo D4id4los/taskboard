@@ -4671,7 +4671,7 @@ impl Adapter {
             // "no subject" cell).
             (Flow::None, UiEffect::BeginEffortEdit) => {
                 if self.view_state.subject_task().is_some() {
-                    window.invoke_focus_detail_cell(6);
+                    window.invoke_focus_effort_opener();
                 }
                 Vec::new()
             }
