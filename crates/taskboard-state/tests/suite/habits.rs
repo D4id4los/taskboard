@@ -22,7 +22,7 @@ use taskboard_domain::{
     CommandOutcome, HabitLogKey, NotifierMessage, StateCommand, SyncCommand, SystemEvent,
     WindowStart,
 };
-use taskboard_state::{EngineHandle, spawn_state_engine};
+use taskboard_state::{EngineHandle, ExecuteError, spawn_state_engine};
 
 use crate::common;
 
@@ -570,4 +570,190 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
     let h2 = spawn_over(repo, FixedClock::new(T0)).await;
     assert_eq!(h2.published(), expected, "memory ≡ disk across restarts");
     h2.shutdown().await;
+}
+
+// ---- HF1: skip + pause (#955, #958; plan 2026-11-21-habit-skip-pause) --
+
+/// US-1/S2 (engine leg): SkipHabit routes the exact typed mark onto the
+/// current canonical window's log row — count preserved, receipt names
+/// the window — and the repeat is the accepted no-op (no clock churn).
+/// UnskipHabit (the undo inverse) clears the mark and keeps the count.
+#[tokio::test(start_paused = true)]
+async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
+    let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+    let clock = FixedClock::new(T0);
+    let h = spawn_over(repo, clock.clone()).await;
+    let board = h.board_id();
+    let CommandOutcome::HabitCreated(habit) = h
+        .handle
+        .execute(StateCommand::CreateHabit {
+            board,
+            title: "meditate".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    // Log once so the skip must preserve the count.
+    clock.advance(60);
+    let _ = h
+        .handle
+        .execute(StateCommand::LogHabit { habit })
+        .await
+        .expect("accepted");
+    clock.advance(60);
+    let CommandOutcome::HabitSkipped {
+        window: skipped, ..
+    } = h
+        .handle
+        .execute(StateCommand::SkipHabit { habit })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    assert_eq!(skipped, window(0), "the current canonical window");
+    let published = h.published();
+    let row = &published.log[&key(habit, 0)];
+    assert!(row.skip, "the typed mark landed");
+    assert_eq!(row.count, 1, "the count is untouched by the mark");
+    assert_eq!(h.repo.snapshot().habits, published, "memory ≡ disk");
+
+    // The repeat is the accepted no-op; nothing persisted.
+    clock.advance(60);
+    let before = h.repo.snapshot();
+    let repeat = h.handle.execute(StateCommand::SkipHabit { habit }).await;
+    match repeat {
+        Ok(CommandOutcome::NoOp) => {}
+        other => panic!("expected NoOp, got {other:?}"),
+    }
+    assert_eq!(h.repo.snapshot(), before, "the no-op persisted nothing");
+
+    // The undo inverse clears the mark, keeps the count.
+    clock.advance(60);
+    let _ = h
+        .handle
+        .execute(StateCommand::UnskipHabit { habit })
+        .await
+        .expect("accepted");
+    let published = h.published();
+    assert!(
+        !published.log[&key(habit, 0)].skip,
+        "the mark cleared (badge hygiene)"
+    );
+    assert_eq!(published.log[&key(habit, 0)].count, 1);
+    // Unskipping an unmarked window is the accepted no-op.
+    clock.advance(60);
+    let before = h.repo.snapshot();
+    let repeat = h.handle.execute(StateCommand::UnskipHabit { habit }).await;
+    match repeat {
+        Ok(CommandOutcome::NoOp) => {}
+        other => panic!("expected NoOp, got {other:?}"),
+    }
+    assert_eq!(h.repo.snapshot(), before);
+    h.shutdown().await;
+}
+
+/// US-2/AC-4 + AC-5 (engine leg): a past through-date is the typed
+/// `InvalidHabitPause`; a valid pause lands on the row (badge + through
+/// date); the unchanged value no-ops; the explicit `None` resume clears
+/// for badge hygiene (the PauseSeries posture verbatim).
+#[tokio::test(start_paused = true)]
+async fn pause_round_trips_resume_clears_and_past_date_is_typed_invalid() {
+    let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+    let clock = FixedClock::new(T0);
+    let h = spawn_over(repo, clock.clone()).await;
+    let board = h.board_id();
+    let CommandOutcome::HabitCreated(habit) = h
+        .handle
+        .execute(StateCommand::CreateHabit {
+            board,
+            title: "stretch".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(1).unwrap(),
+            ),
+        })
+        .await
+        .expect("accepted")
+    else {
+        panic!("wrong receipt");
+    };
+    // AC-5: a past-date through-date is the typed rejection.
+    let past = chrono::NaiveDate::from_ymd_opt(1969, 12, 31).expect("valid");
+    let err = h
+        .handle
+        .execute(StateCommand::PauseHabit {
+            habit,
+            until: Some(past),
+        })
+        .await
+        .expect_err("a past pause is rejected");
+    assert!(
+        matches!(
+            err,
+            ExecuteError::Rejected(taskboard_domain::CommandError::InvalidHabitPause { .. })
+        ),
+        "typed invalid-pause: {err:?}"
+    );
+    // AC-1: a valid pause lands.
+    let today = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid");
+    let outcome = h
+        .handle
+        .execute(StateCommand::PauseHabit {
+            habit,
+            until: Some(today),
+        })
+        .await
+        .expect("accepted");
+    assert_eq!(outcome, CommandOutcome::Applied);
+    let published = h.published();
+    assert_eq!(published.habits[&habit].paused_until, Some(today));
+    assert_eq!(
+        published.habits[&habit].clocks.paused_until,
+        common::ts(T0),
+        "the pause write clock stamped"
+    );
+    assert_eq!(h.repo.snapshot().habits, published, "memory ≡ disk");
+    // The unchanged value is the accepted no-op (no clock churn).
+    clock.advance(60);
+    let before = h.repo.snapshot();
+    let repeat = h
+        .handle
+        .execute(StateCommand::PauseHabit {
+            habit,
+            until: Some(today),
+        })
+        .await;
+    match repeat {
+        Ok(CommandOutcome::NoOp) => {}
+        other => panic!("expected NoOp, got {other:?}"),
+    }
+    assert_eq!(h.repo.snapshot(), before);
+    // AC-4: the explicit None resume clears for badge hygiene.
+    clock.advance(60);
+    let _ = h
+        .handle
+        .execute(StateCommand::PauseHabit { habit, until: None })
+        .await
+        .expect("accepted");
+    let published = h.published();
+    assert_eq!(published.habits[&habit].paused_until, None);
+    assert_eq!(h.repo.snapshot().habits, published);
+    // Resuming an unpaused habit is the accepted no-op.
+    clock.advance(60);
+    let before = h.repo.snapshot();
+    let repeat = h
+        .handle
+        .execute(StateCommand::PauseHabit { habit, until: None })
+        .await;
+    match repeat {
+        Ok(CommandOutcome::NoOp) => {}
+        other => panic!("expected NoOp, got {other:?}"),
+    }
+    assert_eq!(h.repo.snapshot(), before);
+    h.shutdown().await;
 }
