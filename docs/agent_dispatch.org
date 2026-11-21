@@ -79,6 +79,23 @@ earned by a recovered incident. The full narrative:
     measure; the self-caps are the protection. Evidence: the #923
     two-mode corollary and the mutants stage-2 report §4
     (.artifacts/reports/2026-11-17-cargo-mutants-taskboard-app-report.md).
+  - *Gate-lock liveness is detection-only (#1110)*: both gate locks
+    release on holder *death* (flock is kernel-owned) but a holder
+    that hangs while *alive* blinds every queued waiter —
+    =scripts/gate-lock-liveness.sh= (sourced by both gates)
+    classifies the holder from the record the gates already write:
+    =alive= (CPU time advanced across the poll window), =likely-hung=
+    (zero CPU-time delta across 3 consecutive polls), =gone= (pid
+    vanished; the kernel releases the lock). The constraint, binding
+    on every gate and every agent: **no gate may kill, signal, or
+    steal a lock from a live holder regardless of its CPU profile** —
+    a legitimate long holder is indistinguishable from a wedged one by
+    CPU time alone; triage is the dispatcher's job, and the safe
+    release path remains flock-on-kill. The =likely-hung= wait line
+    ("no CPU time in ~90s — triage that lane") is the #894
+    flock-deferral rule's triage trigger: a waiting agent that sees it
+    reports "gate deferred: lock held by a likely-hung pid <pid>" and
+    ends the stage instead of blocking.
 - *Resource law (the concurrency cap)*: at most **3 concurrent
   work-performing agents per box**, with **staggered starts ≥3
   minutes apart** (cold pre-commit build peaks must not align), and
