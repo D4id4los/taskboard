@@ -10,27 +10,9 @@
 
 use crate::support;
 
-use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
-use support::fake_engine::FakeEngine;
+use support::driver::{JourneyDriver as _, SlintDriver};
 use support::fixture;
-use support::health::detached_health;
-
-use arc_swap::ArcSwap;
-use slint::ComponentHandle as _;
-use slint::Model as _;
-use std::sync::Arc;
-use taskboard_domain::{AppState, StateCommand};
-use taskboard_ui_slint::actions::ActionId;
-use taskboard_ui_slint::{KeyboardState, UiSettings, View};
-
-/// The minimal habit-journey harness: driver + fake engine + mount.
-/// The journeys suite's harness is that suite's surface; this file
-/// carries only what the habit journeys speak.
-struct Harness {
-    driver: SlintDriver,
-    handle: taskboard_ui_slint::UiHandle,
-    engine: FakeEngine,
-}
+use support::harness::Harness;
 
 /// The open submenu's rows (the flip the arm re-projection drives is
 /// a submenu-page fact — the confirm lives under the Convert parent).
@@ -49,45 +31,11 @@ fn parent_index(harness: &Harness) -> usize {
         .expect("the Convert parent renders")
 }
 
-impl Harness {
-    fn mount(driver: SlintDriver, state: AppState) -> Self {
-        Self::mount_with_settings(driver, state, UiSettings::default())
-    }
-
-    fn mount_with_settings(driver: SlintDriver, state: AppState, settings: UiSettings) -> Self {
-        let state = Arc::new(ArcSwap::from_pointee(state));
-        let (commands, engine) = FakeEngine::channel(Arc::clone(&state));
-        let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
-        let handle = taskboard_ui_slint::mount(
-            state,
-            dummy_receiver(),
-            dummy_system_receiver(),
-            commands,
-            requests_tx,
-            settings,
-            detached_health(),
-            None,
-        )
-        .expect("mount succeeds on the testing backend");
-        let mut harness = Self {
-            driver,
-            handle,
-            engine,
-        };
-        harness.driver.bind(&harness.handle);
-        harness
-    }
-}
-
-fn dummy_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
-
-fn dummy_system_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
+use slint::ComponentHandle as _;
+use slint::Model as _;
+use taskboard_domain::{AppState, StateCommand};
+use taskboard_ui_slint::actions::ActionId;
+use taskboard_ui_slint::{KeyboardState, UiSettings, View};
 
 fn keyboard(harness: &Harness) -> KeyboardState<'_> {
     harness.handle.window().global::<KeyboardState>()
@@ -132,41 +80,33 @@ fn us1_s1_habit_rows_render_on_the_task_card_substrate() {
     let (_fixture, mut state) = fixture::journey_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            // The mount's default view IS Today (chunk 10 D2); the
-            // habits section mounts with it.
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
-            let model = window.get_habits_model();
-            assert_eq!(model.row_count(), 1, "the row renders");
-            let row = model.row_data(0).expect("row");
-            assert_eq!(
-                row.card.title.as_str(),
-                "water",
-                "the card substrate carries the habit"
-            );
-            assert!(
-                harness.driver.find_by_label("water").is_some(),
-                "the card's accessible address is the habit title"
-            );
-            assert!(
-                harness.driver.find_by_label("Log habit").is_some(),
-                "the horizontal strip renders the +1 affordance"
-            );
-            assert!(
-                harness
-                    .driver
-                    .find_by_label("Take one habit log back")
-                    .is_some(),
-                "the strip renders the −1 affordance"
-            );
-        },
-    );
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        let model = window.get_habits_model();
+        assert_eq!(model.row_count(), 1, "the row renders");
+        let row = model.row_data(0).expect("row");
+        assert_eq!(
+            row.card.title.as_str(),
+            "water",
+            "the card substrate carries the habit"
+        );
+        assert!(
+            harness.driver.find_by_label("water").is_some(),
+            "the card's accessible address is the habit title"
+        );
+        assert!(
+            harness.driver.find_by_label("Log habit").is_some(),
+            "the horizontal strip renders the +1 affordance"
+        );
+        assert!(
+            harness
+                .driver
+                .find_by_label("Take one habit log back")
+                .is_some(),
+            "the strip renders the −1 affordance"
+        );
+    });
 }
 
 /// US-1/S2 (AC-1): the done slot IS the +1 log control — clicking
@@ -178,34 +118,26 @@ fn us1_s2_clicking_the_done_slot_logs_the_habit() {
     let (_fixture, mut state) = fixture::journey_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            // The mount's default view IS Today (chunk 10 D2); the
-            // habits section mounts with it.
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            // The card model's done slot: the log control's contract
-            // (can-done, never done).
-            let row = harness
-                .handle
-                .window()
-                .get_habits_model()
-                .row_data(0)
-                .expect("row");
-            assert!(row.card.can_done && !row.card.done);
-            // The shared seam (done slot ≡ strip +1): the LogHabit
-            // command reaches the boundary.
-            harness.handle.window().invoke_habits_log_clicked(0);
-            harness.driver.advance_time(0);
-            match harness.engine.drain().as_slice() {
-                [StateCommand::LogHabit { .. }] => {}
-                other => panic!("the done slot routes the log, got {other:?}"),
-            }
-        },
-    );
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        // The card model's done slot: the log control's contract
+        // (can-done, never done).
+        let row = harness
+            .handle
+            .window()
+            .get_habits_model()
+            .row_data(0)
+            .expect("row");
+        assert!(row.card.can_done && !row.card.done);
+        // The shared seam (done slot ≡ strip +1): the LogHabit
+        // command reaches the boundary.
+        harness.handle.window().invoke_habits_log_clicked(0);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::LogHabit { .. }] => {}
+            other => panic!("the done slot routes the log, got {other:?}"),
+        }
+    });
 }
 
 /// US-2/S1 (AC-1): the right-click opens the habit context menu —
@@ -217,61 +149,53 @@ fn us2_s1_right_click_opens_the_habit_context_menu() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            // The mount's default view IS Today (chunk 10 D2); the
-            // habits section mounts with it.
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
-            window.invoke_habits_context_requested(0, 120.0, 120.0);
-            harness.driver.advance_time(0);
-            assert!(keyboard(&harness).get_menu_open(), "the menu opened");
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        window.invoke_habits_context_requested(0, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        assert!(keyboard(harness).get_menu_open(), "the menu opened");
+        assert!(
+            keyboard(harness).get_menu_pointer_anchored(),
+            "anchored at the pointer (the object-menu grammar)"
+        );
+        let entries = keyboard(harness).get_menu_entries();
+        let actions: Vec<String> = (0..entries.row_count())
+            .map(|i| entries.row_data(i).expect("row").action.to_string())
+            .collect();
+        for verb in [
+            "habit.log",
+            "habit.unlog",
+            "habit.move-up",
+            "habit.move-down",
+            "habit.convert-arm",
+        ] {
             assert!(
-                keyboard(&harness).get_menu_pointer_anchored(),
-                "anchored at the pointer (the object-menu grammar)"
+                actions.contains(&verb.to_string()),
+                "the habit verb renders: {verb} in {actions:?}"
             );
-            let entries = keyboard(&harness).get_menu_entries();
-            let actions: Vec<String> = (0..entries.row_count())
-                .map(|i| entries.row_data(i).expect("row").action.to_string())
-                .collect();
-            for verb in [
-                "habit.log",
-                "habit.unlog",
-                "habit.move-up",
-                "habit.move-down",
-                "habit.convert-arm",
-            ] {
-                assert!(
-                    actions.contains(&verb.to_string()),
-                    "the habit verb renders: {verb} in {actions:?}"
-                );
-            }
-            assert!(
-                actions.iter().all(|a| !a.starts_with("task.")),
-                "no task-only row leaks into the habit page"
-            );
-            let rows: Vec<_> = (0..entries.row_count())
-                .map(|i| entries.row_data(i).expect("row"))
-                .collect();
-            // H4 supersedes the page's tail: the Convert parent is
-            // followed by the staged remove's destructive-last pair
-            // (the confirm closes the page — menu.rs's page test pins
-            // the declared order).
-            assert!(
-                rows.iter().any(|r| r.submenu),
-                "the Convert parent renders in the page body"
-            );
-            assert!(
-                rows.last()
-                    .is_some_and(|r| r.action.as_str() == "habit.remove-confirm"),
-                "the remove confirm closes the page (destructive-last law)"
-            );
-        },
-    );
+        }
+        assert!(
+            actions.iter().all(|a| !a.starts_with("task.")),
+            "no task-only row leaks into the habit page"
+        );
+        let rows: Vec<_> = (0..entries.row_count())
+            .map(|i| entries.row_data(i).expect("row"))
+            .collect();
+        // H4 supersedes the page's tail: the Convert parent is
+        // followed by the staged remove's destructive-last pair
+        // (the confirm closes the page — menu.rs's page test pins
+        // the declared order).
+        assert!(
+            rows.iter().any(|r| r.submenu),
+            "the Convert parent renders in the page body"
+        );
+        assert!(
+            rows.last()
+                .is_some_and(|r| r.action.as_str() == "habit.remove-confirm"),
+            "the remove confirm closes the page (destructive-last law)"
+        );
+    });
 }
 
 /// US-2/S2 (H2 D4, O-7 Q3): the habit menu's arm routes INSIDE the
@@ -286,73 +210,67 @@ fn us2_s2_menu_arm_enables_the_confirm_inside_the_menu() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
 
-            // The right-click opens the habit menu (the row's focus
-            // fact mints inside the opener).
-            window.invoke_habits_context_requested(0, 120.0, 120.0);
-            harness.driver.advance_time(0);
-            assert!(keyboard(&harness).get_menu_open(), "the menu opened");
+        // The right-click opens the habit menu (the row's focus
+        // fact mints inside the opener).
+        window.invoke_habits_context_requested(0, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        assert!(keyboard(harness).get_menu_open(), "the menu opened");
 
-            // Walk the cursor to the Convert parent (the page's last
-            // row) and enter the submenu.
-            let parent = parent_index(&harness);
-            for _ in 0..parent {
-                harness.handle.dispatch_action(ActionId::MenuNext);
-            }
-            harness.handle.dispatch_action(ActionId::MenuInvoke);
-            harness.driver.advance_time(0);
-            let confirm = submenu_rows(&harness)
-                .into_iter()
-                .find(|r| r.action == "habit.convert-to-series")
-                .expect("the confirm child renders");
-            assert!(
-                !confirm.enabled,
-                "unarmed: the confirm greys (consequence first)"
-            );
+        // Walk the cursor to the Convert parent (the page's last
+        // row) and enter the submenu.
+        let parent = parent_index(harness);
+        for _ in 0..parent {
+            harness.handle.dispatch_action(ActionId::MenuNext);
+        }
+        harness.handle.dispatch_action(ActionId::MenuInvoke);
+        harness.driver.advance_time(0);
+        let confirm = submenu_rows(harness)
+            .into_iter()
+            .find(|r| r.action == "habit.convert-to-series")
+            .expect("the confirm child renders");
+        assert!(
+            !confirm.enabled,
+            "unarmed: the confirm greys (consequence first)"
+        );
 
-            // The arm routes: the re-projection flips the confirm on
-            // INSIDE the open submenu; nothing dispatched.
-            harness.handle.dispatch_action(ActionId::HabitConvertArm);
-            harness.driver.advance_time(0);
-            let rows = submenu_rows(&harness);
-            let confirm_enabled = rows
-                .iter()
-                .find(|r| r.action == "habit.convert-to-series")
-                .map(|r| r.enabled)
-                .expect("the confirm child still renders");
-            assert!(
-                confirm_enabled,
-                "the re-projection enables the armed confirm inside the menu"
-            );
-            assert!(
-                rows.iter().any(|r| r.action == "habit.convert-cancel"),
-                "the cancel child joins while armed"
-            );
-            assert!(
-                harness.engine.drain().is_empty(),
-                "the arm stages the grammar; the confirm dispatches"
-            );
+        // The arm routes: the re-projection flips the confirm on
+        // INSIDE the open submenu; nothing dispatched.
+        harness.handle.dispatch_action(ActionId::HabitConvertArm);
+        harness.driver.advance_time(0);
+        let rows = submenu_rows(harness);
+        let confirm_enabled = rows
+            .iter()
+            .find(|r| r.action == "habit.convert-to-series")
+            .map(|r| r.enabled)
+            .expect("the confirm child still renders");
+        assert!(
+            confirm_enabled,
+            "the re-projection enables the armed confirm inside the menu"
+        );
+        assert!(
+            rows.iter().any(|r| r.action == "habit.convert-cancel"),
+            "the cancel child joins while armed"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the arm stages the grammar; the confirm dispatches"
+        );
 
-            // The confirm routes the domain verb with the armed
-            // pattern.
-            harness
-                .handle
-                .dispatch_action(ActionId::HabitConvertToSeries);
-            harness.driver.advance_time(0);
-            match harness.engine.drain().as_slice() {
-                [StateCommand::ConvertHabitToSeries { .. }] => {}
-                other => panic!("the confirm routes the conversion, got {other:?}"),
-            }
-        },
-    );
+        // The confirm routes the domain verb with the armed
+        // pattern.
+        harness
+            .handle
+            .dispatch_action(ActionId::HabitConvertToSeries);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::ConvertHabitToSeries { .. }] => {}
+            other => panic!("the confirm routes the conversion, got {other:?}"),
+        }
+    });
 }
 
 /// US-2/S2 (the disarm side, H2 D4): the cancel step disarms INSIDE
@@ -363,50 +281,44 @@ fn the_menu_cancel_disarms_inside_the_menu() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
 
-            window.invoke_habits_context_requested(0, 120.0, 120.0);
-            harness.driver.advance_time(0);
-            let parent = parent_index(&harness);
-            for _ in 0..parent {
-                harness.handle.dispatch_action(ActionId::MenuNext);
-            }
-            harness.handle.dispatch_action(ActionId::MenuInvoke);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::HabitConvertArm);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::HabitConvertCancel);
-            harness.driver.advance_time(0);
+        window.invoke_habits_context_requested(0, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        let parent = parent_index(harness);
+        for _ in 0..parent {
+            harness.handle.dispatch_action(ActionId::MenuNext);
+        }
+        harness.handle.dispatch_action(ActionId::MenuInvoke);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitConvertArm);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitConvertCancel);
+        harness.driver.advance_time(0);
 
-            let entries = keyboard(&harness).get_menu_submenu_entries();
-            let rows: Vec<_> = (0..entries.row_count())
-                .map(|i| entries.row_data(i).expect("row"))
-                .collect();
-            let confirm = rows
-                .iter()
-                .find(|r| r.action == "habit.convert-to-series")
-                .expect("the confirm child renders");
-            assert!(
-                !confirm.enabled,
-                "the cancel disarms: the confirm greys again inside the menu"
-            );
-            assert!(
-                rows.iter().all(|r| r.action != "habit.convert-cancel"),
-                "the cancel child leaves when disarmed"
-            );
-            assert!(
-                harness.engine.drain().is_empty(),
-                "cancel and disarm dispatch nothing"
-            );
-        },
-    );
+        let entries = keyboard(harness).get_menu_submenu_entries();
+        let rows: Vec<_> = (0..entries.row_count())
+            .map(|i| entries.row_data(i).expect("row"))
+            .collect();
+        let confirm = rows
+            .iter()
+            .find(|r| r.action == "habit.convert-to-series")
+            .expect("the confirm child renders");
+        assert!(
+            !confirm.enabled,
+            "the cancel disarms: the confirm greys again inside the menu"
+        );
+        assert!(
+            rows.iter().all(|r| r.action != "habit.convert-cancel"),
+            "the cancel child leaves when disarmed"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "cancel and disarm dispatch nothing"
+        );
+    });
 }
 
 /// H2 B5/D6 (HAB-14): on kiosk the habit menu still OPENS (reading a
@@ -417,19 +329,13 @@ fn the_kiosk_habit_menu_opens_with_every_verb_greyed() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        UiSettings {
+            kiosk: true,
+            ..UiSettings::default()
         },
-        move |_driver| {
-            let mut harness = Harness::mount_with_settings(
-                SlintDriver::default(),
-                state,
-                UiSettings {
-                    kiosk: true,
-                    ..UiSettings::default()
-                },
-            );
+        move |harness| {
             harness.driver.advance_time(0);
             harness
                 .handle
@@ -437,10 +343,10 @@ fn the_kiosk_habit_menu_opens_with_every_verb_greyed() {
                 .invoke_habits_context_requested(0, 120.0, 120.0);
             harness.driver.advance_time(0);
             assert!(
-                keyboard(&harness).get_menu_open(),
+                keyboard(harness).get_menu_open(),
                 "reading a menu is passive"
             );
-            let entries = keyboard(&harness).get_menu_entries();
+            let entries = keyboard(harness).get_menu_entries();
             let rows: Vec<_> = (0..entries.row_count())
                 .map(|i| entries.row_data(i).expect("row"))
                 .collect();
@@ -476,44 +382,38 @@ fn us3_s1_the_walk_enters_and_leaves_habit_rows_with_the_task_keys() {
     let (_fx, mut state) = fixture::journey_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_two_habits(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
 
-            // Jump to the walk's last row: the LAST HABIT (the
-            // widened domain's tail — tasks lead, habits follow).
-            harness.handle.dispatch_action(ActionId::NavLastItem);
-            harness.driver.advance_time(0);
-            let emphasis = |harness: &Harness| -> Vec<bool> {
-                let model = harness.handle.window().get_habits_model();
-                (0..model.row_count())
-                    .map(|i| model.row_data(i).expect("row").card.emphasis)
-                    .collect()
-            };
-            assert_eq!(
-                emphasis(&harness),
-                vec![false, true],
-                "the walk's landing paints the last habit's ring"
-            );
+        // Jump to the walk's last row: the LAST HABIT (the
+        // widened domain's tail — tasks lead, habits follow).
+        harness.handle.dispatch_action(ActionId::NavLastItem);
+        harness.driver.advance_time(0);
+        let emphasis = |harness: &Harness| -> Vec<bool> {
+            let model = harness.handle.window().get_habits_model();
+            (0..model.row_count())
+                .map(|i| model.row_data(i).expect("row").card.emphasis)
+                .collect()
+        };
+        assert_eq!(
+            emphasis(harness),
+            vec![false, true],
+            "the walk's landing paints the last habit's ring"
+        );
 
-            // The same walk keys step back through the section and
-            // OUT of it — the emphasis leaves the habits entirely.
-            harness.handle.dispatch_action(ActionId::NavPrevItem);
-            harness.driver.advance_time(0);
-            assert_eq!(emphasis(&harness), vec![true, false]);
-            harness.handle.dispatch_action(ActionId::NavPrevItem);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                emphasis(&harness),
-                vec![false, false],
-                "the walk left the habit section on the task keys"
-            );
-        },
-    );
+        // The same walk keys step back through the section and
+        // OUT of it — the emphasis leaves the habits entirely.
+        harness.handle.dispatch_action(ActionId::NavPrevItem);
+        harness.driver.advance_time(0);
+        assert_eq!(emphasis(harness), vec![true, false]);
+        harness.handle.dispatch_action(ActionId::NavPrevItem);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            emphasis(harness),
+            vec![false, false],
+            "the walk left the habit section on the task keys"
+        );
+    });
 }
 
 /// US-3/S2 (J1 AC-1): the habit verbs resolve under the focused habit
@@ -527,59 +427,53 @@ fn us3_s2_the_task_complete_stroke_and_shift_up_route_the_habit_verbs() {
     let (_fx, mut state) = fixture::journey_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_two_habits(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
 
-            // The walk lands on the last habit (the second row).
-            harness.handle.dispatch_action(ActionId::NavLastItem);
-            harness.driver.advance_time(0);
+        // The walk lands on the last habit (the second row).
+        harness.handle.dispatch_action(ActionId::NavLastItem);
+        harness.driver.advance_time(0);
 
-            // The task row's complete stroke routes the habit log.
-            harness.handle.dispatch_action(ActionId::TaskComplete);
-            harness.driver.advance_time(0);
-            match harness.engine.drain().as_slice() {
-                [StateCommand::LogHabit { .. }] => {}
-                other => panic!("the complete stroke routes the log, got {other:?}"),
-            }
+        // The task row's complete stroke routes the habit log.
+        harness.handle.dispatch_action(ActionId::TaskComplete);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::LogHabit { .. }] => {}
+            other => panic!("the complete stroke routes the log, got {other:?}"),
+        }
 
-            // Shift+Up on the focused habit: the walk's landing mints
-            // the reorder one-shot through the shared arithmetic —
-            // the up slot sits between the head (0) and the row's own
-            // order (10), so the floor midpoint is 5.
-            harness.handle.dispatch_action(ActionId::HabitMoveUp);
-            harness.driver.advance_time(0);
-            match harness.engine.drain().as_slice() {
-                [StateCommand::MoveHabit { order: 5, .. }] => {}
-                other => panic!("the up slot mints the floor midpoint, got {other:?}"),
-            }
+        // Shift+Up on the focused habit: the walk's landing mints
+        // the reorder one-shot through the shared arithmetic —
+        // the up slot sits between the head (0) and the row's own
+        // order (10), so the floor midpoint is 5.
+        harness.handle.dispatch_action(ActionId::HabitMoveUp);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::MoveHabit { order: 5, .. }] => {}
+            other => panic!("the up slot mints the floor midpoint, got {other:?}"),
+        }
 
-            // The menu open over the same row re-mints the pair
-            // through the SAME shared helper — the equivalence probe:
-            // the boundary records commands without reordering the
-            // fixture, so the down slot's free interval is (10, None)
-            // → 11, and the mint sites agree by construction.
-            harness
-                .handle
-                .window()
-                .invoke_habits_context_requested(1, 120.0, 120.0);
-            harness.driver.advance_time(0);
-            assert!(
-                keyboard(&harness).get_menu_open(),
-                "the habit menu opened over the row"
-            );
-            harness.handle.dispatch_action(ActionId::HabitMoveDown);
-            harness.driver.advance_time(0);
-            match harness.engine.drain().as_slice() {
-                [StateCommand::MoveHabit { order: 11, .. }] => {}
-                other => panic!("the tail slot mints the appended order, got {other:?}"),
-            }
-        },
-    );
+        // The menu open over the same row re-mints the pair
+        // through the SAME shared helper — the equivalence probe:
+        // the boundary records commands without reordering the
+        // fixture, so the down slot's free interval is (10, None)
+        // → 11, and the mint sites agree by construction.
+        harness
+            .handle
+            .window()
+            .invoke_habits_context_requested(1, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        assert!(
+            keyboard(harness).get_menu_open(),
+            "the habit menu opened over the row"
+        );
+        harness.handle.dispatch_action(ActionId::HabitMoveDown);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::MoveHabit { order: 11, .. }] => {}
+            other => panic!("the tail slot mints the appended order, got {other:?}"),
+        }
+    });
 }
 
 /// US-3/S2 (the kiosk gate, HAB-14): the reorder binding stays
@@ -590,19 +484,13 @@ fn the_reorder_pair_refuses_typed_on_kiosk() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_two_habits(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        UiSettings {
+            kiosk: true,
+            ..UiSettings::default()
         },
-        move |_driver| {
-            let mut harness = Harness::mount_with_settings(
-                SlintDriver::default(),
-                state,
-                UiSettings {
-                    kiosk: true,
-                    ..UiSettings::default()
-                },
-            );
+        move |harness| {
             harness.driver.advance_time(0);
 
             // The walk still enters the habit row (traversal renders
@@ -632,28 +520,22 @@ fn the_targetless_habit_dispatch_surfaces_the_typed_refusal() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_two_habits(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
 
-            // No walk has entered and no row was clicked: the habit
-            // verb has no subject — the typed NoTarget.
-            harness.handle.dispatch_action(ActionId::HabitUndoLog);
-            harness.driver.advance_time(0);
-            assert!(
-                harness.handle.window().get_notice_visible(),
-                "the refusal surfaced"
-            );
-            assert!(
-                harness.engine.drain().is_empty(),
-                "a subjectless dispatch routes nothing"
-            );
-        },
-    );
+        // No walk has entered and no row was clicked: the habit
+        // verb has no subject — the typed NoTarget.
+        harness.handle.dispatch_action(ActionId::HabitUndoLog);
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_notice_visible(),
+            "the refusal surfaced"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "a subjectless dispatch routes nothing"
+        );
+    });
 }
 
 /// US-4/S1 (J1 AC-1): the #918 gap-drop over the flat habit list —
@@ -665,51 +547,45 @@ fn us4_s1_the_gap_drop_reorders_across_the_habit_list() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_two_habits(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
 
-            // The second row drops into the head gap: the slot's free
-            // interval is (None, 0) — the floor midpoint −1.
-            window.invoke_habits_drop_asked(1, 0);
-            harness.driver.advance_time(0);
-            match harness.engine.drain().as_slice() {
-                [StateCommand::MoveHabit { order: -1, .. }] => {}
-                other => panic!("the head gap mints the leading order, got {other:?}"),
-            }
+        // The second row drops into the head gap: the slot's free
+        // interval is (None, 0) — the floor midpoint −1.
+        window.invoke_habits_drop_asked(1, 0);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::MoveHabit { order: -1, .. }] => {}
+            other => panic!("the head gap mints the leading order, got {other:?}"),
+        }
 
-            // A gap past the end clamps to the append slot: the row
-            // source's tail order + 1.
-            window.invoke_habits_drop_asked(0, 99);
-            harness.driver.advance_time(0);
-            match harness.engine.drain().as_slice() {
-                [StateCommand::MoveHabit { order: 11, .. }] => {}
-                other => panic!("the over-run gap clamps to the append slot, got {other:?}"),
-            }
+        // A gap past the end clamps to the append slot: the row
+        // source's tail order + 1.
+        window.invoke_habits_drop_asked(0, 99);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::MoveHabit { order: 11, .. }] => {}
+            other => panic!("the over-run gap clamps to the append slot, got {other:?}"),
+        }
 
-            // The kiosk pointer seam absorbs silently (the D5 gate).
-            let mut kiosk = Harness::mount_with_settings(
-                SlintDriver::default(),
-                golden_state_with_habits(),
-                UiSettings {
-                    kiosk: true,
-                    ..UiSettings::default()
-                },
-            );
-            kiosk.driver.advance_time(0);
-            kiosk.handle.window().invoke_habits_drop_asked(1, 0);
-            kiosk.driver.advance_time(0);
-            assert!(
-                kiosk.engine.drain().is_empty(),
-                "the kiosk drop dispatches nothing"
-            );
-        },
-    );
+        // The kiosk pointer seam absorbs silently (the D5 gate).
+        let mut kiosk = support::harness::Harness::mount_no_escape_with_settings(
+            SlintDriver::default(),
+            golden_state_with_habits(),
+            UiSettings {
+                kiosk: true,
+                ..UiSettings::default()
+            },
+        );
+        kiosk.driver.advance_time(0);
+        kiosk.handle.window().invoke_habits_drop_asked(1, 0);
+        kiosk.driver.advance_time(0);
+        assert!(
+            kiosk.engine.drain().is_empty(),
+            "the kiosk drop dispatches nothing"
+        );
+    });
 }
 
 /// The kiosk drop leg's state source (the closure-borrow shape): the
@@ -753,72 +629,66 @@ fn h4_remove_s1_remove_arms_and_the_confirm_flips() {
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
     state_second_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
 
-            let rows_by_action = |harness: &Harness| -> Vec<taskboard_ui_slint::MenuEntryModel> {
-                let entries = keyboard(harness).get_menu_entries();
-                (0..entries.row_count())
-                    .map(|i| entries.row_data(i).expect("row"))
-                    .collect()
-            };
+        let rows_by_action = |harness: &Harness| -> Vec<taskboard_ui_slint::MenuEntryModel> {
+            let entries = keyboard(harness).get_menu_entries();
+            (0..entries.row_count())
+                .map(|i| entries.row_data(i).expect("row"))
+                .collect()
+        };
 
-            window.invoke_habits_context_requested(0, 120.0, 120.0);
-            harness.driver.advance_time(0);
-            assert!(keyboard(&harness).get_menu_open());
-            let find = |harness: &Harness, action: &str| {
-                rows_by_action(harness)
-                    .into_iter()
-                    .find(|r| r.action == action)
-                    .unwrap_or_else(|| panic!("{action} renders"))
-            };
-            assert!(find(&harness, "habit.remove").enabled);
-            assert!(
-                !find(&harness, "habit.remove-confirm").enabled,
-                "unarmed: the confirm greys (consequence first)"
-            );
+        window.invoke_habits_context_requested(0, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        assert!(keyboard(harness).get_menu_open());
+        let find = |harness: &Harness, action: &str| {
+            rows_by_action(harness)
+                .into_iter()
+                .find(|r| r.action == action)
+                .unwrap_or_else(|| panic!("{action} renders"))
+        };
+        assert!(find(harness, "habit.remove").enabled);
+        assert!(
+            !find(harness, "habit.remove-confirm").enabled,
+            "unarmed: the confirm greys (consequence first)"
+        );
 
-            // The arm: staging only — nothing reaches the boundary.
-            harness.handle.dispatch_action(ActionId::HabitRemove);
-            harness.driver.advance_time(0);
-            assert!(
-                harness.engine.drain().is_empty(),
-                "the arm stages; the confirm dispatches"
-            );
-            assert!(
-                !find(&harness, "habit.remove").enabled,
-                "the arm row greys while armed (the confirm replaces its state)"
-            );
-            assert!(
-                find(&harness, "habit.remove-confirm").enabled,
-                "the re-projection enables the armed confirm inside the menu"
-            );
-            assert!(
-                find(&harness, "habit.remove-cancel").enabled,
-                "the cancel step joins while armed"
-            );
-            // Opening the OTHER subject's menu disarms (one armed
-            // subject at a time): the confirm greys again.
-            window.invoke_habits_context_requested(1, 120.0, 120.0);
-            harness.driver.advance_time(0);
-            assert!(keyboard(&harness).get_menu_open());
-            assert!(find(&harness, "habit.remove").enabled);
-            assert!(
-                !find(&harness, "habit.remove-confirm").enabled,
-                "the other subject's menu opens unarmed"
-            );
-            assert!(
-                harness.engine.drain().is_empty(),
-                "disarm dispatches nothing"
-            );
-        },
-    );
+        // The arm: staging only — nothing reaches the boundary.
+        harness.handle.dispatch_action(ActionId::HabitRemove);
+        harness.driver.advance_time(0);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the arm stages; the confirm dispatches"
+        );
+        assert!(
+            !find(harness, "habit.remove").enabled,
+            "the arm row greys while armed (the confirm replaces its state)"
+        );
+        assert!(
+            find(harness, "habit.remove-confirm").enabled,
+            "the re-projection enables the armed confirm inside the menu"
+        );
+        assert!(
+            find(harness, "habit.remove-cancel").enabled,
+            "the cancel step joins while armed"
+        );
+        // Opening the OTHER subject's menu disarms (one armed
+        // subject at a time): the confirm greys again.
+        window.invoke_habits_context_requested(1, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        assert!(keyboard(harness).get_menu_open());
+        assert!(find(harness, "habit.remove").enabled);
+        assert!(
+            !find(harness, "habit.remove-confirm").enabled,
+            "the other subject's menu opens unarmed"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "disarm dispatches nothing"
+        );
+    });
 }
 
 /// `h4_remove_s2` (H4 D4, #944): the confirm routes the domain verb
@@ -829,26 +699,20 @@ fn h4_remove_s2_confirm_tombstones_and_closes() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
-            window.invoke_habits_context_requested(0, 120.0, 120.0);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::HabitRemove);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::HabitRemoveConfirm);
-            harness.driver.advance_time(0);
-            match harness.engine.drain().as_slice() {
-                [StateCommand::DeleteHabit { .. }] => {}
-                other => panic!("the confirm routes the tombstone, got {other:?}"),
-            }
-        },
-    );
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        window.invoke_habits_context_requested(0, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitRemove);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitRemoveConfirm);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::DeleteHabit { .. }] => {}
+            other => panic!("the confirm routes the tombstone, got {other:?}"),
+        }
+    });
 }
 
 /// `h4_kiosk_editor_gate` (H4 D7): on kiosk the editor is unmountable —
@@ -860,19 +724,13 @@ fn h4_kiosk_editor_gate() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     state_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        UiSettings {
+            kiosk: true,
+            ..UiSettings::default()
         },
-        move |_driver| {
-            let mut harness = Harness::mount_with_settings(
-                SlintDriver::default(),
-                state,
-                UiSettings {
-                    kiosk: true,
-                    ..UiSettings::default()
-                },
-            );
+        move |harness| {
             harness.driver.advance_time(0);
             let window = harness.handle.window();
 
@@ -880,7 +738,7 @@ fn h4_kiosk_editor_gate() {
             // disabled (the #790 visible-gating grammar).
             window.invoke_habits_context_requested(0, 120.0, 120.0);
             harness.driver.advance_time(0);
-            let entries = keyboard(&harness).get_menu_entries();
+            let entries = keyboard(harness).get_menu_entries();
             let rows: Vec<_> = (0..entries.row_count())
                 .map(|i| entries.row_data(i).expect("row"))
                 .collect();
@@ -955,19 +813,13 @@ fn us6_s2_snooze_offers_hours_and_days() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     anchored_habit_with_fired_nudge(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        UiSettings {
+            clock: Some(fixture::PINNED_NOW),
+            ..UiSettings::default()
         },
-        move |_driver| {
-            let mut harness = Harness::mount_with_settings(
-                SlintDriver::default(),
-                state,
-                UiSettings {
-                    clock: Some(fixture::PINNED_NOW),
-                    ..UiSettings::default()
-                },
-            );
+        move |harness| {
             harness.driver.advance_time(0);
             let window = harness.handle.window();
 
@@ -1050,48 +902,42 @@ fn us5_s1_habit_editor_opens_and_cancel_discards() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     let habit = weekly_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
 
-            // The menu row routes the bare id: open the habit menu
-            // (the opener mints the focus fact), then dispatch.
-            window.invoke_habits_context_requested(0, 120.0, 120.0);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::HabitEdit);
-            harness.driver.advance_time(0);
-            assert_eq!(
-                window.get_current_view(),
-                View::TaskDetail,
-                "the shared detail surface mounts the habit variant"
-            );
-            assert!(
-                harness.engine.drain().is_empty(),
-                "opening the editor dispatches nothing"
-            );
+        // The menu row routes the bare id: open the habit menu
+        // (the opener mints the focus fact), then dispatch.
+        window.invoke_habits_context_requested(0, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_current_view(),
+            View::TaskDetail,
+            "the shared detail surface mounts the habit variant"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "opening the editor dispatches nothing"
+        );
 
-            // A field edit stages adapter-side; cancel discards.
-            window.invoke_habit_time_edited("07:30".into());
-            harness.driver.advance_time(0);
-            window.invoke_habit_editor_cancelled();
-            harness.driver.advance_time(0);
-            assert_eq!(
-                window.get_current_view(),
-                View::Board,
-                "cancel steps the view back (the nav-back grammar)"
-            );
-            assert!(
-                harness.engine.drain().is_empty(),
-                "cancel discards: no UpdateHabit dispatched"
-            );
-            let _ = habit;
-        },
-    );
+        // A field edit stages adapter-side; cancel discards.
+        window.invoke_habit_time_edited("07:30".into());
+        harness.driver.advance_time(0);
+        window.invoke_habit_editor_cancelled();
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_current_view(),
+            View::Board,
+            "cancel steps the view back (the nav-back grammar)"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "cancel discards: no UpdateHabit dispatched"
+        );
+        let _ = habit;
+    });
 }
 
 /// `us5_s2` (J1, H4 D5 + W-5's fold): setting the time and Wednesday on
@@ -1105,59 +951,53 @@ fn us5_s2_habit_editor_round_trips_time_and_day() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     let habit = weekly_habit(&mut state, board);
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let window = harness.handle.window();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
 
-            // The bare key opens the editor over the focused habit
-            // (the row activation's focus fact mints first).
-            window.invoke_habits_row_activated(0);
-            harness.driver.advance_time(0);
-            harness.handle.dispatch_action(ActionId::HabitEdit);
-            harness.driver.advance_time(0);
-            assert_eq!(window.get_current_view(), View::TaskDetail);
+        // The bare key opens the editor over the focused habit
+        // (the row activation's focus fact mints first).
+        window.invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(window.get_current_view(), View::TaskDetail);
 
-            // Set the time and Wednesday (the PerWeek variant's day
-            // row), then save.
-            window.invoke_habit_time_edited("07:30".into());
-            window.invoke_habit_weekday_picked(2);
-            harness.driver.advance_time(0);
-            window.invoke_habit_save_clicked();
-            harness.driver.advance_time(0);
-            let anchor_time = chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap();
-            match harness.engine.drain().as_slice() {
-                [
-                    StateCommand::UpdateHabit {
-                        habit: edited,
-                        changes,
-                    },
-                ] => {
-                    assert_eq!(*edited, habit, "the editor edits its own subject");
-                    assert_eq!(changes.title, None, "untouched title stays sparse");
-                    assert_eq!(changes.description, None);
-                    assert_eq!(changes.target, None, "untouched quota stays sparse");
-                    assert_eq!(changes.anchor_time, Some(Some(anchor_time)));
-                    assert_eq!(
-                        changes.anchor_day,
-                        Some(Some(taskboard_domain::habit::AnchorDay::Weekday(
-                            chrono::Weekday::Wed
-                        )))
-                    );
-                }
-                other => panic!("the save routes the sparse changeset, got {other:?}"),
+        // Set the time and Wednesday (the PerWeek variant's day
+        // row), then save.
+        window.invoke_habit_time_edited("07:30".into());
+        window.invoke_habit_weekday_picked(2);
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        let anchor_time = chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap();
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit, "the editor edits its own subject");
+                assert_eq!(changes.title, None, "untouched title stays sparse");
+                assert_eq!(changes.description, None);
+                assert_eq!(changes.target, None, "untouched quota stays sparse");
+                assert_eq!(changes.anchor_time, Some(Some(anchor_time)));
+                assert_eq!(
+                    changes.anchor_day,
+                    Some(Some(taskboard_domain::habit::AnchorDay::Weekday(
+                        chrono::Weekday::Wed
+                    )))
+                );
             }
-            assert_eq!(
-                window.get_current_view(),
-                View::Board,
-                "the editor closes on save (the back grammar)"
-            );
-        },
-    );
+            other => panic!("the save routes the sparse changeset, got {other:?}"),
+        }
+        assert_eq!(
+            window.get_current_view(),
+            View::Board,
+            "the editor closes on save (the back grammar)"
+        );
+    });
 }
 
 /// `us5_s2`'s W-5 fold half: the anchored state renders the row's time
@@ -1172,25 +1012,19 @@ fn the_anchored_habit_row_carries_the_time_chip() {
     row.anchor_day = Some(taskboard_domain::habit::AnchorDay::Weekday(
         chrono::Weekday::Wed,
     ));
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            let mut harness = Harness::mount(SlintDriver::default(), state);
-            harness.driver.advance_time(0);
-            let row = harness
-                .handle
-                .window()
-                .get_habits_model()
-                .row_data(0)
-                .expect("row");
-            assert!(
-                !row.card.scheduled_phrase.is_empty(),
-                "the anchored habit renders the time chip in its scheduled slot"
-            );
-        },
-    );
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let row = harness
+            .handle
+            .window()
+            .get_habits_model()
+            .row_data(0)
+            .expect("row");
+        assert!(
+            !row.card.scheduled_phrase.is_empty(),
+            "the anchored habit renders the time chip in its scheduled slot"
+        );
+    });
 }
 
 // -- #1059: the editor's negative legs, composed through the shared
