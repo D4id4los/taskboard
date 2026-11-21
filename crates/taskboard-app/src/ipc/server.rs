@@ -947,3 +947,56 @@ mod control_lane_tests {
         assert!(!*stop_rx.borrow_and_update(), "stop not fired");
     }
 }
+#[cfg(test)]
+mod reload_relay_tests {
+    use super::{BasicSession, run_argv};
+    use crate::test_support::{refusing_store, standalone_boot_fixture};
+
+    /// `us2_s2_relayed_reload_reaches_the_daemon_arm` (US-2/S2, W-7):
+    /// the daemon's Exec dispatch feeds the relayed `config reload`
+    /// argv through the relay resolver into `handle_daemon`'s reload
+    /// arm — the typed reload view travels back as the Exec payload,
+    /// and the booted core converged (the third relayed config verb).
+    #[tokio::test]
+    async fn us2_s2_relayed_reload_reaches_the_daemon_arm() {
+        // The daemon arm reads the session's env truth; a polluted
+        // ambient is the re-homed hostile-oracle legs' home (#1113).
+        if std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_")) {
+            return;
+        }
+        let fixture = standalone_boot_fixture("reload-relay").await;
+        let session = BasicSession {
+            config: {
+                let mut config = crate::config::AppConfig::default();
+                config.storage.db_path = fixture.dir.path().join("taskboard.db").into();
+                config
+            },
+            store: refusing_store(),
+            config_path: Some(fixture.config_path.clone()),
+        };
+        // An external edit the daemon has not seen: the relayed reload
+        // converges the core and reports `Applied` typed.
+        std::fs::write(&fixture.config_path, "[reminders]\ntick_secs = 55\n")
+            .expect("external edit");
+        let argv: Vec<String> = ["config", "reload", "--json"]
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect();
+        let (code, out, err) = run_argv(&fixture.app, &session, &argv).await;
+        assert_eq!(code, 0, "out={out} err={err}");
+        let view: crate::commands::output::ConfigReloadView =
+            serde_json::from_str(&out).expect("the typed view travels as JSON");
+        assert_eq!(
+            view.outcome,
+            taskboard_domain::ConfigReloadOutcome::Applied,
+            "the watcher lane's own Applied outcome, relayed"
+        );
+        assert_eq!(view.path, fixture.config_path);
+        assert_eq!(
+            fixture.app.engine.shared_state().load().settings.tick_secs,
+            taskboard_domain::TickSecs::new(55).expect("secs > 0"),
+            "the daemon's core converged to the file"
+        );
+        fixture.app.shutdown().await;
+    }
+}

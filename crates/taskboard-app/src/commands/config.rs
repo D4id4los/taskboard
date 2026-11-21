@@ -6,7 +6,10 @@
 use taskboard_domain::ReminderOffset;
 
 use crate::cli::ConfigCmd;
-use crate::commands::output::{ConfigBatchSetView, ConfigPathView, ConfigSetView, ConfigView};
+use crate::commands::output::{
+    ConfigBatchSetView, ConfigBatchUnsetView, ConfigPathView, ConfigReloadView, ConfigSetView,
+    ConfigView,
+};
 use crate::commands::{CommandCtx, CommandError, emit_to, report_to};
 use crate::config::{AppConfig, ConfigError, SinkChoice, SyncBackend};
 use crate::settings_overlay::OverlayError;
@@ -507,60 +510,115 @@ pub(crate) async fn set_with_locked(
     })
 }
 
-/// `config unset <key>` (T-18, #801; propagation #845): removes the
-/// toml layer's override through the prove-gate removal writer
-/// (journey W-4) so the default (or env layer) applies again — the
-/// same typed lanes as [`set`].
+/// `config unset <k1> [<k2> …]` (T-18, #801; propagation #845; batch
+/// #1014): removes every named toml-layer override as **one atomic
+/// document** — one prove verdict, one write, one lane bit — so the
+/// defaults (or env layer) apply again. The same typed lanes as
+/// [`set_batch`]: zero keys, an unknown key, an env-pinned key, a
+/// duplicate key, or a prove-gate refusal leaves the file
+/// byte-identical and names the offending key typed. A one-key
+/// invocation is the single-unset form of the widened grammar.
 ///
 /// # Errors
 ///
-/// [`ConfigSetError`] — the typed refusal classes.
+/// [`ConfigBatchError`] — the typed refusal classes (the batch
+/// lattice, shared with `config set`; `BadValue` is set-only).
 pub async fn unset(
     config_path: Option<std::path::PathBuf>,
-    key: &str,
-) -> Result<ConfigSetView, ConfigSetError> {
+    keys: &[String],
+) -> Result<ConfigBatchUnsetView, ConfigBatchError> {
     let write_path = AppConfig::write_path(config_path);
     let locked = AppConfig::env_overridden_keys(Some(write_path.as_path()))
-        .map_err(|err| ConfigSetError::Io(std::io::Error::other(err.to_string())))?;
-    unset_with_locked(&write_path, key, &locked, None).await
+        .map_err(|err| ConfigBatchError::Io(std::io::Error::other(err.to_string())))?;
+    unset_batch_with_locked(&write_path, keys, &locked, None).await
 }
 
-/// The lock-set seam for unset (the [`set_with_locked`] twin): lane
-/// seam + env seam over the shared port and the removal writer.
-async fn unset_with_locked(
+/// The lock-set seam for the unset batch (the [`set_batch_with_locked`]
+/// twin, journey W-2): parse *all* keys → env-guard *all* keys →
+/// duplicate-key check → **one** `run_settings_write`-shaped port call
+/// carrying the doc-level removals writer. The chain runs before the
+/// document load, so the prove skeleton is never invoked on a doomed
+/// batch. No size-1 fallback: one key flows through this same chain
+/// (D-GRAMMAR/D-SCOPE — one verb, one error family).
+async fn unset_batch_with_locked(
     write_path: &std::path::Path,
-    key: &str,
+    keys: &[String],
     locked: &std::collections::BTreeSet<String>,
     engine: Option<&taskboard_state::EngineHandle>,
-) -> Result<ConfigSetView, ConfigSetError> {
-    let parsed = ConfigKey::from_dotted(key).ok_or_else(|| ConfigSetError::UnknownKey {
-        key: key.to_owned(),
-    })?;
-    if locked.contains(key) {
-        return Err(ConfigSetError::EnvLocked {
-            key: key.to_owned(),
-        });
+) -> Result<ConfigBatchUnsetView, ConfigBatchError> {
+    if keys.is_empty() {
+        return Err(ConfigBatchError::BadArity);
     }
-    let (section, field) = parsed.dotted();
+    // Parse ALL keys before anything is touched (US-1/S1): each resolves
+    // in the knob table, naming the offender. Unset carries no values,
+    // so there is no value-parse step (D-ERROR: `BadValue` is set-only).
+    let mut parsed_keys: Vec<(String, ConfigKey)> = Vec::new();
+    for key in keys {
+        let parsed = ConfigKey::from_dotted(key)
+            .ok_or_else(|| ConfigBatchError::UnknownKey { key: key.clone() })?;
+        parsed_keys.push((key.clone(), parsed));
+    }
+    // Env-guard ALL keys before the write (US-1/S2), naming the pin.
+    for (key, _) in &parsed_keys {
+        if locked.contains(key) {
+            return Err(ConfigBatchError::EnvLocked { key: key.clone() });
+        }
+    }
+    // Duplicate check after the guards (US-1/S3, AC-5): removal is
+    // idempotent, but ambiguity is never resolved silently — the same
+    // posture as the set batch's last-wins rejection (D-ATOMIC).
+    let mut seen = std::collections::BTreeSet::new();
+    for (key, _) in &parsed_keys {
+        if !seen.insert(key.as_str()) {
+            return Err(ConfigBatchError::DuplicateKey { key: key.clone() });
+        }
+    }
+    let removals: Vec<(String, String)> = parsed_keys
+        .iter()
+        .map(|(_, parsed)| {
+            let (section, key) = parsed.dotted();
+            (section.to_owned(), key.to_owned())
+        })
+        .collect();
+    let guard_keys: Vec<&str> = parsed_keys.iter().map(|(key, _)| key.as_str()).collect();
     let outcome = run_settings_write(
         write_path,
         locked,
-        &[key],
-        |path| crate::settings_overlay::remove_key(path, section, field),
+        &guard_keys,
+        |path| crate::settings_overlay::prove_and_remove_doc(path, &removals),
         engine,
     )
     .await
     .map_err(|err| match err {
-        SettingsWriteError::EnvLocked => ConfigSetError::EnvLocked {
-            key: key.to_owned(),
+        SettingsWriteError::EnvLocked => {
+            // The port's own guard tripped; our named guard above
+            // runs first, so this arm is a port-race paranoia — the
+            // first batch key is the honest name available here.
+            let key = guard_keys
+                .iter()
+                .find(|key| locked.contains(**key))
+                .map(|key| (*key).to_owned())
+                .unwrap_or_default();
+            ConfigBatchError::EnvLocked { key }
+        }
+        SettingsWriteError::Overlay(overlay) => match overlay {
+            OverlayError::Io(io) => ConfigBatchError::Io(io),
+            OverlayError::Rejected(config_err) => ConfigBatchError::Rejected(config_err),
         },
-        SettingsWriteError::Overlay(overlay) => ConfigSetError::from(overlay),
-        SettingsWriteError::Config(config_err) => ConfigSetError::Rejected(config_err),
+        SettingsWriteError::Config(config_err) => ConfigBatchError::Rejected(config_err),
     })?;
-    Ok(ConfigSetView {
-        key: key.to_owned(),
-        value: None,
-        applied_live: outcome.apply == LiveApply::Applied,
+    let applied_live = outcome.apply == LiveApply::Applied;
+    let entries = parsed_keys
+        .into_iter()
+        .map(|(key, _)| ConfigSetView {
+            key,
+            value: None,
+            applied_live,
+        })
+        .collect();
+    Ok(ConfigBatchUnsetView {
+        entries,
+        applied_live,
     })
 }
 
@@ -580,18 +638,20 @@ pub fn render_set_text(view: &ConfigSetView) -> String {
     }
 }
 
-/// The typed refusal of one `config set` *batch* invocation (#910,
-/// journey US-2): the set lattice plus the batch-only classes. Every
+/// The typed refusal of one `config set`/`unset` *batch* invocation
+/// (#910/#1014, journeys US-2/US-1): the set lattice plus the
+/// batch-only classes. Every
 /// refusal names the offending key where one exists, and no variant
 /// in the chain before the write ever touches the file (the
 /// parse/guard/duplicate chain runs before the document load — the
 /// prove skeleton is never invoked on a doomed batch).
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigBatchError {
-    /// Zero pairs or an odd argv count — the even-pair grammar
-    /// (`<k1> <v1> [<k2> <v2> …]`) refused before anything is touched
-    /// (US-2/S1, `BadValue`-class per the plan).
-    #[error("expected an even list of key/value pairs")]
+    /// Zero pairs or an odd argv count for `config set` (`<k1> <v1>
+    /// [<k2> <v2> …]`), or zero keys for `config unset` (`<k1> [<k2>
+    /// …]`) — the arity grammars refuse before anything is touched
+    /// (set US-2/S1; unset US-1/S1, D-GRAMMAR).
+    #[error("expected an even list of key/value pairs (set), or at least one key (unset)")]
     BadArity,
     /// The same dotted key appears twice in one batch — ambiguity is
     /// never resolved silently (last-wins rejected, US-2 AC-5).
@@ -614,7 +674,9 @@ pub enum ConfigBatchError {
         /// The unknown dotted key.
         key: String,
     },
-    /// A value failed its key's predicate (US-2/S1, AC-2).
+    /// A value failed its key's predicate (US-2/S1, AC-2). Set-only:
+    /// the unset batch carries no values, so this variant is never
+    /// constructed from the unset path (D-ERROR).
     #[error("the value does not fit the key")]
     BadValue {
         /// The refused dotted key.
@@ -825,14 +887,31 @@ pub(crate) async fn handle(cmd: &ConfigCmd, ctx: &mut CommandCtx<'_>) -> u8 {
             }
             Err(err) => report_to(&mut ctx.io, &CommandError::ConfigBatch(err)),
         },
-        ConfigCmd::Unset { ref key } => match unset(ctx.config_path.clone(), key).await {
+        ConfigCmd::Unset { ref keys } => match unset(ctx.config_path.clone(), keys).await {
             Ok(view) => {
-                emit_to(&mut ctx.io, &view, &render_set_text(&view));
+                emit_to(&mut ctx.io, &view, &render_batch_set_text(&view));
                 0
             }
-            Err(err) => report_to(&mut ctx.io, &CommandError::ConfigSet(err)),
+            Err(err) => report_to(&mut ctx.io, &CommandError::ConfigBatch(err)),
         },
+        // `config reload` is `IpcRoute::IpcOnly` (journey US-2/S1,
+        // D-RELOAD-ROUTE): main intercepts the verb before dispatch
+        // ever sees it. This arm is the defensive fallback — the verb
+        // has no local semantic (D-RELOAD-VERB), so the standing
+        // IpcOnly refusal is the honest answer.
+        ConfigCmd::Reload => report_to(&mut ctx.io, &CommandError::NoDaemon),
     }
+}
+
+/// The mutation arms' env lock set over the daemon's own env truth
+/// (D8's recorded asymmetry); an unreadable config file is the typed
+/// `ConfigSet::Io` report.
+fn env_lock_set(
+    write_path: &std::path::Path,
+) -> Result<std::collections::BTreeSet<String>, CommandError> {
+    AppConfig::env_overridden_keys(Some(write_path))
+        .map_err(|err| ConfigSetError::Io(std::io::Error::other(err.to_string())))
+        .map_err(CommandError::from)
 }
 
 /// The daemon's `config set`/`unset` arm (journey W-2, US-1/S3–S5):
@@ -848,18 +927,22 @@ pub(crate) async fn handle_daemon(
     io: &mut crate::commands::CommandIo<'_>,
 ) -> u8 {
     let write_path = AppConfig::write_path(config_path.map(std::path::Path::to_path_buf));
-    let locked = AppConfig::env_overridden_keys(Some(write_path.as_path()))
-        .map_err(|err| ConfigSetError::Io(std::io::Error::other(err.to_string())));
-    let locked = match locked {
-        Ok(locked) => locked,
-        Err(err) => return report_to(io, &CommandError::ConfigSet(err)),
-    };
-    // The two relay verbs keep their own typed classes end-to-end: a
-    // batch `set` refusal is a `ConfigBatch` report, a single-key
-    // `unset` refusal stays a `ConfigSet` report with its one-echo
-    // reply — the relay never relabels an invocation it only carries.
+    // The relay verbs keep their own typed classes end-to-end: a
+    // `set`/`unset` batch refusal is a `ConfigBatch` report — one verb,
+    // one error family (D-ERROR/D-SCOPE: the widened grammar routes the
+    // one-key form through the same batch classes, a superset naming
+    // the same key) — the relay never relabels an invocation it only
+    // carries.
     match *cmd {
         ConfigCmd::Set { ref pairs } => {
+            // The env lock set is the mutation arms' own precondition —
+            // the reload arm deliberately skips it: the manual verb must
+            // reach `reload_once` (and report its typed refusal) even
+            // while the file is unbootable.
+            let locked = match env_lock_set(&write_path) {
+                Ok(locked) => locked,
+                Err(err) => return report_to(io, &err),
+            };
             match set_batch_with_locked(&write_path, pairs, &locked, Some(&app.engine)).await {
                 Ok(view) => {
                     emit_to(io, &view, &render_batch_set_text(&view));
@@ -868,19 +951,71 @@ pub(crate) async fn handle_daemon(
                 Err(err) => report_to(io, &CommandError::ConfigBatch(err)),
             }
         }
-        ConfigCmd::Unset { ref key } => {
-            match unset_with_locked(&write_path, key, &locked, Some(&app.engine)).await {
+        ConfigCmd::Unset { ref keys } => {
+            let locked = match env_lock_set(&write_path) {
+                Ok(locked) => locked,
+                Err(err) => return report_to(io, &err),
+            };
+            match unset_batch_with_locked(&write_path, keys, &locked, Some(&app.engine)).await {
                 Ok(view) => {
-                    emit_to(io, &view, &render_set_text(&view));
+                    emit_to(io, &view, &render_batch_set_text(&view));
                     0
                 }
-                Err(err) => report_to(io, &CommandError::ConfigSet(err)),
+                Err(err) => report_to(io, &CommandError::ConfigBatch(err)),
             }
         }
+        // The manual reload runs the watcher lane's own choreography
+        // (D-RELOAD-PATH): `reload_once` is the *same function* the
+        // watcher's debouncer calls, so manual and watcher convergence
+        // are equivalent by construction (US-2 AC-1's pin). The outcome
+        // travels to the invoking terminal as the Exec payload; no
+        // broadcast is emitted here (the watcher's broadcast lane stays
+        // watcher-triggered-only — double-reporting is noise, R-5).
+        ConfigCmd::Reload => {
+            let outcome = crate::config_watcher::reload_once(&write_path, &app.engine).await;
+            let view = ConfigReloadView {
+                outcome,
+                path: write_path.clone(),
+            };
+            emit_to(io, &view, &render_reload_text(&view));
+            0
+        }
         // Print/Path stay `IpcRoute::Local` (journey R-2); only
-        // Set/Unset take the relay lane, so nothing else arrives here.
+        // Set/Unset/Reload take the relay lane, so nothing else arrives
+        // here.
         ConfigCmd::Print | ConfigCmd::Path => {
-            unreachable!("the relay lane carries only config set/unset (R-2)")
+            unreachable!("the relay lane carries only config set/unset/reload (R-2)")
+        }
+    }
+}
+
+/// The typed reload receipt's human line (US-2/S3's text lane): one
+/// honest sentence — what the attempt did. The wording is
+/// presentation; the tests assert the typed view, never this text.
+#[must_use]
+pub fn render_reload_text(view: &ConfigReloadView) -> String {
+    let path = view.path.display();
+    match view.outcome {
+        taskboard_domain::ConfigReloadOutcome::Applied => {
+            format!("reloaded from {path}; the running app applies it now")
+        }
+        taskboard_domain::ConfigReloadOutcome::Unchanged => {
+            format!("{path} matches the running app's settings; nothing to apply")
+        }
+        taskboard_domain::ConfigReloadOutcome::SkippedTransient => {
+            format!("{path} was unreadable at the attempt (mid-save?); retry")
+        }
+        taskboard_domain::ConfigReloadOutcome::RefusedDecode
+        | taskboard_domain::ConfigReloadOutcome::RefusedValidate => {
+            format!(
+                "{path} is not bootable right now; the running app keeps its last-known-good settings"
+            )
+        }
+        taskboard_domain::ConfigReloadOutcome::EngineGone => {
+            format!("{path} stays the boot authority; the running app did not take the reload")
+        }
+        taskboard_domain::ConfigReloadOutcome::WatcherDisabled => {
+            format!("{path} stays the boot authority; this session has no live reload")
         }
     }
 }
@@ -1041,11 +1176,12 @@ mod set_tests {
         set(Some(path.clone()), "focus.work_mins", "50")
             .await
             .expect("set");
-        let view = unset(Some(path.clone()), "focus.work_mins")
+        let view = unset(Some(path.clone()), &["focus.work_mins".to_owned()])
             .await
             .expect("unset");
-        assert_eq!(view.key, "focus.work_mins");
-        assert_eq!(view.value, None);
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].key, "focus.work_mins");
+        assert_eq!(view.entries[0].value, None);
         assert!(!view.applied_live, "the local lane");
         let file_only =
             AppConfig::extract_file_only(Some(path.as_path())).expect("the file decodes");
@@ -1073,11 +1209,12 @@ mod set_tests {
         assert_eq!(view.key, "reminders.tick_secs");
         assert_eq!(view.value.as_deref(), Some("45"));
         assert!(!view.applied_live, "the local lane bit");
-        let view = unset(Some(path.clone()), "reminders.tick_secs")
+        let view = unset(Some(path.clone()), &["reminders.tick_secs".to_owned()])
             .await
             .expect("unset");
-        assert_eq!(view.key, "reminders.tick_secs");
-        assert_eq!(view.value, None, "an unset echoes no value");
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].key, "reminders.tick_secs");
+        assert_eq!(view.entries[0].value, None, "an unset echoes no value");
         assert!(!view.applied_live);
         std::fs::remove_dir_all(path.parent().expect("dir")).ok();
     }
@@ -1309,11 +1446,17 @@ mod set_tests {
                 .work(),
             chrono::TimeDelta::minutes(50)
         );
-        let view = unset_with_locked(&path, "focus.work_mins", &locked, Some(&app.engine))
-            .await
-            .expect("unset lands");
+        let view = unset_batch_with_locked(
+            &path,
+            &["focus.work_mins".to_owned()],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("unset lands");
         assert!(view.applied_live, "the live lane");
-        assert_eq!(view.value, None);
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].value, None);
         let published = app.engine.shared_state().load();
         assert_ne!(
             published.settings.focus.as_ref().map(|focus| focus.work()),
@@ -1340,11 +1483,17 @@ mod set_tests {
                 .work(),
             chrono::TimeDelta::minutes(50)
         );
-        let view = unset_with_locked(&path, "focus.work_mins", &locked, Some(&app.engine))
-            .await
-            .expect("unset lands");
+        let view = unset_batch_with_locked(
+            &path,
+            &["focus.work_mins".to_owned()],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("unset lands");
         assert!(view.applied_live, "the live lane");
-        assert_eq!(view.value, None);
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].value, None);
         let published = app.engine.shared_state().load();
         assert_ne!(
             published.settings.focus.as_ref().map(|focus| focus.work()),
@@ -1490,11 +1639,17 @@ mod set_tests {
         )
         .await
         .expect("set live");
-        let view = unset_with_locked(&path, "files_sync.poll_secs", &locked, Some(&app.engine))
-            .await
-            .expect("unset lands");
+        let view = unset_batch_with_locked(
+            &path,
+            &["files_sync.poll_secs".to_owned()],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("unset lands");
         assert!(view.applied_live, "the live lane");
-        assert_eq!(view.value, None);
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].value, None);
         assert_eq!(
             app.engine
                 .shared_state()
@@ -1519,11 +1674,17 @@ mod set_tests {
         )
         .await
         .expect("set live");
-        let view = unset_with_locked(&path, "files_sync.poll_secs", &locked, Some(&app.engine))
-            .await
-            .expect("unset lands");
+        let view = unset_batch_with_locked(
+            &path,
+            &["files_sync.poll_secs".to_owned()],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("unset lands");
         assert!(view.applied_live, "the live lane");
-        assert_eq!(view.value, None);
+        assert_eq!(view.entries.len(), 1);
+        assert_eq!(view.entries[0].value, None);
         assert_eq!(
             app.engine
                 .shared_state()
@@ -2077,5 +2238,253 @@ mod set_tests {
             "the file took the write: {text}"
         );
         let _keep = app;
+    }
+
+    // -- the batch unset (B7, #1014, journey US-1) ------------------------
+
+    fn daemon_io<'a>(out: &'a mut Vec<u8>, err: &'a mut Vec<u8>) -> crate::commands::CommandIo<'a> {
+        crate::commands::CommandIo {
+            out,
+            err,
+            json: true,
+        }
+    }
+
+    /// `us1_s1_batch_unset_parse_refusals_name_the_offending_key`
+    /// (US-1/S1, AC-2): zero keys is the typed `BadArity` refusal; an
+    /// unknown key in the batch names that key typed; both fire before
+    /// anything is touched — the file is byte-identical.
+    #[tokio::test]
+    async fn us1_s1_batch_unset_parse_refusals_name_the_offending_key() {
+        let path = temp_config("batch-unset-parse");
+        let _ = std::fs::remove_file(&path);
+        let err = unset(Some(path.clone()), &[])
+            .await
+            .expect_err("zero keys refuses");
+        assert!(matches!(err, ConfigBatchError::BadArity), "{err:?}");
+        let err = unset(
+            Some(path.clone()),
+            &["reminders.tick_secs".to_owned(), "no.such_key".to_owned()],
+        )
+        .await
+        .expect_err("the unknown key refuses the batch");
+        assert!(
+            matches!(err, ConfigBatchError::UnknownKey { ref key } if key == "no.such_key"),
+            "the refusal names the offender: {err:?}"
+        );
+        let text = std::fs::read_to_string(&path);
+        assert!(text.is_err(), "no file was created on any refusal");
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    /// `us1_s2_batch_unset_env_guard_names_the_pinned_key` (US-1/S2,
+    /// AC-3): an env-pinned key anywhere in the batch refuses the whole
+    /// batch typed naming the key, before any write.
+    #[tokio::test]
+    async fn us1_s2_batch_unset_env_guard_names_the_pinned_key() {
+        let path = temp_config("batch-unset-env");
+        let _ = std::fs::remove_file(&path);
+        let mut locked = std::collections::BTreeSet::new();
+        locked.insert("focus.work_mins".to_owned());
+        let err = unset_batch_with_locked(
+            &path,
+            &[
+                "reminders.tick_secs".to_owned(),
+                "focus.work_mins".to_owned(),
+            ],
+            &locked,
+            None,
+        )
+        .await
+        .expect_err("the pinned key refuses the batch");
+        assert!(
+            matches!(err, ConfigBatchError::EnvLocked { ref key } if key == "focus.work_mins"),
+            "the refusal names the pin: {err:?}"
+        );
+        let text = std::fs::read_to_string(&path);
+        assert!(text.is_err(), "nothing wrote");
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    /// `us1_s3_duplicate_batch_unset_key_refuses_before_any_write`
+    /// (US-1/S3, AC-5): removal is idempotent, but a repeated key is
+    /// ambiguity — never resolved silently; the refusal fires before
+    /// the document load.
+    #[tokio::test]
+    async fn us1_s3_duplicate_batch_unset_key_refuses_before_any_write() {
+        let path = temp_config("batch-unset-dup");
+        let _ = std::fs::remove_file(&path);
+        let err = unset(
+            Some(path.clone()),
+            &[
+                "reminders.tick_secs".to_owned(),
+                "reminders.tick_secs".to_owned(),
+            ],
+        )
+        .await
+        .expect_err("the repeat refuses");
+        assert!(
+            matches!(err, ConfigBatchError::DuplicateKey { ref key } if key == "reminders.tick_secs"),
+            "the refusal names the repeat: {err:?}"
+        );
+        let text = std::fs::read_to_string(&path);
+        assert!(text.is_err(), "nothing wrote");
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+
+    /// `us1_s5_batch_unset_apply_is_one_update_settings` (US-1/S4–S5,
+    /// AC-1/AC-6/AC-7): a multi-key unset on the daemon lane lands one
+    /// atomic document and ONE engine apply for the whole batch — the
+    /// one lane bit is true, each entry echoes `value: none`, both
+    /// overrides leave the file and the published snapshot — and a
+    /// batch naming an absent key alongside present keys succeeds
+    /// idempotently for the absent one.
+    #[tokio::test]
+    async fn us1_s5_batch_unset_apply_is_one_update_settings() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("batch-unset").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let locked = std::collections::BTreeSet::new();
+        set_batch_with_locked(
+            &path,
+            &[
+                "focus.work_mins".to_owned(),
+                "50".to_owned(),
+                "reminders.tick_secs".to_owned(),
+                "45".to_owned(),
+            ],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("the seeding batch lands");
+        let view = unset_batch_with_locked(
+            &path,
+            &[
+                "focus.work_mins".to_owned(),
+                // Absent alongside present: idempotent success (AC-7).
+                "focus.break_mins".to_owned(),
+                "reminders.tick_secs".to_owned(),
+            ],
+            &locked,
+            Some(&app.engine),
+        )
+        .await
+        .expect("the batch lands");
+        assert!(view.applied_live, "one lane bit for the whole batch");
+        let entries: Vec<_> = view
+            .entries
+            .iter()
+            .map(|entry| (entry.key.as_str(), entry.value.as_deref()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("focus.work_mins", None),
+                ("focus.break_mins", None),
+                ("reminders.tick_secs", None),
+            ],
+            "one value:none echo per key, argv order"
+        );
+        let text = std::fs::read_to_string(&path).expect("the file");
+        assert!(
+            !text.contains("work_mins") && !text.contains("tick_secs"),
+            "both overrides left the file as one document: {text}"
+        );
+        let published = app.engine.shared_state().load();
+        assert_ne!(
+            published.settings.focus.as_ref().map(|focus| focus.work()),
+            Some(chrono::TimeDelta::minutes(50)),
+            "the engine fell back off the removed override"
+        );
+        assert_ne!(
+            published.settings.tick_secs,
+            taskboard_domain::TickSecs::new(45).expect("secs > 0"),
+            "the engine fell back off the removed tick override"
+        );
+        app.shutdown().await;
+    }
+
+    /// `us2_s2_manual_reload_uses_the_watcher_lane_choreography`
+    /// (US-2/S2, AC-1/AC-2/AC-3): the daemon arm calls the watcher
+    /// lane's own `reload_once`, so an external edit converges typed
+    /// `Applied`, an unchanged file reports `Unchanged` (no engine
+    /// round trip), and a mid-save-shaped file (decodes, fails
+    /// validate) reports `RefusedValidate` with the engine keeping its
+    /// last-known-good snapshot. The outcome travels in the typed
+    /// reload view with the resolved path (D-RELOAD-PATH/
+    /// D-RELOAD-OUTCOME).
+    #[tokio::test]
+    async fn us2_s2_manual_reload_uses_the_watcher_lane_choreography() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("manual-reload").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        let cmd = ConfigCmd::Reload;
+        // An external edit converges typed `Applied` through the same
+        // choreography — the engine takes the file's truth.
+        std::fs::write(&path, "[reminders]\ntick_secs = 55\n").expect("external edit");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = handle_daemon(&cmd, &app, Some(&path), &mut daemon_io(&mut out, &mut err)).await;
+        assert_eq!(code, 0);
+        let view: ConfigReloadView =
+            serde_json::from_slice(&out).expect("the typed view travels as JSON");
+        assert_eq!(view.path, path, "the view names the reloaded file");
+        assert_eq!(
+            view.outcome,
+            taskboard_domain::ConfigReloadOutcome::Applied,
+            "the watcher lane's own Applied outcome"
+        );
+        assert_eq!(
+            app.engine.shared_state().load().settings.tick_secs,
+            taskboard_domain::TickSecs::new(55).expect("secs > 0"),
+            "the engine converged to the file"
+        );
+
+        // Now the published snapshot equals the file: an unchanged
+        // reload costs a decode, never an engine round trip (AC-2).
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = handle_daemon(&cmd, &app, Some(&path), &mut daemon_io(&mut out, &mut err)).await;
+        assert_eq!(code, 0);
+        let view: ConfigReloadView =
+            serde_json::from_slice(&out).expect("the typed view travels as JSON");
+        assert_eq!(
+            view.outcome,
+            taskboard_domain::ConfigReloadOutcome::Unchanged,
+            "no-op costs a decode, never an engine round trip"
+        );
+
+        // A mid-save-shaped file (decodes, fails validate) refuses
+        // typed and the engine keeps its last-known-good snapshot (AC-3,
+        // the RefusedValidate class).
+        std::fs::write(
+            &path,
+            "[sync]\nbackoff_initial_secs = 400\nbackoff_max_secs = 100\n",
+        )
+        .expect("invalid-but-decodable write");
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = handle_daemon(&cmd, &app, Some(&path), &mut daemon_io(&mut out, &mut err)).await;
+        assert_eq!(code, 0);
+        let view: ConfigReloadView =
+            serde_json::from_slice(&out).expect("the typed view travels as JSON");
+        assert_eq!(
+            view.outcome,
+            taskboard_domain::ConfigReloadOutcome::RefusedValidate,
+            "the validate stage refused"
+        );
+        assert_eq!(
+            app.engine.shared_state().load().settings.tick_secs,
+            taskboard_domain::TickSecs::new(55).expect("secs > 0"),
+            "the last-known-good snapshot stands"
+        );
+        app.shutdown().await;
     }
 }
