@@ -293,9 +293,10 @@ pub struct HabitReminderOverride {
     pub base: NudgeBase,
     /// Days added to the base day (may be negative — a nudge *before*
     /// the base day is a legitimate ask, e.g. "the day before the
-    /// period starts"). The armed day is clamped into the canonical
-    /// window at read time (an armed day outside the window would arm
-    /// in a foreign window's span — the derivation floors back).
+    /// period starts"). The arm test is a membership test, never
+    /// clamped: an armed day outside the named window simply does not
+    /// arm inside it — it lands in the neighbor window's span, which
+    /// runs its own gate (`override_armed_today`).
     pub offset_days: i32,
     /// The fallback local time-of-day (used when the habit carries no
     /// `anchor_time`).
@@ -981,13 +982,12 @@ fn streak_with_break(
         } else if preschedule_window(habit, WindowStart(cursor), today) {
             // Pre-schedule (R-6/US-5 AC-1): the window's scheduled days
             // have not begun — transparent regardless of grace (no due
-            // posture, no miss), walk on. HF1 composition seam
-            // (named-but-unwired): skip and pause are the transparent
-            // class's other subjects — the composition arm
+            // posture, no miss), walk on. The transparent class's
+            // other subjects (HF1, landed: the pause arm above, the
+            // skip arm before this one) compose here — the
+            // composition property
             // (`transparency_composes_across_skip_pause_preschedule`)
-            // lands with HF1 (plan
-            // 2026-11-21-habit-skip-pause-plan); a skip/pause field
-            // does not exist yet.
+            // pins the one-outcome law.
         } else {
             let grace_end = period_end(kind, cursor, day) + grace;
             if now >= grace_end {
@@ -3172,7 +3172,7 @@ mod tracker_anchor_tests {
 #[cfg(test)]
 mod hf4_schedule_tests {
     use super::*;
-    use crate::test_support::proptest_config;
+    use crate::test_support::{habit_fixture_strategy, proptest_config};
     use chrono::{NaiveTime, TimeZone, Weekday};
     use proptest::prelude::*;
 
@@ -3325,6 +3325,102 @@ mod hf4_schedule_tests {
             0,
             "grace closed: the elapsed scheduled window misses"
         );
+    }
+
+    // Σ extension (the HF4 catalogue's composition arm): skip ∧
+    // pause ∧ pre-schedule are ONE transparent outcome. Over
+    // generated fixtures whose weekly/monthly habit carries a random
+    // day set (inert-None for daily, per R-6): (a) arbitrary skip
+    // marks never break a run; (b) marks confined to pre-schedule
+    // windows are invisible — the window is transparent with or
+    // without the mark; (c) the same holds under a pause covering
+    // the walked suffix.
+    proptest! {
+        #![proptest_config(proptest_config(64))]
+
+        fn transparency_composes_across_skip_pause_preschedule(
+        (fixture, probe, mask, set_mask) in habit_fixture_strategy().prop_flat_map(
+            |fixture| {
+                (
+                    Just(fixture.clone()),
+                    0_i64..=200_000,
+                    proptest::collection::vec(any::<bool>(), 0..9),
+                    proptest::collection::vec(any::<bool>(), 7),
+                )
+            },
+        ),
+    ) {
+        let now =
+            fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
+        let kind = fixture.habit.target.kind();
+        let mut f = fixture.clone();
+        if kind != PeriodKind::Day {
+            const WEEKDAYS: [chrono::Weekday; 7] = [
+                chrono::Weekday::Mon,
+                chrono::Weekday::Tue,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Thu,
+                chrono::Weekday::Fri,
+                chrono::Weekday::Sat,
+                chrono::Weekday::Sun,
+            ];
+            let days: Vec<chrono::Weekday> = (0..7_usize)
+                .filter(|i| set_mask[*i])
+                .map(|i| WEEKDAYS[i])
+                .collect();
+            // An empty draw leaves the set `None` (the inert posture —
+            // the property holds trivially; the day-set arms fire on
+            // non-empty draws).
+            f.habit.scheduled_days = WeekdaySet::new(days).ok();
+        }
+        let today = f.day.today(now);
+        let clean = streak(&f.habit, &f.log, now, f.day);
+        // (a) arbitrary skip marks never break a run.
+        let mut marked = f.clone();
+        for (i, key) in marked.log.keys().copied().collect::<Vec<_>>()
+            .into_iter()
+            .enumerate()
+            .take(mask.len())
+        {
+            if mask[i]
+                && let Some(entry) = marked.log.get_mut(&key)
+            {
+                entry.skip = true;
+            }
+        }
+        let with_marks = streak(&marked.habit, &marked.log, now, marked.day);
+        prop_assert!(with_marks >= clean, "skips never break a run");
+        // (b) marks confined to pre-schedule windows are invisible.
+        let mut presched = f.clone();
+        for (i, key) in presched.log.keys().copied().collect::<Vec<_>>()
+            .into_iter()
+            .enumerate()
+            .take(mask.len())
+        {
+            if mask[i]
+                && preschedule_window(&presched.habit, WindowStart(key.window.as_date()), today)
+                && let Some(entry) = presched.log.get_mut(&key)
+            {
+                entry.skip = true;
+            }
+        }
+        prop_assert_eq!(
+            streak(&presched.habit, &presched.log, now, presched.day),
+            clean,
+            "a pre-schedule window's skip mark is invisible (one transparent outcome)"
+        );
+        // (c) the composition law under a pause covering the suffix.
+        let until = today.pred_opt().unwrap_or(today);
+        let mut paused_clean = f.clone();
+        paused_clean.habit.paused_until = Some(until);
+        let mut paused_marked = presched.clone();
+        paused_marked.habit.paused_until = Some(until);
+        prop_assert_eq!(
+            streak(&paused_marked.habit, &paused_marked.log, now, paused_marked.day),
+            streak(&paused_clean.habit, &paused_clean.log, now, paused_clean.day),
+            "pre-schedule marks are invisible under a pause too"
+        );
+        }
     }
 
     /// US-5 AC-5 (US-9's dependency): the denominator joins once the

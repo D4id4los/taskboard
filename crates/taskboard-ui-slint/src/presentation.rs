@@ -7695,7 +7695,6 @@ mod recur_badge_tests {
 // each a *typed posture bit* (repair mount, its invert side, the met
 // restyle, HF4's off-schedule mark), never a boolean-parameter knot;
 // the row is built once per refresh from domain facts.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // the typed state bits ARE the row's shape
 pub struct HabitRow {
