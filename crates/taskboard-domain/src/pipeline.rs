@@ -1992,9 +1992,24 @@ pub fn apply_files_board_snapshot(
 ///
 /// `last_success` advances to `now` only when no outcome was rejected;
 /// rejections keep the previous last success (a rejected write is not a
-/// successful sync). `ids` is currently unused and reserved so the
-/// signature matches [`apply_sync_report`]'s (a future push path that
-/// adopts remotely-created entities would need it).
+/// successful sync). `board` is the cycle's board — the local board the
+/// report names, resolved from `SyncReport::Failed { board }`'s remote
+/// id: the per-board sync bookkeeping attributes to it, **not** to the
+/// pushed ops' target boards (plan
+/// `.artifacts/plans/2026-11-21-sync-report-attribution-plan.md` §2 — a
+/// sync row is a per-bound-board record of server contact; the op's
+/// target board is a planning fact, and an unbound target has no row
+/// and no server to advance). `None` — a board-less failure, or one
+/// whose remote board no longer resolves — vanishes from the map: no
+/// row is written, matching the counters lane's rule. A resolved
+/// board's row transitions unconditionally, as in
+/// [`apply_sync_report`], and the `features` stamp rides the same row;
+/// `sidecar` stays untouched — a push-only cycle produces no fresh
+/// app-data evidence, the last one stands. `ids` is currently unused
+/// and reserved so the signature matches [`apply_sync_report`]'s (a
+/// future push path that adopts remotely-created entities would need
+/// it).
+#[allow(clippy::too_many_arguments)] // the injected-seams shape, matched to apply_sync_report's
 pub fn apply_push_report(
     current: &AppState,
     outbox: &[PendingOp],
@@ -2002,6 +2017,7 @@ pub fn apply_push_report(
     read_at: DateTime<Utc>,
     ids: &dyn IdGenerator,
     now: DateTime<Utc>,
+    board: Option<crate::ids::BoardId>,
     features: crate::capabilities::DeckFeatures,
 ) -> (AppState, Vec<PersistenceAction>) {
     let _ = ids;
@@ -2060,28 +2076,20 @@ pub fn apply_push_report(
     } else {
         SyncPhase::Idle
     };
-    // The cycle has no snapshot, so board identity comes from the pushed
-    // ops' attribution: exactly the boards this cycle wrote to transition.
-    // A rejection is not a successful sync — each board keeps its own
-    // last success instead of advancing it.
-    let affected: std::collections::BTreeSet<crate::ids::BoardId> = outbox
-        .iter()
-        .filter(|entry| op_results.contains_key(&entry.op_id))
-        .filter_map(|entry| crate::state::attributed_board(&entry.op, &stacks, &tasks, &labels))
-        .collect();
+    // The cycle has no snapshot, so the report's board is the only sync
+    // fact: exactly that board's row transitions (see the doc comment
+    // above, plan §2). A board-less failure writes no row. A rejection
+    // is not a successful sync — the previous last success carries
+    // instead of advancing.
     let mut sync = current.sync.clone();
-    for board in &affected {
-        let carried = sync.get(*board).and_then(|row| row.last_success);
-        sync.set_stored(
-            *board,
-            phase,
-            if any_rejected { carried } else { Some(now) },
-        );
-        // Each affected board's row carries *its* connector's flags
-        // (a board's row is only written by reports for that board);
-        // the sidecar verdict is not re-derived here — a push-only
-        // cycle produces no fresh evidence, the last one stands.
-        if let Some(row) = sync.get_mut(*board) {
+    if let Some(board) = board {
+        let carried = sync.get(board).and_then(|row| row.last_success);
+        sync.set_stored(board, phase, if any_rejected { carried } else { Some(now) });
+        // The cycle's row carries *its* connector's flags (a board's row
+        // is only written by reports for that board); the sidecar verdict
+        // is not re-derived here — a push-only cycle produces no fresh
+        // evidence, the last one stands.
+        if let Some(row) = sync.get_mut(board) {
             row.features = features;
         }
     }
@@ -3353,6 +3361,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 3_600),
+            Some(state.boards.keys().copied().next().expect("one board")),
             DeckFeatures::NATIVE,
         );
         assert_eq!(
@@ -3503,6 +3512,7 @@ mod tests {
             ts(BASE),
             &CountingIds::default(),
             ts(BASE + 3_600),
+            Some(state.boards.keys().copied().next().expect("one board")),
             DeckFeatures::NATIVE,
         );
         assert_eq!(pushed.habits, expected, "a push cycle never touches habits");
@@ -3956,6 +3966,14 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 7_200),
+            Some(
+                state_after_resurrect
+                    .boards
+                    .keys()
+                    .copied()
+                    .next()
+                    .expect("one board"),
+            ),
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         let rebound_task = rebound.tasks.values().next().unwrap();
@@ -5147,6 +5165,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 3_660),
+            Some(state.boards.keys().copied().next().expect("one board")),
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
@@ -5184,6 +5203,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            Some(bound),
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
@@ -5197,6 +5217,140 @@ mod tests {
             app.0.sync.aggregate().last_success,
             Some(ts(BASE)),
             "a rejected write is not a successful sync"
+        );
+    }
+
+    #[test]
+    fn apply_push_report_attributes_the_bookkeeping_to_the_cycles_board() {
+        // The #1080 divergence class: a board op targets an unbound board
+        // while a bound live board exists. The per-board sync bookkeeping
+        // attributes to the cycle's board — the board the report names —
+        // never to the op's target board (plan §2): the unbound board has
+        // no server relationship, so no row is fabricated for it.
+        let state = base_state(bound_task(1));
+        let bound = state.boards.keys().copied().next().expect("bound board");
+        let unbound_id = crate::ids::BoardId::from_uuid(uuid::Uuid::from_u128(900));
+        let unbound = Board {
+            id: unbound_id,
+            remote: None,
+            title: "unbound".into(),
+            color: crate::Color::new("00ff00"),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::BoardClocks {
+                title: ts(BASE),
+                color: ts(BASE),
+                archived: ts(BASE),
+                deleted: ts(BASE),
+            },
+            authors: crate::entities::BoardAuthors::default(),
+            remote_seen: None,
+        };
+        let mut base = state;
+        base.boards.insert(unbound_id, unbound);
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(67));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateBoard(unbound_id),
+            queued_at: ts(BASE),
+        };
+
+        let app = apply_push_report(
+            &base,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Applied { echo: None },
+            }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+            Some(bound),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        assert!(
+            app.0
+                .sync
+                .get(unbound_id)
+                .is_none_or(|row| row.last_success.is_none() && row.phase == SyncPhase::Idle),
+            "nothing is stamped for the unbound op-target board: no fabricated \
+             last success, no cycle phase (the row itself is the derived \
+             per-board normalization `derive_sync_states` materializes)"
+        );
+        let row = app
+            .0
+            .sync
+            .get(bound)
+            .expect("the cycle's bound board carries the row");
+        assert_eq!(row.phase, SyncPhase::Idle);
+        assert_eq!(
+            row.last_success,
+            Some(ts(BASE + 60)),
+            "an applied outcome is a successful contact for the cycle's board"
+        );
+        assert!(
+            app.1
+                .iter()
+                .any(|a| matches!(a, PersistenceAction::CompleteOp(id) if *id == op_id)),
+            "the op completed"
+        );
+    }
+
+    #[test]
+    fn apply_push_report_carries_last_success_on_the_cross_board_shape() {
+        // The rejection-carry rule on the #1080 shape: a rejected outcome
+        // is not a successful contact — the cycle board's row keeps its
+        // previous last success, and the unbound target gains no row.
+        let state = base_state(bound_task(1));
+        let bound = state.boards.keys().copied().next().expect("bound board");
+        let unbound_id = crate::ids::BoardId::from_uuid(uuid::Uuid::from_u128(901));
+        let mut unbound = base_state(bound_task(2))
+            .boards
+            .into_values()
+            .next()
+            .expect("fixture board");
+        unbound.id = unbound_id;
+        unbound.remote = None;
+        let mut base = state;
+        base.boards.insert(unbound_id, unbound);
+        base.sync.set_stored(bound, SyncPhase::Idle, Some(ts(BASE)));
+        let op_id = crate::outbox::OpId(uuid::Uuid::from_u128(68));
+        let op = crate::outbox::PendingOp {
+            op_id,
+            op: LocalOp::UpdateBoard(unbound_id),
+            queued_at: ts(BASE),
+        };
+
+        let app = apply_push_report(
+            &base,
+            std::slice::from_ref(&op),
+            &[PushOutcome {
+                op: op_id,
+                result: crate::remote::PushResult::Rejected {
+                    kind: SyncErrorKind::Forbidden,
+                },
+            }],
+            chrono::DateTime::<chrono::Utc>::MAX_UTC,
+            &CountingIds::default(),
+            ts(BASE + 60),
+            Some(bound),
+            crate::capabilities::DeckFeatures::CONSERVATIVE,
+        );
+
+        assert!(
+            app.0
+                .sync
+                .get(unbound_id)
+                .is_none_or(|row| row.last_success.is_none() && row.phase == SyncPhase::Idle),
+            "the unbound target's derived row stays untouched: no carried or \
+             advanced last success, no cycle phase"
+        );
+        let row = app.0.sync.get(bound).expect("the cycle board's row");
+        assert_eq!(
+            row.last_success,
+            Some(ts(BASE)),
+            "a rejected outcome is not a successful contact — the row carries"
         );
     }
 
@@ -5223,6 +5377,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            Some(base.boards.keys().copied().next().expect("one board")),
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
@@ -5259,6 +5414,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            None,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
@@ -5294,6 +5450,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            None,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
@@ -5327,6 +5484,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            None,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
@@ -5362,6 +5520,7 @@ mod tests {
             chrono::DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            None,
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
         assert!(
@@ -5523,8 +5682,17 @@ mod tests {
 
                 let app: AppState = state.clone().into();
                 let now = ts(2_000_000_000);
+                // The cycle's board: the bound board the report names —
+                // the same board `mirror_snapshot` keys on.
+                let cycle_board = state
+                    .boards
+                    .values()
+                    .find(|b| b.remote.is_some())
+                    .map(|b| b.id)
+                    .expect("the strategy repaired a bound board");
                 let (pushed_state, pushed_actions) = apply_push_report(
                     &app, &state.outbox, &pushes, chrono::DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
+                    Some(cycle_board),
                     crate::capabilities::DeckFeatures::CONSERVATIVE);
                 let (full_state, full_actions, _events) = apply_sync_report(
                     &app, &state.outbox, &snapshot, &pushes, DateTime::<chrono::Utc>::MAX_UTC, &CountingIds::default(), now,
@@ -7156,6 +7324,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 60),
+            Some(board_id),
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
@@ -7208,6 +7377,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 360),
+            Some(board_id),
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
@@ -7262,6 +7432,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 360),
+            Some(board_id),
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
@@ -7298,6 +7469,7 @@ mod tests {
             DateTime::<chrono::Utc>::MAX_UTC,
             &CountingIds::default(),
             ts(BASE + 360),
+            Some(board_id),
             crate::capabilities::DeckFeatures::CONSERVATIVE,
         );
 
