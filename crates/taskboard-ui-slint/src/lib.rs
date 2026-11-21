@@ -661,6 +661,9 @@ fn start_repaint_driver(
             if adapter.borrow_mut().poll_export_run() {
                 window.invoke_export_outcome_shown();
             }
+            // The status reply drain (OP3 W-2): the same cadence — a
+            // settled reply folds the panel's typed facts.
+            adapter.borrow_mut().drain_status_reply(&window);
             // One clock read per tick feeds both boundaries (r4
             // decision 5). The second boundary fires only while the
             // adapter's `seconds_surfaces_active` gate holds; the cell
@@ -987,6 +990,17 @@ impl UiHandle {
             if settled {
                 window.invoke_export_outcome_shown();
             }
+        }
+    }
+
+    /// The status reply drain (OP3 W-2): the same non-blocking poll
+    /// the repaint timer runs every cadence tick. Public for the
+    /// component journeys (the established [`UiHandle`]-seam
+    /// pattern): the test plays the app half by answering the drained
+    /// request's oneshot, then drives the drain.
+    pub fn drain_status_reply(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            self.adapter.borrow_mut().drain_status_reply(&window);
         }
     }
 

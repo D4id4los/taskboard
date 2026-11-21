@@ -107,6 +107,7 @@ impl JourneyHarness {
             View::Review => None,
             View::Settings => Some(ContextId::Settings),
             View::PlanNextDay => Some(ContextId::PlanNextDay),
+            View::Status => Some(ContextId::StatusPanel),
         };
         let mut chain = Vec::with_capacity(4);
         if keyboard.get_date_picker_grid() {

@@ -809,6 +809,28 @@ async fn retire_forwarder(mut join: JoinHandle<()>, budget: Duration, what: &str
 /// [`taskboard_ui_slint::quit`] — both reach the same graceful
 /// shutdown.
 ///
+/// The status panel's answer source (OP3 W-4, D-2): captures the
+/// process's own in-session projection ([`StatusView::in_session`])
+/// over cloned handles — engine, config, connector-lifecycle control,
+/// the files-sync watch — so the panel answers from the identical
+/// state the CLI `status` verb prints. One projection, two fronts.
+pub fn status_source_of(
+    app: &crate::App,
+) -> impl Fn() -> crate::commands::status::StatusView + Send + Sync + use<> {
+    let engine = app.engine.clone();
+    let config = app.config.clone();
+    let control = app.connector_control();
+    let files = app.files_sync_status.clone();
+    move || {
+        crate::commands::status::StatusView::in_session_parts(
+            &engine,
+            &config,
+            control.connector_attached(),
+            files.as_ref(),
+        )
+    }
+}
+
 /// # Errors
 ///
 /// Bootstrap, mount, and event-loop failures, as typed errors.
@@ -841,6 +863,10 @@ pub async fn run_desktop(
     // precedent).
     ui_settings.export = resolve_export_defaults(&app.config);
     let (requests_tx, requests_rx) = crate::ui_requests::ui_request_channel();
+    // The status panel's answer source (OP3 W-4, D-2): the same
+    // `StatusView` the CLI builds — this process's own in-session
+    // projection over cloned handles (one projection, two fronts).
+    let status_source = status_source_of(&app);
     let request_forwarder = crate::ui_requests::spawn_ui_request_forwarder(
         requests_rx,
         app.engine.shared_state(),
@@ -865,6 +891,7 @@ pub async fn run_desktop(
                 // out.
                 may_open_viewer: true,
             },
+            status: Box::new(status_source),
         },
     );
 

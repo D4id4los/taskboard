@@ -718,6 +718,10 @@ pub(crate) struct Adapter {
     /// The settings view-model (round-1 D7/D8): draft mirror, row
     /// list, liveness overrides, and the pending reply half.
     settings: SettingsVm,
+    /// The status panel's VM (OP3 W-1..W-3): the one in-flight
+    /// `StatusQuery` reply half (D-3's snapshot-on-open + explicit
+    /// refresh — never a polling timer; one query at a time).
+    status_panel: StatusPanelVm,
     /// The status line's auto-clear driver (r2 D28): a one-shot slint
     /// timer, mock-clock driven. Lifetime held here alongside the
     /// window; the fire closure carries only weak handles.
@@ -4919,6 +4923,18 @@ impl Adapter {
             (Flow::ConfirmBoardReconcile { .. }, UiEffect::BoardReconcile) => {
                 self.interpret_ceremony(UiEffect::BoardReconcile, &state)
             }
+            // The status panel's toggle (OP3 W-1, the settings
+            // opener's twin, D-5): the open is a pushed view level;
+            // the snapshot-on-open query dispatches from the panel's
+            // own mount seam (`status-panel-open` — one query per
+            // mount, never a timer), so this arm is pure view state.
+            (Flow::None, UiEffect::OpenStatusPanel) => {
+                if self.view_state.view() == crate::view_state::ViewId::Status {
+                    self.view_state.close_status_panel()
+                } else {
+                    self.view_state.open_status_panel()
+                }
+            }
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
             // menu row, `Ctrl+,`, and a second press all close an open
             // settings surface. No explicit dismiss: both toggle
@@ -5231,6 +5247,9 @@ impl Adapter {
             (crate::view_state::ViewId::PlanNextDay | crate::view_state::ViewId::TaskDetail, _) => {
                 None
             }
+            // The status panel (OP3): one whole-page viewport, no
+            // paging container — the same typed inert.
+            (crate::view_state::ViewId::Status, _) => None,
             (crate::view_state::ViewId::Today, _) => self
                 .view_state
                 .focused_task()
@@ -5346,7 +5365,9 @@ impl Adapter {
             | crate::view_state::ViewId::Review
             // The planner's panes are a fixed surface (#622): no
             // paging container — the same typed inert.
-            | crate::view_state::ViewId::PlanNextDay => None,
+            | crate::view_state::ViewId::PlanNextDay
+            // The status panel: no paging container (OP3).
+            | crate::view_state::ViewId::Status => None,
         };
         let Some((target_a, target_b)) = hint else {
             return;
@@ -5604,9 +5625,11 @@ impl Adapter {
             // TaskDetail/Settings: every other direction is the control
             // walk — the stop ladder is linear today (the recorded
             // degenerate horizontal: up/down ride the same ladder).
-            crate::view_state::ViewId::TaskDetail | crate::view_state::ViewId::Settings => {
-                Some(backwards)
-            }
+            crate::view_state::ViewId::TaskDetail
+            | crate::view_state::ViewId::Settings
+            // The status panel's ladder is linear too (OP3): the
+            // Refresh button is the walk's one stop.
+            | crate::view_state::ViewId::Status => Some(backwards),
             _ => None,
         }
     }
@@ -5667,7 +5690,7 @@ impl Adapter {
             // recorded geometry; AC-1 accepts the per-geometry
             // reading) and both axes at Settings walk (r4 D19
             // behavior kept). The tail owns the rows.
-            (ViewId::TaskDetail | ViewId::Settings, _) => Vec::new(),
+            (ViewId::TaskDetail | ViewId::Settings | ViewId::Status, _) => Vec::new(),
             // The planner (J3 R-5): left/right switch the pane
             // (boxes ↔ pool); up/down are the recorded inert until an
             // in-pane cursor seam exists (backlog follow-up).
@@ -6294,6 +6317,7 @@ impl Adapter {
                 return;
             }
             UiEffect::PickerKey(key) => self.apply_picker_key(window, key),
+
             UiEffect::OpenPalette
             | UiEffect::SetMode(_)
             | UiEffect::FocusNext
@@ -6320,6 +6344,9 @@ impl Adapter {
             | UiEffect::StackWider
             | UiEffect::StackNarrower
             | UiEffect::OpenSettings
+            // The status panel's toggle (OP3 W-1) interprets like the
+            // settings opener — its kept arm owns the view swap.
+            | UiEffect::OpenStatusPanel
             | UiEffect::BoardNext
             | UiEffect::BoardPrevious
             | UiEffect::BoardSelect(_)
@@ -7131,6 +7158,16 @@ fn auto_list_suppressed(
         .is_some_and(|entry| entry.active(now))
 }
 
+/// The status panel's VM (OP3 W-1..W-3, journey plan
+/// `2026-11-21-parity-restore-journeys-status-surface.md`): the single
+/// in-flight `StatusQuery` reply half. The folded data lives slint-side
+/// (the `StatusPanelFacts` global's typed properties — the panel
+/// renders from its facts, the adapter only dispatches and folds).
+#[derive(Default)]
+struct StatusPanelVm {
+    pending: Option<oneshot::Receiver<crate::requests::StatusSnapshot>>,
+}
+
 #[derive(Debug, Default)]
 struct SettingsVm {
     draft: ConnectionDraft,
@@ -7935,6 +7972,47 @@ impl Adapter {
             self.refresh_forced(window);
         }
         dirty
+    }
+
+    /// Dispatches one `UiRequest::StatusQuery` (OP3 W-1, D-3): the
+    /// reply half parks in [`StatusPanelVm`]; the slint-side busy
+    /// posture holds until the reply folds or the channel drops (the
+    /// typed failure — W-3). A full/closed lane degrades to the
+    /// failure posture, never a wedge.
+    fn dispatch_status_query(&mut self, window: &AppWindow) {
+        let (reply, reply_rx) = oneshot::channel();
+        if self
+            .requests
+            .try_send(crate::requests::UiRequest::StatusQuery { reply })
+            .is_ok()
+        {
+            self.status_panel.pending = Some(reply_rx);
+            window.global::<crate::StatusPanelFacts>().set_busy(true);
+        } else {
+            tracing::warn!("request channel full or closed; status query dropped");
+            window.invoke_status_failure_shown();
+        }
+    }
+
+    /// The status reply drain (OP3 W-2/W-3): the same non-blocking
+    /// poll the repaint cadence runs — a settled reply folds into the
+    /// panel's typed facts; a dropped reply renders the failure
+    /// posture.
+    pub(crate) fn drain_status_reply(&mut self, window: &AppWindow) {
+        let Some(rx) = self.status_panel.pending.as_mut() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(snapshot) => {
+                self.status_panel.pending = None;
+                window.invoke_status_fields_folded(status_panel_data(&snapshot));
+            }
+            Err(oneshot::error::TryRecvError::Empty) => {}
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.status_panel.pending = None;
+                window.invoke_status_failure_shown();
+            }
+        }
     }
 
     /// The board-reconcile preview's drain (OP1 US-3, D-4): the same
@@ -10662,6 +10740,7 @@ pub(crate) fn install(
         models: crate::models::PushModels::default(),
         width_drag: None,
         scale_drag: None,
+        status_panel: StatusPanelVm::default(),
         settings: SettingsVm {
             rows: connectors,
             // The mount seed (r2 D27): the picker's initial selection
@@ -10884,6 +10963,7 @@ pub(crate) fn install(
 /// state (the adapter applies `view_state` outcomes verbatim, D9).
 fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_toolbar_seam(window, adapter);
+    install_status_panel_seam(window, adapter);
     install_menu_dismiss_seam(window, adapter);
     install_board_bar_seam(window, adapter);
     install_board_color_seams(window, adapter);
@@ -11854,6 +11934,78 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// `menu.dismiss`) — the F1 fix, since the toggle means `OpenMenu` can
 /// only ever fire while the menu is closed, so the pre-menu chain the
 /// projection reads is the real one on every open.
+/// The status panel's seams (OP3 W-1..W-3): the mount's
+/// snapshot-on-open dispatch and the Refresh control's re-query ride
+/// the exported `StatusPanelFacts` global (the composition owns the
+/// callbacks, the adapter owns the dispatch). The panel dispatches no
+/// `StateCommand` — R-3's read-only contract is structural here: no
+/// seam body touches the command lane.
+fn install_status_panel_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    let facts = window.global::<crate::StatusPanelFacts>();
+    // slint: status-panel-open — the mount's snapshot-on-open dispatch
+    // (D-3, US-1/S1).
+    {
+        let seam_adapter = Rc::clone(adapter);
+        let seam_weak = window.as_weak();
+        facts.on_status_panel_open(move || {
+            let Some(window) = seam_weak.upgrade() else {
+                return;
+            };
+            let mut a = seam_adapter.borrow_mut();
+            a.dispatch_status_query(&window);
+        });
+    }
+    // slint: status-panel-refresh — the explicit re-query (US-1/S4).
+    {
+        let seam_adapter = Rc::clone(adapter);
+        let seam_weak = window.as_weak();
+        facts.on_status_panel_refresh(move || {
+            let Some(window) = seam_weak.upgrade() else {
+                return;
+            };
+            let mut a = seam_adapter.borrow_mut();
+            a.dispatch_status_query(&window);
+        });
+    }
+}
+
+/// Folds one settled [`StatusSnapshot`] into the panel's presentation
+/// data (OP3 W-2): the typed posture carries the D-2 rule verbatim;
+/// absent facts render as -1 / empty strings. Presentation fold only —
+/// no GUI-side fact is minted.
+fn status_panel_data(snapshot: &crate::requests::StatusSnapshot) -> crate::StatusPanelData {
+    let absent = -1_i32;
+    let as_int = |value: Option<u32>| value.and_then(|v| i32::try_from(v).ok()).unwrap_or(absent);
+    crate::StatusPanelData {
+        posture: match crate::requests::fold_status_posture(snapshot) {
+            crate::requests::StatusPosture::Serving => crate::StatusPanelPosture::Serving,
+            crate::requests::StatusPosture::Draining => crate::StatusPanelPosture::Draining,
+            crate::requests::StatusPosture::NoDaemon => crate::StatusPanelPosture::NoDaemon,
+        },
+        holder_pid: as_int(snapshot.holder_pid),
+        version: snapshot.version.clone().unwrap_or_default().into(),
+        backend: snapshot.backend.clone().unwrap_or_default().into(),
+        pid: as_int(snapshot.pid),
+        connector_present: snapshot.connector_attached.is_some(),
+        connector_attached: snapshot.connector_attached.unwrap_or(false),
+        draining: snapshot.draining == Some(true),
+        sync_phase: snapshot.sync_phase.clone().unwrap_or_default().into(),
+        sync_pending: as_int(snapshot.sync_pending_ops),
+        engine_commands: snapshot
+            .engine_commands
+            .and_then(|v| i32::try_from(v).ok())
+            .unwrap_or(absent),
+        engine_rejections: snapshot
+            .engine_rejections
+            .and_then(|v| i32::try_from(v).ok())
+            .unwrap_or(absent),
+        engine_signals: snapshot
+            .engine_signals
+            .and_then(|v| i32::try_from(v).ok())
+            .unwrap_or(absent),
+    }
+}
+
 fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_toolbar_menu_clicked, adapter: adapter;
     bind mut (a, window), args (), {        if a.shell.menu.open {
@@ -16357,6 +16509,7 @@ impl crate::UiHandle {
             }
             Some(ContextId::Review) => crate::view_state::ViewId::Review,
             Some(ContextId::Settings) => crate::view_state::ViewId::Settings,
+            Some(ContextId::StatusPanel) => crate::view_state::ViewId::Status,
             Some(ContextId::PlanNextDay) => crate::view_state::ViewId::PlanNextDay,
             // The overlay's context maps to no view: like the other
             // non-routable contexts, the adapter is left untouched

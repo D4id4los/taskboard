@@ -198,6 +198,7 @@ impl Harness {
             View::TaskDetail => Some(ContextId::TaskDetail),
             View::Review => Some(ContextId::Review),
             View::Settings => Some(ContextId::Settings),
+            View::Status => Some(ContextId::StatusPanel),
             View::PlanNextDay => Some(ContextId::PlanNextDay),
         };
         let mut chain = Vec::with_capacity(4);

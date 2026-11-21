@@ -1,0 +1,184 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The status panel (OP3 W-1..W-3, journey plan
+// `2026-11-21-parity-restore-journeys-status-surface.md`): the
+// menu-anchored diagnostics panel — who serves the database, the sync
+// posture, and the daemon/lock diagnostics (D-2's 1:1 `StatusView`
+// mirror). Read-only by contract (R-3): the only dispatch is the
+// `StatusQuery` request (D-3's snapshot-on-open + explicit refresh —
+// never a polling timer). The draining posture folds Rust-side into
+// the typed `StatusPanelPosture` (US-2 — the same rule the CLI text
+// renderer consumes, D-4); the panel renders postures, never text
+// oracles. Read-only on kiosk too (D-5): the panel is display, the
+// Refresh button is keyboard-reachable (the TextButton grammar's
+// Return/Space activation).
+
+import { Theme, Typography, RoleText } from "../theme.slint";
+import { TextButton } from "../widgets/text-button.slint";
+import { LabeledValueRow, RowMode } from "../widgets/labeled-value-row.slint";
+
+// The panel's typed posture (US-2/AC-1/AC-2): the Rust-side fold
+// (`fold_status_posture`) is the oracle — presentation renders the
+// enum, never text.
+export enum StatusPanelPosture {
+    serving,
+    draining,
+    no-daemon,
+}
+
+// One folded reply (W-2): the D-2 fields the panel renders, absent
+// facts as -1 / empty strings. The posture carries the typed rule;
+// `draining` rides it as the display fact beside the holder pid.
+export struct StatusPanelData {
+    posture: StatusPanelPosture,
+    holder-pid: int, // -1 = absent (diagnostic, best-effort)
+    version: string,
+    backend: string,
+    pid: int, // -1 = absent
+    connector-present: bool,
+    connector-attached: bool,
+    draining: bool,
+    sync-phase: string,
+    sync-pending: int, // -1 = absent
+    engine-commands: int,
+    engine-rejections: int,
+    engine-signals: int,
+}
+
+export global StatusPanelFacts {
+    // The folded reply (W-2) and the failure posture (W-3); `busy`
+    // holds from dispatch until a reply folds or fails (US-1/S1).
+    in-out property <StatusPanelData> data: {
+        posture: StatusPanelPosture.no-daemon,
+        holder-pid: -1,
+        version: "",
+        backend: "",
+        pid: -1,
+        connector-present: false,
+        connector-attached: false,
+        draining: false,
+        sync-phase: "",
+        sync-pending: -1,
+        engine-commands: -1,
+        engine-rejections: -1,
+        engine-signals: -1,
+    };
+    in-out property <bool> busy: false;
+    in-out property <bool> failure: false;
+
+    // slint: status-panel-open — the mount's snapshot-on-open dispatch
+    // (D-3, US-1/S1): the panel fires this once per mount; the adapter
+    // answers with exactly one `UiRequest::StatusQuery`.
+    callback status-panel-open();
+    // slint: status-panel-refresh — the Refresh control's re-query
+    // (US-1/S4): keyboard-reachable (the TextButton grammar), never a
+    // timer.
+    callback status-panel-refresh();
+    // slint: status-fields-folded — the settled reply's fold (W-2):
+    // the adapter invokes it Rust-side; the body writes the typed
+    // data and clears the busy posture.
+    callback status-fields-folded(StatusPanelData);
+    status-fields-folded(d) => {
+        data = d;
+        busy = false;
+        failure = false;
+    }
+    // slint: status-failure-shown — the dropped reply's typed failure
+    // posture (W-3, US-1/S3): never a blank panel; Refresh stays
+    // available.
+    callback status-failure-shown();
+    status-failure-shown() => {
+        failure = true;
+        busy = false;
+    }
+}
+
+export component StatusPanel inherits Rectangle {
+    background: Theme.surface;
+    // The mount's snapshot-on-open dispatch (D-3): one query per
+    // mount, never a timer.
+    init => {
+        StatusPanelFacts.status-panel-open();
+    }
+
+    pure function headline() -> string {
+        if (StatusPanelFacts.failure) {
+            return "The status query failed.";
+        }
+        if (StatusPanelFacts.busy) {
+            return "Reading the status…";
+        }
+        if (StatusPanelFacts.data.posture == StatusPanelPosture.serving) {
+            return "A daemon serves this database.";
+        }
+        if (StatusPanelFacts.data.posture == StatusPanelPosture.draining) {
+            return "Daemon draining: the sync artifact sits beside a held lock.";
+        }
+        return "No daemon is serving this database.";
+    }
+
+    VerticalLayout {
+        padding: Theme.space-5;
+        spacing: Theme.space-4;
+
+        RoleText {
+            text: root.headline();
+            role: Typography.heading;
+            wrap: word-wrap;
+        }
+
+        // The holder pid renders beside the lock diagnostics only when
+        // the sidecar reported one (US-2/S1: the draining posture shows
+        // the holder pid; the plain posture shows it as the
+        // diagnostic fact it is).
+        LabeledValueRow {
+            mode: RowMode.display;
+            label: "Lock holder pid";
+            visible: StatusPanelFacts.data.holder-pid >= 0 && !StatusPanelFacts.failure;
+            value: StatusPanelFacts.data.holder-pid >= 0
+                ? StatusPanelFacts.data.holder-pid : "";
+        }
+
+        LabeledValueRow {
+            mode: RowMode.display;
+            label: "Sync phase";
+            visible: StatusPanelFacts.data.sync-phase != "" && !StatusPanelFacts.failure;
+            value: StatusPanelFacts.data.sync-phase;
+        }
+
+        LabeledValueRow {
+            mode: RowMode.display;
+            label: "Pending ops";
+            visible: StatusPanelFacts.data.sync-pending >= 0 && !StatusPanelFacts.failure;
+            value: StatusPanelFacts.data.sync-pending >= 0
+                ? StatusPanelFacts.data.sync-pending : "";
+        }
+
+        LabeledValueRow {
+            mode: RowMode.display;
+            label: "Connector";
+            visible: StatusPanelFacts.data.connector-present && !StatusPanelFacts.failure;
+            value: StatusPanelFacts.data.connector-attached ? "attached" : "detached (logged out)";
+        }
+
+        LabeledValueRow {
+            mode: RowMode.display;
+            label: "Engine";
+            visible: StatusPanelFacts.data.engine-commands >= 0 && !StatusPanelFacts.failure;
+            value: StatusPanelFacts.data.engine-commands >= 0
+                ? StatusPanelFacts.data.engine-commands + " cmds / "
+                    + StatusPanelFacts.data.engine-rejections + " rejected / "
+                    + StatusPanelFacts.data.engine-signals + " signals"
+                : "";
+        }
+
+        // The explicit Refresh affordance (US-1/S4): the only dispatch
+        // surface, keyboard-reachable (D-5), available in every
+        // posture including the failure one.
+        TextButton {
+            label: "Refresh";
+            clicked => {
+                StatusPanelFacts.status-panel-refresh();
+            }
+        }
+    }
+}

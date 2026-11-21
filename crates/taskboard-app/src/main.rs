@@ -903,6 +903,9 @@ async fn run_kiosk(
             // the dialog (R-2), the postures are inert facts.
             ui_settings.export = taskboard_app::ui::resolve_export_defaults(&app.config);
             let (requests_tx, requests_rx) = taskboard_app::ui_requests::ui_request_channel();
+            // The status panel's answer source (OP3 W-4, D-2): the
+            // kiosk's own in-session projection (the desktop twin).
+            let status_source = taskboard_app::ui::status_source_of(&app);
             let request_forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
                 requests_rx,
                 app.engine.shared_state(),
@@ -926,6 +929,7 @@ async fn run_kiosk(
                         config: std::sync::Arc::new(app.config.clone()),
                         may_open_viewer: false,
                     },
+                    status: Box::new(status_source),
                 },
             );
 

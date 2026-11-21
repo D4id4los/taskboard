@@ -98,6 +98,23 @@ async fn booted_workspace(
         ),
         connector_owners: app.connector_owners.clone(),
         export: taskboard_app::ui_requests::ExportWorkspace::default(),
+        // The suite never drives the status panel; the source is a
+        // plain value requirement — the in-session projection of the
+        // booted app.
+        status: Box::new({
+            let engine = app.engine.clone();
+            let config = app.config.clone();
+            let control = app.connector_control();
+            let files = app.files_sync_status.clone();
+            move || {
+                taskboard_app::commands::status::StatusView::in_session_parts(
+                    &engine,
+                    &config,
+                    control.connector_attached(),
+                    files.as_ref(),
+                )
+            }
+        }),
     };
     (app, workspace)
 }

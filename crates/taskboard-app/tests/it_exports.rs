@@ -67,6 +67,22 @@ fn workspace(
             config: Arc::new(app.config.clone()),
             may_open_viewer: false,
         },
+        // The suite never drives the status panel; the source is the
+        // in-session projection over the fixture's handles.
+        status: Box::new({
+            let engine = app.engine.clone();
+            let config = app.config.clone();
+            let control = app.connector_control();
+            let files = app.files_sync_status.clone();
+            move || {
+                taskboard_app::commands::status::StatusView::in_session_parts(
+                    &engine,
+                    &config,
+                    control.connector_attached(),
+                    files.as_ref(),
+                )
+            }
+        }),
     }
 }
 

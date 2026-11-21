@@ -102,3 +102,100 @@ fn us3_s3_the_json_payload_stays_the_byte_additive_b6_shape() {
         .collect::<Vec<_>>();
     assert_eq!(keys, ["daemon", "draining", "holder_pid"]);
 }
+
+/// OP3 W-4 (journey plan `status_query_reply_mirrors_status_view`) —
+/// the `StatusQuery` answer mirrors the CLI-built `StatusView` 1:1: the
+/// app half folds the in-session projection (the same constructor the
+/// REPL `status` line builds, D-2's one-projection law) and every
+/// mirrored field passes through verbatim — no GUI-side fact is minted,
+/// renamed, or re-derived.
+#[tokio::test]
+async fn status_query_reply_mirrors_status_view() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut config = taskboard_app::config::AppConfig::default();
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
+    config.storage.db_path = Some(dir.path().join("taskboard.db"));
+    config.app.shutdown_timeout_secs = 2;
+    config.validate().expect("valid");
+    let app = taskboard_app::bootstrap::bootstrap_in(
+        config,
+        std::sync::Arc::new(FixedStore),
+        std::sync::Arc::new(taskboard_app::notifications::LogSink),
+        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await
+    .expect("boots");
+
+    // The in-session projection (the CLI verb's constructor) and the
+    // panel's fold: 1:1 over the scalar surface.
+    let view = taskboard_app::commands::status::StatusView::in_session(&app);
+    let snapshot = taskboard_app::ui_requests::status_snapshot(&view);
+    assert_eq!(snapshot.daemon, view.daemon);
+    assert_eq!(snapshot.version, view.version);
+    assert_eq!(snapshot.backend, view.backend);
+    assert_eq!(snapshot.pid, view.pid);
+    assert_eq!(snapshot.holder_pid, view.holder_pid);
+    assert_eq!(snapshot.connector_attached, view.connector_attached);
+    assert_eq!(snapshot.draining, view.draining);
+    assert_eq!(
+        snapshot.sync_phase,
+        view.sync.as_ref().map(|sync| sync.phase.clone())
+    );
+    assert_eq!(
+        snapshot.sync_pending_ops,
+        view.sync.as_ref().map(|sync| sync.pending_ops)
+    );
+    assert_eq!(
+        snapshot.engine_commands,
+        view.engine.as_ref().map(|engine| engine.commands)
+    );
+    assert_eq!(
+        snapshot.engine_rejections,
+        view.engine.as_ref().map(|engine| engine.rejections)
+    );
+    assert_eq!(
+        snapshot.engine_signals,
+        view.engine.as_ref().map(|engine| engine.signals)
+    );
+    // In-session honesty: the session IS the core holder.
+    assert!(!snapshot.daemon);
+    assert_eq!(snapshot.holder_pid, Some(std::process::id()));
+
+    // The no-daemon projection folds 1:1 too (the draining fact rides
+    // B6's Option verbatim).
+    let absent = taskboard_app::commands::status::StatusView::no_daemon(std::path::Path::new(
+        "/nonexistent/taskboard.db",
+    ));
+    let snapshot = taskboard_app::ui_requests::status_snapshot(&absent);
+    assert!(!snapshot.daemon);
+    assert_eq!(snapshot.draining, None);
+    assert_eq!(snapshot.holder_pid, None);
+
+    let _ = app.shutdown().await;
+}
+
+/// A credential store that never answers (standalone never consults
+/// it) — the unit tests' `FixedStore` twin, local to this binary.
+#[derive(Debug)]
+struct FixedStore;
+
+impl taskboard_app::secrets::CredentialStore for FixedStore {
+    fn load(
+        &self,
+        _server: &str,
+        _username: &str,
+    ) -> Result<taskboard_app::secrets::AppPassword, taskboard_app::secrets::CredentialError> {
+        Ok(taskboard_app::secrets::AppPassword::new("pw"))
+    }
+    fn store(
+        &self,
+        _: &str,
+        _: &str,
+        _: taskboard_app::secrets::AppPassword,
+    ) -> Result<(), taskboard_app::secrets::CredentialError> {
+        Err(taskboard_app::secrets::CredentialError::Unsupported)
+    }
+    fn delete(&self, _: &str, _: &str) -> Result<(), taskboard_app::secrets::CredentialError> {
+        Err(taskboard_app::secrets::CredentialError::Unsupported)
+    }
+}

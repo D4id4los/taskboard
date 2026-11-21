@@ -262,6 +262,9 @@ impl KeymapShell {
             | UiEffect::StackWider
             | UiEffect::StackNarrower
             | UiEffect::OpenSettings
+            // The status panel's toggle (OP3) moves no shell state —
+            // the view intent lives in `view_state`.
+            | UiEffect::OpenStatusPanel
             // The plan-next-day family (#622) moves no shell state —
             // the view/flow intents live in `view_state`.
             | UiEffect::OpenPlanNextDay

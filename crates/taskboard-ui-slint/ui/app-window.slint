@@ -57,6 +57,7 @@ import {
     SettingsPublishCopy,
 } from "views/settings-view.slint";
 export { SettingsModel, ConnectionRow, ConnectionItem, ConnectionItemKind, SettingsBadgeTone, SettingsRowStatus, SettingsOutcome }
+import { StatusPanel, StatusPanelFacts } from "compositions/status-panel.slint";
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { TaskCard } from "widgets/task-card.slint";
 import { DragState } from "drag-state.slint";
@@ -81,7 +82,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
 export { ReviewWalkModel, DialogButtonModel, DialogButtonRole }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
@@ -106,6 +107,9 @@ export enum View {
     // The plan-next-day surface (#622): desktop-only by routing
     // (the kiosk rotation maps Board/Today only).
     plan-next-day,
+    // The status panel (OP3 W-1): the read-only diagnostics surface,
+    // reachable from the action menu on desktop and kiosk alike (D-5).
+    status,
 }
 
 // The keymap layer's window-facing state (D18), pushed one-way from
@@ -692,6 +696,11 @@ export component AppWindow inherits Window {
                 effort-edited(t) => root.plan-effort-edited(t);
                 place-commit() => root.plan-place-commit();
                 place-cancel() => root.plan-place-cancel();
+            }
+            if (root.current-view == View.status): StatusPanel {
+                // The seams ride the exported StatusPanelFacts global
+                // (open/refresh/fields-folded/failure-shown); the
+                // panel dispatches no command (OP3 R-3).
             }
             if (root.current-view == View.review): ReviewView {
                 review: root.review-model;
