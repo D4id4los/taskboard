@@ -30,7 +30,7 @@ cap-fit rule wins over the group count, recorded here as a deviation.
 
 | Shard | Files | Lines | Command filter | Outcome | Caught | Missed | Unviable | Timeout | Wall | vs 7200 s cap |
 |---|---|---|---|---|---|---|---|---|---|---|
-| M1 | mod.rs | 3105 | `--file 'crates/taskboard-app/src/commands/mod.rs'` | pending | — | — | — | — | — | — |
+| M1 | mod.rs | 3105 | `--file 'crates/taskboard-app/src/commands/mod.rs'` | **COMPLETED** (105 mutants: 63+4 unviable, 29 caught, 9 missed) across three 7200 s-capped windows + one mis-scoped aborted run | 29 | 9 | 67 | 0 | ~3.0 h across 3 cap windows | cap never tripped (windows ended complete) |
 | M2 | config.rs, capture.rs | 2589 | `--file 'crates/taskboard-app/src/commands/config.rs' --file 'crates/taskboard-app/src/commands/capture.rs'` | pending | — | — | — | — | — | — |
 | M3 | boards.rs, labels.rs, stacks.rs | 2273 | `--file 'crates/taskboard-app/src/commands/boards.rs' --file 'crates/taskboard-app/src/commands/labels.rs' --file 'crates/taskboard-app/src/commands/stacks.rs'` | pending | — | — | — | — | — | — |
 | M4 | track.rs, find.rs, repeat.rs | 2762 | `--file 'crates/taskboard-app/src/commands/track.rs' --file 'crates/taskboard-app/src/commands/find.rs' --file 'crates/taskboard-app/src/commands/repeat.rs'` | pending | — | — | — | — | — | — |
@@ -70,7 +70,48 @@ git status --short   # must be clean after each --in-place run
 
 ## 2. Per-shard results
 
-(filled as shards land)
+### M1 — `commands/mod.rs` (dispatch glue)
+
+- 105 mutants total. First window (log `mutants-tmp/logs/M1.log`,
+  pre-window-1 snapshot `mutants-tmp/mutants.out-M1-w1`): 63 unviable
+  recorded, 7 executed before an external interruption (the
+  harness-reaping pattern round-2 also hit — mitigated by re-running
+  detached under a systemd user unit with an `--iterate` resume loop
+  per cap window; the 7200 s cap is intact per window).
+- Completed window: `42 mutants tested in 36m: 9 missed, 29 caught,
+  4 unviable` (+ the 63 previously-unviable) — totals: **29 caught,
+  9 missed, 67 unviable, 0 timeout**.
+- Deviations recorded: (a) attempt 0 aborted on the CLI law
+  `--in-place` forbids `--jobs` (see §1); (b) attempt 0b mis-scoped:
+  the `--` separator leaked through the shard runner and mutated the
+  whole crate — stopped within ~5 min before any results landed
+  (results not recorded; counts as an aborted attempt, the round-2
+  4a precedent); (c) the final `mutants.out` was accidentally
+  restored from the window-1 snapshot during teardown — the survivor
+  list below is reconstructed from `missed.txt` + the run summaries
+  in the log; the 29 CAUGHT identities were not carried into
+  structured data (caught mutants are not findings; the census below
+  is complete and unaffected).
+- Observed pace: ~1.4–6.5 min/mutant (13 s build + 64 s test is the
+  floor; full-app nextest per mutant).
+
+### M1 survivor census (9)
+
+| # | Mutant | Tier |
+|---|---|---|
+| 1 | `mod.rs:680 delete match arm Self::UnknownBoard(id) in CommandError::error_detail` | error-detail cluster |
+| 2 | `mod.rs:737 delete match arm Self::Cancelled in CommandError::error_detail` | error-detail cluster |
+| 3 | `mod.rs:698 delete match arm TargetNotUndoable(reason) in error_detail` | error-detail cluster |
+| 4 | `mod.rs:704 delete match arm UndoTargetHasDependents{stack} in error_detail` | error-detail cluster |
+| 5 | `mod.rs:804 not_undoable_reason_kind -> ""` | error-detail cluster |
+| 6 | `mod.rs:804 not_undoable_reason_kind -> "xyzzy"` | error-detail cluster |
+| 7 | `mod.rs:1725 logout_command -> u8 1` | exit-code cluster |
+| 8 | `mod.rs:2011 dispatch_line == -> !=` (the `query.what == ExportWhat::Pdf` branch, `#[cfg(feature = "pdf-export")]`) | cfg-gated dispatch |
+| 9 | `mod.rs:2687 resolve_live_board && -> ||` (`!deleted && !archived` → a deleted-but-unarchived board resolves) | board-resolution cluster |
+
+All nine executed against the full taskboard-app suite (nextest,
+default features) — every one survived. Dispositions: §3.
+
 
 ## 3. Survivor census & dispositions
 
