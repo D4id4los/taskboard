@@ -299,10 +299,36 @@ impl StatusView {
     /// rule as `AppConfig::server_url`).
     #[must_use]
     pub fn in_session(app: &crate::App) -> Self {
-        let configured = crate::connectors::configured_connectors(&app.config)
+        Self::in_session_parts(
+            &app.engine,
+            &app.config,
+            app.connector_attached(),
+            app.files_sync_status.as_ref(),
+        )
+    }
+
+    /// The in-session derivation over its parts (OP3 W-4): the GUI
+    /// lifecycles answer `StatusQuery` from this constructor with the
+    /// same cloned handles the CLI session would read — one
+    /// derivation, two fronts, no drift ([`Self::in_session`]
+    /// delegates verbatim).
+    ///
+    /// # Panics
+    ///
+    /// Never on a validated config: same rule as [`Self::in_session`].
+    #[must_use]
+    pub fn in_session_parts(
+        engine: &taskboard_state::EngineHandle,
+        config: &crate::config::AppConfig,
+        connector_attached: bool,
+        files_sync_status: Option<
+            &tokio::sync::watch::Receiver<taskboard_sync_files_nextcloud::status::FilesSyncStatus>,
+        >,
+    ) -> Self {
+        let configured = crate::connectors::configured_connectors(config)
             .expect("connector names validated at boot — App.config is a validated AppConfig");
-        let connector_attached = connector_flag(!configured.is_empty(), app.connector_attached());
-        let state = app.engine.shared_state().load_full();
+        let connector_attached = connector_flag(!configured.is_empty(), connector_attached);
+        let state = engine.shared_state().load_full();
         let (connectors, boards) = derive_connector_views(&state, &configured);
         Self {
             daemon: false,
@@ -316,10 +342,8 @@ impl StatusView {
             boards: Some(boards),
             // The session *is* the core holder: the same handle read as
             // `server`, same honesty.
-            engine: Some(EngineMetricsView::new(app.engine.metrics())),
-            files_sync: app
-                .files_sync_status
-                .as_ref()
+            engine: Some(EngineMetricsView::new(engine.metrics())),
+            files_sync: files_sync_status
                 .map(|rx| crate::commands::output::FilesSyncStatusView::new(&rx.borrow().clone())),
             draining: None,
         }

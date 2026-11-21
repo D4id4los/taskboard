@@ -85,6 +85,33 @@ pub struct ExportWorkspace {
     pub may_open_viewer: bool,
 }
 
+/// Folds one CLI-built [`StatusView`] into the panel's 1:1 mirror
+/// (OP3 W-4, D-2): the scalar surface of the same typed view the CLI
+/// verb prints — no fact is minted, renamed, or re-derived GUI-side.
+/// The per-connector/per-board/per-peer arrays are entity detail
+/// outside D-2's enumerated panel surface (the CLI verb remains their
+/// front); every other field passes through verbatim.
+#[must_use]
+pub fn status_snapshot(
+    view: &crate::commands::status::StatusView,
+) -> taskboard_ui_slint::requests::StatusSnapshot {
+    use taskboard_ui_slint::requests::StatusSnapshot;
+    StatusSnapshot {
+        daemon: view.daemon,
+        version: view.version.clone(),
+        backend: view.backend.clone(),
+        pid: view.pid,
+        holder_pid: view.holder_pid,
+        connector_attached: view.connector_attached,
+        draining: view.draining,
+        sync_phase: view.sync.as_ref().map(|sync| sync.phase.clone()),
+        sync_pending_ops: view.sync.as_ref().map(|sync| sync.pending_ops),
+        engine_commands: view.engine.as_ref().map(|engine| engine.commands),
+        engine_rejections: view.engine.as_ref().map(|engine| engine.rejections),
+        engine_signals: view.engine.as_ref().map(|engine| engine.signals),
+    }
+}
+
 /// The settings handlers' dependencies (round-1 chunk 3, plan D3): the
 /// config write target, the credential store, and the connector
 /// lifecycle — everything a spawned task can own without an `App`
@@ -118,6 +145,14 @@ pub struct ConnectionWorkspace {
     /// lifecycle (the kiosk workspace never shells out, R-2's trap-c
     /// law; the kiosk UI never mounts the dialog anyway).
     pub export: ExportWorkspace,
+    /// The status panel's answer source (OP3 W-4, D-2): the same
+    /// `StatusView` constructors the CLI `status` verb builds — the
+    /// GUI lifecycles capture their own in-session projection
+    /// ([`StatusView::in_session_parts`]) over cloned handles, so the
+    /// panel reads the identical state the CLI prints (one
+    /// projection, two fronts). Captured per lifecycle at the spawn
+    /// site (`ui.rs` desktop, `main.rs` kiosk).
+    pub status: Box<dyn Fn() -> crate::commands::status::StatusView + Send + Sync>,
 }
 
 /// Spawns the UI request forwarder: width snapshots merge into the
@@ -157,6 +192,10 @@ pub fn spawn_ui_request_forwarder(
                     // last rect (the full-snapshot semantics).
                     pending_geometry = Some(geometry);
                 }
+                UiRequest::StatusQuery { reply } => {
+                    answer_status_query(&workspace, reply);
+                    continue;
+                }
                 settings => {
                     handle_settings(settings, &workspace).await;
                     continue;
@@ -174,6 +213,9 @@ pub fn spawn_ui_request_forwarder(
                     }
                     Ok(Some(UiRequest::WindowGeometryChanged { geometry })) => {
                         pending_geometry = Some(geometry);
+                    }
+                    Ok(Some(UiRequest::StatusQuery { reply })) => {
+                        answer_status_query(&workspace, reply);
                     }
                     Ok(Some(settings)) => {
                         handle_settings(settings, &workspace).await;
@@ -377,6 +419,18 @@ const SAVE_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 /// busy state covers the window.
 const PUBLISH_SETTLE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Answers one `StatusQuery` (OP3 W-4): the CLI-built in-session
+/// projection folded into the panel's mirror. Pure — no config write,
+/// no core boot, no lock; a wedged engine reads its last published
+/// state (the observation posture, never a sync trigger).
+fn answer_status_query(
+    workspace: &ConnectionWorkspace,
+    reply: tokio::sync::oneshot::Sender<taskboard_ui_slint::requests::StatusSnapshot>,
+) {
+    let view = (workspace.status)();
+    let _ = reply.send(status_snapshot(&view));
+}
+
 /// Dispatches one settings request (never debounced — plan D3). Every
 /// reply is fire-and-forget-honest: a dropped receiver (a stale form)
 /// is at most a log line, never a panic, and persistence is never
@@ -389,6 +443,9 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
     match request {
         UiRequest::StackWidthsChanged { .. } | UiRequest::WindowGeometryChanged { .. } => {
             unreachable!("width and geometry snapshots take the debounce path")
+        }
+        UiRequest::StatusQuery { .. } => {
+            unreachable!("status queries take the OP3 arm's own path, never the settings lane")
         }
         UiRequest::SaveConnection { profile, reply } => {
             let outcome = save_connection(workspace, &profile).await;
@@ -2348,6 +2405,22 @@ mod tests {
             device_json: Some(dir.path().join("device.json")),
             connector_owners: app.connector_owners.clone(),
             export: crate::ui_requests::ExportWorkspace::default(),
+            // The suite never drives the status panel; the source is
+            // the in-session projection over the fixture's handles.
+            status: Box::new({
+                let engine = app.engine.clone();
+                let config = app.config.clone();
+                let control = app.connector_control();
+                let files = app.files_sync_status.clone();
+                move || {
+                    crate::commands::status::StatusView::in_session_parts(
+                        &engine,
+                        &config,
+                        control.connector_attached(),
+                        files.as_ref(),
+                    )
+                }
+            }),
         };
         WorkspaceFixture {
             workspace,

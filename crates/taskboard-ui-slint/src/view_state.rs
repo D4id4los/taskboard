@@ -71,6 +71,12 @@ pub enum ViewId {
     /// cycle (the Settings precedent; the wave's only interactive
     /// editing workspace must not become a casual cycle stop).
     PlanNextDay,
+    /// The status panel (OP3 W-1, journey plan §2 R-1: the fixed
+    /// surface set's app-scoped home, the Settings precedent):
+    /// reachable only through `open_status_panel` — never a member of
+    /// the `step_view` cycle. Read-only (R-3): no engine command is
+    /// reachable from it.
+    Status,
 }
 
 /// The kiosk ambient display's modes (issue #363): the two
@@ -1560,6 +1566,7 @@ impl ViewState {
             ViewId::TaskDetail => ContextId::TaskDetail,
             ViewId::Review => ContextId::Review,
             ViewId::Settings => ContextId::Settings,
+            ViewId::Status => ContextId::StatusPanel,
             ViewId::PlanNextDay => ContextId::PlanNextDay,
         }
     }
@@ -1635,6 +1642,24 @@ impl ViewState {
     /// level (the old no-recorded-return path) the fallback lands on
     /// the board, byte-equal to the retired `unwrap_or(ViewId::Board)`.
     pub fn close_settings(&mut self) -> Vec<FlowOutcome> {
+        self.close_over_view();
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// Opens the status panel (OP3 W-1, D-5): the `open_settings`
+    /// twin — a pushed view level, exact restore by truncation, the
+    /// D7 refusal mapped to repaint-only. Read-only surface (R-3).
+    pub fn open_status_panel(&mut self) -> Vec<FlowOutcome> {
+        match self
+            .surfaces
+            .push(crate::surfaces::Surface::View(ViewId::Status))
+        {
+            Ok(_) | Err(crate::surfaces::AlreadyInChain) => vec![FlowOutcome::RefreshNow],
+        }
+    }
+
+    /// Closes the status panel: the `close_settings` twin.
+    pub fn close_status_panel(&mut self) -> Vec<FlowOutcome> {
         self.close_over_view();
         vec![FlowOutcome::RefreshNow]
     }
@@ -1832,8 +1857,9 @@ impl ViewState {
             // The settings surface never enters through the cycle
             // (round-1 D5): only `open_settings` reaches it. The
             // plan-next-day surface likewise (D-1): only
-            // `open_plan_next_day` reaches it.
-            ViewId::Settings | ViewId::PlanNextDay => false,
+            // `open_plan_next_day` reaches it. The status panel
+            // likewise (OP3): only `open_status_panel` reaches it.
+            ViewId::Settings | ViewId::PlanNextDay | ViewId::Status => false,
         }
     }
 
@@ -2685,7 +2711,12 @@ impl ViewState {
             // is the create path there. The settings surface hosts no
             // create flow either (round-1 D5).
             // Review is subjectless like Today (#214 D-1).
-            ViewId::Today | ViewId::Settings | ViewId::Review | ViewId::PlanNextDay => None,
+            ViewId::Today
+            | ViewId::Settings
+            | ViewId::Review
+            | ViewId::PlanNextDay
+            // The status panel hosts no create flow (OP3: read-only).
+            | ViewId::Status => None,
             ViewId::Board => self
                 .focused_stack(state)
                 .or(self.selected_stack)

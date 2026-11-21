@@ -35,6 +35,11 @@ pub enum ContextId {
     /// resolution stays total over the view set (the plan's D-8).
     Review,
     Settings,
+    /// The status panel (OP3, D-5): a non-masking view context like
+    /// `Settings` — the Escape close resolves here (the settings
+    /// close law's twin); the panel is read-only, so no other verb
+    /// targets the context (R-3: no `StateCommand` is reachable).
+    StatusPanel,
     /// The plan-next-day surface (#622): a non-masking view context
     /// like `Today` — the planner's walking verbs live here; the
     /// placement form's text fields ride the existing `ViInsert`
@@ -121,6 +126,7 @@ impl ContextId {
             Self::AlarmWindow => "alarm-window",
             Self::NotificationSurface => "notification-surface",
             Self::Settings => "settings",
+            Self::StatusPanel => "status-panel",
             Self::PlanNextDay => "plan-next-day",
             Self::Menu => "menu",
             Self::Palette => "palette",
@@ -664,6 +670,12 @@ pub enum ActionId {
     /// exactly as the field's pointer affordance does; the
     /// `Editor`-scope TEXT settle rule applies unchanged.
     TaskDescriptionEdit,
+    /// The status panel's opener (OP3 W-1, journey plan
+    /// `2026-11-21-parity-restore-journeys-status-surface.md` §7):
+    /// routes `UiEffect::OpenStatusPanel` — the menu-anchored
+    /// diagnostics panel's entry point. Toggle semantics like the
+    /// settings opener; the panel dispatches no `StateCommand` (R-3).
+    StatusPanelOpen,
 }
 
 impl ActionId {
@@ -677,6 +689,7 @@ impl ActionId {
             Self::AppUndo => "app.undo",
             Self::AppRedo => "app.redo",
             Self::AppSettings => "app.settings",
+            Self::StatusPanelOpen => "app.status-panel-open",
             Self::AppHelp => "app.help",
             Self::ExportDialogOpen => "app.export-dialog",
             Self::ExportDialogClose => "app.export-dialog-close",
@@ -1018,6 +1031,18 @@ pub const REGISTRY: &[ActionEntry] = &[
         // `LabelOverlayDismiss` shape).
         menu_rank: 990,
         description: "Closes the export dialog; nothing dispatches and any running export completes independently.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::StatusPanelOpen,
+        label: "Status…",
+        contexts: GLOBAL,
+        category: Category::Application,
+        enabled: true,
+        // After the Redo quick row (40), before the go-to verbs (60):
+        // the diagnostics panel is an application verb like settings.
+        menu_rank: 45,
+        description: "Opens or closes the status panel: who serves the database, the sync posture, and the daemon/lock diagnostics. Read-only.",
         menu_group: None,
     },
     ActionEntry {
@@ -2786,6 +2811,7 @@ mod tests {
             ActionId::AppUndo,
             ActionId::AppRedo,
             ActionId::AppSettings,
+            ActionId::StatusPanelOpen,
             ActionId::AppHelp,
             ActionId::CaptureQuick,
             ActionId::ViewToday,

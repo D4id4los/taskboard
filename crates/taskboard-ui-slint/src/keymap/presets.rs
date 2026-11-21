@@ -625,6 +625,11 @@ static STANDARD_S1: &[(ActionId, ContextId, &[&str])] = &[
     // Round-1 chunk 3 (D28b): Escape closes the settings surface
     // (dialog semantics; the opener is the global Ctrl+, route).
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
+    (
+        ActionId::StatusPanelOpen,
+        ContextId::StatusPanel,
+        &["Escape"],
+    ),
     // The Settings directional rows are DELIBERATELY ABSENT in this
     // preset (J3 US-1 deviation, recorded 2026-11-19): the settings
     // pane's slider owns the raw arrows as its keyboard step
@@ -1175,6 +1180,11 @@ static EMACS_S1: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::ModeNormal, ContextId::ViInsert, &["Escape"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
+    (
+        ActionId::StatusPanelOpen,
+        ContextId::StatusPanel,
+        &["Escape"],
+    ),
     // The planner's pane-switch grammar (J3 R-5, round 9 chunk 9):
     // C-f/C-b flip the boxes ↔ pool focus (free in this context —
     // the palette's isearch shadow does not reach the planner).
@@ -1455,6 +1465,11 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::MenuInvoke, ContextId::FocusMode, &["Return"]),
     // Round-1 chunk 3 (D28b): Escape closes the settings surface.
     (ActionId::AppSettings, ContextId::Settings, &["Escape"]),
+    (
+        ActionId::StatusPanelOpen,
+        ContextId::StatusPanel,
+        &["Escape"],
+    ),
     // Round 3 (D25): the control walk — Tab/Shift+Tab in the five
     // view contexts (unbound today; under ViInsert the chain masks
     // them and Tab stays the fields' native traversal).

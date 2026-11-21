@@ -331,6 +331,9 @@ pub enum UiEffect {
     /// Close the export dialog (W-1's close callback): nothing
     /// dispatches; the pending reply drops (US-2/S2's escape law).
     ExportDialogClose,
+    /// The status panel's toggle request (OP3 W-1): the adapter owns
+    /// the toggle and the D-3 snapshot-on-open query.
+    OpenStatusPanel,
     // --- the plan-next-day surface (#622, D-4/D-3): the routed
     // reachability seam plus the placement interaction. All pure
     // view intents (never a parallel write path — the placement
@@ -486,6 +489,7 @@ impl UiEffect {
             | Self::OpenSettings
             | Self::ExportDialogOpen
             | Self::ExportDialogClose
+            | Self::OpenStatusPanel
             | Self::FocusNext
             | Self::FocusPrev
             | Self::FocusDirectional(_)
@@ -1947,6 +1951,9 @@ impl ActionRouter {
             // only disabled row left (D6) is AppHelp (the undo rows
             // dispatch at the top of the match).
             ActionId::PaletteSearch => DispatchOutcome::UiEffect(UiEffect::OpenPalette),
+            // The status panel's opener (OP3 W-1): the toggle and the
+            // snapshot-on-open query live in the adapter's arm.
+            ActionId::StatusPanelOpen => DispatchOutcome::UiEffect(UiEffect::OpenStatusPanel),
             ActionId::AppHelp => DispatchOutcome::Disabled,
         }
     }

@@ -207,6 +207,7 @@ enum EK {
     /// is a modal takeover, the close the modal's own exit arm.
     ExportOpen,
     ExportClose,
+    OpenStatusPanel,
     BeginTitleEdit,
     /// The keymap-parity D-4 editor arms: their own keys — the date
     /// arm posts `Due`, the description arm posts `Text`.
@@ -327,6 +328,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::OpenSettings => EK::OpenSettings,
         UiEffect::ExportDialogOpen => EK::ExportOpen,
         UiEffect::ExportDialogClose => EK::ExportClose,
+        UiEffect::OpenStatusPanel => EK::OpenStatusPanel,
         UiEffect::BeginTitleEdit => EK::BeginTitleEdit,
         UiEffect::BeginDateEdit { .. } => EK::BeginDateEdit,
         UiEffect::BeginDescriptionEdit => EK::BeginDescriptionEdit,
@@ -1636,6 +1638,7 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::OpenSettings,
         UiEffect::ExportDialogOpen,
         UiEffect::ExportDialogClose,
+        UiEffect::OpenStatusPanel,
         UiEffect::BeginTitleEdit,
         // The keymap-parity D-4 editor arms (US-3): the subject is
         // entered by the driver, so both arms arm their flows.
@@ -2925,6 +2928,7 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BoardSelect(_)
         | UiEffect::Activate
         | UiEffect::OpenSettings
+        | UiEffect::OpenStatusPanel
         // The plan-next-day toggle (#622): it swaps the mounted
         // surface like the settings opener.
         | UiEffect::OpenPlanNextDay
@@ -3135,6 +3139,7 @@ fn walk_effects(fx: &Fixture, second: BoardId) -> Vec<UiEffect> {
         UiEffect::BoardSelect(second),
         UiEffect::Activate,
         UiEffect::OpenSettings,
+        UiEffect::OpenStatusPanel,
         UiEffect::ShowTask,
         UiEffect::InvokeSelected,
         // AnchorOrModal

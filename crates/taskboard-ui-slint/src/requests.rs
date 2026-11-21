@@ -547,6 +547,74 @@ pub struct ExportDialogDefaults {
     pub open_after: bool,
 }
 
+/// One app-posture snapshot for the status panel (OP3 D-2, journey
+/// plan `2026-11-21-parity-restore-journeys-status-surface.md` W-4):
+/// the scalar fields of the app crate's `StatusView` mirrored 1:1 —
+/// the adapter reads nothing the CLI `status` verb does not, and this
+/// type mints no GUI-specific fact. The sync posture rides the
+/// aggregate fold's two facts the panel renders (`sync_phase`,
+/// `sync_pending_ops`); the engine's counters ride flat. The
+/// per-connector/per-board/per-peer arrays are entity detail outside
+/// D-2's enumerated panel surface (the CLI verb remains their front).
+///
+/// The draining fact is B6's byte-additive `Option<bool>` verbatim:
+/// never `Some(false)` (the app-side minters guarantee it), and the
+/// panel's posture fold (`draining == Some(true)`) is the same typed
+/// rule the CLI text renderer consumes (D-4 — one rule, two fronts).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StatusSnapshot {
+    /// Is a daemon serving this database? In the GUI lifecycles the
+    /// process itself holds the core, so the answer is the in-session
+    /// projection's (`daemon: false`, holder = own pid).
+    pub daemon: bool,
+    pub version: Option<String>,
+    pub backend: Option<String>,
+    pub pid: Option<u32>,
+    /// The instance-lock sidecar's diagnostic holder pid (the
+    /// in-session answer: the process's own pid).
+    pub holder_pid: Option<u32>,
+    pub connector_attached: Option<bool>,
+    /// B6's typed draining distinction, additive and never
+    /// `Some(false)`.
+    pub draining: Option<bool>,
+    /// The aggregate sync phase (`"idle" | "syncing" | ...`), present
+    /// when a core-holding projection derived it.
+    pub sync_phase: Option<String>,
+    pub sync_pending_ops: Option<u32>,
+    /// Process-lifetime engine counters (present when derived).
+    pub engine_commands: Option<u64>,
+    pub engine_rejections: Option<u64>,
+    pub engine_signals: Option<u64>,
+}
+
+/// The status panel's posture fold (OP3 D-2, US-2/AC-1/AC-2): the
+/// typed rule the panel renders — never text. `Draining` is
+/// `daemon == false ∧ draining == Some(true)` (the same rule the CLI
+/// text renderer consumes, D-4); `NoDaemon` is the plain posture
+/// (`draining == None` — B6's law: never `Some(false)`); `Serving` is
+/// `daemon == true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusPosture {
+    Serving,
+    Draining,
+    NoDaemon,
+}
+
+/// Folds one [`StatusSnapshot`] into the panel's typed posture. The
+/// fold is pure over the B6-typed fields — the GUI and the CLI text
+/// renderer consume the identical predicate (D-2/D-4: one rule, two
+/// fronts).
+#[must_use]
+pub fn fold_status_posture(snapshot: &StatusSnapshot) -> StatusPosture {
+    if snapshot.daemon {
+        StatusPosture::Serving
+    } else if snapshot.draining == Some(true) {
+        StatusPosture::Draining
+    } else {
+        StatusPosture::NoDaemon
+    }
+}
+
 #[derive(Debug)]
 pub enum UiRequest {
     /// The full per-board stack-width snapshot (round-1 D21):
@@ -690,6 +758,16 @@ pub enum UiRequest {
     PublishBoardToFiles {
         board: BoardId,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// The status panel's one query (OP3 W-1, D-3): snapshot-on-open
+    /// and the explicit Refresh control — never a polling timer (the
+    /// kiosk memory/perf posture). The reply carries the
+    /// [`StatusSnapshot`]; a dropped reply (the app half gone) is the
+    /// typed failure posture UI-side — the app-side answer cannot
+    /// fail, it is a pure projection, so the error channel is the
+    /// channel itself, not a `Result` payload.
+    StatusQuery {
+        reply: oneshot::Sender<StatusSnapshot>,
     },
     /// Persists the keymap preset and replies with the rebuilt keymap
     /// (overrides re-resolved under the chosen preset, D9).

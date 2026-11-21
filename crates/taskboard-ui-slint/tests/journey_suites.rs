@@ -39,6 +39,8 @@ mod golden_visuals;
 mod habits_journey;
 #[path = "journeys/keymap_case_seam.rs"]
 mod keymap_case_seam;
+#[path = "journeys/status_surface_journeys.rs"]
+mod status_surface_journeys;
 #[path = "journeys/tracker_journeys.rs"]
 mod tracker_journeys;
 #[path = "journeys/usability_components.rs"]
