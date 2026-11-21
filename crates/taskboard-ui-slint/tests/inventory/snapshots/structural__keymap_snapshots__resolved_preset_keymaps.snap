@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-ui-slint/tests/inventory/keymap_snapshots.rs
+assertion_line: 115
 expression: rows
 ---
 - preset: standard
@@ -95,6 +96,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+o
           action: habit.skip
+        - sequence:
+            - Ctrl+Shift+q
+          action: habit.quota-edit
         - sequence:
             - Ctrl+Shift+u
           action: habit.unlog
@@ -769,6 +773,9 @@ expression: rows
             - Ctrl+p
           action: nav.focus-up
         - sequence:
+            - Ctrl+Shift+q
+          action: habit.quota-edit
+        - sequence:
             - Ctrl+Shift+u
           action: habit.unlog
         - sequence:
@@ -1337,6 +1344,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+o
           action: habit.skip
+        - sequence:
+            - Ctrl+Shift+q
+          action: habit.quota-edit
         - sequence:
             - t
           action: task.due-today

@@ -193,6 +193,14 @@ const SEAM_INVENTORY: &[&str] = &[
     "habits_create_quota_edited",
     // seam (H2 W-1): callback "habits-log-clicked".
     "habits_log_clicked",
+    // The inline quota edit's seams (HF2, W-5 #961): the phrase
+    // click, the stepper rungs, the commit, and the dismissal funnel
+    // (callbacks "habits-quota-edit-asked" / "-stepped" /
+    // "-committed" / "-dismissed").
+    "habits_quota_edit_asked",
+    "habits_quota_stepped",
+    "habits_quota_committed",
+    "habits_quota_dismissed",
     "habits_repair_clicked",
     "intercept_key",
     "menu_dismiss_requested",

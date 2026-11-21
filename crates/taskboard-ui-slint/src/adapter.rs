@@ -11837,7 +11837,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // `NonZeroCount` mint over the habit's CURRENT kind — the inline
     // edit is a one-number edit, the kind is locked); Escape/outside
     // (the host's dismissal) hits the disarm funnel.
-    install_seam!(window: window.on_habits_quota_edit_asked, adapter: adapter;
+    install_seam!(window: window.on_habits_quota_edit_asked, adapter: adapter; // slint: habits-quota-edit-asked
     bind mut (a, window), args (index), {        let Some(&habit) = a
         .tables
         .habits
@@ -11852,7 +11852,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.route(&window, ActionId::HabitQuotaEdit);
 
     });
-    install_seam!(window: window.on_habits_quota_stepped, adapter: adapter;
+    install_seam!(window: window.on_habits_quota_stepped, adapter: adapter; // slint: habits-quota-stepped
     bind mut (a, window), args (delta), {        // The stepper's floor is 0 — the typed invalid draft renders
     // (commit blocked); no upper clamp beyond i32 (the mint refuses
     // overflow at commit, and a u32 quota bounds the reachable
@@ -11861,7 +11861,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.sync_quota_popover(&window);
 
     });
-    install_seam!(window: window.on_habits_quota_committed, adapter: adapter;
+    install_seam!(window: window.on_habits_quota_committed, adapter: adapter; // slint: habits-quota-committed
     bind mut (a, window), args (), {        // The zero draft never routes (US-4/AC-3): the typed
     // invalid-draft state blocks the commit — the popover stays
     // open, the rungs remain the recovery.
@@ -11905,7 +11905,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.route(&window, ActionId::HabitQuotaCommit);
 
     });
-    install_seam!(window: window.on_habits_quota_dismissed, adapter: adapter;
+    install_seam!(window: window.on_habits_quota_dismissed, adapter: adapter; // slint: habits-quota-dismissed
     bind mut (a, window), args (), {        a.disarm_habit_quota(&window);
 
     });

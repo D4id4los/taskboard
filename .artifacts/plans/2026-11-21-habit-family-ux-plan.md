@@ -506,20 +506,20 @@ stateDiagram-v2
 
 | Kind | Name | Payload sketch | Journeys |
 |---|---|---|---|
-| StateCommand | `SkipHabit` | `{ habit: HabitId }` — window minted planner-side from the day calendar (the `LogHabit` posture; current canonical window only, R-4) | US-1/S2 |
-| StateCommand | `PauseHabit` | `{ habit: HabitId, until: Option<NaiveDate> }` — inclusive pause-through local date; `None` resumes (the `PauseSeries` twin, D-C10 shape) | US-2/S2, US-2/S3 |
-| StateCommand | `UpdateHabit` (changed payload, pre-existing command) | `HabitChanges` gains `scheduled_days: Option<WeekdaySet>` (PerWeek/PerMonth habits only, R-6) and `reminder: Option<Option<HabitReminderOverride>>` (double-option clear leg, the `anchor_time` test twin) | US-4/S2, US-5/S2, US-6/S2, US-6/S3 |
-| StateCommand | `LogHabit` (changed classification only) | classification: `NotUndoable(HabitSurface)` → journal-invertible pre-image (prior count+clock); command shape unchanged | US-3/S2 (R-7) |
-| StateCommand | `UndoLast` (pre-existing, unchanged) | global undo pops the habit-log entry | US-3/S2, US-1/S4 |
-| ActionId | `HabitSkip` | Today context, presets keyed | US-1/S2 |
-| ActionId | `HabitPause` / `HabitResume` | Today context; editor field | US-2/S2, US-2/S3 |
-| ActionId | `HabitQuotaEdit` | row-focused | US-4/S2 |
-| ActionId | `HabitScheduleEdit` / `HabitReminderEdit` | editor-anchored | US-5/S2, US-6/S2 |
-| ActionId | `HabitHistory` | dialog mount | US-7/S1 |
-| CLI | `habits skip <id>` | app-crate verb, routes `SkipHabit` | US-1 |
-| CLI | `habits pause <id> --until <date>` / `habits resume <id>` | routes `PauseHabit` | US-2 |
-| CLI | `habits update` (flags added) | `--days <mo,we,...>`, `--reminder ...`, `--reminder-clear` | US-5, US-6 |
-| CLI | `habits history <id>` / `habits stats <id>` | projection verbs (read-only) | US-7, US-9 |
+| StateCommand | SkipHabit | { habit: HabitId } — window minted planner-side from the day calendar (the LogHabit posture; current canonical window only, R-4) | US-1/S2 |
+| StateCommand | PauseHabit | { habit: HabitId, until: Option<NaiveDate> } — inclusive pause-through local date; None resumes (the PauseSeries twin, D-C10 shape) | US-2/S2, US-2/S3 |
+| StateCommand | UpdateHabit (changed payload, pre-existing command) | HabitChanges gains scheduled_days: Option<WeekdaySet> (PerWeek/PerMonth habits only, R-6) and reminder: Option<Option<HabitReminderOverride>> (double-option clear leg, the anchor_time test twin) | US-4/S2, US-5/S2, US-6/S2, US-6/S3 |
+| StateCommand | LogHabit (changed classification only) | classification: NotUndoable(HabitSurface) → journal-invertible pre-image (prior count+clock); command shape unchanged | US-3/S2 (R-7) |
+| StateCommand | UndoLast (pre-existing, unchanged) | global undo pops the habit-log entry | US-3/S2, US-1/S4 |
+| ActionId | HabitSkip | Today context, presets keyed | US-1/S2 |
+| ActionId | HabitPause / HabitResume | Today context; editor field | US-2/S2, US-2/S3 |
+| ActionId | HabitQuotaEdit | row-focused | US-4/S2 |
+| ActionId | HabitScheduleEdit / HabitReminderEdit | editor-anchored | US-5/S2, US-6/S2 |
+| ActionId | HabitHistory | dialog mount | US-7/S1 |
+| CLI | habits skip <id> | app-crate verb, routes SkipHabit | US-1 |
+| CLI | habits pause <id> --until <date> / habits resume <id> | routes PauseHabit | US-2 |
+| CLI | habits update (flags added) | --days <mo,we,...>, --reminder ..., --reminder-clear | US-5, US-6 |
+| CLI | habits history <id> / habits stats <id> | projection verbs (read-only) | US-7, US-9 |
 
 ## 8. Verification plan
 
@@ -577,3 +577,29 @@ stateDiagram-v2
   week/month scheduled-day generalization issue)
 - [ ] The Σ property extension lands with HF1 (window semantics) and
   HF4 (scheduled days) — the chunk plans carry the exact property arms
+
+## 10. Gate-grammar erratum (HF2 stage 2, 2026-11-21)
+
+Mechanical, decision-free amendment against the accepted text (the
+OP1/OP2 normalization pattern; the tokens are unchanged except one
+recorded implementation fact):
+
+1. **Gate grammar**: the §6/§7 token cells are unbackticked — the
+   ux-coverage token matcher is boundary-anchored over raw source
+   (the template's example rows are unbackticked).
+2. **W-12 implementation fact**: the pre-existing global undo verb is
+   `StateCommand::Undo` (the plan's `UndoLast` sketch was the
+   payload sketch's name; the shipped command arm is `Undo` — the
+   classification change is R-7's, the routing is untouched).
+3. **W-5 implementation fact**: the popover opener's window-level
+   seam front is `habits-quota-edit-asked(int row)` (the section
+   callback `quota-edit-asked` re-exposes through TodayView like
+   every row seam; the adapter installs the window-level name —
+   slint callbacks are per-component, the adapter's manifest speaks
+   window-level). W-5's us4_s3 test nomination reads
+   `us4_s3_zero_draft_blocks_commit` (the accepted chunk plan's
+   catalogue naming — US-4/AC-3's typed invalid-draft state).
+4. **Display-row grammar**: the pure-display W rows' Callback and
+   Commands cells are bare `—` (the prose that explained the absence
+   moves to the Journey-steps cell — a cell must be exactly `—` for
+   the gate's absence check, the OP1/OP2 erratum's rule).
