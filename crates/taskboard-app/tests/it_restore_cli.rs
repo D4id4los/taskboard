@@ -1,0 +1,580 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! RS chunk: the restore-family verbs' first CLI surface (the accepted
+//! J2 journey plan, `2026-11-21-parity-restore-journeys-restore-cli`).
+//! Step-ID-named seam tests over hermetic standalone tempdirs (the
+//! `cli_track` recipe): one invocation is a full boot/work/shutdown
+//! process on one db. Receipts are the serde-pinned `CommandOutcome`
+//! variants (journey D-3/W-5) — asserted as typed values, refusals via
+//! `matches!`/`error_kind()`, never message text.
+
+use std::sync::{Mutex, OnceLock};
+
+use clap::Parser;
+
+use taskboard_app::cli::{Cli, Command, LabelsCmd};
+use taskboard_app::commands::CommandError;
+use taskboard_app::commands::habits::{self, HabitOutcome, HabitsInvocation};
+use taskboard_app::commands::labels;
+use taskboard_app::commands::tasks;
+use taskboard_app::commands::track::{self, TrackInvocation};
+use taskboard_app::config::AppConfig;
+use taskboard_domain::CommandOutcome;
+
+use taskboard_domain::tracking::TimeEntryKind;
+
+use crate::common::{forbidden_store, standalone_config, tempdir};
+
+mod common;
+
+/// The dbs the seed scaffold already ran on (tests share no db, but
+/// `seed_task` may run several times against one).
+fn seeded_dbs() -> &'static Mutex<std::collections::HashSet<std::path::PathBuf>> {
+    static S: OnceLock<Mutex<std::collections::HashSet<std::path::PathBuf>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Seeds the fresh db's board (+ stack) exactly once — every verb that
+/// resolves a board needs the single-live-board shape.
+async fn seed_board(config: &AppConfig) {
+    let db = config.db_path().to_path_buf();
+    if seeded_dbs().lock().expect("seed map").insert(db) {
+        taskboard_app::commands::boards::create(
+            config.clone(),
+            forbidden_store(),
+            "seed board",
+            None,
+        )
+        .await
+        .expect("board create boots");
+        taskboard_app::commands::stacks::add(
+            config.clone(),
+            forbidden_store(),
+            None,
+            "seed stack",
+            None,
+        )
+        .await
+        .expect("stack add boots");
+    }
+}
+
+/// Seeds one live task through a real boot (the single-board fresh
+/// shape). Returns the task's uuid string.
+async fn seed_task(config: &AppConfig, title: &str) -> String {
+    seed_board(config).await;
+    let receipt = tasks::add(config.clone(), forbidden_store(), title, Some("seed stack"))
+        .await
+        .expect("task add boots");
+    receipt.id
+}
+
+/// Parses one `taskboard labels …` argv through the real clap surface.
+fn parse_labels(argv: &[&str]) -> LabelsCmd {
+    let mut cmdline = vec!["taskboard"];
+    cmdline.extend_from_slice(argv);
+    let cli = Cli::try_parse_from(&cmdline).expect("the argv parses");
+    let Some(Command::Labels { cmd }) = cli.command else {
+        panic!("the argv selects the labels group");
+    };
+    cmd
+}
+
+/// Parses one `taskboard track …` argv through the real clap surface
+/// and collapses it (the dispatch entry's own shape).
+fn parse_track(argv: &[&str]) -> TrackInvocation {
+    let mut cmdline = vec!["taskboard"];
+    cmdline.extend_from_slice(argv);
+    let cli = Cli::try_parse_from(&cmdline).expect("the argv parses");
+    let Some(Command::Track { cmd }) = cli.command else {
+        panic!("the argv selects the track group");
+    };
+    track::collapse(cmd).expect("one invocation")
+}
+
+/// Seeds one label, deletes it (tombstone), returns its uuid.
+async fn seed_tombstoned_label(config: &AppConfig, title: &str) -> String {
+    seed_board(config).await;
+    let receipt = labels::add(config.clone(), forbidden_store(), None, title, None)
+        .await
+        .expect("label add boots");
+    let deleted = labels::delete(config.clone(), forbidden_store(), &receipt.id)
+        .await
+        .expect("label delete boots");
+    assert_eq!(deleted.id, receipt.id);
+    receipt.id
+}
+
+/// Seeds one habit, deletes it (tombstone), returns its uuid.
+async fn seed_tombstoned_habit(config: &AppConfig, title: &str) -> String {
+    seed_board(config).await;
+    let mut cmdline = vec!["taskboard", "habits", "add", title, "--daily"];
+    let cli = Cli::try_parse_from(&cmdline).expect("the argv parses");
+    let Some(Command::Habits { cmd }) = cli.command else {
+        panic!("the argv selects the habits group");
+    };
+    let receipt = habits::run(config.clone(), forbidden_store(), habits::collapse(cmd))
+        .await
+        .expect("habit add boots");
+    let HabitOutcome::Added(row) = &receipt else {
+        panic!("the add receipt");
+    };
+    let habit_id = row
+        .habit
+        .as_ref()
+        .expect("the minted habit row")
+        .habit_id
+        .clone();
+    cmdline = vec!["taskboard", "habits", "rm", habit_id.as_str()];
+    let cli = Cli::try_parse_from(&cmdline).expect("the argv parses");
+    let Some(Command::Habits { cmd }) = cli.command else {
+        panic!("the argv selects the habits group");
+    };
+    habits::run(config.clone(), forbidden_store(), habits::collapse(cmd))
+        .await
+        .expect("habit rm boots");
+    habit_id
+}
+
+/// Fresh standalone config over a unique tempdir db; the tempdir
+/// travels back so it outlives the config's db path for the test.
+fn config_for(tag: &str) -> (AppConfig, tempfile::TempDir) {
+    let dir = tempdir();
+    let db = format!("{tag}.db");
+    let config = standalone_config(dir.path(), &db);
+    (config, dir)
+}
+
+/// A fixed RFC-3339 stamp (explicit offset, host-TZ independent).
+const START_STAMP: &str = "2026-11-20T09:00:00+02:00";
+const END_STAMP: &str = "2026-11-20T10:30:00+02:00";
+
+/// US-1/S1 (W-1): `labels restore <id|prefix>` dispatches
+/// `RestoreLabel` and the receipt is the pinned `LabelRestored`; the
+/// tombstoned values come back verbatim; the ≥8-char prefix
+/// resolves the tombstone (D-2: ids are the restore family's address).
+/// AC-2 rides the same step: an unknown id is the typed rejection.
+#[tokio::test]
+async fn us1_s1_labels_restore_dispatches_restore_label_and_receipts() {
+    let (config, _dir) = config_for("us1_s1");
+    let label_id = seed_tombstoned_label(&config, "urgent").await;
+
+    // AC-2 first: an unknown id is the typed rejection before anything
+    // exists to restore.
+    let unknown = "00000000-0000-0000-0000-000000000000";
+    match labels::restore(config.clone(), forbidden_store(), unknown).await {
+        Err(err) => {
+            assert!(
+                matches!(err, CommandError::UnknownLabel(sel) if sel == unknown),
+                "typed unknown-label rejection"
+            );
+        }
+        Ok(_) => panic!("an unknown id must refuse"),
+    }
+
+    // S1 by prefix: the tombstone resolves and the receipt is the
+    // pinned `LabelRestored` fact.
+    let argv = ["labels", "restore", &label_id[..8]];
+    let LabelsCmd::Restore { label } = parse_labels(&argv) else {
+        panic!("the argv selects the restore verb");
+    };
+    let outcome = labels::restore(config.clone(), forbidden_store(), &label)
+        .await
+        .expect("restore boots");
+    let CommandOutcome::LabelRestored { label: restored } = outcome else {
+        panic!("the restore receipt");
+    };
+    assert_eq!(restored.as_uuid().to_string(), label_id);
+
+    // Verbatim: the resurrected row carries the pre-tombstone title.
+    let rows = labels::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list boots");
+    assert!(
+        rows.iter().any(|r| r.id == label_id && r.title == "urgent"),
+        "the resurrected label is live with its pre-tombstone values"
+    );
+}
+
+/// US-1/S1+US-1/S2 (W-5): the `--json` receipt payload decodes as the
+/// serde-pinned `CommandOutcome` (#993) — both the restore fact and
+/// the accepted live-target no-op (S2's repeat is not an error).
+#[tokio::test]
+async fn us1_s1_json_receipt_decodes_pinned_command_outcome() {
+    let (config, _dir) = config_for("us1_json");
+    let label_id = seed_tombstoned_label(&config, "urgent").await;
+
+    let outcome = labels::restore(config.clone(), forbidden_store(), &label_id)
+        .await
+        .expect("restore boots");
+    let json = serde_json::to_string(&outcome).expect("the pinned receipt serializes");
+    let decoded: CommandOutcome =
+        serde_json::from_str(&json).expect("the receipt decodes as CommandOutcome");
+    assert_eq!(decoded, outcome);
+    assert!(matches!(decoded, CommandOutcome::LabelRestored { .. }));
+
+    // S2: the repeat dispatches again and answers the accepted no-op —
+    // which rides the same pinned envelope.
+    let repeat = labels::restore(config.clone(), forbidden_store(), &label_id)
+        .await
+        .expect("repeat restore boots");
+    let json = serde_json::to_string(&repeat).expect("the no-op serializes");
+    let decoded: CommandOutcome =
+        serde_json::from_str(&json).expect("the no-op decodes as CommandOutcome");
+    assert_eq!(decoded, CommandOutcome::NoOp);
+}
+
+/// US-1/S2: the repeat dispatch is the accepted no-op — a live target
+/// is not an error, nothing changed.
+#[tokio::test]
+async fn us1_s2_labels_restore_repeat_is_the_accepted_noop() {
+    let (config, _dir) = config_for("us1_s2");
+    let label_id = seed_tombstoned_label(&config, "urgent").await;
+
+    labels::restore(config.clone(), forbidden_store(), &label_id)
+        .await
+        .expect("restore boots");
+    let repeat = labels::restore(config.clone(), forbidden_store(), &label_id)
+        .await
+        .expect("repeat restore boots");
+    assert_eq!(repeat, CommandOutcome::NoOp);
+    // Nothing changed: the label stayed live across the repeat.
+    let rows = labels::list(config.clone(), forbidden_store(), None)
+        .await
+        .expect("list boots");
+    assert_eq!(
+        rows.iter().filter(|r| r.id == label_id).count(),
+        1,
+        "exactly one live row after the repeat"
+    );
+}
+
+/// US-2/S1 (W-2): `habits restore <id|prefix>` dispatches
+/// `RestoreHabit` and the receipt is the pinned `HabitRestored`; the
+/// log is never touched. AC-2 rides the same step: an unknown id is
+/// the typed rejection.
+#[tokio::test]
+async fn us2_s1_habits_restore_dispatches_restore_habit_and_receipts() {
+    let (config, _dir) = config_for("us2_s1");
+    let habit_id = seed_tombstoned_habit(&config, "stretch").await;
+
+    let unknown = "00000000-0000-0000-0000-000000000000";
+    match habits::run(
+        config.clone(),
+        forbidden_store(),
+        HabitsInvocation::Restore {
+            habit: unknown.to_owned(),
+        },
+    )
+    .await
+    {
+        Err(err) => assert!(
+            matches!(err, CommandError::UnknownHabit { selector } if selector == unknown),
+            "typed unknown-habit rejection"
+        ),
+        Ok(_) => panic!("an unknown id must refuse"),
+    }
+
+    // S1 by prefix: the tombstone resolves, the receipt is the pinned
+    // fact.
+    let argv = ["taskboard", "habits", "restore", &habit_id[..8]];
+    let cli = Cli::try_parse_from(argv).expect("the argv parses");
+    let Some(Command::Habits { cmd }) = cli.command else {
+        panic!("the argv selects the habits group");
+    };
+    let outcome = habits::run(config.clone(), forbidden_store(), habits::collapse(cmd))
+        .await
+        .expect("restore boots");
+    let HabitOutcome::Restored(CommandOutcome::HabitRestored { habit: restored }) = outcome else {
+        panic!("the restore receipt");
+    };
+    assert_eq!(restored.as_uuid().to_string(), habit_id);
+}
+
+/// US-2/S2: the repeat dispatch is the accepted no-op — a live target
+/// is not an error.
+#[tokio::test]
+async fn us2_s2_habits_restore_repeat_is_the_accepted_noop() {
+    let (config, _dir) = config_for("us2_s2");
+    let habit_id = seed_tombstoned_habit(&config, "stretch").await;
+
+    habits::run(
+        config.clone(),
+        forbidden_store(),
+        HabitsInvocation::Restore {
+            habit: habit_id.clone(),
+        },
+    )
+    .await
+    .expect("restore boots");
+    let repeat = habits::run(
+        config.clone(),
+        forbidden_store(),
+        HabitsInvocation::Restore {
+            habit: habit_id.clone(),
+        },
+    )
+    .await
+    .expect("repeat restore boots");
+    assert!(matches!(
+        repeat,
+        HabitOutcome::Restored(CommandOutcome::NoOp)
+    ));
+}
+
+/// US-3/S1 (W-3): `track restore --task … --start … [--end] [--id]`
+/// dispatches `RestoreTimeEntry` with the verbatim payload and the
+/// receipt is the pinned `EntryRestored`; `--id` omitted mints a
+/// fresh v7. The verbatim principle is proven by the exact
+/// already-restored no-op: re-restoring the identical payload answers
+/// `NoOp` (the engine's whole-row equality). AC-4 rides the same
+/// step: a malformed `--start` is the clap-layer refusal before any
+/// dispatch.
+#[tokio::test]
+async fn us3_s1_track_restore_assembles_verbatim_payload_and_receipts() {
+    let (config, _dir) = config_for("us3_s1");
+    let task_id = seed_task(&config, "focus work").await;
+
+    // AC-4: malformed `--start` never reaches a boot.
+    let bad = Cli::try_parse_from([
+        "taskboard",
+        "track",
+        "restore",
+        "--task",
+        &task_id,
+        "--start",
+        "not-a-stamp",
+    ]);
+    assert!(bad.is_err(), "the malformed stamp is a clap refusal");
+
+    // S1 with an explicit `--id`: the payload rides verbatim and the
+    // receipt names the id.
+    let explicit = "00000000-0000-0000-0000-00000000c0de";
+    let argv = [
+        "track",
+        "restore",
+        "--task",
+        &task_id,
+        "--start",
+        START_STAMP,
+        "--end",
+        END_STAMP,
+        "--kind",
+        "respite",
+        "--id",
+        explicit,
+    ];
+    let TrackInvocation::Restore {
+        entry,
+        task,
+        start,
+        end,
+        kind,
+        id,
+    } = parse_track(&argv)
+    else {
+        panic!("the argv selects the restore verb");
+    };
+    assert_eq!(entry, None);
+    assert_eq!(task, task_id);
+    assert_eq!(id.map(|u| u.to_string()).as_deref(), Some(explicit));
+    let outcome = track::restore(
+        config.clone(),
+        forbidden_store(),
+        entry,
+        &task,
+        start,
+        end,
+        kind,
+        id,
+    )
+    .await
+    .expect("restore boots");
+    let CommandOutcome::EntryRestored { id: restored } = &outcome else {
+        panic!("the restore receipt");
+    };
+    assert_eq!(restored.as_uuid().to_string(), explicit);
+
+    // Verbatim: a second boot reads the row back — the assembled
+    // payload is what the engine restored (flags in, row out).
+    let view = track::list(config, forbidden_store(), Some(&task), None)
+        .await
+        .expect("list boots");
+    let row = view
+        .entries
+        .iter()
+        .find(|r| r.entry_id == explicit)
+        .expect("the restored row");
+    assert_eq!(row.task_id, task_id);
+    assert_eq!(row.task_title, "focus work");
+    assert_eq!(row.start, start);
+    assert_eq!(row.end, end);
+    assert_eq!(row.kind, TimeEntryKind::Respite);
+}
+
+/// US-3/S1 (W-3, the fresh-v7 leg): the positional id slot omitted and
+/// `--id` omitted mints a fresh v7 payload id; the receipt carries it.
+#[tokio::test]
+async fn us3_s1_track_restore_id_slot_defaults_to_fresh_v7() {
+    let (config, _dir) = config_for("us3_v7");
+    let task_id = seed_task(&config, "fresh id").await;
+
+    let argv = [
+        "track",
+        "restore",
+        "--task",
+        &task_id,
+        "--start",
+        START_STAMP,
+    ];
+    let TrackInvocation::Restore { entry, id, .. } = parse_track(&argv) else {
+        panic!("the argv selects the restore verb");
+    };
+    assert_eq!(entry, None);
+    assert_eq!(id, None, "neither slot names an id");
+    let outcome = track::restore(
+        config.clone(),
+        forbidden_store(),
+        entry,
+        &task_id,
+        chrono::DateTime::parse_from_rfc3339(START_STAMP)
+            .expect("the stamp parses")
+            .with_timezone(&chrono::Utc),
+        None,
+        taskboard_domain::tracking::TimeEntryKind::default(),
+        None,
+    )
+    .await
+    .expect("restore boots");
+    let CommandOutcome::EntryRestored { id: minted } = &outcome else {
+        panic!("the restore receipt");
+    };
+    assert_eq!(minted.as_uuid().get_version_num(), 7, "a fresh v7 mint");
+}
+
+/// US-3/S1 (W-3, the positional leg): a positional full uuid names the
+/// payload id verbatim; a positional prefix is the typed refusal
+/// before any dispatch (D-2: a hard-deleted row cannot
+/// prefix-resolve).
+#[tokio::test]
+async fn us3_s1_track_restore_positional_id_slot() {
+    let (config, _dir) = config_for("us3_pos");
+    let task_id = seed_task(&config, "positional").await;
+
+    let positional = "00000000-0000-0000-0000-00000000face";
+    let outcome = track::restore(
+        config.clone(),
+        forbidden_store(),
+        Some(positional.to_owned()),
+        &task_id,
+        chrono::DateTime::parse_from_rfc3339(START_STAMP)
+            .expect("the stamp parses")
+            .with_timezone(&chrono::Utc),
+        None,
+        taskboard_domain::tracking::TimeEntryKind::default(),
+        None,
+    )
+    .await
+    .expect("restore boots");
+    let CommandOutcome::EntryRestored { id } = &outcome else {
+        panic!("the restore receipt");
+    };
+    assert_eq!(id.as_uuid().to_string(), positional);
+
+    // The prefix leg: typed refusal, nothing dispatched.
+    let (config2, _dir2) = config_for("us3_pos2");
+    let task2 = seed_task(&config2, "positional prefix").await;
+    let err = track::restore(
+        config2,
+        forbidden_store(),
+        Some("00000000".to_owned()),
+        &task2,
+        chrono::DateTime::parse_from_rfc3339(START_STAMP)
+            .expect("the stamp parses")
+            .with_timezone(&chrono::Utc),
+        None,
+        taskboard_domain::tracking::TimeEntryKind::default(),
+        None,
+    )
+    .await
+    .expect_err("a prefix cannot address a hard-deleted row");
+    assert!(
+        matches!(err, CommandError::UnknownTimeEntry { selector } if selector == "00000000"),
+        "typed unknown-time-entry refusal"
+    );
+}
+
+/// US-3/S2 (W-4): a `--task` naming a gone/deleted task is the typed
+/// rejection before any dispatch (`unknown-task` kind, JSON shape).
+#[tokio::test]
+async fn us3_s2_gone_owner_task_refuses_typed() {
+    let (config, _dir) = config_for("us3_s2");
+    let task_id = seed_task(&config, "doomed owner").await;
+    tasks::delete(config.clone(), forbidden_store(), &task_id)
+        .await
+        .expect("task delete boots");
+
+    let err = track::restore(
+        config,
+        forbidden_store(),
+        None,
+        &task_id,
+        chrono::DateTime::parse_from_rfc3339(START_STAMP)
+            .expect("the stamp parses")
+            .with_timezone(&chrono::Utc),
+        None,
+        taskboard_domain::tracking::TimeEntryKind::default(),
+        None,
+    )
+    .await
+    .expect_err("a gone owner refuses");
+    assert_eq!(err.error_kind(), "unknown-task");
+}
+
+/// US-3/S3 (W-4): a same-id row with a *divergent* payload is the
+/// typed divergence refusal (`time-entry-already-present` kind) —
+/// ids are minted once; the identical payload is the exact
+/// already-restored no-op instead (never a refusal).
+#[tokio::test]
+async fn us3_s3_present_same_id_refuses_typed() {
+    let (config, _dir) = config_for("us3_s3");
+    let task_id = seed_task(&config, "divergent").await;
+    let start = chrono::DateTime::parse_from_rfc3339(START_STAMP)
+        .expect("the stamp parses")
+        .with_timezone(&chrono::Utc);
+    let end = chrono::DateTime::parse_from_rfc3339(END_STAMP)
+        .expect("the stamp parses")
+        .with_timezone(&chrono::Utc);
+    let id = uuid::Uuid::now_v7();
+
+    // Establish the present row.
+    let outcome = track::restore(
+        config.clone(),
+        forbidden_store(),
+        None,
+        &task_id,
+        start,
+        Some(end),
+        taskboard_domain::tracking::TimeEntryKind::Work,
+        Some(id),
+    )
+    .await
+    .expect("restore boots");
+    assert!(matches!(outcome, CommandOutcome::EntryRestored { .. }));
+
+    // A present same-id row (here: a re-run whose assembler stamps
+    // differ — the whole-row equality cannot hold across invocations)
+    // is the typed divergence refusal, and nothing dispatches.
+    let err = track::restore(
+        config,
+        forbidden_store(),
+        None,
+        &task_id,
+        start,
+        Some(end),
+        TimeEntryKind::Work,
+        Some(id),
+    )
+    .await
+    .expect_err("a present same-id row refuses");
+    assert_eq!(err.error_kind(), "time-entry-already-present");
+}

@@ -22,11 +22,11 @@ use taskboard_domain::{
 use crate::cli::DayEdit;
 
 use crate::cli::{AnchorEdit, HabitsCmd, SeamEdit};
-use crate::commands::CommandError;
 use crate::commands::output::{
     HabitAddReceipt, HabitAdjustReceipt, HabitDeleteReceipt, HabitListView, HabitLogReceipt,
     HabitRow, HabitUpdateReceipt,
 };
+use crate::commands::{CommandError, outcome_mismatch};
 use crate::config::AppConfig;
 use crate::secrets::CredentialStore;
 
@@ -134,6 +134,14 @@ pub enum HabitsInvocation {
         /// The habit selector.
         habit: String,
     },
+    /// `restore <habit>` — the #901 restore-family verb's first
+    /// surface (tombstone-only resurrect; the log is never touched,
+    /// D26).
+    Restore {
+        /// The habit selector (uuid | ≥8-char uuid prefix;
+        /// tombstones resolve, no title leg).
+        habit: String,
+    },
 }
 
 /// Collapses the clap subcommand into exactly one invocation.
@@ -198,6 +206,7 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             continued_from,
         },
         HabitsCmd::Rm { habit } => HabitsInvocation::Rm { habit },
+        HabitsCmd::Restore { habit } => HabitsInvocation::Restore { habit },
     }
 }
 
@@ -231,6 +240,10 @@ pub enum HabitOutcome {
     Updated(HabitUpdateReceipt),
     /// `rm`.
     Removed(HabitDeleteReceipt),
+    /// `restore` — the pinned engine receipt verbatim (`HabitRestored`
+    /// or the accepted live-target `NoOp`; the serde-pinned
+    /// `CommandOutcome` is the `--json` contract, journey D-3/W-5).
+    Restored(CommandOutcome),
 }
 
 /// The `habits` steps on a booted core (the session seam).
@@ -295,6 +308,9 @@ pub async fn run_on(
             ))
         }
         HabitsInvocation::Rm { habit } => Ok(HabitOutcome::Removed(rm_on(app, &habit).await?)),
+        HabitsInvocation::Restore { habit } => {
+            Ok(HabitOutcome::Restored(restore_on(app, &habit).await?))
+        }
     }
 }
 
@@ -647,6 +663,79 @@ pub fn resolve_habit(state: &AppState, selector: &str) -> Result<HabitId, Comman
     }
 }
 
+/// Resolves a *restore* target: exact uuid → unique ≥8-char uuid
+/// prefix, tombstones included, and deliberately **no title leg** —
+/// tombstoned rows may share titles, so ids are the restore family's
+/// only address (journey D-2).
+///
+/// # Errors
+///
+/// [`CommandError::UnknownHabit`] / [`CommandError::AmbiguousHabit`] —
+/// typed, never text-matched.
+pub(crate) fn resolve_restorable_habit(
+    state: &AppState,
+    selector: &str,
+) -> Result<HabitId, CommandError> {
+    let habits = &state.habits.habits;
+    if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
+        let id = HabitId::from(uuid);
+        return if habits.contains_key(&id) {
+            Ok(id)
+        } else {
+            Err(CommandError::UnknownHabit {
+                selector: selector.to_owned(),
+            })
+        };
+    }
+    if selector.len() >= 8 {
+        let needle = selector.to_lowercase();
+        let hits: Vec<HabitId> = habits
+            .values()
+            .filter(|h| h.id.as_uuid().to_string().starts_with(&needle))
+            .map(|h| h.id)
+            .collect();
+        if let [id] = hits.as_slice() {
+            return Ok(*id);
+        }
+        if !hits.is_empty() {
+            return Err(CommandError::AmbiguousHabit {
+                candidates: hits.iter().map(|id| id.as_uuid().to_string()).collect(),
+            });
+        }
+    }
+    Err(CommandError::UnknownHabit {
+        selector: selector.to_owned(),
+    })
+}
+
+/// The `habits restore` steps on a booted core (both dispatch lanes):
+/// dispatches [`StateCommand::RestoreHabit`] and returns the engine's
+/// pinned receipt verbatim (`HabitRestored`, or `NoOp` for the
+/// accepted live-target no-op) — the `--json` payload is the
+/// serde-pinned [`CommandOutcome`] itself (journey D-3/W-5).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) async fn restore_on(
+    app: &crate::App,
+    selector: &str,
+) -> Result<CommandOutcome, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let id = resolve_restorable_habit(&state, selector)?;
+    drop(state);
+    match app
+        .engine
+        .execute(StateCommand::RestoreHabit { id })
+        .await?
+    {
+        // The pinned receipt family: the restore fact, or the accepted
+        // live-target no-op. Anything else is an engine contract break.
+        outcome @ (CommandOutcome::HabitRestored { .. } | CommandOutcome::NoOp) => Ok(outcome),
+        _ => Err(outcome_mismatch()),
+    }
+}
+
 /// One list/surface row source (pure): the board's **live** habits in
 /// stored manual `(order, id)` order (D-C13; `anchor_time` appears
 /// only as the chip). `count` is the current window's row (the period
@@ -791,6 +880,13 @@ pub fn render_text(outcome: &HabitOutcome) -> String {
                 )
             }
         }
+        HabitOutcome::Restored(CommandOutcome::HabitRestored { habit }) => {
+            format!("restored habit {} (log intact)", habit.as_uuid())
+        }
+        HabitOutcome::Restored(CommandOutcome::NoOp) => {
+            "habit is already live (nothing to restore)".to_owned()
+        }
+        HabitOutcome::Restored(_) => "unexpected restore receipt".to_owned(),
     }
 }
 
@@ -816,13 +912,6 @@ pub async fn habits_line(
     invocation: HabitsInvocation,
 ) -> u8 {
     crate::commands::emit_result(io, run_on(app, invocation).await, render_text)
-}
-
-/// The reply contract pins one outcome per habit command (plus
-/// `NoOp`); any other reply is an engine contract bug — surfaced as
-/// the generic engine kind, never misreported as a user error.
-fn outcome_mismatch() -> CommandError {
-    CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone))
 }
 
 #[cfg(test)]
@@ -1092,6 +1181,36 @@ mod tests {
         assert!(matches!(err, CommandError::UnknownHabit { .. }));
         assert_eq!(err.error_kind(), "unknown-habit");
         let _ = uuid_b;
+    }
+
+    #[test]
+    fn restore_selector_hits_tombstones_by_uuid_then_unique_prefix() {
+        let mut dead = habit(0x1234_5678_0000_0000_0000_0000_0000_0001, 2, 0, false, None);
+        dead.deleted = true;
+        let id = dead.id;
+        let mut state = AppState::default();
+        state.habits.habits.insert(dead.id, dead);
+        // The tombstone is the restore surface's addressable row.
+        assert_eq!(
+            resolve_restorable_habit(&state, &id.as_uuid().to_string()).expect("exact uuid"),
+            id
+        );
+        assert_eq!(
+            resolve_restorable_habit(&state, &id.as_uuid().to_string()[..8])
+                .expect("unique prefix"),
+            id
+        );
+        // No title leg: tombstoned rows may share titles (journey D-2).
+        assert!(matches!(
+            resolve_restorable_habit(&state, "never-title"),
+            Err(CommandError::UnknownHabit { .. })
+        ));
+        // An unknown full uuid is the typed rejection, never a miss.
+        let nil = uuid::Uuid::from_u128(0x999).to_string();
+        assert!(matches!(
+            resolve_restorable_habit(&state, &nil),
+            Err(CommandError::UnknownHabit { selector }) if selector == nil
+        ));
     }
 
     #[test]

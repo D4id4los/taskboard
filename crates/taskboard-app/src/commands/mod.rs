@@ -878,6 +878,14 @@ pub(crate) fn map_deck_error(err: DeckError) -> CommandError {
     }
 }
 
+/// The reply contract pins one outcome per verb (plus the accepted
+/// `NoOp` where the planner allows it); any other reply is an engine
+/// contract bug — surfaced as the generic engine kind, never
+/// misreported as a user error.
+pub(crate) fn outcome_mismatch() -> CommandError {
+    CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone))
+}
+
 /// Resolves the board a board-scoped verb targets: the `--board` flag
 /// when given (typed lookup refusals when the id names nothing / a
 /// tombstone — the same kinds the engine would refuse with, surfaced
@@ -1349,6 +1357,17 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 ctx.config_path.clone(),
                 labels::render_text_receipt,
                 move |config, store| async move { labels::delete(config, store, &label).await },
+            )
+            .await
+        }
+        Command::Labels {
+            cmd: LabelsCmd::Restore { label },
+        } => {
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                labels::render_text_restore,
+                move |config, store| async move { labels::restore(config, store, &label).await },
             )
             .await
         }
@@ -2300,6 +2319,11 @@ async fn labels_line(app: &crate::App, cmd: LabelsCmd, io: &mut CommandIo<'_>) -
             io,
             labels::delete_on(app, &label).await,
             labels::render_text_receipt,
+        ),
+        LabelsCmd::Restore { label } => emit_result(
+            io,
+            labels::restore_on(app, &label).await,
+            labels::render_text_restore,
         ),
     }
 }
