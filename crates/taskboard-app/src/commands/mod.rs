@@ -3140,3 +3140,97 @@ mod task_field_mapping_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod error_detail_tests {
+    use super::{CommandError, not_undoable_reason_kind};
+    use taskboard_domain::NotUndoableReason;
+    use taskboard_state::ExecuteError;
+
+    fn engine_rejected(rejected: taskboard_domain::CommandError) -> CommandError {
+        CommandError::Engine(Box::new(ExecuteError::Rejected(rejected)))
+    }
+
+    /// The `--json` error detail is a structural surface (ADR 0019): a
+    /// variant that carries detail must never degrade to `None` — the
+    /// M1 sweep found each arm deletable with the full suite green.
+    #[test]
+    fn the_detail_carrying_variants_keep_their_detail() {
+        assert!(CommandError::UnknownBoard(7).error_detail().is_some());
+        assert!(CommandError::Cancelled.error_detail().is_some());
+        assert!(
+            engine_rejected(taskboard_domain::CommandError::TargetNotUndoable(
+                NotUndoableReason::BoardCeremony,
+            ))
+            .error_detail()
+            .is_some()
+        );
+        assert!(
+            engine_rejected(taskboard_domain::CommandError::UndoTargetHasDependents {
+                stack: taskboard_domain::StackId::from_uuid(uuid::Uuid::new_v4()),
+            },)
+            .error_detail()
+            .is_some()
+        );
+    }
+
+    /// The kebab discriminators are the `--json` detail's field names —
+    /// structural facts a script branches on, never prose (ADR 0019).
+    /// The M1 sweep found the mapping wholesale replaceable.
+    #[test]
+    fn the_not_undoable_reason_kinds_are_the_adr_0019_discriminators() {
+        use NotUndoableReason as R;
+        assert_eq!(not_undoable_reason_kind(R::RestoreClass), "restore-class");
+        assert_eq!(not_undoable_reason_kind(R::BoardCeremony), "board-ceremony");
+        assert_eq!(
+            not_undoable_reason_kind(R::ReminderSurface),
+            "reminder-surface"
+        );
+        assert_eq!(
+            not_undoable_reason_kind(R::TrackingSurface),
+            "tracking-surface"
+        );
+        assert_eq!(not_undoable_reason_kind(R::HabitSurface), "habit-surface");
+        assert_eq!(
+            not_undoable_reason_kind(R::ReflectionSurface),
+            "reflection-surface"
+        );
+    }
+}
+
+#[cfg(test)]
+mod live_board_resolution_tests {
+    use super::resolve_live_board;
+    use crate::commands::CommandError;
+    use taskboard_domain::BoardClocks;
+    use taskboard_domain::{AppState, Board, BoardId, Color};
+
+    /// The live filter is a conjunction: a tombstoned (deleted,
+    /// unarchived) board must stay unresolvable by title — the M1 sweep
+    /// found the `&&` floppable to `||` with the full suite green.
+    #[test]
+    fn a_deleted_board_is_not_resolvable_by_title() {
+        let mut state = AppState::default();
+        let ghost = Board {
+            id: BoardId::from_uuid(uuid::Uuid::new_v4()),
+            remote: None,
+            title: "ghost".to_owned(),
+            color: Color::new("0000ff"),
+            archived: false,
+            deleted: true,
+            clocks: BoardClocks {
+                title: BoardClocks::epoch(),
+                color: BoardClocks::epoch(),
+                archived: BoardClocks::epoch(),
+                deleted: BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
+            remote_seen: None,
+        };
+        state.boards.insert(ghost.id, ghost);
+        assert!(matches!(
+            resolve_live_board(&state, "ghost"),
+            Err(CommandError::UnknownBoardSelector { .. })
+        ));
+    }
+}
