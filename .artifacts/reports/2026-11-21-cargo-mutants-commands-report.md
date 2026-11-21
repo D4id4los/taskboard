@@ -31,7 +31,7 @@ cap-fit rule wins over the group count, recorded here as a deviation.
 | Shard | Files | Lines | Command filter | Outcome | Caught | Missed | Unviable | Timeout | Wall | vs 7200 s cap |
 |---|---|---|---|---|---|---|---|---|---|---|
 | M1 | mod.rs | 3105 | `--file 'crates/taskboard-app/src/commands/mod.rs'` | **COMPLETED** (105 mutants: 63+4 unviable, 29 caught, 9 missed) across three 7200 s-capped windows + one mis-scoped aborted run | 29 | 9 | 67 | 0 | ~3.0 h across 3 cap windows | cap never tripped (windows ended complete) |
-| M2 | config.rs, capture.rs | 2589 | `--file 'crates/taskboard-app/src/commands/config.rs' --file 'crates/taskboard-app/src/commands/capture.rs'` | pending | — | — | — | — | — | — |
+| M2 | config.rs, capture.rs | 2589 | `config.rs`+`capture.rs` filters | **window 1 complete** (102 mutants: 46 missed, 35 caught, 21 unviable; capture.rs's mutant set folded into the same run) | 35 | 46 | 21 | 0 | 84 m (window 1) | under |
 | M3 | boards.rs, labels.rs, stacks.rs | 2273 | `--file 'crates/taskboard-app/src/commands/boards.rs' --file 'crates/taskboard-app/src/commands/labels.rs' --file 'crates/taskboard-app/src/commands/stacks.rs'` | pending | — | — | — | — | — | — |
 | M4 | track.rs, find.rs, repeat.rs | 2762 | `--file 'crates/taskboard-app/src/commands/track.rs' --file 'crates/taskboard-app/src/commands/find.rs' --file 'crates/taskboard-app/src/commands/repeat.rs'` | pending | — | — | — | — | — | — |
 | M5 | habits.rs, status.rs | 2583 | `--file 'crates/taskboard-app/src/commands/habits.rs' --file 'crates/taskboard-app/src/commands/status.rs'` | pending | — | — | — | — | — | — |
@@ -111,6 +111,54 @@ git status --short   # must be clean after each --in-place run
 
 All nine executed against the full taskboard-app suite (nextest,
 default features) — every one survived. Dispositions: §3.
+
+### M1 disposition & verification
+
+TDD-first trivial kills (commit `c1c9136e`, tests land before any
+production change — there is none; the mutation exposed only test
+gaps):
+
+- Survivors 1–4 (error_detail arms) killed by
+  `error_detail_tests::the_detail_carrying_variants_keep_their_detail`
+  (the `--json` detail is ADR 0019's structural surface; a
+  detail-carrying variant must never degrade to `None`).
+- Survivors 5–6 (`not_undoable_reason_kind → ""/"xyzzy"`) killed by
+  `the_not_undoable_reason_kinds_are_the_adr_0019_discriminators`
+  (kebab discriminators are contract, the function's own doc comment
+  and ADR 0019 name them structural, never prose).
+- Survivor 9 (`resolve_live_board && → ||`) killed by
+  `live_board_resolution_tests::a_deleted_board_is_not_resolvable_by_title`.
+
+Verification pass (window log `mutants-tmp/logs/M1v.log`, snapshot
+`mutants-tmp/mutants.out-M1v-final`): **9 mutants re-tested in 9 m:
+2 missed, 7 caught** — exactly the TDD-killed set flips, and nothing
+else. Survivors 7 and 8 are not trivially killable and carry backlog
+issues (#1175: the logout exit code needs an async `CommandIo` fixture
+across the nudge seam; #1176: the pdf-export dispatch branch needs a
+cfg-gated kill test in a tier the sweep does not run).
+
+### M2 survivor census (46) — clusters
+
+Window 1 (`mutants-tmp/logs/M2.log`, snapshot `mutants.out-M2-w1` is
+PARTIAL — the resume loop was stopped mid-window-2; the authoritative
+census is the log's 46 MISSED lines + the window-1 summary; caught
+identities are not printed by cargo-mutants):
+
+| Cluster | Mutants | Count | Shape |
+|---|---|---|---|
+| A: `ConfigKey::from_dotted` delete-arm | `config.rs:231–247` (12 keys) | 12 | key-string → enum parse mapping; pure |
+| B: `ConfigKey::parse_value` delete-arm | `config.rs:332–339` (`true`/`false`/`auto`/`log`/`desktop`) | 5 | value parsing; pure |
+| C: `ConfigKey::write` delete-arm | `config.rs:350–398` (13 typed settings) | 13 | typed setting → written field mapping |
+| D: `batch_edit` delete-arm | `config.rs:701–733` (6 arms) | 6 | batch-edit apply mapping |
+| E: render-text family | `render_text`/`render_path_text`/`render_set_text`/`render_batch_set_text`/`render_reload_text` (replace with `""`/`"xyzzy"`/`String::new()`) | 10 | CLI prose output |
+
+Disposition plan (applied as kill tests land in the shard gaps;
+per-cluster evidence then recorded here): A–D are pure mapping
+surfaces → trivial TDD kills; E is CLI prose, which the no-text-
+assertion law (AGENTS §5) forbids pinning at the unit tier — cluster
+backlog issue pointing at the golden-coverage wave (S7) as the right
+home.
+
 
 
 ## 3. Survivor census & dispositions
