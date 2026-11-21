@@ -1245,6 +1245,254 @@ pub fn habit_streak_unioned(
     own + extra
 }
 
+// ---- Statistics (HF3, US-9 / #963) ----------------------------------------
+//
+// Pure, total, projection-only over `HabitState.log`. Every function
+// enumerates canonical windows of the habit's *current* target kind
+// only, so former-kind rows stay analytically inert (D-H12) and a
+// kind change starts a fresh statistical horizon (the same read law
+// the streak walk applies).
+
+/// The typed adherence ratio (US-9 AC-1/AC-3): `met` windows over
+/// `scheduled` windows. Hand-rolled private-field newtype (the A1
+/// house pattern) minted through [`AdherenceRatio::mint`], which
+/// rejects `met > scheduled` — a ratio above 100 % is corruption, not
+/// data. `scheduled == 0` is the **typed empty state**: no division
+/// ever runs against zero windows, `ratio()` answers `None`, and
+/// there is no "0 % of nothing" posture (US-9 AC-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdherenceRatio {
+    met: u32,
+    scheduled: u32,
+}
+
+impl AdherenceRatio {
+    /// The fallible mint: `Some` iff `met <= scheduled`.
+    #[must_use]
+    pub const fn mint(met: u32, scheduled: u32) -> Option<Self> {
+        if met <= scheduled {
+            Some(Self { met, scheduled })
+        } else {
+            None
+        }
+    }
+
+    /// The typed empty state: zero met, zero scheduled windows.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            met: 0,
+            scheduled: 0,
+        }
+    }
+
+    /// True exactly in the typed empty state (nothing scheduled yet —
+    /// an empty history, or a history of nothing but transparent
+    /// windows).
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.scheduled == 0
+    }
+
+    /// The windows that counted toward the ratio (met).
+    #[must_use]
+    pub const fn met(&self) -> u32 {
+        self.met
+    }
+
+    /// The windows the ratio was computed over (scheduled, elapsed,
+    /// non-transparent).
+    #[must_use]
+    pub const fn scheduled(&self) -> u32 {
+        self.scheduled
+    }
+
+    /// The ratio itself, in `0.0..=1.0`; `None` in the typed empty
+    /// state (there is no percentage of zero windows).
+    #[must_use]
+    pub fn ratio(&self) -> Option<f64> {
+        if self.scheduled == 0 {
+            None
+        } else {
+            Some(f64::from(self.met) / f64::from(self.scheduled))
+        }
+    }
+}
+
+/// The habit's statistics horizon: canonical windows of the current
+/// target kind, from the log's earliest current-kind row through the
+/// natural (current) window of `now`. Deliberate documented leniency:
+/// the horizon starts at the **earliest log row**, not at a habit
+/// creation stamp — the log is the module's only historical record
+/// (HF3 trap (a): statistics read `HabitState.log`, no new
+/// persistence), so pre-log windows are simply outside the horizon
+/// rather than assumed missed.
+///
+/// TODO(HF4 — `.artifacts/plans/2026-11-21-habit-schedules-plan.md`):
+/// the scheduled-window denominator derives from the weekly/monthly
+/// day sets (journey plan R-6 / US-5 AC-5) once HF4's
+/// `scheduled_days` field lands; on today's semantics every elapsed
+/// window of the current kind is scheduled (there is no daily
+/// off-day class — R-6's own law), so the horizon enumeration below
+/// is the denominator. Same seam owns the skipped / paused /
+/// pre-schedule transparent classes (HF1's
+/// `.artifacts/plans/2026-11-21-habit-skip-pause-plan.md` skip mark
+/// and `paused_until`): today the only transparent class is the
+/// walk's own pending window (grace still open), which leaves both
+/// numerator and denominator exactly per US-9 AC-2's law.
+fn statistics_horizon(
+    habit: &Habit,
+    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    now: DateTime<Utc>,
+    day: DayCalendar,
+) -> Vec<NaiveDate> {
+    let kind = habit.target.kind();
+    let mut rows: Vec<NaiveDate> = log
+        .keys()
+        .filter(|key| {
+            key.habit == habit.id
+                && key.window.as_date() == period_start(kind, key.window.as_date())
+        })
+        .map(|key| key.window.as_date())
+        .collect();
+    rows.sort_unstable();
+    let Some(earliest) = rows.first().copied() else {
+        return Vec::new();
+    };
+    let natural = WindowStart::of_period(kind, day.today(now)).as_date();
+    let mut horizon = Vec::new();
+    let mut cursor = natural;
+    loop {
+        horizon.push(cursor);
+        if cursor <= earliest {
+            break;
+        }
+        let prev = period_before(kind, cursor);
+        if prev >= cursor {
+            break; // chrono saturation: the ends hold
+        }
+        cursor = prev;
+    }
+    horizon.reverse(); // chronological order
+    horizon
+}
+
+/// The habit's adherence (US-9 AC-1): met elapsed windows over
+/// scheduled elapsed windows, both over [`statistics_horizon`].
+///
+/// Window classification follows the streak walk verbatim: count ≥
+/// quota → met (numerator + denominator); grace still open → pending,
+/// transparent (leaves both — US-9 AC-2); grace closed and under
+/// quota → missed (denominator only). An empty history — no
+/// current-kind canonical rows at all — is the typed empty state
+/// (US-9 AC-3).
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the 24 h grace offset — a
+/// programming error, not an input condition.
+#[must_use]
+pub fn adherence(
+    habit: &Habit,
+    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    now: DateTime<Utc>,
+    day: DayCalendar,
+) -> AdherenceRatio {
+    let kind = habit.target.kind();
+    let quota = habit.target.quota().get();
+    let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
+    let horizon = statistics_horizon(habit, log, now, day);
+    if horizon.is_empty() {
+        return AdherenceRatio::empty();
+    }
+    let mut met = 0_u32;
+    let mut scheduled = 0_u32;
+    for window in horizon {
+        let count = log
+            .get(&HabitLogKey {
+                habit: habit.id,
+                window: WindowStart(window),
+            })
+            .map_or(0, |entry| entry.count);
+        if count >= quota {
+            met += 1;
+            scheduled += 1;
+        } else {
+            let grace_end = period_end(kind, window, day) + grace;
+            if now >= grace_end {
+                scheduled += 1; // missed: denominator only
+            }
+            // else pending: transparent — leaves both.
+        }
+    }
+    AdherenceRatio { met, scheduled }
+}
+
+/// The best historical streak (US-9 AC-1): the maximum run of
+/// consecutive counting windows anywhere in [`statistics_horizon`],
+/// with the walk's own classification — counting windows extend a
+/// run, pending (grace-open) windows are transparent (neither break
+/// nor extend, the walk's saturation posture), missed windows break
+/// it. Always at least [`streak`]'s value: the current run is one of
+/// the historical runs.
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the 24 h grace offset — a
+/// programming error, not an input condition.
+#[must_use]
+pub fn best_streak(
+    habit: &Habit,
+    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+    now: DateTime<Utc>,
+    day: DayCalendar,
+) -> u32 {
+    let kind = habit.target.kind();
+    let quota = habit.target.quota().get();
+    let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
+    let mut best = 0_u32;
+    let mut run = 0_u32;
+    for window in statistics_horizon(habit, log, now, day) {
+        let count = log
+            .get(&HabitLogKey {
+                habit: habit.id,
+                window: WindowStart(window),
+            })
+            .map_or(0, |entry| entry.count);
+        if count >= quota {
+            run += 1;
+            best = best.max(run);
+        } else {
+            let grace_end = period_end(kind, window, day) + grace;
+            if now >= grace_end {
+                run = 0; // missed: the run breaks
+            }
+            // else pending: transparent — neither extends nor breaks.
+        }
+    }
+    best
+}
+
+/// The per-window totals (US-9 AC-1): the count column of the history
+/// grid — every current-kind canonical log row, keyed by window,
+/// counts as stored (a 0 row stays, honestly — an audited correction
+/// may empty a window). Former-kind and non-canonical rows are inert
+/// (D-H12): they simply do not appear.
+#[must_use]
+pub fn per_period_totals(
+    habit: &Habit,
+    log: &BTreeMap<HabitLogKey, HabitLogEntry>,
+) -> BTreeMap<WindowStart, u32> {
+    let kind = habit.target.kind();
+    log.iter()
+        .filter(|(key, _)| {
+            key.habit == habit.id
+                && key.window.as_date() == period_start(kind, key.window.as_date())
+        })
+        .map(|(key, entry)| (key.window, entry.count))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,7 +1500,7 @@ mod tests {
     use chrono::{Datelike, TimeZone};
     use proptest::prelude::*;
 
-    fn habit(raw: u128, target: HabitTarget) -> Habit {
+    pub(super) fn habit(raw: u128, target: HabitTarget) -> Habit {
         Habit {
             id: HabitId::from(uuid::Uuid::from_u128(raw)),
             board: BoardId::from(uuid::Uuid::from_u128(900)),
@@ -3670,5 +3918,236 @@ mod hf4_schedule_tests {
             "attribution never reads the override"
         );
     }
+    }
+}
+
+// ---- Statistics tests (HF3, US-9; the accepted plan's catalogue) ----
+
+#[cfg(test)]
+mod statistics_tests {
+    use super::tests::habit;
+    use super::*;
+    use crate::test_support::{habit_fixture_strategy, proptest_config};
+    use chrono::{FixedOffset, NaiveTime, TimeZone};
+    use proptest::prelude::*;
+
+    fn stamp(secs: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(secs, 0).single().expect("valid stamp")
+    }
+
+    fn entry(count: u32) -> HabitLogEntry {
+        HabitLogEntry {
+            count,
+            clock: stamp(10),
+            by: None,
+        }
+    }
+
+    fn put(
+        log: &mut BTreeMap<HabitLogKey, HabitLogEntry>,
+        habit: HabitId,
+        window: NaiveDate,
+        count: u32,
+    ) {
+        log.insert(
+            HabitLogKey {
+                habit,
+                window: WindowStart::from_stored(window),
+            },
+            entry(count),
+        );
+    }
+
+    /// A daily-quota habit met exactly `met` of the `depth` days
+    /// ending yesterday (today stays pending — grace open).
+    fn daily_habit(
+        raw: u128,
+        quota: u32,
+        pattern: &[bool],
+    ) -> (
+        Habit,
+        BTreeMap<HabitLogKey, HabitLogEntry>,
+        DateTime<Utc>,
+        DayCalendar,
+    ) {
+        let habit = habit(
+            raw,
+            HabitTarget::PerDay(NonZeroCount::new(quota).expect("nonzero")),
+        );
+        let day = DayCalendar {
+            day_start_time: NaiveTime::MIN,
+            offset: FixedOffset::east_opt(0).expect("zero offset"),
+        };
+        let today = NaiveDate::from_ymd_opt(2026, 11, 21).expect("date");
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 21, 12, 0, 0)
+            .single()
+            .expect("noon");
+        let mut log = BTreeMap::new();
+        for (i, met) in pattern.iter().enumerate() {
+            // pattern[0] is the OLDEST day in the window; today itself
+            // is never written (its grace is open — pending).
+            let back =
+                i64::try_from(pattern.len()).expect("small") - i64::try_from(i).expect("small");
+            let d = today - chrono::Duration::days(back);
+            put(&mut log, habit.id, d, u32::from(*met) * quota);
+        }
+        (habit, log, now, day)
+    }
+
+    // US-9 AC-1: the denominator counts scheduled *elapsed* windows —
+    // met windows and missed windows both enter it; the pending
+    // current window (grace open) does not.
+    #[test]
+    fn adherence_denominator_is_scheduled_windows() {
+        // 6 elapsed days: 3 met, 2 missed, 1 met → denominator 6,
+        // numerator 4. Today is pending, never in either side.
+        let (habit, log, now, day) = daily_habit(1, 2, &[true, false, true, false, true, true]);
+        let ratio = adherence(&habit, &log, now, day);
+        assert_eq!(ratio.met(), 4);
+        assert_eq!(ratio.scheduled(), 6);
+        assert_eq!(ratio.ratio(), Some(4.0 / 6.0));
+    }
+
+    // US-9 AC-2: the transparent class leaves BOTH numerator and
+    // denominator. On today's landed semantics the transparent class
+    // is the walk's pending window (grace open). The skipped /
+    // paused / pre-schedule classes are HF1/HF4 seams (see the TODO
+    // at `statistics_horizon`); this test pins the law those classes
+    // must honor when they land.
+    #[test]
+    fn transparent_windows_leave_numerator_and_denominator() {
+        // Only today's window has a row (under quota, grace open) →
+        // pending: transparent. Zero elapsed windows → the ratio is
+        // the typed empty state, not 100 % and not 0 %.
+        let (habit, mut log, now, day) = daily_habit(2, 1, &[]);
+        put(&mut log, habit.id, day.today(now), 0);
+        let ratio = adherence(&habit, &log, now, day);
+        assert!(ratio.is_empty());
+        assert_eq!(ratio.ratio(), None);
+        // And a *met* pending window does count (done is done): met 1,
+        // scheduled 1 — the current window's own completion joins the
+        // ratio even while its grace is open.
+        put(&mut log, habit.id, day.today(now), 1);
+        let ratio = adherence(&habit, &log, now, day);
+        assert_eq!(ratio.met(), 1);
+        assert_eq!(ratio.scheduled(), 1);
+    }
+
+    // US-9 AC-1: best streak = the max historical run, not the
+    // current one and not the sum.
+    #[test]
+    fn best_streak_is_the_max_historical_run() {
+        // Chronological runs: 2, then a miss, then 1, then a miss,
+        // then 5 — best 5; today pending extends nothing.
+        let (habit, log, now, day) = daily_habit(
+            3,
+            1,
+            &[true, true, false, true, false, true, true, true, true, true],
+        );
+        assert_eq!(best_streak(&habit, &log, now, day), 5);
+        // And the current streak (the newest run's tail, bounded by
+        // the newest miss) is smaller.
+        assert!(streak(&habit, &log, now, day) <= 5);
+    }
+
+    // US-9 AC-3: empty history is the typed empty state — no 0 % of
+    // nothing.
+    #[test]
+    fn empty_history_is_the_typed_empty_state() {
+        let (habit, log, now, day) = daily_habit(4, 1, &[]);
+        let ratio = adherence(&habit, &log, now, day);
+        assert_eq!(ratio, AdherenceRatio::empty());
+        assert!(ratio.is_empty());
+        assert_eq!(ratio.ratio(), None);
+        assert_eq!(best_streak(&habit, &log, now, day), 0);
+        assert!(per_period_totals(&habit, &log).is_empty());
+    }
+
+    // D-H12: former-kind (non-canonical) rows are inert — they never
+    // render as misses, never join the horizon, never dilute the
+    // denominator.
+    #[test]
+    fn former_kind_rows_render_inert_never_missed() {
+        // A *weekly* habit whose log only carries daily-kind rows
+        // (Tuesday Nov 17 — not an ISO Monday, hence non-canonical for
+        // the current PerWeek kind): every row is inert — no horizon,
+        // no misses, no totals.
+        let weekly = habit(
+            5,
+            HabitTarget::PerWeek(NonZeroCount::new(1).expect("nonzero")),
+        );
+        let day = DayCalendar {
+            day_start_time: NaiveTime::MIN,
+            offset: FixedOffset::east_opt(0).expect("zero offset"),
+        };
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 21, 12, 0, 0)
+            .single()
+            .expect("noon");
+        let mut log = BTreeMap::new();
+        put(
+            &mut log,
+            weekly.id,
+            NaiveDate::from_ymd_opt(2026, 11, 17).expect("Tuesday"),
+            5,
+        );
+        let ratio = adherence(&weekly, &log, now, day);
+        assert!(ratio.is_empty(), "former-kind rows never become misses");
+        assert!(per_period_totals(&weekly, &log).is_empty());
+        // And another habit's rows are equally invisible (id-scoped).
+        let (other, _, _, _) = daily_habit(6, 1, &[true, true]);
+        let mut cross = BTreeMap::new();
+        for (key, value) in other_keys(other.id) {
+            cross.insert(key, value);
+        }
+        let (subject, empty_log, now2, day2) = daily_habit(7, 1, &[]);
+        assert!(adherence(&subject, &cross, now2, day2).is_empty());
+        drop(empty_log);
+        let _ = weekly.target;
+    }
+
+    fn other_keys(habit: HabitId) -> Vec<(HabitLogKey, HabitLogEntry)> {
+        let mut out = Vec::new();
+        for d in [17, 18] {
+            out.push((
+                HabitLogKey {
+                    habit,
+                    window: WindowStart::from_stored(
+                        NaiveDate::from_ymd_opt(2026, 11, d).expect("date"),
+                    ),
+                },
+                entry(1),
+            ));
+        }
+        out
+    }
+
+    // The Σ-shape property (HF3's extension arm): over every fixture,
+    // (a) met <= scheduled, (b) the ratio never exceeds 1, (c) the
+    // best streak dominates the current streak (the current run is a
+    // historical run), and (d) the per-period totals' keys are exactly
+    // current-kind canonical windows.
+    proptest! {
+        #![proptest_config(proptest_config(64))]
+
+        #[test]
+        fn stats_invariants_hold_over_generated_histories(
+            fixture in habit_fixture_strategy(),
+        ) {
+            let ratio = adherence(&fixture.habit, &fixture.log, fixture.now, fixture.day);
+            prop_assert!(ratio.met() <= ratio.scheduled());
+            if let Some(r) = ratio.ratio() {
+                prop_assert!((0.0..=1.0).contains(&r));
+            } else {
+                prop_assert!(ratio.is_empty());
+            }
+            prop_assert!(best_streak(&fixture.habit, &fixture.log, fixture.now, fixture.day)
+                >= streak(&fixture.habit, &fixture.log, fixture.now, fixture.day));
+            let kind = fixture.habit.target.kind();
+            for (window, _) in per_period_totals(&fixture.habit, &fixture.log) {
+                prop_assert_eq!(window.as_date(), period_start(kind, window.as_date()));
+            }
+        }
     }
 }
