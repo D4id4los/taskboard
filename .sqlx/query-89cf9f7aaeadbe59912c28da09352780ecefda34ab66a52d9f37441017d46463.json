@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO habit_log (habit_id, window_start, count, clock, au_by, skip)\n                   VALUES (?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(habit_id, window_start) DO UPDATE SET\n                       count = excluded.count,\n                       clock = excluded.clock,\n                       au_by = excluded.au_by,\n                       skip = excluded.skip\n                   WHERE excluded.clock > habit_log.clock",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "89cf9f7aaeadbe59912c28da09352780ecefda34ab66a52d9f37441017d46463"
+}

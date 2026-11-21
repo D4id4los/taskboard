@@ -8605,6 +8605,8 @@ fn state_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     state.habits.habits.insert(habit.id, habit);
 }
@@ -23389,6 +23391,8 @@ fn the_menu_reorder_rows_mint_the_floor_midpoint_slots() {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let _ = &mut h;
         h

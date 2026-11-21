@@ -204,7 +204,7 @@ mod tests {
             .fetch_one(&raw)
             .await
             .expect("migration bookkeeping");
-        assert_eq!(applied, 27, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 28, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }
@@ -388,6 +388,8 @@ mod tests {
             )),
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let key = taskboard_domain::HabitLogKey {
             habit: habit.id,
@@ -404,6 +406,8 @@ mod tests {
                     count: 2,
                     clock: chrono::TimeZone::timestamp_opt(&chrono::Utc, 200, 0).unwrap(),
                     by: None,
+
+                    skip: false,
                 },
             ),
         ])

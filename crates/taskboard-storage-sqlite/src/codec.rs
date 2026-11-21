@@ -1148,6 +1148,7 @@ mod journal_payload_tests {
                     count: 1,
                     clock: chrono::Utc.timestamp_opt(100, 0).unwrap(),
                     by: None,
+                    skip: false,
                 }),
             }],
             watermark: UndoWatermark(
@@ -1157,6 +1158,7 @@ mod journal_payload_tests {
                         count: 5,
                         clock: chrono::Utc.timestamp_opt(150, 0).unwrap(),
                         by: None,
+                        skip: false,
                     }),
                 )]
                 .into_iter()

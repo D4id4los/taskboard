@@ -179,6 +179,16 @@ pub enum CommandError {
         /// The offending window.
         window: WindowStart,
     },
+    /// `PauseHabit` with a through-date before today (the planner's
+    /// local today) — the pause would cover nothing and read as a
+    /// stale badge.
+    #[error("habit pause through-date is in the past")]
+    InvalidHabitPause {
+        /// The named habit.
+        habit: HabitId,
+        /// The offending through-date.
+        until: chrono::NaiveDate,
+    },
     /// No reflection entry with this id exists.
     #[error("unknown reflection entry")]
     UnknownReflection(crate::ids::ReflectionId),
@@ -351,6 +361,14 @@ pub enum CommandOutcome {
         window: WindowStart,
         /// The window's post-increment count.
         count: u32,
+    },
+    /// The skip mark landed on this window (the current canonical
+    /// window, R-4) — user-visible feedback naming where.
+    HabitSkipped {
+        /// The skipped habit.
+        habit: HabitId,
+        /// The window the skip mark landed on.
+        window: WindowStart,
     },
     /// The audited correction's post-write state.
     HabitLogAdjusted {
@@ -2698,6 +2716,8 @@ pub fn plan_command(
                 continued_from: None,
                 deleted: false,
                 by: author,
+
+                paused_until: None,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -2803,6 +2823,8 @@ pub fn plan_command(
                             count,
                             clock,
                             by: author,
+
+                            skip: false,
                         },
                     ),
                     board_flush(habit.board, ids, now),
@@ -2856,6 +2878,8 @@ pub fn plan_command(
                             count: *count,
                             clock,
                             by: author,
+
+                            skip: false,
                         },
                     ),
                     board_flush(habit.board, ids, now),
@@ -2865,6 +2889,97 @@ pub fn plan_command(
                     window: *window,
                     count: *count,
                 },
+            })
+        }
+        StateCommand::SkipHabit { habit: id } => {
+            let habit = live_habit(app, *id)?;
+            // The current canonical window only (R-4): the window is
+            // minted planner-side, the `LogHabit` posture. The mark is
+            // a typed bit on the row — the row's count (if any) stays.
+            let window = WindowStart::of_period(habit.target.kind(), day.today(now));
+            let key = HabitLogKey { habit: *id, window };
+            if app.habits.log.get(&key).is_some_and(|entry| entry.skip) {
+                // Already marked: the accepted no-op — no clock churn.
+                return Ok(no_op());
+            }
+            let clock = crate::habit::mint_log_clock(
+                now,
+                app.habits.log.get(&key).map(|entry| entry.clock),
+            );
+            let count = app.habits.log.get(&key).map_or(0, |entry| entry.count);
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::RecordHabitLog(
+                        key,
+                        HabitLogEntry {
+                            count,
+                            clock,
+                            by: author,
+                            skip: true,
+                        },
+                    ),
+                    board_flush(habit.board, ids, now),
+                ],
+                outcome: CommandOutcome::HabitSkipped { habit: *id, window },
+            })
+        }
+        StateCommand::UnskipHabit { habit: id } => {
+            let habit = live_habit(app, *id)?;
+            // The skip's undo inverse: clear the typed mark on the
+            // current canonical window; the count stays untouched.
+            let window = WindowStart::of_period(habit.target.kind(), day.today(now));
+            let key = HabitLogKey { habit: *id, window };
+            if !app.habits.log.get(&key).is_some_and(|entry| entry.skip) {
+                return Ok(no_op());
+            }
+            let clock = crate::habit::mint_log_clock(
+                now,
+                app.habits.log.get(&key).map(|entry| entry.clock),
+            );
+            let count = app.habits.log.get(&key).map_or(0, |entry| entry.count);
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::RecordHabitLog(
+                        key,
+                        HabitLogEntry {
+                            count,
+                            clock,
+                            by: author,
+                            skip: false,
+                        },
+                    ),
+                    board_flush(habit.board, ids, now),
+                ],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        StateCommand::PauseHabit { habit: id, until } => {
+            let habit = live_habit(app, *id)?;
+            // The PauseSeries posture verbatim: read-modify-write on the
+            // field only; an unchanged value is the accepted no-op; a
+            // past-date `until` is the typed rejection (a pause that
+            // covers nothing reads as a stale badge).
+            if let Some(date) = until {
+                let today = day.today(now);
+                if *date < today {
+                    return Err(CommandError::InvalidHabitPause {
+                        habit: *id,
+                        until: *date,
+                    });
+                }
+            }
+            if habit.paused_until == *until {
+                return Ok(no_op());
+            }
+            let mut updated = habit.clone();
+            updated.paused_until = *until;
+            updated.clocks.paused_until = now;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertHabit(updated),
+                    board_flush(habit.board, ids, now),
+                ],
+                outcome: CommandOutcome::Applied,
             })
         }
         StateCommand::DeleteHabit { habit: id } => {
@@ -3114,6 +3229,8 @@ pub fn plan_command(
                 continued_from: Some(rule.series),
                 deleted: false,
                 by: author,
+
+                paused_until: None,
             };
             Ok(CommandPlan {
                 actions: vec![
@@ -9665,6 +9782,7 @@ mod tests {
             | CommandOutcome::EntryDeleted { .. }
             | CommandOutcome::HabitCreated(_)
             | CommandOutcome::HabitLogged { .. }
+            | CommandOutcome::HabitSkipped { .. }
             | CommandOutcome::HabitLogAdjusted { .. }
             | CommandOutcome::ReflectionRecorded { .. }
             | CommandOutcome::ReflectionUpdated { .. }
@@ -9754,6 +9872,12 @@ mod tests {
                 ),
                 count: 3,
             },
+            CommandOutcome::HabitSkipped {
+                habit: habit_id(),
+                window: crate::habit::WindowStart::from_stored(
+                    chrono::NaiveDate::from_ymd_opt(2026, 11, 17).expect("valid"),
+                ),
+            },
             CommandOutcome::HabitLogAdjusted {
                 habit: habit_id(),
                 window: crate::habit::WindowStart::from_stored(
@@ -9807,7 +9931,7 @@ mod tests {
         // to extend both the match and this list; the count pin closes
         // the remaining drift — a silently *dropped* sample line (the
         // tag-uniqueness check below only catches duplicates) fails here.
-        assert_eq!(samples.len(), 37);
+        assert_eq!(samples.len(), 38);
         for outcome in &samples {
             assert_every_variant_is_round_tripped(outcome);
             let json = serde_json::to_string(outcome).expect("serializes");
@@ -10040,6 +10164,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -10055,6 +10181,8 @@ mod tests {
             count,
             clock: ts(T0 - 1_800),
             by: None,
+
+            skip: false,
         }
     }
 

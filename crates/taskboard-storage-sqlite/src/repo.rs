@@ -832,12 +832,14 @@ struct HabitRow {
     sort_order: i64,
     anchor_time: Option<String>,
     anchor_day: Option<String>,
+    paused_until: Option<String>,
     ck_title: String,
     ck_target: String,
     ck_order: String,
     ck_anchor_time: String,
     ck_description: String,
     ck_anchor_day: String,
+    ck_paused_until: String,
     ck_deleted: String,
     deleted: bool,
     continued_from: Option<String>,
@@ -873,6 +875,13 @@ fn decode_habit(
             Some(day)
         }
     };
+    let paused_until = match &row.paused_until {
+        None => None,
+        Some(text) => Some(
+            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate))?,
+        ),
+    };
     let clocks = taskboard_domain::HabitClocks {
         title: decode::clock(&row.ck_title)?,
         description: decode::clock(&row.ck_description)?,
@@ -880,6 +889,7 @@ fn decode_habit(
         order: decode::clock(&row.ck_order)?,
         anchor_time: decode::clock(&row.ck_anchor_time)?,
         anchor_day: decode::clock(&row.ck_anchor_day)?,
+        paused_until: decode::clock(&row.ck_paused_until)?,
         deleted: decode::clock(&row.ck_deleted)?,
     };
     let continued_from = row
@@ -901,6 +911,7 @@ fn decode_habit(
             order,
             anchor_time,
             anchor_day,
+            paused_until,
             clocks,
             continued_from,
             deleted: row.deleted,
@@ -1335,9 +1346,11 @@ impl SqliteTaskRepository {
             HabitRow,
             r#"SELECT habit_id, board_id, title, description, target,
                       sort_order, anchor_time, anchor_day,
+                      COALESCE(paused_until, NULL) AS paused_until,
                       ck_title, ck_target, ck_order, ck_anchor_time,
                       COALESCE(ck_description, '1970-01-01T00:00:00+00:00') AS ck_description,
                       COALESCE(ck_anchor_day, '1970-01-01T00:00:00+00:00') AS ck_anchor_day,
+                      COALESCE(ck_paused_until, '1970-01-01T00:00:00+00:00') AS ck_paused_until,
                       ck_deleted,
                       deleted as "deleted: bool", continued_from, au_by
                FROM habits ORDER BY habit_id"#
@@ -1346,9 +1359,9 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
-        type HabitLogRow = (String, String, i64, String, Option<String>);
+        type HabitLogRow = (String, String, i64, String, Option<String>, bool);
         let habit_log_rows: Vec<HabitLogRow> = sqlx::query_as(
-            r"SELECT habit_id, window_start, count, clock, au_by FROM habit_log
+            r"SELECT habit_id, window_start, count, clock, au_by, skip FROM habit_log
                ORDER BY habit_id, window_start",
         )
         .fetch_all(&mut *tx)
@@ -1704,7 +1717,7 @@ impl SqliteTaskRepository {
                         .map_err(|e| e.attached(PersistedTable::Habits, row_key))?;
                     habits.habits.insert(id, habit);
                 }
-                for (habit_id, window_start, count, clock, au_by) in &habit_log_rows {
+                for (habit_id, window_start, count, clock, au_by, skip) in &habit_log_rows {
                     let row_key = Uuid::parse_str(habit_id).ok();
                     let decoded = (|| {
                         Result::<
@@ -1734,7 +1747,15 @@ impl SqliteTaskRepository {
                             })?;
                             let clock: DateTime<Utc> = decode::clock(clock)?;
                             let by = decode::author(au_by.as_deref())?;
-                            (key, taskboard_domain::HabitLogEntry { count, clock, by })
+                            (
+                                key,
+                                taskboard_domain::HabitLogEntry {
+                                    count,
+                                    clock,
+                                    by,
+                                    skip: *skip,
+                                },
+                            )
                         })
                     })()
                     .map_err(|e| e.attached(PersistedTable::HabitLog, row_key))?;
@@ -2545,9 +2566,10 @@ async fn execute_batch(
     for habit in habit_upserts {
         sqlx::query!(
             r#"INSERT INTO habits (habit_id, board_id, title, description, target, sort_order,
-                         anchor_time, anchor_day, ck_title, ck_target, ck_order, ck_anchor_time,
-                         ck_description, ck_anchor_day, ck_deleted, deleted, continued_from, au_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         anchor_time, anchor_day, paused_until, ck_title, ck_target, ck_order,
+                         ck_anchor_time, ck_description, ck_anchor_day, ck_paused_until,
+                         ck_deleted, deleted, continued_from, au_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(habit_id) DO UPDATE SET
                        board_id = excluded.board_id,
                        title = excluded.title,
@@ -2556,12 +2578,14 @@ async fn execute_batch(
                        sort_order = excluded.sort_order,
                        anchor_time = excluded.anchor_time,
                        anchor_day = excluded.anchor_day,
+                       paused_until = excluded.paused_until,
                        ck_title = excluded.ck_title,
                        ck_target = excluded.ck_target,
                        ck_order = excluded.ck_order,
                        ck_anchor_time = excluded.ck_anchor_time,
                        ck_description = excluded.ck_description,
                        ck_anchor_day = excluded.ck_anchor_day,
+                       ck_paused_until = excluded.ck_paused_until,
                        ck_deleted = excluded.ck_deleted,
                        deleted = excluded.deleted,
                        continued_from = excluded.continued_from,
@@ -2576,12 +2600,14 @@ async fn execute_batch(
             habit
                 .anchor_day
                 .map(|d| serde_json::to_string(&d).expect("anchor_day serializes")),
+            habit.paused_until.map(|d| d.to_string()),
             habit.clocks.title.to_rfc3339(),
             habit.clocks.target.to_rfc3339(),
             habit.clocks.order.to_rfc3339(),
             habit.clocks.anchor_time.to_rfc3339(),
             habit.clocks.description.to_rfc3339(),
             habit.clocks.anchor_day.to_rfc3339(),
+            habit.clocks.paused_until.to_rfc3339(),
             habit.clocks.deleted.to_rfc3339(),
             habit.deleted,
             habit
@@ -2662,18 +2688,20 @@ async fn execute_batch(
         // never overwrites; equal/older keeps local (belt to the fold's
         // braces).
         sqlx::query!(
-            r#"INSERT INTO habit_log (habit_id, window_start, count, clock, au_by)
-                   VALUES (?, ?, ?, ?, ?)
+            r#"INSERT INTO habit_log (habit_id, window_start, count, clock, au_by, skip)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(habit_id, window_start) DO UPDATE SET
                        count = excluded.count,
                        clock = excluded.clock,
-                       au_by = excluded.au_by
+                       au_by = excluded.au_by,
+                       skip = excluded.skip
                    WHERE excluded.clock > habit_log.clock"#,
             codec::uuid_to_text(key.habit.as_uuid()),
             key.window.as_date().to_string(),
             i64::from(entry.count),
             entry.clock.to_rfc3339(),
             entry.by.map(|a| a.to_string()),
+            entry.skip,
         )
         .execute(&mut *tx)
         .await

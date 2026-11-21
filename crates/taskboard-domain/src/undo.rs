@@ -332,6 +332,24 @@ fn record_entry(
             // log-row delete action exists.
             UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
         }
+        StateCommand::SkipHabit { .. } | StateCommand::UnskipHabit { .. } => {
+            // Journal-invertible (HF1, 2026-11-21 — the habit-family UX
+            // plan R-7's spirit): the pre-image is the prior row shape
+            // **or none** (`PreImage::HabitLogRow` before: Option); the
+            // inverse flips the typed mark via the mirror verb, never
+            // forging a row shape. The count stays untouched either way.
+            UndoFacts::PreImages {
+                images: pre_images(app, actions),
+                watermark: watermark_of(actions),
+            }
+        }
+        StateCommand::PauseHabit { .. } => {
+            // The pause lives on the habit row, but `HabitChanges` has
+            // no `paused_until` leg (the sparse-edit change mask never
+            // grew one), so the standard UpdateHabit inverse cannot
+            // express the restore — refuse-and-name, the D25 posture.
+            UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+        }
         StateCommand::RecordReflection { .. }
         | StateCommand::UpdateReflection { .. }
         | StateCommand::DeleteReflection { .. } => {
@@ -464,6 +482,9 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         StateCommand::UpdateHabit { habit, .. }
         | StateCommand::MoveHabit { habit, .. }
         | StateCommand::LogHabit { habit }
+        | StateCommand::SkipHabit { habit }
+        | StateCommand::UnskipHabit { habit }
+        | StateCommand::PauseHabit { habit, .. }
         | StateCommand::AdjustHabitLog { habit, .. }
         | StateCommand::DeleteHabit { habit }
         | StateCommand::RestoreHabit { id: habit } => app.habits.habits.get(habit).map(|h| h.board),
@@ -970,6 +991,10 @@ enum InverseClass {
     /// `AdjustHabitLog`: the touched window's post-write row compared
     /// as a whole (count AND clock).
     AdjustHabitLog,
+    /// `SkipHabit`/`UnskipHabit` (HF1): the touched window's post-write
+    /// row compared as a whole (mark AND clock); the inverse is the
+    /// mirror verb (skip ↔ unskip), never a forged row shape.
+    SkipHabit,
 }
 
 /// The §3 classification of a journaled command — the narrow extract of
@@ -1005,6 +1030,9 @@ impl JournalEntry {
             StateCommand::CreateHabit { .. } => Ok(InverseClass::CreatedHabit),
             StateCommand::UpdateHabit { .. } => Ok(InverseClass::UpdateHabit),
             StateCommand::MoveHabit { .. } => Ok(InverseClass::MoveHabit),
+            StateCommand::SkipHabit { .. } | StateCommand::UnskipHabit { .. } => {
+                Ok(InverseClass::SkipHabit)
+            }
             StateCommand::AdjustHabitLog { .. } => Ok(InverseClass::AdjustHabitLog),
             // The #901 restore-family rows (D-5's table).
             StateCommand::DeleteLabel { .. } => Ok(InverseClass::DeletedLabel),
@@ -1040,6 +1068,7 @@ impl JournalEntry {
             | StateCommand::StartTracking { .. }
             | StateCommand::StopTracking
             | StateCommand::LogHabit { .. }
+            | StateCommand::PauseHabit { .. }
             | StateCommand::RecordReflection { .. }
             | StateCommand::UpdateReflection { .. }
             | StateCommand::DeleteReflection { .. }
@@ -1943,6 +1972,43 @@ fn synthesize_undo(
                 habit: pre.id,
                 order: pre.order,
             }])
+        }
+        InverseClass::SkipHabit => {
+            // The mirror-verb inverse (HF1): the mark flips via
+            // `UnskipHabit`/`SkipHabit`; the guard compares the touched
+            // window's row to the recorded post-write row as a whole
+            // (any later write to the window refuses). The window key
+            // comes from the journal entry's `PreImage::HabitLogRow` —
+            // never recomputed from "today" (the day may have rolled
+            // over since the skip).
+            let Some(habit) = (match &entry.command {
+                StateCommand::SkipHabit { habit } | StateCommand::UnskipHabit { habit } => {
+                    Some(*habit)
+                }
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let Some(key) = images.iter().find_map(|image| match image {
+                PreImage::HabitLogRow { key, .. } if key.habit == habit => Some(*key),
+                _ => None,
+            }) else {
+                // Unreachable for a journaled skip (the mark always
+                // records the row pre-image); defensive.
+                return Err(CommandError::NothingToUndo);
+            };
+            let entity = JournalEntity::HabitLog(key);
+            let Some(EntityStamps::HabitLog(recorded_post)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::HabitLogCount));
+            };
+            if app.habits.log.get(&key) != Some(recorded_post) {
+                return Err(refuse(entity, UndoField::HabitLogCount));
+            }
+            let inverse = match &entry.command {
+                StateCommand::SkipHabit { .. } => StateCommand::UnskipHabit { habit },
+                _ => StateCommand::SkipHabit { habit },
+            };
+            Ok(vec![inverse])
         }
         InverseClass::AdjustHabitLog => {
             // The key comes from the stored command payload; the pre

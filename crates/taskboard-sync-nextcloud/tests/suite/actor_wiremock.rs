@@ -3470,6 +3470,8 @@ mod flush_seed {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let habit_id = habit.id;
         state.habits.habits.insert(habit.id, habit);
@@ -3485,6 +3487,8 @@ mod flush_seed {
                 count: 1,
                 clock: ts(T + 20),
                 by: None,
+
+                skip: false,
             },
         );
         state.outbox.push(PendingOp {

@@ -951,6 +951,8 @@ mod tests {
             continued_from: None,
             deleted,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -1308,6 +1310,8 @@ mod tests {
             count: 0,
             clock: ts(0),
             by: None,
+
+            skip: false,
         };
         let _ = HabitState::default();
     }

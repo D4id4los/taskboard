@@ -894,6 +894,8 @@ mod tests {
                 continued_from: None,
                 deleted: false,
                 by: None,
+
+                paused_until: None,
             },
         );
         let occurrence = T0 - chrono::TimeDelta::try_minutes(30).expect("30 min"); // the window's anchor reading (00:30, midnight day start)

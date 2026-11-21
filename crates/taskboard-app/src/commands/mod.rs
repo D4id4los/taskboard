@@ -771,6 +771,7 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::NotRecurring(_) => "not-recurring",
         D::UnknownHabit(_) | D::HabitDeleted(_) => "unknown-habit",
         D::InvalidHabitWindow { .. } => "invalid-habit-window",
+        D::InvalidHabitPause { .. } => "invalid-habit-pause",
         // The undo line's refusals are their own surface family
         // (ADR 0019); `EngineRouted` is the catalogue's totality arm.
         D::EngineRouted => "engine-routed",

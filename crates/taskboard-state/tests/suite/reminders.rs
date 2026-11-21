@@ -1233,6 +1233,8 @@ fn seeded_tracker_state() -> PersistedState {
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     let mut habits = HabitState::default();
     habits.habits.insert(habit.id, habit);

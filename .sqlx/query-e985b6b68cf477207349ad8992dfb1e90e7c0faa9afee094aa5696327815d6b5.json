@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO habits (habit_id, board_id, title, description, target, sort_order,\n                         anchor_time, anchor_day, paused_until, ck_title, ck_target, ck_order,\n                         ck_anchor_time, ck_description, ck_anchor_day, ck_paused_until,\n                         ck_deleted, deleted, continued_from, au_by)\n                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n                   ON CONFLICT(habit_id) DO UPDATE SET\n                       board_id = excluded.board_id,\n                       title = excluded.title,\n                       description = excluded.description,\n                       target = excluded.target,\n                       sort_order = excluded.sort_order,\n                       anchor_time = excluded.anchor_time,\n                       anchor_day = excluded.anchor_day,\n                       paused_until = excluded.paused_until,\n                       ck_title = excluded.ck_title,\n                       ck_target = excluded.ck_target,\n                       ck_order = excluded.ck_order,\n                       ck_anchor_time = excluded.ck_anchor_time,\n                       ck_description = excluded.ck_description,\n                       ck_anchor_day = excluded.ck_anchor_day,\n                       ck_paused_until = excluded.ck_paused_until,\n                       ck_deleted = excluded.ck_deleted,\n                       deleted = excluded.deleted,\n                       continued_from = excluded.continued_from,\n                       au_by = excluded.au_by",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 20
+    },
+    "nullable": []
+  },
+  "hash": "e985b6b68cf477207349ad8992dfb1e90e7c0faa9afee094aa5696327815d6b5"
+}
