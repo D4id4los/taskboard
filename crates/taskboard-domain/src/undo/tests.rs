@@ -4011,6 +4011,46 @@ fn undo_of_delete_time_entry_refuses_when_a_row_reappeared() {
 }
 
 #[test]
+fn restore_time_entry_undo_re_deletes_the_restored_row() {
+    // The #1187 regression: undoing a CLI `track restore` must answer
+    // the re-delete inverse. The restore's own journal shape carries a
+    // `before: None` time-entry pre-image (the row was hard-absent
+    // pre-restore), which the inverse synthesis must accept — the
+    // `Some`-demanding shape belongs to the delete family's journal.
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry row");
+    let payload = h.disk.tracking.entries[&entry_id].clone();
+    h.exec(&StateCommand::DeleteTimeEntry { id: entry_id })
+        .expect("deleted");
+    h.exec(&StateCommand::RestoreTimeEntry {
+        entry: Box::new(payload),
+    })
+    .expect("restored");
+    h.exec(&StateCommand::Undo).expect("the restore undoes");
+    assert!(
+        !h.disk.tracking.entries.contains_key(&entry_id),
+        "the undo re-deleted the restored row"
+    );
+    // Redo re-restores (the line's child is the restore, replayed
+    // through the ordinary catalogue).
+    h.exec(&StateCommand::Redo).expect("the re-delete redoes");
+    assert!(
+        h.disk.tracking.entries.contains_key(&entry_id),
+        "the redo re-materialized the row"
+    );
+}
+
+#[test]
 fn restore_time_entry_round_trips_and_conflicts_typed() {
     let mut h = Harness::new();
     let board = h.board();
