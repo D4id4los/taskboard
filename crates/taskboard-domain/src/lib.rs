@@ -107,9 +107,10 @@ pub use entities::{
 };
 pub use find::{MatchQuality, SearchHit, SearchTarget, find};
 pub use habit::{
-    AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget,
-    InvalidHabitTarget, MonthDay, NonZeroCount, PeriodKind, WindowStart, habit_streak_unioned,
-    log_window, period_after, period_before, period_end, period_start, streak,
+    AdherenceRatio, AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState,
+    HabitTarget, InvalidHabitTarget, MonthDay, NonZeroCount, PeriodKind, WindowStart, adherence,
+    best_streak, habit_streak_unioned, log_window, per_period_totals, period_after, period_before,
+    period_end, period_start, streak,
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
