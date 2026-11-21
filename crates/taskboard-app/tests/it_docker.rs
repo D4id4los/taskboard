@@ -1587,11 +1587,12 @@ async fn move_to_files_journey(cfg: &common::LiveCfg) {
     let _env = common::taskboard_env_lock();
     let _password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", &cfg.token);
     let budget = Duration::from_secs(60);
-    // The default-path identity home: the live journey's in-process
-    // ceremony calls resolve it exactly as the CLI verb does (the
-    // injection seam, #751).
-    let device_json =
-        taskboard_app::board_move_ceremony::default_device_json().expect("platform data dir");
+    // The fixture's own identity home (#1106): the live journey's
+    // in-process ceremony resolves the identity file exactly as the
+    // CLI verb composes it, but the path is fixture-local — no test
+    // writes outside its workspace, ever.
+    let device_home = tempfile::tempdir().expect("tempdir");
+    let device_json = device_home.path().join("device.json");
     let client = DeckClient::new(&cfg.url, &cfg.user, &cfg.token).expect("base URL");
     let run = common::run_id();
     let (deck, stack) = create_board_and_stack(&client, &run).await;
