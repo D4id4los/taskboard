@@ -1396,7 +1396,6 @@ fn effective_clock_of(clocks: &crate::habit::HabitClocks) -> chrono::DateTime<ch
         .max(clocks.description)
         .max(clocks.anchor_day)
         .max(clocks.paused_until)
-
         .max(clocks.scheduled_days)
         .max(clocks.reminder)
         .max(clocks.deleted)

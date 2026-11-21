@@ -1384,9 +1384,9 @@ fn break_firings(
 /// shifted by its offset, and supplies the fallback time-of-day when
 /// the habit carries no `anchor_time` (US-6 AC-4). The gate decides
 /// WHEN only (`tracker_eligible` stays the quota gate; the snooze walk
-/// reads the map after the gate). Nudges stay disarmed while paused
-/// (HF1's composition seam — the pause field does not exist yet; the
-/// wiring lands with `2026-11-21-habit-skip-pause-plan`).
+/// reads the map after the gate). Nudges stay disarmed while paused —
+/// the HF1 wiring landed (the `paused_until` gate inside
+/// `tracker_eligible`).
 ///
 /// `None` ⇔ the habit row is missing or tombstoned, or today is not
 /// an armed day (`tracker_arm`'s `None` legs: no anchor and no

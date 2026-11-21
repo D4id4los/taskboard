@@ -589,8 +589,11 @@ export component TaskView inherits FocusScope {
                     }
                     for slot in [0, 1, 2, 3, 4, 5, 6]: CheckBox {
                         checked: root.habit.schedule_days[slot];
-                        checked-label: ["Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Mon"][slot];
-                        unchecked-label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][slot];
+                        // The add/remove verb pair (the widget's label
+                        // grammar: the label announces the *toggle*
+                        // action, so both states name THIS slot's day).
+                        checked-label: ["Remove Mon", "Remove Tue", "Remove Wed", "Remove Thu", "Remove Fri", "Remove Sat", "Remove Sun"][slot];
+                        unchecked-label: ["Add Mon", "Add Tue", "Add Wed", "Add Thu", "Add Fri", "Add Sat", "Add Sun"][slot];
                         toggled => { root.habit_schedule_day_toggled(slot, !root.habit.schedule_days[slot]); }
                     }
                 }
@@ -622,7 +625,11 @@ export component TaskView inherits FocusScope {
                     }
                     TextField {
                         horizontal-stretch: 1;
-                        placeholder: "07:30";
+                        // The blank field's actual fallback is the
+                        // mint's 09:00 default (the adapter's
+                        // override mint) — the placeholder names the
+                        // real default, never a different example.
+                        placeholder: "09:00";
                         label: "Time (no chip: used)";
                         text: root.habit.reminder-time;
                         edited(text) => { root.habit_reminder_time_edited(text); }

@@ -39,6 +39,8 @@ fn state_habit(
         order: 0,
         anchor_time: None,
         anchor_day: None,
+        scheduled_days: None,
+        reminder: None,
         clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
         continued_from: None,
         deleted: false,
