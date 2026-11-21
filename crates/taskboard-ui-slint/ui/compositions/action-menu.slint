@@ -285,4 +285,22 @@ export component ActionMenu inherits Rectangle {
                     / max(Theme.focus-ring-width / 4, flick.content-height - flick.height));
         }
     }
+
+    // #1188: the border box closes over the clipped scroll edge. The
+    // Flickable's viewport clips its last visible row at the panel
+    // cap and the row's fragments (hint keycaps included) paint above
+    // the panel's own border stroke — children render after the
+    // parent's background, and the viewport bottom is not inset from
+    // the border. This overlay redraws the border as the panel's
+    // topmost chrome so the box closes at every geometry; a bare
+    // Rectangle intercepts no pointer events (the rows below stay
+    // clickable).
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        border-width: Theme.focus-ring-width;
+        border-color: Theme.focus-ring;
+        border-radius: Theme.radius-medium;
+    }
 }
