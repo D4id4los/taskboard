@@ -303,9 +303,11 @@ fn record_entry(
             // D24/§7.2: an adjust onto a window with no pre-existing row
             // is lossy to invert — the `count: 0` inverse would forge an
             // explicit count-0 row where the pre-state had none (the
-            // exact stored-fact lossiness that keeps `LogHabit`
-            // excluded). Pre row present (any count, 0 included)
-            // inverts exactly.
+            // exact stored-fact lossiness; `LogHabit` no longer shares
+            // this fence — journal-invertible since 2026-11-21
+            // (habit-family UX plan R-7) — the audited correction valve
+            // itself keeps it, per R-7's scope). Pre row present (any
+            // count, 0 included) inverts exactly.
             let key = crate::habit::HabitLogKey {
                 habit: *habit,
                 window: *window,
@@ -327,10 +329,24 @@ fn record_entry(
             UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
         }
         StateCommand::LogHabit { .. } => {
-            // Lossy to invert: a pre-log absent window would become an
-            // explicit count-0 row — a different stored fact; no
-            // log-row delete action exists.
-            UndoFacts::NotUndoable(NotUndoableReason::HabitSurface)
+            // Journal-invertible since 2026-11-21 (habit-family UX plan
+            // R-7 — the dated supersession of the former
+            // `NotUndoable(HabitSurface)` classification, #956): the
+            // pre-image is the prior row shape **or none**
+            // (`PreImage::HabitLogRow` over the touched window) and the
+            // inverse restores the prior count through the existing
+            // audited `AdjustHabitLog` — the #986 bump mint re-stamps
+            // the restored row deterministically, so journal replay
+            // re-mints identically (the B1 clock-bump rule is
+            // load-bearing here and unchanged). Per-increment
+            // undoability: one `LogHabit` is one journal entry; a
+            // same-second burst pops one increment per undo (the
+            // bump's monotone clocks distinguish rows). `AdjustHabitLog`
+            // (D24) and the conversion seam (D25) keep their fences.
+            UndoFacts::PreImages {
+                images: pre_images(app, actions),
+                watermark: watermark_of(actions),
+            }
         }
         StateCommand::SkipHabit { .. } | StateCommand::UnskipHabit { .. } => {
             // Journal-invertible (HF1, 2026-11-21 — the habit-family UX
@@ -995,6 +1011,12 @@ enum InverseClass {
     /// row compared as a whole (mark AND clock); the inverse is the
     /// mirror verb (skip ↔ unskip), never a forged row shape.
     SkipHabit,
+    /// `LogHabit` (R-7, 2026-11-21): the touched window's post-write
+    /// row compared as a whole (count AND clock); the inverse restores
+    /// the pre-image count via `AdjustHabitLog` — the pre row's absence
+    /// restores as the honest count-0 row (the legal correction shape;
+    /// absence-equivalent in every count read).
+    LoggedHabit,
 }
 
 /// The §3 classification of a journaled command — the narrow extract of
@@ -1034,6 +1056,7 @@ impl JournalEntry {
                 Ok(InverseClass::SkipHabit)
             }
             StateCommand::AdjustHabitLog { .. } => Ok(InverseClass::AdjustHabitLog),
+            StateCommand::LogHabit { .. } => Ok(InverseClass::LoggedHabit),
             // The #901 restore-family rows (D-5's table).
             StateCommand::DeleteLabel { .. } => Ok(InverseClass::DeletedLabel),
             StateCommand::DeleteTimeEntry { .. } => Ok(InverseClass::DeletedTimeEntry),
@@ -1067,7 +1090,6 @@ impl JournalEntry {
             | StateCommand::DeleteBreakRule { .. }
             | StateCommand::StartTracking { .. }
             | StateCommand::StopTracking
-            | StateCommand::LogHabit { .. }
             | StateCommand::PauseHabit { .. }
             | StateCommand::RecordReflection { .. }
             | StateCommand::UpdateReflection { .. }
@@ -2045,6 +2067,65 @@ fn synthesize_undo(
                 habit,
                 window,
                 count: recorded_pre.count,
+            }])
+        }
+        InverseClass::LoggedHabit => {
+            // The R-7 inverse (2026-11-21): the habit and window come
+            // from the journal entry's `PreImage::HabitLogRow` — never
+            // recomputed from "today" (the day may have rolled over
+            // since the log) — and the pre count from the same image
+            // (`before: None` = the pre-log absent window; the inverse
+            // is the count-0 correction, the legal row shape,
+            // absence-equivalent in every count read). The guard
+            // compares the touched window's row to the recorded
+            // post-write row as a whole (any later write to the window
+            // — another log, an adjust — moved the clock and refuses).
+            // The inverse itself is the existing audited
+            // `AdjustHabitLog`: its #986 bump mint re-stamps the
+            // restored row deterministically (journal replay re-mints
+            // identically; the B1 rule unchanged), and its ordinary
+            // catalogue planning answers the D-H12 kind gate typed if
+            // the habit's kind moved since the log.
+            let Some(habit) = (match &entry.command {
+                StateCommand::LogHabit { habit } => Some(*habit),
+                _ => None,
+            }) else {
+                return Err(CommandError::NothingToUndo);
+            };
+            let Some(key) = images.iter().find_map(|image| match image {
+                PreImage::HabitLogRow { key, .. } if key.habit == habit => Some(*key),
+                _ => None,
+            }) else {
+                // Unreachable for a journaled log (every LogHabit
+                // records the row pre-image); defensive.
+                return Err(CommandError::NothingToUndo);
+            };
+            let recorded_pre = images.iter().find_map(|image| match image {
+                PreImage::HabitLogRow {
+                    key: image_key,
+                    before,
+                } if *image_key == key => before.as_ref().map(|row| row.count),
+                _ => None,
+            });
+            let entity = JournalEntity::HabitLog(key);
+            let Some(EntityStamps::HabitLog(recorded_post)) = watermark.0.get(&entity) else {
+                return Err(refuse(entity, UndoField::HabitLogCount));
+            };
+            // Count-only guard (not the AdjustHabitLog class's
+            // whole-row compare): this class's own inverse re-stamps
+            // the row (the #986 bump mint), so the clock legitimately
+            // moves between consecutive pops — a whole-row guard would
+            // deadlock the second undo of a burst (US-3/AC-2's
+            // per-increment law). The count is the class's full
+            // semantic payload (one log = exactly one increment), and
+            // the bump's monotone mint keeps the LWW ordering intact.
+            if app.habits.log.get(&key).map(|row| row.count) != Some(recorded_post.count) {
+                return Err(refuse(entity, UndoField::HabitLogCount));
+            }
+            Ok(vec![StateCommand::AdjustHabitLog {
+                habit,
+                window: key.window,
+                count: recorded_pre.unwrap_or(0),
             }])
         }
     }
