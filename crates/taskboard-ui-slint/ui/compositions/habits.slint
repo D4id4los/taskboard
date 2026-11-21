@@ -25,6 +25,9 @@ import { TippedField } from "../widgets/tipped-field.slint";
 import { DragState } from "../drag-state.slint";
 import { StatusNotice } from "../widgets/status-notice.slint";
 import { SectionHeader } from "../widgets/section-header.slint";
+import { TextButton, TextButtonEmphasis } from "../widgets/text-button.slint";
+import { AnchorMirror } from "../widgets/anchored-overlay.slint";
+import { HabitQuotaFacts } from "../menu-facts.slint";
 
 // One tracker row on the card substrate (H2 D2): the card slots are
 // the model derivation's (models::habit_card); the strip facts ride
@@ -50,6 +53,10 @@ export struct HabitCardModel {
     // The inclusive pause-through date (the badge's meta text; empty
     // while unpaused).
     paused-until: string,
+    // The row's progress phrase ("3/8", W-5 #961): the strip's
+    // clickable quota-edit affordance carries it (the same derivation
+    // the card's decoration chip renders — one phrase, two mounts).
+    progress-phrase: string,
 }
 
 export component HabitsSection inherits Rectangle {
@@ -77,6 +84,14 @@ export component HabitsSection inherits Rectangle {
     // `(window, count)` from the same row source and dispatches
     // AdjustHabitLog — what you click is what increments.
     callback repair-clicked(int);
+    // The inline quota edit's opener (W-5, #961): the row's progress
+    // phrase is clickable (desktop; kiosk renders the affordance
+    // disabled per R-3) — clicking mounts the quota popover over the
+    // row (app-window-level AnchoredOverlayHost mount; the anchor
+    // rides HabitQuotaFacts). The key twin is `HabitQuotaEdit` over
+    // the focused row (click ≡ key).
+    // slint: habits-quota-edit-asked
+    callback quota-edit-asked(int);
     // The right-click context request (H2 D4): pointer coords in
     // window coordinates — the same seam the task cards speak.
     // slint: habits-context-requested
@@ -357,6 +372,32 @@ export component HabitsSection inherits Rectangle {
                     // the card's progress chip instead.
                     clicked => root.log-clicked(row-index);
                 }
+                // The row's progress phrase, clickable (W-5, #961):
+                // the quota popover's anchor IS the phrase — clicking
+                // it asks the inline edit (kiosk: rendered disabled,
+                // the R-3 posture). The AnchorMirror publishes the
+                // realized window-space rect to HabitQuotaFacts (the
+                // #954 idiom; stale while unclicked — harmless, the
+                // popover's own mount condition gates the read).
+                phrase-button := TextButton {
+                    label: row.progress-phrase;
+                    enabled: root.editing-enabled;
+                    clicked => {
+                        root.quota-edit-asked(row-index);
+                    }
+                    AnchorMirror {
+                        source-x: phrase-button.absolute-position.x;
+                        source-y: phrase-button.absolute-position.y;
+                        source-width: phrase-button.width;
+                        source-height: phrase-button.height;
+                        published(x, y, w, h) => {
+                            HabitQuotaFacts.anchor-x = x;
+                            HabitQuotaFacts.anchor-y = y;
+                            HabitQuotaFacts.anchor-width = w;
+                            HabitQuotaFacts.anchor-height = h;
+                        }
+                    }
+                }
                 // The −1 recovery (UX R-2 D-3): symmetric with the
                 // +1's risk profile — one click, no armed strip (the
                 // frequency argument); itself reversible by +.
@@ -425,6 +466,66 @@ export component HabitsSection inherits Rectangle {
             height: 2px * Theme.base-scale;
             background: Semantic.sync-active;
             border-radius: Theme.radius-small;
+        }
+    }
+}
+
+// The inline quota editor's popover panel (W-5, #961): the stepper
+// over the count and the period-kind phrase locked to the current
+// kind (the inline edit is a one-number edit — kind change goes
+// through the full editor, UX plan §2 habit.quota_edit). Mounts at
+// the app-window level on the AnchoredOverlayHost over the row's
+// progress phrase; commit routes `UpdateHabit` (existing command).
+// The typed invalid-draft state: count 0 renders the invalid tone and
+// blocks the commit — no route fires (US-4/AC-3).
+export component HabitQuotaEditor inherits VerticalLayout {
+    in property <int> count;
+    in property <bool> valid: true;
+    in property <string> kind-phrase;
+    // The stepper rungs (+1/−1): the adapter holds the draft and its
+    // typed validity; the floor is 0 (the invalid draft renders).
+    callback stepped(int);
+    callback committed();
+    spacing: Theme.space-2;
+    padding: Theme.space-2;
+
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        IconButton {
+            icon: IconKind.remove;
+            tone: Tone.neutral;
+            label: "One quota step fewer";
+            clicked => { root.stepped(-1); }
+        }
+        RoleText {
+            vertical-stretch: 0;
+            role: Typography.body;
+            text: "\{root.count}";
+            text-halign: center;
+            text-color: root.valid ? Theme.text-primary : Semantic.danger;
+        }
+        IconButton {
+            icon: IconKind.plus;
+            tone: Tone.success;
+            label: "One quota step more";
+            clicked => { root.stepped(1); }
+        }
+        TextButton {
+            label: root.kind-phrase;
+            enabled: false;
+            click-through: true;
+        }
+    }
+    if (!root.valid): StatusNotice {
+        text: "A quota of 0 cannot be saved — step back up to at least 1.";
+    }
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        TextButton {
+            label: "Save quota";
+            emphasis: TextButtonEmphasis.cta;
+            enabled: root.valid;
+            clicked => { root.committed(); }
         }
     }
 }

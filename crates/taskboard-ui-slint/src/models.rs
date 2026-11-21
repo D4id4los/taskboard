@@ -941,6 +941,7 @@ fn push_habits(
                 row.paused_until
                     .map_or_else(String::new, |until| until.to_string()),
             ),
+            progress_phrase: SharedString::from(presentation::habit_progress_phrase(row)),
         })
         .collect();
     window.set_habits_editing_enabled(presentation::habit_editing_enabled(kiosk));

@@ -61,6 +61,7 @@ fn one_habit_row() -> ModelRc<HabitCardModel> {
         skip: false,
         paused: false,
         paused_until: "".into(),
+        progress_phrase: "0/2".into(),
     }];
     ModelRc::new(VecModel::from(rows))
 }

@@ -352,6 +352,10 @@ fn key_of(effect: &UiEffect) -> EK {
         | UiEffect::HabitRemoveArm
         | UiEffect::HabitRemoveCancel
         | UiEffect::HabitCreateToggle
+        // The quota popover's opener (W-5, #961): the RecurIntent
+        // class — a view intent over the row subject, no modal
+        // takeover beyond the settle.
+        | UiEffect::HabitQuotaEdit
         | UiEffect::SeriesConvertArm => EK::RecurIntent,
         // The H4 editor opener (H4 D1): the settle-then-open view
         // intent — the Nav class cells, no pair overrides.
@@ -2966,6 +2970,7 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             // settle.
             | UiEffect::HabitEdit
             | UiEffect::HabitCreateToggle
+            | UiEffect::HabitQuotaEdit
             | UiEffect::SeriesConvertArm
             // The recur editor's opener (round-7 D-7.1): a modal
             // takeover like the entries overlay's; the detach flips

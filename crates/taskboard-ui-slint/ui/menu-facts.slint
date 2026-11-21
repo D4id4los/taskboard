@@ -44,3 +44,17 @@ export global TimerSetterFacts {
     in-out property <length> anchor-width;
     in-out property <length> anchor-height;
 }
+
+// The habit quota popover's facts (W-5, #961): the TimerSetterFacts
+// twin — the row's progress-phrase button lives inside the habits
+// section's delegates the window cannot name, so the clicked row's
+// button mirrors its realized window-space geometry here through the
+// AnchorMirror (the #954 idiom); values are stale while the popover
+// is closed, and the popover's mount condition is the window's own
+// `habits-quota-open`.
+export global HabitQuotaFacts {
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+}

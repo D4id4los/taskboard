@@ -634,6 +634,16 @@ pub(crate) struct Adapter {
     /// `timer_when_draft` twin): the per-keystroke validity pass
     /// reads it; commit and disarm clear it.
     habit_create_quota: String,
+    /// The quota popover's stepper draft (W-5, #961): the count the
+    /// +/− rungs edit, seeded at the stored quota on open. `0` is the
+    /// typed invalid draft (the `NonZeroCount` mint's law surfaced at
+    /// the UI boundary — commit stays blocked, no route); negative
+    /// values are unreachable (the stepper's floor).
+    habit_quota_count: i32,
+    /// The quota popover's one-shot commit payload (W-5): minted at
+    /// the commit seam (the trust boundary — the `NonZeroCount` mint),
+    /// consumed by the routed `habit.quota-commit` dispatch.
+    habit_quota_draft: Option<crate::router::HabitQuotaDraft>,
     /// The one-shot focus hand-over (round-3 D10, r4 D25): the phase
     /// step that owns the next push's focus — `None` keeps the status
     /// quo, `Grid` hands focus to the overlay's grid (the
@@ -1423,6 +1433,23 @@ impl Adapter {
         self.refresh_forced(window);
     }
 
+    /// The quota popover's push (W-5, #961): the stepper draft and its
+    /// typed validity ride the window properties — `0` is the invalid
+    /// draft (the `NonZeroCount` mint's law at the UI boundary; the
+    /// commit stays blocked, no route), every `≥ 1` value is valid.
+    fn sync_quota_popover(&self, window: &AppWindow) {
+        window.set_habits_quota_count(self.habit_quota_count);
+        window.set_habits_quota_valid(self.habit_quota_count >= 1);
+    }
+
+    /// The quota popover's disarm (the escape rungs' funnel): the
+    /// window flag drops and the one-shot draft dies with it (the
+    /// buffers never outlive the flow).
+    fn disarm_habit_quota(&mut self, window: &AppWindow) {
+        window.set_habits_quota_open(false);
+        self.habit_quota_draft = None;
+    }
+
     fn set_feedback(window: &AppWindow, feedback: KeyFeedback) {
         window.global::<KeyboardState>().set_last_feedback(feedback);
     }
@@ -1701,6 +1728,9 @@ impl Adapter {
         }
         if wants.wants(crate::router::OneShotSet::HABIT_CREATE_DRAFT) {
             ctx.habit_create_draft = self.habit_create_draft.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_QUOTA_DRAFT) {
+            ctx.habit_quota_draft = self.habit_quota_draft.take();
         }
         if wants.wants(crate::router::OneShotSet::PATTERN_DRAFT) {
             ctx.pattern_draft = self.pattern_draft.take();
@@ -4810,6 +4840,45 @@ impl Adapter {
                 }
                 Vec::new()
             }
+            // The quota popover's opener (W-5, #961): the one arming
+            // site both invocation paths converge on (the row phrase
+            // click seam routes the same effect — click ≡ key). Kiosk
+            // is structurally inert (R-3's disabled posture gates the
+            // affordance); a subjectless dispatch surfaces the typed
+            // refusal (the T-19 twin).
+            (_, UiEffect::HabitQuotaEdit) if self.kiosk => Vec::new(),
+            (Flow::None, UiEffect::HabitQuotaEdit) => {
+                if let Some(habit) = self.habit_edit_subject() {
+                    let state = self.state.load();
+                    let seed = state.habits.habits.get(&habit).map(|row| {
+                        (
+                            i32::try_from(row.target.quota().get()).unwrap_or(1),
+                            crate::presentation::habit_target_phrase(row.target),
+                        )
+                    });
+                    if let Some((quota, phrase)) = seed {
+                        drop(state);
+                        // The draft starts AT the stored quota (the
+                        // popover shows the current count — US-4/AC-1);
+                        // the kind phrase is the row's own (the picker
+                        // is locked to the current kind — the inline
+                        // edit is a one-number edit).
+                        self.habit_quota_count = quota;
+                        window.set_habits_quota_kind_phrase(SharedString::from(phrase));
+                        window.set_habits_quota_open(true);
+                        self.sync_quota_popover(window);
+                        // The focus fact composes both directions (the
+                        // row activation's law).
+                        self.focused_habit = Some(habit);
+                    } else {
+                        drop(state);
+                    }
+                } else {
+                    self.arm_no_target_notice(ActionId::HabitQuotaEdit);
+                    self.push_notice(window);
+                }
+                Vec::new()
+            }
             // The rule cursor's activation (J3 US-6 D-3, round 9
             // chunk 12): over an armed cursor, Activate dispatches the
             // cursor'd row's OWN affordance — remove for an armed
@@ -6473,6 +6542,7 @@ impl Adapter {
             // The H4 editor opener interprets like every view intent
             // (the kiosk/subject refusals live in the arm).
             | UiEffect::HabitEdit
+            | UiEffect::HabitQuotaEdit
             // The recur editor's intents (round-7 D-7.1): the opener
             // and the detach strip's flag flips interpret like every
             // view intent — the kiosk/subject refusals live in the
@@ -10815,6 +10885,8 @@ pub(crate) fn install(
         habit_create_open: false,
         habit_create_draft: None,
         habit_create_quota: String::new(),
+        habit_quota_count: 1,
+        habit_quota_draft: None,
         walk_reentry: Rc::clone(&walk_flag),
         walk_timer: slint::Timer::default(),
         flow_open: FlowLiveness::Flowless,
@@ -11754,6 +11826,87 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     window.set_habits_create_open(false);
     a.route(&window, ActionId::HabitCreateCommit);
     true
+
+    });
+
+    // The inline quota edit's seams (W-5, #961): the phrase click
+    // resolves the row and routes the same opener effect the key
+    // routes (click ≡ key — one arming site); the stepper rungs edit
+    // the adapter-held draft (floor 0 — the typed invalid draft); the
+    // commit mints the one-shot at the trust boundary (the
+    // `NonZeroCount` mint over the habit's CURRENT kind — the inline
+    // edit is a one-number edit, the kind is locked); Escape/outside
+    // (the host's dismissal) hits the disarm funnel.
+    install_seam!(window: window.on_habits_quota_edit_asked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(&habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+    else {
+        return; // a stale index degrades to a no-op
+    };
+    // The row click refreshes the focus fact (cross-surface friction
+    // plan D-2, #832): click ≡ key composes both directions. The
+    // opener resolves the subject from this fact (one arming site).
+    a.focused_habit = Some(habit);
+    a.route(&window, ActionId::HabitQuotaEdit);
+
+    });
+    install_seam!(window: window.on_habits_quota_stepped, adapter: adapter;
+    bind mut (a, window), args (delta), {        // The stepper's floor is 0 — the typed invalid draft renders
+    // (commit blocked); no upper clamp beyond i32 (the mint refuses
+    // overflow at commit, and a u32 quota bounds the reachable
+    // values).
+    a.habit_quota_count = (a.habit_quota_count + delta).max(0);
+    a.sync_quota_popover(&window);
+
+    });
+    install_seam!(window: window.on_habits_quota_committed, adapter: adapter;
+    bind mut (a, window), args (), {        // The zero draft never routes (US-4/AC-3): the typed
+    // invalid-draft state blocks the commit — the popover stays
+    // open, the rungs remain the recovery.
+    if a.habit_quota_count < 1 {
+        return;
+    }
+    // The habit and its CURRENT kind resolve fresh at commit — never
+    // cached at arm (what you see is what the habit lands on; the
+    // kind lock reads the stored row, not the popover's stale echo).
+    let Some(habit) = a.habit_edit_subject() else {
+        a.disarm_habit_quota(&window);
+        return;
+    };
+    let state = a.state.load();
+    let Some(row) = state.habits.habits.get(&habit) else {
+        drop(state);
+        a.disarm_habit_quota(&window);
+        return;
+    };
+    let Some(count) = u32::try_from(a.habit_quota_count).ok()
+        .and_then(|count| taskboard_domain::NonZeroCount::new(count).ok())
+    else {
+        return; // unreachable past the guard above; the mint is total
+    };
+    let target = match row.target {
+        taskboard_domain::HabitTarget::PerDay(_) => {
+            taskboard_domain::HabitTarget::PerDay(count)
+        }
+        taskboard_domain::HabitTarget::PerWeek(_) => {
+            taskboard_domain::HabitTarget::PerWeek(count)
+        }
+        taskboard_domain::HabitTarget::PerMonth(_) => {
+            taskboard_domain::HabitTarget::PerMonth(count)
+        }
+    };
+    drop(state);
+    a.habit_quota_draft = Some(crate::router::HabitQuotaDraft { habit, target });
+    // The popover closes on commit (the create form's shape); the
+    // routed dispatch consumes the one-shot draft.
+    window.set_habits_quota_open(false);
+    a.route(&window, ActionId::HabitQuotaCommit);
+
+    });
+    install_seam!(window: window.on_habits_quota_dismissed, adapter: adapter;
+    bind mut (a, window), args (), {        a.disarm_habit_quota(&window);
 
     });
 }

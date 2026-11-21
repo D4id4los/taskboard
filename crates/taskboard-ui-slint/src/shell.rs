@@ -136,6 +136,7 @@ impl KeymapShell {
             focused_stack: self.focused_stack,
             habit_create_draft: None,
             habit_pause_target: None,
+            habit_quota_draft: None,
             habit_move_up: None,
             habit_move_down: None,
             plan_target: None,
@@ -323,6 +324,7 @@ impl KeymapShell {
             | UiEffect::HabitRemoveCancel
             | UiEffect::HabitEdit
             | UiEffect::HabitCreateToggle
+            | UiEffect::HabitQuotaEdit
             | UiEffect::SeriesConvertArm
             // The recur editor's intents are adapter-interpreted view
             // intents (round-7 D-7.1); the shell records nothing.

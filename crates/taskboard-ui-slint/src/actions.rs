@@ -474,6 +474,19 @@ pub enum ActionId {
     /// exists). Zero journal-class change: `LogHabit` keeps its
     /// recorded posture.
     HabitUndoLog,
+    /// The inline quota edit's opener (habit-family UX plan US-4/W-5,
+    /// #961): mounts the quota popover over the row's progress phrase
+    /// — the click seam and the focused-row key route the same arming
+    /// helper (click ≡ key). Commit routes the existing `UpdateHabit`
+    /// with `HabitChanges { target: Some(..) }` (zero new commands;
+    /// the period kind is locked to the current one — the inline edit
+    /// is a one-number edit, UX plan §2 `habit.quota_edit`).
+    HabitQuotaEdit,
+    /// The quota popover's commit dispatch (the `HabitCreateCommit`
+    /// internal-verb twin): routes `UpdateHabit` from the one-shot
+    /// draft the commit seam minted (`NoTarget` without one). Internal
+    /// verb — the popover's Confirm is its only affordance.
+    HabitQuotaCommit,
     HabitMove,
     /// The habit menu's reorder pair (H2 D4, the menu stopgap until
     /// H3's drag/keys reorder): the direction rides the routing id —
@@ -800,6 +813,8 @@ impl ActionId {
             Self::FocusModeToggle => "focus.toggle",
             Self::HabitLog => "habit.log",
             Self::HabitUndoLog => "habit.unlog",
+            Self::HabitQuotaEdit => "habit.quota-edit",
+            Self::HabitQuotaCommit => "habit.quota-commit",
             Self::HabitMove => "habit.move",
             Self::HabitMoveUp => "habit.move-up",
             Self::HabitMoveDown => "habit.move-down",
@@ -2109,6 +2124,19 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: None,
     },
     ActionEntry {
+        id: ActionId::HabitQuotaEdit,
+        label: "Edit habit quota…",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 205,
+        description: "Opens the inline quota editor over the focused tracker's progress phrase (a one-number edit; the period kind stays).",
+        // Section-scoped (the HabitLog R-11 ruling's exact twin): the
+        // row's own affordance is the invocation; the key (O-8 parity,
+        // UX plan W-11) routes over the focused row.
+        menu_group: None,
+    },
+    ActionEntry {
         id: ActionId::HabitCreate,
         label: "Add habit…",
         contexts: &[ContextId::Today],
@@ -2131,6 +2159,18 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Routes the create form's confirm: CreateHabit with the minted title and quota target.",
         // Internal dispatch verb (see HabitLog): the form's Confirm
         // button is its only affordance.
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitQuotaCommit,
+        label: "Save quota",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 206,
+        description: "Routes the quota popover's confirm: UpdateHabit with the minted target over the habit's current period kind.",
+        // Internal dispatch verb (the HabitCreateCommit twin): the
+        // popover's Confirm button is its only affordance.
         menu_group: None,
     },
     ActionEntry {
