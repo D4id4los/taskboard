@@ -1215,12 +1215,19 @@ pub fn habit_day_phrase(day: taskboard_domain::AnchorDay) -> String {
 
 /// The habit card's scheduled-slot phrase (H2 D2): the time chip,
 /// the day chip joining it when the field is set — one mono slot,
-/// empty string = absent (the due-phrase pattern).
+/// empty string = absent (the due-phrase pattern). HF4 (US-5/S3, R-6):
+/// an off-schedule week/month day marks the slot instead of the
+/// anchor chips — the row's off-day state is display data the card
+/// shows verbatim; daily rows (and set-free rows) are unchanged.
 #[must_use]
 pub fn habit_scheduled_phrase(
     chip: Option<chrono::NaiveTime>,
     day: Option<taskboard_domain::AnchorDay>,
+    off_schedule: bool,
 ) -> String {
+    if off_schedule {
+        return String::from("off today");
+    }
     match (chip, day) {
         (None, None) => String::new(),
         (Some(time), None) => habit_time_phrase(time),
@@ -7684,6 +7691,11 @@ mod recur_badge_tests {
 /// the id table build from): the same shape the CLI's list projection
 /// speaks — count/quota/streak derive from the domain functions, the
 /// chip is presentation-only, `met` restyles but never disables.
+// clippy::struct_excessive_bools: the four flags are the design —
+// each a *typed posture bit* (repair mount, its invert side, the met
+// restyle, HF4's off-schedule mark), never a boolean-parameter knot;
+// the row is built once per refresh from domain facts.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // the typed state bits ARE the row's shape
 pub struct HabitRow {
@@ -7731,6 +7743,12 @@ pub struct HabitRow {
     pub paused_until: Option<chrono::NaiveDate>,
     /// The restyle flag.
     pub met: bool,
+    /// HF4 (US-5/S3, R-6): the today row's off-schedule bit — `true`
+    /// exactly when the habit's effective day set exists and *today*
+    /// is not one of its scheduled days (a week/month window's
+    /// non-scheduled day: no due posture, no nudge). Daily habits and
+    /// day-set-free habits render `false` (byte-identical rows).
+    pub off_schedule: bool,
 }
 
 /// The board's **live** habits in stored manual `(order, id)` order
@@ -7811,6 +7829,14 @@ pub fn habit_rows(
                 skip: state.habits.log.get(&key).is_some_and(|entry| entry.skip),
                 paused: habit.paused_until.is_some_and(|until| until >= today),
                 paused_until: habit.paused_until,
+
+                // HF4's display bit (US-5/S3): the domain's membership
+                // rule read once, here — the row shows the off-day
+                // state for week/month habits with a set; everything
+                // else is today's posture.
+                off_schedule: habit
+                    .effective_scheduled_days()
+                    .is_some_and(|set| !set.contains(today.weekday())),
             }
         })
         .collect()
@@ -8367,11 +8393,17 @@ mod habit_section_tests {
             )),
             "21"
         );
-        assert_eq!(habit_scheduled_phrase(Some(time), None), "07:05");
+        assert_eq!(habit_scheduled_phrase(Some(time), None, false), "07:05");
+        assert_eq!(
+            habit_scheduled_phrase(Some(time), None, true),
+            "off today",
+            "the off-day mark replaces the chip slot (US-5/S3)"
+        );
         assert_eq!(
             habit_scheduled_phrase(
                 None,
-                Some(taskboard_domain::AnchorDay::Weekday(chrono::Weekday::Mon))
+                Some(taskboard_domain::AnchorDay::Weekday(chrono::Weekday::Mon)),
+                false,
             ),
             "Mon"
         );
@@ -8379,10 +8411,11 @@ mod habit_section_tests {
             habit_scheduled_phrase(
                 Some(time),
                 Some(taskboard_domain::AnchorDay::Weekday(chrono::Weekday::Wed)),
+                false,
             ),
             "07:05 Wed"
         );
-        assert_eq!(habit_scheduled_phrase(None, None), "");
+        assert_eq!(habit_scheduled_phrase(None, None, false), "");
     }
 
     /// T-18 (continued): count/quota/streak/met derive from the domain
@@ -8413,6 +8446,54 @@ mod habit_section_tests {
         assert!(rows[0].met);
         assert_eq!(rows[0].streak, 1, "today is met: the walk counts it");
         assert_eq!(habit_progress_phrase(&rows[0]), "3/3");
+    }
+
+    /// `us5_s3_row_shows_the_off_schedule_state` (W-6's display half,
+    /// US-5/S3): a weekly habit with a set renders the off-day bit on
+    /// the set's non-scheduled days (and clears it on scheduled ones);
+    /// a daily habit and a set-free weekly stay `false` — today's
+    /// posture, byte-identical rows.
+    #[test]
+    fn us5_s3_row_shows_the_off_schedule_state() {
+        let board = taskboard_domain::BoardId::from(uuid::Uuid::from_u128(2));
+        let mut state = AppState::default();
+        let mut weekly = habit(1, 2, 0, None);
+        weekly.target = HabitTarget::PerWeek(NonZeroCount::new(1).unwrap());
+        weekly.scheduled_days = Some(
+            taskboard_domain::habit::WeekdaySet::new([
+                chrono::Weekday::Mon,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Fri,
+            ])
+            .expect("three days"),
+        );
+        state.habits.habits.insert(weekly.id, weekly.clone());
+        // 2026-11-18 is a Wednesday; 2026-11-19 a Thursday.
+        let wednesday = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let thursday = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let midnight =
+            |date: chrono::NaiveDate| date.and_hms_opt(12, 0, 0).expect("noon").and_utc();
+        let rows = habit_rows(&state, board, midnight(wednesday), day());
+        assert!(
+            !rows[0].off_schedule,
+            "Wednesday is scheduled: no off-day bit"
+        );
+        let rows = habit_rows(&state, board, midnight(thursday), day());
+        assert!(rows[0].off_schedule, "Thursday is off: the off-day bit");
+        // A set-free weekly habit: today's posture.
+        let mut plain = habit(2, 2, 1, None);
+        plain.target = HabitTarget::PerWeek(NonZeroCount::new(1).unwrap());
+        state.habits.habits.insert(plain.id, plain.clone());
+        let rows = habit_rows(&state, board, midnight(thursday), day());
+        assert_eq!(rows.len(), 2);
+        assert!(!rows[1].off_schedule, "no day set: today's posture");
+        // A daily habit (even carrying the inert legacy field) never
+        // shows the bit — R-6's daily half.
+        let mut daily = habit(3, 2, 2, None);
+        daily.scheduled_days = Some(taskboard_domain::habit::WeekdaySet::all());
+        state.habits.habits.insert(daily.id, daily.clone());
+        let rows = habit_rows(&state, board, midnight(thursday), day());
+        assert!(!rows[2].off_schedule, "PerDay is inert (R-6)");
     }
 
     /// T-19 (the order law): the drop slot's floor midpoint — one law

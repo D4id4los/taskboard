@@ -13111,6 +13111,67 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
             }
         }
     });
+    // ---- HF4 (W-6): the schedule picker's toggle seams -----------------
+    // The picker is a draft-backed multi-select; the draft holds the
+    // raw mask (a mid-edit empty selection is legal — the save gate
+    // blocks it, US-5 AC-3).
+    install_seam!(window: window.on_habit_schedule_day_toggled, adapter: adapter;
+    bind mut (a, window), args (index, checked), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            let bit = 1_u8
+                << u32::try_from(index).unwrap_or(u32::MAX).min(6);
+            if checked {
+                draft.schedule_bits |= bit;
+            } else {
+                draft.schedule_bits &= !bit;
+            }
+            draft.schedule_edited = true;
+        }
+    });
+    // ---- HF4 (W-7): the reminder override's field seams ---------------
+    install_seam!(window: window.on_habit_reminder_base_picked, adapter: adapter;
+    bind mut (a, window), args (index), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.reminder_base = usize::try_from(index).unwrap_or(0).min(1);
+            draft.reminder_edited = true;
+        }
+    });
+    install_seam!(window: window.on_habit_reminder_offset_edited, adapter: adapter;
+    bind mut (a, window), args (t), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.reminder_offset = t.to_string();
+            draft.reminder_edited = true;
+        }
+    });
+    install_seam!(window: window.on_habit_reminder_time_edited, adapter: adapter;
+    bind mut (a, window), args (t), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.reminder_time = t.to_string();
+            draft.reminder_edited = true;
+        }
+    });
+    install_seam!(window: window.on_habit_reminder_snooze_edited, adapter: adapter;
+    bind mut (a, window), args (t), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.reminder_snooze = t.to_string();
+            draft.reminder_edited = true;
+        }
+    });
+    // The clear leg (US-6/S3): the explicit `Some(None)` reverts the
+    // habit to the plain O-1 default nudge.
+    install_seam!(window: window.on_habit_reminder_clear_clicked, adapter: adapter;
+    bind mut (a, window), args (), {
+        let _ = &window;
+        if let Some(draft) = a.habit_edit_draft.as_mut() {
+            draft.reminder_clear = true;
+            draft.reminder_edited = true;
+        }
+    });
     // The save: ONE sparse `UpdateHabit` computed against the stored
     // row, then the editor closes (the back grammar — the subject
     // dies with the root swap). An empty changeset is unreachable

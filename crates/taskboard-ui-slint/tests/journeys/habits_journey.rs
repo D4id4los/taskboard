@@ -1223,3 +1223,171 @@ fn us5_s4_escape_cancels_the_editor() {
         harness.assert_commands(&[]);
     });
 }
+
+// ---- HF4 (#960, #959): the schedule picker + the reminder override ------
+
+/// `us5_s2` (W-6, the schedule save): toggling Mon/Wed/Fri on a weekly
+/// habit and saving routes ONE sparse `UpdateHabit` whose changeset
+/// names exactly `scheduled_days: Some(set)` — every untouched field
+/// stays `None` — and the editor closes (the back grammar).
+#[test]
+fn us5_s2_schedule_save_routes_the_exact_command() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = weekly_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+
+        window.invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(window.get_current_view(), View::TaskDetail);
+
+        // Toggle Mon (slot 0), Wed (slot 2), Fri (slot 4), then save.
+        window.invoke_habit_schedule_day_toggled(0, true);
+        window.invoke_habit_schedule_day_toggled(2, true);
+        window.invoke_habit_schedule_day_toggled(4, true);
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        let set = taskboard_domain::habit::WeekdaySet::new([
+            chrono::Weekday::Mon,
+            chrono::Weekday::Wed,
+            chrono::Weekday::Fri,
+        ])
+        .expect("three days");
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit, "the editor edits its own subject");
+                assert_eq!(changes.title, None, "untouched title stays sparse");
+                assert_eq!(changes.description, None);
+                assert_eq!(changes.target, None);
+                assert_eq!(changes.anchor_time, None);
+                assert_eq!(changes.anchor_day, None);
+                assert_eq!(changes.reminder, None);
+                assert_eq!(changes.scheduled_days, Some(set));
+            }
+            other => panic!("the save routes the sparse changeset, got {other:?}"),
+        }
+        assert_eq!(
+            window.get_current_view(),
+            View::Board,
+            "the editor closes on save (the back grammar)"
+        );
+    });
+}
+
+/// US-5 AC-3 (the picker's empty-selection leg): toggling a day on and
+/// back off leaves an edited-but-empty selection whose commit the save
+/// gate blocks — no `UpdateHabit` ever reaches the boundary.
+#[test]
+fn us5_s3_empty_schedule_selection_blocks_the_save() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let _ = weekly_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+
+        window.invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        window.invoke_habit_schedule_day_toggled(0, true);
+        window.invoke_habit_schedule_day_toggled(0, false);
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the empty selection is a typed invalid draft: no dispatch"
+        );
+        // Cancel discards (the escape rung).
+        window.invoke_habit_editor_cancelled();
+        harness.driver.advance_time(0);
+        assert_eq!(window.get_current_view(), View::Board);
+    });
+}
+
+/// `us6_s2` + `us6_s3` (W-7): the override fields route the exact
+/// double-Option set; the clear leg routes `reminder: Some(None)` and
+/// reverts the habit to the plain O-1 default.
+#[test]
+fn us6_s2_override_save_routes_the_exact_command_and_s3_clears() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = weekly_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+
+        window.invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+
+        // Set the override (period-start base, offset 1, 07:30, 2h
+        // snooze) and save.
+        window.invoke_habit_reminder_base_picked(1);
+        window.invoke_habit_reminder_offset_edited("1".into());
+        window.invoke_habit_reminder_time_edited("07:30".into());
+        window.invoke_habit_reminder_snooze_edited("2h".into());
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        let ovr = taskboard_domain::habit::HabitReminderOverride {
+            base: taskboard_domain::habit::NudgeBase::PeriodStart,
+            offset_days: 1,
+            time: chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap(),
+            snooze: taskboard_domain::habit::HabitSnooze::Hours(2),
+        };
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                assert_eq!(changes.title, None);
+                assert_eq!(changes.scheduled_days, None);
+                assert_eq!(changes.reminder, Some(Some(ovr)));
+            }
+            other => panic!("the override save routes the sparse changeset, got {other:?}"),
+        }
+
+        // US-6/S3: reopen, clear, save — the Some(None) clear leg.
+        window.invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        window.invoke_habit_reminder_clear_clicked();
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                assert_eq!(
+                    changes.reminder,
+                    Some(None),
+                    "the clear leg rides the double option's None"
+                );
+            }
+            other => panic!("the clear leg routes the sparse changeset, got {other:?}"),
+        }
+        assert_eq!(window.get_current_view(), View::Board);
+    });
+}

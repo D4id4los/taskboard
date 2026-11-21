@@ -1098,6 +1098,24 @@ expression: rows
   menu_rank: 240
   description: "Opens the habit editor on the shared detail surface (title, description, quota, anchor time and day)."
   menu_group: task
+- id: habit.schedule-edit
+  label: Edit habit schedule
+  contexts:
+    - today
+  category: task
+  enabled: true
+  menu_rank: 960
+  description: Opens the habit editor at the scheduled-days row (week/month habits only; a daily habit happens every day).
+  menu_group: ~
+- id: habit.reminder-edit
+  label: Edit habit reminder
+  contexts:
+    - today
+  category: task
+  enabled: true
+  menu_rank: 970
+  description: "Opens the habit editor at the reminder-override row (base, offset, time, snooze)."
+  menu_group: ~
 - id: habit.remove
   label: Remove habit
   contexts:

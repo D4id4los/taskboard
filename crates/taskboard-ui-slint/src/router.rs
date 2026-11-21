@@ -673,6 +673,25 @@ pub struct HabitEditDraft {
     pub day_edited: bool,
     pub anchor_time: Option<chrono::NaiveTime>,
     pub anchor_day: Option<taskboard_domain::habit::AnchorDay>,
+    // ---- HF4 (W-6/W-7): the schedule picker + the reminder override --
+    /// The schedule picker's raw selection bits (bit n = n days from
+    /// Monday). The draft deliberately holds the *raw* mask — a
+    /// mid-edit empty selection is a legal draft state whose commit
+    /// the save gate blocks (US-5 AC-3: the empty set is a typed
+    /// invalid draft, not a validate-and-forget).
+    pub schedule_bits: u8,
+    /// The schedule picker's edited bit (the sparse-changeset name).
+    pub schedule_edited: bool,
+    /// The reminder override's edit grammar: `reminder_edited` names
+    /// the section touched; `reminder_clear` is the clear leg (a
+    /// `Some(None)` changeset value); the four field mirrors mint the
+    /// override at commit.
+    pub reminder_edited: bool,
+    pub reminder_clear: bool,
+    pub reminder_base: usize,
+    pub reminder_offset: String,
+    pub reminder_time: String,
+    pub reminder_snooze: String,
 }
 
 impl HabitEditDraft {
@@ -701,7 +720,113 @@ impl HabitEditDraft {
             day_edited: false,
             anchor_time: habit.anchor_time,
             anchor_day: habit.anchor_day,
+            schedule_bits: habit
+                .scheduled_days
+                .map_or(0, taskboard_domain::habit::WeekdaySet::bits),
+            schedule_edited: false,
+            reminder_edited: false,
+            reminder_clear: false,
+            reminder_base: match habit.reminder {
+                Some(ovr) if ovr.base == taskboard_domain::habit::NudgeBase::PeriodStart => 1,
+                _ => 0,
+            },
+            reminder_offset: habit
+                .reminder
+                .map_or(String::new(), |ovr| ovr.offset_days.to_string()),
+            reminder_time: habit.reminder.map_or(String::new(), |ovr| {
+                crate::due_edit::format_time_hm(ovr.time)
+            }),
+            reminder_snooze: habit
+                .reminder
+                .map_or(String::new(), |ovr| match ovr.snooze {
+                    taskboard_domain::habit::HabitSnooze::Hours(h) => format!("{h}h"),
+                    taskboard_domain::habit::HabitSnooze::Days(d) => format!("{d}d"),
+                }),
         }
+    }
+
+    /// The weekday picker's gated visibility (US-5 AC-4, R-6 — the
+    /// fold's gate): the picker mounts for PerWeek/PerMonth habits
+    /// only. A daily habit happens *every day*; the field is absent
+    /// by construction, not hidden-by-convenience.
+    #[must_use]
+    pub fn schedule_picker_visible(&self) -> bool {
+        !matches!(self.target.kind(), taskboard_domain::PeriodKind::Day)
+    }
+
+    /// The schedule picker's checked slots (Monday-first; the slint
+    /// `[bool]` model's mirror).
+    #[must_use]
+    pub fn schedule_day_checked(&self, index: usize) -> bool {
+        self.schedule_bits & (1_u8 << index) != 0
+    }
+
+    /// The adapter seam's toggle body (Monday-first slot index).
+    pub fn toggle_schedule_slot(&mut self, index: usize) {
+        let bit = 1_u8 << (index % 7);
+        self.schedule_bits ^= bit;
+        self.schedule_edited = true;
+    }
+
+    /// The test twin: this draft's stored-row shape (same id, target)
+    /// for the fold tests' `changes`/`can_save` oracles.
+    #[cfg(test)]
+    pub(crate) fn stored_twin(self) -> taskboard_domain::habit::Habit {
+        taskboard_domain::habit::Habit {
+            id: self.habit,
+            board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
+            title: self.title,
+            description: self.description,
+            target: self.target,
+            order: 0,
+            anchor_time: self.anchor_time,
+            anchor_day: self.anchor_day,
+            scheduled_days: taskboard_domain::habit::WeekdaySet::from_bits(self.schedule_bits),
+            reminder: None,
+            clocks: taskboard_domain::habit::HabitClocks::all(chrono::DateTime::UNIX_EPOCH),
+            continued_from: None,
+            deleted: false,
+            by: None,
+        }
+    }
+
+    /// The override editor's parse at the trust boundary: the minted
+    /// `HabitReminderOverride` while every field holds.
+    #[must_use]
+    fn minted_reminder_override(&self) -> Option<taskboard_domain::habit::HabitReminderOverride> {
+        let base = match self.reminder_base {
+            0 => taskboard_domain::habit::NudgeBase::NudgeDay,
+            _ => taskboard_domain::habit::NudgeBase::PeriodStart,
+        };
+        let offset_days = self.reminder_offset.trim().parse::<i32>().ok()?;
+        let time = self
+            .reminder_time
+            .trim()
+            .is_empty()
+            .then_some(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("whole hour"))
+            .or_else(|| crate::due_edit::parse_time_lenient(self.reminder_time.trim()))?;
+        let snooze_text = self.reminder_snooze.trim();
+        let digits = snooze_text.trim_end_matches(['h', 'H', 'd', 'D']);
+        let n = digits.parse::<u8>().ok().filter(|n| *n > 0)?;
+        let snooze = match snooze_text.chars().next_back() {
+            Some('h' | 'H') => taskboard_domain::habit::HabitSnooze::Hours(n),
+            Some('d' | 'D') => taskboard_domain::habit::HabitSnooze::Days(n),
+            _ => return None,
+        };
+        Some(taskboard_domain::habit::HabitReminderOverride {
+            base,
+            offset_days,
+            time,
+            snooze,
+        })
+    }
+
+    /// The override section's validity (the save gate's input): an
+    /// untouched section is valid (untouched = untouched); an edited
+    /// one must mint — the clear leg is always valid.
+    #[must_use]
+    pub fn reminder_valid(&self) -> bool {
+        !self.reminder_edited || self.reminder_clear || self.minted_reminder_override().is_some()
     }
 
     /// The `SegmentedControl` index (0 day / 1 week / 2 month).
@@ -777,6 +902,23 @@ impl HabitEditDraft {
         if self.day_edited {
             changes.anchor_day = Some(self.anchor_day);
         }
+        // HF4 rows (W-6/W-7): the picker commits the minted set (a
+        // set replaces; clearing = the full seven-day set via `all` —
+        // the picker has no empty commit, the gate blocks it), the
+        // override section commits the double option (the clear leg
+        // rides `reminder_clear`).
+        if self.schedule_edited
+            && let Some(set) = taskboard_domain::habit::WeekdaySet::from_bits(self.schedule_bits)
+        {
+            changes.scheduled_days = Some(set);
+        }
+        if self.reminder_edited {
+            changes.reminder = Some(if self.reminder_clear {
+                None
+            } else {
+                self.minted_reminder_override()
+            });
+        }
         changes
     }
 
@@ -787,8 +929,12 @@ impl HabitEditDraft {
         let parses_hold = self.quota_valid
             && self.time_valid
             && self.month_valid
+            && self.reminder_valid()
             && (self.quota_count.trim().is_empty() || self.parsed_count().is_some());
-        parses_hold && !self.changes_is_empty(stored)
+        // US-5 AC-3: an edited-but-empty schedule selection blocks the
+        // commit (the typed invalid draft — never a minted empty set).
+        let schedule_holds = !self.schedule_edited || self.schedule_bits != 0;
+        parses_hold && schedule_holds && !self.changes_is_empty(stored)
     }
 
     fn changes_is_empty(&self, stored: &taskboard_domain::habit::Habit) -> bool {
@@ -798,6 +944,8 @@ impl HabitEditDraft {
             && changes.target.is_none()
             && changes.anchor_time.is_none()
             && changes.anchor_day.is_none()
+            && changes.scheduled_days.is_none()
+            && changes.reminder.is_none()
     }
 }
 
@@ -1474,6 +1622,12 @@ impl ActionRouter {
             // resolves the one-shot habit subject and opens the
             // shared surface (subjectless dispatch is the adapter's
             // typed refusal).
+            // HF4 (W-11): the schedule/override rows are the editor
+            // opener's anchors — the sections live inside the editor
+            // surface, so the key opens it (the click ≡ key law).
+            ActionId::HabitScheduleEdit | ActionId::HabitReminderEdit => {
+                DispatchOutcome::UiEffect(UiEffect::HabitEdit)
+            }
             ActionId::HabitEdit => DispatchOutcome::UiEffect(UiEffect::HabitEdit),
             // The inline quota edit (W-5, #961): the opener is a view
             // intent (the adapter arms over the resolved subject); the
@@ -2050,6 +2204,86 @@ mod tests {
     use super::*;
     use taskboard_domain::{HabitId, TaskId};
     use uuid::Uuid;
+
+    // ---- HF4 fold (US-5 AC-4, R-6) ---------------------------------
+
+    fn draft_for(target: taskboard_domain::HabitTarget) -> HabitEditDraft {
+        HabitEditDraft::from_habit(&taskboard_domain::habit::Habit {
+            id: HabitId::from_uuid(Uuid::now_v7()),
+            board: taskboard_domain::BoardId::from_uuid(Uuid::now_v7()),
+            title: "run".into(),
+            description: String::new(),
+            target,
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: taskboard_domain::habit::HabitClocks::all(chrono::DateTime::UNIX_EPOCH),
+            continued_from: None,
+            deleted: false,
+            by: None,
+        })
+    }
+
+    /// `editor_gates_the_weekday_picker_by_target_kind` (W-6's fold,
+    /// US-5 AC-4): the picker mounts for week/month habits and is
+    /// *absent* for `PerDay` (R-6 reversed — a daily habit happens every
+    /// day; the field is absent by construction, not hidden).
+    #[test]
+    fn editor_gates_the_weekday_picker_by_target_kind() {
+        assert!(
+            !draft_for(taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(1).expect("1")
+            ))
+            .schedule_picker_visible()
+        );
+        assert!(
+            draft_for(taskboard_domain::HabitTarget::PerWeek(
+                taskboard_domain::NonZeroCount::new(1).expect("1")
+            ))
+            .schedule_picker_visible()
+        );
+        assert!(
+            draft_for(taskboard_domain::HabitTarget::PerMonth(
+                taskboard_domain::NonZeroCount::new(1).expect("1")
+            ))
+            .schedule_picker_visible()
+        );
+    }
+
+    /// US-5 AC-3's draft half: an edited-but-empty selection is a
+    /// legal draft whose commit the save gate blocks (the typed
+    /// invalid draft), and a toggled set mints into the sparse
+    /// changeset (clearing = the full set rides `WeekdaySet::all`).
+    #[test]
+    fn the_schedule_picker_blocks_the_empty_selection_and_mints_the_set() {
+        let mut draft = draft_for(taskboard_domain::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(1).expect("1"),
+        ));
+        let stored = draft.clone().stored_twin();
+        // Toggle Mon on, then off: empty selection, commit blocked.
+        draft.toggle_schedule_slot(0);
+        assert_eq!(draft.schedule_bits, 1);
+        draft.toggle_schedule_slot(0);
+        assert_eq!(draft.schedule_bits, 0);
+        assert!(
+            !draft.can_save(&stored),
+            "the edited empty selection blocks the save"
+        );
+        // The `all` leg: every slot on mints the full set (the clear
+        // posture).
+        for slot in 0..7_usize {
+            draft.toggle_schedule_slot(slot);
+        }
+        let changes = draft.changes(&stored);
+        assert_eq!(
+            changes.scheduled_days,
+            Some(taskboard_domain::habit::WeekdaySet::all()),
+            "clearing = the full seven-day set"
+        );
+        assert!(draft.can_save(&stored));
+    }
 
     fn ctx(task: bool) -> DispatchCtx {
         DispatchCtx {
