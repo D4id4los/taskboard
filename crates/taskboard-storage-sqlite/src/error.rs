@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Error types of the sqlite adapter.
 
-use taskboard_domain::persistence::RepositoryError;
+use taskboard_domain::persistence::{CorruptionDetail, DecodeReason, DecodeStage, RepositoryError};
 
 /// Failure to open/migrate a database (construction-time, not port-level).
 #[derive(Debug, thiserror::Error)]
@@ -23,15 +23,23 @@ pub enum OpenError {
 /// not an integrity verdict.
 #[allow(clippy::must_use_candidate)]
 pub(crate) fn repo_error(err: &sqlx::Error) -> RepositoryError {
+    // No table/row is in hand at this mapping (plan D-B2-4): the detail
+    // carries the failure class only (`CorruptionDetail::UNKNOWN`'s
+    // legs plus the stage/reason the shape implies).
     match &err {
         sqlx::Error::ColumnDecode { .. } | sqlx::Error::ColumnNotFound(_) => {
-            RepositoryError::Corrupted
+            RepositoryError::corrupted(CorruptionDetail::staged(
+                DecodeStage::Column,
+                DecodeReason::MissingColumn,
+            ))
         }
         sqlx::Error::Database(db) => match db.kind() {
             sqlx::error::ErrorKind::UniqueViolation
             | sqlx::error::ErrorKind::ForeignKeyViolation
             | sqlx::error::ErrorKind::NotNullViolation
-            | sqlx::error::ErrorKind::CheckViolation => RepositoryError::Corrupted,
+            | sqlx::error::ErrorKind::CheckViolation => RepositoryError::corrupted(
+                CorruptionDetail::staged(DecodeStage::Invariant, DecodeReason::ConstraintViolation),
+            ),
             // Other database errors (syntax, RAISE-triggered aborts, …)
             // are not integrity verdicts about the stored data.
             _ => RepositoryError::Unavailable,
@@ -47,13 +55,13 @@ mod tests {
     #[test]
     fn decode_class_errors_map_to_corrupted() {
         let err = sqlx::Error::ColumnNotFound("title".into());
-        assert_eq!(repo_error(&err), RepositoryError::Corrupted);
+        assert!(matches!(repo_error(&err), RepositoryError::Corrupted(_)));
     }
 
     #[test]
     fn constraint_violations_map_to_corrupted() {
         let err = sqlx::Error::Database(Box::new(FakeDbError));
-        assert_eq!(repo_error(&err), RepositoryError::Corrupted);
+        assert!(matches!(repo_error(&err), RepositoryError::Corrupted(_)));
     }
 
     #[test]

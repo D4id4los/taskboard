@@ -970,21 +970,21 @@ async fn corrupt_rows_decode_to_corrupted() {
 
     // Unparseable uuid in an id column.
     let result = corrupt_and_load("INSERT INTO boards (id, title, color, archived, deleted) VALUES ('not-a-uuid', 'x', 'x', 0, 0)").await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // Unknown op_kind tag.
     let result = corrupt_and_load(
         "INSERT INTO outbox (op_id, op_kind, queued_at) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000001', 'teleport_task', '2026-01-01T00:00:00+00:00')",
     )
     .await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // Missing required id column for the op kind.
     let result = corrupt_and_load(
         "INSERT INTO outbox (op_id, op_kind, queued_at) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000002', 'create_task', '2026-01-01T00:00:00+00:00')",
     )
     .await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // rename_board without its board column (the cast-era shape — the
     // board id riding stack_id — is now a rejection, not a silent cast).
@@ -992,7 +992,7 @@ async fn corrupt_rows_decode_to_corrupted() {
         "INSERT INTO outbox (op_id, op_kind, queued_at) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000008', 'rename_board', '2026-01-01T00:00:00+00:00')",
     )
     .await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // Unknown sync phase tag (on a row whose board exists — the FK).
     let result = corrupt_and_load(
@@ -1000,7 +1000,7 @@ async fn corrupt_rows_decode_to_corrupted() {
          INSERT INTO sync_status (board, phase) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000009', 'warp')",
     )
     .await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // Failed phase without its error kind.
     let result = corrupt_and_load(
@@ -1008,7 +1008,7 @@ async fn corrupt_rows_decode_to_corrupted() {
          INSERT INTO sync_status (board, phase) VALUES ('0197c0ff-eeee-7ccc-8ddd-00000000000a', 'failed')",
     )
     .await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // Note: a malformed board uuid in the status key cannot be inserted
     // past the FK (the key must match a boards row, whose id decodes),
@@ -1020,7 +1020,7 @@ async fn corrupt_rows_decode_to_corrupted() {
          INSERT INTO stacks (id, board, remote_board_id, remote_stack_id, title, sort_order, archived, deleted, ck_title, ck_sort_order, ck_deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000004', '0197c0ff-eeee-7ccc-8ddd-000000000003', 5, NULL, 's', 0, 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
     )
     .await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // Unparseable clock text in a task's ck_ column.
     let result = corrupt_and_load(
@@ -1029,7 +1029,7 @@ async fn corrupt_rows_decode_to_corrupted() {
          INSERT INTO tasks (id, stack, title, description, sort_order, archived, deleted, ck_title, ck_description, ck_duedate, ck_done, ck_position, ck_labels, ck_archived, ck_deleted) VALUES ('0197c0ff-eeee-7ccc-8ddd-000000000007', '0197c0ff-eeee-7ccc-8ddd-000000000006', 't', '', 0, 0, 0, 'junk', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')",
     )
     .await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // Positive reminder-rule offset (the mint rejects it; never a
     // clamped value).
@@ -1040,7 +1040,7 @@ async fn corrupt_rows_decode_to_corrupted() {
          INSERT INTO reminder_rules (rule_id, task_id, offset_seconds, created_at) VALUES ('0197c0ff-eeee-7ccc-8ddd-00000000000e', '0197c0ff-eeee-7ccc-8ddd-00000000000d', 60, '2026-01-01T00:00:00+00:00')",
     )
     .await;
-    assert!(matches!(result, Err(RepositoryError::Corrupted)));
+    assert!(matches!(result, Err(RepositoryError::Corrupted(_))));
 
     // The singleton row is gone (per-board rebuild; zero rows is the
     // healthy fresh-install shape, so only a *malformed* key corrupts).
@@ -1244,7 +1244,7 @@ async fn corrupt_baseline_json_is_typed_corruption() {
     db.reopen().await;
 
     let err = db.repo().load().await.expect_err("load must fail");
-    assert_eq!(err, RepositoryError::Corrupted);
+    assert!(matches!(err, RepositoryError::Corrupted(_)));
     db.close().await;
 }
 
@@ -1587,7 +1587,7 @@ async fn unknown_insistence_text_is_a_typed_corruption() {
     pool.close().await;
 
     let err = db.repo().load().await.expect_err("corrupt decode");
-    assert!(matches!(err, RepositoryError::Corrupted));
+    assert!(matches!(err, RepositoryError::Corrupted(_)));
     db.close().await;
 }
 
@@ -2026,7 +2026,7 @@ async fn an_unknown_task_kind_text_is_corrupted() {
 
     let err = db.repo().load().await.expect_err("corrupted row refuses");
     assert!(
-        matches!(err, RepositoryError::Corrupted),
+        matches!(err, RepositoryError::Corrupted(_)),
         "the strict decode reports Corrupted, got {err:?}"
     );
     db.close().await;
@@ -2307,7 +2307,7 @@ async fn self_contradictory_kind_rows_decode_corrupted() {
             .expect("raw insert");
         pool.close().await;
         let err = repo.load().await.expect_err("load must fail");
-        assert_eq!(err, RepositoryError::Corrupted);
+        assert!(matches!(err, RepositoryError::Corrupted(_)));
         db.close().await;
     }
 

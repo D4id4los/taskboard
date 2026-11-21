@@ -337,6 +337,33 @@ pub async fn spawn_state_engine_with_user_data(
     author: Option<taskboard_domain::ids::AuthorId>,
 ) -> Result<(EngineHandle, JoinHandle<()>), EngineStartupError> {
     let persisted = repo.load().await.map_err(EngineStartupError::Load)?;
+    // The degraded-boot hop (plan D-B2-6, #1039): the repository may
+    // have quarantined undecodable journal rows during this load. The
+    // engine takes the storage-published diagnostics once and
+    // re-broadcasts the typed system event — one event per degraded
+    // load, never per row; a healthy (or fake) repository publishes
+    // nothing and the boot path is bit-for-bit unchanged (round law c).
+    let diagnostics = repo
+        .load_diagnostics()
+        .and_then(taskboard_domain::persistence::LoadDiagnosticsSource::take_load_diagnostics)
+        .filter(|diagnostics| !diagnostics.details.is_empty());
+    if let Some(diagnostics) = diagnostics {
+        tracing::warn!(
+            dropped = diagnostics.dropped,
+            head = ?diagnostics.head,
+            details = ?diagnostics.details,
+            "boot load degraded: command journal rows quarantined"
+        );
+        let _ = system_out.send(SystemEvent::JournalDegraded {
+            details: diagnostics.details,
+            dropped: diagnostics.dropped,
+            // The raw-uuid payload shape: the D-J1 vocabulary ruling
+            // keeps the undo substrate's `Journal*` spelling in its
+            // homes, and `CorruptionDetail::row` already carries the
+            // same raw shape.
+            head: diagnostics.head.map(taskboard_domain::JournalId::as_uuid),
+        });
+    }
     // Log the counts straight off the hydrated data — never clone the
     // whole state just to print its sizes.
     tracing::info!(
@@ -682,7 +709,12 @@ async fn run_loop(
                     SystemEvent::StorageFailed
                     | SystemEvent::TaskResurrected(_)
                     | SystemEvent::SettingsChanged
-                    | SystemEvent::ConfigReload(_),
+                    | SystemEvent::ConfigReload(_)
+                    // The boot hop's own event (#1039): the engine is its
+                    // producer — the boot broadcast happened before this
+                    // loop started; a replayed or externally-sent copy is
+                    // an emit-upstream-only verdict, never an instruction.
+                    | SystemEvent::JournalDegraded { .. },
                 ) => {}
                 Err(broadcast::error::RecvError::Closed) => system_open = false,
                 Err(broadcast::error::RecvError::Lagged(missed)) => {

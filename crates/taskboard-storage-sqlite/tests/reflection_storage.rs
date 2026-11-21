@@ -179,6 +179,7 @@ async fn generated_states_apply_and_load_identically() {
 /// Plants one corrupt cell per rejection class via a raw INSERT; every
 /// decode failure is typed `Corrupted` — never a panic, never a clamp.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // the planted-cell table IS the scope
 async fn corrupt_cells_decode_to_corrupted() {
     let file = tempfile::Builder::new().suffix(".db").tempfile().unwrap();
     {
@@ -274,9 +275,11 @@ async fn corrupt_cells_decode_to_corrupted() {
     .await
     .expect("open");
     let err = repo.load().await.expect_err("corruption is typed");
-    assert_eq!(
-        err,
-        taskboard_domain::persistence::RepositoryError::Corrupted,
+    assert!(
+        matches!(
+            err,
+            taskboard_domain::persistence::RepositoryError::Corrupted(_)
+        ),
         "every planted cell rejects typed"
     );
     repo.close().await;
@@ -317,9 +320,10 @@ async fn a_stored_zero_rating_is_corruption_not_a_clamp() {
     .await
     .expect("open");
     let err = repo.load().await.expect_err("the zero rating rejects");
-    assert_eq!(
+    assert!(matches!(
         err,
-        taskboard_domain::persistence::RepositoryError::Corrupted
-    );
+        taskboard_domain::persistence::RepositoryError::Corrupted(_)
+    ));
+
     repo.close().await;
 }

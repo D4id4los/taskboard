@@ -58,10 +58,12 @@ mod tests {
 
     #[test]
     fn startup_error_carries_the_load_error() {
-        let err = EngineStartupError::from(RepositoryError::Corrupted);
+        let err = EngineStartupError::from(RepositoryError::corrupted(
+            taskboard_domain::persistence::CorruptionDetail::UNKNOWN,
+        ));
         assert!(matches!(
             err,
-            EngineStartupError::Load(RepositoryError::Corrupted)
+            EngineStartupError::Load(RepositoryError::Corrupted(_))
         ));
     }
 }

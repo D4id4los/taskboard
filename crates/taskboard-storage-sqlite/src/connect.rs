@@ -61,6 +61,7 @@ async fn open_with(
     Ok(SqliteTaskRepository {
         pool,
         default_connector,
+        diagnostics: std::sync::Arc::new(std::sync::Mutex::new(None)),
     })
 }
 

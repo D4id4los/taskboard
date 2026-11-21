@@ -269,7 +269,7 @@ async fn effort_beyond_the_i64_fence_is_a_typed_corruption() {
         .apply(vec![PersistenceAction::UpsertTask(task)])
         .await
         .expect_err("overflow rejected");
-    assert!(matches!(err, RepositoryError::Corrupted));
+    assert!(matches!(err, RepositoryError::Corrupted(_)));
     db.close().await;
 }
 
@@ -290,7 +290,7 @@ async fn unknown_level_text_in_the_db_is_a_typed_corruption() {
     pool.close().await;
 
     let err = db.repo().load().await.expect_err("corrupt decode");
-    assert!(matches!(err, RepositoryError::Corrupted));
+    assert!(matches!(err, RepositoryError::Corrupted(_)));
     db.close().await;
 }
 
@@ -311,7 +311,7 @@ async fn corrupt_recur_json_in_the_db_is_a_typed_corruption() {
     pool.close().await;
 
     let err = db.repo().load().await.expect_err("corrupt decode");
-    assert!(matches!(err, RepositoryError::Corrupted));
+    assert!(matches!(err, RepositoryError::Corrupted(_)));
     db.close().await;
 }
 
@@ -332,7 +332,7 @@ async fn negative_effort_text_in_the_db_is_a_typed_corruption() {
     pool.close().await;
 
     let err = db.repo().load().await.expect_err("corrupt decode");
-    assert!(matches!(err, RepositoryError::Corrupted));
+    assert!(matches!(err, RepositoryError::Corrupted(_)));
     db.close().await;
 }
 
