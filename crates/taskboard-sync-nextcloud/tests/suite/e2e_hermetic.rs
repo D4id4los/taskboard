@@ -30,9 +30,8 @@ use tokio::sync::{broadcast, mpsc};
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-mod common;
-use common::SteppingClock;
-use common::hermetic::{
+use crate::common::SteppingClock;
+use crate::common::hermetic::{
     BOARD, STACK, T, board_json, boards_json, card_json, mount_conditional_pull, stacks_json,
     start_server, ts, uuid, wait_subscribed,
 };
