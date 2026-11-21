@@ -206,6 +206,63 @@ pub fn prove_and_write_doc(path: &Path, edits: &[BatchEdit]) -> Result<(), Overl
     }
 }
 
+/// The doc-level multi-removal writer (the batch-unset twin of
+/// [`prove_and_write_doc`], plan D-WRITER): one document load, one
+/// removal per `(section, key)` pair reusing [`remove_key`]'s
+/// in-document semantics — an absent key (or absent section) is an
+/// idempotent no-op for that pair, and no empty table is minted —
+/// **one** prove verdict, **one** atomic write. Removals are a
+/// `(section, key)` tuple slice: a removal carries no value item, so
+/// a `BatchEdit`-style payload struct would carry a permanently-`None`
+/// field. A failing mid-batch key rolls back by construction — the
+/// write never happened. The base-verdict/attribution rule is
+/// [`prove_and_write_doc`]'s, generalized to the removed-section set.
+///
+/// # Errors
+///
+/// [`OverlayError`] — see the module docs.
+pub fn prove_and_remove_doc(
+    path: &Path,
+    removals: &[(String, String)],
+) -> Result<(), OverlayError> {
+    let mut doc = crate::config::overlay_document(path).map_err(OverlayError::Io)?;
+    let base_verdict = prove_verdict(&doc.to_string());
+    for (section, key) in removals {
+        if let Some(table) = doc.get_mut(section).and_then(|item| item.as_table_mut()) {
+            table.remove(key);
+        }
+    }
+    let result = prove_verdict(&doc.to_string());
+    match result {
+        // The file as a whole still boots: write.
+        Ok(()) => write(path, &doc),
+        Err(result_err) => match base_verdict {
+            // A previously-valid file: the batch introduced the
+            // failure — refuse typed, file untouched.
+            Ok(()) => Err(OverlayError::Rejected(result_err)),
+            Err(base_err) => {
+                let blamed_inside = result_err.field().is_some_and(|field| {
+                    removals
+                        .iter()
+                        .any(|(section, _)| field.starts_with(&format!("{section}.")))
+                });
+                if blamed_inside {
+                    Err(OverlayError::Rejected(result_err))
+                } else {
+                    tracing::warn!(
+                        base = %base_err.kind(),
+                        result = %result_err.kind(),
+                        sections = ?removals.iter().map(|(section, _)| section.as_str()).collect::<Vec<_>>(),
+                        "batch removal over an already-invalid config: \
+                         unrelated pre-existing failure, writing anyway"
+                    );
+                    write(path, &doc)
+                }
+            }
+        },
+    }
+}
+
 /// The rendered `day_start_time` form: `%H:%M` for whole minutes (the
 /// user-echo convention: a write never widens the spelling it was
 /// handed) and `%H:%M:%S` otherwise. One definition — the per-intent
@@ -1122,6 +1179,67 @@ mod tests {
             std::fs::read_to_string(&path).expect("read"),
             before,
             "the file is byte-identical — no half-provisioned batch"
+        );
+    }
+
+    /// `us1_s4_batch_unset_lands_one_atomic_document` (US-1 AC-1/AC-4/
+    /// AC-7): a cross-section removal batch lands every removal through
+    /// **one** document — one atomic rename — with the comments and
+    /// every unrelated table preserved; an absent key in the same
+    /// batch is idempotent success; and a batch whose removal would
+    /// cross the whole-document validity refuses typed with the file
+    /// byte-identical (the earlier, individually-valid removal is NOT
+    /// landed — the write never happened).
+    #[test]
+    fn us1_s4_batch_unset_lands_one_atomic_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed(&dir, COMMENTED);
+        let removals = vec![
+            ("reminders".to_owned(), "tick_secs".to_owned()),
+            ("sync".to_owned(), "poll_interval_secs".to_owned()),
+            // Absent: idempotent success inside the same batch (AC-7).
+            ("focus".to_owned(), "work_mins".to_owned()),
+        ];
+        prove_and_remove_doc(&path, &removals).expect("the batch lands");
+
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            written.contains("# operator comment") && written.contains("# keep me"),
+            "comments survived: {written}"
+        );
+        assert!(written.contains("scale = 1.5"), "[ui] survives");
+        assert!(
+            written.contains("credential_store = \"file\""),
+            "[nextcloud] survives"
+        );
+        assert!(
+            !written.contains("tick_secs") && !written.contains("poll_interval_secs"),
+            "both overrides left the file: {written}"
+        );
+        let decoded = crate::config::AppConfig::decode_file_only_str(&written).expect("decodes");
+        decoded.validate().expect("the written batch stays valid");
+
+        // AC-4: a later removal crossing the ordering refuses typed and
+        // the file is byte-identical — the earlier removal did not land.
+        // The proven crossing shape: max at its default falls below the
+        // standing initial (the `remove_key` refusal seed's shape).
+        let dir2 = tempfile::tempdir().expect("tempdir");
+        let path2 = seed(
+            &dir2,
+            "[reminders]\ntick_secs = 30\n\
+             [sync]\npoll_interval_secs = 30\nbackoff_initial_secs = 400\nbackoff_max_secs = 400\n",
+        );
+        let before = std::fs::read_to_string(&path2).expect("read");
+        let doomed = vec![
+            ("reminders".to_owned(), "tick_secs".to_owned()),
+            ("sync".to_owned(), "backoff_max_secs".to_owned()),
+        ];
+        let err = prove_and_remove_doc(&path2, &doomed).expect_err("the crossing removal refuses");
+        assert!(matches!(err, OverlayError::Rejected(_)), "{err:?}");
+        assert_eq!(
+            std::fs::read_to_string(&path2).expect("read"),
+            before,
+            "the file is byte-identical — no half-deprovisioned batch"
         );
     }
 
