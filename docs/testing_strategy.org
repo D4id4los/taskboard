@@ -135,6 +135,24 @@ benchmark lanes fire at 03:00/04:00 UTC).
    its expectation (the bracket/flank idiom); collapses dual-read
    boundary races on the test side.
 
+*Standing exception — boot-level tests cannot run on the paused
+clock (2026-11-21, #1134):* the sqlx pool wraps every acquire in
+=tokio::time::timeout(acquire_timeout)= (sqlx-core
+=pool/inner.rs=), and under a paused clock's auto-advance that timer
+fires the moment the runtime parks on the real-IO sqlite connect +
+migrate — *regardless of the deadline* (a 24 h =acquire_timeout=
+still returns =PoolTimedOut= in ~20 ms; the seam was tried and
+reverted, #1134). There is no tokio-side way to disable auto-advance
+or to arm no timer, so =bootstrap=-level hermetic tests that drive
+the real storage open keep the real wall clock with bounded,
+predicate-with-deadline polling (the R2c teardown-inversion pin,
+=bootstrap.rs= =b4_shutdown_mid_cycle_is_bounded_and_keeps_the_outbox=).
+The exception is scoped to tests whose *fixture* opens a real pool;
+everything above the open seam stays under the paused-clock tools
+1–6. Follow-up: the chunk plan
+=.artifacts/plans/2026-11-21-boot-fixture-residue-plan.md= §2 item 3
+(fallback (c)) and the =backlog:= issue #1134 on the scoping.
+
 ** 6.2 The seam-vs-anchor decision rule (2026-11-06 ruling)
 
 Match the tool to the *assertion's oracle*, not to the test. Ask what
