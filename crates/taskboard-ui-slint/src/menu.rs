@@ -1794,7 +1794,8 @@ mod tests {
             ActionId::HabitRepair,
             // The HF1 trio rides the shared rank space between the
             // repair and the Convert arm (skip 206, pause 207,
-            // resume 208).
+            // resume 209 — the internal HabitPauseCommit holds 230,
+            // past the whole 216 family).
             ActionId::HabitSkip,
             ActionId::HabitPause,
             ActionId::HabitResume,
