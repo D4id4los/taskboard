@@ -230,5 +230,5 @@ async fn a_corrupt_payload_is_typed_corrupted_at_load() {
         .expect("corrupt");
     raw.close().await;
     let err = repo.load().await.expect_err("corruption is typed");
-    assert!(matches!(err, RepositoryError::Corrupted));
+    assert!(matches!(err, RepositoryError::Corrupted(_)));
 }

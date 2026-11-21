@@ -32,10 +32,14 @@ const JOURNAL_ALLOWED: [&str; 8] = [
     "idgen.rs",
     "persistence.rs",
 ];
-/// The undo receipts in `command.rs` and the fake generator arm in
-/// `test_support/` — same frozen-at-base rationale, kept separate so
-/// the list above stays the substrate's shape at a glance.
-const JOURNAL_ALLOWED_MORE: [&str; 3] = ["command.rs", "test_support", "state.rs"];
+/// The undo receipts in `command.rs`, the fake generator arm in
+/// `test_support/`, and the degraded-boot broadcast in `messages.rs`
+/// (`SystemEvent::JournalDegraded`, #1039 — the operator-accepted plan
+/// names the variant, and the event is undo-line vocabulary by
+/// definition) — same frozen-at-base rationale, kept separate so the
+/// list above stays the substrate's shape at a glance. The scan itself
+/// is unchanged: every other file — future ones included — is checked.
+const JOURNAL_ALLOWED_MORE: [&str; 4] = ["command.rs", "test_support", "state.rs", "messages.rs"];
 
 /// The `Journal`-prefixed identifier scan (identifier-boundary regex,
 /// not a substring: prose like "journaling" or "journal line" in doc

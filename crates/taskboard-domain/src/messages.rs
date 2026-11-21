@@ -888,6 +888,25 @@ pub enum SystemEvent {
     /// edge; a `Lagged` consumer misses at most the *outcome report*,
     /// never a value (the value lives in the published settings).
     ConfigReload(ConfigReloadOutcome),
+    /// The boot hydration quarantined undecodable `command_journal`
+    /// rows (#1039): the app started on healthy authoritative state,
+    /// but the undo line degraded — the named rows (and their orphaned
+    /// descendants) were dropped and the line head re-pinned. One event
+    /// per degraded load, never per row; the payload is fully typed
+    /// (plan D-B2-6) so a UI badge can be added later without another
+    /// decode-path change.
+    JournalDegraded {
+        /// One typed detail per dropped journal row.
+        details: Vec<crate::persistence::CorruptionDetail>,
+        /// How many journal rows were dropped (bad rows + orphaned
+        /// descendants).
+        dropped: u32,
+        /// The re-pinned line head after the quarantine pass (the row's
+        /// UUID — the same raw shape `CorruptionDetail::row` carries, so
+        /// the undo substrate's `Journal*` spelling stays in its D-J1
+        /// homes).
+        head: Option<uuid::Uuid>,
+    },
 }
 
 /// The config live-reload watcher's typed outcome per debounced

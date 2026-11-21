@@ -321,6 +321,9 @@ async fn run(
                     SystemEvent::StorageFailed
                         | SystemEvent::TaskResurrected(_)
                         | SystemEvent::ConfigReload(_)
+                        // The boot-degraded verdict (#1039) is the
+                        // engine's own broadcast: no sync concern.
+                        | SystemEvent::JournalDegraded { .. }
                         | SystemEvent::NetworkLost
                         | SystemEvent::NetworkRestored
                         | SystemEvent::ConnectorLost(_)

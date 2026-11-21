@@ -496,10 +496,11 @@ pub(crate) fn journal_payload_to_json(
     .expect("journal payload serializes")
 }
 
-/// Decodes a journal payload; `None` on any malformed JSON or shape
-/// (typed `Corrupted` at the repository — corruption, not data).
-pub(crate) fn journal_payload_from_json(raw: &str) -> Option<JournalPayload> {
-    serde_json::from_str(raw).ok()
+/// Decodes a journal payload; the serde error on any malformed JSON or
+/// shape (typed `Corrupted` at the repository — corruption, not data;
+/// the error text is triage detail for the quarantine warn only).
+pub(crate) fn journal_payload_from_json(raw: &str) -> Result<JournalPayload, serde_json::Error> {
+    serde_json::from_str(raw)
 }
 
 #[cfg(test)]

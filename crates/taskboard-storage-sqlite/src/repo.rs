@@ -16,7 +16,9 @@ use taskboard_domain::ids::{
 };
 use taskboard_domain::outbox::{OpId, PendingOp};
 use taskboard_domain::persistence::{
-    BoxFuture, PersistedState, PersistenceAction, RepositoryError, SyncValidators, TaskRepository,
+    BoxFuture, CorruptionDetail, DecodeReason, DecodeStage, LoadDiagnostics, LoadDiagnosticsSource,
+    PersistedState, PersistedTable, PersistenceAction, RepositoryError, SyncValidators,
+    TaskRepository,
 };
 use taskboard_domain::reflection::Rating;
 use taskboard_domain::reminders::{
@@ -39,6 +41,18 @@ pub struct SqliteTaskRepository {
     /// are read-only relics — decoded by this rule only when a decode
     /// consumer exists (chunk 4); never backfilled at boot.
     pub(crate) default_connector: ConnectorId,
+    /// The degraded-load diagnostics cell (plan D-B2-6): the last
+    /// successful load's journal-quarantine report, taken once by the
+    /// engine's boot hydration call site over the
+    /// [`LoadDiagnosticsSource`] hop. `None` after a healthy load.
+    pub(crate) diagnostics: std::sync::Arc<std::sync::Mutex<Option<LoadDiagnostics>>>,
+}
+
+/// The typed `Corrupted` construction helper for the decode paths: the
+/// helper knows only the stage and reason; table + row key are attached
+/// by the row-decode caller via [`RepositoryError::attached`].
+fn corrupt(stage: DecodeStage, reason: DecodeReason) -> RepositoryError {
+    RepositoryError::corrupted(CorruptionDetail::staged(stage, reason))
 }
 
 /// Raw `boards` row (`query_as!` target; domain structs with nested clocks
@@ -281,7 +295,7 @@ fn decode_adhoc_alarm(row: &AdhocAlarmRow) -> Result<AdhocAlarm, RepositoryError
 fn decode_break_rule(row: &BreakRuleRow, board: Uuid) -> Result<BreakRule, RepositoryError> {
     let threshold = chrono::TimeDelta::try_seconds(row.threshold_seconds)
         .and_then(|dur| taskboard_domain::tracking::WorkThreshold::try_new(dur).ok())
-        .ok_or(RepositoryError::Corrupted)?;
+        .ok_or(corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?;
     Ok(BreakRule {
         id: BreakRuleId::from(decode::uuid(&row.rule_id)?),
         board: BoardId::from(board),
@@ -297,13 +311,14 @@ fn decode_break_rule(row: &BreakRuleRow, board: Uuid) -> Result<BreakRule, Repos
 /// [`RepositoryError::Corrupted`] (plan decision 10/12).
 mod decode {
     use super::{
-        ConnectorId, DateTime, RemoteBoardBinding, RemoteBoardId, RemoteCardId, RemoteCardRef,
-        RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, RepositoryError, Utc, Uuid,
-        codec,
+        ConnectorId, DateTime, DecodeReason, DecodeStage, RemoteBoardBinding, RemoteBoardId,
+        RemoteCardId, RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef,
+        RepositoryError, Utc, Uuid, codec, corrupt,
     };
 
     pub(crate) fn uuid(raw: &str) -> Result<Uuid, RepositoryError> {
-        codec::uuid_from_text(raw).map_err(|_| RepositoryError::Corrupted)
+        codec::uuid_from_text(raw)
+            .map_err(|_| corrupt(DecodeStage::Column, DecodeReason::MalformedUuid))
     }
 
     /// An RFC 3339 clock column (`ck_*`, journal stamps, habit-log
@@ -314,9 +329,10 @@ mod decode {
     /// from blurring (T-STORE-4).
     pub(crate) fn clock(text: &str) -> Result<DateTime<Utc>, RepositoryError> {
         if text.contains('#') {
-            return Err(RepositoryError::Corrupted);
+            return Err(corrupt(DecodeStage::Column, DecodeReason::MalformedClock));
         }
-        text.parse().map_err(|_| RepositoryError::Corrupted)
+        text.parse()
+            .map_err(|_| corrupt(DecodeStage::Column, DecodeReason::MalformedClock))
     }
 
     /// The authored clock's grammar (`rfc3339 [# author]`, D-BF2): the
@@ -339,7 +355,7 @@ mod decode {
             None => (text, None),
             Some((left, right)) => {
                 if right.is_empty() || right.contains('#') {
-                    return Err(RepositoryError::Corrupted);
+                    return Err(corrupt(DecodeStage::Column, DecodeReason::MalformedClock));
                 }
                 (left, Some(right))
             }
@@ -358,12 +374,16 @@ mod decode {
             None => Ok(None),
             Some(raw) => taskboard_domain::ids::AuthorId::parse(raw)
                 .map(Some)
-                .ok_or(RepositoryError::Corrupted),
+                .ok_or(corrupt(
+                    DecodeStage::Column,
+                    DecodeReason::UnknownEnumVariant,
+                )),
         }
     }
 
     pub(crate) fn remote_opt(cols: &[Option<i64>]) -> Result<Option<Vec<u64>>, RepositoryError> {
-        codec::remote_columns_present_or_none(cols).map_err(|_| RepositoryError::Corrupted)
+        codec::remote_columns_present_or_none(cols)
+            .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::UnknownEnumVariant))
     }
 
     /// The optional remote binding from the board's id columns
@@ -378,13 +398,20 @@ mod decode {
     ) -> Result<Option<RemoteBoardBinding>, RepositoryError> {
         let board = match (deck_col, files_col) {
             (None, None) => return Ok(None),
-            (Some(num), None) => {
-                RemoteBoardId::Deck(u64::try_from(num).map_err(|_| RepositoryError::Corrupted)?)
-            }
-            (None, Some(raw)) => RemoteBoardId::Files(
-                uuid::Uuid::parse_str(raw).map_err(|_| RepositoryError::Corrupted)?,
+            (Some(num), None) => RemoteBoardId::Deck(
+                u64::try_from(num)
+                    .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?,
             ),
-            (Some(_), Some(_)) => return Err(RepositoryError::Corrupted),
+            (None, Some(raw)) => RemoteBoardId::Files(
+                uuid::Uuid::parse_str(raw)
+                    .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid))?,
+            ),
+            (Some(_), Some(_)) => {
+                return Err(corrupt(
+                    DecodeStage::RowBuild,
+                    DecodeReason::UnknownEnumVariant,
+                ));
+            }
         };
         Ok(Some(RemoteBoardBinding {
             // NULL tag ⇒ the spawn-time default (DF-4's resolution
@@ -406,7 +433,10 @@ mod decode {
                 board: RemoteBoardId::deck(*b),
                 stack: RemoteStackId::deck(*s),
             })),
-            Some(_) => Err(RepositoryError::Corrupted),
+            Some(_) => Err(corrupt(
+                DecodeStage::RowBuild,
+                DecodeReason::UnknownEnumVariant,
+            )),
         }
     }
 
@@ -421,7 +451,10 @@ mod decode {
                 stack: RemoteStackId::deck(*s),
                 card: RemoteCardId::deck(*c),
             })),
-            Some(_) => Err(RepositoryError::Corrupted),
+            Some(_) => Err(corrupt(
+                DecodeStage::RowBuild,
+                DecodeReason::UnknownEnumVariant,
+            )),
         }
     }
 
@@ -435,42 +468,63 @@ mod decode {
                 board: RemoteBoardId::deck(*b),
                 label: RemoteLabelId::deck(*l),
             })),
-            Some(_) => Err(RepositoryError::Corrupted),
+            Some(_) => Err(corrupt(
+                DecodeStage::RowBuild,
+                DecodeReason::UnknownEnumVariant,
+            )),
         }
     }
 
     pub(crate) fn importance(
         raw: &str,
     ) -> Result<taskboard_domain::entities::Importance, RepositoryError> {
-        codec::importance_from_text(raw).ok_or(RepositoryError::Corrupted)
+        codec::importance_from_text(raw).ok_or(corrupt(
+            DecodeStage::RowBuild,
+            DecodeReason::UnknownEnumVariant,
+        ))
     }
 
     pub(crate) fn urgency(
         raw: &str,
     ) -> Result<taskboard_domain::entities::Urgency, RepositoryError> {
-        codec::urgency_from_text(raw).ok_or(RepositoryError::Corrupted)
+        codec::urgency_from_text(raw).ok_or(corrupt(
+            DecodeStage::RowBuild,
+            DecodeReason::UnknownEnumVariant,
+        ))
     }
 
     pub(crate) fn insistence(
         raw: &str,
     ) -> Result<taskboard_domain::reminders::Insistence, RepositoryError> {
-        codec::insistence_from_text(raw).ok_or(RepositoryError::Corrupted)
+        codec::insistence_from_text(raw).ok_or(corrupt(
+            DecodeStage::RowBuild,
+            DecodeReason::UnknownEnumVariant,
+        ))
     }
 
     pub(crate) fn time_entry_kind(
         raw: &str,
     ) -> Result<taskboard_domain::tracking::TimeEntryKind, RepositoryError> {
-        codec::time_entry_kind_from_text(raw).ok_or(RepositoryError::Corrupted)
+        codec::time_entry_kind_from_text(raw).ok_or(corrupt(
+            DecodeStage::RowBuild,
+            DecodeReason::UnknownEnumVariant,
+        ))
     }
 
     pub(crate) fn recur(raw: &str) -> Result<taskboard_domain::recur::RecurRule, RepositoryError> {
-        codec::recur_from_text(raw).ok_or(RepositoryError::Corrupted)
+        codec::recur_from_text(raw).ok_or(corrupt(
+            DecodeStage::RowBuild,
+            DecodeReason::UnknownEnumVariant,
+        ))
     }
 
     /// Strict decode of the task-kind column (trusted-written rows: an
     /// unknown text is `Corrupted`, never a clamped value).
     pub(crate) fn kind(raw: &str) -> Result<taskboard_domain::entities::TaskKind, RepositoryError> {
-        codec::task_kind_from_text(raw).ok_or(RepositoryError::Corrupted)
+        codec::task_kind_from_text(raw).ok_or(corrupt(
+            DecodeStage::RowBuild,
+            DecodeReason::UnknownEnumVariant,
+        ))
     }
 
     pub(crate) fn remote_baseline(
@@ -479,8 +533,10 @@ mod decode {
         // A baseline we cannot read must not silently downgrade to the
         // fallback: the next merge would blanket-clobber — the exact bug
         // the record exists to close (ADR 0004's D-7).
-        taskboard_domain::entities::RemoteTaskBaseline::parse_text_form(raw)
-            .ok_or(RepositoryError::Corrupted)
+        taskboard_domain::entities::RemoteTaskBaseline::parse_text_form(raw).ok_or(corrupt(
+            DecodeStage::RowBuild,
+            DecodeReason::UnknownEnumVariant,
+        ))
     }
 }
 
@@ -578,7 +634,7 @@ fn decode_task(
             .effort
             .map(u64::try_from)
             .transpose()
-            .map_err(|_| RepositoryError::Corrupted)?
+            .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?
             .map(taskboard_domain::entities::Effort::new),
         importance: row
             .importance
@@ -665,7 +721,7 @@ fn decode_outbox_row(row: &OutboxRow) -> Result<PendingOp, RepositoryError> {
         row.board_id.as_deref(),
         row.payload.as_deref(),
     )
-    .map_err(|_| RepositoryError::Corrupted)?;
+    .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::UnknownEnumVariant))?;
     Ok(PendingOp {
         op_id,
         op,
@@ -675,7 +731,8 @@ fn decode_outbox_row(row: &OutboxRow) -> Result<PendingOp, RepositoryError> {
 
 /// Decodes a stored reminder reference (`"rule:<uuid>"`/`"default:<uuid>"`).
 fn decode_reminder_ref(raw: &str) -> Result<ReminderRef, RepositoryError> {
-    codec::reminder_ref_from_text(raw).map_err(|_| RepositoryError::Corrupted)
+    codec::reminder_ref_from_text(raw)
+        .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::UnknownEnumVariant))
 }
 
 fn decode_reminder_rule(
@@ -692,20 +749,35 @@ fn decode_reminder_rule(
     let kind = match codec::reminder_kind_is_at(row.kind.as_str()) {
         Some(false) => {
             if row.at_epoch_seconds.is_some() {
-                return Err(RepositoryError::Corrupted);
+                return Err(corrupt(
+                    DecodeStage::RowBuild,
+                    DecodeReason::ConstraintViolation,
+                ));
             }
             let duration = chrono::TimeDelta::try_seconds(row.offset_seconds)
-                .ok_or(RepositoryError::Corrupted)?;
+                .ok_or(corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?;
             ReminderKind::DueOffset(
-                ReminderOffset::before(duration).map_err(|_| RepositoryError::Corrupted)?,
+                ReminderOffset::before(duration)
+                    .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?,
             )
         }
         Some(true) => {
-            let secs = row.at_epoch_seconds.ok_or(RepositoryError::Corrupted)?;
-            let dt = chrono::DateTime::from_timestamp(secs, 0).ok_or(RepositoryError::Corrupted)?;
-            ReminderKind::At(AtInstant::whole_second(dt).map_err(|_| RepositoryError::Corrupted)?)
+            let secs = row
+                .at_epoch_seconds
+                .ok_or(corrupt(DecodeStage::RowBuild, DecodeReason::MissingColumn))?;
+            let dt = chrono::DateTime::from_timestamp(secs, 0)
+                .ok_or(corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?;
+            ReminderKind::At(
+                AtInstant::whole_second(dt)
+                    .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?,
+            )
         }
-        None => return Err(RepositoryError::Corrupted),
+        None => {
+            return Err(corrupt(
+                DecodeStage::RowBuild,
+                DecodeReason::UnknownEnumVariant,
+            ));
+        }
     };
     let id = ReminderRuleId::from(decode::uuid(&row.rule_id)?);
     Ok((
@@ -755,26 +827,28 @@ fn decode_habit(
     row: &HabitRow,
 ) -> Result<(taskboard_domain::ids::HabitId, taskboard_domain::Habit), RepositoryError> {
     let id = taskboard_domain::ids::HabitId::from(
-        codec::uuid_from_text(&row.habit_id).map_err(|_| RepositoryError::Corrupted)?,
+        codec::uuid_from_text(&row.habit_id)
+            .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid))?,
     );
     let board = taskboard_domain::BoardId::from(
-        codec::uuid_from_text(&row.board_id).map_err(|_| RepositoryError::Corrupted)?,
+        codec::uuid_from_text(&row.board_id)
+            .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid))?,
     );
-    let target: taskboard_domain::HabitTarget =
-        serde_json::from_str(&row.target).map_err(|_| RepositoryError::Corrupted)?;
+    let target: taskboard_domain::HabitTarget = serde_json::from_str(&row.target)
+        .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))?;
     let order = row.sort_order;
     let anchor_time = match &row.anchor_time {
         None => None,
         Some(text) => Some(
             chrono::NaiveTime::parse_from_str(text, "%H:%M:%S")
-                .map_err(|_| RepositoryError::Corrupted)?,
+                .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedClock))?,
         ),
     };
     let anchor_day = match &row.anchor_day {
         None => None,
         Some(text) => {
-            let day: taskboard_domain::habit::AnchorDay =
-                serde_json::from_str(text).map_err(|_| RepositoryError::Corrupted)?;
+            let day: taskboard_domain::habit::AnchorDay = serde_json::from_str(text)
+                .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))?;
             Some(day)
         }
     };
@@ -792,7 +866,7 @@ fn decode_habit(
         .as_deref()
         .map(codec::uuid_from_text)
         .transpose()
-        .map_err(|_| RepositoryError::Corrupted)?
+        .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid))?
         .map(taskboard_domain::ids::SeriesId::from);
     let by = decode::author(row.au_by.as_deref())?;
     Ok((
@@ -832,10 +906,12 @@ fn decode_reflection_entry(
     RepositoryError,
 > {
     let id = taskboard_domain::ids::ReflectionId::from(decode::uuid(&row.entry_id)?);
-    let cadence = taskboard_domain::reflection::ReviewCadence::parse_text_form(&row.cadence)
-        .ok_or(RepositoryError::Corrupted)?;
+    let cadence =
+        taskboard_domain::reflection::ReviewCadence::parse_text_form(&row.cadence).ok_or(
+            corrupt(DecodeStage::RowBuild, DecodeReason::UnknownEnumVariant),
+        )?;
     let day = chrono::NaiveDate::parse_from_str(&row.day, "%Y-%m-%d")
-        .map_err(|_| RepositoryError::Corrupted)?;
+        .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate))?;
     let window_start: chrono::DateTime<chrono::Utc> = decode::clock(&row.window_start)?;
     let window_end: chrono::DateTime<chrono::Utc> = decode::clock(&row.window_end)?;
     let created_at: chrono::DateTime<chrono::Utc> = decode::clock(&row.created_at)?;
@@ -845,13 +921,14 @@ fn decode_reflection_entry(
     let rating = |raw: Option<i64>| -> Result<Option<Rating>, RepositoryError> {
         raw.map(u8::try_from)
             .transpose()
-            .map_err(|_| RepositoryError::Corrupted)?
+            .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))?
             .map(Rating::try_new)
             .transpose()
-            .map_err(|_| RepositoryError::Corrupted)
+            .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange))
     };
     let names = |raw: &str| -> Result<Vec<String>, RepositoryError> {
-        serde_json::from_str(raw).map_err(|_| RepositoryError::Corrupted)
+        serde_json::from_str(raw)
+            .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))
     };
     let mut flags = std::collections::BTreeSet::new();
     let mut extra_flags = std::collections::BTreeSet::new();
@@ -953,6 +1030,19 @@ impl TaskRepository for SqliteTaskRepository {
     fn apply(&self, actions: Vec<PersistenceAction>) -> BoxFuture<'_, Result<(), RepositoryError>> {
         Box::pin(self.apply_inner(actions))
     }
+
+    fn load_diagnostics(&self) -> Option<&dyn LoadDiagnosticsSource> {
+        Some(self)
+    }
+}
+
+impl LoadDiagnosticsSource for SqliteTaskRepository {
+    fn take_load_diagnostics(&self) -> Option<LoadDiagnostics> {
+        self.diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
 impl SqliteTaskRepository {
@@ -969,6 +1059,13 @@ impl SqliteTaskRepository {
     #[tracing::instrument(skip(self), err)]
     #[allow(clippy::too_many_lines)] // one SELECT per table; the length is the schema's
     async fn load_inner(&self) -> Result<PersistedState, RepositoryError> {
+        // Clear any stale diagnostics up front: only THIS load's
+        // quarantine pass may publish a signal (one degraded event per
+        // degraded load, never a replay of an older load's report).
+        *self
+            .diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         // One read transaction around all SELECTs: the single pooled
         // connection would otherwise be released between queries, and a
         // concurrent `apply` could interleave — yielding a state mixing
@@ -1174,7 +1271,15 @@ impl SqliteTaskRepository {
                 .map_err(|e| stmt_error(&e))?;
         let journal_head: Option<Option<String>> = journal_head_row.into_iter().next().map(|r| r.0);
         let Some(journal_head) = journal_head else {
-            return Err(RepositoryError::Corrupted);
+            // The head singleton row is missing entirely — the
+            // fail-closed invariant (plan matrix case 9); the journal is
+            // pointerless and the line is undecidable.
+            return Err(RepositoryError::corrupted(CorruptionDetail {
+                table: Some(PersistedTable::CommandJournalHead),
+                row: None,
+                stage: Some(DecodeStage::Invariant),
+                reason: Some(DecodeReason::MissingColumn),
+            }));
         };
 
         let time_entry_rows = sqlx::query_as!(
@@ -1238,19 +1343,25 @@ impl SqliteTaskRepository {
 
         let mut boards = BTreeMap::new();
         for row in board_rows {
-            let board = decode_board(row, &self.default_connector)?;
+            let row_key = Uuid::parse_str(&row.id).ok();
+            let board = decode_board(row, &self.default_connector)
+                .map_err(|e| e.attached(PersistedTable::Boards, row_key))?;
             boards.insert(board.id, board);
         }
 
         let mut stacks = BTreeMap::new();
         for row in stack_rows {
-            let stack = decode_stack(row)?;
+            let row_key = Uuid::parse_str(&row.id).ok();
+            let stack =
+                decode_stack(row).map_err(|e| e.attached(PersistedTable::Stacks, row_key))?;
             stacks.insert(stack.id, stack);
         }
 
         let mut labels = BTreeMap::new();
         for row in label_rows {
-            let label = decode_label(row)?;
+            let row_key = Uuid::parse_str(&row.id).ok();
+            let label =
+                decode_label(row).map_err(|e| e.attached(PersistedTable::Labels, row_key))?;
             labels.insert(label.id, label);
         }
 
@@ -1260,32 +1371,61 @@ impl SqliteTaskRepository {
             BTreeMap<Uuid, taskboard_domain::entities::MembershipState>,
         > = BTreeMap::new();
         for row in task_label_rows {
-            let task = decode::uuid(&row.task)?;
-            let label = decode::uuid(&row.label)?;
-            let clock: DateTime<Utc> = decode::clock(&row.ck_membership)?;
-            let state = match row.state.as_str() {
-                "added" => taskboard_domain::entities::MembershipState::Added { at: clock },
-                "removed" => taskboard_domain::entities::MembershipState::Removed { at: clock },
-                _ => return Err(RepositoryError::Corrupted),
-            };
-            label_sets.entry(task).or_default().insert(label, state);
+            let row_key = Uuid::parse_str(&row.task).ok();
+            let decoded = (|| {
+                Result::<
+                        (Uuid, Uuid, taskboard_domain::entities::MembershipState),
+                        RepositoryError,
+                    >::Ok({
+                        let task = decode::uuid(&row.task)?;
+                        let label = decode::uuid(&row.label)?;
+                        let clock: DateTime<Utc> = decode::clock(&row.ck_membership)?;
+                        let state = match row.state.as_str() {
+                            "added" => {
+                                taskboard_domain::entities::MembershipState::Added { at: clock }
+                            }
+                            "removed" => {
+                                taskboard_domain::entities::MembershipState::Removed { at: clock }
+                            }
+                            _ => {
+                                return Err(corrupt(
+                                    DecodeStage::RowBuild,
+                                    DecodeReason::UnknownEnumVariant,
+                                ));
+                            }
+                        };
+                        (task, label, state)
+                    })
+            })()
+            .map_err(|e| e.attached(PersistedTable::Tasks, row_key))?;
+            label_sets
+                .entry(decoded.0)
+                .or_default()
+                .insert(decoded.1, decoded.2);
         }
 
         let mut tasks = BTreeMap::new();
         for row in task_rows {
-            let task = decode_task(row, &label_sets)?;
+            let row_key = Uuid::parse_str(&row.id).ok();
+            let task = decode_task(row, &label_sets)
+                .map_err(|e| e.attached(PersistedTable::Tasks, row_key))?;
             tasks.insert(task.id, task);
         }
 
         let mut outbox = Vec::with_capacity(outbox_rows.len());
         for row in outbox_rows {
-            outbox.push(decode_outbox_row(&row)?);
+            let row_key = Uuid::parse_str(&row.op_id).ok();
+            let op =
+                decode_outbox_row(&row).map_err(|e| e.attached(PersistedTable::Outbox, row_key))?;
+            outbox.push(op);
         }
 
         let mut validators = BTreeMap::new();
         for row in validator_rows {
-            let key =
-                codec::validator_key_from_text(&row.key).map_err(|_| RepositoryError::Corrupted)?;
+            let key = codec::validator_key_from_text(&row.key).map_err(|_| {
+                corrupt(DecodeStage::RowBuild, DecodeReason::UnknownEnumVariant)
+                    .attached(PersistedTable::Validators, None)
+            })?;
             validators.insert(
                 key,
                 SyncValidators {
@@ -1299,43 +1439,61 @@ impl SqliteTaskRepository {
         // standalone whose board-less singleton the 0006 rebuild dropped).
         let mut sync = SyncStates::new();
         for status_row in status_rows {
+            let row_key = Uuid::parse_str(&status_row.board).ok();
             let phase =
                 codec::sync_phase_from_columns(&status_row.phase, status_row.last_error.as_deref())
-                    .map_err(|_| RepositoryError::Corrupted)?;
+                    .map_err(|_| {
+                        corrupt(DecodeStage::RowBuild, DecodeReason::UnknownEnumVariant)
+                            .attached(PersistedTable::SyncStatus, row_key)
+                    })?;
             let board = decode::uuid(&status_row.board)?;
             sync.set_stored(BoardId::from(board), phase, status_row.last_success);
         }
 
         let mut rules = BTreeMap::new();
         for row in reminder_rule_rows {
-            let (id, rule) = decode_reminder_rule(&row)?;
+            let row_key = Uuid::parse_str(&row.rule_id).ok();
+            let (id, rule) = decode_reminder_rule(&row)
+                .map_err(|e| e.attached(PersistedTable::Reminders, row_key))?;
             rules.insert(id, rule);
         }
         let mut deliveries = BTreeSet::new();
         for row in reminder_delivery_rows {
-            deliveries.insert(decode_reminder_delivery(&row)?);
+            let delivery = decode_reminder_delivery(&row)
+                .map_err(|e| e.attached(PersistedTable::Reminders, None))?;
+            deliveries.insert(delivery);
         }
         let mut dismissals = BTreeSet::new();
         for row in reminder_dismissal_rows {
-            dismissals.insert(decode_reminder_dismissal(&row)?);
+            let dismissal = decode_reminder_dismissal(&row)
+                .map_err(|e| e.attached(PersistedTable::Reminders, None))?;
+            dismissals.insert(dismissal);
         }
         let mut snoozes = BTreeMap::new();
         for row in reminder_snooze_rows {
-            let (key, rescheduled_to) = decode_reminder_snooze(&row)?;
+            let (key, rescheduled_to) = decode_reminder_snooze(&row)
+                .map_err(|e| e.attached(PersistedTable::Reminders, None))?;
             snoozes.insert(key, rescheduled_to);
         }
         let mut muted = BTreeSet::new();
         for row in reminder_muted_rows {
-            muted.insert(TaskId::from(decode::uuid(&row.task_id)?));
+            let row_key = Uuid::parse_str(&row.task_id).ok();
+            let task = decode::uuid(&row.task_id)
+                .map_err(|e| e.attached(PersistedTable::Reminders, row_key))?;
+            muted.insert(TaskId::from(task));
         }
         let mut alarms = BTreeMap::new();
         for row in adhoc_alarm_rows {
-            let alarm = decode_adhoc_alarm(&row)?;
+            let row_key = Uuid::parse_str(&row.alarm_id).ok();
+            let alarm = decode_adhoc_alarm(&row)
+                .map_err(|e| e.attached(PersistedTable::Reminders, row_key))?;
             alarms.insert(alarm.id, alarm);
         }
         let mut tracking = taskboard_domain::TrackingState::default();
         for row in time_entry_rows {
-            let (id, entry) = decode_time_entry(&row)?;
+            let row_key = Uuid::parse_str(&row.entry_id).ok();
+            let (id, entry) = decode_time_entry(&row)
+                .map_err(|e| e.attached(PersistedTable::Tracking, row_key))?;
             tracking.entries.insert(id, entry);
         }
         let mut break_rules = std::collections::BTreeMap::new();
@@ -1349,7 +1507,9 @@ impl SqliteTaskRepository {
                 tracing::warn!(rule = %row.rule_id, "break rule skipped: no backfilled board");
                 continue;
             };
-            let rule = decode_break_rule(row, board)?;
+            let row_key = Uuid::parse_str(&row.rule_id).ok();
+            let rule = decode_break_rule(row, board)
+                .map_err(|e| e.attached(PersistedTable::BreakRules, row_key))?;
             break_rules.insert(rule.id, rule);
         }
         let reminders = ReminderState {
@@ -1366,39 +1526,131 @@ impl SqliteTaskRepository {
         // the convention forbids ORDER BY on TEXT stamps) plus the
         // persisted head (R-U10). Empty rows decode to the default —
         // the upgrade-pinned shape.
+        //
+        // Quarantine-with-signal (plan §4, #1039): this table is undo
+        // metadata only (ADR 0019) — the authoritative task state lives
+        // in the entity tables, which abort above. An undecodable row is
+        // dropped with a typed detail; its parent-chained descendants
+        // are dropped as orphaned (the chain invariant forces the
+        // minimal sub-forest); a later lineage rooted before the gap
+        // still hydrates; the head is re-pinned (D-B2-7); and one typed
+        // diagnostics report is published for the engine to broadcast
+        // (D-B2-6). A healthy journal behaves exactly as before.
         let mut journal_entries = Vec::with_capacity(journal_rows.len());
+        let mut quarantine_details: Vec<CorruptionDetail> = Vec::new();
+        let mut dropped: u32 = 0;
+        let mut dropped_ids: BTreeSet<Uuid> = BTreeSet::new();
         for (id, parent, created_at, pushed, board, payload) in &journal_rows {
-            let id = taskboard_domain::JournalId::from(decode::uuid(id)?);
-            let parent = parent
-                .as_deref()
-                .map(decode::uuid)
-                .transpose()?
-                .map(taskboard_domain::JournalId::from);
-            let board = board
-                .as_deref()
-                .map(decode::uuid)
-                .transpose()?
-                .map(taskboard_domain::BoardId::from);
-            let created_at: DateTime<Utc> = decode::clock(created_at)?;
-            let payload =
-                codec::journal_payload_from_json(payload).ok_or(RepositoryError::Corrupted)?;
-            journal_entries.push(taskboard_domain::JournalEntry {
-                id,
-                parent,
-                command: payload.command,
-                facts: payload.facts,
-                ops: payload.ops,
-                pushed: *pushed,
-                board,
-                created_at,
+            let row_key = Uuid::parse_str(id).ok();
+            let decoded = (|| -> Result<taskboard_domain::JournalEntry, RepositoryError> {
+                let id = taskboard_domain::JournalId::from(decode::uuid(id)?);
+                let parent = parent
+                    .as_deref()
+                    .map(decode::uuid)
+                    .transpose()?
+                    .map(taskboard_domain::JournalId::from);
+                let board = board
+                    .as_deref()
+                    .map(decode::uuid)
+                    .transpose()?
+                    .map(taskboard_domain::BoardId::from);
+                let created_at: DateTime<Utc> = decode::clock(created_at)?;
+                // The payload serde arm keeps serde's field-level message
+                // out of the typed context (untrusted text) — the warn
+                // below carries the typed detail plus serde's field-level
+                // triage text (plan §3.2, matrix case 12).
+                let payload = codec::journal_payload_from_json(payload).map_err(|serde_err| {
+                    tracing::warn!(
+                        row = ?row_key,
+                        serde_detail = %serde_err,
+                        "journal payload serde decode failed"
+                    );
+                    corrupt(DecodeStage::Payload, DecodeReason::SerdePayload)
+                })?;
+                Ok(taskboard_domain::JournalEntry {
+                    id,
+                    parent,
+                    command: payload.command,
+                    facts: payload.facts,
+                    ops: payload.ops,
+                    pushed: *pushed,
+                    board,
+                    created_at,
+                })
+            })()
+            .map_err(|e| e.attached(PersistedTable::CommandJournal, row_key));
+            match decoded {
+                Ok(entry) => journal_entries.push(entry),
+                Err(err) => {
+                    // The attached detail (typed facts only); the rowid
+                    // sequence is the triage hint.
+                    tracing::warn!(
+                        row = ?row_key,
+                        detail = ?err.corruption_detail(),
+                        "command journal row quarantined at boot load"
+                    );
+                    if let Some(key) = row_key {
+                        dropped_ids.insert(key);
+                    }
+                    dropped += 1;
+                    if let Some(detail) = err.corruption_detail() {
+                        quarantine_details.push(detail);
+                    }
+                }
+            }
+        }
+        // The chain invariant forces the descendant drop (plan D-B2-5
+        // step 2): a surviving entry whose parent chain crosses the gap
+        // is orphaned — dropped with its own typed `Invariant` detail,
+        // to a fixpoint (the gap may sit mid-line).
+        loop {
+            let mut orphaned = 0u32;
+            journal_entries.retain(|entry| {
+                let orphan = entry
+                    .parent
+                    .as_ref()
+                    .is_some_and(|p| dropped_ids.contains(&p.as_uuid()));
+                if orphan {
+                    orphaned += 1;
+                    dropped_ids.insert(entry.id.as_uuid());
+                    tracing::warn!(
+                        row = ?entry.id.as_uuid(),
+                        "command journal entry orphaned by a quarantined ancestor"
+                    );
+                    quarantine_details.push(CorruptionDetail {
+                        table: Some(PersistedTable::CommandJournal),
+                        row: Some(entry.id.as_uuid()),
+                        stage: Some(DecodeStage::Invariant),
+                        reason: None,
+                    });
+                }
+                !orphan
             });
+            if orphaned == 0 {
+                break;
+            }
+            dropped += orphaned;
         }
 
         let head = journal_head
             .as_deref()
             .map(decode::uuid)
-            .transpose()?
+            .transpose()
+            .map_err(|e| e.attached(PersistedTable::CommandJournalHead, None))?
             .map(taskboard_domain::JournalId::from);
+        // D-B2-7: keep a head that still names a surviving entry (an
+        // undo-moved mid-line head is legitimate state); otherwise
+        // re-pin to the highest-rowid survivor — or the emptied line's
+        // `None`. The persisted pin only moves on a degraded load.
+        let journal_quarantined = !quarantine_details.is_empty();
+        let head = if journal_quarantined {
+            match head {
+                Some(h) if journal_entries.iter().any(|e| e.id == h) => Some(h),
+                _ => journal_entries.last().map(|e| e.id),
+            }
+        } else {
+            head
+        };
 
         let mut state = PersistedState {
             boards,
@@ -1413,34 +1665,55 @@ impl SqliteTaskRepository {
             habits: {
                 let mut habits = taskboard_domain::HabitState::default();
                 for row in &habit_rows {
-                    let (id, habit) = decode_habit(row)?;
+                    let row_key = Uuid::parse_str(&row.habit_id).ok();
+                    let (id, habit) = decode_habit(row)
+                        .map_err(|e| e.attached(PersistedTable::Habits, row_key))?;
                     habits.habits.insert(id, habit);
                 }
                 for (habit_id, window_start, count, clock, au_by) in &habit_log_rows {
-                    let habit = taskboard_domain::ids::HabitId::from(
-                        codec::uuid_from_text(habit_id).map_err(|_| RepositoryError::Corrupted)?,
-                    );
-                    let date = chrono::NaiveDate::parse_from_str(window_start, "%Y-%m-%d")
-                        .map_err(|_| RepositoryError::Corrupted)?;
-                    // D-H12's decode seam: the stored date decodes
-                    // as-is, never floored (former-kind synced rows).
-                    let key = taskboard_domain::HabitLogKey {
-                        habit,
-                        window: taskboard_domain::WindowStart::from_stored(date),
-                    };
-                    let count = u32::try_from(*count).map_err(|_| RepositoryError::Corrupted)?;
-                    let clock: DateTime<Utc> = decode::clock(clock)?;
-                    let by = decode::author(au_by.as_deref())?;
-                    habits
-                        .log
-                        .insert(key, taskboard_domain::HabitLogEntry { count, clock, by });
+                    let row_key = Uuid::parse_str(habit_id).ok();
+                    let decoded = (|| {
+                        Result::<
+                            (
+                                taskboard_domain::HabitLogKey,
+                                taskboard_domain::HabitLogEntry,
+                            ),
+                            RepositoryError,
+                        >::Ok({
+                            let habit = taskboard_domain::ids::HabitId::from(
+                                codec::uuid_from_text(habit_id).map_err(|_| {
+                                    corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid)
+                                })?,
+                            );
+                            // D-H12's decode seam: the stored date decodes
+                            // as-is, never floored (former-kind synced rows).
+                            let date = chrono::NaiveDate::parse_from_str(window_start, "%Y-%m-%d")
+                                .map_err(|_| {
+                                    corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate)
+                                })?;
+                            let key = taskboard_domain::HabitLogKey {
+                                habit,
+                                window: taskboard_domain::WindowStart::from_stored(date),
+                            };
+                            let count = u32::try_from(*count).map_err(|_| {
+                                corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange)
+                            })?;
+                            let clock: DateTime<Utc> = decode::clock(clock)?;
+                            let by = decode::author(au_by.as_deref())?;
+                            (key, taskboard_domain::HabitLogEntry { count, clock, by })
+                        })
+                    })()
+                    .map_err(|e| e.attached(PersistedTable::HabitLog, row_key))?;
+                    habits.log.insert(decoded.0, decoded.1);
                 }
                 habits
             },
             reflection: {
                 let mut reflection = taskboard_domain::ReflectionState::default();
                 for row in &reflection_rows {
-                    let (id, entry) = decode_reflection_entry(row)?;
+                    let row_key = Uuid::parse_str(&row.entry_id).ok();
+                    let (id, entry) = decode_reflection_entry(row)
+                        .map_err(|e| e.attached(PersistedTable::Reflection, row_key))?;
                     reflection.entries.insert(id, entry);
                 }
                 reflection
@@ -1448,13 +1721,18 @@ impl SqliteTaskRepository {
             roaming: {
                 let mut roaming = taskboard_domain::RoamingSettings::default();
                 for (name, value, clock) in &roaming_rows {
-                    let value: taskboard_domain::RoamingSettingValue =
-                        serde_json::from_str(value).map_err(|_| RepositoryError::Corrupted)?;
-                    let clock = decode::clock(clock)?;
-                    roaming.0.insert(
-                        name.clone(),
-                        taskboard_domain::RoamingSettingRow { value, clock },
-                    );
+                    let decoded = (|| {
+                        Result::<taskboard_domain::RoamingSettingRow, RepositoryError>::Ok({
+                            let value: taskboard_domain::RoamingSettingValue =
+                                serde_json::from_str(value).map_err(|_| {
+                                    corrupt(DecodeStage::Payload, DecodeReason::SerdePayload)
+                                })?;
+                            let clock = decode::clock(clock)?;
+                            taskboard_domain::RoamingSettingRow { value, clock }
+                        })
+                    })()
+                    .map_err(|e| e.attached(PersistedTable::Roaming, None))?;
+                    roaming.0.insert(name.clone(), decoded);
                 }
                 roaming
             },
@@ -1477,6 +1755,30 @@ impl SqliteTaskRepository {
         // Read-only transaction: dropping without commit releases the
         // snapshot.
         drop(tx);
+        if journal_quarantined {
+            // D-B2-7: the head re-pin is a best-effort write after the
+            // load's transaction boundary — a failed re-pin leaves the
+            // stale head and the next load's quarantine pass re-pins
+            // (idempotent: the surviving-set invariant is what tests
+            // pin). Then the one-per-load typed diagnostics report is
+            // published for the engine's broadcast hop (D-B2-6).
+            let pinned = head.map(|h| codec::uuid_to_text(h.as_uuid()));
+            if let Err(err) = sqlx::query(r"UPDATE command_journal_head SET id = ?")
+                .bind(pinned)
+                .execute(&self.pool)
+                .await
+            {
+                tracing::warn!(error = %err, "journal head re-pin failed; next load retries");
+            }
+            *self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(LoadDiagnostics {
+                details: quarantine_details,
+                dropped,
+                head,
+            });
+        }
         tracing::trace!(
             boards = state.boards.len(),
             stacks = state.stacks.len(),
@@ -1859,8 +2161,10 @@ async fn execute_batch(
     for stack in stacks {
         let (rb, rs) = match stack.remote {
             Some(r) => {
-                let (b, s) =
-                    codec::remote_stack_to_columns(r).map_err(|_| RepositoryError::Corrupted)?;
+                let (b, s) = codec::remote_stack_to_columns(r).map_err(|_| {
+                    corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange)
+                        .attached(PersistedTable::Stacks, Some(stack.id.as_uuid()))
+                })?;
                 (Some(b), Some(s))
             }
             None => (None, None),
@@ -1907,8 +2211,10 @@ async fn execute_batch(
     for label in labels {
         let (rb, rl) = match label.remote {
             Some(r) => {
-                let (b, l) =
-                    codec::remote_label_to_columns(r).map_err(|_| RepositoryError::Corrupted)?;
+                let (b, l) = codec::remote_label_to_columns(r).map_err(|_| {
+                    corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange)
+                        .attached(PersistedTable::Labels, Some(label.id.as_uuid()))
+                })?;
                 (Some(b), Some(l))
             }
             None => (None, None),
@@ -1953,8 +2259,10 @@ async fn execute_batch(
     for task in tasks {
         let (rb, rs, rc) = match task.remote {
             Some(r) => {
-                let (b, s, c) =
-                    codec::remote_card_to_columns(r).map_err(|_| RepositoryError::Corrupted)?;
+                let (b, s, c) = codec::remote_card_to_columns(r).map_err(|_| {
+                    corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange)
+                        .attached(PersistedTable::Tasks, Some(task.id.as_uuid()))
+                })?;
                 (Some(b), Some(s), Some(c))
             }
             None => (None, None, None),
@@ -1964,7 +2272,12 @@ async fn execute_batch(
         // corrupt-input rejection, never a silent wrap.
         let effort = task
             .effort
-            .map(|e| i64::try_from(e.seconds()).map_err(|_| RepositoryError::Corrupted))
+            .map(|e| {
+                i64::try_from(e.seconds()).map_err(|_| {
+                    corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange)
+                        .attached(PersistedTable::Tasks, Some(task.id.as_uuid()))
+                })
+            })
             .transpose()?;
         sqlx::query!(
             r#"INSERT INTO tasks (id, stack, remote_board_id, remote_stack_id, remote_card_id, title, description, duedate, scheduled, done, sort_order, effort, importance, urgency, recur, kind, archived, deleted, ck_title, ck_description, ck_duedate, ck_scheduled, ck_done, ck_position, ck_labels, ck_effort, ck_importance, ck_urgency, ck_recur, ck_kind, ck_archived, ck_deleted, au_title, au_description, au_duedate, au_scheduled, au_done, au_position, au_effort, au_importance, au_urgency, au_recur, au_kind, au_archived, au_deleted, remote_seen, remote_baseline)
@@ -2303,7 +2616,10 @@ async fn execute_batch(
                      clock = excluded.clock",
         )
         .bind(name)
-        .bind(serde_json::to_string(&setting.value).map_err(|_| RepositoryError::Corrupted)?)
+        .bind(serde_json::to_string(&setting.value).map_err(|_| {
+            corrupt(DecodeStage::Payload, DecodeReason::SerdePayload)
+                .attached(PersistedTable::Roaming, None)
+        })?)
         .bind(setting.clock.to_rfc3339())
         .execute(&mut *tx)
         .await
@@ -2943,31 +3259,31 @@ mod remote_decode_tests {
 
     #[test]
     fn under_arity_remote_columns_are_corrupted_not_a_panic() {
-        assert_eq!(
+        assert!(matches!(
             decode::remote_stack(&[Some(1)]).unwrap_err(),
-            RepositoryError::Corrupted
-        );
-        assert_eq!(
+            RepositoryError::Corrupted(_)
+        ));
+        assert!(matches!(
             decode::remote_card(&[Some(1), Some(2)]).unwrap_err(),
-            RepositoryError::Corrupted
-        );
-        assert_eq!(
+            RepositoryError::Corrupted(_)
+        ));
+        assert!(matches!(
             decode::remote_label(&[Some(1)]).unwrap_err(),
-            RepositoryError::Corrupted
-        );
+            RepositoryError::Corrupted(_)
+        ));
     }
 
     #[test]
     fn over_arity_remote_columns_are_corrupted_not_ignored() {
-        assert_eq!(
+        assert!(matches!(
             decode::remote_board(Some(1), Some("not-a-uuid"), None, &ConnectorId::from("c1"))
                 .unwrap_err(),
-            RepositoryError::Corrupted
-        );
-        assert_eq!(
+            RepositoryError::Corrupted(_)
+        ));
+        assert!(matches!(
             decode::remote_card(&[Some(1), Some(2), Some(3), Some(4)]).unwrap_err(),
-            RepositoryError::Corrupted
-        );
+            RepositoryError::Corrupted(_)
+        ));
     }
 }
 
@@ -3007,14 +3323,14 @@ mod author_decode_tests {
             assert!(
                 matches!(
                     decode::clock_with_author(&bad),
-                    Err(RepositoryError::Corrupted)
+                    Err(RepositoryError::Corrupted(_))
                 ),
                 "fail closed on {bad}"
             );
         }
         assert!(matches!(
             decode::clock_with_author("not a clock"),
-            Err(RepositoryError::Corrupted)
+            Err(RepositoryError::Corrupted(_))
         ));
     }
 
@@ -3027,11 +3343,11 @@ mod author_decode_tests {
         assert_eq!(decode::author(Some(&a.to_string())).unwrap(), Some(a));
         assert!(matches!(
             decode::author(Some("not-a-uuid")),
-            Err(RepositoryError::Corrupted)
+            Err(RepositoryError::Corrupted(_))
         ));
         assert!(matches!(
             decode::author(Some("")),
-            Err(RepositoryError::Corrupted)
+            Err(RepositoryError::Corrupted(_))
         ));
     }
 
@@ -3045,7 +3361,7 @@ mod author_decode_tests {
         let suffixed = format!("2026-11-07T10:00:00+00:00#{a}");
         assert!(matches!(
             decode::clock(&suffixed),
-            Err(RepositoryError::Corrupted)
+            Err(RepositoryError::Corrupted(_))
         ));
     }
 }

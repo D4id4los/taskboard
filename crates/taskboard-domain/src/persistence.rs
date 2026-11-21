@@ -36,6 +36,14 @@ pub trait TaskRepository: Send + Sync + std::fmt::Debug {
     /// [`RepositoryError::Corrupted`] when persisted data fails to decode.
     fn load(&self) -> BoxFuture<'_, Result<PersistedState, RepositoryError>>;
 
+    /// The degraded-load diagnostics source, when the implementation
+    /// quarantines journal rows (plan D-B2-6). `None` — the provided
+    /// default — means "never degrades": the engine skips the hop
+    /// entirely (every fake, every strict implementation).
+    fn load_diagnostics(&self) -> Option<&dyn LoadDiagnosticsSource> {
+        None
+    }
+
     /// Apply a batch atomically: entity upserts and outbox/validator
     /// transitions land together or fail together.
     ///
@@ -45,15 +53,173 @@ pub trait TaskRepository: Send + Sync + std::fmt::Debug {
     fn apply(&self, actions: Vec<PersistenceAction>) -> BoxFuture<'_, Result<(), RepositoryError>>;
 }
 
+/// Which persisted table failed to decode. Closed enum — every hydratable
+/// table (the plan §3.1 list plus the tables its draft enumeration
+/// omitted: sync status, break rules, reflection entries, roaming
+/// settings — a closed enum that lies is worse than a longer one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PersistedTable {
+    Boards,
+    Stacks,
+    Tasks,
+    Labels,
+    Outbox,
+    Validators,
+    SyncStatus,
+    Reminders,
+    Tracking,
+    Habits,
+    HabitLog,
+    BreakRules,
+    Reflection,
+    Roaming,
+    CommandJournal,
+    CommandJournalHead,
+}
+
+/// Where in the decode the failure fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecodeStage {
+    /// A single column failed to parse (sqlx decode or the text-form
+    /// parsers over one column).
+    Column,
+    /// Row-level integrity check or struct assembly failed.
+    RowBuild,
+    /// A JSON payload column failed serde decoding.
+    Payload,
+    /// A cross-row/table invariant failed (chain break, missing
+    /// singleton).
+    Invariant,
+}
+
+/// Why the value did not decode. Closed enum — no string payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecodeReason {
+    MalformedUuid,
+    MalformedClock,
+    MalformedDate,
+    UnknownEnumVariant,
+    SerdePayload,
+    OutOfRange,
+    ConstraintViolation,
+    MissingColumn,
+}
+
+/// Typed decode context carried by [`RepositoryError::Corrupted`] (#1038).
+/// Every field is a typed fact — never a formatted string (round law a).
+/// Each leg is `Option`: a decode helper fills only the legs it knows,
+/// and the row-decode caller attaches table + row key on the way out
+/// ([`RepositoryError::attached`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CorruptionDetail {
+    /// The table whose row failed; `None` when no caller attached one
+    /// (the sqlx shape mapping has no table in hand).
+    pub table: Option<PersistedTable>,
+    /// The row's key (UUID where the schema has one); `None` for
+    /// singleton rows and for rows whose id column itself failed to
+    /// parse (untrusted garbage stays out of the typed context).
+    pub row: Option<uuid::Uuid>,
+    /// The decode stage.
+    pub stage: Option<DecodeStage>,
+    /// The decode reason.
+    pub reason: Option<DecodeReason>,
+}
+
+impl CorruptionDetail {
+    /// The all-`None` context — the sqlx shape mapping's detail (plan
+    /// D-B2-4): no table/row in hand there, only the failure class.
+    pub const UNKNOWN: Self = Self {
+        table: None,
+        row: None,
+        stage: None,
+        reason: None,
+    };
+
+    /// The `UNKNOWN` detail plus the stage/reason a decode helper knows.
+    #[must_use]
+    pub const fn staged(stage: DecodeStage, reason: DecodeReason) -> Self {
+        Self {
+            table: None,
+            row: None,
+            stage: Some(stage),
+            reason: Some(reason),
+        }
+    }
+}
+
+/// What one degraded boot load quarantined (#1039): the typed details of
+/// every dropped journal row (direct failures and orphaned descendants
+/// alike), how many rows were dropped, and the re-pinned line head.
+/// Emitted once per degraded load — never per row — over the storage →
+/// engine diagnostics hop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LoadDiagnostics {
+    /// One typed detail per dropped journal row.
+    pub details: Vec<CorruptionDetail>,
+    /// How many journal rows were dropped (bad rows + orphaned
+    /// descendants).
+    pub dropped: u32,
+    /// The re-pinned line head after the quarantine pass.
+    pub head: Option<crate::ids::JournalId>,
+}
+
+/// The read side of the storage → engine degraded-load diagnostics hop
+/// (plan D-B2-6). The port's `load` signature stays stable; an
+/// implementation that quarantined rows during its last successful
+/// `load` publishes the diagnostics here, and the engine's boot
+/// hydration call site takes them once and re-broadcasts
+/// `SystemEvent::JournalDegraded`. Provided `None` by every fake and by
+/// implementations with nothing to report.
+pub trait LoadDiagnosticsSource: Send + Sync {
+    /// Takes the pending diagnostics (if any), clearing them — one
+    /// consumption per load, never a replayed signal.
+    fn take_load_diagnostics(&self) -> Option<LoadDiagnostics>;
+}
+
 /// Persistence-layer failure classes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RepositoryError {
     /// Backend unreachable/locked/busy — transient, caller may retry.
     #[error("repository unavailable")]
     Unavailable,
-    /// Persisted data failed integrity/decoding — not retryable.
-    #[error("repository data corrupted")]
-    Corrupted,
+    /// Persisted data failed integrity/decoding — not retryable. The
+    /// payload is the typed decode context (#1038); the `Display` text
+    /// renders it for humans, but the facts are the typed fields.
+    #[error("repository data corrupted: {0:?}")]
+    Corrupted(CorruptionDetail),
+}
+
+impl RepositoryError {
+    /// Typed `Corrupted` construction (plan D-B2-4) — the one
+    /// construction path; `..CorruptionDetail::UNKNOWN` fills the legs
+    /// the caller cannot know.
+    #[must_use]
+    pub fn corrupted(detail: CorruptionDetail) -> Self {
+        Self::Corrupted(detail)
+    }
+
+    /// Fills the table/row legs a decode helper could not know: the
+    /// helper's error carries stage/reason; the row-decode caller adds
+    /// its table and the row's parsed key (or `None` when the id column
+    /// itself failed). Already-filled legs are kept — the innermost
+    /// fact wins.
+    #[must_use]
+    pub fn attached(mut self, table: PersistedTable, row: Option<uuid::Uuid>) -> Self {
+        if let Self::Corrupted(detail) = &mut self {
+            detail.table = detail.table.or(Some(table));
+            detail.row = detail.row.or(row);
+        }
+        self
+    }
+
+    /// The typed decode context, when this is a decode failure.
+    #[must_use]
+    pub fn corruption_detail(&self) -> Option<CorruptionDetail> {
+        match self {
+            Self::Corrupted(detail) => Some(*detail),
+            Self::Unavailable => None,
+        }
+    }
 }
 
 /// The sync actor's read-only view of the engine's persisted state —
