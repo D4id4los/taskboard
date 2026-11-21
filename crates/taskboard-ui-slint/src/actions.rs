@@ -2129,7 +2129,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 205,
+        menu_rank: 230,
         description: "Opens the inline quota editor over the focused tracker's progress phrase (a one-number edit; the period kind stays).",
         // Section-scoped (the HabitLog R-11 ruling's exact twin): the
         // row's own affordance is the invocation; the key (O-8 parity,
@@ -2167,7 +2167,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 206,
+        menu_rank: 204,
         description: "Routes the quota popover's confirm: UpdateHabit with the minted target over the habit's current period kind.",
         // Internal dispatch verb (the HabitCreateCommit twin): the
         // popover's Confirm button is its only affordance.
