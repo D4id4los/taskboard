@@ -267,23 +267,23 @@ export component TaskView inherits FocusScope {
     callback habit-time-cleared();
     callback habit-weekday-picked(int);
     callback habit-month-day-edited(string);
-    // slint: habit-schedule-day-toggled (W-6) — the schedule picker's
+    // slint: habit_schedule_day_toggled (W-6) — the schedule picker's
     // per-slot toggle (slot index Monday-first, the checked bit).
-    callback habit-schedule-day-toggled(int, bool);
-    // slint: habit-reminder-base-picked (W-7) — the override's base
+    callback habit_schedule_day_toggled(int, bool);
+    // slint: habit_reminder_base_picked (W-7) — the override's base
     // row (0 nudge-day / 1 period-start).
-    callback habit-reminder-base-picked(int);
-    // slint: habit-reminder-offset-edited (W-7) — the offset days field.
-    callback habit-reminder-offset-edited(string);
-    // slint: habit-reminder-time-edited (W-7) — the fallback
+    callback habit_reminder_base_picked(int);
+    // slint: habit_reminder_offset_edited (W-7) — the offset days field.
+    callback habit_reminder_offset_edited(string);
+    // slint: habit_reminder_time_edited (W-7) — the fallback
     // time-of-day field.
-    callback habit-reminder-time-edited(string);
-    // slint: habit-reminder-snooze-edited (W-7) — the hours/days
+    callback habit_reminder_time_edited(string);
+    // slint: habit_reminder_snooze_edited (W-7) — the hours/days
     // snooze field.
-    callback habit-reminder-snooze-edited(string);
-    // slint: habit-reminder-clear-clicked (W-7) — the clear leg.
-    callback habit-reminder-clear-clicked();
-    callback habit-save-clicked();
+    callback habit_reminder_snooze_edited(string);
+    // slint: habit_reminder_clear_clicked (W-7) — the clear leg.
+    callback habit_reminder_clear_clicked();
+    callback habit_save_clicked();
     callback habit-editor-cancelled();
     // The tracking verbs (DR-5/4, D-T16): route the matching action
     // over the focused task (the subject IS the focused task).
@@ -591,7 +591,7 @@ export component TaskView inherits FocusScope {
                         checked: root.habit.schedule_days[slot];
                         checked-label: ["Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Mon"][slot];
                         unchecked-label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][slot];
-                        toggled => { root.habit-schedule-day-toggled(slot, !root.habit.schedule_days[slot]); }
+                        toggled => { root.habit_schedule_day_toggled(slot, !root.habit.schedule_days[slot]); }
                     }
                 }
                 // HF4 (W-7, US-6/S1–S3): the reminder override
@@ -609,7 +609,7 @@ export component TaskView inherits FocusScope {
                         root.habit.reminder-base == 0,
                         root.habit.reminder-base == 1,
                     ];
-                    picked(index) => { root.habit-reminder-base-picked(index); }
+                    picked(index) => { root.habit_reminder_base_picked(index); }
                 }
                 HorizontalLayout {
                     spacing: Theme.space-2;
@@ -618,14 +618,14 @@ export component TaskView inherits FocusScope {
                         placeholder: "0";
                         label: "Offset days";
                         text: root.habit.reminder-offset;
-                        edited(text) => { root.habit-reminder-offset-edited(text); }
+                        edited(text) => { root.habit_reminder_offset_edited(text); }
                     }
                     TextField {
                         horizontal-stretch: 1;
                         placeholder: "07:30";
                         label: "Time (no chip: used)";
                         text: root.habit.reminder-time;
-                        edited(text) => { root.habit-reminder-time-edited(text); }
+                        edited(text) => { root.habit_reminder_time_edited(text); }
                     }
                     TextField {
                         horizontal-stretch: 1;
@@ -633,13 +633,13 @@ export component TaskView inherits FocusScope {
                         label: "Snooze";
                         text: root.habit.reminder-snooze;
                         validity: root.habit.reminder-valid ? FieldValidity.valid : FieldValidity.invalid;
-                        edited(text) => { root.habit-reminder-snooze-edited(text); }
+                        edited(text) => { root.habit_reminder_snooze_edited(text); }
                     }
                     IconButton {
                         icon: IconKind.remove;
                         tone: Tone.neutral;
                         label: "Clear override";
-                        clicked => { root.habit-reminder-clear-clicked(); }
+                        clicked => { root.habit_reminder_clear_clicked(); }
                     }
                 }
                 HorizontalLayout {
@@ -649,7 +649,7 @@ export component TaskView inherits FocusScope {
                         tone: Tone.success;
                         label: "Save habit";
                         enabled: root.habit.can-save;
-                        clicked => { root.habit-save-clicked(); }
+                        clicked => { root.habit_save_clicked(); }
                     }
                     IconButton {
                         icon: IconKind.remove;

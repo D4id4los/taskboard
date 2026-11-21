@@ -785,13 +785,13 @@ export component AppWindow inherits Window {
                 habit-time-cleared() => root.habit-time-cleared();
                 habit-weekday-picked(i) => root.habit-weekday-picked(i);
                 habit-month-day-edited(t) => root.habit-month-day-edited(t);
-                habit-schedule-day-toggled(i, c) => root.habit-schedule-day-toggled(i, c);
-                habit-reminder-base-picked(i) => root.habit-reminder-base-picked(i);
-                habit-reminder-offset-edited(t) => root.habit-reminder-offset-edited(t);
-                habit-reminder-time-edited(t) => root.habit-reminder-time-edited(t);
-                habit-reminder-snooze-edited(t) => root.habit-reminder-snooze-edited(t);
-                habit-reminder-clear-clicked() => root.habit-reminder-clear-clicked();
-                habit-save-clicked() => root.habit-save-clicked();
+                habit_schedule_day_toggled(i, c) => root.habit_schedule_day_toggled(i, c);
+                habit_reminder_base_picked(i) => root.habit_reminder_base_picked(i);
+                habit_reminder_offset_edited(t) => root.habit_reminder_offset_edited(t);
+                habit_reminder_time_edited(t) => root.habit_reminder_time_edited(t);
+                habit_reminder_snooze_edited(t) => root.habit_reminder_snooze_edited(t);
+                habit_reminder_clear_clicked() => root.habit_reminder_clear_clicked();
+                habit_save_clicked() => root.habit_save_clicked();
                 habit-editor-cancelled() => root.habit-editor-cancelled();
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
                 rule-row-clicked(i) => root.task-rule-row-clicked(i);
@@ -2127,13 +2127,13 @@ export component AppWindow inherits Window {
     pure callback habit-time-cleared();
     pure callback habit-weekday-picked(int);
     pure callback habit-month-day-edited(string);
-    pure callback habit-schedule-day-toggled(int, bool);
-    pure callback habit-reminder-base-picked(int);
-    pure callback habit-reminder-offset-edited(string);
-    pure callback habit-reminder-time-edited(string);
-    pure callback habit-reminder-snooze-edited(string);
-    pure callback habit-reminder-clear-clicked();
-    pure callback habit-save-clicked();
+    pure callback habit_schedule_day_toggled(int, bool);
+    pure callback habit_reminder_base_picked(int);
+    pure callback habit_reminder_offset_edited(string);
+    pure callback habit_reminder_time_edited(string);
+    pure callback habit_reminder_snooze_edited(string);
+    pure callback habit_reminder_clear_clicked();
+    pure callback habit_save_clicked();
     pure callback habit-editor-cancelled();
     // The scale slider's gesture seams (r2 D29, r4 D38): press seeds
     // the revert point, release commits once (the drag itself is the
