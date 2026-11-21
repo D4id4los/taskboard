@@ -16,9 +16,9 @@ use taskboard_domain::test_support::CountingIds;
 use taskboard_domain::{CommandOutcome, StateCommand, SyncCommand, SyncReport, SystemEvent};
 use taskboard_state::spawn_state_engine;
 
-mod common;
+use crate::common;
 
-use common::{FixedClock, T0};
+use crate::common::{FixedClock, T0};
 
 #[cfg_attr(miri, ignore)] // tempdir mkdir + sqlite FFI (environment gate)
 #[tokio::test]
