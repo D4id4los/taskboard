@@ -110,7 +110,7 @@ pub use habit::{
     AdherenceRatio, AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState,
     HabitTarget, InvalidHabitTarget, MonthDay, NonZeroCount, PeriodKind, WindowStart, adherence,
     best_streak, habit_streak_unioned, log_window, per_period_totals, period_after, period_before,
-    period_end, period_start, streak,
+    period_end, period_start, statistics_horizon, streak,
 };
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{

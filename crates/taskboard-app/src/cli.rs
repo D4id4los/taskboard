@@ -1737,6 +1737,21 @@ pub enum HabitsCmd {
         /// resolve — no title leg, tombstoned rows may share titles).
         habit: String,
     },
+    /// The habit's history: the canonical log windows with typed    /// states (met/pending/missed), chronological (HF3, US-7). A
+    /// tombstoned habit's log still renders (US-7 AC-5).
+    History {
+        /// The habit (uuid | prefix | exact title — tombstones match
+        /// too).
+        habit: String,
+    },
+    /// The habit's statistics: adherence (met/scheduled windows),
+    /// best streak, per-window totals (HF3, US-9). Empty history is
+    /// the typed empty state — no 0%-of-nothing posture.
+    Stats {
+        /// The habit (uuid | prefix | exact title — tombstones match
+        /// too).
+        habit: String,
+    },
 }
 
 /// The review-journal verb family (DR-7 D-J11) over the in-process
