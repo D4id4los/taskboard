@@ -136,7 +136,7 @@ krilla = { version = "0.8", default-features = false, features = ["simple-text"]
 # Glyph advance widths for the print layout's measure helper (krilla
 # exposes none): the exact version krilla 0.8 already resolves, so the
 # pin adds no crate to the graph. Moves with the krilla pin.
-skrifa = "=0.42.0"
+skrifa = "=0.44.0"
 # Dev-only (taskboard-app pdf tests): inflates krilla's compressed
 # content streams for structural assertions — already in krilla's tree.
 flate2 = "1"
