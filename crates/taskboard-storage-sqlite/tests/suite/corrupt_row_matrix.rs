@@ -142,6 +142,8 @@ async fn entity_abort_middle_habit_log_row_names_the_date_reason() {
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     let day = |d| taskboard_domain::HabitLogKey {
         habit: habit.id,
@@ -157,6 +159,8 @@ async fn entity_abort_middle_habit_log_row_names_the_date_reason() {
                 count: 1,
                 clock: ts(d),
                 by: None,
+
+                skip: false,
             },
         )
     };

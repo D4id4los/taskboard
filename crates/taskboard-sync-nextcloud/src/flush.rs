@@ -1538,6 +1538,8 @@ mod habit_gate_tests {
             continued_from: None,
             deleted,
             by: None,
+
+            paused_until: None,
         };
         let mut habits = HabitState::default();
         habits
@@ -1595,6 +1597,8 @@ mod habit_gate_tests {
                 count: 1,
                 clock: now,
                 by: None,
+
+                skip: false,
             },
         );
         assert!(!has_flush_work(
@@ -1622,6 +1626,8 @@ mod habit_gate_tests {
                 count: 1,
                 clock: now,
                 by: None,
+
+                skip: false,
             },
         );
         assert!(has_flush_work(

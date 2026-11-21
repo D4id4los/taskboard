@@ -523,6 +523,42 @@ pub enum StateCommand {
         /// The corrected count.
         count: u32,
     },
+    /// Mark the habit's **current canonical window** skipped (the typed
+    /// planned skip, issue #955): the window's log row carries the skip
+    /// mark (`HabitLogEntry.skip`) and the streak walk treats the window
+    /// as transparent — neither counts nor breaks. R-4: skip targets the
+    /// current window only (past windows are the audited `AdjustHabitLog`
+    /// valve's); R-5: skip is period-grain, one mark per canonical
+    /// window. Window minted planner-side via
+    /// `WindowStart::of_period(kind, day.today(now))` — the `LogHabit`
+    /// posture. A window already marked is the accepted no-op. The
+    /// journal entry carries the prior row shape as its pre-image, so
+    /// the skip pops via the global undo line.
+    SkipHabit {
+        /// The habit whose current window is skipped.
+        habit: HabitId,
+    },
+    /// Clear the typed skip mark on the habit's current canonical
+    /// window (the skip's undo inverse). A window without the mark is
+    /// the accepted no-op; the row's count is untouched — the mark
+    /// flips, never the counted history.
+    UnskipHabit {
+        /// The habit whose current window's mark clears.
+        habit: HabitId,
+    },
+    /// Pause a habit through an inclusive local date (the
+    /// `PauseSeries` twin, issue #958): covered windows are transparent
+    /// in the streak walk (no miss, no credit) and the tracker nudge
+    /// disarms. Read-modify-write on the field only (the
+    /// `PauseSeries` posture); `None` resumes (badge hygiene); an
+    /// unchanged value is the accepted no-op; a past-date `until` is
+    /// the typed [`crate::command::CommandError::InvalidHabitPause`].
+    PauseHabit {
+        /// The habit to pause.
+        habit: HabitId,
+        /// The inclusive pause-through local date; `None` resumes.
+        until: Option<chrono::NaiveDate>,
+    },
     /// Delete (tombstone) a habit. The log is never touched — history
     /// outlives the tracker. A repeat is the accepted no-op.
     DeleteHabit {

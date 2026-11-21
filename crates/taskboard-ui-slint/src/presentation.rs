@@ -3904,6 +3904,8 @@ mod tests {
                 continued_from: None,
                 deleted: false,
                 by: None,
+
+                paused_until: None,
             },
         );
         // The delivered key is the window's anchor reading (the same
@@ -7453,6 +7455,8 @@ mod recur_badge_tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let mut log = std::collections::BTreeMap::new();
         // Under quota, in grace: the make-up points at yesterday's
@@ -7473,6 +7477,8 @@ mod recur_badge_tests {
                 count: 2,
                 clock: now,
                 by: None,
+
+                skip: false,
             },
         );
         assert_eq!(habit_repair_target(&h, &log, now, day), None);
@@ -8126,6 +8132,8 @@ mod habit_section_tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -8219,6 +8227,8 @@ mod habit_section_tests {
                 count: 1,
                 clock: ts(100),
                 by: None,
+
+                skip: false,
             },
         );
         let rows = habit_rows(&state, board, grace_now, day_ctx);
@@ -8352,6 +8362,8 @@ mod habit_section_tests {
                 count: 3,
                 clock: ts(200),
                 by: None,
+
+                skip: false,
             },
         );
         let rows = habit_rows(&state, board, ts(1_700_000_000), day());

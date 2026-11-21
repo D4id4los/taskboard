@@ -274,6 +274,8 @@ fn journal_entry_round_trips_through_serde_all_facts_variants() {
                     count: 2,
                     clock: ts(100),
                     by: None,
+
+                    skip: false,
                 }),
             },
             PreImage::HabitLogRow {
@@ -306,6 +308,8 @@ fn journal_entry_round_trips_through_serde_all_facts_variants() {
                         count: 5,
                         clock: ts(150),
                         by: None,
+
+                        skip: false,
                     }),
                 ),
             ]

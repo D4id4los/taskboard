@@ -70,6 +70,8 @@ fn anchored_habit_met_today() -> (Habit, HabitState) {
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     let mut habits = HabitState::default();
     habits.habits.insert(habit.id, habit.clone());
@@ -82,6 +84,8 @@ fn anchored_habit_met_today() -> (Habit, HabitState) {
             count: 1,
             clock: ts(T0),
             by: None,
+
+            skip: false,
         },
     );
     (habit, habits)

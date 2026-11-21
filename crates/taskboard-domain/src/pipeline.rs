@@ -2778,6 +2778,8 @@ mod tests {
             continued_from: None,
 
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -3394,6 +3396,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let key = crate::habit::HabitLogKey {
             habit: habit.id,
@@ -3409,6 +3413,8 @@ mod tests {
                 count: 2,
                 clock: ts(BASE),
                 by: None,
+
+                skip: false,
             },
         );
 
@@ -3440,6 +3446,8 @@ mod tests {
                     clock: ts(BASE + 400),
 
                     by: None,
+
+                    skip: false,
                 },
             )],
         );
@@ -3487,6 +3495,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let key = crate::habit::HabitLogKey {
             habit: habit.id,
@@ -3502,6 +3512,8 @@ mod tests {
                 count: 2,
                 clock: ts(BASE),
                 by: None,
+
+                skip: false,
             },
         );
         let expected = state.habits.clone();

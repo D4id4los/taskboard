@@ -965,6 +965,9 @@ pub enum HabitRecord {
         order: i64,
         anchor_time: Option<chrono::NaiveTime>,
         anchor_day: Option<crate::habit::AnchorDay>,
+        /// The inclusive pause-through date (`Habit.paused_until`'s wire
+        /// form): default-absent decode, additive-always serialize.
+        paused_until: Option<chrono::NaiveDate>,
         clocks: crate::habit::HabitClocks,
         continued_from: Option<crate::ids::SeriesId>,
         /// The row's author (F1's `by` leg): default-absent.
@@ -998,6 +1001,7 @@ impl HabitRecord {
                     .max(clocks.anchor_time)
                     .max(clocks.description)
                     .max(clocks.anchor_day)
+                    .max(clocks.paused_until)
                     .max(clocks.deleted),
             ),
             Self::Tombstone { clock, .. } => Some(*clock),
@@ -1046,6 +1050,12 @@ impl HabitRecord {
             None | Some(Value::Null) => Some(None),
             Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
         };
+        // Default-absent additive decode: a row written before HF1
+        // carries no `paused_until` key and decodes `None`.
+        let paused_until = match map.get("paused_until") {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
+        };
         let continued_from = match map.get("continued_from") {
             None | Some(Value::Null) => Some(None),
             Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
@@ -1057,6 +1067,7 @@ impl HabitRecord {
             Ok(order),
             Some(anchor_time),
             Some(anchor_day),
+            Some(paused_until),
             Ok(clocks),
             Some(continued_from),
             Ok(by),
@@ -1069,6 +1080,7 @@ impl HabitRecord {
             serde_json::from_value(map.get("order").cloned().unwrap_or(Value::Null)),
             anchor_time,
             anchor_day,
+            paused_until,
             serde_json::from_value(map.get("clocks").cloned().unwrap_or(Value::Null)),
             continued_from,
             decode_by(map),
@@ -1080,6 +1092,7 @@ impl HabitRecord {
                 order,
                 anchor_time,
                 anchor_day,
+                paused_until,
                 clocks,
                 continued_from,
                 by,
@@ -1109,6 +1122,7 @@ impl Serialize for HabitRecord {
                 order,
                 anchor_time,
                 anchor_day,
+                paused_until,
                 clocks,
                 continued_from,
                 by,
@@ -1124,6 +1138,7 @@ impl Serialize for HabitRecord {
                     "order": order,
                     "anchor_time": anchor_time,
                     "anchor_day": anchor_day,
+                    "paused_until": paused_until,
                     "clocks": clocks,
                     "continued_from": continued_from,
                 });
@@ -1163,6 +1178,10 @@ pub enum HabitLogRecord {
         clock: DateTime<Utc>,
         /// The row's author (F1's `by` leg): default-absent.
         by: Option<crate::ids::AuthorId>,
+        /// The typed planned-skip mark (`HabitLogEntry.skip`'s wire
+        /// form): default-absent decode (`false`), emitted only when
+        /// set — the additive default-absent law.
+        skip: bool,
     },
     /// A shape this version does not model: preserved verbatim.
     Verbatim(Value),
@@ -1186,17 +1205,30 @@ impl<'de> Deserialize<'de> for HabitLogRecord {
         // — a future `{"deleted": true}` row included — decodes as
         // `Verbatim`, never a document failure.
         let raw = Value::deserialize(deserializer)?;
-        if let Value::Object(map) = &raw
-            && let (Some(Ok(count)), Some(Ok(clock)), Ok(by)) = (
+        if let Value::Object(map) = &raw {
+            // The skip mark decodes default-absent (`false`); a
+            // present-but-unmodelable value demotes the row.
+            let skip = match map.get("skip") {
+                None | Some(Value::Null) => Some(false),
+                Some(Value::Bool(b)) => Some(*b),
+                Some(_) => None,
+            };
+            if let (Some(Ok(count)), Some(Ok(clock)), Ok(by), Some(skip)) = (
                 map.get("count")
                     .map(|v| serde_json::from_value::<u32>(v.clone())),
                 map.get("clock")
                     .map(|v| serde_json::from_value::<DateTime<Utc>>(v.clone())),
                 decode_by(map),
-            )
-            && !map.contains_key("deleted")
-        {
-            return Ok(Self::Entry { count, clock, by });
+                skip,
+            ) && !map.contains_key("deleted")
+            {
+                return Ok(Self::Entry {
+                    count,
+                    clock,
+                    by,
+                    skip,
+                });
+            }
         }
         Ok(Self::Verbatim(raw))
     }
@@ -1205,8 +1237,16 @@ impl<'de> Deserialize<'de> for HabitLogRecord {
 impl Serialize for HabitLogRecord {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Entry { count, clock, by } => {
+            Self::Entry {
+                count,
+                clock,
+                by,
+                skip,
+            } => {
                 let mut object = serde_json::json!({ "count": count, "clock": clock });
+                if *skip && let Some(map) = object.as_object_mut() {
+                    map.insert("skip".into(), Value::Bool(true));
+                }
                 if let Some(map) = object.as_object_mut()
                     && let Some(by) = by
                 {
@@ -2305,6 +2345,7 @@ pub fn habits_for(
                     order: habit.order,
                     anchor_time: habit.anchor_time,
                     anchor_day: None,
+                    paused_until: habit.paused_until,
                     clocks: habit.clocks,
                     continued_from: habit.continued_from,
                     by: habit.by.or(author),
@@ -2354,6 +2395,7 @@ pub fn habit_log_for(
                     count: entry.count,
                     clock: entry.clock,
                     by: entry.by.or(author),
+                    skip: entry.skip,
                 },
             )
         })
@@ -5599,6 +5641,8 @@ mod habit_section_tests {
             continued_from: None,
             deleted,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -5614,6 +5658,8 @@ mod habit_section_tests {
             continued_from: None,
 
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -5656,6 +5702,8 @@ mod habit_section_tests {
             clocks: h.clocks,
             continued_from: h.continued_from,
             by: h.by,
+
+            paused_until: None,
         };
         let json = serde_json::to_value(&row).unwrap();
         let map = json.as_object().unwrap();
@@ -5725,6 +5773,8 @@ mod habit_section_tests {
                         clock: ts(100),
 
                         by: None,
+
+                        skip: false,
                     },
                 )]
                 .into_iter()
@@ -5782,6 +5832,8 @@ mod habit_section_tests {
                         clock: ts(100),
 
                         by: None,
+
+                        skip: false,
                     },
                 )]
                 .into_iter()
@@ -5846,6 +5898,8 @@ mod habit_section_tests {
                 clock: ts(200),
 
                 by: None,
+
+                skip: false,
             },
         )]
         .into_iter()
@@ -5858,6 +5912,8 @@ mod habit_section_tests {
                 clock: ts(100),
 
                 by: None,
+
+                skip: false,
             },
         );
         let mut merged = base.clone();
@@ -5874,6 +5930,8 @@ mod habit_section_tests {
                 clock: ts(300),
 
                 by: None,
+
+                skip: false,
             },
         );
         union_habit_log(&mut merged, &overlay_newer);
@@ -5972,6 +6030,8 @@ mod habit_section_tests {
                             clock: ts(900),
 
                             by: None,
+
+                            skip: false,
                         },
                     )]
                     .into_iter()
@@ -6033,6 +6093,8 @@ mod habit_section_tests {
                 continued_from: mine.continued_from,
 
                 by: None,
+
+                paused_until: None,
             })
         );
         assert_eq!(
@@ -6076,7 +6138,9 @@ mod habit_section_tests {
                     .unwrap();
                 log.insert(
                     key(raw, d),
-                    HabitLogEntry { count: u32::try_from(i + 1).unwrap(), clock: ts(100) , by: None, },
+                    HabitLogEntry { count: u32::try_from(i + 1).unwrap(), clock: ts(100) , by: None,
+        skip: false,
+    },
                 );
             }
             let emitted = habit_log_for(&[(habit.id, habit.clone())].into(), &log, board, today, None);
@@ -6099,7 +6163,9 @@ mod habit_section_tests {
             let mut base_log = emitted.clone();
             base_log.insert(
                 aged_key.wire_form(),
-                HabitLogRecord::Entry { count: 9, clock: ts(50), by: None },
+                HabitLogRecord::Entry { count: 9, clock: ts(50), by: None ,
+        skip: false,
+    },
             );
             let base = document(
                 7,
@@ -6260,6 +6326,8 @@ mod author_by_tests {
             count,
             clock,
             by: None,
+
+            skip: false,
         } = relayed
         else {
             panic!("the by-less relay decodes as a live authorless row");
@@ -6285,6 +6353,8 @@ mod author_by_tests {
                 count: 3,
                 clock: ts(1_000),
                 by: None,
+
+                skip: false,
             },
         )]
         .into_iter()
@@ -6297,6 +6367,8 @@ mod author_by_tests {
                 count: 4,
                 clock: ts(1_000),
                 by: Some(a),
+
+                skip: false,
             },
         )]
         .into_iter()

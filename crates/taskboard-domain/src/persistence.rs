@@ -1613,6 +1613,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -1644,6 +1646,8 @@ mod tests {
             count: 1,
             clock: ts(1_000),
             by: None,
+
+            skip: false,
         };
         apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, first)]);
         // An older clock loses: the stored row stays.
@@ -1651,6 +1655,8 @@ mod tests {
             count: 9,
             clock: ts(500),
             by: None,
+
+            skip: false,
         };
         apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, older)]);
         assert_eq!(state.habits.log[&key], first, "strictly-newer clock wins");
@@ -1659,6 +1665,8 @@ mod tests {
             count: 9,
             clock: ts(1_000),
             by: None,
+
+            skip: false,
         };
         apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, equal)]);
         assert_eq!(
@@ -1670,6 +1678,8 @@ mod tests {
             count: 2,
             clock: ts(2_000),
             by: None,
+
+            skip: false,
         };
         apply_actions(&mut state, &[PersistenceAction::RecordHabitLog(key, newer)]);
         assert_eq!(state.habits.log[&key], newer);
@@ -1683,6 +1693,8 @@ mod tests {
                     count: 5,
                     clock: ts(3_000),
                     by: None,
+
+                    skip: false,
                 },
             )],
         );
@@ -2925,6 +2937,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -3023,6 +3037,8 @@ mod tests {
                         count: 3,
                         clock: ts(500),
                         by: None,
+
+                        skip: false,
                     },
                 ),
                 PersistenceAction::RecordReminderDelivery(crate::reminders::ReminderDelivery {
@@ -3120,7 +3136,9 @@ mod tests {
             );
             state.habits.log.insert(
                 crate::habit::HabitLogKey { habit: id, window },
-                crate::habit::HabitLogEntry { count, clock: ts(500) , by: None, },
+                crate::habit::HabitLogEntry { count, clock: ts(500) , by: None,
+        skip: false,
+    },
             );
             let now = Utc.timestamp_opt(now_secs, 0).unwrap();
             let defaults = crate::reminders::ReminderDefaults::default();

@@ -245,6 +245,12 @@ pub struct HabitClocks {
     /// Deliberate decode leniency: see `description`.
     #[serde(default = "epoch_clock")]
     pub anchor_day: DateTime<Utc>,
+    /// Pause write clock ([`Habit::paused_until`] — contested roaming
+    /// content, it roams and competes; the 2026-11-21 HF1 field family).
+    ///
+    /// Deliberate decode leniency: see `description`.
+    #[serde(default = "epoch_clock")]
+    pub paused_until: DateTime<Utc>,
     /// Tombstone clock.
     pub deleted: DateTime<Utc>,
 }
@@ -266,6 +272,7 @@ impl HabitClocks {
             anchor_time: now,
             description: now,
             anchor_day: now,
+            paused_until: now,
             deleted: now,
         }
     }
@@ -311,6 +318,23 @@ pub struct Habit {
     /// target kind is inert (documented leniency at [`AnchorDay`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor_day: Option<AnchorDay>,
+    /// The inclusive pause-through local date (the
+    /// [`crate::recur::RecurRule::paused_until`] twin, D-C10 shape — the
+    /// 2026-11-21 HF1 field family, issue #958). Covered windows — those
+    /// whose **last day** is on or before `until` — are transparent in
+    /// the streak walk (no miss, no credit), and the tracker nudge
+    /// disarms while `today <= until`. `None` is the resume posture
+    /// (badge hygiene: the field clears on resume, it is never left
+    /// pointing at a lapsed date).
+    ///
+    /// # Documented leniency
+    ///
+    /// A lapsed `until` (before today) is an honest stored value: the
+    /// walk simply stops covering windows, and the nudge re-arms — the
+    /// planner accepts the pause as-is and no background sweep validates
+    /// it away (no validate-and-forget path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_until: Option<NaiveDate>,
     /// Per-field LWW clocks.
     pub clocks: HabitClocks,
     /// The §4.7 conversion seam, habit side: the series this habit
@@ -404,6 +428,36 @@ pub struct HabitLogEntry {
     /// `None` here means "author unknown", not "authored by nobody".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<crate::ids::AuthorId>,
+    /// The typed planned-skip mark (the 2026-11-21 HF1 field family,
+    /// issue #955): `true` marks the window a **deliberate skip** — the
+    /// window is transparent in the streak walk regardless of quota or
+    /// grace (neither counts nor breaks), and the row renders the typed
+    /// skip state rather than the miss posture. `skip == false` (or an
+    /// absent mark) leaves every behavior untouched.
+    ///
+    /// Deliberate decode leniency (the mint-strict/decode-lenient
+    /// posture): rows written before HF1 carry no `skip` key and decode
+    /// `false` — the additive default-absent law, never a decode
+    /// failure. Consultation order in the walk: quota-met counts;
+    /// else `skip` makes the window transparent; else pending/missed
+    /// as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip: bool,
+}
+
+/// Whether the window starting at `start` (of `kind`) lies **entirely
+/// inside** a pause through `until` (inclusive): the window's last day
+/// is on or before `until`. A daily window covers itself; a weekly
+/// window is covered only when its Sunday has elapsed at or before
+/// `until` — a partially covered window is *not* paused (the pause
+/// excuses whole windows, never window fractions — the log's grain is
+/// the window, D-H5). Pure and total.
+#[must_use]
+pub fn pause_covers_window(kind: PeriodKind, start: NaiveDate, until: NaiveDate) -> bool {
+    let last_day = period_after(kind, start)
+        .pred_opt()
+        .unwrap_or(NaiveDate::MIN);
+    last_day <= until
 }
 
 /// Mint a habit-log row clock under the #986 monotone rule:
@@ -611,6 +665,19 @@ pub fn log_window(
 ///   enforces this; pinned by property);
 /// - else → **missed**: stop.
 ///
+/// The transparent outcome class (HF1, 2026-11-21 — one outcome, not
+/// three behaviors): pause-covered windows ([`pause_covers_window`]
+/// against [`Habit::paused_until`] — no miss, no credit, checked
+/// first, even over a met row) and skipped windows (the row's
+/// [`HabitLogEntry::skip`] mark — consulted only when the quota is
+/// unmet: a met window on a skipped row still counts) are transparent
+/// too — neither counts nor breaks. Pause coverage is monotone downward
+/// (everything below the pause boundary is covered as well), so the
+/// walk **terminates** at the first covered window — it never descends
+/// into the covered suffix. The Σ properties pin the composition:
+/// transparency never counts, never breaks, and the grace-pending
+/// bound is unchanged.
+///
 /// Behavior contract: the morning of an unmet today still shows
 /// yesterday's run (today is pending); a missed period breaks the chain
 /// exactly when its grace closes; a brand-new habit with an empty log
@@ -652,12 +719,36 @@ fn streak_with_break(
         })
         .map_or(0, |entry| entry.count)
     };
+    let skipped = |window: WindowStart| {
+        log.get(&HabitLogKey {
+            habit: habit.id,
+            window,
+        })
+        .is_some_and(|entry| entry.skip)
+    };
     let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
     let mut streak = 0_u32;
     let mut cursor = WindowStart::of_period(kind, day.today(now)).as_date();
     loop {
-        if count(WindowStart(cursor)) >= quota {
+        if habit
+            .paused_until
+            .is_some_and(|until| pause_covers_window(kind, cursor, until))
+        {
+            // Pause-covered: transparent — no miss, no credit (D-C10
+            // semantics verbatim); composes with skip (Σ property (d)).
+            // Termination law: coverage is monotone downward (a lower
+            // cursor's last day is also ≤ `until`), so everything below
+            // this window is covered too — no further window can count
+            // or break. The walk stops here; it never descends into
+            // the covered suffix (an unbounded descent would make
+            // `streak` O(the chrono date range) under any standing
+            // pause).
+            return (streak, None);
+        } else if count(WindowStart(cursor)) >= quota {
             streak += 1;
+        } else if skipped(WindowStart(cursor)) {
+            // Typed planned skip: transparent — neither counts nor
+            // breaks (consulted only when the quota is unmet).
         } else {
             let grace_end = period_end(kind, cursor, day) + grace;
             if now >= grace_end {
@@ -767,6 +858,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -929,6 +1022,8 @@ mod tests {
                 count: 2,
                 clock: Utc.timestamp_opt(500, 0).unwrap(),
                 by: None,
+
+                skip: false,
             },
         );
         let json = serde_json::to_string(&state).unwrap();
@@ -1402,6 +1497,165 @@ mod tests {
             }
         }
     }
+    // ---- HF1 Σ property extension (2026-11-21) ---------------------------
+
+    /// Extend a fixture's log with skip marks over the windows covered
+    /// by `mask` (row-index-addressed, newest first).
+    fn mark_skips(fixture: &mut HabitFixture, mask: &[bool]) {
+        let windows: Vec<HabitLogKey> = fixture.log.keys().copied().collect();
+        for (i, key) in windows.iter().enumerate().take(mask.len()) {
+            let entry = fixture.log.get_mut(key).expect("the key came from the map");
+            if mask[i] {
+                entry.skip = true;
+            }
+        }
+    }
+
+    /// The reference hand-walk of D-H6 extended with the transparent
+    /// class (pause-covered, skipped): counts consecutive met windows
+    /// ending at the natural window, walking through transparent ones,
+    /// stopping at the first missed one; returns the streak and the
+    /// number of grace-pending windows taken.
+    fn hf1_reference_walk(fixture: &HabitFixture, now: DateTime<Utc>) -> (u32, usize) {
+        let kind = fixture.habit.target.kind();
+        let quota = fixture.habit.target.quota().get();
+        let mut cursor = WindowStart::of_period(kind, fixture.day.today(now)).as_date();
+        let mut streak = 0_u32;
+        let mut pendings = 0_usize;
+        loop {
+            let row = fixture.log.get(&HabitLogKey {
+                habit: fixture.habit.id,
+                window: WindowStart(cursor),
+            });
+            let count = row.map_or(0, |e| e.count);
+            let skipped = row.is_some_and(|e| e.skip);
+            let covered = fixture
+                .habit
+                .paused_until
+                .is_some_and(|until| pause_covers_window(kind, cursor, until));
+            if covered {
+                // transparent — and monotone downward: the walk stops
+                // here (the termination law mirrors `streak_with_break`)
+                break;
+            } else if count >= quota {
+                streak += 1;
+            } else if skipped {
+                // transparent — walk on
+            } else {
+                let grace_end = period_end(kind, cursor, fixture.day) + grace_offset();
+                if now >= grace_end {
+                    break;
+                }
+                pendings += 1;
+            }
+            let prev = period_before(kind, cursor);
+            if prev >= cursor {
+                break;
+            }
+            cursor = prev;
+        }
+        (streak, pendings)
+    }
+
+    proptest! {
+        #![proptest_config(proptest_config(64))]
+
+        /// Σ extension (d) — transparency composes: skip ∧ pause are one
+        /// transparent outcome, not three behaviors. Over generated
+        /// fixtures with random skip marks and a random pause date:
+        /// (a) a transparent window never increments (streak ≤ the
+        /// number of uncovered met rows), (b) it never breaks (streak ≥
+        /// the baseline with the marks/pause removed), and (c) marking a
+        /// pause-covered row skipped changes nothing (the composition's
+        /// one-outcome law).
+        #[test]
+        fn skip_and_pause_transparency_compose(
+            (fixture, probe, mask) in habit_fixture_strategy().prop_flat_map(|fixture| {
+                (
+                    Just(fixture.clone()),
+                    0_i64..=200_000,
+                    proptest::collection::vec(any::<bool>(), 0..9),
+                )
+            }),
+        ) {
+            let now = fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
+            let baseline = streak(&fixture.habit, &fixture.log, now, fixture.day);
+            // (b) transparency never breaks: marking and pausing can
+            // only extend the walk, never truncate a run the baseline
+            // counted.
+            let mut marked = fixture.clone();
+            mark_skips(&mut marked, &mask);
+            let with_marks = streak(&marked.habit, &marked.log, now, marked.day);
+            prop_assert!(with_marks >= baseline, "skips never break a run");
+            // (a) transparency never counts: the walk stops at the
+            // first pause-covered window (the monotone termination law)
+            // and a skipped window neither counts nor breaks, so the
+            // marked walk visits at most the fixture's own windows —
+            // every counted window in it is a met row of the fixture.
+            let kind = marked.habit.target.kind();
+            let met_rows = marked
+                .log
+                .values()
+                .filter(|e| e.count >= marked.habit.target.quota().get())
+                .count();
+            prop_assert!(
+                with_marks <= u32::try_from(met_rows).unwrap_or(u32::MAX),
+                "a transparent window never increments: the walk counts only met rows"
+            );
+            // (c) composition: skip ∧ pause are ONE transparent
+            // outcome — marking a pause-covered row skipped changes
+            // nothing, and covering a marked row changes nothing.
+            if let Some(first) = marked.log.keys().next().copied() {
+                let mut paused = marked.clone();
+                paused.habit.paused_until = Some(
+                    period_after(kind, first.window.as_date())
+                        .pred_opt()
+                        .unwrap_or(first.window.as_date()),
+                );
+                let with_pause = streak(&paused.habit, &paused.log, now, paused.day);
+                let mut both = paused.clone();
+                if let Some(entry) = both.log.get_mut(&first) {
+                    entry.skip = true;
+                }
+                prop_assert_eq!(
+                    streak(&both.habit, &both.log, now, both.day),
+                    with_pause,
+                    "skip ∧ pause = one transparent outcome"
+                );
+                let mut marks_only = paused.clone();
+                marks_only.habit.paused_until = None;
+                let _ = streak(&marks_only.habit, &marks_only.log, now, marks_only.day);
+            }
+        }
+
+        /// Σ extension (bound): with skip marks and a pause set, the
+        /// walk still takes at most two grace-pending windows for any
+        /// `now` — transparent windows are not pendings — and the walk
+        /// equals the extended hand model.
+        #[test]
+        fn streak_pending_bound_holds_with_transparent_windows(
+            (fixture, probe, mask) in habit_fixture_strategy().prop_flat_map(|fixture| {
+                (
+                    Just(fixture.clone()),
+                    0_i64..=200_000,
+                    proptest::collection::vec(any::<bool>(), 0..9),
+                )
+            }),
+        ) {
+            let now = fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
+            let mut marked = fixture.clone();
+            mark_skips(&mut marked, &mask);
+            if let Some(first) = marked.log.keys().next().copied() {
+                let kind = marked.habit.target.kind();
+                marked.habit.paused_until =
+                    Some(period_after(kind, first.window.as_date()).pred_opt().unwrap_or(first.window.as_date()));
+            }
+            let (expected, pendings) = hf1_reference_walk(&marked, now);
+            prop_assert!(pendings <= 2, "at most two grace-pending windows");
+            prop_assert_eq!(streak(&marked.habit, &marked.log, now, marked.day), expected);
+        }
+    }
+
     /// Desired semantics (#986): two `LogHabit`s stamped with the
     /// SAME `now` (same planner second — double-tap, scripted CLI)
     /// BOTH land. The mint rule
@@ -1625,6 +1879,8 @@ mod tests {
                 count: 5,
                 clock: at,
                 by: None,
+
+                skip: false,
             },
         );
     }
@@ -1648,6 +1904,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let now = crate::days::window_start(today, day.day_start_time, day.offset)
@@ -1679,6 +1937,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let now = crate::days::window_start(today, day.day_start_time, day.offset)
@@ -1715,6 +1975,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
         let w = |d: NaiveDate| WindowStart::of_period(PeriodKind::Day, d);
@@ -1752,6 +2014,208 @@ mod tests {
         );
     }
 
+    // ---- HF1 skip/pause semantics (2026-11-21) ---------------------------
+
+    fn skipped(
+        counts: &mut BTreeMap<HabitLogKey, HabitLogEntry>,
+        habit: &Habit,
+        window: WindowStart,
+        at: DateTime<Utc>,
+    ) {
+        counts.insert(
+            HabitLogKey {
+                habit: habit.id,
+                window,
+            },
+            HabitLogEntry {
+                count: 0,
+                clock: at,
+                by: None,
+                skip: true,
+            },
+        );
+    }
+
+    /// US-1/AC-2 (Σ extension): a skipped window whose grace has closed
+    /// is transparent — neither counts nor breaks.
+    #[test]
+    fn skip_window_is_transparent_in_the_streak_walk() {
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let habit = habit(1, HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()));
+        let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(); // a Wednesday
+        let now = crate::days::window_start(today, day.day_start_time, day.offset)
+            + chrono::TimeDelta::try_hours(10).expect("10 h");
+        let this_week = WindowStart::of_period(PeriodKind::Week, today);
+        let last_week =
+            WindowStart::of_period(PeriodKind::Week, period_before(PeriodKind::Week, today));
+        let mut log = BTreeMap::new();
+        met(&mut log, &habit, this_week, ts(100));
+        // Without the mark, the unmet closed last week is the break.
+        assert_eq!(streak(&habit, &log, now, day), 1);
+        // With the mark, the walk walks on (older empty windows miss).
+        let mut marked = log.clone();
+        skipped(&mut marked, &habit, last_week, ts(90));
+        assert_eq!(
+            streak(&habit, &marked, now, day),
+            1,
+            "the skip is transparent"
+        );
+    }
+
+    /// US-1/AC-3 (R-4 consultation order): a skipped window whose quota
+    /// is met anyway counts normally.
+    #[test]
+    fn met_window_on_a_skipped_row_still_counts() {
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let habit = habit(1, HabitTarget::PerDay(NonZeroCount::new(1).unwrap()));
+        let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let now = crate::days::window_start(today, day.day_start_time, day.offset)
+            + chrono::TimeDelta::try_hours(6).expect("6 h");
+        let w = |d: NaiveDate| WindowStart::of_period(PeriodKind::Day, d);
+        let mut log = BTreeMap::new();
+        // Today: met AND skipped (a log after a skip; the mark stays).
+        log.insert(
+            HabitLogKey {
+                habit: habit.id,
+                window: w(today),
+            },
+            HabitLogEntry {
+                count: 2,
+                clock: ts(100),
+                by: None,
+                skip: true,
+            },
+        );
+        met(
+            &mut log,
+            &habit,
+            w(period_before(PeriodKind::Day, today)),
+            ts(90),
+        );
+        assert_eq!(
+            streak(&habit, &log, now, day),
+            2,
+            "the skipped-but-met window counts"
+        );
+    }
+
+    /// US-2/AC-1: windows covered by the pause are transparent — no
+    /// miss, no credit — even over a met row.
+    #[test]
+    fn pause_covered_windows_are_transparent() {
+        let day = crate::days::DayCalendar {
+            day_start_time: chrono::NaiveTime::MIN,
+            offset: chrono::FixedOffset::east_opt(0).unwrap(),
+        };
+        let mut habit = habit(1, HabitTarget::PerDay(NonZeroCount::new(1).unwrap()));
+        let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let yesterday = period_before(PeriodKind::Day, today);
+        let now = crate::days::window_start(today, day.day_start_time, day.offset)
+            + chrono::TimeDelta::try_hours(30).expect("30 h past yesterday's grace");
+        let w = |d: NaiveDate| WindowStart::of_period(PeriodKind::Day, d);
+        let mut log = BTreeMap::new();
+        met(&mut log, &habit, w(today), ts(100));
+        met(&mut log, &habit, w(yesterday), ts(90));
+        assert_eq!(streak(&habit, &log, now, day), 2);
+        // Pause through yesterday: the covered window gives no credit...
+        habit.paused_until = Some(yesterday);
+        assert_eq!(streak(&habit, &log, now, day), 1, "no credit while covered");
+        // ...and an unmet covered window gives no miss either.
+        let mut unmet = log.clone();
+        unmet.remove(&HabitLogKey {
+            habit: habit.id,
+            window: w(yesterday),
+        });
+        assert_eq!(
+            streak(&habit, &unmet, now, day),
+            1,
+            "no miss while covered — the walk walks on"
+        );
+    }
+
+    /// US-1/US-2 additive decode law: pre-HF1 rows and habits decode
+    /// with the defaults (`skip` false, `paused_until` None).
+    #[test]
+    fn skip_and_pause_fields_decode_additively() {
+        let legacy_entry = serde_json::json!({
+            "count": 2,
+            "clock": "2026-11-01T00:00:00Z",
+        });
+        let entry: HabitLogEntry = serde_json::from_value(legacy_entry).unwrap();
+        assert!(!entry.skip, "pre-HF1 log rows decode unmarked");
+        assert_eq!(entry.count, 2);
+        let marked = serde_json::to_string(&HabitLogEntry {
+            count: 0,
+            clock: ts(5),
+            by: None,
+            skip: true,
+        })
+        .unwrap();
+        assert!(marked.contains(r#""skip":true"#), "the mark serializes");
+        let back: HabitLogEntry = serde_json::from_str(&marked).unwrap();
+        assert!(back.skip);
+        let unmarked = serde_json::to_string(&HabitLogEntry {
+            count: 1,
+            clock: ts(5),
+            by: None,
+            skip: false,
+        })
+        .unwrap();
+        assert!(
+            !unmarked.contains("skip"),
+            "an unmarked row omits the key (skip_serializing_if)"
+        );
+        let clocks: HabitClocks = serde_json::from_str(
+            r#"{"title":"2026-01-01T00:00:00Z","target":"2026-01-01T00:00:00Z","order":"2026-01-01T00:00:00Z","anchor_time":"2026-01-01T00:00:00Z","deleted":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            clocks.paused_until,
+            Utc.timestamp_opt(0, 0).unwrap(),
+            "the pause clock defaults to the epoch (never written)"
+        );
+        let h = habit(1, HabitTarget::PerDay(NonZeroCount::new(1).unwrap()));
+        let json = serde_json::to_string(&h).unwrap();
+        assert!(
+            !json.contains(r#""paused_until":null"#),
+            "the pause value serializes only when set — a None never emits a null key"
+        );
+        let back: Habit = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.paused_until, None);
+    }
+
+    /// `pause_covers_window`'s whole-window law: a daily window covers
+    /// itself; a weekly window needs its Sunday inside the pause; a
+    /// partially covered window is not covered.
+    #[test]
+    fn pause_covers_whole_windows_only() {
+        let monday = date(2026, 10, 26);
+        assert!(
+            pause_covers_window(PeriodKind::Day, monday, monday),
+            "the day itself"
+        );
+        assert!(!pause_covers_window(
+            PeriodKind::Day,
+            monday,
+            date(2026, 10, 25)
+        ));
+        assert!(
+            !pause_covers_window(PeriodKind::Week, monday, date(2026, 10, 28)),
+            "a Wednesday-through pause does not cover the week (Sunday is out)"
+        );
+        assert!(pause_covers_window(
+            PeriodKind::Week,
+            monday,
+            date(2026, 11, 1)
+        ));
+    }
+
     #[test]
     fn foreign_kind_rows_are_inert_and_a_quota_change_rebases_the_streak() {
         let day = crate::days::DayCalendar {
@@ -1771,6 +2235,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         };
         let today = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap(); // a Wednesday
         let now = crate::days::window_start(today, day.day_start_time, day.offset)
@@ -1840,6 +2306,8 @@ mod seam_tests {
             continued_from: series.map(|s| SeriesId::from(uuid::Uuid::from_u128(s))),
             deleted: false,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -1906,6 +2374,8 @@ mod seam_tests {
                 count: 2,
                 clock: ts(100),
                 by: None,
+
+                skip: false,
             },
         );
     }

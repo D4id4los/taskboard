@@ -1740,8 +1740,10 @@ async fn habit_rows_survive_a_close_reopen_including_the_tombstone() {
             order: ts(120),
             anchor_time: ts(130),
             anchor_day: ts(125),
+            paused_until: ts(135),
             deleted: ts(140),
         },
+        paused_until: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap()),
         continued_from: Some(taskboard_domain::ids::SeriesId::from(
             uuid::Uuid::from_u128(99),
         )),
@@ -1785,6 +1787,8 @@ async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {
             count: 5,
             clock: ts(500),
             by: None,
+
+            skip: false,
         },
     )])
     .await
@@ -1796,6 +1800,8 @@ async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {
             count: 1,
             clock: ts(400),
             by: None,
+
+            skip: false,
         },
     )])
     .await
@@ -2457,6 +2463,8 @@ async fn tracker_receipts_rehydrate_and_still_guard_the_toast() {
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     let day = taskboard_domain::days::DayCalendar {
         day_start_time: chrono::NaiveTime::MIN,
@@ -2814,6 +2822,8 @@ mod sidecar_author_slot {
             continued_from: None,
             deleted: false,
             by,
+
+            paused_until: None,
         }
     }
 
@@ -2873,6 +2883,8 @@ mod sidecar_author_slot {
                 count: 2,
                 clock: ts(500),
                 by: Some(author(11)),
+
+                skip: false,
             },
         );
         let plain_log = (
@@ -2881,6 +2893,8 @@ mod sidecar_author_slot {
                 count: 3,
                 clock: ts(501),
                 by: None,
+
+                skip: false,
             },
         );
 
@@ -3045,6 +3059,8 @@ mod sidecar_author_slot {
                 count: 2,
                 clock: ts(500),
                 by: Some(author(11)),
+
+                skip: false,
             },
         );
         repo.apply(vec![
@@ -3328,6 +3344,8 @@ async fn pre_0027_habit_rows_decode_with_additive_defaults() {
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     db.repo()
         .apply(vec![PersistenceAction::UpsertHabit(post.clone())])

@@ -132,6 +132,8 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
                     continued_from,
                     deleted,
                     by,
+
+                    paused_until: None,
                 }
             },
         )
@@ -237,6 +239,8 @@ pub fn habit_fixture_strategy() -> impl Strategy<Value = HabitFixture> {
                         by: Some(crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(
                             u128::from(count) * 7 + 1,
                         ))),
+
+                        skip: false,
                     },
                 );
                 cursor = crate::habit::period_before(habit.target.kind(), cursor);

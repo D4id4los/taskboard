@@ -65,6 +65,8 @@ fn state_habit_at(state: &mut AppState, board: taskboard_domain::BoardId, order:
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     state.habits.habits.insert(habit.id, habit);
 }
@@ -614,6 +616,8 @@ fn state_second_habit(state: &mut AppState, board: taskboard_domain::BoardId) {
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     state.habits.habits.insert(habit.id, habit);
 }
@@ -790,6 +794,8 @@ fn anchored_habit_with_fired_nudge(state: &mut AppState, board: taskboard_domain
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     let habit_id = habit.id;
     state.habits.habits.insert(habit.id, habit);
@@ -886,6 +892,8 @@ fn weekly_habit(
         continued_from: None,
         deleted: false,
         by: None,
+
+        paused_until: None,
     };
     let id = habit.id;
     state.habits.habits.insert(habit.id, habit);

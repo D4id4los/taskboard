@@ -1429,7 +1429,16 @@ fn tracker_eligible(
     if !habit.is_live() || habit.anchor_time.is_none() {
         return false;
     }
-    let window = WindowStart::of_period(habit.target.kind(), day.today(now));
+    let today = day.today(now);
+    // The pause disarms the nudge while it stands (HF1, 2026-11-21):
+    // a habit paused through an inclusive local date arms no tracker
+    // nudge for any day inside the pause; a lapsed pause re-arms
+    // honestly (no stored arm/disarm state, the `paused_until` twin's
+    // posture).
+    if habit.paused_until.is_some_and(|until| until >= today) {
+        return false;
+    }
+    let window = WindowStart::of_period(habit.target.kind(), today);
     let count = habits
         .log
         .get(&HabitLogKey {
@@ -5021,6 +5030,8 @@ mod tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -5048,6 +5059,8 @@ mod tests {
                 count,
                 clock: ts(500),
                 by: None,
+
+                skip: false,
             },
         );
     }

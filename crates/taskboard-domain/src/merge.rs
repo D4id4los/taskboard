@@ -1301,6 +1301,7 @@ pub fn fold_habits(
                 order,
                 anchor_time,
                 anchor_day,
+                paused_until,
                 clocks,
                 continued_from,
                 by,
@@ -1323,6 +1324,7 @@ pub fn fold_habits(
                         local.order = *order;
                         local.anchor_time = *anchor_time;
                         local.anchor_day = *anchor_day;
+                        local.paused_until = *paused_until;
                         local.clocks = *clocks;
                         local.by = *by;
                         // Wholesale adoption resurrects: the wire emits a
@@ -1344,6 +1346,7 @@ pub fn fold_habits(
                             order: *order,
                             anchor_time: *anchor_time,
                             anchor_day: *anchor_day,
+                            paused_until: *paused_until,
                             clocks: *clocks,
                             continued_from: *continued_from,
                             deleted: false,
@@ -1386,6 +1389,7 @@ fn effective_clock_of(clocks: &crate::habit::HabitClocks) -> chrono::DateTime<ch
         .max(clocks.anchor_time)
         .max(clocks.description)
         .max(clocks.anchor_day)
+        .max(clocks.paused_until)
         .max(clocks.deleted)
 }
 
@@ -1415,7 +1419,13 @@ pub fn fold_habit_log(
 ) -> HabitLogFoldChanges {
     let mut changes = HabitLogFoldChanges::default();
     for (key, row) in rows {
-        let crate::appdata::HabitLogRecord::Entry { count, clock, by } = row else {
+        let crate::appdata::HabitLogRecord::Entry {
+            count,
+            clock,
+            by,
+            skip,
+        } = row
+        else {
             continue; // verbatim content never folds
         };
         let Some(parsed) = crate::habit::HabitLogKey::parse_wire_form(key) else {
@@ -1432,6 +1442,7 @@ pub fn fold_habit_log(
                 count: *count,
                 clock: *clock,
                 by: *by,
+                skip: *skip,
             };
             habits.log.insert(parsed, entry);
             changes.records.push((parsed, entry));
@@ -6867,6 +6878,8 @@ mod habit_fold_tests {
             continued_from: None,
             deleted,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -6881,6 +6894,8 @@ mod habit_fold_tests {
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             by: None,
+
+            paused_until: None,
         }
     }
 
@@ -6955,6 +6970,8 @@ mod habit_fold_tests {
                 clocks,
                 continued_from: None,
                 by: None,
+
+                paused_until: None,
             },
         )]
         .into_iter()
@@ -6986,6 +7003,8 @@ mod habit_fold_tests {
                 clocks: HabitClocks::all(ts(100)),
                 continued_from: None,
                 by: None,
+
+                paused_until: None,
             },
         )]
         .into_iter()
@@ -7131,6 +7150,8 @@ mod habit_fold_tests {
                 count: 4,
                 clock: ts(200),
                 by: None,
+
+                skip: false,
             },
         )]
         .into_iter()
@@ -7146,6 +7167,8 @@ mod habit_fold_tests {
                 count: 1,
                 clock: ts(210),
                 by: None,
+
+                skip: false,
             },
         )]
         .into_iter()
@@ -7160,6 +7183,8 @@ mod habit_fold_tests {
                 count: 0,
                 clock: ts(300),
                 by: None,
+
+                skip: false,
             },
         )]
         .into_iter()
@@ -7174,6 +7199,8 @@ mod habit_fold_tests {
                 count: 9,
                 clock: ts(300),
                 by: None,
+
+                skip: false,
             },
         )]
         .into_iter()
@@ -7198,6 +7225,8 @@ mod habit_fold_tests {
                 count: 5,
                 clock: ts(400),
                 by: None,
+
+                skip: false,
             },
         );
         let log_b = (
@@ -7206,6 +7235,8 @@ mod habit_fold_tests {
                 count: 6,
                 clock: ts(410),
                 by: None,
+
+                skip: false,
             },
         );
         let fold = |rows: Vec<&(String, HabitRecord)>, logs: Vec<&(String, HabitLogRecord)>| {
@@ -7218,6 +7249,8 @@ mod habit_fold_tests {
                             count: 1,
                             clock: ts(100),
                             by: None,
+
+                            skip: false,
                         },
                     ),
                     (
@@ -7226,6 +7259,8 @@ mod habit_fold_tests {
                             count: 2,
                             clock: ts(100),
                             by: None,
+
+                            skip: false,
                         },
                     ),
                 ]
@@ -7594,6 +7629,8 @@ mod author_duel_tests {
                 continued_from: None,
                 deleted: false,
                 by,
+
+                paused_until: None,
             };
             let doc_row = |title: &str, by: Option<AuthorId>| crate::appdata::HabitRecord::Live {
                 title: title.to_owned(),
@@ -7605,6 +7642,8 @@ mod author_duel_tests {
                 clocks: crate::habit::HabitClocks::all(t),
                 continued_from: None,
                 by,
+
+                paused_until: None,
             };
             let fold =
                 |own: &str, own_author: AuthorId, foreign: &str, foreign_author: AuthorId| {
@@ -7655,6 +7694,8 @@ mod author_duel_tests {
                             count: own,
                             clock: t,
                             by: Some(own_author),
+
+                            skip: false,
                         },
                     )]
                     .into_iter()
@@ -7666,6 +7707,8 @@ mod author_duel_tests {
                         count: foreign,
                         clock: t,
                         by: Some(foreign_author),
+
+                        skip: false,
                     },
                 )]
                 .into_iter()
@@ -7847,6 +7890,8 @@ mod author_duel_tests {
                 continued_from: None,
                 deleted: false,
                 by: Some(a),
+
+                paused_until: None,
             };
             let mut state = crate::habit::HabitState {
                 habits: [(habit_id, habit("a-habit"))].into_iter().collect(),
@@ -7864,6 +7909,8 @@ mod author_duel_tests {
                     clocks: crate::habit::HabitClocks::all(t),
                     continued_from: None,
                     by: Some(a),
+
+                    paused_until: None,
                 },
             )]
             .into_iter()
@@ -7892,6 +7939,8 @@ mod author_duel_tests {
                         count: 1,
                         clock: t,
                         by: Some(a),
+
+                        skip: false,
                     },
                 )]
                 .into_iter()
@@ -7903,6 +7952,8 @@ mod author_duel_tests {
                     count: 2,
                     clock: t,
                     by: Some(a),
+
+                    skip: false,
                 },
             )]
             .into_iter()
@@ -8083,6 +8134,8 @@ mod author_duel_tests {
                 continued_from: None,
                 deleted: false,
                 by: Some(b),
+
+                paused_until: None,
             };
             let rows = [(
                 habit_id.as_uuid().to_string(),
@@ -8096,6 +8149,8 @@ mod author_duel_tests {
                     clocks: crate::habit::HabitClocks::all(t2),
                     continued_from: None,
                     by: Some(d),
+
+                    paused_until: None,
                 },
             )]
             .into_iter()
@@ -8128,6 +8183,8 @@ mod author_duel_tests {
                     count: 5,
                     clock: t2,
                     by: Some(d),
+
+                    skip: false,
                 },
             )]
             .into_iter()
@@ -8140,6 +8197,8 @@ mod author_duel_tests {
                         count: 1,
                         clock: t1,
                         by: Some(b),
+
+                        skip: false,
                     },
                 )]
                 .into_iter()
@@ -8460,7 +8519,9 @@ mod sidecar_convergence_prop {
                     continued_from: None,
                     deleted: false,
                     by: fact.by,
-                };
+
+        paused_until: None,
+    };
                 let doc = |fact: &Fact| {
                     (
                         habit_id.as_uuid().to_string(),
@@ -8474,7 +8535,9 @@ mod sidecar_convergence_prop {
                             clocks: crate::habit::HabitClocks::all(ts(fact.clock)),
                             continued_from: None,
                             by: fact.by,
-                        },
+
+        paused_until: None,
+    },
                     )
                 };
                 let mut state = crate::habit::HabitState {
@@ -8505,7 +8568,9 @@ mod sidecar_convergence_prop {
                     count: fact.content,
                     clock: ts(fact.clock),
                     by: fact.by,
-                };
+
+        skip: false,
+    };
                 let doc = |fact: &Fact| {
                     (
                         log_key.wire_form(),
@@ -8513,7 +8578,9 @@ mod sidecar_convergence_prop {
                             count: fact.content,
                             clock: ts(fact.clock),
                             by: fact.by,
-                        },
+
+        skip: false,
+    },
                     )
                 };
                 let mut state = crate::habit::HabitState {

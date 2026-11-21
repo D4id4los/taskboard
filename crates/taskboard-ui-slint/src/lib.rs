@@ -3604,6 +3604,8 @@ mod view_component_tests {
             continued_from: None,
             deleted: false,
             by: None,
+
+            paused_until: None,
         }
     }
 

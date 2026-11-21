@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT habit_id, board_id, title, description, target,\n                      sort_order, anchor_time, anchor_day,\n                      ck_title, ck_target, ck_order, ck_anchor_time,\n                      COALESCE(ck_description, '1970-01-01T00:00:00+00:00') AS ck_description,\n                      COALESCE(ck_anchor_day, '1970-01-01T00:00:00+00:00') AS ck_anchor_day,\n                      ck_deleted,\n                      deleted as \"deleted: bool\", continued_from, au_by\n               FROM habits ORDER BY habit_id",
+  "query": "SELECT habit_id, board_id, title, description, target,\n                      sort_order, anchor_time, anchor_day,\n                      COALESCE(paused_until, NULL) AS paused_until,\n                      ck_title, ck_target, ck_order, ck_anchor_time,\n                      COALESCE(ck_description, '1970-01-01T00:00:00+00:00') AS ck_description,\n                      COALESCE(ck_anchor_day, '1970-01-01T00:00:00+00:00') AS ck_anchor_day,\n                      COALESCE(ck_paused_until, '1970-01-01T00:00:00+00:00') AS ck_paused_until,\n                      ck_deleted,\n                      deleted as \"deleted: bool\", continued_from, au_by\n               FROM habits ORDER BY habit_id",
   "describe": {
     "columns": [
       {
@@ -92,8 +92,14 @@
         }
       },
       {
-        "name": "ck_title",
+        "name": "paused_until",
         "ordinal": 8,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "ck_title",
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +110,7 @@
       },
       {
         "name": "ck_target",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +121,7 @@
       },
       {
         "name": "ck_order",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +132,7 @@
       },
       {
         "name": "ck_anchor_time",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -137,19 +143,25 @@
       },
       {
         "name": "ck_description",
-        "ordinal": 12,
-        "type_info": "Text",
-        "origin": "Expression"
-      },
-      {
-        "name": "ck_anchor_day",
         "ordinal": 13,
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "name": "ck_deleted",
+        "name": "ck_anchor_day",
         "ordinal": 14,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "ck_paused_until",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "ck_deleted",
+        "ordinal": 16,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -160,7 +172,7 @@
       },
       {
         "name": "deleted: bool",
-        "ordinal": 15,
+        "ordinal": 17,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -171,7 +183,7 @@
       },
       {
         "name": "continued_from",
-        "ordinal": 16,
+        "ordinal": 18,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -182,7 +194,7 @@
       },
       {
         "name": "au_by",
-        "ordinal": 17,
+        "ordinal": 19,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -204,6 +216,8 @@
       false,
       true,
       true,
+      true,
+      false,
       false,
       false,
       false,
@@ -216,5 +230,5 @@
       true
     ]
   },
-  "hash": "6a4f0ba169578038aee3ae7d53be8a6eb8ae7831ae57550bc2437e27a9b935d5"
+  "hash": "654c931148092629bbe1cc6059dc0ed0c4c37cc3c0090b1ec1e91cddd6648208"
 }
