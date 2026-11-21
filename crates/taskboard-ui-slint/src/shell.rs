@@ -334,6 +334,12 @@ impl KeymapShell {
             | UiEffect::ReviewWalk(_)
             // The notification verbs live adapter-side (the routed
             // seam bodies; the shell state is untouched).
+            // The board ceremony verbs (OP1) join them: pure
+            // view-intent strips — the shell reads nothing from them
+            // (the lifecycle family's shell-invisible row).
+            | UiEffect::BoardArchive
+            | UiEffect::BoardReset
+            | UiEffect::BoardReconcile
             | UiEffect::NotificationVerb(_) => {}
         }
         true

@@ -70,6 +70,10 @@ const SEAM_INVENTORY: &[&str] = &[
     "task_multi_delete_strip_cancelled",
     "board_delete_strip_confirmed",
     "board_delete_strip_cancelled",
+    // The board ceremony strips' confirm/cancel pair (OP1, W-1/W-3/
+    // W-6): one pair, the armed subject surface-wide decides the verb.
+    "board_ceremony_confirmed",
+    "board_ceremony_cancelled",
     "stack_delete_strip_confirmed",
     "stack_delete_strip_cancelled",
     "board_bar_segment_activated",

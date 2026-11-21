@@ -101,7 +101,14 @@ fn kind_of(flow: &Flow) -> FK {
         // The armed-delete strip (UX R-2 D-2) and the color picker
         // (UX R-4 D-1, #791): the modals' row — their seams own the
         // commit/confirm, settle is the disarm.
-        Flow::ConfirmDelete(_) | Flow::BoardColorPick { .. } | Flow::None => FK::None,
+        // The board ceremony strips (OP1): the armed-delete's row —
+        // settle is the disarm, the strips' seams own the confirm.
+        Flow::ConfirmBoardArchive { .. }
+        | Flow::ConfirmBoardReset { .. }
+        | Flow::ConfirmBoardReconcile { .. }
+        | Flow::ConfirmDelete(_)
+        | Flow::BoardColorPick { .. }
+        | Flow::None => FK::None,
         // The child levels (chunk 3's ports): no kept intents of
         // their own; settle is the Cancelled end.
         Flow::EntryDatePicker | Flow::WalkFilePick { .. } | Flow::WalkDatePick => FK::Child,
@@ -184,6 +191,10 @@ enum EK {
     BoardRename,
     BoardColorEdit,
     BoardDefaultPreset,
+    /// The board ceremony verbs (OP1, US-1/2/3): the lifecycle
+    /// family's keys — the arm/confirm split is the delete verbs'
+    /// two-phase shape over the selected board.
+    BoardCeremony,
     /// Present for the class mapping's totality; the pair harness
     /// never drives it (applied before the table, the `PickerKey`
     /// exclusion verbatim).
@@ -302,6 +313,11 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::BoardRename => EK::BoardRename,
         UiEffect::BoardColorEdit => EK::BoardColorEdit,
         UiEffect::BoardDefaultPreset => EK::BoardDefaultPreset,
+        // The board ceremony verbs (OP1): the lifecycle family's
+        // key — one cell family, the delete verbs' shape.
+        UiEffect::BoardArchive | UiEffect::BoardReset | UiEffect::BoardReconcile => {
+            EK::BoardCeremony
+        }
         UiEffect::FocusFirst => EK::FocusFirst,
         UiEffect::FocusLast => EK::FocusLast,
         UiEffect::OpenSettings => EK::OpenSettings,
@@ -831,6 +847,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // fixture board is non-empty, so the gate's typed no-op ends
     // flow-free.
     row(FK::Child, E::BoardDelete, exp(Z, K(KNone)));
+    row(FK::Child, E::BoardCeremony, exp(Z, K(KNone)));
     row(FK::Child, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::Child, E::BeginTitleEdit, exp(Z, K(KTxt)));
     row(FK::Child, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
@@ -854,6 +871,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // non-empty buffer, the re-run arms the strip (UX R-2 D-2).
     row(FK::Text, E::StackDelete, exp(NZ, K(KNone)));
     row(FK::Text, E::BoardDelete, exp(NZ, K(KNone)));
+    row(FK::Text, E::BoardCeremony, exp(NZ, K(KNone)));
     row(FK::Text, E::StackRename, exp(NZ, K(KTxt)));
     row(FK::Text, E::BoardRename, exp(NZ, K(KTxt)));
     row(FK::Text, E::BoardCreate, exp(NZ, K(KTxt)));
@@ -863,6 +881,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     for kind in [FK::Due, FK::Move, FK::Drag, FK::Palette, FK::Capture] {
         row(kind, E::StackDelete, exp(Z, K(KNone)));
         row(kind, E::BoardDelete, exp(Z, K(KNone)));
+        row(kind, E::BoardCeremony, exp(Z, K(KNone)));
         row(kind, E::StackRename, exp(Z, K(KTxt)));
         row(kind, E::BoardRename, exp(Z, K(KTxt)));
         row(kind, E::BoardCreate, exp(Z, K(KTxt)));
@@ -934,6 +953,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::FocusOverlay, E::BeginTitleEdit, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::StackDelete, exp(Z, K(KNone)));
     row(FK::FocusOverlay, E::BoardDelete, exp(Z, K(KNone)));
+    row(FK::FocusOverlay, E::BoardCeremony, exp(Z, K(KNone)));
     row(FK::FocusOverlay, E::StackRename, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::FocusOverlay, E::BoardCreate, exp(Z, K(KTxt)));
@@ -959,6 +979,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // dispatches, the armed flow holds (the kind-None family).
     row(FK::None, E::StackDelete, exp(Z, K(KNone)));
     row(FK::None, E::BoardDelete, exp(Z, K(KNone)));
+    row(FK::None, E::BoardCeremony, exp(Z, K(KNone)));
     // -- TEXT rows --
     row(FK::Text, E::Activate, exp(NZ, N)); // kept commit (non-empty)
     row(FK::Text, E::SetModeNormal, exp(Z, N)); // kept discard
@@ -1079,6 +1100,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::BeginTitleEdit, exp(Z, K(KTxt)));
         row(kind, E::StackDelete, exp(Z, K(KNone)));
         row(kind, E::BoardDelete, exp(Z, K(KNone)));
+        row(kind, E::BoardCeremony, exp(Z, K(KNone)));
         row(kind, E::StackRename, exp(Z, K(KTxt)));
         row(kind, E::BoardRename, exp(Z, K(KTxt)));
         row(kind, E::BoardCreate, exp(Z, K(KTxt)));
@@ -1095,6 +1117,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::PlanForm, E::BeginTitleEdit, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::StackDelete, exp(Z, K(KNone)));
     row(FK::PlanForm, E::BoardDelete, exp(Z, K(KNone)));
+    row(FK::PlanForm, E::BoardCeremony, exp(Z, K(KNone)));
     row(FK::PlanForm, E::StackRename, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::PlanForm, E::BoardCreate, exp(Z, K(KTxt)));
@@ -1111,6 +1134,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::RecurEditor, E::BeginTitleEdit, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::StackDelete, exp(Z, K(KNone)));
     row(FK::RecurEditor, E::BoardDelete, exp(Z, K(KNone)));
+    row(FK::RecurEditor, E::BoardCeremony, exp(Z, K(KNone)));
     row(FK::RecurEditor, E::StackRename, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::RecurEditor, E::BoardCreate, exp(Z, K(KTxt)));
@@ -1164,6 +1188,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::ReviewWalk, E::BeginTitleEdit, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::StackDelete, exp(Z, K(KNone)));
     row(FK::ReviewWalk, E::BoardDelete, exp(Z, K(KNone)));
+    row(FK::ReviewWalk, E::BoardCeremony, exp(Z, K(KNone)));
     row(FK::ReviewWalk, E::StackRename, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::ReviewWalk, E::BoardCreate, exp(Z, K(KTxt)));
@@ -1330,6 +1355,7 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     row(FK::PlanChild, E::BoardCreate, exp(Z, K(KTxt)));
     row(FK::PlanChild, E::BoardColorEdit, exp(Z, K(KNone)));
     row(FK::PlanChild, E::BoardDelete, exp(Z, K(KNone)));
+    row(FK::PlanChild, E::BoardCeremony, exp(Z, K(KNone)));
     row(FK::PlanChild, E::BoardRename, exp(Z, K(KTxt)));
     row(FK::PlanChild, E::BeginTitleEdit, exp(Z, K(KTxt)));
     row(FK::PlanChild, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
@@ -1592,6 +1618,11 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::BoardRename,
         UiEffect::BoardColorEdit,
         UiEffect::BoardDefaultPreset,
+        // The board ceremony verbs (OP1): the lifecycle family's
+        // matrix members.
+        UiEffect::BoardArchive,
+        UiEffect::BoardReset,
+        UiEffect::BoardReconcile,
         UiEffect::FocusFirst,
         // OpenBoardBarFlyout is excluded: applied in `apply_effect`,
         // before the table (the picker keys' exclusion).
@@ -2989,6 +3020,9 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::BoardRename
         | UiEffect::BoardColorEdit
         | UiEffect::BoardDefaultPreset
+        | UiEffect::BoardArchive
+        | UiEffect::BoardReset
+        | UiEffect::BoardReconcile
         | UiEffect::HabitConvertCancel
         | UiEffect::HabitRemoveCancel
         | UiEffect::OpenBoardBarFlyout => DismissClass::Survive,

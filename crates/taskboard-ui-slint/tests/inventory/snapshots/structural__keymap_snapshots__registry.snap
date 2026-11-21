@@ -1,5 +1,5 @@
 ---
-source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
+source: crates/taskboard-ui-slint/tests/inventory/keymap_snapshots.rs
 assertion_line: 49
 expression: rows
 ---
@@ -390,6 +390,33 @@ expression: rows
   enabled: true
   menu_rank: 110
   description: "Deletes the current board and all its content: the first press arms the confirm strip, the repeat or the strip's Confirm commits; typed refusals are the engine's."
+  menu_group: board
+- id: board.archive
+  label: Archive board
+  contexts:
+    - board
+  category: navigation
+  enabled: true
+  menu_rank: 112
+  description: "Archives the current board: the strip's caption carries the archive fact and the typed escape — the archived-boards roster's restore row brings the board back; the verb is not undoable and no undo affordance is offered. (The `ActionId::BoardArchive` id routes the exact `StateCommand::SetBoardArchived` (archived: true).)"
+  menu_group: board
+- id: board.reconcile
+  label: Reconcile board…
+  contexts:
+    - board
+  category: navigation
+  enabled: true
+  menu_rank: 114
+  description: "Arms the reconcile confirm for the current board: the strip's preview letter carries the same-title match counts the merge will adopt (the planner's facts, not prose); the merge is irreversible — survivors keep the local ids and no undo affordance is offered. (The `ActionId::BoardReconcile` id routes the exact `StateCommand::ReconcileByTitle`.)"
+  menu_group: board
+- id: board.reset
+  label: Reset board…
+  contexts:
+    - board
+  category: navigation
+  enabled: true
+  menu_rank: 119
+  description: "Arms the reset confirm for the current board: the strip's consequence letter carries the live stack, task, and label counts the reset clears; the board row and its binding survive and a bound board re-materializes on the next pull; not undoable. (The `ActionId::BoardReset` id routes the exact `StateCommand::ResetBoard`.)"
   menu_group: board
 - id: stack.next
   label: Next stack

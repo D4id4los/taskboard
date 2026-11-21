@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The board ceremony letter (O-5 parity chunk OP1, W-2/W-4/W-7 —
+// #945/#946/#947): the informed-consent letter the armed strips mount.
+// The r1 erratum law holds: `SetBoardArchived`, `ResetBoard`, and
+// `ReconcileByTitle` stay `NotUndoable(BoardCeremony)` engine-side —
+// the letter carries the blast radius *before* the confirm routes the
+// verb, and the typed escape is the verb's own reversal path, never
+// `AppUndo`.
+//
+// The grammar derives from the typed ceremony plan, never hand-written
+// prose: the letter is one of five modes (the fold enum), and every
+// number rendered comes from a typed derivation input (D-3's live
+// model counts, D-4's planner preview counts) — the tests assert the
+// mode and the inputs, never letter text (the round law).
+
+import { Theme, Typography, RoleText, Semantic, Tone } from "../theme.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
+
+// The letter's fold enum (US-1/AC-2, US-2/AC-4, US-3/AC-4): the
+// fold tests assert this enum and the model's typed inputs, never
+// letter text.
+export enum CeremonyLetterMode {
+    // Disarmed: no ceremony flow holds; the letter never mounts.
+    none,
+    // The archive consent caption (D-1: a single row with a consent
+    // caption — the verb is self-reversing, the roster restore is the
+    // typed escape).
+    archive-caption,
+    // The reset consequence letter (D-3: the live stack/task/label
+    // counts the reset clears).
+    reset-counts,
+    // The reconcile preview letter (D-4: the planner's match counts —
+    // a zero-count preview is the letter's "safe no-op" fact).
+    reconcile-preview,
+    // The preview request is in flight (the strip mounts before the
+    // counts reply lands; an unlettered confirm is refused view-state
+    // side — D-4's staging law).
+    reconcile-pending,
+    // The typed dead-lane fact. Never mounted: a failed reply disarms
+    // the flow before any render — the mode exists so the fold
+    // catalogue's enum is exhaustive over the reply's outcomes.
+    reconcile-failed,
+}
+
+// The letter's typed derivation inputs (the grammar's only numbers):
+// D-3's live counts ride `stacks`/`tasks`/`labels`; D-4's planner
+// counts ride `merge-*`/`cancelled-ops`. `undo-offered` is the
+// no-AppUndo fact as a typed flag (R-3): it is `false` in every
+// ceremony letter — the letter never offers an undo affordance, and
+// the fold test asserts the flag structurally.
+export struct CeremonyLetterModel {
+    mode: CeremonyLetterMode,
+    stacks: int,
+    tasks: int,
+    labels: int,
+    merge-stacks: int,
+    merge-tasks: int,
+    merge-labels: int,
+    cancelled-ops: int,
+    undo-offered: bool,
+}
+
+// slint: ceremony-letter-caption (W-2, US-1/S2): the archive consent
+// caption — the archive fact plus the typed re-archive escape.
+// slint: ceremony-letter-counts (W-4, US-2/S2): the reset consequence
+// letter — the live counts plus the survives/re-materializes fact.
+// slint: ceremony-letter-preview (W-7, US-3/S1–S2): the reconcile
+// preview letter — the planner's match counts (zero counts included).
+export component BoardCeremonyLetter inherits Rectangle {
+    in property <CeremonyLetterModel> letter;
+
+    // The confirm/cancel pair's labels derive from the mode (the
+    // a11y labels stay specific per ceremony; unasserted text).
+    callback confirmed();
+    callback cancelled();
+
+    min-height: row.preferred-height;
+    // The danger posture: every ceremony letter carries a blast
+    // radius (archive's is the smallest — the caption, not counts —
+    // but the confirm is still a ceremony verb the engine refuses to
+    // invert), so the message reads danger and the confirm sits
+    // danger-toned (the ConfirmStrip destructive grammar).
+    row := HorizontalLayout {
+        spacing: Theme.space-2;
+        RoleText {
+            role: Typography.caption;
+            text-color: Semantic.danger;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            text: root.letter.mode == CeremonyLetterMode.archive-caption
+                ? "Archives this board. The archived-boards roster's restore row brings it back — this verb has no undo."
+                : root.letter.mode == CeremonyLetterMode.reset-counts
+                ? "Clears this board's local content: \{root.letter.stacks} stacks, \{root.letter.tasks} tasks, \{root.letter.labels} labels. The board and its connection survive; a bound board re-materializes on the next pull. This cannot be undone."
+                : root.letter.mode == CeremonyLetterMode.reconcile-preview
+                ? (root.letter.merge-stacks == 0 && root.letter.merge-tasks == 0 && root.letter.merge-labels == 0
+                    ? "No same-title duplicates found — the merge pass is a safe no-op."
+                    : "Merges same-title duplicates: \{root.letter.merge-stacks} stacks, \{root.letter.merge-tasks} tasks, \{root.letter.merge-labels} labels ( \{root.letter.cancelled-ops} queued ops cancel). Survivors keep the local ids. This cannot be undone.")
+                : root.letter.mode == CeremonyLetterMode.reconcile-pending
+                ? "Preparing the duplicate preview…"
+                : "";
+        }
+        if (root.letter.mode != CeremonyLetterMode.none
+                && root.letter.mode != CeremonyLetterMode.reconcile-pending
+                && root.letter.mode != CeremonyLetterMode.reconcile-failed): IconButton {
+            icon: IconKind.check;
+            tone: Tone.danger;
+            label: root.letter.mode == CeremonyLetterMode.archive-caption
+                ? "Confirm archive board"
+                : root.letter.mode == CeremonyLetterMode.reset-counts
+                ? "Confirm reset board"
+                : "Confirm reconcile board";
+            clicked => { root.confirmed(); }
+        }
+        if (root.letter.mode != CeremonyLetterMode.none
+                && root.letter.mode != CeremonyLetterMode.reconcile-failed): IconButton {
+            icon: IconKind.remove;
+            tone: Tone.neutral;
+            label: root.letter.mode == CeremonyLetterMode.archive-caption
+                ? "Cancel archive board"
+                : root.letter.mode == CeremonyLetterMode.reset-counts
+                ? "Cancel reset board"
+                : "Cancel reconcile board";
+            clicked => { root.cancelled(); }
+        }
+    }
+}

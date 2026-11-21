@@ -374,6 +374,32 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
             let outcome = save_connection(workspace, &profile).await;
             let _ = reply.send(outcome);
         }
+        UiRequest::BoardReconcilePreview { board, reply } => {
+            // The planner's match counts over the live engine state
+            // (OP1 US-3, D-4): the same facts the CLI's typed refusal
+            // carries (`commands::boards::reconcile_on`'s preview
+            // half), as a pure query — no state change, no
+            // persistence. A dropped receiver (a stale flow) is at
+            // most a dropped send.
+            let counts =
+                match taskboard_domain::SyncStateReader::read_state(&workspace.engine).await {
+                    Ok(persisted) => {
+                        let state = workspace.engine.shared_state().load_full();
+                        let (_, counts) =
+                            taskboard_domain::plan_reconcile(&state, &persisted.outbox, board);
+                        drop(state);
+                        Some(counts)
+                    }
+                    // The state read is the query's only failure mode;
+                    // `None` is the typed not-derivable fact — a failed
+                    // planner must never masquerade as a zero-count
+                    // preview (the letter's "safe no-op" is a planner
+                    // fact, not a fallback), so the strip disarms
+                    // instead.
+                    Err(_) => None,
+                };
+            let _ = reply.send(counts);
+        }
         UiRequest::RemoveConnection { name, reply } => {
             let outcome = remove_connection(workspace, &name).await;
             let _ = reply.send(outcome);

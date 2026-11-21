@@ -485,6 +485,49 @@ pub enum Flow {
     /// dispatched (the settle law verbatim). Arming a different
     /// board re-arms; the board's death ends the flow (reconcile).
     BoardColorPick { board: BoardId },
+    // -- the board ceremony flows (O-5 parity chunk OP1, US-1/US-2/
+    // US-3, #945/#946/#947) ------------------------------------------
+    //
+    // The armed consent strips for the three GUI board-ceremony verbs.
+    // The r1 erratum law holds verbatim: `SetBoardArchived`,
+    // `ResetBoard`, and `ReconcileByTitle` stay
+    // `NotUndoable(BoardCeremony)` in the engine — these flows are
+    // *informed-consent confirmations*, not undo machinery; the typed
+    // escapes are the verbs' own reversal paths (re-archive for
+    // archive, the re-pull for reset, idempotent re-runs for
+    // reconcile), never `AppUndo`. The shared grammar is the
+    // `ConfirmDelete` shape (one armed subject surface-wide, re-arm
+    // swaps, Escape → disarm, a foreign settle disarms, the subject's
+    // death ends the flow); the letters ride the flow as typed
+    // derivation inputs, never hand-written prose.
+    //
+    /// The archive consent caption (OP1 US-1/S2–S3, D-1): one
+    /// context-menu row with a consent caption — the verb is
+    /// self-reversing (the archived roster's restore row is the typed
+    /// escape), so the letter is the caption fact alone, no counts
+    /// strip. Confirm routes the exact `SetBoardArchived { true }`.
+    ConfirmBoardArchive { board: BoardId },
+    /// The armed reset strip (OP1 US-2, D-3): the consequence letter
+    /// derives its counts from the live model at arm/refresh time
+    /// (the board's stack/task/label rows) — no engine query. Confirm
+    /// routes the exact `ResetBoard { board }`; the board row and
+    /// connect session survive (the letter's re-materialization fact).
+    ConfirmBoardReset { board: BoardId },
+    /// The armed reconcile strip (OP1 US-3, D-4): the preview letter's
+    /// counts are planner-derived facts (the same-title merge pairs
+    /// the presentation model does not carry), so they arrive through
+    /// the oneshot `UiRequest::BoardReconcilePreview` reply and ride
+    /// the flow (the `WalkFilePick` precedent: pure interaction state
+    /// rides the variant). `Pending` mounts the strip before the
+    /// counts reply lands; `Ready` carries the counts (a zero-count
+    /// preview is the letter's "says so" — the confirm routes the
+    /// idempotent verb anyway); `Failed` is the typed dead-lane fact
+    /// (the disarm follows). Confirm routes the exact
+    /// `ReconcileByTitle { board }`.
+    ConfirmBoardReconcile {
+        board: BoardId,
+        preview: ReconcilePreviewState,
+    },
     /// The labels overlay (UX R-3 D-2, #789): the task-detail's
     /// modal over the subject task — the entries overlay's pattern
     /// (subject-affine mount; `reconcile` drops it when the view
@@ -521,6 +564,22 @@ pub enum DeleteTarget {
     /// dispatches one `DeleteTask` per member (each a journal
     /// `PreImage` — `AppUndo` reverses stepwise, engine truth).
     Tasks(Vec<TaskId>),
+}
+
+/// The reconcile preview letter's typed state (OP1 D-4): the
+/// oneshot reply's lifecycle as flow data — never prose. The fold
+/// tests assert this enum, never letter text (the round law).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcilePreviewState {
+    /// The preview request is in flight; the strip is mounted, the
+    /// counts are not in yet.
+    Pending,
+    /// The reply landed: the planner's match counts (the letter's
+    /// derivation inputs — no prose rides the wire).
+    Ready(taskboard_domain::ReconcileCounts),
+    /// The reply lane died (the app half is gone): the typed failure
+    /// fact; the disarm follows on the drain.
+    Failed,
 }
 
 /// The board selection (UX-R8 D-4, US-4/S1, W-4): adapter-owned
@@ -1835,6 +1894,13 @@ impl ViewState {
     /// archived under the session) falls back the same way. The one
     /// normalization site — `reconcile` runs it refresh-time; the
     /// board walk and `begin_create_stack` before they read.
+    /// A board row's liveness for the ceremony strips' prune arms
+    /// (OP1): present and not tombstoned (an archived board stays
+    /// commandable — the archived board is not a death).
+    fn board_live(state: &AppState, board: BoardId) -> bool {
+        state.boards.get(&board).is_some_and(|row| !row.deleted)
+    }
+
     fn normalize_board(&mut self, state: &AppState) {
         let live = self.board.is_some_and(|id| {
             state
@@ -4139,6 +4205,13 @@ impl ViewState {
             // picker's own re-openability is the recovery, so no
             // staged discard either).
             Flow::BoardColorPick { .. } => self.cancel_board_color(),
+            // The board ceremony strips (OP1, US-1/2/3): a foreign
+            // settle disarms without dispatching — the armed-delete
+            // close shape verbatim (the informed-consent letter is
+            // consent scaffolding, never a command).
+            Flow::ConfirmBoardArchive { .. } => self.cancel_board_archive(),
+            Flow::ConfirmBoardReset { .. } => self.cancel_board_reset(),
+            Flow::ConfirmBoardReconcile { .. } => self.cancel_board_reconcile(),
         }
     }
 
@@ -4323,6 +4396,197 @@ impl ViewState {
     /// armed-delete close shape.
     pub fn cancel_board_color(&mut self) -> Vec<FlowOutcome> {
         if matches!(self.flow(), Flow::BoardColorPick { .. }) {
+            self.write_flow(Flow::None);
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
+    }
+
+    // -- the board ceremony verbs (OP1, US-1/US-2/US-3) ---------------
+
+    /// `board.archive` (OP1 US-1, D-1): arms the archive consent
+    /// caption over the selected board — nothing dispatches; the
+    /// strip's Confirm (or the invoking verb's repeat — click ≡ key
+    /// at every step) routes the exact `SetBoardArchived { true }`
+    /// and clears the flow. Zero command delta, zero undo-class
+    /// change: the verb stays `NotUndoable(BoardCeremony)`; the
+    /// confirmation is consent scaffolding, the typed escape is the
+    /// re-archive path. Inert without a board; re-arming over the
+    /// armed board confirms (the shared grammar's second stroke); a
+    /// different armed subject swaps.
+    pub fn begin_board_archive(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        if *self.flow() == (Flow::ConfirmBoardArchive { board }) {
+            return self.commit_board_ceremony_archive();
+        }
+        self.write_flow(Flow::ConfirmBoardArchive { board });
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The archive strip's confirm half: dispatches the exact
+    /// `SetBoardArchived { archived: true }` over the armed board and
+    /// clears the flow (the confirm-delete commit shape; the engine's
+    /// typed tombstone refusal is the failure path's fact).
+    fn commit_board_ceremony_archive(&mut self) -> Vec<FlowOutcome> {
+        let Flow::ConfirmBoardArchive { board } = self.flow().clone() else {
+            return Vec::new();
+        };
+        self.write_flow(Flow::None);
+        vec![
+            FlowOutcome::Command(StateCommand::SetBoardArchived {
+                board,
+                archived: true,
+            }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// The archive strip's disarm (Cancel, Escape, a foreign settle):
+    /// ends the flow without dispatching — the armed-delete close
+    /// shape.
+    pub fn cancel_board_archive(&mut self) -> Vec<FlowOutcome> {
+        if matches!(self.flow(), Flow::ConfirmBoardArchive { .. }) {
+            self.write_flow(Flow::None);
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// `board.reset` (OP1 US-2, D-3): arms `ConfirmBoardReset` over
+    /// the selected board — the consequence letter derives its counts
+    /// from the live model at push time (the adapter's board rows;
+    /// no engine query). Confirm routes the exact `ResetBoard`; the
+    /// same grammar as the archive caption (the shared armed-strip
+    /// machinery). Inert without a board; re-arm swaps subjects.
+    pub fn begin_board_reset(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        if *self.flow() == (Flow::ConfirmBoardReset { board }) {
+            return self.commit_board_reset();
+        }
+        self.write_flow(Flow::ConfirmBoardReset { board });
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The reset strip's confirm half (US-2/S3): dispatches the exact
+    /// `ResetBoard { board }` and clears the flow — the board row and
+    /// connect session survive engine-side; the typed tombstone
+    /// refusal is the failure path's fact.
+    fn commit_board_reset(&mut self) -> Vec<FlowOutcome> {
+        let Flow::ConfirmBoardReset { board } = self.flow().clone() else {
+            return Vec::new();
+        };
+        self.write_flow(Flow::None);
+        vec![
+            FlowOutcome::Command(StateCommand::ResetBoard { board }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// The reset strip's disarm (Cancel, Escape, a foreign settle).
+    pub fn cancel_board_reset(&mut self) -> Vec<FlowOutcome> {
+        if matches!(self.flow(), Flow::ConfirmBoardReset { .. }) {
+            self.write_flow(Flow::None);
+            vec![FlowOutcome::RefreshNow]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// `board.reconcile` (OP1 US-3, D-4): arms `ConfirmBoardReconcile`
+    /// with a `Pending` preview — the adapter sends the oneshot
+    /// `UiRequest::BoardReconcilePreview` when the arm is fresh (the
+    /// adapter's arm owns the send; the view state never touches a
+    /// channel). Confirm routes the exact `ReconcileByTitle`; the
+    /// zero-count preview is the accepted idempotent no-op (AC-4).
+    pub fn begin_board_reconcile(&mut self, state: &AppState) -> Vec<FlowOutcome> {
+        self.normalize_board(state);
+        let Some(board) = self.board else {
+            return Vec::new();
+        };
+        if let Flow::ConfirmBoardReconcile {
+            board: armed,
+            preview,
+        } = self.flow().clone()
+            && armed == board
+        {
+            // The second stroke confirms unless the counts are still
+            // in flight — a confirm against an unseen letter is not
+            // informed consent (D-4's staging law); the stroke is the
+            // typed no-op while pending.
+            return if matches!(preview, ReconcilePreviewState::Pending) {
+                Vec::new()
+            } else {
+                self.commit_board_reconcile()
+            };
+        }
+        self.write_flow(Flow::ConfirmBoardReconcile {
+            board,
+            preview: ReconcilePreviewState::Pending,
+        });
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The preview reply's landing (the adapter's drain seam): fills
+    /// the armed flow's counts (or the dead-lane fact) — only over
+    /// the matching armed subject; a reply for a since-vanished flow
+    /// is discarded.
+    pub fn settle_board_reconcile_preview(
+        &mut self,
+        board: BoardId,
+        preview: Result<taskboard_domain::ReconcileCounts, ()>,
+    ) -> Vec<FlowOutcome> {
+        let Flow::ConfirmBoardReconcile {
+            board: armed,
+            preview: state,
+        } = self.flow().clone()
+        else {
+            return Vec::new();
+        };
+        if armed != board || state != ReconcilePreviewState::Pending {
+            return Vec::new();
+        }
+        if let Ok(counts) = preview {
+            self.write_flow(Flow::ConfirmBoardReconcile {
+                board: armed,
+                preview: ReconcilePreviewState::Ready(counts),
+            });
+            return vec![FlowOutcome::RefreshNow];
+        }
+        // The dead-lane fact (US-3/S1's escape cell): the strip
+        // disarms — an unlettered confirm is not informed consent
+        // (D-4's staging law); the Failed state is the typed
+        // dead-lane marker the fold catalogue names (never
+        // mounted — the disarm precedes any render).
+        self.write_flow(Flow::None);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The reconcile strip's confirm half (US-3/S3): dispatches the
+    /// exact `ReconcileByTitle { board }` and clears the flow.
+    fn commit_board_reconcile(&mut self) -> Vec<FlowOutcome> {
+        let Flow::ConfirmBoardReconcile { board, .. } = self.flow().clone() else {
+            return Vec::new();
+        };
+        self.write_flow(Flow::None);
+        vec![
+            FlowOutcome::Command(StateCommand::ReconcileByTitle { board }),
+            FlowOutcome::RefreshNow,
+        ]
+    }
+
+    /// The reconcile strip's disarm (Cancel, Escape, a foreign
+    /// settle): the preview dies with the flow (US-3 AC-3 — the
+    /// discard).
+    pub fn cancel_board_reconcile(&mut self) -> Vec<FlowOutcome> {
+        if matches!(self.flow(), Flow::ConfirmBoardReconcile { .. }) {
             self.write_flow(Flow::None);
             vec![FlowOutcome::RefreshNow]
         } else {
@@ -4569,6 +4833,24 @@ impl ViewState {
                 self.write_flow(Flow::None);
             }
             Flow::ConfirmDelete(DeleteTarget::Board(board)) if self.board != Some(board) => {
+                self.write_flow(Flow::None);
+            }
+            // The board ceremony strips (OP1): the armed board's
+            // death ends the flow silently (the reconcile-vanish
+            // pattern; the preview dies with the flow).
+            Flow::ConfirmBoardArchive { board }
+                if self.board != Some(board) || !Self::board_live(state, board) =>
+            {
+                self.write_flow(Flow::None);
+            }
+            Flow::ConfirmBoardReset { board }
+                if self.board != Some(board) || !Self::board_live(state, board) =>
+            {
+                self.write_flow(Flow::None);
+            }
+            Flow::ConfirmBoardReconcile { board, .. }
+                if self.board != Some(board) || !Self::board_live(state, board) =>
+            {
                 self.write_flow(Flow::None);
             }
             // The placement form (#622): a dead subject drops it; a

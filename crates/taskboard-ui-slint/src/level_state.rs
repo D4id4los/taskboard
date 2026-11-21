@@ -337,6 +337,10 @@ impl LevelState {
                 | crate::surfaces::FlowTag::ConfirmDelete
                 // The color picker (UX R-4 D-1): armed-with-no-buffer,
                 // the strip's shape.
+                // The board ceremony strips (OP1): the armed-delete's
+                // bare row — no child machinery, the letter rides the
+                // window model (the strips' seams own the confirm).
+                | crate::surfaces::FlowTag::BoardCeremony
                 | crate::surfaces::FlowTag::BoardColorPick => Self::Bare {
                     anchor: FocusAnchor::None,
                 },

@@ -571,6 +571,15 @@ pub(crate) struct Adapter {
     /// the-flow rule).
     recur_pause_open: bool,
     recur_confirm_armed: bool,
+    /// The board-reconcile preview's pending oneshot (OP1 US-3, D-4):
+    /// the armed subject's board plus the receiver — drained under the
+    /// repaint cadence; a settled reply routes into the flow's
+    /// `ReconcilePreviewState`. Cleared with the flow (the
+    /// buffers-never-outlive rule).
+    reconcile_preview: Option<(
+        taskboard_domain::BoardId,
+        tokio::sync::oneshot::Receiver<Option<taskboard_domain::ReconcileCounts>>,
+    )>,
     /// The labels overlay's in-place form (UX R-3 D-2/D-5, #789):
     /// the create (`seed: None`) / edit (`Some`) draft — the adapter
     /// owns it across refreshes (the due buffers' pattern); cleared
@@ -4865,6 +4874,22 @@ impl Adapter {
                 | UiEffect::BoardColorEdit
                 | UiEffect::BoardDefaultPreset),
             ) => self.interpret_lifecycle(&flow, effect, &state),
+            // The board ceremony verbs (OP1, US-1/2/3): the same
+            // shape as the armed-delete row — the first stroke arms
+            // (over `Flow::None`), the armed subject's repeat stroke
+            // confirms (click ≡ key at every step; the reconcile's
+            // pending-preview guard is the view state's).
+            (
+                Flow::None,
+                effect @ (UiEffect::BoardArchive | UiEffect::BoardReset | UiEffect::BoardReconcile),
+            ) => self.interpret_ceremony(effect, &state),
+            (
+                Flow::ConfirmBoardArchive { .. } | Flow::ConfirmBoardReset { .. },
+                effect @ (UiEffect::BoardArchive | UiEffect::BoardReset),
+            ) => self.interpret_ceremony(effect, &state),
+            (Flow::ConfirmBoardReconcile { .. }, UiEffect::BoardReconcile) => {
+                self.interpret_ceremony(UiEffect::BoardReconcile, &state)
+            }
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
             // menu row, `Ctrl+,`, and a second press all close an open
             // settings surface. No explicit dismiss: both toggle
@@ -5738,6 +5763,63 @@ impl Adapter {
         }
     }
 
+    /// The board ceremony verbs' arms (OP1, US-1/US-2/US-3): the view
+    /// state owns the arm/confirm split (the `interpret_lifecycle`
+    /// shape); the reconcile arm additionally sends the oneshot
+    /// preview request when the arm is fresh — the reply drains into
+    /// the flow's `ReconcilePreviewState` under the repaint cadence.
+    fn interpret_ceremony(
+        &mut self,
+        effect: UiEffect,
+        state: &taskboard_domain::AppState,
+    ) -> Vec<FlowOutcome> {
+        // The kiosk gate (OP1 D-5, the structural exclusion): the
+        // board surface does not mount on kiosk (board-stack plan
+        // PC-4 §6), so the verbs are absent there — no armed letter,
+        // no preview request, no engine command (the
+        // `TrackEntriesOpen` refusal shape; no disabled affordances
+        // are minted for a surface that does not exist).
+        if self.kiosk {
+            return Vec::new();
+        }
+        match effect {
+            UiEffect::BoardArchive => self.view_state.begin_board_archive(state),
+            UiEffect::BoardReset => self.view_state.begin_board_reset(state),
+            UiEffect::BoardReconcile => {
+                let outcomes = self.view_state.begin_board_reconcile(state);
+                if let crate::view_state::Flow::ConfirmBoardReconcile {
+                    board,
+                    preview: crate::view_state::ReconcilePreviewState::Pending,
+                } = self.view_state.flow().clone()
+                    && self
+                        .reconcile_preview
+                        .as_ref()
+                        .is_none_or(|(pending, _)| *pending == board)
+                {
+                    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+                    let request =
+                        crate::requests::UiRequest::BoardReconcilePreview { board, reply };
+                    if self.requests.try_send(request).is_ok() {
+                        self.reconcile_preview = Some((board, reply_rx));
+                    } else {
+                        // The lane is full or closed (degraded app):
+                        // the strip stays armed in Pending — the
+                        // unlettered confirm is refused view-state
+                        // side (D-4's staging law), and the user's
+                        // Escape/Cancel disarms. The typed failure
+                        // fact is the dead reply lane's (the drain's
+                        // Failed arm), not the send's.
+                        tracing::warn!(
+                            "request channel full or closed; the reconcile preview was dropped"
+                        );
+                    }
+                }
+                outcomes
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// The `OpenMenu` settle hook (audit §5): the menu effects are
     /// applied in `apply_effect`, before the table — so the matrix's
     /// "`OpenMenu` settles a foreign flow" cell (the hamburger face
@@ -5796,6 +5878,12 @@ impl Adapter {
             // settle is its disarm (nothing dispatches); its kept
             // intents own the confirm/re-arm.
             | Flow::ConfirmDelete(_)
+            // The board ceremony strips (OP1): the armed-delete's row
+            // — the foreign settle resolves through the view state's
+            // cancel arms; the strips' own seams own the confirm.
+            | Flow::ConfirmBoardArchive { .. }
+            | Flow::ConfirmBoardReset { .. }
+            | Flow::ConfirmBoardReconcile { .. }
             | Flow::None => FlowKind::None,
             Flow::Create { .. }
             | Flow::CreateStack
@@ -6201,6 +6289,12 @@ impl Adapter {
             | UiEffect::BoardRename
             | UiEffect::BoardColorEdit
             | UiEffect::BoardDefaultPreset
+            // The board ceremony verbs (OP1): interpret like every
+            // view intent — the arm/confirm split and the kiosk
+            // refusal live in the arms.
+            | UiEffect::BoardArchive
+            | UiEffect::BoardReset
+            | UiEffect::BoardReconcile
             | UiEffect::FocusFirst
             | UiEffect::FocusLast
             // The directional-focus family (J3 US-1, round 9 chunk 9)
@@ -7547,6 +7641,46 @@ impl Adapter {
             self.refresh_forced(window);
         }
         dirty
+    }
+
+    /// The board-reconcile preview's drain (OP1 US-3, D-4): the same
+    /// non-blocking poll the other drains run, called beside them in
+    /// the repaint pass. A settled reply routes into the armed flow's
+    /// `ReconcilePreviewState` (Ready — the letter's counts land, or
+    /// Failed — the typed dead-lane fact disarms); the receiver slot
+    /// clears either way. A pending-but-flowless slot (the flow died
+    /// under a settle) clears silently — the reply is discarded.
+    pub(crate) fn drain_reconcile_preview(&mut self, window: &AppWindow) {
+        // The flowless slot (the armed flow died under a settle or a
+        // confirm): the pending reply is discarded — the flowless-slot
+        // rule, checked before any poll.
+        if !matches!(
+            self.view_state.flow(),
+            crate::view_state::Flow::ConfirmBoardReconcile { .. }
+        ) {
+            self.reconcile_preview = None;
+            return;
+        }
+        let Some((board, rx)) = self.reconcile_preview.as_mut() else {
+            return;
+        };
+        let settled = match rx.try_recv() {
+            Ok(Some(counts)) => Some(Ok(counts)),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+            // A reply with no counts (the state read failed) is the
+            // same not-derivable disarm as a dead lane — an unlettered
+            // confirm is not informed consent (D-4's staging law).
+            Ok(None) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(())),
+        };
+        let Some(outcome) = settled else {
+            return;
+        };
+        let board = *board;
+        self.reconcile_preview = None;
+        let outcomes = self
+            .view_state
+            .settle_board_reconcile_preview(board, outcome);
+        self.apply_outcomes(window, &outcomes);
     }
 
     #[allow(clippy::too_many_lines)] // one arm per reply variant, kept flat
@@ -10214,6 +10348,7 @@ pub(crate) fn install(
         recur_draft_rule: None,
         recur_pause_open: false,
         recur_confirm_armed: false,
+        reconcile_preview: None,
         priority_open: None,
         label_form: None,
         label_delete_armed: None,
@@ -11408,6 +11543,7 @@ impl Adapter {
         y: f32,
         ids: &[ActionId],
         bar: Vec<crate::menu::QuickBarEntry>,
+        states: &std::collections::BTreeMap<ActionId, bool>,
     ) {
         let chain = [ContextId::Board, ContextId::Global].to_vec();
         self.menu_anchor = MenuAnchor::Pointer(x, y);
@@ -11417,7 +11553,7 @@ impl Adapter {
         // The id-list menus have no subject (the multi set and the
         // stack/board surfaces' curated lists).
         self.menu_row_subject = None;
-        self.root_entries = menu::object_entries(&self.keymap, &self.menu_chain, ids);
+        self.root_entries = menu::object_entries(&self.keymap, &self.menu_chain, ids, states);
         self.menu_entries = self.root_entries.clone();
         // The quick bar (UX-R8 chunk-5 D-2): built once at open —
         // the D-1 pin covers it; every other menu consumer passes
@@ -11497,7 +11633,7 @@ impl Adapter {
                     tracking_elsewhere,
                 )
             };
-            self.open_context_menu(window, x, y, &ids, bar);
+            self.open_context_menu(window, x, y, &ids, bar, &std::collections::BTreeMap::new());
             // The disarm snapshot (#927): recorded after the opener
             // resets it — the multi menu disarms when every member
             // vanished.
@@ -11883,7 +12019,14 @@ fn open_stack_context(a: &mut Adapter, window: &AppWindow, column: i32, x: f32, 
     let state = a.state.load_full();
     let outcomes = a.view_state.select_stack(&state, stack);
     a.apply_outcomes(window, &outcomes);
-    a.open_context_menu(window, x, y, menu::STACK_CONTEXT, Vec::new());
+    a.open_context_menu(
+        window,
+        x,
+        y,
+        menu::STACK_CONTEXT,
+        Vec::new(),
+        &std::collections::BTreeMap::new(),
+    );
 }
 
 /// The stack card's bare-surface body seams (r3 D4 / r4 D3): the
@@ -11927,7 +12070,19 @@ fn install_object_context_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter
     let state = a.state.load_full();
     let outcomes = a.view_state.select_board(&state, board);
     a.apply_outcomes(&window, &outcomes);
-    a.open_context_menu(&window, x, y, menu::BOARD_CONTEXT, Vec::new());
+    // The ceremony rows' liveness verdicts (OP1 US-1/S1): enabled for
+    // a live board, disabled for a tombstone (an honest greyed row —
+    // the engine's typed refusal stays the keyboard path's backstop).
+    let live = state
+        .boards
+        .get(&board)
+        .is_some_and(|row| !row.deleted);
+    let states = std::collections::BTreeMap::from([
+        (ActionId::BoardArchive, live),
+        (ActionId::BoardReset, live),
+        (ActionId::BoardReconcile, live),
+    ]);
+    a.open_context_menu(&window, x, y, menu::BOARD_CONTEXT, Vec::new(), &states);
 
     });
     // The stack-rename field (per-column; the flow names the stack —
@@ -12334,6 +12489,42 @@ fn install_delete_strip_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     install_seam!(window: window.on_board_delete_strip_cancelled, adapter: adapter;
     bind mut (a, window), args (), {
         let outcomes = a.view_state.cancel_confirm_delete();
+        a.apply_outcomes(&window, &outcomes);
+    });
+    // The board ceremony strips' confirm/cancel pair (OP1, W-1/W-3/
+    // W-6): one pair — the armed subject surface-wide decides which
+    // verb routes (the ConfirmDelete strip's route-the-verb shape;
+    // click ≡ key at every step). Cancel is the disarm, nothing
+    // dispatched.
+    install_seam!(window: window.on_board_ceremony_confirmed, adapter: adapter;
+    bind mut (a, window), args (), {
+        match a.view_state.flow() {
+            crate::view_state::Flow::ConfirmBoardArchive { .. } => {
+                a.route(&window, ActionId::BoardArchive);
+            }
+            crate::view_state::Flow::ConfirmBoardReset { .. } => {
+                a.route(&window, ActionId::BoardReset);
+            }
+            crate::view_state::Flow::ConfirmBoardReconcile { .. } => {
+                a.route(&window, ActionId::BoardReconcile);
+            }
+            _ => {}
+        }
+    });
+    install_seam!(window: window.on_board_ceremony_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {
+        let outcomes = match a.view_state.flow() {
+            crate::view_state::Flow::ConfirmBoardArchive { .. } => {
+                a.view_state.cancel_board_archive()
+            }
+            crate::view_state::Flow::ConfirmBoardReset { .. } => {
+                a.view_state.cancel_board_reset()
+            }
+            crate::view_state::Flow::ConfirmBoardReconcile { .. } => {
+                a.view_state.cancel_board_reconcile()
+            }
+            _ => Vec::new(),
+        };
         a.apply_outcomes(&window, &outcomes);
     });
     install_seam!(window: window.on_stack_delete_strip_confirmed, adapter: adapter;

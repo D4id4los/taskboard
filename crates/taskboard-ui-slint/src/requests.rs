@@ -13,7 +13,7 @@
 //! undone by a failed reply. `UiRequest` therefore no longer derives
 //! `Clone`/`PartialEq`/`Eq` (a oneshot sender is neither).
 
-use taskboard_domain::{BoardId, RemoteBoardId, StackId};
+use taskboard_domain::{BoardId, ReconcileCounts, RemoteBoardId, StackId};
 use tokio::sync::oneshot;
 
 use crate::keymap::{Keymap, Preset};
@@ -437,6 +437,22 @@ pub enum UiRequest {
         board: BoardId,
         connector: String,
         reply: oneshot::Sender<Result<ConnectionsSnapshot, SettingsError>>,
+    },
+    /// The reconcile preview's oneshot query (O-5 parity chunk OP1,
+    /// US-3, D-4): the merge pairs are planner-derived facts (the
+    /// same-title duplicate adoption) the presentation model does not
+    /// carry, so the armed strip's letter derives its counts from this
+    /// reply — the same facts the CLI's typed refusal prints, no prose
+    /// rides the wire. A pure query: no state change, no persistence.
+    BoardReconcilePreview {
+        /// The armed board.
+        board: BoardId,
+        /// The planner's match counts (the letter's derivation
+        /// inputs); `None` is the typed not-derivable fact (the state
+        /// read failed — the planner never ran, so no counts exist to
+        /// consent to). A dropped receiver (a stale flow) is at most
+        /// a dropped send, never a panic.
+        reply: oneshot::Sender<Option<ReconcileCounts>>,
     },
     /// Publish a local board onto the named connector's server (D-6.9,
     /// #699): create the Deck board from the local one's title/color

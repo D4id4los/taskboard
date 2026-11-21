@@ -24,10 +24,11 @@ use crate::actions::{ActionId, ContextId};
 use crate::keymap::Keymap;
 use crate::presentation::{self, DueKind, DueSets};
 use crate::responsive::Breakpoint;
-use crate::view_state::{DateField, DeleteTarget, Flow, ViewState};
+use crate::view_state::{DateField, DeleteTarget, Flow, ReconcilePreviewState, ViewState};
 use crate::{
     AppWindow, BannerRowModel, BoardBarModel, BoardModel, BoardSegmentModel, BreakRuleRowModel,
-    Breakpoint as SlintBreakpoint, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
+    Breakpoint as SlintBreakpoint, CeremonyLetterMode as SlintCeremonyLetterMode,
+    CeremonyLetterModel, DecorationKind, DragState, DueDayModel, DueKind as SlintDueKind,
     FilesSyncChipState as SlintFilesSyncChipState, FilesSyncChipTone as SlintFilesSyncChipTone,
     FlowHintModel, HabitCardModel, NotificationRowModel, PaletteRowModel, PlanModel, PlanRowModel,
     ReflectionRowModel, ReflectionSectionModel, ReviewModel, ReviewRowModel, ReviewWindowModel,
@@ -2081,6 +2082,76 @@ fn push_board(
     // the board-bar region's strip mounts while the board is the
     // armed subject.
     window.set_board_delete_armed(matches!(flow, Flow::ConfirmDelete(DeleteTarget::Board(_))));
+    // The armed board-ceremony letter's window-level fact (OP1,
+    // W-2/W-4/W-7): the letter's mode gates the strip's mount; the
+    // letter binds the armed subject's board (the selected board —
+    // a foreign board's stale flow is pruned at reconcile, the belt
+    // the color strip's arm reads). Every number is a typed
+    // derivation input: D-3's live model counts for the reset, D-4's
+    // planner counts for the reconcile preview; the no-AppUndo flag
+    // rides every ceremony letter as `false` (R-3 — the letter never
+    // offers an undo affordance; the fold test asserts the flag).
+    let selected = vs.board();
+    // usize → the model's `int` via the shared cast (the
+    // count-caption's truncation law).
+    let counts_to_int = |v: usize| -> i32 { i32::try_from(v).unwrap_or(i32::MAX) };
+    let disarmed = CeremonyLetterModel {
+        mode: SlintCeremonyLetterMode::None,
+        stacks: 0,
+        tasks: 0,
+        labels: 0,
+        merge_stacks: 0,
+        merge_tasks: 0,
+        merge_labels: 0,
+        cancelled_ops: 0,
+        undo_offered: false,
+    };
+    let ceremony_letter = match &flow {
+        Flow::ConfirmBoardArchive { board } if Some(*board) == selected => CeremonyLetterModel {
+            mode: SlintCeremonyLetterMode::ArchiveCaption,
+            undo_offered: false,
+            ..disarmed
+        },
+        Flow::ConfirmBoardReset { board } if Some(*board) == selected => {
+            let (stacks, tasks, labels) = board_content_counts(state, *board);
+            CeremonyLetterModel {
+                mode: SlintCeremonyLetterMode::ResetCounts,
+                stacks,
+                tasks,
+                labels,
+                undo_offered: false,
+                ..disarmed
+            }
+        }
+        Flow::ConfirmBoardReconcile { board, preview } if Some(*board) == selected => {
+            match preview {
+                ReconcilePreviewState::Pending => CeremonyLetterModel {
+                    mode: SlintCeremonyLetterMode::ReconcilePending,
+                    undo_offered: false,
+                    ..disarmed
+                },
+                ReconcilePreviewState::Ready(counts) => CeremonyLetterModel {
+                    mode: SlintCeremonyLetterMode::ReconcilePreview,
+                    merge_stacks: counts_to_int(counts.stacks),
+                    merge_tasks: counts_to_int(counts.tasks),
+                    merge_labels: counts_to_int(counts.labels),
+                    cancelled_ops: counts_to_int(counts.cancelled_ops),
+                    undo_offered: false,
+                    ..disarmed
+                },
+                // The dead-lane fact disarms the flow before any
+                // render (the view state's settle rule) — the mode
+                // exists for the fold catalogue's exhaustiveness.
+                ReconcilePreviewState::Failed => CeremonyLetterModel {
+                    mode: SlintCeremonyLetterMode::ReconcileFailed,
+                    undo_offered: false,
+                    ..disarmed
+                },
+            }
+        }
+        _ => disarmed,
+    };
+    window.set_ceremony_letter(ceremony_letter);
     // The armed multi-delete strip's window-level fact (UX-R8 chunk-5
     // D-9, #882): the member count with −1 as the disarmed sentinel —
     // the count caption needs the number (the #784 grammar's third
@@ -6398,5 +6469,36 @@ mod habit_card_tests {
             prop_assert_eq!(model.effort_phrase, "");
             prop_assert_eq!(model.track_state, TrackCardState::None);
         }
+    }
+}
+
+/// The reset letter's D-3 derivation inputs (OP1 US-2): the armed
+/// board's live rows from the state the adapter already holds — the
+/// same facts the CLI's typed reset refusal states, derived
+/// presentation-side (no engine query). Counts: live stacks, live
+/// tasks on those stacks, live labels.
+fn board_content_counts(
+    state: &taskboard_domain::AppState,
+    board: taskboard_domain::BoardId,
+) -> (i32, i32, i32) {
+    let stacks: Vec<_> = state
+        .stacks
+        .values()
+        .filter(|s| s.board == board && !s.deleted)
+        .map(|s| s.id)
+        .collect();
+    let tasks = state
+        .tasks
+        .values()
+        .filter(|t| stacks.contains(&t.stack) && t.is_live())
+        .count();
+    let labels = state
+        .labels
+        .values()
+        .filter(|l| l.board == board && !l.deleted)
+        .count();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    {
+        (stacks.len() as i32, tasks as i32, labels as i32)
     }
 }

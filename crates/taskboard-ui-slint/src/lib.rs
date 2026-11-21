@@ -640,6 +640,10 @@ fn start_repaint_driver(
             // The settings reply drain (D25b): the non-blocking poll
             // under the same cadence — a settled reply refreshes.
             adapter.borrow_mut().drain_setting_replies(&window);
+            // The board-reconcile preview's drain (OP1 US-3, D-4): the
+            // same non-blocking poll — a settled reply lands the
+            // letter's counts (or the typed failure fact disarms).
+            adapter.borrow_mut().drain_reconcile_preview(&window);
             // One clock read per tick feeds both boundaries (r4
             // decision 5). The second boundary fires only while the
             // adapter's `seconds_surfaces_active` gate holds; the cell
@@ -930,6 +934,17 @@ impl UiHandle {
     pub fn drain_setting_replies(&self) {
         if let Some(window) = self.window.as_weak().upgrade() {
             self.adapter.borrow_mut().drain_setting_replies(&window);
+        }
+    }
+
+    /// The board-reconcile preview's drain (OP1 US-3, D-4): the same
+    /// non-blocking poll the repaint timer runs every cadence tick.
+    /// Public for the component journeys (the established
+    /// [`UiHandle`]-seam pattern): the test plays the app half by
+    /// answering a drained request's oneshot, then drives the drain.
+    pub fn drain_reconcile_preview(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            self.adapter.borrow_mut().drain_reconcile_preview(&window);
         }
     }
 

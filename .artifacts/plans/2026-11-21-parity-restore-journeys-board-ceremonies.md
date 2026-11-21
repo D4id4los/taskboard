@@ -224,14 +224,14 @@ stateDiagram-v2
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/compositions/action-menu.slint + src/menu.rs | board context-menu `Archive` row (destructive tail) | `board-archive-armed` | `install_board_ceremony_seam` (adapter.rs) | `ActionId::BoardArchive` | `StateCommand::SetBoardArchived` | Menu row on the selected board's context menu (menu index, not element id) | US-1/S1, US-1/S2, US-1/S3 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us1_s3_archive_row_dispatches_set_board_archived |
+| W-1 | ui/compositions/action-menu.slint + src/menu.rs | board context-menu `Archive` row (destructive tail) | `board-archive-armed` | `install_board_ceremony_seam` (adapter.rs) | `ActionId::BoardArchive` | `StateCommand::SetBoardArchived` | Menu row on the selected board's context menu (menu index, not element id) | US-1/S1, US-1/S2, US-1/S3 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us1_s1_the_archive_row_sits_enabled_for_a_live_board, crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us1_s3_archive_row_dispatches_set_board_archived, crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us1_s4_the_roster_restore_is_the_typed_escape |
 | W-2 | ui/compositions/board-ceremony-letter.slint (new) | archive consent caption | `ceremony-letter-caption` | same seam (presentation fold off `BoardModel`) | — | — (display only — D-1 single-stage) | Letter binds the armed subject's board | US-1/S2 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us1_s2_archive_caption_carries_rearchive_escape_fact |
 | W-3 | ui/compositions/action-menu.slint + src/menu.rs | board context-menu `Reset board…` row | `board-reset-armed` | same seam | `ActionId::BoardReset` | `StateCommand::ResetBoard` | Menu row on the selected board's context menu | US-2/S1 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us2_s1_reset_row_arms_confirm_board_reset |
 | W-4 | ui/compositions/board-ceremony-letter.slint | reset consequence letter | `ceremony-letter-counts` | same seam (counts derived from the board model — D-3) | — | — (display only) | Letter binds the armed subject's board | US-2/S2 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us2_s2_reset_letter_derives_live_counts |
-| W-5 | src/view_state.rs | `Flow::ConfirmBoardReset { board }` | (flow machinery — no slint callback) | `view_state.rs` arm/cancel/confirm helpers | — | `StateCommand::ResetBoard` | Flow subject is the board id | US-2/S1, US-2/S3, US-2/S4 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us2_s3_reset_confirm_dispatches_exactly_once |
+| W-5 | src/view_state.rs | `Flow::ConfirmBoardReset { board }` | (flow machinery — no slint callback) | `view_state.rs` arm/cancel/confirm helpers | — | `StateCommand::ResetBoard` | Flow subject is the board id | US-2/S1, US-2/S3, US-2/S4 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us2_s3_reset_confirm_dispatches_exactly_once, crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us2_s4_the_reset_letter_carries_the_survival_facts |
 | W-6 | ui/compositions/action-menu.slint + src/menu.rs | board context-menu `Reconcile…` row | `board-reconcile-armed` | same seam | `ActionId::BoardReconcile` | `StateCommand::ReconcileByTitle` | Menu row on the selected board's context menu | US-3/S1 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us3_s1_reconcile_row_requests_preview_and_arms |
 | W-7 | ui/compositions/board-ceremony-letter.slint | reconcile preview letter | `ceremony-letter-preview` | same seam (counts from the oneshot reply — D-4) | — | `UiRequest::BoardReconcilePreview` | Letter binds the armed subject's board | US-3/S1, US-3/S2 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us3_s2_reconcile_letter_carries_preview_counts |
-| W-8 | src/view_state.rs | `Flow::ConfirmBoardReconcile { board }` | (flow machinery) | `view_state.rs` arm/cancel/confirm helpers | — | `StateCommand::ReconcileByTitle` | Flow subject is the board id | US-3/S1, US-3/S3, US-3/S4 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us3_s3_reconcile_confirm_dispatches_exactly_once |
+| W-8 | src/view_state.rs | `Flow::ConfirmBoardReconcile { board }` | (flow machinery) | `view_state.rs` arm/cancel/confirm helpers | — | `StateCommand::ReconcileByTitle` | Flow subject is the board id | US-3/S1, US-3/S3, US-3/S4 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us3_s3_reconcile_confirm_dispatches_exactly_once, crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us3_s4_the_second_reconcile_pass_routes_the_accepted_no_op |
 | W-9 | crates/taskboard-ui-slint/src/requests.rs | — | — | adapter oneshot drain (`UiRequest::BoardReconcilePreview` reply carries the counts) | — | `UiRequest::BoardReconcilePreview` | — | US-3/S1 | crates/taskboard-ui-slint/tests/journeys/board_ceremonies_journeys.rs::us3_s1_preview_reply_feeds_letter_or_disarms |
 
 ## 7. Command-contract delta
@@ -276,3 +276,20 @@ stateDiagram-v2
       to `E (US-2)`/`E (US-3)` (the recorded supersession of
       R-10/R-11, dated 2026-11-21, authority O-5 + this plan)
 - [ ] Non-goals filed as backlog issues (none beyond the ruling homes — §1)
+
+## Erratum (2026-11-21, stage-3 review)
+
+The four journey steps that §6 originally left un-nominated
+(US-1/S1, US-1/S4, US-2/S4, US-3/S4) are now nominated in the Test
+column of W-1, W-5, and W-8 — the tests existed in
+`board_ceremonies_journeys.rs`; the omission left them AMBIGUOUS via
+legacy `tests/journeys.rs` prefix hits (#920/#1181) and poisoned the
+§2 census citations. The remaining gate MISSING rows after nomination
+(W-1/W-3/W-6's `board-*-armed` callback labels, W-2/W-4/W-7's
+`ceremony-letter-*` markers, the two "flow machinery" and two
+"display only" prose cells) are #1181 parser-class rows (backticked
+tokens defeat Kind/evidence selection; prose cells have no token to
+grep) — none is an unimplemented row: the armed mounts route through
+`ActionId::BoardArchive/BoardReset/BoardReconcile` with the shared
+`board-ceremony-confirmed/cancelled` seams (in the seam inventory),
+and the letter markers live in `board-ceremony-letter.slint`.
