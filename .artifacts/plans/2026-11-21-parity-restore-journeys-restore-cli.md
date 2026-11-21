@@ -65,7 +65,7 @@ Typed refusals map onto the existing `domain_error_kind` table
 | D-2 | **Id resolution follows the house CLI grammar**: uuid \| unique ≥8-char uuid prefix (the `export --task` precedent, `cli.rs` filter docs). Live-target restores are the engine's accepted no-op (the receipt carries the no-op fact); an unknown/deleted id is the typed rejection. | Name-based resolution (ids are the restore family's address — tombstoned rows may share titles). |
 | D-3 | **Receipts ride the `--json` envelope; text mode renders the typed fact.** The receipt variants are already serde-pinned (#993) — the CLI consumes them as the stable contract; no text-assertion tests, only typed outcome matches. | Printing free-text receipts (the no-text-assertion law would leave the surface untestable). |
 | D-4 | **`track restore` assembles the payload from flags**: `--task <uuid|prefix|exact live title>` (resolved to the owner task id — the engine refuses a gone owner typed), `--start <RFC 3339>`, optional `--end <RFC 3339>`, `--kind <work|break>` (default `work`), and optional `--id <uuid>` defaulting to a fresh v7 when omitted. Verbatim-payload principle: whatever the flags carry is what the engine restores; a present same-id row is the typed `time-entry-already-present` divergence refusal. Reconstructing the payload from the journal instead is rejected — the row is hard-deleted and the journal pre-image is the undo line's internal shape, not a CLI contract. | A journal-id-based `track restore --from-journal <id>` (exposes journal internals on a CLI surface). |
-| D-5 | **The restore verbs stay NotUndoable(RestoreClass)** — they *are* the recovery path; the typed escape is the ordinary delete/tombstone verbs (re-delete the restored entity). No new undo-classification work; the fence's existing reason kind already names the class. | Classifying restores as undoable (inverts the recovery semantics). |
+| D-5 | **SUPERSEDED 2026-11-21 (operator ruling on #1187): the restore verbs are undoable via the journal pre-images** — #901's landed reclassification (commit 324f3e17) stands; "having things be undoable is a feature." The CLI restore verbs are undoable-*consuming*: after a restore, the global undo line offers the inverse, and undoing synthesizes the re-delete of the restored row (tombstone restored where the delete tombstones — labels/habits; the hard-deleted entry row re-removed for `track restore`). The verbs stay undoable-*non-creating* in the D-5-adjacent sense: a restore pushes `PreImages` journal facts, never a `RestoreClass` fence fact (no engine delta intended — and one gap the ruling anticipated did surface and was fixed on this branch: the `RestoredTimeEntry` inverse synthesis demanded a `before: Some` pre-image a restore can never carry (`before: None` is the restore's own journal shape), making the verb's undo unreachable — undoing a CLI `track restore` answered a spurious `nothing-to-undo`; see the #1187 resolution comment and the `restore_time_entry_undo_re_deletes_the_restored_row` regression test). | ~~Classifying restores as undoable~~ — rejected by the operator 2026-11-21; the original fence ruling's premise predates the #901 reclassification and was found stale during chunk RS implementation (issue #1187). |
 | D-6 | **Kiosk posture**: the CLI is platform-free; no GUI delta exists in this chunk (R-1). | — |
 
 ## 2. Capability × surface matrix
@@ -157,7 +157,7 @@ Typed refusals map onto the existing `domain_error_kind` table
 |---|---|---|---|---|---|
 | US-1/S1 | Terminal | Run `taskboard labels restore <id/prefix>` | `StateCommand::RestoreLabel { id }` | The label flips live with pre-tombstone values verbatim and a fresh tombstone clock; the receipt prints (D-3: typed fact text, or the pinned JSON receipt under `--json`) | Unknown/deleted id → the typed `unknown-label` rejection, exit reflects the refusal; nothing changed |
 | US-1/S2 | Terminal | Re-run the same verb | `StateCommand::RestoreLabel { id }` | The accepted no-op receipt (a live target is not an error) | — |
-| US-1/S3 | Terminal | Undo is attempted on the restore | — display only (the fence answers) | The typed `target-not-undoable` / `restore-class` fact (D-5's fence; the existing `not_undoable_reason_kind` mapping) | The typed escape is the ordinary label-delete verb |
+| US-1/S3 | Terminal | Run `taskboard tasks undo` after the restore | the undo line's synthesized inverse (`DeleteLabel`) | The label is tombstoned again (the re-delete; D-5 as superseded by the operator ruling on #1187) — the journal receipt prints, and re-running `labels restore` answers the pinned `LabelRestored` fact | The typed escape back *into* undoability is `tasks redo` |
 
 ### US-2 — `habits restore`
 
@@ -165,7 +165,7 @@ Typed refusals map onto the existing `domain_error_kind` table
 |---|---|---|---|---|---|
 | US-2/S1 | Terminal | Run `taskboard habits restore <id/prefix>` | `StateCommand::RestoreHabit { id }` | The habit flips live with pre-tombstone values verbatim and a fresh tombstone clock; the log is untouched (D26); the receipt prints (D-3) | Unknown id → the typed `unknown-habit` rejection |
 | US-2/S2 | Terminal | Re-run the same verb | `StateCommand::RestoreHabit { id }` | The accepted no-op receipt | — |
-| US-2/S3 | Terminal | Undo is attempted on the restore | — display only | The typed `restore-class` fence fact (D-5) | The typed escape is the ordinary habit-delete verb |
+| US-2/S3 | Terminal | Run `taskboard tasks undo` after the restore | the undo line's synthesized inverse (`DeleteHabit`) | The habit is tombstoned again (the re-delete; the log stays untouched, D26) — re-running `habits restore` answers the pinned `HabitRestored` fact | The typed escape back *into* undoability is `tasks redo` |
 
 ### US-3 — `track restore`
 
@@ -174,7 +174,7 @@ Typed refusals map onto the existing `domain_error_kind` table
 | US-3/S1 | Terminal | Run `taskboard track restore <id/prefix> --task T --start S [--end E] [--kind K] [--id I]` | `StateCommand::RestoreTimeEntry { entry }` (payload assembled per D-4) | The entry re-materializes verbatim; the receipt prints (`EntryRestored { id }`; the fresh-v7 default surfaces its minted id) | Malformed date/kind → the clap-layer typed parse refusal before dispatch (AC-4) |
 | US-3/S2 | Terminal | Run with a `--task` naming a gone/deleted task | (no dispatch — the resolution refuses) | The typed `unknown-task` rejection | Fix `--task` and re-run |
 | US-3/S3 | Terminal | Run with `--id` naming a present row | (no dispatch — the planner refuses) | The typed `time-entry-already-present` divergence refusal | Omit `--id` (fresh v7) or name a genuinely absent id |
-| US-3/S4 | Terminal | Undo is attempted on the restore | — display only | The typed `restore-class` fence fact (D-5) | The typed escape is the ordinary time-entry delete verb |
+| US-3/S4 | Terminal | Run `taskboard tasks undo` after the restore | the undo line's synthesized inverse (`DeleteTimeEntry`) | The entry row is removed again (the re-delete; D-5 as superseded by the operator ruling on #1187) — re-running `track restore` with the same flags answers the pinned `EntryRestored` fact | The typed escape back *into* undoability is `tasks redo` |
 
 ## 5. Interaction flows
 
@@ -199,16 +199,16 @@ flowchart TD
   OK1 --> UNDO[undo attempt]
   OK2 --> UNDO
   OK3 --> UNDO
-  UNDO --> FENCE[target-not-undoable / restore-class typed fact]
+  UNDO --> REDEL[the re-delete of the restored row (D-5, superseded)]
 ```
 
 ## 6. Wiring inventory
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | crates/taskboard-app/src/cli.rs | `labels restore <id/prefix>` verb arm | — | `commands/labels.rs` dispatch | — | StateCommand::RestoreLabel | Verb + positional id | US-1/S1, US-1/S2 | crates/taskboard-app/tests/it_restore_cli.rs::us1_s1_labels_restore_dispatches_restore_label_and_receipts, crates/taskboard-app/tests/it_restore_cli.rs::us1_s2_labels_restore_repeat_is_the_accepted_noop |
-| W-2 | crates/taskboard-app/src/cli.rs | `habits restore <id/prefix>` verb arm | — | `commands/` habit dispatch | — | StateCommand::RestoreHabit | Verb + positional id | US-2/S1, US-2/S2 | crates/taskboard-app/tests/it_restore_cli.rs::us2_s1_habits_restore_dispatches_restore_habit_and_receipts, crates/taskboard-app/tests/it_restore_cli.rs::us2_s2_habits_restore_repeat_is_the_accepted_noop |
-| W-3 | crates/taskboard-app/src/cli.rs | `track restore` verb arm + flags | — | `commands/track.rs` dispatch (payload assembly per D-4) | — | StateCommand::RestoreTimeEntry | Verb + positional id + flags | US-3/S1 | crates/taskboard-app/tests/it_restore_cli.rs::us3_s1_track_restore_assembles_verbatim_payload_and_receipts |
+| W-1 | crates/taskboard-app/src/cli.rs | `labels restore <id/prefix>` verb arm | — | `commands/labels.rs` dispatch | — | StateCommand::RestoreLabel | Verb + positional id | US-1/S1, US-1/S2 | crates/taskboard-app/tests/it_restore_cli.rs::us1_s1_labels_restore_dispatches_restore_label_and_receipts, crates/taskboard-app/tests/it_restore_cli.rs::us1_s2_labels_restore_repeat_is_the_accepted_noop, crates/taskboard-app/tests/it_restore_cli.rs::us1_s3_labels_restore_undo_redeletes_the_restored_row |
+| W-2 | crates/taskboard-app/src/cli.rs | `habits restore <id/prefix>` verb arm | — | `commands/` habit dispatch | — | StateCommand::RestoreHabit | Verb + positional id | US-2/S1, US-2/S2 | crates/taskboard-app/tests/it_restore_cli.rs::us2_s1_habits_restore_dispatches_restore_habit_and_receipts, crates/taskboard-app/tests/it_restore_cli.rs::us2_s2_habits_restore_repeat_is_the_accepted_noop, crates/taskboard-app/tests/it_restore_cli.rs::us2_s3_habits_restore_undo_redeletes_the_restored_row |
+| W-3 | crates/taskboard-app/src/cli.rs | `track restore` verb arm + flags | — | `commands/track.rs` dispatch (payload assembly per D-4) | — | StateCommand::RestoreTimeEntry | Verb + positional id + flags | US-3/S1, US-3/S4 | crates/taskboard-app/tests/it_restore_cli.rs::us3_s1_track_restore_assembles_verbatim_payload_and_receipts, crates/taskboard-app/tests/it_restore_cli.rs::us3_s4_track_restore_undo_redeletes_the_restored_row |
 | W-4 | crates/taskboard-app/src/commands/mod.rs | typed-refusal mapping for the new paths | — | `domain_error_kind` arms (existing table) | — | — | — | US-1/S1, US-2/S1, US-3/S2, US-3/S3 | crates/taskboard-app/tests/it_restore_cli.rs::us3_s3_present_same_id_refuses_typed, crates/taskboard-app/tests/it_restore_cli.rs::us3_s2_gone_owner_task_refuses_typed |
 | W-5 | crates/taskboard-app/src/cli.rs | `--json` receipt path over the pinned variants | — | the `--json` envelope (D-3) | — | — | — | US-1/S1, US-2/S1, US-3/S1 | crates/taskboard-app/tests/it_restore_cli.rs::us1_s1_json_receipt_decodes_pinned_command_outcome |
 
@@ -236,6 +236,7 @@ verb arms — `labels restore <id/prefix>`, `habits restore <id/prefix>`,
   `us2_s1_*`, `us3_s1_*`, `us3_s3_*` — per the §6 Test column.
   Test-root: `crates/taskboard-app/tests/` (a CLI-chunk plan; no
   journey-test root in the UI crate — D-6).
+- The D-5 fence steps were rewritten 2026-11-21 (operator ruling on #1187): the undo legs pin the re-delete semantics of the landed #901 pre-image classification, not a fence. Implementing them surfaced the one engine gap named at D-5 above; the domain regression test (`restore_time_entry_undo_re_deletes_the_restored_row`) pins the inverse at the lowest layer and the journey tests pin it end-to-end.
 - **Seam tests**: exact-`StateCommand` assertions (variant + payload
   fields, including the fresh-v7 `--id` default and the verbatim
   payload); typed refusal matches (`matches!(err_kind, …)` /
