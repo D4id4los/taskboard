@@ -12,9 +12,9 @@ use proptest::prelude::*;
 
 use super::{string_strategy, timestamp_strategy};
 use crate::habit::{
-    AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitReminderOverride,
-    HabitSnooze, HabitState, HabitTarget, MonthDay, NonZeroCount, NudgeBase, PeriodKind,
-    WeekdaySet, period_start,
+    AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitReminderOverride, HabitSnooze,
+    HabitState, HabitTarget, MonthDay, NonZeroCount, NudgeBase, PeriodKind, WeekdaySet,
+    period_start,
 };
 
 /// One of the three period kinds, uniform.

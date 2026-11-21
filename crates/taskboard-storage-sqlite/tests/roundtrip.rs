@@ -1733,6 +1733,15 @@ async fn habit_rows_survive_a_close_reopen_including_the_tombstone() {
         anchor_day: Some(taskboard_domain::habit::AnchorDay::Weekday(
             chrono::Weekday::Wed,
         )),
+        scheduled_days: Some(
+            taskboard_domain::habit::WeekdaySet::new([
+                chrono::Weekday::Mon,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Fri,
+            ])
+            .expect("three days"),
+        ),
+        reminder: None,
         clocks: taskboard_domain::HabitClocks {
             title: ts(100),
             description: ts(115),
@@ -1741,6 +1750,9 @@ async fn habit_rows_survive_a_close_reopen_including_the_tombstone() {
             anchor_time: ts(130),
             anchor_day: ts(125),
             paused_until: ts(135),
+
+            scheduled_days: ts(128),
+            reminder: ts(0),
             deleted: ts(140),
         },
         paused_until: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap()),
@@ -3342,6 +3354,13 @@ async fn pre_0027_habit_rows_decode_with_additive_defaults() {
         anchor_day: Some(taskboard_domain::habit::AnchorDay::MonthDay(
             taskboard_domain::habit::MonthDay::new(17).expect("17"),
         )),
+        scheduled_days: Some(taskboard_domain::habit::WeekdaySet::all()),
+        reminder: Some(taskboard_domain::habit::HabitReminderOverride {
+            base: taskboard_domain::habit::NudgeBase::PeriodStart,
+            offset_days: -1,
+            time: chrono::NaiveTime::from_hms_opt(21, 0, 0).unwrap(),
+            snooze: taskboard_domain::habit::HabitSnooze::Days(2),
+        }),
         clocks: taskboard_domain::HabitClocks::all(
             chrono::TimeZone::timestamp_opt(&chrono::Utc, 1_000, 0).unwrap(),
         ),

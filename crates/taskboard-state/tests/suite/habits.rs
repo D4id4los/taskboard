@@ -468,6 +468,20 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
                 )),
                 anchor_time: Some(Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap())),
                 anchor_day: Some(Some(wednesday)),
+                scheduled_days: Some(
+                    taskboard_domain::habit::WeekdaySet::new([
+                        chrono::Weekday::Mon,
+                        chrono::Weekday::Wed,
+                        chrono::Weekday::Fri,
+                    ])
+                    .expect("three days"),
+                ),
+                reminder: Some(Some(taskboard_domain::habit::HabitReminderOverride {
+                    base: taskboard_domain::habit::NudgeBase::PeriodStart,
+                    offset_days: 1,
+                    time: chrono::NaiveTime::from_hms_opt(21, 0, 0).unwrap(),
+                    snooze: taskboard_domain::habit::HabitSnooze::Hours(3),
+                })),
                 continued_from: None,
             },
         })
@@ -489,6 +503,18 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
         Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap())
     );
     assert_eq!(after.anchor_day, Some(wednesday));
+    assert_eq!(
+        after.scheduled_days,
+        Some(
+            taskboard_domain::habit::WeekdaySet::new([
+                chrono::Weekday::Mon,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Fri,
+            ])
+            .expect("three days")
+        )
+    );
+    assert!(after.reminder.is_some());
     // Every touched field's clock moved (LWW stamps ride the injected
     // clock), the untouched ones stay byte-equal.
     assert_ne!(after.clocks.title, before.clocks.title);
@@ -496,6 +522,8 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
     assert_ne!(after.clocks.description, before.clocks.description);
     assert_ne!(after.clocks.anchor_time, before.clocks.anchor_time);
     assert_ne!(after.clocks.anchor_day, before.clocks.anchor_day);
+    assert_ne!(after.clocks.scheduled_days, before.clocks.scheduled_days);
+    assert_ne!(after.clocks.reminder, before.clocks.reminder);
     // The sparse discipline's other half: nothing else churns.
     assert_eq!(
         after.clocks.order, before.clocks.order,
@@ -550,6 +578,7 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
             changes: taskboard_domain::HabitChanges {
                 anchor_time: Some(None),
                 anchor_day: Some(None),
+                reminder: Some(None),
                 ..taskboard_domain::HabitChanges::default()
             },
         })
@@ -562,6 +591,10 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
     let cleared_both = h.published().habits[&habit].clone();
     assert_eq!(cleared_both.anchor_time, None);
     assert_eq!(cleared_both.anchor_day, None);
+    assert_eq!(
+        cleared_both.reminder, None,
+        "the clear leg reverts the override"
+    );
 
     // Persisted intent: a fresh engine over the same repository sees
     // the final shape.
@@ -755,5 +788,203 @@ async fn pause_round_trips_resume_clears_and_past_date_is_typed_invalid() {
         other => panic!("expected NoOp, got {other:?}"),
     }
     assert_eq!(h.repo.snapshot(), before);
+}
+
+// ---- HF4 (#960, #959): schedule + override routes over the live engine --
+
+/// US-5/S2 (`schedule_save_routes_the_exact_update_habit`): the
+/// editor's schedule save routes the exact sparse `UpdateHabit {
+/// scheduled_days: Some(set) }` — the set stores verbatim, its clock
+/// stamps, and the shape persists across a restart (memory ≡ disk).
+#[tokio::test]
+async fn us5_s2_schedule_save_routes_the_exact_update_habit() {
+    let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+    let clock = FixedClock::new(T0);
+    let h = spawn_over(repo.clone(), clock.clone()).await;
+    let board = h.board_id();
+    let CommandOutcome::HabitCreated(habit) = h
+        .handle
+        .execute(StateCommand::CreateHabit {
+            board,
+            title: "run".into(),
+            target: taskboard_domain::HabitTarget::PerWeek(
+                taskboard_domain::NonZeroCount::new(2).unwrap(),
+            ),
+        })
+        .await
+        .expect("create")
+    else {
+        panic!("create names the habit");
+    };
+    clock.advance(60);
+    let set = taskboard_domain::habit::WeekdaySet::new([
+        chrono::Weekday::Mon,
+        chrono::Weekday::Wed,
+        chrono::Weekday::Fri,
+    ])
+    .expect("three days");
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                scheduled_days: Some(set),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::Applied => {}
+        other => panic!("the schedule save applies, got {other:?}"),
+    }
+    let stored = h.published().habits[&habit].clone();
+    assert_eq!(stored.scheduled_days, Some(set));
+    assert_ne!(
+        stored.clocks.scheduled_days, stored.clocks.title,
+        "the set stamps its own clock slot"
+    );
+    // Persisted intent.
+    let expected = h.published();
+    h.shutdown().await;
+    let h2 = spawn_over(repo, FixedClock::new(T0)).await;
+    assert_eq!(h2.published(), expected, "memory ≡ disk across restarts");
+    h2.shutdown().await;
+}
+
+/// US-6/S2 + US-6/S3 (`override_save_routes_the_exact_command`,
+/// `clear_leg_reverts_to_the_o1_default`): the override save routes
+/// the exact double-Option set and the clear leg (`Some(None)`)
+/// reverts the habit to the plain O-1 default — the field goes back
+/// to `None`, byte-identical to a habit that never carried one.
+#[tokio::test]
+async fn us6_s2_override_save_routes_the_exact_command_and_the_clear_leg_reverts() {
+    let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+    let clock = FixedClock::new(T0);
+    let h = spawn_over(repo.clone(), clock.clone()).await;
+    let board = h.board_id();
+    let CommandOutcome::HabitCreated(habit) = h
+        .handle
+        .execute(StateCommand::CreateHabit {
+            board,
+            title: "stretch".into(),
+            target: taskboard_domain::HabitTarget::PerMonth(
+                taskboard_domain::NonZeroCount::new(4).unwrap(),
+            ),
+        })
+        .await
+        .expect("create")
+    else {
+        panic!("create names the habit");
+    };
+    let ovr = taskboard_domain::habit::HabitReminderOverride {
+        base: taskboard_domain::habit::NudgeBase::PeriodStart,
+        offset_days: 2,
+        time: chrono::NaiveTime::from_hms_opt(7, 45, 0).unwrap(),
+        snooze: taskboard_domain::habit::HabitSnooze::Days(1),
+    };
+    clock.advance(60);
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                reminder: Some(Some(ovr)),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::Applied => {}
+        other => panic!("the override save applies, got {other:?}"),
+    }
+    assert_eq!(h.published().habits[&habit].reminder, Some(ovr));
+    clock.advance(60);
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                reminder: Some(None),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::Applied => {}
+        other => panic!("the clear leg applies, got {other:?}"),
+    }
+    let reverted = h.published().habits[&habit].clone();
+    assert_eq!(reverted.reminder, None, "clear reverts to the O-1 default");
+    // A zero-leg repetition stays the typed no-op (no clock churn).
+    let before = h.published().habits[&habit].clone();
+    clock.advance(60);
+    match h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                reminder: Some(None),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await
+        .expect("update")
+    {
+        CommandOutcome::NoOp => {}
+        other => panic!("an unchanged clear is the no-op, got {other:?}"),
+    }
+    assert_eq!(h.published().habits[&habit].clocks, before.clocks);
+    h.shutdown().await;
+}
+
+/// HF4 R-6 (`scheduled_days_on_a_daily_habit_is_a_typed_rejection`):
+/// the write path refuses the field on a `PerDay` target with the typed
+/// rejection — before any plan exists, nothing persists.
+#[tokio::test]
+async fn us5_scheduled_days_on_a_daily_habit_is_a_typed_rejection() {
+    let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
+    let clock = FixedClock::new(T0);
+    let h = spawn_over(repo, clock.clone()).await;
+    let board = h.board_id();
+    let CommandOutcome::HabitCreated(habit) = h
+        .handle
+        .execute(StateCommand::CreateHabit {
+            board,
+            title: "daily walk".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(1).unwrap(),
+            ),
+        })
+        .await
+        .expect("create")
+    else {
+        panic!("create names the habit");
+    };
+    clock.advance(60);
+    let before = h.published();
+    let outcome = h
+        .handle
+        .execute(StateCommand::UpdateHabit {
+            habit,
+            changes: taskboard_domain::HabitChanges {
+                scheduled_days: Some(taskboard_domain::habit::WeekdaySet::all()),
+                ..taskboard_domain::HabitChanges::default()
+            },
+        })
+        .await;
+    match outcome {
+        Err(taskboard_state::ExecuteError::Rejected(
+            taskboard_domain::CommandError::ScheduledDaysOnDailyHabit(got),
+        )) => assert_eq!(got, habit),
+        other => panic!("expected the typed R-6 refusal, got {other:?}"),
+    }
+    assert_eq!(
+        h.published(),
+        before,
+        "the refusal persists nothing (no clock churn, no row)"
+    );
     h.shutdown().await;
 }

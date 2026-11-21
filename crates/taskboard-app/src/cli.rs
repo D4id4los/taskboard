@@ -1214,6 +1214,105 @@ fn parse_day_edit(raw: &str) -> Result<DayEdit, String> {
 }
 
 /// `--continued-from <series uuid>` / `--continued-from none`.
+/// The `habits update --days` value (HF4): `all` is the full
+/// seven-day set (the clear posture); anything else is a comma list
+/// of weekday names, deduplicated, never empty. The empty list and an
+/// unknown name are typed refusals at parse time (the trust boundary —
+/// the mint's law made visible).
+fn parse_days_flag(raw: &str) -> Result<taskboard_domain::habit::WeekdaySet, String> {
+    if raw.eq_ignore_ascii_case("all") {
+        return Ok(taskboard_domain::habit::WeekdaySet::all());
+    }
+    let days = raw
+        .split(',')
+        .map(|name| {
+            let name = name.trim().to_ascii_lowercase();
+            match name.as_str() {
+                "mo" | "mon" | "monday" => Ok(chrono::Weekday::Mon),
+                "tu" | "tue" | "tuesday" => Ok(chrono::Weekday::Tue),
+                "we" | "wed" | "wednesday" => Ok(chrono::Weekday::Wed),
+                "th" | "thu" | "thursday" => Ok(chrono::Weekday::Thu),
+                "fr" | "fri" | "friday" => Ok(chrono::Weekday::Fri),
+                "sa" | "sat" | "saturday" => Ok(chrono::Weekday::Sat),
+                "su" | "sun" | "sunday" => Ok(chrono::Weekday::Sun),
+                other => Err(format!("unknown weekday `{other}`")),
+            }
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    taskboard_domain::habit::WeekdaySet::new(days).map_err(|_| {
+        String::from("the empty day set is unmintable — name at least one weekday, or `all`")
+    })
+}
+
+/// The `habits update --reminder` value (HF4): comma-separated
+/// `key=value` segments; omitted keys take the defaults (`base`
+/// nudge-day, `offset` 0, `time` 09:00, `snooze` 1 hour). Unknown keys,
+/// a duplicated key, or an unparseable value is a typed refusal.
+fn parse_reminder_override(
+    raw: &str,
+) -> Result<taskboard_domain::habit::HabitReminderOverride, String> {
+    use taskboard_domain::habit::{HabitReminderOverride, HabitSnooze, NudgeBase};
+    let mut base = NudgeBase::NudgeDay;
+    let mut offset = 0_i32;
+    let mut time = chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("whole hour");
+    let mut snooze = HabitSnooze::Hours(1);
+    let mut seen = std::collections::BTreeSet::<String>::new();
+    let insert =
+        |key: &'static str, seen: &mut std::collections::BTreeSet<String>| -> Result<(), String> {
+            if !seen.insert(String::from(key)) {
+                return Err(format!("duplicated key `{key}`"));
+            }
+            Ok(())
+        };
+    for segment in raw.split(',') {
+        let (key, value) = segment
+            .split_once('=')
+            .ok_or_else(|| format!("segment `{segment}` is not key=value"))?;
+        let value = value.trim();
+        match key.trim() {
+            "base" => {
+                insert("base", &mut seen)?;
+                base = match value {
+                    "nudge-day" => NudgeBase::NudgeDay,
+                    "period-start" => NudgeBase::PeriodStart,
+                    other => return Err(format!("unknown base `{other}`")),
+                };
+            }
+            "offset" => {
+                insert("offset", &mut seen)?;
+                offset = value
+                    .parse::<i32>()
+                    .map_err(|_| format!("offset `{value}` is not an integer day count"))?;
+            }
+            "time" => {
+                insert("time", &mut seen)?;
+                time = parse_time_of_day_flag(value)?;
+            }
+            "snooze" => {
+                insert("snooze", &mut seen)?;
+                let digits = value.trim_end_matches(['h', 'H', 'd', 'D']);
+                let n: u8 = digits
+                    .parse()
+                    .map_err(|_| format!("snooze `{value}` is not a count"))?;
+                snooze = if value.ends_with('h') || value.ends_with('H') {
+                    HabitSnooze::Hours(n)
+                } else if value.ends_with('d') || value.ends_with('D') {
+                    HabitSnooze::Days(n)
+                } else {
+                    return Err(format!("snooze `{value}` needs an `h` or `d` unit"));
+                };
+            }
+            other => return Err(format!("unknown key `{other}`")),
+        }
+    }
+    Ok(HabitReminderOverride {
+        base,
+        offset_days: offset,
+        time,
+        snooze,
+    })
+}
+
 fn parse_seam_edit(raw: &str) -> Result<SeamEdit, String> {
     if raw.eq_ignore_ascii_case("none") {
         return Ok(SeamEdit::Unlink);
@@ -1239,6 +1338,61 @@ fn parse_span_stamp_normalizes_to_utc_and_rejects_bare_times() {
     // No `none`, no bare time-of-day: both are usage errors.
     for bad in ["none", "09:30", "tomorrow", "", "2026-10-24T09:00:00"] {
         assert!(parse_span_stamp(bad).is_err(), "{bad} must be rejected");
+    }
+}
+
+#[test]
+fn parse_days_flag_mints_lists_and_all_and_refuses_empty() {
+    use taskboard_domain::habit::WeekdaySet;
+    let days = parse_days_flag("mo,we,fr").expect("three days");
+    assert_eq!(
+        days,
+        WeekdaySet::new([
+            chrono::Weekday::Mon,
+            chrono::Weekday::Wed,
+            chrono::Weekday::Fri
+        ])
+        .expect("three days")
+    );
+    assert_eq!(parse_days_flag("all").expect("all"), WeekdaySet::all());
+    // The mint's law at the boundary: the empty list is a typed
+    // refusal, never an inert mint.
+    for bad in ["", ",", "monday-morning"] {
+        assert!(parse_days_flag(bad).is_err(), "{bad} must be rejected");
+    }
+    let only_unknown = parse_days_flag(",");
+    assert!(only_unknown.is_err(), "no weekday named");
+}
+
+#[test]
+fn parse_reminder_override_defaults_fill_and_refusals_are_typed() {
+    use taskboard_domain::habit::{HabitSnooze, NudgeBase};
+    let ovr = parse_reminder_override("base=period-start,offset=-1,time=07:30,snooze=1d")
+        .expect("full grammar");
+    assert_eq!(ovr.base, NudgeBase::PeriodStart);
+    assert_eq!(ovr.offset_days, -1);
+    assert_eq!(
+        ovr.time,
+        chrono::NaiveTime::from_hms_opt(7, 30, 0).expect("valid time")
+    );
+    assert_eq!(ovr.snooze, HabitSnooze::Days(1));
+    // Defaults: a bare `snooze=45m`? No — hours/days only (O-1); the
+    // defaults fill the omitted keys.
+    let minimal = parse_reminder_override("snooze=2h").expect("minimal");
+    assert_eq!(minimal.base, NudgeBase::NudgeDay, "R-8 default base");
+    assert_eq!(minimal.offset_days, 0);
+    assert_eq!(minimal.snooze, HabitSnooze::Hours(2));
+    for bad in [
+        "snooze=45m",
+        "base=tuesday",
+        "offset=",
+        "base=nudge-day,base=period-start",
+        "wat",
+    ] {
+        assert!(
+            parse_reminder_override(bad).is_err(),
+            "{bad} must be rejected"
+        );
     }
 }
 
@@ -1514,6 +1668,26 @@ pub enum HabitsCmd {
         /// inertness answers).
         #[arg(long, value_parser = parse_day_edit)]
         day: Option<DayEdit>,
+        /// The scheduled weekdays *inside* the canonical window
+        /// (weekly/monthly habits only, HF4/R-6): a comma list of
+        /// `mon..sun`, or `all` (the clear value — "no schedule" and
+        /// "every day" are one posture). A daily target is the typed
+        /// `scheduled-days-on-daily-habit` refusal at the planner —
+        /// the field is a weekly/monthly extension by construction.
+        #[arg(long, value_name = "MO,WE,FR|ALL", value_parser = parse_days_flag)]
+        days: Option<taskboard_domain::habit::WeekdaySet>,
+        /// The reminder override's fields (HF4, #959), one per `key=`
+        /// segment, comma-separated: `base=nudge-day|period-start`
+        /// (default `nudge-day`, R-8), `offset=N` days (may be
+        /// negative), `time=HH:MM[:SS]` (the fallback time-of-day when
+        /// the habit carries no `--at` chip), `snooze=NH|ND` (hours or
+        /// days, O-1's grammar).
+        #[arg(long, value_name = "BASE=..,OFFSET=..,TIME=..,SNOOZE=..", value_parser = parse_reminder_override)]
+        reminder: Option<taskboard_domain::habit::HabitReminderOverride>,
+        /// Clear the reminder override (the `Some(None)` clear leg) —
+        /// the habit reverts to the plain O-1 default nudge.
+        #[arg(long, conflicts_with = "reminder")]
+        reminder_clear: bool,
         /// Absolute manual-order slot (the `MoveHabit` semantics).
         #[arg(long)]
         order: Option<i64>,

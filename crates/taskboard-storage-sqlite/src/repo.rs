@@ -903,9 +903,8 @@ fn decode_habit(
     let reminder = match &row.reminder {
         None => None,
         Some(text) => {
-            let ovr: taskboard_domain::habit::HabitReminderOverride =
-                serde_json::from_str(text)
-                    .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))?;
+            let ovr: taskboard_domain::habit::HabitReminderOverride = serde_json::from_str(text)
+                .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))?;
             Some(ovr)
         }
     };
@@ -2665,10 +2664,7 @@ async fn execute_batch(
             habit.clocks.description.to_rfc3339(),
             habit.clocks.anchor_day.to_rfc3339(),
             habit.clocks.paused_until.to_rfc3339(),
-            habit
-                .clocks
-                .scheduled_days
-                .to_rfc3339(),
+            habit.clocks.scheduled_days.to_rfc3339(),
             habit.clocks.reminder.to_rfc3339(),
             habit.clocks.deleted.to_rfc3339(),
             habit.deleted,
