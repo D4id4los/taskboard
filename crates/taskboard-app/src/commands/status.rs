@@ -329,6 +329,17 @@ impl StatusView {
 /// The human-readable status line (presentation text, never asserted).
 #[must_use]
 pub fn render_text(view: &StatusView) -> String {
+    render_text_at(view, Utc::now())
+}
+
+/// [`render_text`] with the render clock injected (the clock
+/// discipline's committed-artifact law, #1111 D-4): the age phrases in
+/// the files-sync block read `now` from this parameter, so a byte pin
+/// over a view that carries clock-derived text freezes the instant
+/// instead of pinning the wall clock. Production renders pass
+/// `Utc::now()`.
+#[must_use]
+pub fn render_text_at(view: &StatusView, now: chrono::DateTime<Utc>) -> String {
     // One spelling of the detached marker: every projection whose
     // answer carries the connector fact appends the same suffix.
     let detached = if view.connector_attached == Some(false) {
@@ -380,9 +391,28 @@ pub fn render_text(view: &StatusView) -> String {
             }
         }
         if let Some(files) = &view.files_sync {
-            push_files_sync_lines(&mut daemon, files);
+            push_files_sync_lines(&mut daemon, files, now);
         }
         daemon
+    } else if view.draining == Some(true) {
+        // The #1111 draining line (OP3 US-3, D-4's typed rule):
+        // `daemon == false ∧ draining == Some(true)` — the artifact
+        // sits beside a held lock, so the plain "no daemon" line would
+        // misread a draining daemon. The same typed rule the GUI
+        // panel's fold consumes (D-2/D-4: one rule, two fronts).
+        let mut line = match view.holder_pid {
+            Some(pid) => {
+                format!(
+                    "daemon draining: the sync artifact sits beside a held lock (lock holder pid {pid})"
+                )
+            }
+            None => "daemon draining: the sync artifact sits beside a held lock".to_owned(),
+        };
+        line.push_str(detached);
+        if let Some(files) = &view.files_sync {
+            push_files_sync_lines(&mut line, files, now);
+        }
+        line
     } else {
         let mut line = match view.holder_pid {
             Some(pid) => format!("no daemon serving this database (lock holder pid {pid})"),
@@ -390,7 +420,7 @@ pub fn render_text(view: &StatusView) -> String {
         };
         line.push_str(detached);
         if let Some(files) = &view.files_sync {
-            push_files_sync_lines(&mut line, files);
+            push_files_sync_lines(&mut line, files, now);
         }
         line
     }
@@ -401,7 +431,11 @@ pub fn render_text(view: &StatusView) -> String {
 /// lines. Ages render from the wall clock at render time (presentation
 /// text, never asserted — the JSON view carries the instants); the
 /// data-survival facts (device uuids, paths, counts) must survive.
-fn push_files_sync_lines(out: &mut String, files: &crate::commands::output::FilesSyncStatusView) {
+fn push_files_sync_lines(
+    out: &mut String,
+    files: &crate::commands::output::FilesSyncStatusView,
+    now: chrono::DateTime<Utc>,
+) {
     for moved in &files.moved_boards {
         let _ = write!(
             out,
@@ -425,7 +459,7 @@ fn push_files_sync_lines(out: &mut String, files: &crate::commands::output::File
             {
                 let hb = files
                     .last_heartbeat_written
-                    .map_or_else(|| "?".to_owned(), |t| age_phrase(t, Utc::now()));
+                    .map_or_else(|| "?".to_owned(), |t| age_phrase(t, now));
                 format!(", heartbeat {hb}")
             }
         ),
@@ -439,7 +473,6 @@ fn push_files_sync_lines(out: &mut String, files: &crate::commands::output::File
     };
     let _ = write!(out, "\n{lead}");
     for peer in &files.peers {
-        let now = Utc::now();
         let _ = write!(
             out,
             "\n  peer {} — heartbeat {} (data {})",
