@@ -651,6 +651,7 @@ async fn app_world<'a>(
         state_reader: Arc::new(engine.clone()),
         board_reports: tokio::sync::mpsc::channel::<SyncReport>(1).0,
         deck_origins: std::collections::BTreeMap::new(),
+        cancel: taskboard_sync_files_nextcloud::cycle::CycleCancel::new(),
     };
     Ok(AppWorld {
         engine,

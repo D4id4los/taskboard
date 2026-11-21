@@ -872,6 +872,7 @@ async fn run_mover(
         state_reader: Arc::new(a.engine.clone()),
         board_reports: a.board_report_tx.clone(),
         deck_origins: std::collections::BTreeMap::new(),
+        cancel: taskboard_sync_files_nextcloud::cycle::CycleCancel::new(),
     };
     let moved_from = MovedFrom {
         deck_server: DECK_ORIGIN.to_owned(),

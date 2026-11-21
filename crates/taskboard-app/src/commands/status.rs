@@ -432,6 +432,9 @@ fn push_files_sync_lines(out: &mut String, files: &crate::commands::output::File
         Some(crate::commands::output::CycleOutcomeView::Failed) => {
             "files-sync: last cycle failed (retrying with backoff)".to_owned()
         }
+        Some(crate::commands::output::CycleOutcomeView::Aborted) => {
+            "files-sync: last cycle aborted at shutdown (no retry armed)".to_owned()
+        }
         None => "files-sync: no cycle yet".to_owned(),
     };
     let _ = write!(out, "\n{lead}");

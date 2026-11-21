@@ -402,6 +402,9 @@ pub enum CycleOutcomeView {
         import_rejected: usize,
     },
     Failed,
+    /// The cycle unwound at a shutdown checkpoint (#1085): it ended
+    /// mid-flight — no failure counted, no backoff armed.
+    Aborted,
 }
 
 /// One parked path's typed finding: the faithful `ParkKind` mirror
@@ -448,6 +451,9 @@ impl FilesSyncStatusView {
                 },
                 taskboard_sync_files_nextcloud::status::CycleOutcome::Failed => {
                     CycleOutcomeView::Failed
+                }
+                taskboard_sync_files_nextcloud::status::CycleOutcome::Aborted => {
+                    CycleOutcomeView::Aborted
                 }
             }),
             last_heartbeat_written: status.last_heartbeat_written,

@@ -501,6 +501,7 @@ impl Harness {
             state_reader: Arc::new(NoBoards),
             board_reports: board_tx,
             deck_origins: BTreeMap::new(),
+            cancel: taskboard_sync_files_nextcloud::cycle::CycleCancel::new(),
         };
         Self {
             server,

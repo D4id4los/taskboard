@@ -2682,6 +2682,290 @@ mod connector_module_tests {
         app.shutdown().await;
     }
 
+    // -- the shutdown drain contract (#1085, option (a)) -------------
+
+    /// The wall-clock guard shared by the stalled-origin waits (the
+    /// hang bound; paused time advances only inside these loops).
+    const DRAIN_WALL: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// The gate state of the stalled origin: the attach ceremony is
+    /// answered instantly; the steady cycle's devices listing parks
+    /// until exactly one release ticket is granted; everything after
+    /// that release stalls forever.
+    #[derive(Default)]
+    struct StalledGate {
+        devices_listings: std::sync::atomic::AtomicUsize,
+        tickets: std::sync::atomic::AtomicUsize,
+        parked: std::sync::atomic::AtomicBool,
+        released: std::sync::atomic::AtomicBool,
+    }
+
+    /// A local `WebDAV` origin that parks the in-flight cycle (the
+    /// #1085 staging): a real `WebDavFilesTransport` against a TCP
+    /// server under the test's control — no transport seam needed,
+    /// the production client is the one that parks.
+    struct StalledOrigin {
+        addr: std::net::SocketAddr,
+        gate: Arc<StalledGate>,
+    }
+
+    /// The empty Depth-1 listing body (no members).
+    const EMPTY_LISTING: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<d:multistatus xmlns:d=\"DAV:\"></d:multistatus>";
+
+    impl StalledOrigin {
+        /// Spawns the listener and its per-connection handlers onto
+        /// the ambient runtime.
+        async fn spawn() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind the stalled origin");
+            let addr = listener.local_addr().expect("local addr");
+            let gate = Arc::new(StalledGate::default());
+            let handler_gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    let gate = Arc::clone(&handler_gate);
+                    tokio::spawn(serve(stream, gate));
+                }
+            });
+            Self { addr, gate }
+        }
+
+        /// True while the steady cycle's devices listing is parked.
+        fn parked(&self) -> bool {
+            self.gate.parked.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// The gate counters, in gate order — the park-timeout
+        /// assertion's failure message reads them.
+        fn debug(&self) -> (usize, usize, bool, bool) {
+            (
+                self.gate
+                    .devices_listings
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                self.gate.tickets.load(std::sync::atomic::Ordering::SeqCst),
+                self.gate.parked.load(std::sync::atomic::Ordering::SeqCst),
+                self.gate.released.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        }
+
+        /// Grant exactly one release ticket (the test's controlled
+        /// un-park of the in-flight listing).
+        fn release(&self) {
+            self.gate
+                .tickets
+                .store(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// Serves one keep-alive connection against the gate: read a
+    /// request head (+ body), decide, respond — or park.
+    async fn serve(mut stream: tokio::net::TcpStream, gate: Arc<StalledGate>) {
+        use tokio::io::AsyncReadExt as _;
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            // Read one request head.
+            let head_end = loop {
+                if let Some(pos) = find_head_end(&buf) {
+                    break pos;
+                }
+                let mut chunk = [0u8; 4096];
+                let Ok(read) = stream.read(&mut chunk).await else {
+                    return;
+                };
+                if read == 0 {
+                    return; // closed
+                }
+                buf.extend_from_slice(&chunk[..read]);
+            };
+            let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
+            let mut lines = head.split("\r\n");
+            let first = lines.next().unwrap_or_default();
+            let mut parts = first.split(' ');
+            let method = parts.next().unwrap_or_default().to_owned();
+            let path = parts.next().unwrap_or_default().to_owned();
+            let content_length = head
+                .split("\r\n")
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            let body_end = head_end + 4 + content_length;
+            while buf.len() < body_end {
+                let mut chunk = [0u8; 4096];
+                let Ok(read) = stream.read(&mut chunk).await else {
+                    return;
+                };
+                if read == 0 {
+                    return;
+                }
+                buf.extend_from_slice(&chunk[..read]);
+            }
+            buf.drain(..body_end);
+
+            // The gate: the second devices listing is the steady
+            // cycle's — park it until a ticket, then mark the release.
+            let is_devices_listing = method == "PROPFIND" && path.ends_with("taskboard/devices/");
+            if is_devices_listing {
+                let seen = gate
+                    .devices_listings
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                if seen == 1 {
+                    respond(&mut stream, 207, "Multi-Status", EMPTY_LISTING).await;
+                    continue;
+                }
+                gate.parked.store(true, std::sync::atomic::Ordering::SeqCst);
+                loop {
+                    // Guarded decrement (single waiter): without the
+                    // load guard the unsigned count wraps on the first
+                    // empty tick and the second fetch reads a huge
+                    // "ticket" — the gate would self-release.
+                    if gate.tickets.load(std::sync::atomic::Ordering::SeqCst) > 0
+                        && gate
+                            .tickets
+                            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                            > 0
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                gate.parked
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                gate.released
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                respond(&mut stream, 207, "Multi-Status", EMPTY_LISTING).await;
+                continue;
+            }
+            if gate.released.load(std::sync::atomic::Ordering::SeqCst) {
+                // Post-release: the checkpoint abort's world never gets
+                // here (the actor exits at the listing boundary); the
+                // old contract's world pins exactly here, forever.
+                std::future::pending::<()>().await;
+            }
+            let (status, reason): (u16, &str) = match method.as_str() {
+                "MKCOL" | "PUT" => (201, "Created"),
+                _ => (404, "Not Found"),
+            };
+            respond(&mut stream, status, reason, "").await;
+        }
+    }
+
+    fn find_head_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n")
+    }
+
+    async fn respond(stream: &mut tokio::net::TcpStream, status: u16, reason: &str, body: &str) {
+        use tokio::io::AsyncWriteExt as _;
+        let response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/xml\r\n\
+             Content-Length: {}\r\nETag: \"stalled\"\r\n\r\n{body}",
+            body.len(),
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.flush().await;
+    }
+
+    /// The teardown inversion (#1085): shutdown while a files cycle is
+    /// parked mid-flight completes inside one join budget — the actor
+    /// unwinds at the cycle's checkpoint, the engine's user-data drain
+    /// satisfies, and every join succeeds (`degraded()` false). The
+    /// 30 s three-budget trace is the contract this inverts: the old
+    /// between-cycles-only Shutdown check held the engine's lane until
+    /// the in-flight cycle finished, burning every join budget.
+    ///
+    /// Real wall clock, deliberately: the paused test clock is
+    /// incompatible with boot (the sqlx pool's connect timeout fires
+    /// under auto-advance before the sqlite connect completes), and
+    /// the asserted facts are the join budgets themselves. The 1 s
+    /// budget + 1 s poll make the arithmetic tight and fast; the
+    /// abort mechanism itself is pinned deterministically (paused
+    /// clock, `ParkOnDevices` parking) at the actor level.
+    #[tokio::test]
+    async fn a_shutdown_during_an_in_flight_files_cycle_drains_within_one_join_budget() {
+        let origin = StalledOrigin::spawn().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = files_sync_enabled_config(dir.path());
+        config.nextcloud.server_url = Some(format!("http://{}", origin.addr));
+        // Tight arithmetic: the in-flight cycle parks within a second
+        // of boot, and each join budget is a single second — the old
+        // contract burned three of them, the checkpoint contract
+        // burns none.
+        config.app.shutdown_timeout_secs = 1;
+        config.sync.poll_interval_secs = 1;
+        config.validate().expect("valid world");
+        let app = bootstrap_with_modules(
+            config,
+            Arc::new(AcceptingStore),
+            Arc::new(crate::notifications::LogSink),
+            Vec::new(),
+            BootIdentity::At(dir.path().to_owned()),
+        )
+        .await
+        .expect("boot");
+        // The steady cycle parks on its devices listing (the attach
+        // cycle answered instantly): the in-flight state is staged.
+        // Predicate-with-deadline polling, no fixed waits.
+        let parked_deadline = std::time::Instant::now() + DRAIN_WALL;
+        while !origin.parked() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(
+                std::time::Instant::now() < parked_deadline,
+                "the steady cycle never parked on its devices listing; \
+                 gate={:?} status={:?}",
+                origin.debug(),
+                app.files_sync_status.as_ref().map(|rx| rx.borrow().clone())
+            );
+        }
+        // The probe's subscription predates the shutdown: receiving
+        // `Shutdown` proves the broadcast was sent. The yields hand the
+        // scheduler to the actor's forwarder (woken by the same send)
+        // so the cancel flag is tripped before the release is granted.
+        let mut shutdown_probe = app.system.subscribe();
+        let t0 = std::time::Instant::now();
+        let shutdown = tokio::spawn(async move { app.shutdown().await });
+        let broadcast = loop {
+            match shutdown_probe.recv().await {
+                Ok(event) => break event,
+                Err(broadcast::error::RecvError::Closed) => {
+                    panic!("the system broadcast closed before Shutdown")
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+            }
+        };
+        assert!(matches!(broadcast, SystemEvent::Shutdown));
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        origin.release();
+        // The joins resolve within one budget: bounded wait with the
+        // wall guard.
+        let outcome = {
+            let deadline = std::time::Instant::now() + DRAIN_WALL;
+            while !shutdown.is_finished() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "shutdown never finished within the staged horizon"
+                );
+            }
+            shutdown.await.expect("join the shutdown task")
+        };
+        let elapsed = t0.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "shutdown drained within one join budget, took {elapsed:?}"
+        );
+        assert!(
+            !outcome.degraded(),
+            "no join burned its budget: {outcome:?}"
+        );
+    }
+
     #[tokio::test]
     async fn module_build_failure_maps_onto_the_typed_bootstrap_error() {
         let mut config = AppConfig::default();

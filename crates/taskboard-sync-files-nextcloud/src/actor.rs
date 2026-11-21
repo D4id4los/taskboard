@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::cycle::{LocalDocument, LoopState, SyncContext};
+use crate::cycle::{CycleVerdict, LocalDocument, LoopState, SyncContext};
 use crate::device::{self, DeviceIdentityError};
 use crate::poll::poll_backoff;
 use crate::transport::FilesTransport;
@@ -96,7 +96,10 @@ pub fn spawn_files_sync_actor<T: FilesTransport>(
     (join, status_rx)
 }
 
-#[allow(clippy::too_many_arguments)] // the spawn's seams, verbatim
+#[allow(clippy::too_many_arguments)]
+// the spawn's seams, verbatim
+// the shutdown forwarder plus the loop's arms read long, not tangled
+#[allow(clippy::too_many_lines)]
 async fn run<T: FilesTransport>(
     transport: T,
     device_json_path: PathBuf,
@@ -133,6 +136,11 @@ async fn run<T: FilesTransport>(
             return;
         }
     };
+    // The shutdown cancellation flag (#1085): tripped by the
+    // forwarder below the moment `Shutdown` reaches the broadcast —
+    // the in-flight cycle polls it at its checkpoints and unwinds
+    // typed instead of pinning the shutdown drain for a whole cycle.
+    let cancel = crate::cycle::CycleCancel::new();
     let ctx = Arc::new(SyncContext {
         identity,
         app_version: cfg.app_version.clone(),
@@ -143,6 +151,7 @@ async fn run<T: FilesTransport>(
         state_reader: state_reader.clone(),
         board_reports,
         deck_origins: cfg.deck_origins.clone(),
+        cancel: cancel.clone(),
     });
     // The loop-local settings read (D-5.5 item 7 retired, #673): the
     // cadence comes from the engine's live snapshot every re-arm —
@@ -155,19 +164,51 @@ async fn run<T: FilesTransport>(
     // First cycle fires immediately.
     let mut deadline = tokio::time::Instant::now();
 
+    // The shutdown forwarder (#1085): its own broadcast subscription
+    // (receivers are not `Clone`; the loop keeps its own) trips the
+    // cycle's cancel flag the moment `Shutdown` arrives — including
+    // while `run_cycle` is awaited, exactly the window the loop's
+    // biased `select!` cannot see. It consumes nothing the loop needs
+    // (each subscription is independent) and dies with the actor.
+    let forwarder = {
+        let cancel = cancel.clone();
+        let mut shutdown_rx = system.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match shutdown_rx.recv().await {
+                    Ok(SystemEvent::Shutdown) => {
+                        cancel.trip();
+                        return;
+                    }
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        })
+    };
+
     loop {
         tokio::select! {
             biased;
 
             () = tokio::time::sleep_until(deadline) => {
-                crate::cycle::run_cycle(&transport, &ctx, &mut st, &status).await;
+                if matches!(
+                    crate::cycle::run_cycle(&transport, &ctx, &mut st, &status).await,
+                    CycleVerdict::Aborted
+                ) {
+                    tracing::info!(
+                        "files-sync actor stopping: the in-flight cycle \
+                         aborted at a shutdown checkpoint"
+                    );
+                    break;
+                }
                 deadline = reschedule(&st, &reader.read_settings());
             },
 
             event = sys_rx.recv(), if sys_open => match event {
                 Ok(SystemEvent::Shutdown) => {
                     tracing::info!("files-sync actor stopping: shutdown event");
-                    return;
+                    break;
                 }
                 Ok(SystemEvent::SettingsChanged) => {
                     // The min rule (the Deck connector's semantics,
@@ -210,6 +251,7 @@ async fn run<T: FilesTransport>(
             },
         }
     }
+    forwarder.abort();
 }
 
 /// The next wake-up: the effective poll interval after a success, the
@@ -2217,6 +2259,208 @@ mod tests {
             "the wake fired at the backoff deadline"
         );
         assert_eq!(cycles(&harness.fake), baseline + 1);
+    }
+
+    // -- the shutdown-abort matrix (#1085, option (a)) ----------------
+
+    /// A `SyncContext` over the fixture identity — the direct
+    /// `run_cycle` abort tests' harness.
+    fn cycle_ctx(
+        cancel: crate::cycle::CycleCancel,
+        state: Arc<EmptyPersistedState>,
+        reports: mpsc::Sender<UserDataReport>,
+        board_reports: mpsc::Sender<SyncReport>,
+    ) -> SyncContext {
+        SyncContext {
+            identity: taskboard_sync_files::identity::DeviceIdentity {
+                device_id: DeviceId::parse(SELF).expect("fixture device id"),
+                created_at: heartbeat_base(),
+            },
+            app_version: "test".into(),
+            clock: Arc::new(SteppingClock::new(heartbeat_base(), 30)),
+            local: Arc::new(crate::cycle::EmptyDocument),
+            report_tx: reports,
+            connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
+            state_reader: state,
+            board_reports,
+            deck_origins: std::collections::BTreeMap::new(),
+            cancel,
+        }
+    }
+
+    /// Waits (wall-clock bounded) for a spawned task to finish,
+    /// advancing paused time so its awaits resolve, then joins it.
+    async fn wait_finished<T: Send + 'static>(handle: tokio::task::JoinHandle<T>, what: &str) -> T {
+        let deadline = std::time::Instant::now() + WALL;
+        while !handle.is_finished() {
+            tokio::time::advance(Duration::from_millis(10)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never finished"
+            );
+        }
+        handle.await.expect("join the finished task")
+    }
+
+    /// Waits (wall-clock bounded) until the engine stand-in's user-data
+    /// lane closes, advancing paused time.
+    async fn wait_lane_closed(rx: &mut mpsc::Receiver<UserDataReport>) {
+        let deadline = std::time::Instant::now() + WALL;
+        loop {
+            if matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Disconnected)) {
+                return;
+            }
+            tokio::time::advance(Duration::from_millis(10)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the user-data lane never closed"
+            );
+        }
+    }
+
+    /// The abort counts as neither success nor failure (#1085): a
+    /// cycle parked on its listing, the cancel flag tripped mid-park,
+    /// the release unwinding typed — `failure_streak` stays zero, the
+    /// status surface shows `Aborted`, and the next cycle aborts at
+    /// its first checkpoint without arming the backoff either (an
+    /// abort never lengthens the next cadence).
+    #[tokio::test(start_paused = true)]
+    async fn an_aborted_cycle_neither_counts_a_failure_nor_arms_the_backoff() {
+        let fake = Arc::new(FakeFilesTransport::new());
+        let gated = StdArc::new(ParkOnDevices::new(fake));
+        gated.arm();
+        let cancel = crate::cycle::CycleCancel::new();
+        let state = Arc::new(EmptyPersistedState::new());
+        let (report_tx, _report_rx) = mpsc::channel(4);
+        let (board_tx, _board_rx) = mpsc::channel::<SyncReport>(4);
+        let ctx = Arc::new(cycle_ctx(cancel.clone(), state, report_tx, board_tx));
+        let status = Arc::new(watch::channel(FilesSyncStatus::default()).0);
+        let st = Arc::new(tokio::sync::Mutex::new(LoopState::default()));
+
+        let first = {
+            let ctx = Arc::clone(&ctx);
+            let st = Arc::clone(&st);
+            let status = Arc::clone(&status);
+            let transport = ParkHandle {
+                gated: gated.clone(),
+            };
+            tokio::spawn(async move {
+                let mut st = st.lock().await;
+                crate::cycle::run_cycle(&transport, &ctx, &mut st, &status).await
+            })
+        };
+        wait_parked(&gated.parked).await;
+        // Shutdown arrives while the cycle is parked on the listing;
+        // the release lets the request finish (never cancelled
+        // in-flight) and the post-listing checkpoint unwinds typed.
+        cancel.trip();
+        gated
+            .release
+            .lock()
+            .expect("release lock")
+            .take()
+            .expect("armed release")
+            .send(())
+            .expect("the cycle is parked on the release");
+        let verdict = wait_finished(first, "the parked cycle").await;
+        assert_eq!(verdict, CycleVerdict::Aborted);
+        assert_eq!(
+            st.lock().await.failure_streak,
+            0,
+            "an abort is not a transport failure: the streak is untouched"
+        );
+        assert_eq!(status.borrow().last_cycle, Some(CycleOutcome::Aborted));
+
+        // The next cycle aborts at its first checkpoint — still no
+        // streak, so `reschedule` would arm the plain poll interval,
+        // never the backoff curve.
+        let second = {
+            let ctx = Arc::clone(&ctx);
+            let st = Arc::clone(&st);
+            let status = Arc::clone(&status);
+            let transport = ParkHandle {
+                gated: gated.clone(),
+            };
+            tokio::spawn(async move {
+                let mut st = st.lock().await;
+                crate::cycle::run_cycle(&transport, &ctx, &mut st, &status).await
+            })
+        };
+        let verdict = wait_finished(second, "the post-abort cycle").await;
+        assert_eq!(verdict, CycleVerdict::Aborted);
+        assert_eq!(st.lock().await.failure_streak, 0);
+    }
+
+    /// Shutdown during a parked cycle (#1085): the actor's forwarder
+    /// trips the cancel flag while the cycle is parked; on release the
+    /// cycle unwinds typed — the actor's join completes (the pin is
+    /// gone), the status surface shows `Aborted`, and the engine
+    /// stand-in's user-data lane closes, so the shutdown drain can
+    /// satisfy (the exact 30 s trace's mechanism, inverted).
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_during_a_parked_cycle_joins_with_the_typed_abort() {
+        let fake = Arc::new(FakeFilesTransport::new());
+        seed_peer(&fake, "v1");
+        let gated = StdArc::new(ParkOnDevices::new(Arc::clone(&fake)));
+        let dir = tempfile::tempdir().expect("temp dir");
+        let device_path = dir.path().join("device.json");
+        write_device_identity(&device_path);
+        let (system, _system_rx) = broadcast::channel(16);
+        let (report_tx, mut report_rx) = mpsc::channel(4);
+        let (board_tx, _board_rx) = mpsc::channel::<SyncReport>(4);
+        let state = Arc::new(EmptyPersistedState::new());
+        let (join, mut status_rx) = spawn_files_sync_actor(
+            ParkHandle {
+                gated: gated.clone(),
+            },
+            device_path,
+            Arc::new(crate::cycle::EmptyDocument),
+            state,
+            report_tx,
+            board_tx,
+            system.clone(),
+            cfg(),
+        );
+        // Attach completes (unarmed park) — the same generous fixture
+        // horizons as the doorbell-during-a-cycle test.
+        let attached =
+            watch_status_within(&mut status_rx, Duration::from_secs(600), "attach").await;
+        assert!(ok(&attached));
+        // Park the next steady cycle's listing, then Shutdown arrives
+        // while the cycle is parked.
+        gated.arm();
+        tokio::time::advance(POLL).await;
+        wait_parked(&gated.parked).await;
+        system
+            .send(SystemEvent::Shutdown)
+            .expect("shutdown while the steady cycle is parked");
+        gated
+            .release
+            .lock()
+            .expect("release lock")
+            .take()
+            .expect("armed release")
+            .send(())
+            .expect("the cycle is parked on the release");
+        wait_finished(join, "the actor join").await;
+        // The abort rides the same watch as every other publish — poll
+        // for the typed outcome itself (change-detection alone cannot
+        // distinguish it from the attach tick's lane update).
+        let deadline = std::time::Instant::now() + WALL;
+        loop {
+            let current = status_rx.borrow_and_update().clone();
+            if current.last_cycle == Some(CycleOutcome::Aborted) {
+                break;
+            }
+            tokio::time::advance(Duration::from_millis(10)).await;
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the abort status never surfaced"
+            );
+        }
+        // The user-data lane closed: the actor's exit dropped its
+        // sender — the engine's drain condition can now satisfy.
+        wait_lane_closed(&mut report_rx).await;
     }
 
     /// The board lanes' empty state seam: no boards, no outbox — every
