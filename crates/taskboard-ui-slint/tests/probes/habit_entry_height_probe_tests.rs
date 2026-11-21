@@ -58,6 +58,9 @@ fn one_habit_row() -> ModelRc<HabitCardModel> {
         repair: false,
         repair_undoable: false,
         met: false,
+        skip: false,
+        paused: false,
+        paused_until: "".into(),
     }];
     ModelRc::new(VecModel::from(rows))
 }

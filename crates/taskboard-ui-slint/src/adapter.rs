@@ -618,6 +618,14 @@ pub(crate) struct Adapter {
     /// pushed per pass (the armed-strip doctrine; no transient UI
     /// state in Slint).
     habit_create_open: bool,
+    /// The pause editor's armed flag (HF1, W-3): the inline editor
+    /// mounts below the section header while true — adapter-owned,
+    /// pushed per pass (the create-form's doctrine).
+    habit_pause_open: bool,
+    /// The pause editor's one-shot subject (HF1, W-3): resolved by
+    /// the opener, consumed by the commit/resume routes (the
+    /// `series_target` twin).
+    habit_pause_target: Option<taskboard_domain::HabitId>,
     /// The create form's one-shot commit payload (round-7 D-7.2):
     /// minted at the confirm seam, consumed by the routed
     /// `habit.create-commit` dispatch.
@@ -1404,6 +1412,17 @@ impl Adapter {
         self.refresh_forced(window);
     }
 
+    /// The pause editor's disarm funnel (HF1, W-3): one path — the
+    /// commit's consumed subject, the Cancel seam, the subject-death
+    /// absorb. Clears the armed flag and the one-shot subject (the
+    /// create funnel's shape).
+    fn disarm_habit_pause(&mut self, window: &AppWindow) {
+        self.habit_pause_open = false;
+        self.habit_pause_target = None;
+        window.set_habits_pause_open(false);
+        self.refresh_forced(window);
+    }
+
     fn set_feedback(window: &AppWindow, feedback: KeyFeedback) {
         window.global::<KeyboardState>().set_last_feedback(feedback);
     }
@@ -1669,6 +1688,9 @@ impl Adapter {
             // armed state clears with the dispatch — a repeat confirm
             // is the disarmed `NoTarget`).
             ctx.habit_remove_target = self.habit_remove_armed.take();
+        }
+        if wants.wants(crate::router::OneShotSet::HABIT_PAUSE_TARGET) {
+            ctx.habit_pause_target = self.habit_pause_target.take();
         }
         if wants.wants(crate::router::OneShotSet::HABIT_CREATE_DRAFT) {
             ctx.habit_create_draft = self.habit_create_draft.take();
@@ -2774,6 +2796,19 @@ impl Adapter {
         }) {
             self.habit_remove_armed = None;
         }
+        // The pause editor's one-shot subject absorbs when its habit
+        // dies (the same stale-index law; HF1) — the open editor
+        // unmounts with it.
+        if !self.habit_pause_target.is_some_and(|armed| {
+            state
+                .habits
+                .habits
+                .get(&armed)
+                .is_some_and(taskboard_domain::habit::Habit::is_live)
+        }) {
+            self.habit_pause_open = false;
+            self.habit_pause_target = None;
+        }
         // The editor's draft dies with its subject (the editor's
         // escape/cancel discipline — the buffer-never-outlives rule).
         if self.view_state.subject_habit().is_none() {
@@ -2954,6 +2989,11 @@ impl Adapter {
         // flag and the quota validity are adapter-owned; cheap every
         // pass (the setter popover's shape).
         window.set_habits_create_open(self.habit_create_open);
+        // The pause editor's pushed halves (HF1, W-3): the armed flag
+        // and the desktop mount gate are adapter-owned; cheap every
+        // pass (the create form's shape).
+        window.set_habits_pause_open(self.habit_pause_open);
+        window.set_habits_pause_mountable(!self.kiosk);
         let (quota_validity, quota_hint) =
             crate::presentation::habit_quota_validity(&self.habit_create_quota);
         window.set_habits_quota_validity(match quota_validity {
@@ -4579,6 +4619,23 @@ impl Adapter {
             // the dispatch degrades to silence (the stale-arm law).
             // Armed again = discard-and-close (the ViewPlanNextDay
             // toggle posture).
+            // The pause editor's opener (HF1, W-3): resolves the
+            // effective habit subject (the walk/click union — click ≡
+            // key) and flips the adapter-owned flag; kiosk is
+            // structurally inert (the R-3 gate: the actions render
+            // disabled, the editor never mounts).
+            (_, UiEffect::HabitPauseOpen) if self.kiosk => Vec::new(),
+            (_, UiEffect::HabitPauseOpen) => {
+                if let Some(habit) = self.effective_habit() {
+                    self.habit_pause_target = Some(habit);
+                    self.habit_pause_open = true;
+                    self.refresh_forced(window);
+                } else {
+                    self.arm_no_target_notice(ActionId::HabitPause);
+                    self.push_notice(window);
+                }
+                Vec::new()
+            }
             (_, UiEffect::HabitCreateToggle) if self.kiosk => Vec::new(),
             (_, UiEffect::HabitCreateToggle) => {
                 if self.view_state.board().is_some() {
@@ -6399,6 +6456,7 @@ impl Adapter {
             // intent (issue #506) — the kiosk/subject refusals live
             // in the arms.
             | UiEffect::SeriesPauseOpen
+            | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitConvertCancel
             | UiEffect::HabitRemoveArm
@@ -6800,6 +6858,11 @@ impl Adapter {
         if self.kiosk {
             for id in [
                 ActionId::HabitLog,
+                // The HF1 trio greys with the rest (R-3: visible-
+                // disabled, never withheld).
+                ActionId::HabitSkip,
+                ActionId::HabitPause,
+                ActionId::HabitResume,
                 ActionId::HabitUndoLog,
                 ActionId::HabitRepair,
                 ActionId::HabitMoveUp,
@@ -10720,6 +10783,8 @@ pub(crate) fn install(
         recur_edit_target: None,
         recur_draft_rule: None,
         recur_pause_open: false,
+        habit_pause_open: false,
+        habit_pause_target: None,
         recur_confirm_armed: false,
         reconcile_preview: None,
         priority_open: None,
@@ -11483,6 +11548,7 @@ fn habit_undo_target(
 /// menu (the reorder pair and the conversion live there now — the
 /// slots minted at menu open with the same floor-midpoint law, the
 /// UI computes midpoints, the planner stamps).
+#[allow(clippy::too_many_lines)] // one seam block per wired callback
 fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_habits_log_clicked, adapter: adapter; // slint callback: habits-log-clicked (the done slot ≡ strip +1 shared seam, H2 W-1)
     bind mut (a, window), args (index), {        let Some(habit) = a
@@ -11537,6 +11603,70 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // cancel hits the shared disarm funnel.
     install_seam!(window: window.on_habits_create_asked, adapter: adapter;
     bind mut (a, window), args (), {        a.route(&window, ActionId::HabitCreate);
+
+    });
+    // The HF1 skip/pause/resume seams (W-1/W-3): the row affordances
+    // resolve the `IdTables.habits` index (stale index → no-op, the
+    // notification-row guard shape); the pause editor's commit is the
+    // trust boundary (strict %Y-%m-%d, no leniency — the recur-pause
+    // seam's convention); cancel writes nothing (the destructive-role
+    // dismissal law).
+    install_seam!(window: window.on_habits_skip_asked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    a.habit_target = Some(habit);
+    a.focused_habit = Some(habit);
+    a.route(&window, ActionId::HabitSkip);
+
+    });
+    install_seam!(window: window.on_habits_pause_asked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    a.focused_habit = Some(habit);
+    a.habit_pause_target = Some(habit);
+    a.habit_pause_open = true;
+    a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_habits_resume_asked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return;
+    };
+    a.focused_habit = Some(habit);
+    a.habit_pause_target = Some(habit);
+    a.route(&window, ActionId::HabitResume);
+
+    });
+    install_seam!(window: window.on_habits_pause_until_picked, adapter: adapter;
+    bind mut (a, window), args (text), {        let Ok(date) =
+        chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+    else {
+        return; // an unparseable draft dispatches nothing
+    };
+    a.pause_draft = Some(date);
+    a.habit_pause_open = false;
+    a.route(&window, ActionId::HabitPauseCommit);
+
+    });
+    install_seam!(window: window.on_habits_pause_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        a.disarm_habit_pause(&window);
 
     });
     install_seam!(window: window.on_habits_create_quota_edited, adapter: adapter;

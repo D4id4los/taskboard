@@ -163,6 +163,10 @@ pub enum UiEffect {
     /// when armed — only with an active board; kiosk stays inert
     /// (the action gate, D-T16).
     HabitCreateToggle,
+    /// The habit pause editor's opener (HF1, W-3): the adapter flips
+    /// the habits section's inline pause editor over the resolved
+    /// habit subject (the `SeriesPauseOpen` shape).
+    HabitPauseOpen,
     /// Arm the recur row's conversion confirm strip (issue #506).
     SeriesConvertArm,
     /// Open the recurrence-rule editor overlay (round-7 D-7.1): the
@@ -508,6 +512,7 @@ impl UiEffect {
             // adapter's interpretation table owns them; no shell
             // state moves).
             | Self::SeriesPauseOpen
+            | Self::HabitPauseOpen
             | Self::HabitConvertArm
             | Self::HabitConvertCancel
             | Self::HabitRemoveArm
@@ -924,6 +929,9 @@ pub struct DispatchCtx {
     /// The staged remove's armed subject (H4 D4): the confirm routes
     /// `DeleteHabit` from it (`None` = unarmed/stale — `NoTarget`).
     pub habit_remove_target: Option<taskboard_domain::HabitId>,
+    /// The pause editor's one-shot subject (HF1, W-3): the commit and
+    /// resume routes read it (`None` = stale — `NoTarget`).
+    pub habit_pause_target: Option<taskboard_domain::HabitId>,
     /// The create form's one-shot payload (round-7 D-7.2): the exact
     /// `CreateHabit` triple the confirm seam minted (board resolved
     /// fresh at commit, the minted quota target) — `habit.create-commit`
@@ -1025,6 +1033,7 @@ impl OneShotSet {
     // cross-consume the create form's draft — the OR-based pin can't
     // see it).
     pub(crate) const HABIT_REMOVE_TARGET: u32 = 1 << 27;
+    pub(crate) const HABIT_PAUSE_TARGET: u32 = 1 << 28;
     pub(crate) const PATTERN_DRAFT: u32 = 1 << 19;
     pub(crate) const SERIES_TARGET: u32 = 1 << 20;
     pub(crate) const PAUSE_DRAFT: u32 = 1 << 21;
@@ -1102,6 +1111,9 @@ impl OneShotSet {
     pub(crate) const fn habit_remove_target(self) -> Self {
         self.set(Self::HABIT_REMOVE_TARGET)
     }
+    pub(crate) const fn habit_pause_target(self) -> Self {
+        self.set(Self::HABIT_PAUSE_TARGET)
+    }
     pub(crate) const fn habit_create_draft(self) -> Self {
         self.set(Self::HABIT_CREATE_DRAFT)
     }
@@ -1144,7 +1156,7 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::TimerCancel => OneShotSet::default().timer_target(),
         A::BreakRuleCreate => OneShotSet::default().break_rule_draft(),
         A::BreakRuleRemoveConfirm => OneShotSet::default().break_rule_target(),
-        A::HabitLog => OneShotSet::default().habit_target(),
+        A::HabitLog | A::HabitSkip => OneShotSet::default().habit_target(),
         A::HabitUndoLog => OneShotSet::default().habit_undo(),
         A::HabitMove => OneShotSet::default().habit_move(),
         A::HabitMoveUp => OneShotSet::default().habit_move_up(),
@@ -1152,6 +1164,8 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::HabitRepair => OneShotSet::default().habit_repair(),
         A::HabitConvertToSeries => OneShotSet::default().habit_convert_target().pattern_draft(),
         A::HabitRemoveConfirm => OneShotSet::default().habit_remove_target(),
+        A::HabitPauseCommit => OneShotSet::default().habit_pause_target().pause_draft(),
+        A::HabitResume => OneShotSet::default().habit_pause_target(),
         A::HabitCreateCommit => OneShotSet::default().habit_create_draft(),
         A::SeriesPauseCommit => OneShotSet::default().series_target().pause_draft(),
         A::SeriesResume => OneShotSet::default().series_target(),
@@ -1435,6 +1449,30 @@ impl ActionRouter {
             // unarmed/stale — the disarmed form commits nothing).
             ActionId::HabitRemove => DispatchOutcome::UiEffect(UiEffect::HabitRemoveArm),
             ActionId::HabitRemoveCancel => DispatchOutcome::UiEffect(UiEffect::HabitRemoveCancel),
+            // The HF1 skip/pause verbs (#955/#958): the skip routes the
+            // typed mark from the row's one-shot target (R-4: current
+            // window only — the window is minted planner-side); the
+            // pause open is a view intent; commit and resume route the
+            // domain verb from the one-shot target (the SeriesPause
+            // machinery's shape, reused not duplicated).
+            ActionId::HabitSkip => match ctx.habit_target {
+                Some(habit) => DispatchOutcome::Command(StateCommand::SkipHabit { habit }),
+                None => DispatchOutcome::NoTarget,
+            },
+            ActionId::HabitPause => DispatchOutcome::UiEffect(UiEffect::HabitPauseOpen),
+            ActionId::HabitPauseCommit => match (ctx.habit_pause_target, ctx.pause_draft) {
+                (Some(habit), Some(until)) => DispatchOutcome::Command(StateCommand::PauseHabit {
+                    habit,
+                    until: Some(until),
+                }),
+                _ => DispatchOutcome::NoTarget,
+            },
+            ActionId::HabitResume => match ctx.habit_pause_target {
+                Some(habit) => {
+                    DispatchOutcome::Command(StateCommand::PauseHabit { habit, until: None })
+                }
+                None => DispatchOutcome::NoTarget,
+            },
             ActionId::HabitRemoveConfirm => match ctx.habit_remove_target {
                 Some(habit) => DispatchOutcome::Command(StateCommand::DeleteHabit { habit }),
                 None => DispatchOutcome::NoTarget,
@@ -1969,6 +2007,7 @@ mod tests {
         DispatchCtx {
             focused_task: task.then(|| TaskId::from_uuid(Uuid::now_v7())),
             focused_stack: None,
+            habit_pause_target: None,
             habit_move_up: None,
             habit_move_down: None,
             create_target: None,
@@ -3087,6 +3126,7 @@ fn one_shot_bits_are_total() {
         .habit_repair()
         .habit_convert_target()
         .habit_remove_target()
+        .habit_pause_target()
         .habit_create_draft()
         .habit_move_up()
         .habit_move_down()
@@ -3113,7 +3153,7 @@ fn one_shot_bits_are_total() {
     // one-shot, no two constants share a bit.
     assert_eq!(
         full.0.count_ones(),
-        28,
+        29,
         "every one-shot field owns a distinct bit"
     );
     // The conversion confirm is the fix's flagship pair: exactly its

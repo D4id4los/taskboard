@@ -21,6 +21,7 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { FieldValidity, TextField } from "../widgets/text-field.slint";
+import { TippedField } from "../widgets/tipped-field.slint";
 import { DragState } from "../drag-state.slint";
 import { StatusNotice } from "../widgets/status-notice.slint";
 import { SectionHeader } from "../widgets/section-header.slint";
@@ -40,6 +41,15 @@ export struct HabitCardModel {
     // caption splits on it.
     repair-undoable: bool,
     met: bool,
+    // The typed planned-skip bit (HF1, W-2): the current window is
+    // marked skipped — the chip renders the skip state (display only).
+    skip: bool,
+    // The paused bit (HF1, W-4): a standing pause renders the badge
+    // (display only).
+    paused: bool,
+    // The inclusive pause-through date (the badge's meta text; empty
+    // while unpaused).
+    paused-until: string,
 }
 
 export component HabitsSection inherits Rectangle {
@@ -71,6 +81,31 @@ export component HabitsSection inherits Rectangle {
     // window coordinates — the same seam the task cards speak.
     // slint: habits-context-requested
     callback context-requested(int, float, float);
+    // The typed planned skip (HF1, W-1): the strip/menu affordance
+    // routes `habit.skip` over the row (the streak survives the gap).
+    // slint: habits-skip-asked
+    callback skip-asked(int);
+    // The pause editor's opener (HF1, W-3): routes `habit.pause` —
+    // the adapter resolves the one-shot subject and flips `pause-open`.
+    // slint: habits-pause-asked
+    callback pause-asked(int);
+    // The pause editor's commit seam (HF1, W-3): the typed date is the
+    // trust boundary (strict %Y-%m-%d in the adapter; the
+    // recur-pause seam's convention). The destructive-role dismissal
+    // law: cancel writes nothing.
+    // slint: habits-pause-until-picked
+    callback pause-until-picked(string);
+    // slint: habits-pause-cancelled
+    callback pause-cancelled();
+    // The resume affordance (HF1, W-3): routes the None clear leg.
+    // slint: habits-resume-asked
+    callback resume-asked(int);
+    // The pause editor's mount flag (adapter-owned, the create-open
+    // precedent) and the resume affordance's mount fact (a standing
+    // pause on any row mounts it; a paused row's resume is the
+    // no-op-safe clear).
+    in property <bool> pause-open: false;
+    in property <bool> pause-mountable: false;
     // The pointer drag's gap-drop grammar (chunk 8 D5, US-4/AC-1 —
     // the #918 board pattern over the flat list): each card carries a
     // full-size child DropArea that resolves the gap edge from the
@@ -209,6 +244,38 @@ export component HabitsSection inherits Rectangle {
             }
         }
 
+        // The pause editor (HF1, W-3): the section-level inline editor
+        // (the create form's mount posture over the recur-pause
+        // editor's field grammar) — one-shot subject resolved by the
+        // opener, the commit seam parses strictly, cancel writes
+        // nothing. Desktop-only (the editing verb's gate; kiosk is
+        // structurally inert at the arm).
+        if (root.editing-enabled && root.pause-open): VerticalLayout {
+            spacing: Theme.space-1;
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                pause-field := TippedField {
+                    horizontal-stretch: 1;
+                    placeholder: "YYYY-MM-DD";
+                    label: "Pause through date";
+                    help: "The inclusive pause-through date; covered windows are neither counted nor missed.";
+                    accepted(text) => { root.pause-until-picked(text); }
+                }
+                IconButton {
+                    icon: IconKind.check;
+                    tone: Tone.success;
+                    label: "Pause through the typed date";
+                    clicked => root.pause-until-picked(pause-field.text);
+                }
+                IconButton {
+                    icon: IconKind.remove;
+                    tone: Tone.neutral;
+                    label: "Cancel pause";
+                    clicked => root.pause-cancelled();
+                }
+            }
+        }
+
         // One habit = one card + its horizontal action strip (H2 D3):
         // the strip keeps the row's entry height (a task row's — no
         // fixed px, the card's own min-height governs) and the +1
@@ -317,6 +384,35 @@ export component HabitsSection inherits Rectangle {
                         : "Add make-up +1 to yesterday (creates the window's first log row; cannot be undone)";
                     enabled: root.editing-enabled;
                     clicked => root.repair-clicked(row-index);
+                }
+                // The typed planned skip (HF1, W-1's row affordance
+                // beside the menu row): one click, one typed mark, the
+                // streak survives (R-4: the current window only).
+                IconButton {
+                    icon: IconKind.minus;
+                    tone: Tone.neutral;
+                    label: "Skip today: the typed planned gap — the streak survives";
+                    enabled: root.editing-enabled && !row.paused;
+                    clicked => root.skip-asked(row-index);
+                }
+                // The pause editor's opener (HF1, W-3): opens the
+                // section's inline editor over this row.
+                IconButton {
+                    icon: IconKind.timer;
+                    tone: Tone.neutral;
+                    label: "Pause habit through a date: covered windows are neither counted nor missed";
+                    enabled: root.editing-enabled && !row.paused;
+                    clicked => root.pause-asked(row-index);
+                }
+                // The resume affordance (HF1, W-3): mounts only on a
+                // paused row (the badge's other half); the clear is
+                // badge hygiene, not-paused is the accepted no-op.
+                if (row.paused): IconButton {
+                    icon: IconKind.play;
+                    tone: Tone.neutral;
+                    label: "Resume habit: clears the pause";
+                    enabled: root.editing-enabled;
+                    clicked => root.resume-asked(row-index);
                 }
             }
         }

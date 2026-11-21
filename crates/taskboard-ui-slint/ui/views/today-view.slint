@@ -121,8 +121,17 @@ export component TodayView inherits FocusScope {
     // model-side gated) and the form's seams, verbatim.
     in property <bool> habits-create-mountable: false;
     in property <bool> habits-create-open: false;
+    // The pause editor's forwarding (HF1, W-3): the mount flag, the
+    // editor's seams, and the row affordances — verbatim.
+    in property <bool> habits-pause-open: false;
+    in property <bool> habits-pause-mountable: false;
     in property <FieldValidity> habits-quota-validity;
     in property <string> habits-quota-error-hint;
+    callback habits-skip-asked(int);
+    callback habits-pause-asked(int);
+    callback habits-resume-asked(int);
+    callback habits-pause-until-picked(string);
+    callback habits-pause-cancelled();
     callback habits-create-asked();
     callback habits-create-confirmed(string, string, int) -> bool;
     callback habits-create-cancelled();
@@ -224,7 +233,9 @@ export component TodayView inherits FocusScope {
                 // board — the header-only section is how the first
                 // habit gets made; kiosk and board-less days keep the
                 // old rows-only gate model-side).
-                if (root.habits.length > 0 || root.habits-create-mountable): HabitsSection {
+                if (root.habits.length > 0
+                    || root.habits-create-mountable
+                    || root.habits-pause-mountable): HabitsSection {
                     vertical-stretch: 0;
                     habits: root.habits;
                     editing-enabled: root.habits-editing-enabled;
@@ -234,6 +245,13 @@ export component TodayView inherits FocusScope {
                     repair-clicked(r) => root.habits-repair-clicked(r);
                     context-requested(r, x, y) => root.habits-context-requested(r, x, y);
                     drop-asked(r, g) => root.habits-drop-asked(r, g);
+                    skip-asked(r) => root.habits-skip-asked(r);
+                    pause-asked(r) => root.habits-pause-asked(r);
+                    resume-asked(r) => root.habits-resume-asked(r);
+                    pause-until-picked(s) => root.habits-pause-until-picked(s);
+                    pause-cancelled() => root.habits-pause-cancelled();
+                    pause-open: root.habits-pause-open;
+                    pause-mountable: root.habits-pause-mountable;
                     create-open: root.habits-create-open;
                     quota-validity: root.habits-quota-validity;
                     quota-error-hint: root.habits-quota-error-hint;

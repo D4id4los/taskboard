@@ -857,6 +857,27 @@ pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
             tone: Tone::Success,
         });
     }
+    // The typed skip chip (HF1, W-2): the marked window renders the
+    // skip state, never the miss posture (US-1/S3).
+    if row.skip {
+        decorations.push(TaskDecoration {
+            kind: DecorationKind::Habit,
+            label: SharedString::from("skipped"),
+            tone: Tone::Info,
+        });
+    }
+    // The paused badge (HF1, W-4): the standing pause renders with the
+    // inclusive through-date (US-2/S4).
+    if row.paused {
+        decorations.push(TaskDecoration {
+            kind: DecorationKind::Habit,
+            label: SharedString::from(row.paused_until.map_or_else(
+                || "paused".to_owned(),
+                |until| format!("paused through {until}"),
+            )),
+            tone: Tone::Info,
+        });
+    }
     TaskCardModel {
         title: SharedString::from(row.title.clone()),
         due_phrase: SharedString::from(String::new()),
@@ -914,6 +935,12 @@ fn push_habits(
             repair: row.repair,
             repair_undoable: row.repair_undoable,
             met: row.met,
+            skip: row.skip,
+            paused: row.paused,
+            paused_until: SharedString::from(
+                row.paused_until
+                    .map_or_else(String::new, |until| until.to_string()),
+            ),
         })
         .collect();
     window.set_habits_editing_enabled(presentation::habit_editing_enabled(kiosk));
@@ -6407,6 +6434,9 @@ mod habit_card_tests {
             repair: false,
             repair_undoable: false,
             met: count >= quota,
+            skip: false,
+            paused: false,
+            paused_until: None,
         }
     }
 

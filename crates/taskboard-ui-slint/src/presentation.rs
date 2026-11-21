@@ -7662,6 +7662,7 @@ mod recur_badge_tests {
 /// speaks — count/quota/streak derive from the domain functions, the
 /// chip is presentation-only, `met` restyles but never disables.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // the typed state bits ARE the row's shape
 pub struct HabitRow {
     /// The habit's id (the id table's entry).
     pub habit: taskboard_domain::HabitId,
@@ -7693,6 +7694,18 @@ pub struct HabitRow {
     /// rationale is the engine's). Meaningless when `repair` is
     /// false (no affordance renders).
     pub repair_undoable: bool,
+    /// The typed planned-skip bit (HF1, W-2): the current canonical
+    /// window's log row carries `skip == true` — the row renders the
+    /// typed skip chip instead of the miss posture (display only).
+    pub skip: bool,
+    /// The paused bit (HF1, W-4): the habit's pause stands (`today <=
+    /// paused_until`, the nudge disarm law's read-side mirror) — the
+    /// row renders the paused badge with the through-date (display
+    /// only).
+    pub paused: bool,
+    /// The inclusive pause-through date (the badge's meta text;
+    /// `None` while unpaused).
+    pub paused_until: Option<chrono::NaiveDate>,
     /// The restyle flag.
     pub met: bool,
 }
@@ -7772,6 +7785,9 @@ pub fn habit_rows(
                         })
                 }),
                 met: count >= quota,
+                skip: state.habits.log.get(&key).is_some_and(|entry| entry.skip),
+                paused: habit.paused_until.is_some_and(|until| until >= today),
+                paused_until: habit.paused_until,
             }
         })
         .collect()
