@@ -29,11 +29,11 @@ The restore-family verbs become dispatchable by a user. Today they are
 reachable only through the undo line's own synthesis (#979). The CLI
 gains three entity-scoped verbs mirroring the engine grammar:
 
-- `labels restore <id|prefix>` → `RestoreLabel` — tombstone-only
+- `labels restore <id/prefix>` → `RestoreLabel` — tombstone-only
   resurrect with pre-tombstone values verbatim.
-- `habits restore <id|prefix>` → `RestoreHabit` — tombstone-only
+- `habits restore <id/prefix>` → `RestoreHabit` — tombstone-only
   resurrect; the log is never touched (D26).
-- `track restore <id|prefix>` → `RestoreTimeEntry { entry }` —
+- `track restore <id/prefix>` → `RestoreTimeEntry { entry }` —
   re-materialize a hard-deleted entry from a verbatim payload (D-4's
   flag assembly).
 
@@ -93,7 +93,7 @@ Typed refusals map onto the existing `domain_error_kind` table
   still refers to it, I want to resurrect the label by id so that the
   membership-recovery surface (`AssignLabel`) becomes reachable again.
 - **Platforms**: CLI.
-- **Entry points**: `taskboard labels restore <id|prefix>`; the
+- **Entry points**: `taskboard labels restore <id/prefix>`; the
   `--json` envelope for scripts.
 - **Priority**: P1.
 - **Acceptance**:
@@ -113,7 +113,7 @@ Typed refusals map onto the existing `domain_error_kind` table
   intact, I want to resurrect it by id so that the tracker resumes
   with pre-tombstone values verbatim (the log is never touched, D26).
 - **Platforms**: CLI.
-- **Entry points**: `taskboard habits restore <id|prefix>`.
+- **Entry points**: `taskboard habits restore <id/prefix>`.
 - **Priority**: P1.
 - **Acceptance**:
   - AC-1: Given a tombstoned habit id, When the verb runs, Then
@@ -131,7 +131,7 @@ Typed refusals map onto the existing `domain_error_kind` table
   records), I want to re-materialize it from flags so that the
   tracking ledger is whole again.
 - **Platforms**: CLI.
-- **Entry points**: `taskboard track restore <id|prefix> --task <…> --start <…> [--end <…>] [--kind <…>] [--id <uuid>]`.
+- **Entry points**: `taskboard track restore <id/prefix> --task <…> --start <…> [--end <…>] [--kind <…>] [--id <uuid>]`.
 - **Priority**: P1.
 - **Acceptance**:
   - AC-1: Given a valid flag payload, When the verb runs, Then
@@ -155,7 +155,7 @@ Typed refusals map onto the existing `domain_error_kind` table
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-1/S1 | Terminal | Run `taskboard labels restore <id|prefix>` | `StateCommand::RestoreLabel { id }` | The label flips live with pre-tombstone values verbatim and a fresh tombstone clock; the receipt prints (D-3: typed fact text, or the pinned JSON receipt under `--json`) | Unknown/deleted id → the typed `unknown-label` rejection, exit reflects the refusal; nothing changed |
+| US-1/S1 | Terminal | Run `taskboard labels restore <id/prefix>` | `StateCommand::RestoreLabel { id }` | The label flips live with pre-tombstone values verbatim and a fresh tombstone clock; the receipt prints (D-3: typed fact text, or the pinned JSON receipt under `--json`) | Unknown/deleted id → the typed `unknown-label` rejection, exit reflects the refusal; nothing changed |
 | US-1/S2 | Terminal | Re-run the same verb | `StateCommand::RestoreLabel { id }` | The accepted no-op receipt (a live target is not an error) | — |
 | US-1/S3 | Terminal | Undo is attempted on the restore | — display only (the fence answers) | The typed `target-not-undoable` / `restore-class` fact (D-5's fence; the existing `not_undoable_reason_kind` mapping) | The typed escape is the ordinary label-delete verb |
 
@@ -163,7 +163,7 @@ Typed refusals map onto the existing `domain_error_kind` table
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-2/S1 | Terminal | Run `taskboard habits restore <id|prefix>` | `StateCommand::RestoreHabit { id }` | The habit flips live with pre-tombstone values verbatim and a fresh tombstone clock; the log is untouched (D26); the receipt prints (D-3) | Unknown id → the typed `unknown-habit` rejection |
+| US-2/S1 | Terminal | Run `taskboard habits restore <id/prefix>` | `StateCommand::RestoreHabit { id }` | The habit flips live with pre-tombstone values verbatim and a fresh tombstone clock; the log is untouched (D26); the receipt prints (D-3) | Unknown id → the typed `unknown-habit` rejection |
 | US-2/S2 | Terminal | Re-run the same verb | `StateCommand::RestoreHabit { id }` | The accepted no-op receipt | — |
 | US-2/S3 | Terminal | Undo is attempted on the restore | — display only | The typed `restore-class` fence fact (D-5) | The typed escape is the ordinary habit-delete verb |
 
@@ -171,7 +171,7 @@ Typed refusals map onto the existing `domain_error_kind` table
 
 | Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
 |---|---|---|---|---|---|
-| US-3/S1 | Terminal | Run `taskboard track restore <id|prefix> --task T --start S [--end E] [--kind K] [--id I]` | `StateCommand::RestoreTimeEntry { entry }` (payload assembled per D-4) | The entry re-materializes verbatim; the receipt prints (`EntryRestored { id }`; the fresh-v7 default surfaces its minted id) | Malformed date/kind → the clap-layer typed parse refusal before dispatch (AC-4) |
+| US-3/S1 | Terminal | Run `taskboard track restore <id/prefix> --task T --start S [--end E] [--kind K] [--id I]` | `StateCommand::RestoreTimeEntry { entry }` (payload assembled per D-4) | The entry re-materializes verbatim; the receipt prints (`EntryRestored { id }`; the fresh-v7 default surfaces its minted id) | Malformed date/kind → the clap-layer typed parse refusal before dispatch (AC-4) |
 | US-3/S2 | Terminal | Run with a `--task` naming a gone/deleted task | (no dispatch — the resolution refuses) | The typed `unknown-task` rejection | Fix `--task` and re-run |
 | US-3/S3 | Terminal | Run with `--id` naming a present row | (no dispatch — the planner refuses) | The typed `time-entry-already-present` divergence refusal | Omit `--id` (fresh v7) or name a genuinely absent id |
 | US-3/S4 | Terminal | Undo is attempted on the restore | — display only | The typed `restore-class` fence fact (D-5) | The typed escape is the ordinary time-entry delete verb |
@@ -206,11 +206,11 @@ flowchart TD
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | crates/taskboard-app/src/cli.rs | `labels restore <id\|prefix>` verb arm | — (CLI verb; no slint callback — terminal surface, §7 Kind selects the domain token) | `commands/labels.rs` dispatch | — | `StateCommand::RestoreLabel` | Verb + positional id | US-1/S1, US-1/S2 | crates/taskboard-app/tests/it_restore_cli.rs::us1_s1_labels_restore_dispatches_restore_label_and_receipts |
-| W-2 | crates/taskboard-app/src/cli.rs | `habits restore <id\|prefix>` verb arm | — (CLI verb) | `commands/` habit dispatch | — | `StateCommand::RestoreHabit` | Verb + positional id | US-2/S1, US-2/S2 | crates/taskboard-app/tests/it_restore_cli.rs::us2_s1_habits_restore_dispatches_restore_habit_and_receipts |
-| W-3 | crates/taskboard-app/src/cli.rs | `track restore` verb arm + flags | — (CLI verb) | `commands/track.rs` dispatch (payload assembly per D-4) | — | `StateCommand::RestoreTimeEntry` | Verb + positional id + flags | US-3/S1 | crates/taskboard-app/tests/it_restore_cli.rs::us3_s1_track_restore_assembles_verbatim_payload_and_receipts |
-| W-4 | crates/taskboard-app/src/commands/mod.rs | typed-refusal mapping for the new paths | — (CLI verb) | `domain_error_kind` arms (existing table) | — | — (mapping, no new domain delta) | — | US-1/S1, US-2/S1, US-3/S2, US-3/S3 | crates/taskboard-app/tests/it_restore_cli.rs::us3_s3_present_same_id_refuses_typed |
-| W-5 | crates/taskboard-app/src/cli.rs | `--json` receipt path over the pinned variants | — (CLI verb) | the `--json` envelope (D-3) | — | — (envelope, unchanged) | — | US-1/S1, US-2/S1, US-3/S1 | crates/taskboard-app/tests/it_restore_cli.rs::us1_s1_json_receipt_decodes_pinned_command_outcome |
+| W-1 | crates/taskboard-app/src/cli.rs | `labels restore <id/prefix>` verb arm | — | `commands/labels.rs` dispatch | — | StateCommand::RestoreLabel | Verb + positional id | US-1/S1, US-1/S2 | crates/taskboard-app/tests/it_restore_cli.rs::us1_s1_labels_restore_dispatches_restore_label_and_receipts, crates/taskboard-app/tests/it_restore_cli.rs::us1_s2_labels_restore_repeat_is_the_accepted_noop |
+| W-2 | crates/taskboard-app/src/cli.rs | `habits restore <id/prefix>` verb arm | — | `commands/` habit dispatch | — | StateCommand::RestoreHabit | Verb + positional id | US-2/S1, US-2/S2 | crates/taskboard-app/tests/it_restore_cli.rs::us2_s1_habits_restore_dispatches_restore_habit_and_receipts, crates/taskboard-app/tests/it_restore_cli.rs::us2_s2_habits_restore_repeat_is_the_accepted_noop |
+| W-3 | crates/taskboard-app/src/cli.rs | `track restore` verb arm + flags | — | `commands/track.rs` dispatch (payload assembly per D-4) | — | StateCommand::RestoreTimeEntry | Verb + positional id + flags | US-3/S1 | crates/taskboard-app/tests/it_restore_cli.rs::us3_s1_track_restore_assembles_verbatim_payload_and_receipts |
+| W-4 | crates/taskboard-app/src/commands/mod.rs | typed-refusal mapping for the new paths | — | `domain_error_kind` arms (existing table) | — | — | — | US-1/S1, US-2/S1, US-3/S2, US-3/S3 | crates/taskboard-app/tests/it_restore_cli.rs::us3_s3_present_same_id_refuses_typed, crates/taskboard-app/tests/it_restore_cli.rs::us3_s2_gone_owner_task_refuses_typed |
+| W-5 | crates/taskboard-app/src/cli.rs | `--json` receipt path over the pinned variants | — | the `--json` envelope (D-3) | — | — | — | US-1/S1, US-2/S1, US-3/S1 | crates/taskboard-app/tests/it_restore_cli.rs::us1_s1_json_receipt_decodes_pinned_command_outcome |
 
 ## 7. Command-contract delta
 
@@ -224,8 +224,8 @@ flowchart TD
 | ActionId | — | none (CLI chunk) | — |
 
 The CLI grammar delta (prose contract, no domain token): three new
-verb arms — `labels restore <id|prefix>`, `habits restore <id|prefix>`,
-`track restore <id|prefix> --task <uuid|prefix|exact live title>
+verb arms — `labels restore <id/prefix>`, `habits restore <id/prefix>`,
+`track restore <id/prefix> --task <uuid|prefix|exact live title>
 --start <RFC 3339> [--end <RFC 3339>] [--kind <work|break>] [--id <uuid>]`
 — per D-1/D-2/D-4.
 
