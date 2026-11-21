@@ -6483,7 +6483,10 @@ mod habit_card_tests {
         assert_eq!(decorations.len(), 2, "progress + streak");
         assert_eq!(decorations[0].label, "3/3");
         assert_eq!(decorations[0].tone, Tone::Success, "met restyles only");
-        assert_eq!(decorations[1].label, "\u{1F525}2");
+        // The W-9 badge swap: the streak decoration carries the typed
+        // value; the emoji slot is retired (the label text is judged
+        // at walkthrough, never asserted beyond the value).
+        assert_eq!(decorations[1].label, "2");
         assert!(!model.selected && !model.anchor && !model.dragging_source);
         // Under quota: neutral progress tone; no streak: one chip only.
         let model = habit_card(&row(1, 3, 0, None, None));
