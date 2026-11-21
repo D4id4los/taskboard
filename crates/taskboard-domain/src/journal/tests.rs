@@ -437,6 +437,45 @@ fn reflection_surface_serde_name_pins_and_labels_carry_the_arms() {
 /// journal entry carrying `RestoreStack` and the reclassified
 /// `DeleteStack` round-trip through serde JSON unchanged (the new
 /// `StateCommand` arm is appended, so no persisted payload renumbers).
+/// US-1/S3 + US-2/S3 (UF1, W-3, US-1 AC-4's typed face): the
+/// `command_label` lockstep carries the three rule-verb presentation
+/// arms, and a journal headed by a rule-verb entry projects
+/// `UndoView.head_label: Some(_)` — the label text itself is
+/// presentation and never asserted (the journeys-suite law).
+#[test]
+fn us1_s3_command_label_arms_present() {
+    let task = crate::ids::TaskId::from_uuid(uuid::Uuid::from_u128(1));
+    let rule = crate::ids::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(2));
+    let commands = [
+        crate::messages::StateCommand::AddReminderRule {
+            task,
+            offset: crate::reminders::ReminderOffset::before(chrono::TimeDelta::minutes(-30))
+                .expect("valid"),
+            at: None,
+            insistence: crate::reminders::Insistence::Normal,
+        },
+        crate::messages::StateCommand::RemoveReminderRule { rule },
+        crate::messages::StateCommand::ClearReminderRules { task },
+    ];
+    for command in commands {
+        let label = command_label(&command);
+        assert!(!label.is_empty(), "every rule-verb arm carries a label");
+        let ids = CountingIds::new();
+        let entry = JournalEntry {
+            command: command.clone(),
+            ..entry_at(&ids, None, 100)
+        };
+        let mut journal = JournalState::default();
+        journal.entries.push(entry.clone());
+        journal.head = Some(entry.id);
+        let view = UndoView::derive(&journal);
+        assert!(
+            view.head_label.is_some(),
+            "a rule-verb head projects a label: {command:?}"
+        );
+    }
+}
+
 #[test]
 fn restore_stack_and_reclassified_delete_stack_entries_round_trip() {
     let ids = CountingIds::new();

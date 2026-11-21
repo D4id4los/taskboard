@@ -265,15 +265,26 @@ fn record_entry(
         StateCommand::SnoozeReminder { .. }
         | StateCommand::SetTaskRemindersMuted { .. }
         | StateCommand::DismissReminder { .. }
-        | StateCommand::AddReminderRule { .. }
-        | StateCommand::RemoveReminderRule { .. }
-        | StateCommand::ClearReminderRules { .. }
         | StateCommand::CreateAdhocAlarm { .. }
         | StateCommand::CancelAdhocAlarm { .. }
         | StateCommand::CreateBreakRule { .. }
         | StateCommand::DeleteBreakRule { .. } => {
             UndoFacts::NotUndoable(NotUndoableReason::ReminderSurface)
         }
+        // The #354 rule-verb reclassification (UF1): the three task-rule
+        // edits journal their rule pre-images (the arm-agnostic capture
+        // walks the `UpsertReminderRule` / `DeleteReminderRule` actions —
+        // the `PreImage::ReminderRule` row exists since #900), so the
+        // add's inverse is the ordinary remove and a remove/clear's
+        // inverse is the #900 verbatim rule-resurrect (no fresh id, no
+        // re-stamp — the D-3 law). Mute stays `ReminderSurface` (one
+        // self-healing toggle at its own seam), and the snooze /
+        // dismissal / ad-hoc rows stay out by the hard constraint: a
+        // delivered notification is a recorded fact, never retractable
+        // (the UF1 dispatch trap (a)).
+        StateCommand::AddReminderRule { .. }
+        | StateCommand::RemoveReminderRule { .. }
+        | StateCommand::ClearReminderRules { .. } => journaled_pre_images(app, actions),
         // ---- the undo v2 tracking/habit widening (#555, §3 rows
         // 35′–42′; three record-time dynamic rules per §6/§7) ----------
         StateCommand::LogTime { .. }
@@ -534,6 +545,21 @@ pub fn pre_images(app: &AppState, actions: &[PersistenceAction]) -> Vec<PreImage
     let mut images = Vec::new();
     for action in actions {
         let (key, image) = match action {
+            // The #354 rule-verb widening (UF1): the add's upsert is a
+            // create (`before: None` — ids mint once, so a journaled
+            // rule upsert is always the mint; the #900 resurrect's
+            // action-level upserts never journal). The `SetTaskDone`
+            // recur-spawn's per-head rule copies capture the same
+            // honest create shape; no inverse class reads their
+            // `before: None` rows, and the resurrect walk skips
+            // `before: None` — inert for every other entry.
+            PersistenceAction::UpsertReminderRule(rule) => (
+                JournalEntity::ReminderRule(rule.id),
+                PreImage::ReminderRule {
+                    id: rule.id,
+                    before: app.reminders.rules.get(&rule.id).cloned().map(Box::new),
+                },
+            ),
             PersistenceAction::DeleteReminderRule(rule_id) => (
                 JournalEntity::ReminderRule(*rule_id),
                 PreImage::ReminderRule {
@@ -1021,6 +1047,25 @@ enum InverseClass {
     /// restores as the honest count-0 row (the legal correction shape;
     /// absence-equivalent in every count read).
     LoggedHabit,
+    /// `AddReminderRule` (#354, UF1): the inverse is the ordinary
+    /// `RemoveReminderRule` over the minted rule's id (the entry's
+    /// `before: None` `PreImage::ReminderRule`). Rule rows carry no
+    /// clock stamps (D19), so the checked scope is the catalogue's own
+    /// typed refusal — an already-removed rule refuses
+    /// `UnknownReminderRule` at planning, never a silent no-op. A
+    /// delivery that fired between add and undo is untouched by
+    /// construction: no inverse action addresses the delivery record
+    /// (the UF1 hard constraint).
+    AddedReminderRule,
+    /// `RemoveReminderRule`/`ClearReminderRules` (#354, UF1): no
+    /// synthesized command — the inverse is the #900 action-level
+    /// verbatim rule-resurrect over the entry's `before: Some`
+    /// pre-images (same id, same stamps — the D-3 law; the synthesis
+    /// batch is empty and `plan_undo`'s batch walk carries the
+    /// upserts). Pushed/unpushed composes through the D-U2 rule
+    /// unchanged: the resurrect's flush trigger survives a pushed
+    /// entry and is dropped by an unpushed entry's retraction.
+    RemovedReminderRules,
 }
 
 /// The §3 classification of a journaled command — the narrow extract of
@@ -1068,6 +1113,13 @@ impl JournalEntry {
             StateCommand::RestoreLabel { .. } => Ok(InverseClass::RestoredLabel),
             StateCommand::RestoreTimeEntry { .. } => Ok(InverseClass::RestoredTimeEntry),
             StateCommand::RestoreHabit { .. } => Ok(InverseClass::RestoredHabit),
+            // The #354 rule-verb rows (UF1): the add's inverse is the
+            // ordinary remove; a remove/clear's inverse is the #900
+            // verbatim resurrect (an empty synthesis batch — the
+            // action-level walk carries it).
+            StateCommand::AddReminderRule { .. } => Ok(InverseClass::AddedReminderRule),
+            StateCommand::RemoveReminderRule { .. }
+            | StateCommand::ClearReminderRules { .. } => Ok(InverseClass::RemovedReminderRules),
             // NotUndoable heads refuse before the class is consulted;
             // every other arm is unreachable here (the wrapper only
             // journals the arms above). The engine-routed/no-op arms
@@ -1085,9 +1137,6 @@ impl JournalEntry {
             | StateCommand::SnoozeReminder { .. }
             | StateCommand::SetTaskRemindersMuted { .. }
             | StateCommand::DismissReminder { .. }
-            | StateCommand::AddReminderRule { .. }
-            | StateCommand::RemoveReminderRule { .. }
-            | StateCommand::ClearReminderRules { .. }
             | StateCommand::CreateAdhocAlarm { .. }
             | StateCommand::CancelAdhocAlarm { .. }
             | StateCommand::CreateBreakRule { .. }
@@ -2136,6 +2185,42 @@ fn synthesize_undo(
                 window: key.window,
                 count: recorded_pre.unwrap_or(0),
             }])
+        }
+        InverseClass::AddedReminderRule => {
+            // The #354 inverse (UF1): the ordinary `RemoveReminderRule`
+            // over the minted rule's id, read off the entry's
+            // `before: None` rule pre-image (the mint is the only
+            // journaled upsert shape this class sees). Rule rows carry
+            // no stamps (D19) — the checked scope is the catalogue's
+            // own typed refusal: if the rule is already gone, the
+            // remove plans `UnknownReminderRule`; no silent no-op. The
+            // delivery proofs the rule may have fired are untouched by
+            // construction — no action in the batch addresses the
+            // delivery record (the UF1 hard constraint, trap (a)).
+            let Some(rule) = images.iter().find_map(|image| match image {
+                PreImage::ReminderRule { id, before: None } => Some(*id),
+                _ => None,
+            }) else {
+                // Unreachable for a journaled add (the capture records
+                // the mint); defensive.
+                return Err(CommandError::NothingToUndo);
+            };
+            Ok(vec![StateCommand::RemoveReminderRule { rule }])
+        }
+        InverseClass::RemovedReminderRules => {
+            // The #354 inverse (UF1): deliberately empty — the remove /
+            // clear inverts through the #900 action-level verbatim
+            // rule-resurrect in `plan_undo`'s batch walk (same id, same
+            // `created_at`, same stamps — the D-3 law; a synthesized
+            // `AddReminderRule` would mint fresh identities and forge a
+            // different stored fact). Rule rows carry no stamps (D19),
+            // so there is nothing to watermark-check here; the
+            // resurrect's skip-not-refuse guard is the divergence valve
+            // a prior resurrect already placed. Pushed/unpushed (D-U2)
+            // composes after the walk: a pushed entry keeps the
+            // resurrect's document-lane flush; an unpushed entry's
+            // retraction drops it (the server never saw the removal).
+            Ok(Vec::new())
         }
     }
 }
