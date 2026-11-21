@@ -1575,8 +1575,15 @@ impl Adapter {
         // walk's stroke.
         if let Some(habit) = self.effective_habit() {
             match id {
-                ActionId::HabitLog if self.habit_target.is_none() => {
+                ActionId::HabitLog | ActionId::HabitSkip if self.habit_target.is_none() => {
                     self.habit_target = Some(habit);
+                }
+                // HF1 (W-11, O-8 parity): the resume chord over the
+                // walk's landing mints the pause editor's one-shot
+                // subject exactly as the row seams do — a subjectless
+                // dispatch stays the typed NoTarget.
+                ActionId::HabitResume if self.habit_pause_target.is_none() => {
+                    self.habit_pause_target = Some(habit);
                 }
                 ActionId::HabitUndoLog if self.habit_undo.is_none() => {
                     self.habit_undo = habit_undo_target(self, habit);
@@ -11611,7 +11618,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // trust boundary (strict %Y-%m-%d, no leniency — the recur-pause
     // seam's convention); cancel writes nothing (the destructive-role
     // dismissal law).
-    install_seam!(window: window.on_habits_skip_asked, adapter: adapter;
+    install_seam!(window: window.on_habits_skip_asked, adapter: adapter; // slint: habits-skip-asked
     bind mut (a, window), args (index), {        let Some(habit) = a
         .tables
         .habits
@@ -11625,7 +11632,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.route(&window, ActionId::HabitSkip);
 
     });
-    install_seam!(window: window.on_habits_pause_asked, adapter: adapter;
+    install_seam!(window: window.on_habits_pause_asked, adapter: adapter; // slint: habits-pause-asked
     bind mut (a, window), args (index), {        let Some(habit) = a
         .tables
         .habits
@@ -11640,7 +11647,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.refresh_forced(&window);
 
     });
-    install_seam!(window: window.on_habits_resume_asked, adapter: adapter;
+    install_seam!(window: window.on_habits_resume_asked, adapter: adapter; // slint: habits-resume-asked
     bind mut (a, window), args (index), {        let Some(habit) = a
         .tables
         .habits
@@ -11654,7 +11661,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.route(&window, ActionId::HabitResume);
 
     });
-    install_seam!(window: window.on_habits_pause_until_picked, adapter: adapter;
+    install_seam!(window: window.on_habits_pause_until_picked, adapter: adapter; // slint: habits-pause-until-picked
     bind mut (a, window), args (text), {        let Ok(date) =
         chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
     else {
@@ -11665,7 +11672,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.route(&window, ActionId::HabitPauseCommit);
 
     });
-    install_seam!(window: window.on_habits_pause_cancelled, adapter: adapter;
+    install_seam!(window: window.on_habits_pause_cancelled, adapter: adapter; // slint: habits-pause-cancelled
     bind mut (a, window), args (), {        a.disarm_habit_pause(&window);
 
     });

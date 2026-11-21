@@ -101,6 +101,34 @@ fn us1_s2_skip_dispatches_the_exact_command() {
     });
 }
 
+/// US-1/S2 (W-11, the O-8 parity leg): the Today-context chord over
+/// the walk's landing routes the same `StateCommand::SkipHabit` — the
+/// keyboard path mints the one-shot habit subject exactly as the row
+/// seam does (no click or menu fact needed).
+#[test]
+fn us1_s2_skip_key_routes_over_the_row_subject() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        // The walk enters the habits section's row (the last Today
+        // section) — no pointer fact, the keyboard path alone.
+        harness
+            .handle
+            .dispatch_action(taskboard_ui_slint::actions::ActionId::NavLastItem);
+        harness.driver.advance_time(0);
+        harness
+            .handle
+            .dispatch_action(taskboard_ui_slint::actions::ActionId::HabitSkip);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::SkipHabit { .. }] => {}
+            other => panic!("the chord routes the exact command, got {other:?}"),
+        }
+    });
+}
+
 /// US-1/S3 (W-2, AC-5): a skipped window renders the typed skip chip
 /// on the row (display only — no command).
 #[test]
@@ -111,8 +139,6 @@ fn us1_s3_row_shows_the_typed_skip_state() {
     // Mark the current window skipped in the seed (the engine's
     // typed mark, read back through the projection).
     let habit = *state.habits.habits.keys().next().expect("one habit");
-    let today = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch");
-    let _ = today;
     let mut log = std::collections::BTreeMap::new();
     let window = taskboard_domain::WindowStart::of_period(
         taskboard_domain::PeriodKind::Day,
