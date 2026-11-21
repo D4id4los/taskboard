@@ -194,8 +194,9 @@ jobs:
         # Default target set (lib+bins+tests): bench targets are the
         # benchmark workflow's lane (main pushes + weekly; off PRs since
         # 2026-10-21); clippy --all-targets keeps them compiling here.
-        # tests/inventory/bench_fixture_contract.rs stays — it is a
-        # regular integration test, not a bench target.
+        # tests/inventory/bench_fixture_contract.rs (and the consolidated
+        # sqlite tests/suite/bench_fixtures.rs) stay — regular integration
+        # tests, not bench targets.
         run: cargo nextest run --workspace --no-tests=warn
 
       - name: Upload pty gap logs

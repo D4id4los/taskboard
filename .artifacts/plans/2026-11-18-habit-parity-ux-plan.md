@@ -222,7 +222,7 @@ the domain/engine seam tier lands in this round's habit-domain-fields
 chunk, so the step binds to its seam test now; the UI-journey test
 above stays the editor-tier evidence when H2/H4 land it.
 
-bound-test: US-6/S1 -> crates/taskboard-state/tests/habits.rs::us6_s1_update_habit_stores_the_day_inside_the_canonical_window
+bound-test: US-6/S1 -> crates/taskboard-state/tests/state_features.rs::habits::us6_s1_update_habit_stores_the_day_inside_the_canonical_window
 
 - **Journey tests** (step-ID-named): us1_s1 us1_s2 us2_s1 us2_s2 us3_s1
   us3_s2 us5_s1 us5_s2 us5_s3 us5_s4 us6_s1 us6_s2
