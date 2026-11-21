@@ -93,8 +93,17 @@ expression: rows
             - Ctrl+Shift+h
           action: habit.create
         - sequence:
+            - Ctrl+Shift+o
+          action: habit.skip
+        - sequence:
             - Ctrl+Shift+u
           action: habit.unlog
+        - sequence:
+            - Ctrl+Shift+w
+          action: habit.resume
+        - sequence:
+            - Ctrl+Shift+y
+          action: habit.pause
         - sequence:
             - Delete
           action: task.delete
@@ -754,6 +763,9 @@ expression: rows
             - Ctrl+n
           action: nav.focus-down
         - sequence:
+            - Ctrl+Shift+o
+          action: habit.skip
+        - sequence:
             - Ctrl+p
           action: nav.focus-up
         - sequence:
@@ -765,6 +777,12 @@ expression: rows
         - sequence:
             - Ctrl+v
           action: view.scroll-down
+        - sequence:
+            - Ctrl+Shift+w
+          action: habit.resume
+        - sequence:
+            - Ctrl+Shift+y
+          action: habit.pause
         - sequence:
             - Shift+Up
           action: habit.move-up
@@ -1317,14 +1335,23 @@ expression: rows
             - Ctrl+Shift+h
           action: habit.create
         - sequence:
+            - Ctrl+Shift+o
+          action: habit.skip
+        - sequence:
             - t
           action: task.due-today
         - sequence:
             - Ctrl+Shift+u
           action: habit.unlog
         - sequence:
+            - Ctrl+Shift+w
+          action: habit.resume
+        - sequence:
             - y
           action: task.schedule-today
+        - sequence:
+            - Ctrl+Shift+y
+          action: habit.pause
         - sequence:
             - Shift+Up
           action: habit.move-up

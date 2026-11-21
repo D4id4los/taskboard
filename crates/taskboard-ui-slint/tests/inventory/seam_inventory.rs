@@ -176,6 +176,19 @@ const SEAM_INVENTORY: &[&str] = &[
     // The habit list's gap drop (chunk 8 D5, US-4/AC-1): callback
     // "habits-drop-asked" — the #918 board pattern over the flat list.
     "habits_drop_asked",
+    // The HF1 skip/pause/resume seams (W-1/W-3): the row affordances
+    // resolve the IdTables.habits index; the pause editor's commit is
+    // the trust boundary (strict %Y-%m-%d); cancel writes nothing.
+    // slint: habits-skip-asked
+    "habits_skip_asked",
+    // slint: habits-pause-asked
+    "habits_pause_asked",
+    // slint: habits-resume-asked
+    "habits_resume_asked",
+    // slint: habits-pause-until-picked
+    "habits_pause_until_picked",
+    // slint: habits-pause-cancelled
+    "habits_pause_cancelled",
     "habits_create_asked",
     "habits_create_cancelled",
     "habits_create_confirmed",

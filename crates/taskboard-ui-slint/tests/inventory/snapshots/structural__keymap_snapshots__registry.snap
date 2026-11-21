@@ -1099,6 +1099,42 @@ expression: rows
   menu_rank: 252
   description: "Routes the confirmed removal: the habit tombstones, its log history outlives it."
   menu_group: task
+- id: habit.skip
+  label: Skip today
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 206
+  description: "Marks the habit's current window skipped: the typed planned gap — the streak survives."
+  menu_group: task
+- id: habit.pause
+  label: Pause until…
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 207
+  description: "Opens the pause editor: covered windows are neither counted nor missed and no nudges fire."
+  menu_group: task
+- id: habit.pause-commit
+  label: Commit pause
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 230
+  description: Routes the parsed inclusive pause-through date to the habit pause verb.
+  menu_group: ~
+- id: habit.resume
+  label: Resume habit
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 209
+  description: "Clears the habit's pause field (the clear is badge hygiene; not-paused is the accepted no-op)."
+  menu_group: task
 - id: habit.remove-cancel
   label: Cancel removal
   contexts:
