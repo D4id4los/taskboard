@@ -385,6 +385,12 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
         &["Ctrl+Shift+c"],
     ),
     (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
+    // HF1 (W-11, #955/#958): the skip/pause/resume trio — Today
+    // context rows in every preset (the O-8 parity law; the free
+    // Ctrl+Shift chords, the chunk-1 case-law spelling).
+    (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
+    (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
+    (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
     (ActionId::BoardNext, ContextId::Board, &["b"]),
     (ActionId::BoardPrevious, ContextId::Board, &["B"]),
     // The switcher flyout's opener (UX R-4 D-4, #794): the jump-to
@@ -828,6 +834,12 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
         &["Ctrl+Shift+c"],
     ),
     (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
+    // HF1 (W-11, #955/#958): the skip/pause/resume trio — Today
+    // context rows in every preset (the O-8 parity law; the free
+    // Ctrl+Shift chords, the chunk-1 case-law spelling).
+    (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
+    (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
+    (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
     // Round 3 (W-SM-d, F26): the title re-arm — Return at detail is
     // unambiguous once task-detail entry no longer auto-arms (emacs
     // binds Return only at Board/Today for `task.edit`).
@@ -1341,6 +1353,12 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
         &["Ctrl+Shift+c"],
     ),
     (ActionId::HabitUndoLog, ContextId::Today, &["Ctrl+Shift+u"]),
+    // HF1 (W-11, #955/#958): the skip/pause/resume trio — Today
+    // context rows in every preset (the O-8 parity law; the free
+    // Ctrl+Shift chords, the chunk-1 case-law spelling).
+    (ActionId::HabitSkip, ContextId::Today, &["Ctrl+Shift+o"]),
+    (ActionId::HabitPause, ContextId::Today, &["Ctrl+Shift+y"]),
+    (ActionId::HabitResume, ContextId::Today, &["Ctrl+Shift+w"]),
     // The today re-commit (UX R-4 D-8, #796): the bare mnemonic in
     // the Today context (the HabitCreate row's pattern — the view
     // context resolves before ViNormal); free in both contexts.

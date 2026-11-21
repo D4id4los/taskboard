@@ -342,9 +342,11 @@ fn key_of(effect: &UiEffect) -> EK {
         // The priority pickers' opener (UX R-3 D-1): the Nav class
         // flag flip.
         UiEffect::PriorityPickerOpen(_) => EK::PriorityOpen,
-        // The recur row's intents (issue #506): flag flips over the
-        // subject — no flow moves, no command routes.
+        // The recur row's intents (issue #506) and HF1's pause editor
+        // opener: flag flips over the subject — no flow moves, no
+        // command routes.
         UiEffect::SeriesPauseOpen
+        | UiEffect::HabitPauseOpen
         | UiEffect::HabitConvertArm
         | UiEffect::HabitConvertCancel
         | UiEffect::HabitRemoveArm
@@ -1663,9 +1665,11 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         // payload-blindness shape).
         UiEffect::PriorityPickerOpen(crate::router::PriorityField::Importance),
         UiEffect::PriorityPickerOpen(crate::router::PriorityField::Urgency),
-        // The recur row's view intents (issue #506): the same view
-        // intent class as the entries' open.
+        // The recur row's view intents (issue #506) and HF1's pause
+        // editor opener: the same view intent class as the entries'
+        // open.
         UiEffect::SeriesPauseOpen,
+        UiEffect::HabitPauseOpen,
         UiEffect::HabitConvertArm,
         UiEffect::HabitRemoveArm,
         UiEffect::HabitRemoveCancel,
@@ -2950,9 +2954,11 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             // The labels overlay is a modal takeover (UX R-3 D-2,
             // #789) — the entries overlay's class.
             | UiEffect::LabelsOpen
-            // The recur row's intents (issue #506): view intents — no
-            // modal takeover, the flags ride the next pass.
+            // The recur row's intents (issue #506) and HF1's pause
+            // editor opener: view intents — no modal takeover, the
+            // flags ride the next pass.
             | UiEffect::SeriesPauseOpen
+            | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitRemoveArm
             // The H4 editor opener: the settle-then-open view intent

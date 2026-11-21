@@ -526,6 +526,21 @@ pub enum ActionId {
     /// The armed remove's cancel step: disarms INSIDE the open menu;
     /// nothing was dispatched.
     HabitRemoveCancel,
+    /// The row's typed planned skip (HF1, #955; plan
+    /// 2026-11-21-habit-skip-pause W-1): marks the habit's current
+    /// canonical window skipped — the streak survives an intentional
+    /// gap (R-4: current window only; R-5: period grain).
+    HabitSkip,
+    /// The pause editor's opener (HF1, #958; W-3): opens the inline
+    /// pause editor over the focused/menu-row habit (the
+    /// `SeriesPause` shape; the adapter resolves the one-shot subject).
+    HabitPause,
+    /// The pause editor's commit: routes `PauseHabit` with the parsed
+    /// inclusive date (`NoTarget` without target or valid draft).
+    HabitPauseCommit,
+    /// The resume affordance: routes `PauseHabit { until: None }` —
+    /// the field clears for badge hygiene (the `SeriesResume` twin).
+    HabitResume,
     /// The task-view recur row's pause affordance: opens the inline
     /// pause editor (a view intent, the entries-overlay precedent).
     SeriesPause,
@@ -798,6 +813,10 @@ impl ActionId {
             Self::HabitRemove => "habit.remove",
             Self::HabitRemoveConfirm => "habit.remove-confirm",
             Self::HabitRemoveCancel => "habit.remove-cancel",
+            Self::HabitSkip => "habit.skip",
+            Self::HabitPause => "habit.pause",
+            Self::HabitPauseCommit => "habit.pause-commit",
+            Self::HabitResume => "habit.resume",
             Self::SeriesPause => "series.pause",
             Self::SeriesPauseCommit => "series.pause-commit",
             Self::SeriesResume => "series.resume",
@@ -2177,6 +2196,48 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
+        id: ActionId::HabitSkip,
+        label: "Skip today",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 206,
+        description: "Marks the habit's current window skipped: the typed planned gap — the streak survives.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitPause,
+        label: "Pause until…",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 207,
+        description: "Opens the pause editor: covered windows are neither counted nor missed and no nudges fire.",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
+        id: ActionId::HabitPauseCommit,
+        label: "Commit pause",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 208,
+        description: "Routes the parsed inclusive pause-through date to the habit pause verb.",
+        // Internal dispatch verb (see HabitLog): the editor's Confirm
+        // is its only affordance.
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitResume,
+        label: "Resume habit",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 208,
+        description: "Clears the habit's pause field (the clear is badge hygiene; not-paused is the accepted no-op).",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
         id: ActionId::HabitRemoveCancel,
         label: "Cancel removal",
         contexts: GLOBAL,
@@ -2911,6 +2972,10 @@ mod tests {
             ActionId::HabitRepair,
             ActionId::HabitConvertArm,
             ActionId::HabitConvertToSeries,
+            ActionId::HabitSkip,
+            ActionId::HabitPause,
+            ActionId::HabitPauseCommit,
+            ActionId::HabitResume,
             ActionId::SeriesPause,
             ActionId::SeriesPauseCommit,
             ActionId::SeriesResume,

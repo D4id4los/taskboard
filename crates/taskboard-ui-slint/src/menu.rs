@@ -449,6 +449,9 @@ pub const TASK_CONTEXT_MULTI: &[ActionId] = &[ActionId::TaskComplete, ActionId::
 /// destructive-last law has no delete row to pin yet.
 pub const HABIT_CONTEXT: &[ActionId] = &[
     ActionId::HabitLog,
+    ActionId::HabitSkip,
+    ActionId::HabitPause,
+    ActionId::HabitResume,
     ActionId::HabitUndoLog,
     ActionId::HabitRepair,
     ActionId::HabitMoveUp,
@@ -1784,6 +1787,12 @@ mod tests {
             ActionId::HabitLog,
             ActionId::HabitUndoLog,
             ActionId::HabitRepair,
+            // The HF1 trio rides the shared rank space between the
+            // repair and the Convert arm (skip 206, pause 207,
+            // resume 208).
+            ActionId::HabitSkip,
+            ActionId::HabitPause,
+            ActionId::HabitResume,
             ActionId::HabitConvertArm,
             ActionId::HabitMoveUp,
             ActionId::HabitMoveDown,

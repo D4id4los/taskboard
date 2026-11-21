@@ -347,6 +347,10 @@ export component AppWindow inherits Window {
     // adapter-owned flag + quota validity — no transient UI state.
     in-out property <bool> habits-create-mountable: false;
     in-out property <bool> habits-create-open: false;
+    // The pause editor's mount flag (HF1, W-3): adapter-owned, pushed
+    // per pass (the create-open twin).
+    in-out property <bool> habits-pause-open: false;
+    in-out property <bool> habits-pause-mountable: false;
     in-out property <FieldValidity> habits-quota-validity: FieldValidity.neutral;
     in-out property <string> habits-quota-error-hint: "";
     in-out property <int> timers-awaiting: 0;
@@ -649,6 +653,13 @@ export component AppWindow inherits Window {
                 habits-repair-clicked(r) => root.habits-repair-clicked(r);
                 habits-context-requested(r, x, y) => root.habits-context-requested(r, x, y);
                 habits-drop-asked(r, g) => root.habits-drop-asked(r, g);
+                habits-skip-asked(r) => root.habits-skip-asked(r);
+                habits-pause-asked(r) => root.habits-pause-asked(r);
+                habits-resume-asked(r) => root.habits-resume-asked(r);
+                habits-pause-until-picked(s) => root.habits-pause-until-picked(s);
+                habits-pause-cancelled() => root.habits-pause-cancelled();
+                habits-pause-mountable: root.habits-pause-mountable;
+                habits-pause-open: root.habits-pause-open;
                 habits-create-mountable: root.habits-create-mountable;
                 habits-create-open: root.habits-create-open;
                 habits-quota-validity: root.habits-quota-validity;
@@ -2258,6 +2269,11 @@ export component AppWindow inherits Window {
     // the toggle; the commit funnels the minted draft (`false` = an
     // absorbed miss, the field text kept); quota keystrokes ride the
     // per-keystroke validity pass.
+    pure callback habits-skip-asked(int);
+    pure callback habits-pause-asked(int);
+    pure callback habits-resume-asked(int);
+    pure callback habits-pause-until-picked(string);
+    pure callback habits-pause-cancelled();
     pure callback habits-create-asked();
     pure callback habits-create-confirmed(string, string, int) -> bool;
     pure callback habits-create-cancelled();

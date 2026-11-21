@@ -135,6 +135,7 @@ impl KeymapShell {
             focused_task: self.focused_task,
             focused_stack: self.focused_stack,
             habit_create_draft: None,
+            habit_pause_target: None,
             habit_move_up: None,
             habit_move_down: None,
             plan_target: None,
@@ -315,6 +316,7 @@ impl KeymapShell {
             // intents (issue #506); the shell records nothing.
             | UiEffect::TrackEntryDismiss
             | UiEffect::SeriesPauseOpen
+            | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitConvertCancel
             | UiEffect::HabitRemoveArm
