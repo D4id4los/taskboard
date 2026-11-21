@@ -1039,11 +1039,15 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Application,
         enabled: true,
-        // After the Redo quick row (40), before the go-to verbs (60):
-        // the diagnostics panel is an application verb like settings.
-        menu_rank: 45,
+        // The Help group's diagnostics row (the group-page entry
+        // point): the root page's quick rows are the curated four
+        // (menu.rs T-1) and the G6 geometry budget fits exactly those,
+        // so a fifth quick row would clip the menu box at the kiosk
+        // panel's 1024×600 — the diagnostics panel rides the Help
+        // group page instead.
+        menu_rank: 75,
         description: "Opens or closes the status panel: who serves the database, the sync posture, and the daemon/lock diagnostics. Read-only.",
-        menu_group: None,
+        menu_group: Some(MenuGroup::Help),
     },
     ActionEntry {
         id: ActionId::AppHelp,
