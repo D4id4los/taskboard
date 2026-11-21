@@ -1236,7 +1236,12 @@ async fn failed_report_with_pushes_applies_the_evidence() {
     h.report_tx
         .send(SyncReport::Failed {
             duration: std::time::Duration::ZERO,
-            board: None,
+            // A real cycle that pushed names its board (the Deck actor
+            // sends Some whenever pushes exist; None is the board-less
+            // NoBoard skip, which carries an empty pushes vec) — the
+            // row attribution keys on it (2026-11-21
+            // sync-report-attribution plan §2).
+            board: Some(RemoteBoardId::deck(77)),
             connector: taskboard_domain::test_support::test_connector(),
             kind: SyncErrorKind::Network,
             pushes: vec![taskboard_domain::PushOutcome {
