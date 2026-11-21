@@ -1196,3 +1196,76 @@ async fn engine_undo_of_delete_stack_resurrects_rules_in_the_persisted_state() {
         "the action-level resurrect reached the persisted state"
     );
 }
+
+/// US-1/S4 (HF1): a skip pops via the global undo line — the journal
+/// entry carries the prior row shape (or none) as its pre-image, the
+/// undo plans the mirror verb, and the published state shows the mark
+/// cleared with the count preserved (memory ≡ disk).
+#[tokio::test(start_paused = true)]
+async fn us1_s4_undo_clears_the_skip_mark_through_the_global_line() {
+    let mut rig = Rig::start().await;
+    let board = rig
+        .state()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("seed board");
+    let outcome = rig
+        .run(StateCommand::CreateHabit {
+            board,
+            title: "water".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(2).unwrap(),
+            ),
+        })
+        .await
+        .expect("accepted");
+    let habit = match outcome {
+        CommandOutcome::HabitCreated(id) => id,
+        other => panic!("expected HabitCreated, got {other:?}"),
+    };
+    // Log once (the pre-image row shape exists) then skip.
+    rig.run(StateCommand::LogHabit { habit })
+        .await
+        .expect("accepted");
+    rig.run(StateCommand::SkipHabit { habit })
+        .await
+        .expect("accepted");
+    let app = rig.state();
+    let key = taskboard_domain::HabitLogKey {
+        habit,
+        window: taskboard_domain::WindowStart::of_period(
+            taskboard_domain::PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch date"),
+        ),
+    };
+    assert!(
+        app.habits.log[&key].skip,
+        "the mark is on the published row"
+    );
+    drop(app);
+    // The global undo pops the skip (the LogHabit below it stays).
+    let outcome = rig.run(StateCommand::Undo).await.expect("accepted");
+    assert!(matches!(outcome, CommandOutcome::Undone { .. }));
+    let app = rig.state();
+    assert!(!app.habits.log[&key].skip, "the skip undo cleared the mark");
+    assert_eq!(app.habits.log[&key].count, 1, "the count survived");
+    drop(app);
+    let persisted = rig.repo.snapshot();
+    assert!(
+        !persisted.habits.log[&key].skip,
+        "memory ≡ disk: the cleared mark persisted"
+    );
+    // Redo re-applies the skip intent (the forward re-plan re-mints the
+    // row clock — the documented #986 bump), so the guard law "any later
+    // write to the window refuses" applies to a second undo after the
+    // redo (the AdjustHabitLog precedent verbatim); the
+    // undo → redo pair is the pinned journey here.
+    rig.run(StateCommand::Redo).await.expect("accepted");
+    let app = rig.state();
+    assert!(app.habits.log[&key].skip, "redo re-applied the mark");
+    drop(app);
+    let persisted = rig.repo.snapshot();
+    assert!(persisted.habits.log[&key].skip, "memory ≡ disk after redo");
+}

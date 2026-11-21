@@ -4528,3 +4528,103 @@ fn ceremony_and_surface_fences_hold() {
         }
     }
 }
+
+// ---- HF1: the skip/unskip mirror-verb inverse (2026-11-21) -------------
+
+/// The skip's journal entry carries the prior row shape (or none) as
+/// its pre-image; the undo plans the mirror verb; the mark flips and
+/// the count survives; redo re-applies the mark. The `LogHabit` under
+/// the skip stays reachable on the line (its own invertibility is
+/// HF2's; here it simply pops as the next entry when it is newest).
+#[test]
+fn a_skip_journal_entry_inverts_through_the_mirror_verb() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let outcome = h
+        .exec(&StateCommand::CreateHabit {
+            board,
+            title: "water".into(),
+            target: crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(2).unwrap()),
+        })
+        .expect("accepted");
+    let habit = match outcome {
+        CommandOutcome::HabitCreated(id) => id,
+        other => panic!("expected HabitCreated, got {other:?}"),
+    };
+    h.exec(&StateCommand::LogHabit { habit }).expect("accepted");
+    h.exec(&StateCommand::SkipHabit { habit })
+        .expect("accepted");
+    let key = crate::habit::HabitLogKey {
+        habit,
+        window: crate::habit::WindowStart::of_period(
+            crate::habit::PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(1970, 1, 2).expect("valid"),
+        ),
+    };
+    // The window date derives from the harness clock; find the touched
+    // window from the journal entry instead of hardcoding.
+    let entry = h.journal.entries.last().expect("journaled").clone();
+    let key = match &entry.command {
+        StateCommand::SkipHabit { .. } => h
+            .disk
+            .habits
+            .log
+            .keys()
+            .find(|k| k.habit == habit && h.disk.habits.log[k].skip)
+            .copied()
+            .expect("the marked window"),
+        _ => panic!("expected the skip journaled"),
+    };
+    assert!(h.disk.habits.log[&key].skip);
+    assert_eq!(h.disk.habits.log[&key].count, 1);
+    // Undo: the mirror verb flips the mark, keeps the count.
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(!h.disk.habits.log[&key].skip, "the mark cleared");
+    assert_eq!(h.disk.habits.log[&key].count, 1, "the count survived");
+    // Redo re-applies the skip intent.
+    h.exec(&StateCommand::Redo).expect("redone");
+    assert!(h.disk.habits.log[&key].skip, "redo re-applied the mark");
+    // The pre-image round-trips through the persisted journal.
+    let persisted = h.disk.clone();
+    let restored: JournalState =
+        serde_json::from_str(&serde_json::to_string(&persisted.journal).unwrap()).unwrap();
+    let restored_entry = restored.entries.last().expect("journaled").clone();
+    assert_eq!(restored_entry.command, entry.command);
+}
+
+/// The skip of an EMPTY window (pre-image "none" shape) inverts the
+/// same way — the mark flips, the row stays a count-0 unmarked row
+/// (analytically identical to absence for every projection).
+#[test]
+fn a_skip_of_an_empty_window_inverts_to_the_unmarked_row() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let outcome = h
+        .exec(&StateCommand::CreateHabit {
+            board,
+            title: "run".into(),
+            target: crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(1).unwrap()),
+        })
+        .expect("accepted");
+    let habit = match outcome {
+        CommandOutcome::HabitCreated(id) => id,
+        other => panic!("expected HabitCreated, got {other:?}"),
+    };
+    h.exec(&StateCommand::SkipHabit { habit })
+        .expect("accepted");
+    let key = h
+        .disk
+        .habits
+        .log
+        .keys()
+        .find(|k| k.habit == habit)
+        .copied()
+        .expect("the marked window");
+    assert!(h.disk.habits.log[&key].skip);
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(
+        !h.disk.habits.log[&key].skip,
+        "the mark cleared on the none-pre-image shape too"
+    );
+    assert_eq!(h.disk.habits.log[&key].count, 0);
+}

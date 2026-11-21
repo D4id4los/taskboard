@@ -1322,3 +1322,61 @@ async fn tracker_nudge_fires_once_through_the_tick_and_stays_quiet_in_its_window
         "no second toast in the same window"
     );
 }
+
+/// US-2/AC-2 (HF1): a habit paused through today arms no tracker nudge
+/// — the quota-gated pass skips paused rows; resuming re-arms honestly
+/// (no stored arm/disarm state).
+#[cfg_attr(miri, ignore)]
+#[tokio::test(start_paused = true)]
+async fn paused_habit_arms_no_nudge_and_resume_re_arms() {
+    let mut state = seeded_tracker_state();
+    // Pause the tracker's habit through today (T0's local date under
+    // the UTC-midnight calendar is 1970-01-01).
+    let habit = state.habits.habits.values().next().expect("one habit").id;
+    state
+        .habits
+        .habits
+        .get_mut(&habit)
+        .expect("the seeded habit")
+        .paused_until = Some(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid"));
+    let mut h = spawn(Spawner {
+        repo: Arc::new(InMemoryRepository::with_state(state)),
+        clock: FixedClock::new(T0),
+        reminders: tick_config(),
+    })
+    .await;
+    settle_boot_tick().await;
+    advance_both(&h.clock, 5).await;
+    let tracker_ref = ReminderRef::Tracker(habit);
+    let app = h.handle.shared_state().load_full();
+    assert!(
+        !app.reminders
+            .deliveries
+            .iter()
+            .any(|d| d.reminder == tracker_ref),
+        "the paused habit armed no nudge"
+    );
+    drop(app);
+    assert!(
+        !drain_notifications(&mut h.notifications)
+            .iter()
+            .any(|n| n.reminder == tracker_ref),
+        "no payload either"
+    );
+    // Resume through the PauseHabit clear leg: the nudge re-arms on the
+    // next tick (no stored arm state).
+    let _ = h
+        .handle
+        .execute(taskboard_domain::StateCommand::PauseHabit { habit, until: None })
+        .await
+        .expect("accepted");
+    advance_both(&h.clock, 5).await;
+    eventually(&h.handle, |app| {
+        app.reminders
+            .deliveries
+            .iter()
+            .any(|d| d.reminder == tracker_ref)
+    })
+    .await;
+    drop(h);
+}
