@@ -128,6 +128,180 @@ pub enum AnchorDay {
     MonthDay(MonthDay),
 }
 
+/// The [`WeekdaySet`] mint rejected the input (the empty set at the
+/// mint; unmaskable bits cannot occur — decode masks first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a weekday set must name at least one weekday")]
+pub struct InvalidWeekdaySet;
+
+/// Hand-rolled A1 weekday set (HF4, #960): private bitflag-`u8` field,
+/// bit *n* = `chrono::Weekday` `n` days from Monday (Mon = bit 0 …
+/// Sun = bit 6 — the `num_days_from_monday` order). The mint rejects
+/// the empty set at the write boundary; decode is **lenient by
+/// design**: any stored `u8` decodes, masked to the seven valid bits —
+/// a synced row carrying an empty set (a former writer's artifact) is
+/// data, not corruption, and every consumer treats an empty set as
+/// "no day set" (today's posture) instead of "due never" ([`Habit::effective_scheduled_days`]
+/// owns that rule — no validate-and-forget path exists because nothing
+/// is validated away).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "u8", into = "u8")]
+pub struct WeekdaySet(u8);
+
+impl WeekdaySet {
+    /// The full seven-day set (the `--days all` / clear-leg value).
+    #[must_use]
+    pub const fn all() -> Self {
+        Self(0x7F)
+    }
+
+    /// The mint: at least one weekday must be named.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidWeekdaySet`] when no weekday is named.
+    pub fn new(
+        days: impl IntoIterator<Item = chrono::Weekday>,
+    ) -> Result<Self, InvalidWeekdaySet> {
+        let mut bits = 0_u8;
+        for day in days {
+            bits |= 1 << day.num_days_from_monday();
+        }
+        Self::from_bits(bits).ok_or(InvalidWeekdaySet)
+    }
+
+    /// The decode seam: mask to the seven valid bits, then mint.
+    /// `None` only when the masked set is empty (the caller — serde or
+    /// a lenient reader — decides what an empty set means).
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        let masked = bits & 0x7F;
+        if masked == 0 { None } else { Some(Self(masked)) }
+    }
+
+    /// Whether `day` is scheduled.
+    #[must_use]
+    pub const fn contains(self, day: chrono::Weekday) -> bool {
+        self.0 & (1 << day.num_days_from_monday()) != 0
+    }
+
+    /// Whether no weekday is scheduled (possible only via the lenient
+    /// decode seam).
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The scheduled weekdays, Monday-first.
+    pub fn days(self) -> impl Iterator<Item = chrono::Weekday> {
+        const BY_BIT: [chrono::Weekday; 7] = [
+            chrono::Weekday::Mon,
+            chrono::Weekday::Tue,
+            chrono::Weekday::Wed,
+            chrono::Weekday::Thu,
+            chrono::Weekday::Fri,
+            chrono::Weekday::Sat,
+            chrono::Weekday::Sun,
+        ];
+        let bits = self.0;
+        (0_usize..7).filter_map(move |bit| (bits & (1 << bit) != 0).then_some(BY_BIT[bit]))
+    }
+
+    /// The raw mask (the wire form).
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+impl From<u8> for WeekdaySet {
+    fn from(bits: u8) -> Self {
+        // Lenient decode (documented at the type): mask, and an empty
+        // masked set decodes to the empty set — consumers default it.
+        Self(bits & 0x7F)
+    }
+}
+
+impl From<WeekdaySet> for u8 {
+    fn from(set: WeekdaySet) -> Self {
+        set.0
+    }
+}
+
+/// The reminder override's anchor base (R-8): the default
+/// [`NudgeBase::NudgeDay`] keeps O-1's nudge day(s) verbatim;
+/// [`NudgeBase::PeriodStart`] is the explicit alternative anchoring the
+/// nudge at the canonical window's start. The override *parameterizes*
+/// O-1's nudge law — it never contradicts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum NudgeBase {
+    /// O-1's nudge day (default): the anchor day when set, else the
+    /// period start; with a scheduled-day set, the scheduled days
+    /// themselves.
+    #[default]
+    NudgeDay,
+    /// The canonical window's start (ISO-Monday / calendar-1st — the
+    /// boundaries never move).
+    PeriodStart,
+}
+
+/// The habit's chosen snooze grammar (O-1: "user picks hours/days").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HabitSnooze {
+    /// Snooze in whole hours.
+    Hours(u8),
+    /// Snooze in whole days.
+    Days(u8),
+}
+
+impl HabitSnooze {
+    /// The snooze duration.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if chrono cannot represent the value — a
+    /// programming error (u8 hours/days are far in range), not an
+    /// input condition.
+    #[must_use]
+    pub fn duration(self) -> chrono::TimeDelta {
+        match self {
+            Self::Hours(h) => chrono::TimeDelta::try_hours(i64::from(h)),
+            Self::Days(d) => chrono::TimeDelta::try_days(i64::from(d)),
+        }
+        .expect("u8 hours/days are representable")
+    }
+}
+
+/// A habit's per-habit reminder override (HF4, #959): the O-1 nudge
+/// law's parameters, restated per habit — which anchor day the nudge
+/// derives from ([`NudgeBase`]), how many days after it (`offset_days`,
+/// may be negative to pull *before* the base), at what local
+/// time-of-day it arms, and which snooze unit the snooze affordance
+/// offers. `time` is the *fallback* time-of-day: the occurrence arms at
+/// the habit's `anchor_time` when that is set, else at this field.
+///
+/// Deliberate leniency: an override on any target kind is accepted
+/// (the nudge law is defined for every kind); only `scheduled_days`
+/// carries the `PerDay` refusal (R-6 — that field would mint inert
+/// data, an override does not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HabitReminderOverride {
+    /// Which anchor day the nudge derives from.
+    #[serde(default)]
+    pub base: NudgeBase,
+    /// Days added to the base day (may be negative — a nudge *before*
+    /// the base day is a legitimate ask, e.g. "the day before the
+    /// period starts"). The armed day is clamped into the canonical
+    /// window at read time (an armed day outside the window would arm
+    /// in a foreign window's span — the derivation floors back).
+    pub offset_days: i32,
+    /// The fallback local time-of-day (used when the habit carries no
+    /// `anchor_time`).
+    pub time: chrono::NaiveTime,
+    /// The snooze unit the habit's nudge offers.
+    pub snooze: HabitSnooze,
+}
+
 /// Which period a habit's target counts over. The window vocabulary of
 /// the whole module ([`period_start`] and friends).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -251,6 +425,17 @@ pub struct HabitClocks {
     /// Deliberate decode leniency: see `description`.
     #[serde(default = "epoch_clock")]
     pub paused_until: DateTime<Utc>,
+
+    /// Scheduled-day-set write clock (HF4, R-6 — contested content, it
+    /// roams and competes). Deliberate decode leniency: see
+    /// `description`.
+    #[serde(default = "epoch_clock")]
+    pub scheduled_days: DateTime<Utc>,
+    /// Reminder-override write clock (HF4, #959 — contested content,
+    /// it roams and competes). Deliberate decode leniency: see
+    /// `description`.
+    #[serde(default = "epoch_clock")]
+    pub reminder: DateTime<Utc>,
     /// Tombstone clock.
     pub deleted: DateTime<Utc>,
 }
@@ -273,6 +458,9 @@ impl HabitClocks {
             description: now,
             anchor_day: now,
             paused_until: now,
+
+            scheduled_days: now,
+            reminder: now,
             deleted: now,
         }
     }
@@ -335,6 +523,30 @@ pub struct Habit {
     /// it away (no validate-and-forget path).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_until: Option<NaiveDate>,
+
+    /// The scheduled weekdays *inside* a weekly/monthly canonical
+    /// window (HF4, #960). Windows stay ISO-Monday / calendar-1st
+    /// (O-1 untouched — the day set changes which days are
+    /// opportunities, never a window boundary).
+    ///
+    /// # Documented leniency (R-6, operator ruling 2026-11-21)
+    ///
+    /// A `Some` set on a **`PerDay` habit is inert** — a daily habit
+    /// happens *every day*; scheduling it on weekdays is a *weekly*
+    /// habit, and a daily habit with weekday subsets would work
+    /// identically to a weekly habit with the same days (redundant
+    /// terminology and behavior). The *write path* refuses the field
+    /// on a `PerDay` target with a typed rejection (no
+    /// validate-and-forget); only legacy/synced rows can carry the
+    /// inert combination, and [`Habit::effective_scheduled_days`]
+    /// defaults it away at read time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_days: Option<WeekdaySet>,
+    /// The habit's reminder override (HF4, #959): the O-1 nudge law's
+    /// parameters restated per habit. `None` = the plain O-1 default
+    /// (byte-identical to the pre-HF4 engine).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminder: Option<HabitReminderOverride>,
     /// Per-field LWW clocks.
     pub clocks: HabitClocks,
     /// The §4.7 conversion seam, habit side: the series this habit
@@ -358,6 +570,20 @@ impl Habit {
     #[must_use]
     pub const fn is_live(&self) -> bool {
         !self.deleted
+    }
+
+    /// The habit's **effective** scheduled-day set (R-6): `None` for a
+    /// `PerDay` habit (the field is inert there by construction) and
+    /// for an empty decoded set (the [`WeekdaySet`] decode leniency —
+    /// an empty set reads as "no day set", today's posture, never as
+    /// "due never"). Every consumer of the day set reads it through
+    /// this single rule.
+    #[must_use]
+    pub fn effective_scheduled_days(&self) -> Option<WeekdaySet> {
+        if self.target.kind() == PeriodKind::Day {
+            return None;
+        }
+        self.scheduled_days.filter(|set| !set.is_empty())
     }
 }
 
@@ -728,7 +954,8 @@ fn streak_with_break(
     };
     let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
     let mut streak = 0_u32;
-    let mut cursor = WindowStart::of_period(kind, day.today(now)).as_date();
+    let today = day.today(now);
+    let mut cursor = WindowStart::of_period(kind, today).as_date();
     loop {
         if habit
             .paused_until
@@ -749,6 +976,10 @@ fn streak_with_break(
         } else if skipped(WindowStart(cursor)) {
             // Typed planned skip: transparent — neither counts nor
             // breaks (consulted only when the quota is unmet).
+        } else if preschedule_window(habit, WindowStart(cursor), today) {
+            // Pre-schedule (R-6/US-5 AC-1): the window's scheduled days
+            // have not begun — transparent regardless of grace (no due
+            // posture, no miss), walk on.
         } else {
             let grace_end = period_end(kind, cursor, day) + grace;
             if now >= grace_end {
@@ -762,6 +993,177 @@ fn streak_with_break(
         }
         cursor = prev;
     }
+}
+
+/// The window's first scheduled local date (R-6/US-5): the earliest
+/// date at/after the canonical window's start whose weekday is in the
+/// habit's **effective** day set. `None` when the habit has no
+/// effective day set (`PerDay` inertness, no set, empty decode) — the
+/// caller's "no day set" posture (join at period start).
+///
+/// # Panics
+///
+/// Panics only if chrono cannot represent the ≤7-day search from a
+/// window start near the date bound — saturation posture, unreachable
+/// for real calendars.
+#[must_use]
+pub fn first_scheduled_day(habit: &Habit, window: WindowStart) -> Option<NaiveDate> {
+    let set = habit.effective_scheduled_days()?;
+    let start = period_start(habit.target.kind(), window.as_date());
+    first_day_in_set_after(set, start)
+}
+
+/// The earliest date ≥ `from` whose weekday is in `set`. `None` only
+/// for an empty set (cannot pass the mint) or date-bound saturation.
+fn first_day_in_set_after(set: WeekdaySet, from: NaiveDate) -> Option<NaiveDate> {
+    (0..7_u64)
+        .map_while(|offset| from.checked_add_days(chrono::Days::new(offset)))
+        .find(|date| set.contains(date.weekday()))
+}
+
+/// `date` shifted by a signed day count (`None` only at the chrono
+/// date bound — the saturation posture [`period_after`] documents).
+fn add_days_signed(date: NaiveDate, days: i32) -> Option<NaiveDate> {
+    if days >= 0 {
+        date.checked_add_days(chrono::Days::new(u64::try_from(days).unwrap_or(u64::MAX)))
+    } else {
+        date.checked_sub_days(chrono::Days::new(
+            u64::try_from(-days).unwrap_or(u64::MAX),
+        ))
+    }
+}
+
+/// US-5 AC-1 (R-6): the weekly/monthly window is **pre-schedule** —
+/// transparent in the streak walk — while `today` lies before its
+/// first scheduled day (no due posture, no miss; once a scheduled day
+/// has elapsed the window walks normally). A habit with no effective
+/// day set is never pre-schedule: windows join at period start —
+/// today's posture, byte-identical. Daily habits are excluded by
+/// construction ([`Habit::effective_scheduled_days`]).
+#[must_use]
+pub fn preschedule_window(habit: &Habit, window: WindowStart, today: NaiveDate) -> bool {
+    first_scheduled_day(habit, window).is_some_and(|first| today < first)
+}
+
+/// The adherence denominator's join law (US-5 AC-5 / US-9 AC-1): a
+/// window joins the denominator once its first scheduled day has
+/// elapsed; with no day set, at period start. **Never from a daily
+/// habit** — daily windows enter at period start as today (R-6: the
+/// denominator derives from weekly/monthly day sets only). HF3's
+/// `adherence`/stats fns consume this predicate; it is the exact
+/// complement of [`preschedule_window`] — a transparent window leaves
+/// both the numerator and the denominator (planned gaps never dilute
+/// adherence).
+#[must_use]
+pub fn window_joins_denominator(habit: &Habit, window: WindowStart, today: NaiveDate) -> bool {
+    !preschedule_window(habit, window, today)
+}
+
+/// `start`'s window's dates, in order (the day set's search domain).
+fn window_dates(kind: PeriodKind, start: NaiveDate) -> Vec<NaiveDate> {
+    let end = period_after(kind, start);
+    let mut dates = Vec::new();
+    let mut cursor = start;
+    while cursor < end {
+        dates.push(cursor);
+        cursor = period_after(PeriodKind::Day, cursor);
+    }
+    dates
+}
+
+/// The days inside `window` the tracker nudge arms on (O-1's
+/// single-anchor-day generalization, R-6): each scheduled day for a
+/// weekly/monthly habit with an effective day set, else the single
+/// O-1 [`nudge_day`] (today's behavior — a one-day vector,
+/// byte-identical). Pure; the engine consumes the membership form
+/// ([`tracker_arm`]); this shape is the tests' and projections'.
+#[must_use]
+pub fn nudge_days(habit: &Habit, window: WindowStart) -> Vec<NaiveDate> {
+    let kind = habit.target.kind();
+    let start = period_start(kind, window.as_date());
+    match habit.effective_scheduled_days() {
+        Some(set) => window_dates(kind, start)
+            .into_iter()
+            .filter(|date| set.contains(date.weekday()))
+            .collect(),
+        None => vec![nudge_day(habit, window)],
+    }
+}
+
+/// The tracker-nudge arm gate for `today` under the **plain O-1
+/// default** (no override): with an effective day set, `today` must
+/// *be* a scheduled day (US-5 AC-2 — arms on each scheduled day and on
+/// no other day of the window; a pre-schedule day is by construction
+/// not scheduled); without one, `today ≥ nudge_day` — the pre-HF4
+/// gate, byte-identical.
+#[must_use]
+pub fn tracker_armed_today(habit: &Habit, window: WindowStart, today: NaiveDate) -> bool {
+    match habit.effective_scheduled_days() {
+        Some(set) => set.contains(today.weekday()),
+        None => today >= nudge_day(habit, window),
+    }
+}
+
+/// The override's arm gate for `today` (R-8, US-6 AC-1): base
+/// [`NudgeBase::NudgeDay`] keeps the plain gate's day, shifted by
+/// `offset_days`; base [`NudgeBase::PeriodStart`] arms only on the
+/// canonical window's start shifted by `offset_days` (an armed day
+/// pushed outside the window simply does not arm *inside this
+/// window* — it lands in the neighbor's span, which runs its own
+/// gate; no clamping needed for a membership test).
+#[must_use]
+pub fn override_armed_today(
+    habit: &Habit,
+    ovr: &HabitReminderOverride,
+    window: WindowStart,
+    today: NaiveDate,
+) -> bool {
+    match ovr.base {
+        NudgeBase::PeriodStart => {
+            let start = period_start(habit.target.kind(), window.as_date());
+            add_days_signed(start, ovr.offset_days) == Some(today)
+        }
+        NudgeBase::NudgeDay => {
+            if let Some(set) = habit.effective_scheduled_days() {
+                add_days_signed(today, -ovr.offset_days)
+                    .is_some_and(|date| set.contains(date.weekday()))
+            } else {
+                let arm = nudge_day(habit, window);
+                add_days_signed(arm, ovr.offset_days).is_some_and(|shifted| today >= shifted)
+            }
+        }
+    }
+}
+
+/// The occurrence's local time-of-day (US-6 AC-4): the habit's
+/// `anchor_time` when set, else the override's own `time`; `None` when
+/// neither exists — the habit drives no reminder at all. An override
+/// never *requires* an anchor time.
+#[must_use]
+pub fn tracker_arm_time(habit: &Habit) -> Option<chrono::NaiveTime> {
+    habit
+        .anchor_time
+        .or_else(|| habit.reminder.map(|ovr| ovr.time))
+}
+
+/// The tracker nudge's full arm decision for `today` inside `habit`'s
+/// current `window`: `Some`(time-of-day) when the nudge arms — a habit
+/// with neither `anchor_time` nor an override never arms; with an
+/// override the R-8 gate decides; otherwise the day-set/O-1 gate. The
+/// quota gate stays the reminder engine's eligibility (the arm gate
+/// decides WHEN only — the same split as the pre-HF4 engine).
+#[must_use]
+pub fn tracker_arm(
+    habit: &Habit,
+    window: WindowStart,
+    today: NaiveDate,
+) -> Option<chrono::NaiveTime> {
+    let time = tracker_arm_time(habit)?;
+    let armed = match &habit.reminder {
+        Some(ovr) => override_armed_today(habit, ovr, window, today),
+        None => tracker_armed_today(habit, window, today),
+    };
+    armed.then_some(time)
 }
 
 /// The habit's streak continued through its conversion seam (§4.7):
@@ -854,6 +1256,8 @@ mod tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(Utc.timestamp_opt(100, 0).unwrap()),
             continued_from: None,
             deleted: false,
@@ -1184,13 +1588,18 @@ mod tests {
     fn reference_walk(fixture: &HabitFixture, now: DateTime<Utc>) -> (u32, usize) {
         let kind = fixture.habit.target.kind();
         let quota = fixture.habit.target.quota().get();
-        let mut cursor = WindowStart::of_period(kind, fixture.day.today(now)).as_date();
+        let today = fixture.day.today(now);
+        let mut cursor = WindowStart::of_period(kind, today).as_date();
         let mut streak = 0_u32;
         let mut pendings = 0_usize;
         loop {
             let count = stored_count(fixture, WindowStart(cursor));
             if count >= quota {
                 streak += 1;
+            } else if preschedule_window(&fixture.habit, WindowStart(cursor), today) {
+                // HF4 R-6: pre-schedule windows are transparent in the
+                // same class the pendings counter walks through.
+                pendings += 1;
             } else {
                 let grace_end = period_end(kind, cursor, fixture.day) + grace_offset();
                 if now >= grace_end {
@@ -1900,6 +2309,8 @@ mod tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
@@ -1933,6 +2344,8 @@ mod tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
@@ -1971,6 +2384,8 @@ mod tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
@@ -2231,6 +2646,8 @@ mod tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,
@@ -2302,6 +2719,8 @@ mod seam_tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: series.map(|s| SeriesId::from(uuid::Uuid::from_u128(s))),
             deleted: false,
@@ -2739,5 +3158,320 @@ mod tracker_anchor_tests {
                 "distinct window dates derive distinct, ordered keys"
             );
         }
+    }
+}
+
+// -- HF4: per-weekday schedules + reminder overrides (#960, #959) -------
+
+#[cfg(test)]
+mod hf4_schedule_tests {
+    use super::*;
+    use crate::test_support::proptest_config;
+    use chrono::{NaiveTime, TimeZone, Weekday};
+    use proptest::prelude::*;
+
+    fn habit(raw: u128, target: HabitTarget) -> Habit {
+        Habit {
+            id: HabitId::from(uuid::Uuid::from_u128(raw)),
+            board: BoardId::from(uuid::Uuid::from_u128(900)),
+            title: format!("habit {raw}"),
+            description: String::new(),
+            target,
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            paused_until: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: HabitClocks::all(Utc.timestamp_opt(100, 0).unwrap()),
+            continued_from: None,
+            deleted: false,
+            by: None,
+        }
+    }
+
+    fn utc() -> DayCalendar {
+        DayCalendar {
+            day_start_time: NaiveTime::from_hms_opt(0, 0, 0).expect("midnight"),
+            offset: chrono::FixedOffset::east_opt(0).expect("zero offset"),
+        }
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
+    }
+
+    fn at(y: i32, m: u32, d: u32, h: u32) -> DateTime<Utc> {
+        Utc.timestamp_opt(
+            date(y, m, d)
+                .and_hms_opt(h, 0, 0)
+                .expect("whole hour")
+                .and_utc()
+                .timestamp(),
+            0,
+        )
+        .unwrap()
+    }
+
+    fn row(habit_id: u128, window: NaiveDate, count: u32) -> (HabitLogKey, HabitLogEntry) {
+        (
+            HabitLogKey {
+                habit: HabitId::from(uuid::Uuid::from_u128(habit_id)),
+                window: WindowStart(window),
+            },
+            HabitLogEntry {
+                count,
+                clock: Utc.timestamp_opt(1_000, 0).unwrap(),
+                by: None,
+                skip: false,
+            },
+        )
+    }
+
+    #[test]
+    fn empty_weekday_set_is_unmintable() {
+        // The mint refuses the empty set (the write boundary).
+        assert!(WeekdaySet::new([]).is_err());
+        assert!(matches!(
+            WeekdaySet::new(Vec::<Weekday>::new()),
+            Err(crate::habit::InvalidWeekdaySet)
+        ));
+        // The lenient decode seam masks and reports emptiness instead
+        // of minting — the consumer defaults it, never the type.
+        assert!(WeekdaySet::from_bits(0).is_none());
+        assert!(WeekdaySet::from_bits(0x80).is_none(), "out-of-mask-only bits");
+        // Serde decode is lenient (0x88 masks to nothing); the wire
+        // never carries an empty set because the mint cannot make one.
+        let decoded: WeekdaySet = serde_json::from_str("128").expect("lenient decode");
+        assert!(decoded.is_empty());
+        let set = WeekdaySet::new([Weekday::Mon, Weekday::Fri]).expect("two days");
+        assert_eq!(serde_json::to_string(&set).unwrap(), "17");
+        let back: WeekdaySet = serde_json::from_str("17").unwrap();
+        assert_eq!(back, set);
+    }
+
+    /// US-5 AC-1 (Σ extension): a weekly/monthly window whose scheduled
+    /// days have not begun is transparent — an unmet pre-schedule
+    /// window neither counts nor breaks, in both arms (week + month);
+    /// once the first scheduled day has elapsed the window walks
+    /// normally (a past unmet window breaks).
+    #[test]
+    fn pre_schedule_window_is_transparent_weekly_and_monthly() {
+        // Weekly: Mon-start window, scheduled {Wed, Fri}; today Wed.
+        let mut weekly = habit(1, HabitTarget::PerWeek(crate::habit::NonZeroCount::new(1).unwrap()));
+        weekly.scheduled_days =
+            Some(WeekdaySet::new([Weekday::Wed, Weekday::Fri]).expect("two days"));
+        // Monday 2026-11-16; today = Wednesday the 18th (before Fri).
+        let day = utc();
+        let now = at(2026, 11, 18, 12);
+        assert_eq!(day.today(now), date(2026, 11, 18));
+        assert_eq!(first_scheduled_day(&weekly, WindowStart(date(2026, 11, 16))), Some(date(2026, 11, 18)));
+        // The current window is transparent (pending): yesterday's met
+        // week still shows through.
+        let log = BTreeMap::from([
+            row(1, date(2026, 11, 9), 1),
+            row(1, date(2026, 11, 16), 0),
+        ]);
+        assert_eq!(streak(&weekly, &log, now, day), 1, "unmet pre-schedule week does not break");
+        // Same log with the current row deleted: identical (the window
+        // is transparent, not a miss).
+        let log_prev_only = BTreeMap::from([row(1, date(2026, 11, 9), 1)]);
+        assert_eq!(streak(&weekly, &log_prev_only, now, day), 1);
+        // Monthly: scheduled {3rd, 20th}; today the 1st → transparent.
+        let mut monthly = habit(2, HabitTarget::PerMonth(crate::habit::NonZeroCount::new(1).unwrap()));
+        monthly.scheduled_days = Some(WeekdaySet::new([Weekday::Mon]).expect("one day"));
+        // 2026-11: the 1st IS a Sunday... use a fixed Monday: 2026-11-02.
+        // Scheduled {Mon}: first scheduled day of November is the 2nd;
+        // on the 1st the month window is pre-schedule.
+        let now_month = at(2026, 11, 1, 12);
+        let mlog = BTreeMap::from([row(2, date(2026, 10, 1), 1), row(2, date(2026, 11, 1), 0)]);
+        assert_eq!(streak(&monthly, &mlog, now_month, day), 1, "unmet pre-schedule month does not break");
+        // Past the scheduled days, the window walks normally: inside
+        // the first 24 h of December the unmet November is still
+        // *pending* (today's grace semantics, unchanged) — and once the
+        // grace closes it is a miss that breaks the run.
+        let now_pending = at(2026, 11, 30, 12);
+        assert_eq!(streak(&monthly, &mlog, now_pending, day), 1, "pending within grace");
+        let now_missed = at(2026, 12, 2, 12);
+        assert_eq!(streak(&monthly, &mlog, now_missed, day), 0, "grace closed: the elapsed scheduled window misses");
+    }
+
+    /// US-5 AC-5 (US-9's dependency): the denominator joins once the
+    /// first scheduled day has elapsed; before it, the window is
+    /// outside both numerator and denominator (HF3's `adherence`
+    /// consumes this predicate).
+    #[test]
+    fn scheduled_denominator_derives_from_the_day_sets() {
+        let mut weekly = habit(1, HabitTarget::PerWeek(crate::habit::NonZeroCount::new(1).unwrap()));
+        weekly.scheduled_days = Some(WeekdaySet::new([Weekday::Fri]).expect("one day"));
+        let window = WindowStart(date(2026, 11, 16)); // ISO week of Nov 16
+        assert_eq!(first_scheduled_day(&weekly, window), Some(date(2026, 11, 20)));
+        assert!(
+            !window_joins_denominator(&weekly, window, date(2026, 11, 19)),
+            "before the first scheduled day: outside the denominator"
+        );
+        assert!(
+            window_joins_denominator(&weekly, window, date(2026, 11, 20)),
+            "on the first scheduled day: inside"
+        );
+        assert!(
+            window_joins_denominator(&weekly, window, date(2026, 11, 22)),
+            "after it: inside"
+        );
+    }
+
+    /// R-6's daily half (the US-9 pin): a `PerDay` habit's windows join
+    /// at period start — the day set is inert even when present (the
+    /// documented leniency covers only legacy/synced rows), and the
+    /// daily denominator is unchanged byte-for-byte.
+    #[test]
+    fn daily_denominator_unchanged() {
+        let mut daily = habit(1, HabitTarget::PerDay(crate::habit::NonZeroCount::new(1).unwrap()));
+        daily.scheduled_days = Some(WeekdaySet::new([Weekday::Fri]).expect("one day"));
+        assert!(daily.effective_scheduled_days().is_none(), "R-6: inert on PerDay");
+        for offset in [0_u64, 3, 6] {
+            let window = WindowStart(date(2026, 11, 16) + chrono::Days::new(offset));
+            assert!(window_joins_denominator(&daily, window, date(2026, 11, 16) + chrono::Days::new(offset)));
+            assert!(!preschedule_window(&daily, window, date(2026, 11, 16)));
+        }
+    }
+
+    /// US-5 AC-2 (domain arm): the nudge arms on each scheduled day and
+    /// on no other day of the window.
+    #[test]
+    fn nudge_arms_on_each_scheduled_day_only() {
+        let mut weekly = habit(1, HabitTarget::PerWeek(crate::habit::NonZeroCount::new(1).unwrap()));
+        weekly.scheduled_days = Some(WeekdaySet::new([Weekday::Mon, Weekday::Wed, Weekday::Fri]).expect("three days"));
+        weekly.anchor_time = Some(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        let window = WindowStart(date(2026, 11, 16));
+        let days = nudge_days(&weekly, window);
+        assert_eq!(
+            days,
+            vec![date(2026, 11, 16), date(2026, 11, 18), date(2026, 11, 20)],
+            "exactly the scheduled days, in order"
+        );
+        for offset in 0..7_u64 {
+            let today = date(2026, 11, 16) + chrono::Days::new(offset);
+            let armed = tracker_arm(&weekly, window, today).is_some();
+            assert_eq!(armed, matches!(today.weekday(), Weekday::Mon | Weekday::Wed | Weekday::Fri));
+        }
+    }
+
+    /// US-6 AC-1: the override's occurrence equals O-1's nudge law
+    /// shifted by the override's offset — base `NudgeDay` (default)
+    /// for both the anchor-day and no-day-set shapes, base
+    /// `PeriodStart` explicit.
+    #[test]
+    fn override_occurrence_matches_the_o1_law_shifted() {
+        let mut weekly = habit(1, HabitTarget::PerWeek(crate::habit::NonZeroCount::new(1).unwrap()));
+        weekly.anchor_day = Some(AnchorDay::Weekday(Weekday::Wed));
+        let window = WindowStart(date(2026, 11, 16));
+        let ovr = HabitReminderOverride {
+            base: NudgeBase::NudgeDay,
+            offset_days: 2,
+            time: NaiveTime::from_hms_opt(7, 30, 0).unwrap(),
+            snooze: HabitSnooze::Hours(2),
+        };
+        // Default law arms from Wednesday the 18th; shifted by 2 arms
+        // from Friday the 20th.
+        assert!(!override_armed_today(&weekly, &ovr, window, date(2026, 11, 19)));
+        assert!(override_armed_today(&weekly, &ovr, window, date(2026, 11, 20)));
+        assert!(!override_armed_today(&weekly, &ovr, window, date(2026, 11, 17)));
+        // PeriodStart base: exactly the start + offset, no day-gate
+        // tail.
+        let start_ovr = HabitReminderOverride { base: NudgeBase::PeriodStart, offset_days: 1, ..ovr };
+        assert!(override_armed_today(&weekly, &start_ovr, window, date(2026, 11, 17)));
+        assert!(!override_armed_today(&weekly, &start_ovr, window, date(2026, 11, 18)));
+        // Scheduled-day set composition (R-8 default base): the set
+        // shifted by the offset.
+        weekly.scheduled_days = Some(WeekdaySet::new([Weekday::Mon]).expect("Mon"));
+        assert!(
+            override_armed_today(&weekly, &ovr, window, date(2026, 11, 18)),
+            "Mon shifted by 2 arms Wednesday"
+        );
+        assert!(!override_armed_today(&weekly, &ovr, window, date(2026, 11, 16)));
+    }
+
+    /// US-6 AC-1's negative twin (the default posture): with no
+    /// override the gate is byte-identical to the pre-HF4 engine —
+    /// armed from the nudge day on, never before, at the `anchor_time`.
+    #[test]
+    fn no_override_keeps_the_o1_default_occurrence() {
+        let mut weekly = habit(1, HabitTarget::PerWeek(crate::habit::NonZeroCount::new(1).unwrap()));
+        weekly.anchor_time = Some(NaiveTime::from_hms_opt(8, 0, 0).unwrap());
+        let window = WindowStart(date(2026, 11, 16));
+        let arm = nudge_day(&weekly, window);
+        assert_eq!(arm, date(2026, 11, 16), "no anchor day → the window start");
+        assert_eq!(tracker_arm(&weekly, window, date(2026, 11, 15)), None, "before the window: not this window's arm");
+        assert_eq!(
+            tracker_arm(&weekly, window, date(2026, 11, 16)),
+            Some(NaiveTime::from_hms_opt(8, 0, 0).unwrap())
+        );
+        // Anchor day shifts the arm; the gate follows it.
+        weekly.anchor_day = Some(AnchorDay::Weekday(Weekday::Thu));
+        assert_eq!(tracker_arm(&weekly, window, date(2026, 11, 18)), None);
+        assert_eq!(
+            tracker_arm(&weekly, window, date(2026, 11, 19)),
+            Some(NaiveTime::from_hms_opt(8, 0, 0).unwrap())
+        );
+    }
+
+    /// US-6 AC-4: an override does not require an `anchor_time` — the
+    /// occurrence's time-of-day falls back to the override's own time,
+    /// and a habit with neither drives no nudge at all.
+    #[test]
+    fn override_without_anchor_time_arms_at_the_overrides_time() {
+        let mut weekly = habit(1, HabitTarget::PerWeek(crate::habit::NonZeroCount::new(1).unwrap()));
+        let ovr = HabitReminderOverride {
+            base: NudgeBase::PeriodStart,
+            offset_days: 0,
+            time: NaiveTime::from_hms_opt(21, 45, 0).unwrap(),
+            snooze: HabitSnooze::Days(1),
+        };
+        weekly.reminder = Some(ovr);
+        let window = WindowStart(date(2026, 11, 16));
+        assert_eq!(
+            tracker_arm(&weekly, window, date(2026, 11, 16)),
+            Some(NaiveTime::from_hms_opt(21, 45, 0).unwrap()),
+            "the override's own time, no anchor chip"
+        );
+        weekly.reminder = None;
+        assert_eq!(tracker_arm(&weekly, window, date(2026, 11, 16)), None);
+    }
+
+    // The WHEN-only pin (the `anchor_time` invariance family's HF4
+    // extension): the reminder override enters no window, streak, or
+    // attribution path — perturbing only `reminder` leaves `streak`
+    // and `log_window` identical on generated fixtures.
+    proptest! {
+        #![proptest_config(proptest_config(64))]
+
+    #[test]
+    fn new_fields_never_influence_the_canonical_order(
+        (fixture, probe) in crate::test_support::habit_fixture_strategy().prop_flat_map(
+            |fixture| (Just(fixture.clone()), 0_i64..=200_000),
+        ),
+    ) {
+        let now =
+            fixture.now + chrono::TimeDelta::try_seconds(probe).expect("bounded probe");
+        let ovr = HabitReminderOverride {
+            base: NudgeBase::NudgeDay,
+            offset_days: 3,
+            time: NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+            snooze: HabitSnooze::Hours(5),
+        };
+        let mut perturbed = fixture.clone();
+        perturbed.habit.reminder = Some(ovr);
+        prop_assert_eq!(
+            streak(&perturbed.habit, &perturbed.log, now, perturbed.day),
+            streak(&fixture.habit, &fixture.log, now, fixture.day),
+            "nudge parameters are WHEN-only"
+        );
+        prop_assert_eq!(
+            log_window(&perturbed.habit, &perturbed.log, now, perturbed.day),
+            log_window(&fixture.habit, &fixture.log, now, fixture.day),
+            "attribution never reads the override"
+        );
+    }
     }
 }

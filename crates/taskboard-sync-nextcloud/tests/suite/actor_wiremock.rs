@@ -3466,6 +3466,8 @@ mod flush_seed {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: taskboard_domain::HabitClocks::all(ts(T + 10)),
             continued_from: None,
             deleted: false,

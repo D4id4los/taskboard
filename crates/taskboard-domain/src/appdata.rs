@@ -948,6 +948,12 @@ impl Serialize for TimeEntryRecord {
 /// UUID (DR-6 §4.5); the document belongs to one remote board, so no
 /// `board` rides the wire (D-H11 — the fold stamps the locally-bound
 /// board).
+// clippy::large_enum_variant: HF4's field family pushes the `Live`
+// definition row past the lint's ratio against `Verbatim(Value)`.
+// Boxing `Verbatim` alone would diverge this record enum from its
+// sibling wire records' shared shape (the 116-site verbatim grammar);
+// the definition row is the enum's whole purpose — allow, documented.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum HabitRecord {
     /// `{ "title": str, "description": str, "target": HabitTarget,
@@ -958,6 +964,11 @@ pub enum HabitRecord {
     /// `description`/`anchor_day` serialize always (the `title`/`order`
     /// shape) but decode with defaults — an older device's row decodes
     /// to `""`/`None` (additive default-absent law, D3).
+    ///
+    /// HF4's additions (`scheduled_days`, `reminder`) ride the same
+    /// O-2 additive-only law: serialize always, decode default-absent,
+    /// a present-but-undecodable value demotes the row (never a silent
+    /// rewrite); an old reader demotes the row to `Verbatim`.
     Live {
         title: String,
         description: String,
@@ -968,6 +979,11 @@ pub enum HabitRecord {
         /// The inclusive pause-through date (`Habit.paused_until`'s wire
         /// form): default-absent decode, additive-always serialize.
         paused_until: Option<chrono::NaiveDate>,
+
+        /// The scheduled weekday set (HF4, R-6): default-absent.
+        scheduled_days: Option<crate::habit::WeekdaySet>,
+        /// The reminder override (HF4, #959): default-absent.
+        reminder: Option<crate::habit::HabitReminderOverride>,
         clocks: crate::habit::HabitClocks,
         continued_from: Option<crate::ids::SeriesId>,
         /// The row's author (F1's `by` leg): default-absent.
@@ -1002,6 +1018,9 @@ impl HabitRecord {
                     .max(clocks.description)
                     .max(clocks.anchor_day)
                     .max(clocks.paused_until)
+
+                    .max(clocks.scheduled_days)
+                    .max(clocks.reminder)
                     .max(clocks.deleted),
             ),
             Self::Tombstone { clock, .. } => Some(*clock),
@@ -1051,8 +1070,17 @@ impl HabitRecord {
             Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
         };
         // Default-absent additive decode: a row written before HF1
-        // carries no `paused_until` key and decodes `None`.
+        // carries no `paused_until` key (HF1) and no `scheduled_days`/
+        // `reminder` keys (HF4) and decodes `None` for each.
         let paused_until = match map.get("paused_until") {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
+        };
+        let scheduled_days = match map.get("scheduled_days") {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
+        };
+        let reminder = match map.get("reminder") {
             None | Some(Value::Null) => Some(None),
             Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
         };
@@ -1068,6 +1096,8 @@ impl HabitRecord {
             Some(anchor_time),
             Some(anchor_day),
             Some(paused_until),
+            Some(scheduled_days),
+            Some(reminder),
             Ok(clocks),
             Some(continued_from),
             Ok(by),
@@ -1081,6 +1111,8 @@ impl HabitRecord {
             anchor_time,
             anchor_day,
             paused_until,
+            scheduled_days,
+            reminder,
             serde_json::from_value(map.get("clocks").cloned().unwrap_or(Value::Null)),
             continued_from,
             decode_by(map),
@@ -1093,6 +1125,8 @@ impl HabitRecord {
                 anchor_time,
                 anchor_day,
                 paused_until,
+                scheduled_days,
+                reminder,
                 clocks,
                 continued_from,
                 by,
@@ -1123,6 +1157,8 @@ impl Serialize for HabitRecord {
                 anchor_time,
                 anchor_day,
                 paused_until,
+                scheduled_days,
+                reminder,
                 clocks,
                 continued_from,
                 by,
@@ -1139,6 +1175,9 @@ impl Serialize for HabitRecord {
                     "anchor_time": anchor_time,
                     "anchor_day": anchor_day,
                     "paused_until": paused_until,
+
+                    "scheduled_days": scheduled_days,
+                    "reminder": reminder,
                     "clocks": clocks,
                     "continued_from": continued_from,
                 });
@@ -2346,6 +2385,9 @@ pub fn habits_for(
                     anchor_time: habit.anchor_time,
                     anchor_day: None,
                     paused_until: habit.paused_until,
+
+                    scheduled_days: habit.scheduled_days,
+                    reminder: habit.reminder,
                     clocks: habit.clocks,
                     continued_from: habit.continued_from,
                     by: habit.by.or(author),
@@ -5637,6 +5679,8 @@ mod habit_section_tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             deleted,
@@ -5654,6 +5698,8 @@ mod habit_section_tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
 
@@ -5699,6 +5745,8 @@ mod habit_section_tests {
             order: h.order,
             anchor_time: h.anchor_time,
             anchor_day: h.anchor_day,
+            scheduled_days: h.scheduled_days,
+            reminder: h.reminder,
             clocks: h.clocks,
             continued_from: h.continued_from,
             by: h.by,
@@ -6089,6 +6137,8 @@ mod habit_section_tests {
                 order: mine.order,
                 anchor_time: mine.anchor_time,
                 anchor_day: None,
+                scheduled_days: None,
+                reminder: None,
                 clocks: mine.clocks,
                 continued_from: mine.continued_from,
 

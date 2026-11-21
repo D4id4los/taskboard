@@ -858,6 +858,26 @@ pub struct HabitChanges {
         skip_serializing_if = "Option::is_none"
     )]
     pub anchor_day: Option<Option<crate::habit::AnchorDay>>,
+    /// The scheduled weekdays *inside* a weekly/monthly canonical
+    /// window (HF4, R-6). **Plain single option** — a set replaces the
+    /// stored one wholesale; clearing means the *full seven-day set*
+    /// ("no schedule" and "every day" are one posture for a
+    /// weekly/monthly habit; the empty set is unmintable). The planner
+    /// refuses the field on a `PerDay` habit with a typed rejection —
+    /// the field would be inert there (R-6), and inert writes are not
+    /// accepted (no validate-and-forget).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduled_days: Option<crate::habit::WeekdaySet>,
+    /// The habit's reminder override (HF4, #959); `Some(None)` clears
+    /// it, `None` = untouched — the `anchor_time` test twin. An
+    /// override does not require an `anchor_time` (the override's own
+    /// `time` field is the fallback time-of-day).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reminder: Option<Option<crate::habit::HabitReminderOverride>>,
     /// The §4.7 conversion seam's write path: `Some(Some(series))`
     /// links, `Some(None)` unlinks, `None` = untouched. Settable only
     /// here — create never mints a link, and the field carries no clock

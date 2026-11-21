@@ -1062,6 +1062,8 @@ mod tests {
             order,
             anchor_time: chip,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: taskboard_domain::HabitClocks::all(ts(100)),
             continued_from: None,
             deleted,

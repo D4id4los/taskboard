@@ -2459,6 +2459,8 @@ async fn tracker_receipts_rehydrate_and_still_guard_the_toast() {
         // ts() stamps sit inside the same window as their own day.
         anchor_time: Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
         anchor_day: None,
+        scheduled_days: None,
+        reminder: None,
         clocks: HabitClocks::all(ts(1_000)),
         continued_from: None,
         deleted: false,
@@ -2818,6 +2820,8 @@ mod sidecar_author_slot {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(stamp)),
             continued_from: None,
             deleted: false,

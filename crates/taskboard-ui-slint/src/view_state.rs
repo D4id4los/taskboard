@@ -9019,6 +9019,8 @@ mod edit_recur_tests {
             order,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(epoch()),
             continued_from: None,
             deleted: false,

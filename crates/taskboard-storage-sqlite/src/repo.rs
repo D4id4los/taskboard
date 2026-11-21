@@ -833,6 +833,9 @@ struct HabitRow {
     anchor_time: Option<String>,
     anchor_day: Option<String>,
     paused_until: Option<String>,
+
+    scheduled_days: Option<String>,
+    reminder: Option<String>,
     ck_title: String,
     ck_target: String,
     ck_order: String,
@@ -840,6 +843,9 @@ struct HabitRow {
     ck_description: String,
     ck_anchor_day: String,
     ck_paused_until: String,
+
+    ck_scheduled_days: Option<String>,
+    ck_reminder: Option<String>,
     ck_deleted: String,
     deleted: bool,
     continued_from: Option<String>,
@@ -882,6 +888,27 @@ fn decode_habit(
                 .map_err(|_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate))?,
         ),
     };
+    // The 0028/0029 payload columns decode strictly through their serde
+    // mints (the `anchor_day` posture): NULL = unset, a malformed
+    // payload is corruption, never a defaulted value. The clock slots
+    // ride the 0027 COALESCE (pre-HF4 rows decode to the epoch).
+    let scheduled_days = match &row.scheduled_days {
+        None => None,
+        Some(text) => {
+            let set: taskboard_domain::habit::WeekdaySet = serde_json::from_str(text)
+                .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))?;
+            Some(set)
+        }
+    };
+    let reminder = match &row.reminder {
+        None => None,
+        Some(text) => {
+            let ovr: taskboard_domain::habit::HabitReminderOverride =
+                serde_json::from_str(text)
+                    .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))?;
+            Some(ovr)
+        }
+    };
     let clocks = taskboard_domain::HabitClocks {
         title: decode::clock(&row.ck_title)?,
         description: decode::clock(&row.ck_description)?,
@@ -890,6 +917,18 @@ fn decode_habit(
         anchor_time: decode::clock(&row.ck_anchor_time)?,
         anchor_day: decode::clock(&row.ck_anchor_day)?,
         paused_until: decode::clock(&row.ck_paused_until)?,
+
+        // The COALESCE'd column: absent = the epoch (never written).
+        scheduled_days: decode::clock(
+            row.ck_scheduled_days
+                .as_deref()
+                .unwrap_or("1970-01-01T00:00:00+00:00"),
+        )?,
+        reminder: decode::clock(
+            row.ck_reminder
+                .as_deref()
+                .unwrap_or("1970-01-01T00:00:00+00:00"),
+        )?,
         deleted: decode::clock(&row.ck_deleted)?,
     };
     let continued_from = row
@@ -912,6 +951,9 @@ fn decode_habit(
             anchor_time,
             anchor_day,
             paused_until,
+
+            scheduled_days,
+            reminder,
             clocks,
             continued_from,
             deleted: row.deleted,
@@ -1347,10 +1389,14 @@ impl SqliteTaskRepository {
             r#"SELECT habit_id, board_id, title, description, target,
                       sort_order, anchor_time, anchor_day,
                       COALESCE(paused_until, NULL) AS paused_until,
+                      scheduled_days, reminder,
                       ck_title, ck_target, ck_order, ck_anchor_time,
                       COALESCE(ck_description, '1970-01-01T00:00:00+00:00') AS ck_description,
                       COALESCE(ck_anchor_day, '1970-01-01T00:00:00+00:00') AS ck_anchor_day,
                       COALESCE(ck_paused_until, '1970-01-01T00:00:00+00:00') AS ck_paused_until,
+
+                      COALESCE(ck_scheduled_days, '1970-01-01T00:00:00+00:00') AS ck_scheduled_days,
+                      COALESCE(ck_reminder, '1970-01-01T00:00:00+00:00') AS ck_reminder,
                       ck_deleted,
                       deleted as "deleted: bool", continued_from, au_by
                FROM habits ORDER BY habit_id"#
@@ -2566,10 +2612,11 @@ async fn execute_batch(
     for habit in habit_upserts {
         sqlx::query!(
             r#"INSERT INTO habits (habit_id, board_id, title, description, target, sort_order,
-                         anchor_time, anchor_day, paused_until, ck_title, ck_target, ck_order,
-                         ck_anchor_time, ck_description, ck_anchor_day, ck_paused_until,
+                         anchor_time, anchor_day, paused_until, scheduled_days, reminder,
+                         ck_title, ck_target, ck_order, ck_anchor_time, ck_description,
+                         ck_anchor_day, ck_paused_until, ck_scheduled_days, ck_reminder,
                          ck_deleted, deleted, continued_from, au_by)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(habit_id) DO UPDATE SET
                        board_id = excluded.board_id,
                        title = excluded.title,
@@ -2579,6 +2626,8 @@ async fn execute_batch(
                        anchor_time = excluded.anchor_time,
                        anchor_day = excluded.anchor_day,
                        paused_until = excluded.paused_until,
+                       scheduled_days = excluded.scheduled_days,
+                       reminder = excluded.reminder,
                        ck_title = excluded.ck_title,
                        ck_target = excluded.ck_target,
                        ck_order = excluded.ck_order,
@@ -2586,6 +2635,8 @@ async fn execute_batch(
                        ck_description = excluded.ck_description,
                        ck_anchor_day = excluded.ck_anchor_day,
                        ck_paused_until = excluded.ck_paused_until,
+                       ck_scheduled_days = excluded.ck_scheduled_days,
+                       ck_reminder = excluded.ck_reminder,
                        ck_deleted = excluded.ck_deleted,
                        deleted = excluded.deleted,
                        continued_from = excluded.continued_from,
@@ -2601,6 +2652,12 @@ async fn execute_batch(
                 .anchor_day
                 .map(|d| serde_json::to_string(&d).expect("anchor_day serializes")),
             habit.paused_until.map(|d| d.to_string()),
+            habit
+                .scheduled_days
+                .map(|d| serde_json::to_string(&d).expect("scheduled_days serializes")),
+            habit
+                .reminder
+                .map(|d| serde_json::to_string(&d).expect("reminder serializes")),
             habit.clocks.title.to_rfc3339(),
             habit.clocks.target.to_rfc3339(),
             habit.clocks.order.to_rfc3339(),
@@ -2608,6 +2665,11 @@ async fn execute_batch(
             habit.clocks.description.to_rfc3339(),
             habit.clocks.anchor_day.to_rfc3339(),
             habit.clocks.paused_until.to_rfc3339(),
+            habit
+                .clocks
+                .scheduled_days
+                .to_rfc3339(),
+            habit.clocks.reminder.to_rfc3339(),
             habit.clocks.deleted.to_rfc3339(),
             habit.deleted,
             habit
