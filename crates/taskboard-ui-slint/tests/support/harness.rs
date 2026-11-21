@@ -371,6 +371,38 @@ where
     })
 }
 
+/// The today-legs' preamble: `run_journey` without the central board
+/// escape — the mount stays on the desktop's Today default (the
+/// legacy private preamble of `habits_journey.rs`, migrated with
+/// #1112: the habit journeys' Today posture is their assertion
+/// surface, not incidental).
+pub fn run_journey_no_escape<R>(
+    state: taskboard_domain::AppState,
+    job: impl FnOnce(&mut Harness) -> R + Send + 'static,
+) -> R
+where
+    R: Send + 'static,
+{
+    run_journey_no_escape_with_settings(state, UiSettings::default(), job)
+}
+
+/// The today-legs' settings variant: `run_journey_no_escape` with a
+/// configured `UiSettings` (the kiosk-posture legs).
+pub fn run_journey_no_escape_with_settings<R>(
+    state: taskboard_domain::AppState,
+    settings: UiSettings,
+    job: impl FnOnce(&mut Harness) -> R + Send + 'static,
+) -> R
+where
+    R: Send + 'static,
+{
+    run_journey_full_inner(move |_driver| {
+        let mut harness =
+            Harness::mount_no_escape_with_settings(SlintDriver::default(), state, settings);
+        job(&mut harness)
+    })
+}
+
 /// The full-shape preamble: explicit settings and files-sync
 /// receiver. The `driver::run` `SENDER`/`OPTIONS` `OnceLock`
 /// mechanics are untouched — this wraps them, reading
