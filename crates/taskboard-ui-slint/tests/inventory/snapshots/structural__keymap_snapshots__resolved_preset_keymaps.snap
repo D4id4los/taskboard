@@ -427,6 +427,11 @@ expression: rows
         - sequence:
             - PageDown
           action: view.scroll-down
+    - context: status-panel
+      bindings:
+        - sequence:
+            - Escape
+          action: app.status-panel-open
     - context: plan-next-day
       bindings:
         - sequence:
@@ -1072,6 +1077,11 @@ expression: rows
         - sequence:
             - Ctrl+v
           action: view.scroll-down
+    - context: status-panel
+      bindings:
+        - sequence:
+            - Escape
+          action: app.status-panel-open
     - context: plan-next-day
       bindings:
         - sequence:
@@ -1447,6 +1457,11 @@ expression: rows
         - sequence:
             - Escape
           action: app.settings
+    - context: status-panel
+      bindings:
+        - sequence:
+            - Escape
+          action: app.status-panel-open
     - context: menu
       bindings:
         - sequence:

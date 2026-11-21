@@ -66,6 +66,15 @@ expression: rows
   menu_rank: 990
   description: Closes the export dialog; nothing dispatches and any running export completes independently.
   menu_group: ~
+- id: app.status-panel-open
+  label: Status…
+  contexts:
+    - global
+  category: application
+  enabled: true
+  menu_rank: 75
+  description: "Opens or closes the status panel: who serves the database, the sync posture, and the daemon/lock diagnostics. Read-only."
+  menu_group: help
 - id: app.help
   label: Open help
   contexts:
