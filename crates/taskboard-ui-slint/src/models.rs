@@ -884,6 +884,7 @@ pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
         scheduled_phrase: SharedString::from(presentation::habit_scheduled_phrase(
             row.chip,
             row.anchor_day,
+            row.off_schedule,
         )),
         effort_phrase: SharedString::from(String::new()),
         due_kind: SlintDueKind::None,
@@ -2862,6 +2863,20 @@ fn push_task_detail(
             weekday: draft.weekday_index(),
             month_day: SharedString::from(draft.month_day.clone()),
             month_valid: draft.month_valid,
+            // HF4 (W-6/W-7): the kind-gated schedule picker's slots +
+            // validity, and the override section's field mirrors.
+            schedule_visible: draft.schedule_picker_visible(),
+            schedule_days: ModelRc::new(slint::VecModel::from(
+                (0_usize..7)
+                    .map(|slot| draft.schedule_day_checked(slot))
+                    .collect::<Vec<_>>(),
+            )),
+            schedule_valid: !draft.schedule_edited || draft.schedule_bits != 0,
+            reminder_base: i32::try_from(draft.reminder_base).unwrap_or(0),
+            reminder_offset: SharedString::from(draft.reminder_offset.clone()),
+            reminder_time: SharedString::from(draft.reminder_time.clone()),
+            reminder_snooze: SharedString::from(draft.reminder_snooze.clone()),
+            reminder_valid: draft.reminder_valid(),
             can_save,
         });
     }
@@ -6438,6 +6453,8 @@ mod habit_card_tests {
             skip: false,
             paused: false,
             paused_until: None,
+
+            off_schedule: false,
         }
     }
 

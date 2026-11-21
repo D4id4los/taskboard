@@ -209,6 +209,20 @@ export struct HabitDetailModel {
     weekday: int,
     month-day: string,
     month-valid: bool,
+    // HF4 (W-6): the kind-gated schedule picker (US-5 AC-4 — visible
+    // for week/month habits only) + the checked slots (Monday-first)
+    // + the gate's validity (an edited-but-empty selection blocks).
+    schedule-visible: bool,
+    schedule-days: [bool],
+    schedule-valid: bool,
+    // HF4 (W-7): the reminder override's field mirrors (base
+    // 0 nudge-day / 1 period-start, R-8) + the section's parse
+    // validity.
+    reminder-base: int,
+    reminder-offset: string,
+    reminder-time: string,
+    reminder-snooze: string,
+    reminder-valid: bool,
     // The empty-dispatch law (D5): the save affordance greys while
     // the changeset is empty (no actual edit) or any parse is off.
     can-save: bool,
@@ -253,6 +267,22 @@ export component TaskView inherits FocusScope {
     callback habit-time-cleared();
     callback habit-weekday-picked(int);
     callback habit-month-day-edited(string);
+    // slint: habit-schedule-day-toggled (W-6) — the schedule picker's
+    // per-slot toggle (slot index Monday-first, the checked bit).
+    callback habit-schedule-day-toggled(int, bool);
+    // slint: habit-reminder-base-picked (W-7) — the override's base
+    // row (0 nudge-day / 1 period-start).
+    callback habit-reminder-base-picked(int);
+    // slint: habit-reminder-offset-edited (W-7) — the offset days field.
+    callback habit-reminder-offset-edited(string);
+    // slint: habit-reminder-time-edited (W-7) — the fallback
+    // time-of-day field.
+    callback habit-reminder-time-edited(string);
+    // slint: habit-reminder-snooze-edited (W-7) — the hours/days
+    // snooze field.
+    callback habit-reminder-snooze-edited(string);
+    // slint: habit-reminder-clear-clicked (W-7) — the clear leg.
+    callback habit-reminder-clear-clicked();
     callback habit-save-clicked();
     callback habit-editor-cancelled();
     // The tracking verbs (DR-5/4, D-T16): route the matching action
@@ -544,6 +574,73 @@ export component TaskView inherits FocusScope {
                     text: root.habit.month-day;
                     validity: root.habit.month-valid ? FieldValidity.valid : FieldValidity.invalid;
                     edited(text) => { root.habit-month-day-edited(text); }
+                }
+                // HF4 (W-6, US-5/S1–S3): the scheduled-day picker —
+                // gated by the target kind (week/month only, R-6: a
+                // daily habit happens every day). Multi-select over
+                // the CheckBox primitives; the commit mints the set at
+                // the adapter (an edited-but-empty selection greys the
+                // save — the typed invalid draft).
+                if (root.habit.schedule-visible): HorizontalLayout {
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text: "Scheduled days";
+                    }
+                    for slot in [0, 1, 2, 3, 4, 5, 6]: CheckBox {
+                        checked: root.habit.schedule_days[slot];
+                        checked-label: ["Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Mon"][slot];
+                        unchecked-label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][slot];
+                        toggled => { root.habit-schedule-day-toggled(slot, !root.habit.schedule_days[slot]); }
+                    }
+                }
+                // HF4 (W-7, US-6/S1–S3): the reminder override
+                // section — base (R-8: nudge-day default, period-start
+                // explicit), offset days, fallback time-of-day
+                // (US-6 AC-4), snooze in hours/days (O-1), and the
+                // clear leg back to the plain O-1 default.
+                RoleText {
+                    role: Typography.caption;
+                    text: "Reminder override";
+                }
+                ToggleStrip {
+                    options: ["Nudge day", "Period start"];
+                    checked-mask: [
+                        root.habit.reminder-base == 0,
+                        root.habit.reminder-base == 1,
+                    ];
+                    picked(index) => { root.habit-reminder-base-picked(index); }
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "0";
+                        label: "Offset days";
+                        text: root.habit.reminder-offset;
+                        edited(text) => { root.habit-reminder-offset-edited(text); }
+                    }
+                    TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "07:30";
+                        label: "Time (no chip: used)";
+                        text: root.habit.reminder-time;
+                        edited(text) => { root.habit-reminder-time-edited(text); }
+                    }
+                    TextField {
+                        horizontal-stretch: 1;
+                        placeholder: "2h / 1d";
+                        label: "Snooze";
+                        text: root.habit.reminder-snooze;
+                        validity: root.habit.reminder-valid ? FieldValidity.valid : FieldValidity.invalid;
+                        edited(text) => { root.habit-reminder-snooze-edited(text); }
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Clear override";
+                        clicked => { root.habit-reminder-clear-clicked(); }
+                    }
                 }
                 HorizontalLayout {
                     spacing: Theme.space-2;

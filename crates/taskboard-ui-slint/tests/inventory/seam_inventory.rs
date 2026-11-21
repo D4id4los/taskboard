@@ -227,6 +227,16 @@ const SEAM_INVENTORY: &[&str] = &[
     "habit_time_cleared",
     "habit_weekday_picked",
     "habit_month_day_edited",
+    // HF4 (W-6/W-7): the schedule picker's toggle seam ("habit-schedule-day-toggled")
+    // and the override section's field seams ("habit-reminder-base-picked",
+    // "habit-reminder-offset-edited", "habit-reminder-time-edited",
+    // "habit-reminder-snooze-edited", "habit-reminder-clear-clicked").
+    "habit_schedule_day_toggled",
+    "habit_reminder_base_picked",
+    "habit_reminder_offset_edited",
+    "habit_reminder_time_edited",
+    "habit_reminder_snooze_edited",
+    "habit_reminder_clear_clicked",
     "habit_save_clicked",
     // The J1 W-4 cross-check's anchor: the slint-side spelling of the
     // save seam is the kebab "habit-save-clicked" (the #760 grammar —

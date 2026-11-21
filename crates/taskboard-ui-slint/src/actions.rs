@@ -528,6 +528,15 @@ pub enum ActionId {
     /// `TaskEdit` → Activate shape; the adapter resolves the one-shot
     /// subject).
     HabitEdit,
+    /// The habit editor's schedule row (HF4, W-11, US-5): opens the
+    /// editor over the focused habit anchored at the weekday picker —
+    /// the picker is the editor's kind-gated row, the key is its
+    /// Today-context anchor (the `HabitEdit` opener shape).
+    HabitScheduleEdit,
+    /// The habit editor's reminder row (HF4, W-11, US-6): opens the
+    /// editor over the focused habit anchored at the override section
+    /// (the same opener shape).
+    HabitReminderEdit,
     /// The GUI habit remove's arm step (H4 D4, #944): the staged
     /// consequence-first grammar (the task-delete/`BreakRuleRemove`
     /// shape) — arms the confirm inside the open habit menu; the
@@ -825,6 +834,8 @@ impl ActionId {
             Self::HabitConvertArm => "habit.convert-arm",
             Self::HabitConvertToSeries => "habit.convert-to-series",
             Self::HabitEdit => "habit.edit",
+            Self::HabitScheduleEdit => "habit.schedule-edit",
+            Self::HabitReminderEdit => "habit.reminder-edit",
             Self::HabitRemove => "habit.remove",
             Self::HabitRemoveConfirm => "habit.remove-confirm",
             Self::HabitRemoveCancel => "habit.remove-cancel",
@@ -2219,6 +2230,37 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
+        id: ActionId::HabitScheduleEdit,
+        label: "Edit habit schedule",
+        // The Today context (W-11): the row verbs' context — the
+        // editor anchors route over the focused habit there; not the
+        // Menu context (the picker is a section of the editor surface,
+        // never an action-menu row — the G6 geometry budget).
+        contexts: &[ContextId::Today],
+        category: Category::Task,
+        enabled: true,
+        description: "Opens the habit editor at the scheduled-days row (week/month habits only; a daily habit happens every day).",
+        // Not a menu row: the picker is a *section of the editor
+        // surface* (editor-anchored, W-11); the action menu's Task
+        // group is the row verbs' page (the G6 geometry budget). The
+        // rank sits in the cursor family's gap (unrendered rows are
+        // rank-ordered only for the quick-row projection).
+        menu_rank: 960,
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitReminderEdit,
+        label: "Edit habit reminder",
+        // The Today context (W-11; see the schedule row).
+        contexts: &[ContextId::Today],
+        category: Category::Task,
+        enabled: true,
+        description: "Opens the habit editor at the reminder-override row (base, offset, time, snooze).",
+        // Editor-anchored, W-11 (see the schedule row).
+        menu_rank: 970,
+        menu_group: None,
+    },
+    ActionEntry {
         id: ActionId::HabitRemove,
         label: "Remove habit",
         contexts: GLOBAL,
@@ -3104,6 +3146,10 @@ mod tests {
             // commit verb.
             ActionId::HabitQuotaEdit,
             ActionId::HabitQuotaCommit,
+            // The HF4 editor anchors (W-11): the schedule/override rows
+            // open the editor at their sections (the HabitEdit shape).
+            ActionId::HabitScheduleEdit,
+            ActionId::HabitReminderEdit,
         ];
         for id in ALL {
             assert_eq!(REGISTRY.iter().filter(|e| e.id == *id).count(), 1);
