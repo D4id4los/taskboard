@@ -66,6 +66,8 @@ fn anchored_habit_met_today() -> (Habit, HabitState) {
         order: 0,
         anchor_time: Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("09:00")),
         anchor_day: None,
+        scheduled_days: None,
+        reminder: None,
         clocks: HabitClocks::all(ts(T0)),
         continued_from: None,
         deleted: false,

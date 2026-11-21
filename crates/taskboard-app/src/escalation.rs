@@ -890,6 +890,8 @@ mod tests {
                 order: 0,
                 anchor_time: Some(chrono::NaiveTime::from_hms_opt(0, 30, 0).unwrap()),
                 anchor_day: None,
+                scheduled_days: None,
+                reminder: None,
                 clocks: HabitClocks::all(T0 - TimeDelta::hours(1)),
                 continued_from: None,
                 deleted: false,

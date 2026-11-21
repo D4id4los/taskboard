@@ -12,8 +12,9 @@ use proptest::prelude::*;
 
 use super::{string_strategy, timestamp_strategy};
 use crate::habit::{
-    AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitState, HabitTarget, MonthDay,
-    NonZeroCount, PeriodKind, period_start,
+    AnchorDay, Habit, HabitClocks, HabitLogEntry, HabitLogKey, HabitReminderOverride,
+    HabitSnooze, HabitState, HabitTarget, MonthDay, NonZeroCount, NudgeBase, PeriodKind,
+    WeekdaySet, period_start,
 };
 
 /// One of the three period kinds, uniform.
@@ -74,10 +75,72 @@ pub fn anchor_day_strategy() -> impl Strategy<Value = Option<AnchorDay>> {
     ]
 }
 
+/// A random weekday set (never empty — the mint's law).
+pub fn weekday_set_strategy() -> impl Strategy<Value = WeekdaySet> {
+    (1_u8..=7, 0_u8..=127).prop_filter_map("at least one masked weekday", |(count, raw)| {
+        // Take `count` distinct bits off the raw mask, Monday-first.
+        let mut bits = 0_u8;
+        let mut remaining = count;
+        for bit in 0..7 {
+            if raw & (1 << bit) != 0 {
+                bits |= 1 << bit;
+                remaining -= 1;
+            }
+            if remaining == 0 {
+                break;
+            }
+        }
+        if remaining > 0 {
+            // Fill the shortfall from the low bits (mask too thin).
+            for bit in 0..7 {
+                if remaining == 0 {
+                    break;
+                }
+                if bits & (1 << bit) == 0 {
+                    bits |= 1 << bit;
+                    remaining -= 1;
+                }
+            }
+        }
+        WeekdaySet::from_bits(bits)
+    })
+}
+
+/// A random reminder override (HF4 — nudge parameters; no window,
+/// streak, or ordering projection may read them).
+///
+/// # Panics
+///
+/// Panics only if chrono cannot build the bounded time-of-day — a
+/// programming error, not an input condition.
+pub fn reminder_override_strategy() -> impl Strategy<Value = HabitReminderOverride> {
+    (
+        prop_oneof![Just(NudgeBase::NudgeDay), Just(NudgeBase::PeriodStart)],
+        -14_i32..=14,
+        (0_u32..86_400).prop_map(|secs| {
+            chrono::NaiveTime::from_num_seconds_from_midnight_opt(secs, 0)
+                .expect("in-range seconds")
+        }),
+        prop_oneof![
+            (1_u8..=72).prop_map(HabitSnooze::Hours),
+            (1_u8..=14).prop_map(HabitSnooze::Days),
+        ],
+    )
+        .prop_map(|(base, offset_days, time, snooze)| HabitReminderOverride {
+            base,
+            offset_days,
+            time,
+            snooze,
+        })
+}
+
 /// A random habit entity (anchor chips and seam links included — the
 /// negative pin that they influence no projection reads them). The
 /// description and anchor day ride along for the same reason: display
-/// data that no window, streak, or ordering projection may read.
+/// data that no window, streak, or ordering projection may read. The
+/// HF4 fields (`scheduled_days`, `reminder`) ride for the same reason
+/// plus their own pins (R-6 transparency; the nudge gate decides WHEN
+/// only).
 ///
 /// # Panics
 ///
@@ -96,9 +159,14 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
                 .expect("in-range seconds")
         })),
         anchor_day_strategy(),
+        // The two HF4 fields ride as one nested pair (the tuple
+        // strategy's arity ceiling): set + override.
+        (
+            proptest::option::of(weekday_set_strategy()),
+            proptest::option::of(reminder_override_strategy()),
+        ),
         proptest::option::of(super::series_id_strategy()),
-        timestamp_strategy(),
-        any::<bool>(),
+        (timestamp_strategy(), any::<bool>()),
         proptest::option::of(
             (any::<u128>())
                 .prop_map(|raw| crate::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(raw))),
@@ -114,9 +182,9 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
                 order,
                 anchor_time,
                 anchor_day,
+                (scheduled_days, reminder),
                 continued_from,
-                stamp,
-                deleted,
+                (stamp, deleted),
                 by,
             )| {
                 Habit {
@@ -128,6 +196,8 @@ pub fn habit_strategy() -> impl Strategy<Value = Habit> {
                     order,
                     anchor_time,
                     anchor_day,
+                    scheduled_days,
+                    reminder,
                     clocks: HabitClocks::all(stamp),
                     continued_from,
                     deleted,

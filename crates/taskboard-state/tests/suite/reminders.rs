@@ -1229,6 +1229,8 @@ fn seeded_tracker_state() -> PersistedState {
         order: 0,
         anchor_time: Some(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap()),
         anchor_day: None,
+        scheduled_days: None,
+        reminder: None,
         clocks: HabitClocks::all(ts(T0 - 60)),
         continued_from: None,
         deleted: false,

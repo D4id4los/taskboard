@@ -380,6 +380,8 @@ mod tests {
             order: 0,
             anchor_time: Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: taskboard_domain::HabitClocks::all(
                 chrono::TimeZone::timestamp_opt(&chrono::Utc, 100, 0).unwrap(),
             ),

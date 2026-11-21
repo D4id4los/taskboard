@@ -5026,6 +5026,8 @@ mod tests {
             order: 0,
             anchor_time: anchor,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: HabitClocks::all(ts(100)),
             continued_from: None,
             deleted: false,

@@ -138,6 +138,8 @@ async fn entity_abort_middle_habit_log_row_names_the_date_reason() {
         order: 0,
         anchor_time: None,
         anchor_day: None,
+        scheduled_days: None,
+        reminder: None,
         clocks: taskboard_domain::HabitClocks::all(ts(100)),
         continued_from: None,
         deleted: false,

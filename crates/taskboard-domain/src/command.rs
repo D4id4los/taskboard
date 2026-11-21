@@ -189,6 +189,13 @@ pub enum CommandError {
         /// The offending through-date.
         until: chrono::NaiveDate,
     },
+
+    /// `UpdateHabit` names `scheduled_days` on a `PerDay` habit (HF4,
+    /// R-6): the field is a weekly/monthly extension by construction —
+    /// a daily habit happens every day — so the write is refused typed
+    /// at the boundary, never minted inert.
+    #[error("scheduled days cannot be set on a daily habit")]
+    ScheduledDaysOnDailyHabit(HabitId),
     /// No reflection entry with this id exists.
     #[error("unknown reflection entry")]
     UnknownReflection(crate::ids::ReflectionId),
@@ -2712,6 +2719,8 @@ pub fn plan_command(
                 // (D-H7a): create arms never carry the seam.
                 anchor_time: None,
                 anchor_day: None,
+                scheduled_days: None,
+                reminder: None,
                 clocks: HabitClocks::all(now),
                 continued_from: None,
                 deleted: false,
@@ -2729,6 +2738,18 @@ pub fn plan_command(
         }
         StateCommand::UpdateHabit { habit: id, changes } => {
             let stored = live_habit(app, *id)?;
+            // R-6 (no validate-and-forget): `scheduled_days` on a PerDay
+            // habit is refused *typed*, before any plan exists — the
+            // field would be inert on a daily habit (a daily habit
+            // happens every day; weekday subsets are a weekly habit's
+            // vocabulary), and inert writes are not accepted. The
+            // field stays inert at *read* time only for legacy/synced
+            // rows (documented leniency at `Habit::scheduled_days`).
+            if changes.scheduled_days.is_some()
+                && stored.target.kind() == crate::habit::PeriodKind::Day
+            {
+                return Err(CommandError::ScheduledDaysOnDailyHabit(*id));
+            }
             let mut updated = stored.clone();
             if let Some(title) = &changes.title
                 && updated.title != *title
@@ -2764,6 +2785,26 @@ pub fn plan_command(
                 // and stamps its clock.
                 updated.anchor_day = anchor_day;
                 updated.clocks.anchor_day = now;
+            }
+            if let Some(scheduled_days) = changes.scheduled_days
+                && updated.scheduled_days != Some(scheduled_days)
+            {
+                // The R-6 gate above already refused the PerDay
+                // combination; a weekly/monthly set replaces wholesale
+                // (clearing = the full seven-day set, the
+                // `HabitChanges.scheduled_days` contract).
+                updated.scheduled_days = Some(scheduled_days);
+                updated.clocks.scheduled_days = now;
+            }
+            if let Some(reminder) = changes.reminder
+                && updated.reminder != reminder
+            {
+                // Nudge parameters accepted as-is (R-8: the override
+                // parameterizes the O-1 law; `Some(None)` is the clear
+                // leg back to the plain default) — contested content,
+                // it stamps its clock.
+                updated.reminder = reminder;
+                updated.clocks.reminder = now;
             }
             if let Some(continued_from) = changes.continued_from
                 && updated.continued_from != continued_from
@@ -3225,6 +3266,8 @@ pub fn plan_command(
                 order,
                 anchor_time: None,
                 anchor_day: None,
+                scheduled_days: None,
+                reminder: None,
                 clocks: HabitClocks::all(now),
                 continued_from: Some(rule.series),
                 deleted: false,
@@ -10160,6 +10203,8 @@ mod tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: crate::habit::HabitClocks::all(ts(T0 - 3_600)),
             continued_from: None,
             deleted: false,
@@ -10324,6 +10369,8 @@ mod tests {
                     )),
                     anchor_time: Some(Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap())),
                     anchor_day: None,
+                    scheduled_days: None,
+                    reminder: None,
                     continued_from: Some(Some(series)),
                 },
             },
