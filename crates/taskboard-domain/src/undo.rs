@@ -1999,10 +1999,6 @@ fn synthesize_undo(
             };
             let entity = JournalEntity::HabitLog(key);
             let Some(EntityStamps::HabitLog(recorded_post)) = watermark.0.get(&entity) else {
-                eprintln!(
-                    "HF1DBG: no stamp for {entity:?}; have {:?}",
-                    watermark.0.keys().collect::<Vec<_>>()
-                );
                 return Err(refuse(entity, UndoField::HabitLogCount));
             };
             if app.habits.log.get(&key) != Some(recorded_post) {
