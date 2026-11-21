@@ -6998,6 +6998,10 @@ impl Adapter {
                 ActionId::HabitConvertToSeries,
                 ActionId::HabitConvertCancel,
                 ActionId::HabitEdit,
+                // The HF3 history opener greys too (the visible-
+                // disabled posture: the dialog is desktop-only, R-3 —
+                // the row reads "exists, not for this device").
+                ActionId::HabitHistory,
                 ActionId::HabitRemove,
                 ActionId::HabitRemoveConfirm,
             ] {
