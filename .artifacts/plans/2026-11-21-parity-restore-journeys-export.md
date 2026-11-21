@@ -199,19 +199,19 @@ stateDiagram-v2
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/compositions/export-dialog.slint (new) | dialog mount/unmount | `export-dialog-open` / `export-dialog-close` | `install_export_seam` (adapter.rs) | `ActionId::ExportDialogOpen` | — (pure presentation mount; §4 US-1 rows say why) | Modal over the shell | US-1/S1, US-1/S2 | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us1_s1_dialog_mounts_from_all_entry_points |
-| W-2 | Settings view (settings rows composition) | `Export…` row | `export-settings-open` | same seam | — | — (navigation) | Settings row (row callback, not element id) | US-1/S1 | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us1_s1_dialog_mounts_from_all_entry_points |
-| W-3 | ui/compositions/export-dialog.slint | family + format pickers, filter fields | `export-spec-picked` | same seam (spec assembly) | — | — (display only until Run) | Dialog-scoped state | US-2/S1, US-3/S1 | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us2_s1_filters_echo_dialog_state |
-| W-4 | ui/compositions/export-dialog.slint | `Run` button | `export-run` | same seam → `UiRequest::ExportRun` drain | — | `UiRequest::ExportRun` | Dialog-scoped | US-2/S2, US-3/S2 | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us2_s2_run_dispatches_export_run_spec |
-| W-5 | ui/compositions/export-dialog.slint | outcome area + busy posture | `export-outcome-shown` | same seam (oneshot reply → presentation fold) | — | — (display only) | Dialog-scoped | US-2/S3, US-3/S3 | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us2_s3_typed_outcome_renders_file_fact_or_refusal |
-| W-6 | crates/taskboard-ui-slint/src/requests.rs | — | — | app-side drain executes the export engine and replies | — | `UiRequest::ExportRun` | — | US-2/S2, US-3/S2 | crates/taskboard-app/tests/it_exports.rs::export_run_reply_carries_typed_outcome |
+| W-1 | ui/compositions/export-dialog.slint (new) | dialog mount/unmount | export-dialog-open / export-dialog-close | install_export_seam (adapter.rs) | ActionId::ExportDialogOpen | — | Modal over the shell | US-1/S1, US-1/S2 (pure presentation mount; §4 US-1 rows say why) | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us1_s1_dialog_mounts_from_all_entry_points |
+| W-2 | Settings view (settings rows composition) | `Export…` row | export-settings-open | same seam | — | — | Settings row (row callback, not element id) | US-1/S1 (navigation) | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us1_s1_dialog_mounts_from_all_entry_points |
+| W-3 | ui/compositions/export-dialog.slint | family + format pickers, filter fields | export-spec-picked | same seam (spec assembly) | — | — | Dialog-scoped state | US-2/S1, US-3/S1 (display only until Run) | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us2_s1_filters_echo_dialog_state, crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us1_s2_the_mounted_dialog_carries_the_control_set, crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us3_s1_pdf_controls_pre_fill_and_the_fold_disabled_flag |
+| W-4 | ui/compositions/export-dialog.slint | `Run` button | export-run | same seam → UiRequest::ExportRun drain | — | UiRequest::ExportRun | Dialog-scoped | US-2/S2, US-3/S2 | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us2_s2_run_dispatches_export_run_spec, crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us3_s2_run_dispatches_the_pdf_spec_with_the_override |
+| W-5 | ui/compositions/export-dialog.slint | outcome area + busy posture | export-outcome-shown | same seam (oneshot reply → presentation fold) | — | — | Dialog-scoped | US-2/S3, US-3/S3 (display only) | crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us2_s3_typed_outcome_renders_file_fact_or_refusal, crates/taskboard-ui-slint/tests/journeys/export_journeys.rs::us3_s3_the_pdf_outcome_renders_the_written_path_or_refusal |
+| W-6 | crates/taskboard-ui-slint/src/requests.rs | — | — | app-side drain executes the export engine and replies | — | UiRequest::ExportRun | — | US-2/S2, US-3/S2 | crates/taskboard-app/tests/it_exports.rs::export_run_reply_carries_typed_outcome |
 
 ## 7. Command-contract delta
 
 | Kind | Name | Payload sketch | Journeys |
 |---|---|---|---|
-| UiRequest | `ExportRun` | new — `{ spec: ExportSpec }` where `ExportSpec` mirrors the CLI verb's fields (`what`, `format`, `since`, `until`, `task`, `board`, `layout`, `out`, `open_after`) + oneshot reply `ExportRunOutcome` (written path or typed refusal kind — D-5) | US-2/S2, US-3/S2 |
-| ActionId | `ExportDialogOpen` | new — no payload (mounts the dialog) | US-1/S1 |
+| UiRequest | ExportRun | new — `{ spec: ExportSpec }` where `ExportSpec` mirrors the CLI verb's fields (`what`, `format`, `since`, `until`, `task`, `board`, `layout`, `out`, `open_after`) + oneshot reply `ExportRunOutcome` (written path or typed refusal kind — D-5) | US-2/S2, US-3/S2 |
+| ActionId | ExportDialogOpen | new — no payload (mounts the dialog) | US-1/S1 |
 | StateCommand | — | none: the export family touches no engine state (the CLI verb bypasses the `--json` receipt envelope per D-T15; so does the GUI leg) | — |
 
 ## 8. Verification plan
@@ -243,6 +243,35 @@ stateDiagram-v2
 - [ ] Non-goals filed as backlog issues (the csv/json preview/clipboard
       polish — filed with this plan)
 
+## 10. Implementation erratum (OP2 stage 2, 2026-11-21)
+
+Mechanical, decision-free amendments this chunk landed against the
+accepted text (the tokens are unchanged — the gate grammar and two
+recorded implementation facts):
+
+1. **Gate grammar**: §6/§7 token cells are unbackticked (the
+   ux-coverage token matcher is boundary-anchored over raw source —
+   the template's example rows are unbackticked), and the four
+   `— (prose)` Commands cells move their prose into the Journey-steps
+   cell (a Commands cell must be exactly `—` for the absence check).
+   The W-row Test cells gain the one-line nominations for the §4
+   steps whose evidence rides descriptive test names (US-1/S2,
+   US-3/S1, US-3/S2, US-3/S3).
+2. **D-2's dated-name pre-fill reads as a placeholder**: the
+   dialog's destination field pre-fills EMPTY with the config home
+   as the placeholder; the dated file name is engine-derived at run
+   time (`out: None` = the engine default). Rationale: a pre-filled
+   dated name freezes the dialog-open instant into the spec
+   (yesterday's date the next morning), and minting the engine's
+   file-name format presentation-side would duplicate the engine
+   (the O-5 trap). The written-path fact renders the real path after
+   the run.
+3. **Adapter seam surface**: W-1's open callback is the window-level
+   `export-dialog-open()` front (the property is
+   `export-dialog-mounted` — slint forbids a callback and a property
+   of one name); W-5's `export-outcome-shown` is the window-level
+   display fold the reply drain invokes OUTSIDE the adapter borrow
+   (the re-entrancy law — the fold handler re-enters the adapter).
 ## 10. Implementation erratum (OP2 stage 2, 2026-11-21)
 
 Mechanical, decision-free amendments this chunk landed against the
