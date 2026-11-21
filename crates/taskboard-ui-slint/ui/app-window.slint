@@ -17,6 +17,7 @@ import { CaptureOverlay } from "compositions/capture-overlay.slint";
 import { RecurEditor, RecurEditorModel } from "compositions/recur-editor.slint";
 import { ExportDialog, ExportDialogModel } from "compositions/export-dialog.slint";
 import { ReviewWalkOverlay, ReviewWalkModel } from "views/review-walk-overlay.slint";
+import { HabitHistoryView, HabitHistoryModel } from "views/habit-history-view.slint";
 import { FocusOverlay, FocusRowModel } from "compositions/focus-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
 import { StatusBar, SyncBadgeModel, BannerRowModel, FlowHintModel, FilesSyncChipState, FilesSyncChipTone } from "compositions/status-bar.slint";
@@ -383,6 +384,11 @@ export component AppWindow inherits Window {
     in-out property <bool> palette-open: false;
     // The quick-capture overlay (chunk 10 D8).
     in-out property <bool> capture-open: false;
+    // The habit history dialog's mount bit + pushed model (HF3 W-8,
+    // US-7/S1): read role, desktop-only (R-3 — the kiosk never arms
+    // the mount); pure projection, zero commands.
+    in-out property <bool> habit-history-open: false;
+    in-out property <HabitHistoryModel> habit-history;
     // The recur editor's window-level mount bit + pushed model
     // (round-7 D-7.1): the adapter owns both; the overlay mounts
     // exactly while Flow::EditRecur holds.
@@ -793,6 +799,7 @@ export component AppWindow inherits Window {
                 habit_reminder_clear_clicked() => root.habit_reminder_clear_clicked();
                 habit_save_clicked() => root.habit_save_clicked();
                 habit-editor-cancelled() => root.habit-editor-cancelled();
+                habit-history-clicked() => root.habit-editor-history-clicked();
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
                 rule-row-clicked(i) => root.task-rule-row-clicked(i);
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
@@ -1715,6 +1722,26 @@ export component AppWindow inherits Window {
             text-flow-focus-lost() => root.text-flow-focus-lost();
             }
         }
+        // The habit history dialog (HF3 W-8, US-7): the read role's
+        // posture — kind `confirm` routes the outside click to the
+        // close (zero state change, US-7/S4); the button model is
+        // empty (the dialog is a projection — the only intents are
+        // the pager's two flips, US-7/S3, and the host's own
+        // dismissal). Desktop-only: the kiosk never arms the mount
+        // bit (R-3), so this `if` never holds on the appliance.
+        if (root.habit-history-open): ModalDialogHost {
+            open: true;
+            title: "Habit history";
+            kind: DialogKind.confirm;
+            body-preferred-width: 560px * Theme.base-scale;
+            walk-stops: 1 + 2;
+            viewport-floor: status.y;
+            dismissed => root.habit-history-close-requested();
+            HabitHistoryView {
+                model: root.habit-history;
+                history-month-flipped(delta) => root.habit-history-month-flipped(delta);
+            }
+        }
         // The pointer drag's ghost (r2 chunk-8, D-D): the dragged
         // card's snapshot at half opacity, centred under the cursor
         // (DragState.pointer-x/y, fed by the board DropAreas' can-drop
@@ -1995,6 +2022,11 @@ export component AppWindow inherits Window {
     pure callback stack-task-context-requested(int, float, float);
     // The today view's row seams (chunk 10 D7): (section, row) — the
     // adapter resolves the flat index against `today_tasks`.
+    // The habit history dialog's seams (HF3 W-8): the pager flip
+    // (US-7/S3) and the close (US-7/S4 — W1 read-role dismissal,
+    // zero state change).
+    pure callback habit-history-month-flipped(int);
+    pure callback habit-history-close-requested();
     // The capture overlay's seams (chunk 10 D8).
     pure callback capture-dismiss-requested();
     pure callback capture-text-edited(string);
@@ -2135,6 +2167,8 @@ export component AppWindow inherits Window {
     pure callback habit_reminder_clear_clicked();
     pure callback habit_save_clicked();
     pure callback habit-editor-cancelled();
+    // The habit editor's History row (HF3 W-8, US-7/S1).
+    pure callback habit-editor-history-clicked();
     // The scale slider's gesture seams (r2 D29, r4 D38): press seeds
     // the revert point, release commits once (the drag itself is the
     // widget's own).

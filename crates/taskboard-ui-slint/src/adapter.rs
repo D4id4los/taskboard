@@ -4877,6 +4877,17 @@ impl Adapter {
                     self.arm_no_target_notice(ActionId::HabitQuotaEdit);
                     self.push_notice(window);
                 }
+            }
+            // The habit history dialog's opener (HF3 W-8, US-7/S1):
+            // the read-role month-grid projection mounts over the
+            // resolved habit subject. Kiosk dispatch is structurally
+            // inert (R-3 — the dialog is unmountable, D7); a
+            // subjectless dispatch surfaces the typed refusal on the
+            // notice lane (the T-19 twin). Zero commands route — the
+            // dialog is a projection (US-7/S2–S4).
+            (_, UiEffect::HabitHistoryOpen) if self.kiosk => Vec::new(),
+            (Flow::None, UiEffect::HabitHistoryOpen) => {
+                self.open_habit_history_from_subject(window);
                 Vec::new()
             }
             // The rule cursor's activation (J3 US-6 D-3, round 9
@@ -6543,6 +6554,9 @@ impl Adapter {
             // (the kiosk/subject refusals live in the arm).
             | UiEffect::HabitEdit
             | UiEffect::HabitQuotaEdit
+            // The HF3 history opener interprets like every view
+            // intent (the kiosk/subject refusals live in the arm).
+            | UiEffect::HabitHistoryOpen
             // The recur editor's intents (round-7 D-7.1): the opener
             // and the detach strip's flag flips interpret like every
             // view intent — the kiosk/subject refusals live in the
@@ -6825,6 +6839,32 @@ impl Adapter {
     /// routes the bare id — the opener's focus fact mints the target
     /// (the habit menu's `focused_habit`; the repair seam's exact
     /// arithmetic). The convert arm's resolution order, habit-side.
+    /// The habit history dialog's ONE opener (HF3 W-8, US-7/S1):
+    /// the action arm and the editor's History row converge here —
+    /// the subject resolution, the kiosk/subject refusals, and the
+    /// view-state write happen in exactly one place (the arm
+    /// convention). The editor variant's subject rides the
+    /// view-state's habit subject when no row focus carries one.
+    fn open_habit_history_from_subject(&mut self, window: &AppWindow) {
+        let habit = self
+            .habit_edit_subject()
+            .or_else(|| self.view_state.subject_habit());
+        if let Some(habit) = habit {
+            let now = self.day_ctx().now;
+            let day = taskboard_domain::DayCalendar {
+                day_start_time: self.day_start.0,
+                offset: self.day_start.1,
+            };
+            let today = day.today(now);
+            let outcomes = self.view_state.open_habit_history(habit, today);
+            self.apply_outcomes(window, &outcomes);
+            self.finish_mutation(window);
+        } else {
+            self.arm_no_target_notice(ActionId::HabitHistory);
+            self.push_notice(window);
+        }
+    }
+
     fn habit_edit_subject(&self) -> Option<taskboard_domain::HabitId> {
         let habit = self.focused_habit.or(match self.menu_row_subject {
             Some(crate::presentation::RowSubject::Habit(habit)) => Some(habit),
@@ -13755,6 +13795,49 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     install_seam!(window: window.on_capture_accepted, adapter: adapter;
     bind mut (a, window), args (), {        let outcomes = a.view_state.commit_capture();
+    a.apply_outcomes(&window, &outcomes);
+    a.finish_mutation(&window);
+
+    });
+    install_seam!(window: window.on_habit_editor_history_clicked, adapter: adapter; // slint callback: habit-editor-history-clicked (the HF3 W-8 editor History row seam, US-7/S1 — the shared opener)
+    bind mut (a, window), args (), {        a.open_habit_history_from_subject(&window);
+
+    });
+    install_seam!(window: window.on_habit_history_month_flipped, adapter: adapter; // slint callback: habit-history-month-flipped (the HF3 W-8 pager's flip seam, US-7/S3 — the adapter clamps against the can-page facts)
+    bind mut (a, window), args (delta), {        let month_open = a.view_state.habit_history().1.is_some();
+        if month_open {
+            let clamped = {
+                let (habit, month) = a.view_state.habit_history();
+                let state = a.state.load();
+                let day = taskboard_domain::DayCalendar {
+                    day_start_time: a.day_start.0,
+                    offset: a.day_start.1,
+                };
+                let now = a.day_ctx().now;
+                month
+                    .zip(habit)
+                    .is_some_and(|(month, habit)| {
+                        let flipped = crate::presentation::habit_month_flipped(month, delta);
+                        let next = crate::presentation::habit_history_month(
+                            state.habits.habits.get(&habit).expect("open target"),
+                            &state.habits.log,
+                            flipped,
+                            now,
+                            day,
+                        );
+                        (delta < 0 && next.can_page_back)
+                            || (delta > 0 && next.can_page_forward)
+                    })
+            };
+            if clamped {
+                let outcomes = a.view_state.flip_habit_history_month(delta);
+                a.apply_outcomes(&window, &outcomes);
+            }
+        }
+
+    });
+    install_seam!(window: window.on_habit_history_close_requested, adapter: adapter; // slint callback: habit-history-close-requested (the HF3 W-8 read-role dismissal seam, US-7/S4 — zero state change)
+    bind mut (a, window), args (), {        let outcomes = a.view_state.close_habit_history();
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
 

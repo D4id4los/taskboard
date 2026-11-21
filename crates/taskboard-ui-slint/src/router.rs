@@ -152,6 +152,11 @@ pub enum UiEffect {
     /// the shared task-detail surface over the resolved habit
     /// subject — the `Activate` shape with a habit one-shot.
     HabitEdit,
+    /// The habit history dialog's opener (HF3 W-8, US-7/S1): the
+    /// adapter opens the read-role month-grid projection over the
+    /// resolved habit subject; refuses on kiosk (R-3 — the dialog is
+    /// unmountable) and without a subject. Zero commands.
+    HabitHistoryOpen,
     /// Arm the staged habit remove (H4 D4, #944): the adapter
     /// records the armed subject; the dispatch waits for Confirm.
     HabitRemoveArm,
@@ -527,6 +532,10 @@ impl UiEffect {
             // settle-then-open cell: a foreign flow settles first,
             // then the surface opens over the resolved subject).
             | Self::HabitEdit
+            // The HF3 history opener rides the same view-intent
+            // bucket (the read-role dialog's mount is a flag flip —
+            // no flow moves, no command routes).
+            | Self::HabitHistoryOpen
             | Self::HabitCreateToggle
             | Self::HabitQuotaEdit
             | Self::SeriesConvertArm
@@ -1646,6 +1655,7 @@ impl ActionRouter {
                 }),
                 None => DispatchOutcome::NoTarget,
             },
+            ActionId::HabitHistory => DispatchOutcome::UiEffect(UiEffect::HabitHistoryOpen),
             // The staged remove (H4 D4, #944): the arm routes the
             // adapter's staging effect; the confirm routes the domain
             // verb from the one-shot armed subject (`NoTarget`

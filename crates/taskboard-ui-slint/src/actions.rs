@@ -537,6 +537,12 @@ pub enum ActionId {
     /// editor over the focused habit anchored at the override section
     /// (the same opener shape).
     HabitReminderEdit,
+    /// The habit history dialog's mount (HF3 W-8, US-7/S1, #957):
+    /// opens the month-grid heatmap + statistics projection over the
+    /// one-shot habit subject. Read role — zero commands dispatch
+    /// (the plan's no-command reason per US-7/S2–S4); desktop-only
+    /// (R-3: the kiosk never arms the mount).
+    HabitHistory,
     /// The GUI habit remove's arm step (H4 D4, #944): the staged
     /// consequence-first grammar (the task-delete/`BreakRuleRemove`
     /// shape) — arms the confirm inside the open habit menu; the
@@ -836,6 +842,7 @@ impl ActionId {
             Self::HabitEdit => "habit.edit",
             Self::HabitScheduleEdit => "habit.schedule-edit",
             Self::HabitReminderEdit => "habit.reminder-edit",
+            Self::HabitHistory => "habit.history",
             Self::HabitRemove => "habit.remove",
             Self::HabitRemoveConfirm => "habit.remove-confirm",
             Self::HabitRemoveCancel => "habit.remove-cancel",
@@ -2261,6 +2268,16 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: None,
     },
     ActionEntry {
+        id: ActionId::HabitHistory,
+        label: "Habit history",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 245,
+        description: "Opens the habit's history: the month-grid heatmap and the statistics (adherence, best streak, per-window counts).",
+        menu_group: Some(MenuGroup::Task),
+    },
+    ActionEntry {
         id: ActionId::HabitRemove,
         label: "Remove habit",
         contexts: GLOBAL,
@@ -3134,6 +3151,7 @@ mod tests {
             ActionId::HabitConvertCancel,
             // The H4 family: the editor opener and the staged remove.
             ActionId::HabitEdit,
+            ActionId::HabitHistory,
             ActionId::HabitRemove,
             ActionId::HabitRemoveConfirm,
             ActionId::HabitRemoveCancel,

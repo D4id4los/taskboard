@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The habit history view (HF3, W-8/W-10; US-7/US-9, #957/#963): a
+// read-role ModalDialog body — month-grid heatmap of the habit's
+// canonical windows plus the statistics section. Pure projection
+// display: zero commands dispatch from this view (the plan's
+// no-command reason per journey steps US-7/S2–S4); the only seams
+// are the month pager's flip and the host's own dismissal.
+//
+// The grid cells color by the typed `HabitCellState` enum (round law
+// (a)) — never text bits; the state→tone mapping lives here as
+// conditionals over the Theme tone-ladder (O-6: tones flow from
+// tokens only).
+import { Theme, Typography, Semantic, RoleText, Tone } from "../theme.slint";
+import { Badge } from "../widgets/badge.slint";
+import { TextButton } from "../widgets/text-button.slint";
+
+// slint: HabitCellState — the typed per-window state (US-7/S2); the
+// skipped / paused / pre-schedule variants are the HF1/HF4
+// named-but-unwired seams (plans 2026-11-21-habit-skip-pause /
+// 2026-11-21-habit-schedules) and join the walk when those chunks
+// land; inert is the D-H12 fold class (a former-kind row never
+// renders as a miss).
+export enum HabitCellState {
+    met,
+    pending,
+    skipped,
+    paused,
+    pre-schedule,
+    missed,
+    inert,
+}
+
+// slint: HabitCellModel — one grid cell: the window's address label,
+// the count column (US-9), and the typed state the cell colors by.
+export struct HabitCellModel {
+    label: string,
+    count: int,
+    state: HabitCellState,
+}
+
+// slint: HabitStatsModel — the typed statistics section (US-9/S1):
+// adherence carries the domain's typed empty state via
+// `adherence-empty` (no 0%-of-nothing posture), best-streak is the
+// badge's value.
+export struct HabitStatsModel {
+    adherence-empty: bool,
+    adherence-met: int,
+    adherence-scheduled: int,
+    best-streak: int,
+}
+
+// slint: HabitHistoryModel — one visible month of the grid plus the
+// pager's clamp facts and the statistics section.
+export struct HabitHistoryModel {
+    month-label: string,
+    cells: [HabitCellModel],
+    can-page-back: bool,
+    can-page-forward: bool,
+    stats: HabitStatsModel,
+}
+
+export component HabitHistoryView inherits Rectangle {
+    in property <HabitHistoryModel> model;
+    // slint: history-month-flipped — the pager's typed delta
+    // (−1 back, +1 forward); the adapter clamps at the model's
+    // can-page-* facts (US-7/S3: no wrap).
+    callback history-month-flipped(int);
+
+    background: transparent;
+
+    pure function state-tone(state: HabitCellState) -> Tone {
+        // The state→tone ladder (D18's conditional mapping): met
+        // success, pending info, missed danger, the transparent
+        // classes neutral (a skip/pause is neither credit nor
+        // blame), inert the dimmest neutral.
+        state == HabitCellState.met ? Tone.success
+        : state == HabitCellState.pending ? Tone.info
+        : state == HabitCellState.missed ? Tone.danger
+        : Tone.neutral
+    }
+
+    VerticalLayout {
+        spacing: Theme.space-3;
+
+        // The pager row (US-7/S3): month label between the two
+        // flip buttons; a clamped side disables its button (the
+        // visible-disabled posture).
+        HorizontalLayout {
+            spacing: Theme.space-2;
+            alignment: center;
+            TextButton {
+                label: "<";
+                enabled: root.model.can-page-back;
+                clicked => { root.history-month-flipped(-1); }
+            }
+            RoleText {
+                role: Typography.heading;
+                text: root.model.month-label;
+                vertical-alignment: center;
+            }
+            TextButton {
+                label: ">";
+                enabled: root.model.can-page-forward;
+                clicked => { root.history-month-flipped(1); }
+            }
+        }
+
+        // The month grid (US-7/S2): one cell per canonical window,
+        // colored by the typed state; the count rides a Badge
+        // (O-6) when the window holds rows.
+        GridLayout {
+            spacing: Theme.space-1;
+            for cell[i] in root.model.cells: Rectangle {
+                col: Math.mod(i, 7);
+                row: Math.floor(i / 7);
+                border-radius: Theme.radius-small;
+                border-width: Theme.hairline-width;
+                border-color: Theme.border;
+                background: Semantic.tone-fill(root.state-tone(cell.state));
+                min-width: 44px * Theme.base-scale;
+                min-height: 36px * Theme.base-scale;
+                vertical-stretch: 0;
+                horizontal-stretch: 0;
+                accessible-role: AccessibleRole.text;
+                accessible-label: cell.label;
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 0;
+                    RoleText {
+                        role: Typography.badge;
+                        text: cell.label;
+                        text-color: Semantic.tone-color(root.state-tone(cell.state));
+                        horizontal-alignment: center;
+                    }
+                    if (cell.count > 0): Rectangle {
+                        height: Theme.space-4;
+                        HorizontalLayout {
+                            alignment: center;
+                            Badge {
+                                text: "\{cell.count}";
+                                tone: root.state-tone(cell.state);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The statistics section (US-9/S1, R-10: reflection-time
+        // data lives here, not on the row): adherence as the typed
+        // met/scheduled pair (empty history names itself — never a
+        // 0 % posture), best streak as the Badge's value.
+        HorizontalLayout {
+            spacing: Theme.space-3;
+            alignment: start;
+            VerticalLayout {
+                spacing: Theme.space-1;
+                RoleText {
+                    role: Typography.caption;
+                    text: root.model.stats.adherence-empty
+                        ? "No windows yet"
+                        : "Adherence \{root.model.stats.adherence-met}/\{root.model.stats.adherence-scheduled}";
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    alignment: start;
+                    RoleText {
+                        role: Typography.caption;
+                        text: "Best streak";
+                        vertical-alignment: center;
+                    }
+                    Badge {
+                        text: "\{root.model.stats.best-streak}";
+                        tone: Tone.success;
+                    }
+                }
+            }
+        }
+    }
+}
