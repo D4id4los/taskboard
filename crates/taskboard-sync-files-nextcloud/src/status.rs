@@ -41,6 +41,11 @@ pub enum CycleOutcome {
     /// The cycle failed (typed transport outcome or a loud finding);
     /// the actor's backoff reschedules.
     Failed,
+    /// The cycle unwound at a shutdown checkpoint (#1085): it ended
+    /// mid-flight — no failure counted, no backoff armed, no report
+    /// sent. The next boot's cycle re-derives everything from the
+    /// server listing (the protocol is crash-safe by construction).
+    Aborted,
 }
 
 /// Why a peer file is parked (D-SF15): folded from nothing, stored

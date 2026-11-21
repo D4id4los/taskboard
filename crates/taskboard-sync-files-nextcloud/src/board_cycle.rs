@@ -1726,6 +1726,7 @@ mod tests {
                 taskboard_domain::ids::ConnectorId::from("nextcloud"),
                 DECK_ORIGIN.to_owned(),
             )]),
+            cancel: crate::cycle::CycleCancel::new(),
         }
     }
 

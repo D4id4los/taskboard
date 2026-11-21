@@ -127,6 +127,61 @@ impl LocalDocument for EmptyDocument {
     }
 }
 
+/// The cycle's shutdown cancellation flag (#1085, option (a)): a house
+/// `watch<bool>` (the approved stack; no `tokio-util`), tripped by the
+/// actor when `SystemEvent::Shutdown` arrives. The cycle **polls** it
+/// at [`checkpoint`] sites — cycle-step boundaries only, never inside
+/// a transport call — so an in-flight request always finishes (or the
+/// process dies); the abort never cuts a write in half.
+#[derive(Clone)]
+pub struct CycleCancel {
+    tx: watch::Sender<bool>,
+    rx: watch::Receiver<bool>,
+}
+
+impl CycleCancel {
+    /// A fresh, untripped flag.
+    #[must_use]
+    pub fn new() -> Self {
+        let (tx, rx) = watch::channel(false);
+        Self { tx, rx }
+    }
+
+    /// Trip the flag: every subsequent checkpoint aborts the cycle.
+    /// Idempotent.
+    pub fn trip(&self) {
+        self.tx.send_if_modified(|tripped| {
+            if *tripped {
+                false
+            } else {
+                *tripped = true;
+                true
+            }
+        });
+    }
+
+    /// Whether the flag is tripped (a lock-free read — the poll half
+    /// of the checkpoint).
+    #[must_use]
+    pub fn is_tripped(&self) -> bool {
+        *self.rx.borrow()
+    }
+}
+
+impl Default for CycleCancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for CycleCancel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CycleCancel")
+            .field("tripped", &self.is_tripped())
+            .finish()
+    }
+}
+
 /// Everything the cycle needs besides the transport and its mutable
 /// state — the injected identity facts and knobs.
 pub struct SyncContext {
@@ -156,6 +211,52 @@ pub struct SyncContext {
     /// Each Deck connector's server origin: `moved_from` names a server,
     /// a local binding names a connector.
     pub deck_origins: BTreeMap<ConnectorId, String>,
+    /// The shutdown cancellation flag (#1085): polled at the cycle's
+    /// [`checkpoint`] sites; tripping it unwinds the cycle typed
+    /// ([`CycleError::Aborted`]) without touching the failure streak.
+    pub cancel: CycleCancel,
+}
+
+/// The cycle's internal unwind vocabulary (#1085): a transport failure
+/// (the streak/backoff path, unchanged) or the typed shutdown abort.
+/// The abort is deliberately **not** a `TransportError` — counting it
+/// as a failure would miscount the streak and pollute the backoff
+/// curve, and there is no server fact behind it at all.
+#[derive(Debug)]
+enum CycleError {
+    Transport(TransportError),
+    Aborted,
+}
+
+impl From<TransportError> for CycleError {
+    fn from(err: TransportError) -> Self {
+        Self::Transport(err)
+    }
+}
+
+impl From<serde_json::Error> for CycleError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Transport(err.into())
+    }
+}
+
+/// A shutdown checkpoint (#1085): one poll of the cancel flag at a
+/// cycle-step boundary — between transport requests, never inside one.
+/// The abort points are pinned to the boundaries `run_cycle`'s call
+/// graph defines: around `propfind_devices` in [`attach`] and
+/// [`steady_cycle`], between peers in [`read_dirty_peers`], and
+/// between the two reads of [`read_peer`]. Tripped ⇒ the typed abort
+/// unwind: no write is cut in half (every publish step starts only
+/// past a checkpoint), a half-read peer set is discarded (nothing was
+/// written), and an aborted cycle simply sends no user-data report —
+/// exactly the drain semantics ADR 0008 already tolerates from a
+/// crashed kiosk.
+fn checkpoint(ctx: &SyncContext) -> Result<(), CycleError> {
+    if ctx.cancel.is_tripped() {
+        Err(CycleError::Aborted)
+    } else {
+        Ok(())
+    }
 }
 
 /// The actor's mutable state, process-local (decision D-FT4). A
@@ -289,6 +390,12 @@ pub enum CycleVerdict {
         retryable: bool,
         retry_after: Duration,
     },
+    /// The cycle unwound at a shutdown checkpoint (#1085): neither a
+    /// success nor a failure — no streak advance, no `last_success`
+    /// touch, no backoff arm. The actor answers it by exiting; the
+    /// next boot's cycle re-derives everything from the server
+    /// listing (the sync protocol is crash-safe by construction).
+    Aborted,
 }
 
 /// Root-inclusive substrate path of a below-root layout path.
@@ -325,6 +432,18 @@ pub async fn run_cycle<T: FilesTransport>(
         steady_cycle(transport, ctx, st).await
     } else {
         attach(transport, ctx, st).await
+    };
+    // The typed shutdown abort (#1085) short-circuits here: the lanes
+    // do not run on an aborted tick (the actor is exiting), the
+    // failure streak is untouched, and the status surface shows the
+    // cycle ended mid-flight.
+    let verdict: Result<(bool, usize, usize), TransportError> = match verdict {
+        Err(CycleError::Aborted) => {
+            publish_status(status, Some(&CycleOutcome::Aborted), st);
+            return CycleVerdict::Aborted;
+        }
+        Err(CycleError::Transport(err)) => Err(err),
+        Ok(finished) => Ok(finished),
     };
     // The board lanes ride the same tick (D2: one actor, two lanes) —
     // best-effort: a lane's failure is logged per board and retried
@@ -438,7 +557,7 @@ async fn attach<T: FilesTransport>(
     transport: &T,
     ctx: &SyncContext,
     st: &mut LoopState,
-) -> Result<(bool, usize, usize), TransportError> {
+) -> Result<(bool, usize, usize), CycleError> {
     let self_dir = rooted(&format!("{DEVICES_DIR_NAME}/{}", ctx.identity.device_id));
     mkcol_exists_ok(transport, ROOT_FOLDER_NAME).await?;
     mkcol_exists_ok(transport, &rooted(DEVICES_DIR_NAME)).await?;
@@ -467,15 +586,22 @@ async fn attach<T: FilesTransport>(
                 // A folder our older reader cannot represent: unusable,
                 // fail closed (writing here would corrupt a newer tree).
                 finding("FolderNewerFormat", &identity_path);
-                return Err(TransportError::BadRequest);
+                return Err(TransportError::BadRequest.into());
             }
         }
-        Err(other) => return Err(other),
+        Err(other) => return Err(other.into()),
     }
 
     // First read: the full dirty set (the store is cold, so every
     // listed peer re-reads — the honest full-read cycle).
+    // Shutdown checkpoints (#1085): before the listing (the boundary
+    // the biased loop's sleep arm can race past) and immediately after
+    // it returns (a Shutdown that arrived while the request was in
+    // flight aborts here — the half-read listing is discarded; nothing
+    // was written).
+    checkpoint(ctx)?;
     let listing = transport.propfind_devices().await?;
+    checkpoint(ctx)?;
     let _ = ingest_listing(&listing, ctx, st);
     read_dirty_peers(transport, ctx, st).await?;
 
@@ -501,7 +627,7 @@ async fn attach<T: FilesTransport>(
         Err(TransportError::PreconditionFailed) => {
             adopt_own_file(transport, st, &appdata_path).await?;
         }
-        Err(other) => return Err(other),
+        Err(other) => return Err(other.into()),
     }
 
     // Own heartbeat: create-once; a 412 ⇒ adopt (get + capture the
@@ -518,7 +644,7 @@ async fn attach<T: FilesTransport>(
         Err(TransportError::PreconditionFailed) => {
             adopt_own_file(transport, st, &info_path).await?;
         }
-        Err(other) => return Err(other),
+        Err(other) => return Err(other.into()),
     }
 
     st.attached = true;
@@ -533,7 +659,7 @@ async fn adopt_own_file<T: FilesTransport>(
     transport: &T,
     st: &mut LoopState,
     path: &str,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     finding("OwnFileAdopted", path);
     match transport.get(path).await {
         Ok(content) => {
@@ -558,7 +684,7 @@ async fn adopt_own_file<T: FilesTransport>(
             // keeps guarding.
             Ok(())
         }
-        Err(other) => Err(other),
+        Err(other) => Err(other.into()),
     }
 }
 
@@ -570,9 +696,15 @@ async fn steady_cycle<T: FilesTransport>(
     transport: &T,
     ctx: &SyncContext,
     st: &mut LoopState,
-) -> Result<(bool, usize, usize), TransportError> {
+) -> Result<(bool, usize, usize), CycleError> {
     // 1. PROPFIND devices/ → dirty / vanished sets.
+    // Shutdown checkpoints (#1085): the same boundary pair as the
+    // attach listing — before the request, and immediately after it
+    // returns, so a Shutdown that arrived while the listing was in
+    // flight aborts before any ingest, read, or publish step.
+    checkpoint(ctx)?;
     let listing = transport.propfind_devices().await?;
+    checkpoint(ctx)?;
     let (listed, vanished) = ingest_listing(&listing, ctx, st);
     for device in vanished {
         // The tree is the truth: a vanished device's rows leave the
@@ -667,7 +799,7 @@ async fn read_dirty_peers<T: FilesTransport>(
     transport: &T,
     ctx: &SyncContext,
     st: &mut LoopState,
-) -> Result<BTreeSet<DeviceId>, TransportError> {
+) -> Result<BTreeSet<DeviceId>, CycleError> {
     let dirty: BTreeSet<DeviceId> = st
         .etags
         .dirty_devices(&heartbeat_marks(st))
@@ -675,7 +807,10 @@ async fn read_dirty_peers<T: FilesTransport>(
         .filter(|device| *device != ctx.identity.device_id)
         .collect();
     for device in &dirty {
-        read_peer(transport, st, *device).await?;
+        // Shutdown checkpoint (#1085): the boundary between peers —
+        // a half-read peer set is discarded, nothing was written.
+        checkpoint(ctx)?;
+        read_peer(transport, ctx, st, *device).await?;
     }
     Ok(dirty)
 }
@@ -684,15 +819,16 @@ async fn read_dirty_peers<T: FilesTransport>(
 /// tolerant, closed by the read mark (etag + heartbeat revision).
 async fn read_peer<T: FilesTransport>(
     transport: &T,
+    ctx: &SyncContext,
     st: &mut LoopState,
     device: DeviceId,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     let appdata_path = rooted(&layout::device_appdata_path(device));
     let info_path = rooted(&layout::device_info_path(device));
     let appdata = match transport.get(&appdata_path).await {
         Ok(content) => Some(content),
         Err(TransportError::NotFound) => None,
-        Err(other) => return Err(other),
+        Err(other) => return Err(other.into()),
     };
     if let Some(content) = &appdata {
         record_get(st, &appdata_path, content);
@@ -703,10 +839,14 @@ async fn read_peer<T: FilesTransport>(
         appdata.as_ref().map(|c| &c.bytes),
         device,
     );
+    // Shutdown checkpoint (#1085): the boundary between the two reads
+    // of one peer — the peer's rows land atomically per file; an abort
+    // here simply leaves the heartbeat unread this cycle.
+    checkpoint(ctx)?;
     let info = match transport.get(&info_path).await {
         Ok(content) => Some(content),
         Err(TransportError::NotFound) => None,
-        Err(other) => return Err(other),
+        Err(other) => return Err(other.into()),
     };
     if let Some(content) = &info {
         record_get(st, &info_path, content);
@@ -738,7 +878,7 @@ async fn sweep_clean_peer_heartbeats<T: FilesTransport>(
     st: &mut LoopState,
     listed: &BTreeSet<DeviceId>,
     already_read: &BTreeSet<DeviceId>,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     let clean: Vec<DeviceId> = listed
         .iter()
         .copied()
@@ -750,7 +890,7 @@ async fn sweep_clean_peer_heartbeats<T: FilesTransport>(
         let info = match transport.get(&info_path).await {
             Ok(content) => Some(content),
             Err(TransportError::NotFound) => None,
-            Err(other) => return Err(other),
+            Err(other) => return Err(other.into()),
         };
         if let Some(content) = &info {
             record_get(st, &info_path, content);
@@ -763,7 +903,7 @@ async fn sweep_clean_peer_heartbeats<T: FilesTransport>(
             .dirty_devices(&heartbeat_marks(st))
             .contains(&device)
         {
-            read_peer(transport, st, device).await?;
+            read_peer(transport, ctx, st, device).await?;
         }
     }
     Ok(())
@@ -941,7 +1081,7 @@ async fn publish_appdata<T: FilesTransport>(
     ctx: &SyncContext,
     st: &mut LoopState,
     merged: &UserDocument,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     let path = rooted(&layout::device_appdata_path(ctx.identity.device_id));
     if st.forked_paths.contains(&path) {
         return Ok(());
@@ -968,7 +1108,7 @@ async fn publish_appdata<T: FilesTransport>(
                 // create-once.
                 create_own_appdata(transport, st, &path, merged).await
             }
-            Err(other) => Err(other),
+            Err(other) => Err(other.into()),
         };
     };
     let bytes = serde_json::to_vec(merged)?;
@@ -990,7 +1130,7 @@ async fn publish_appdata<T: FilesTransport>(
         }
         Err(TransportError::NotFound) => create_own_appdata(transport, st, &path, merged).await,
         Err(TransportError::PreconditionFailed) => resolve_own_412(transport, ctx, st, &path).await,
-        Err(other) => Err(other),
+        Err(other) => Err(other.into()),
     }
 }
 
@@ -999,7 +1139,7 @@ async fn rewrite_own_appdata<T: FilesTransport>(
     ctx: &SyncContext,
     st: &mut LoopState,
     merged: &UserDocument,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     let path = rooted(&layout::device_appdata_path(ctx.identity.device_id));
     let bytes = serde_json::to_vec(merged)?;
     let token = st.etags.file_etag(&path).cloned();
@@ -1019,7 +1159,7 @@ async fn rewrite_own_appdata<T: FilesTransport>(
             Err(TransportError::PreconditionFailed) => {
                 resolve_own_412(transport, ctx, st, &path).await
             }
-            Err(other) => Err(other),
+            Err(other) => Err(other.into()),
         },
         None => create_own_appdata(transport, st, &path, merged).await,
     }
@@ -1048,7 +1188,7 @@ async fn verify_retained_write<T: FilesTransport>(
     path: &str,
     merged: &UserDocument,
     sent: &[u8],
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     match transport.get(path).await {
         Ok(content) if content.bytes == sent => {
             record_get(st, path, &content);
@@ -1066,7 +1206,7 @@ async fn verify_retained_write<T: FilesTransport>(
             st.published_hash = None;
             Ok(())
         }
-        Err(other) => Err(other),
+        Err(other) => Err(other.into()),
     }
 }
 
@@ -1075,7 +1215,7 @@ async fn create_own_appdata<T: FilesTransport>(
     st: &mut LoopState,
     path: &str,
     merged: &UserDocument,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     let bytes = serde_json::to_vec(merged)?;
     match transport.put_create(path, &bytes).await {
         Ok(outcome) => {
@@ -1089,7 +1229,7 @@ async fn create_own_appdata<T: FilesTransport>(
             // create: the adoption arm.
             adopt_own_file(transport, st, path).await
         }
-        Err(other) => Err(other),
+        Err(other) => Err(other.into()),
     }
 }
 
@@ -1128,7 +1268,7 @@ async fn disambiguate_own_412<T: FilesTransport>(
     ctx: &SyncContext,
     st: &mut LoopState,
     path: &str,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     match transport.get(path).await {
         Err(TransportError::NotFound) => {
             finding("OwnFileVanished", path);
@@ -1144,7 +1284,7 @@ async fn disambiguate_own_412<T: FilesTransport>(
             mark_fork(st, ctx, path, &content);
             Ok(())
         }
-        Err(other) => Err(other),
+        Err(other) => Err(other.into()),
     }
 }
 
@@ -1163,7 +1303,7 @@ async fn resolve_own_412<T: FilesTransport>(
     ctx: &SyncContext,
     st: &mut LoopState,
     path: &str,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     match transport.get(path).await {
         Err(TransportError::NotFound) => {
             finding("OwnFileVanished", path);
@@ -1215,10 +1355,10 @@ async fn resolve_own_412<T: FilesTransport>(
                     mark_fork(st, ctx, path, &content);
                     Ok(())
                 }
-                Err(other) => Err(other),
+                Err(other) => Err(other.into()),
             }
         }
-        Err(other) => Err(other),
+        Err(other) => Err(other.into()),
     }
 }
 
@@ -1229,7 +1369,7 @@ async fn write_heartbeat<T: FilesTransport>(
     ctx: &SyncContext,
     st: &mut LoopState,
     merged: &UserDocument,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     let path = rooted(&layout::device_info_path(ctx.identity.device_id));
     if st.forked_paths.contains(&path) {
         return Ok(());
@@ -1245,7 +1385,7 @@ async fn write_heartbeat<T: FilesTransport>(
             Err(TransportError::NotFound) => {
                 create_own_heartbeat(transport, ctx, st, &path, bytes).await
             }
-            Err(other) => Err(other),
+            Err(other) => Err(other.into()),
         };
     };
     match transport.put_if_match(&path, &bytes, &token).await {
@@ -1261,7 +1401,7 @@ async fn write_heartbeat<T: FilesTransport>(
         Err(TransportError::PreconditionFailed) => {
             disambiguate_own_412(transport, ctx, st, &path).await
         }
-        Err(other) => Err(other),
+        Err(other) => Err(other.into()),
     }
 }
 
@@ -1271,7 +1411,7 @@ async fn write_heartbeat_guarded<T: FilesTransport>(
     st: &mut LoopState,
     path: &str,
     bytes: Vec<u8>,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     match st.etags.file_etag(path).cloned() {
         Some(token) => match transport.put_if_match(path, &bytes, &token).await {
             Ok(outcome) => {
@@ -1283,7 +1423,7 @@ async fn write_heartbeat_guarded<T: FilesTransport>(
             Err(TransportError::PreconditionFailed) => {
                 disambiguate_own_412(transport, ctx, st, path).await
             }
-            Err(other) => Err(other),
+            Err(other) => Err(other.into()),
         },
         None => create_own_heartbeat(transport, ctx, st, path, bytes).await,
     }
@@ -1295,7 +1435,7 @@ async fn create_own_heartbeat<T: FilesTransport>(
     st: &mut LoopState,
     path: &str,
     bytes: Vec<u8>,
-) -> Result<(), TransportError> {
+) -> Result<(), CycleError> {
     match transport.put_create(path, &bytes).await {
         Ok(outcome) => {
             record_put(st, path, &outcome);
@@ -1307,7 +1447,7 @@ async fn create_own_heartbeat<T: FilesTransport>(
             // A racing recreate: the adoption arm.
             adopt_own_file(transport, st, path).await
         }
-        Err(other) => Err(other),
+        Err(other) => Err(other.into()),
     }
 }
 
