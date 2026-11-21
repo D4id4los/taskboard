@@ -3,8 +3,6 @@
 //! matches the domain's `TASK_FIELDS` manifest column-for-column, plus
 //! the 0007 default-inheritance and corrupt-decode semantics.
 
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use sqlx::{Row, SqlitePool};
@@ -12,7 +10,7 @@ use taskboard_domain::entities::{BoardClocks, Effort, TASK_FIELDS, Task, TaskClo
 use taskboard_domain::ids::{StackId, TaskId};
 use taskboard_domain::persistence::{PersistenceAction, RepositoryError, TaskRepository};
 
-use common::FileDb;
+use crate::common::FileDb;
 
 async fn task_columns(db: &SqlitePool) -> BTreeSet<String> {
     let rows = sqlx::query("PRAGMA table_info(tasks)")

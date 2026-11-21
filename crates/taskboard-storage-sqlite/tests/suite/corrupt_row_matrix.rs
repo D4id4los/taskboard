@@ -5,10 +5,8 @@
 //! text. Entity tables abort with full typed context; journal rows
 //! quarantine with signal; the healthy path emits nothing (case 11).
 
-mod common;
-
+use crate::common::FileDb;
 use chrono::TimeZone as _;
-use common::FileDb;
 use sqlx::SqlitePool;
 use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::ids::JournalId;

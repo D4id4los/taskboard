@@ -4,7 +4,7 @@
 //! validity as bench input. These tests pin what the benches rely on;
 //! repository semantics themselves are owned by `roundtrip.rs`.
 
-#[path = "../benches/support/mod.rs"]
+#[path = "../../benches/support/mod.rs"]
 mod support;
 
 use std::collections::BTreeSet;
