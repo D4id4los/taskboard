@@ -355,16 +355,15 @@ async fn report_ingestion_flips_the_pushed_flag_at_the_boundary() {
     let _ = LocalOp::CreateStack(stack); // the op family under test
 }
 
-/// Fact 16's DR-6/6 verification, against undo/1's landed ruling: the
-/// habit surface is deliberately **not undoable**
-/// (`NotUndoableReason::HabitSurface`), so there is no op retraction to
-/// mirror. The pin is that the flush trigger still rides the journal
-/// entry generically (the pushed-boundary machinery stays op-id-aware
-/// of it) while `Undo` refuses the surface typed — the stage-1 plan's
-/// "undo retracts/keeps the pending flush op exactly as for task ops"
-/// premise mis-stated undo/1's catalogue and is recorded as a deviation.
+/// Fact 16's DR-6/6 verification, as superseded by R-7 (2026-11-21,
+/// habit-family UX plan): `LogHabit` is journal-invertible now — the
+/// undo goes through (no op retraction to mirror; the inverse adjust
+/// enqueues its own flush trigger). The surviving pin is that the
+/// flush trigger still rides the journal entry generically (the
+/// pushed-boundary machinery stays op-id-aware of it) while `Undo`
+/// inverts the entry through the global undo line.
 #[tokio::test]
-async fn a_habit_log_journals_its_flush_trigger_but_stays_not_undoable() {
+async fn a_habit_log_journals_its_flush_trigger_and_inverts_through_undo() {
     let mut rig = Rig::start().await;
     let board = rig
         .state()
@@ -407,28 +406,23 @@ async fn a_habit_log_journals_its_flush_trigger_but_stays_not_undoable() {
                 && matches!(pending.op, LocalOp::FlushBoardAppData(_))),
         "the pending trigger is the board flush"
     );
-    // The surface is fenced typed, exactly as undo/1 pinned it.
-    let err = rig
-        .run(StateCommand::Undo)
-        .await
-        .expect_err("the habit surface is not undoable");
-    assert!(
-        matches!(
-            err,
-            ExecuteError::Rejected(taskboard_domain::CommandError::TargetNotUndoable(
-                taskboard_domain::NotUndoableReason::HabitSurface
-            ))
-        ),
-        "typed refusal: {err:?}"
-    );
-    // And the refused undo touched nothing.
+    // The R-7 undo goes through the global line. The log is unpushed,
+    // so the D-U2 pre-push retraction applies: its flush trigger is
+    // failed (the server never knew) and the inverse adjust's fresh
+    // enqueues drop — the outbox ends empty, the inverse's journal
+    // entry stands.
+    rig.run(StateCommand::Undo).await.expect("accepted");
     let after = rig.repo.snapshot();
     assert!(
-        after
+        !after
             .outbox
             .iter()
             .any(|pending| pending.op_id == entry.ops[0]),
-        "the refused undo retracts nothing"
+        "the unpushed log's trigger is retracted, never pushed orphaned"
+    );
+    assert!(
+        after.journal.entries.len() > 1,
+        "the inverse adjust journaled its own entry"
     );
 }
 
@@ -1268,4 +1262,186 @@ async fn us1_s4_undo_clears_the_skip_mark_through_the_global_line() {
     drop(app);
     let persisted = rig.repo.snapshot();
     assert!(persisted.habits.log[&key].skip, "memory ≡ disk after redo");
+}
+
+// ---- the habit-log undo widening (R-7, 2026-11-21; UX plan US-3) -------
+
+/// The engine's habit fixture: one live `PerDay` habit on the seed board.
+async fn habit_fixture(rig: &mut Rig) -> taskboard_domain::HabitId {
+    let board = rig
+        .state()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("seed board");
+    match rig
+        .run(StateCommand::CreateHabit {
+            board,
+            title: "water".into(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+        })
+        .await
+        .expect("accepted")
+    {
+        CommandOutcome::HabitCreated(id) => id,
+        other => panic!("expected HabitCreated, got {other:?}"),
+    }
+}
+
+/// US-3/AC-1 (R-7 supersession, 2026-11-21): a `LogHabit` as the newest
+/// journal entry inverts through the global undo line — the window's
+/// count reverts to the pre-image and the receipt names the habit
+/// surface (the typed `HabitLogAdjusted` of the inverse adjust).
+#[tokio::test]
+async fn log_habit_journal_entry_inverts() {
+    let mut rig = Rig::start().await;
+    let habit = habit_fixture(&mut rig).await;
+    let logged = rig
+        .run(StateCommand::LogHabit { habit })
+        .await
+        .expect("accepted");
+    let CommandOutcome::HabitLogged { count, window, .. } = logged else {
+        panic!("expected HabitLogged, got {logged:?}")
+    };
+    assert_eq!(count, 1, "one increment");
+    // The entry journaled the invertible pre-image (the R-7
+    // classification, supplanting the former HabitSurface fence).
+    {
+        let persisted = rig.repo.snapshot();
+        let entry = persisted.journal.entries.last().expect("journaled");
+        assert!(
+            matches!(entry.facts, taskboard_domain::UndoFacts::PreImages { .. }),
+            "LogHabit journals PreImages since R-7"
+        );
+    }
+    // Undo: the count reverts to the pre-image (no row before the log
+    // — the honest count-0 restore), receipt names the habit surface
+    // (the durable `Undone` entry id; the entry's own label — the
+    // UndoView's source — is the habit surface's "Log habit").
+    let undone = rig.run(StateCommand::Undo).await.expect("accepted");
+    let CommandOutcome::Undone { entry: undone_id } = undone else {
+        panic!("expected Undone, got {undone:?}")
+    };
+    let undone_entry = rig
+        .repo
+        .snapshot()
+        .journal
+        .entry(undone_id)
+        .expect("the receipt's entry is on the line")
+        .clone();
+    assert!(
+        matches!(undone_entry.command, StateCommand::LogHabit { .. }),
+        "the receipt names the habit surface entry: {undone_entry:?}"
+    );
+    let app = rig.state();
+    let key = taskboard_domain::HabitLogKey { habit, window };
+    assert_eq!(
+        app.habits.log.get(&key).map(|entry| entry.count),
+        Some(0),
+        "the pre-image absence restores as the count-0 correction row"
+    );
+}
+
+/// US-3/AC-2: a same-second burst of logs (the #986 bump mint) pops
+/// one increment per undo — per-entry invertibility, the bump's
+/// monotone clocks distinguishing the rows.
+#[tokio::test]
+async fn undo_after_burst_pops_one_increment() {
+    let mut rig = Rig::start().await;
+    let habit = habit_fixture(&mut rig).await;
+    // Two logs inside the same wall-clock second: the bump mint stamps
+    // the second row strictly past the first.
+    rig.clock.advance(0);
+    rig.handle
+        .execute(StateCommand::LogHabit { habit })
+        .await
+        .expect("first log accepted");
+    rig.handle
+        .execute(StateCommand::LogHabit { habit })
+        .await
+        .expect("second log accepted");
+    assert_eq!(
+        rig.state()
+            .habits
+            .log
+            .values()
+            .map(|entry| u64::from(entry.count))
+            .sum::<u64>(),
+        2,
+        "the burst landed both increments"
+    );
+    // First undo: exactly one increment reverts (the receipt's entry
+    // is the second log).
+    let undone = rig.run(StateCommand::Undo).await.expect("accepted");
+    let CommandOutcome::Undone { entry: undone_id } = undone else {
+        panic!("expected Undone, got {undone:?}")
+    };
+    {
+        let persisted = rig.repo.snapshot();
+        let popped = persisted.journal.entry(undone_id).expect("popped entry");
+        assert!(
+            matches!(popped.command, StateCommand::LogHabit { .. }),
+            "one log entry per undo"
+        );
+        assert_eq!(persisted.journal.head, popped.parent, "one pop");
+    }
+    assert_eq!(
+        rig.state()
+            .habits
+            .log
+            .values()
+            .map(|entry| u64::from(entry.count))
+            .sum::<u64>(),
+        1,
+        "one increment reverted"
+    );
+    // Second undo: the other increment.
+    rig.run(StateCommand::Undo).await.expect("accepted");
+    assert_eq!(
+        rig.state()
+            .habits
+            .log
+            .values()
+            .map(|entry| u64::from(entry.count))
+            .sum::<u64>(),
+        0,
+        "the second undo pops the other increment"
+    );
+}
+
+/// US-3/AC-3 (R-7's fence boundary): an `AdjustHabitLog` onto an
+/// absent window as the newest entry keeps the typed
+/// `NotUndoable(HabitSurface)` posture — the audited correction valve
+/// keeps its fence.
+#[tokio::test]
+async fn adjust_habit_log_newest_keeps_the_typed_fence() {
+    let mut rig = Rig::start().await;
+    let habit = habit_fixture(&mut rig).await;
+    let window = taskboard_domain::WindowStart::of_period(
+        taskboard_domain::PeriodKind::Day,
+        chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+    );
+    rig.run(StateCommand::AdjustHabitLog {
+        habit,
+        window,
+        count: 3,
+    })
+    .await
+    .expect("the backfill itself is legal");
+    let err = rig
+        .run(StateCommand::Undo)
+        .await
+        .expect_err("the absent-window adjust stays fenced");
+    assert!(
+        matches!(
+            err,
+            ExecuteError::Rejected(taskboard_domain::CommandError::TargetNotUndoable(
+                taskboard_domain::NotUndoableReason::HabitSurface
+            ))
+        ),
+        "typed refusal: {err:?}"
+    );
 }

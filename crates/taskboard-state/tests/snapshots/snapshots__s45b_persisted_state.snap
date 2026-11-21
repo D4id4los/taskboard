@@ -141,7 +141,16 @@ journal:
         LogHabit:
           habit: 00000000-0000-0000-0000-000000000001
       facts:
-        NotUndoable: HabitSurface
+        PreImages:
+          images:
+            - HabitLogRow:
+                key: 00000000-0000-0000-0000-000000000001|1970-01-01
+                before: ~
+          watermark:
+            - - HabitLog: 00000000-0000-0000-0000-000000000001|1970-01-01
+              - HabitLog:
+                  count: 1
+                  clock: "1970-01-01T10:02:00Z"
       ops:
         - 00000000-0000-0000-0000-000000000004
       pushed: false
@@ -167,7 +176,18 @@ journal:
         LogHabit:
           habit: 00000000-0000-0000-0000-000000000001
       facts:
-        NotUndoable: HabitSurface
+        PreImages:
+          images:
+            - HabitLogRow:
+                key: 00000000-0000-0000-0000-000000000001|1970-01-01
+                before:
+                  count: 1
+                  clock: "1970-01-01T10:02:00Z"
+          watermark:
+            - - HabitLog: 00000000-0000-0000-0000-000000000001|1970-01-01
+              - HabitLog:
+                  count: 2
+                  clock: "1970-01-01T10:04:00Z"
       ops:
         - 00000000-0000-0000-0000-000000000008
       pushed: false

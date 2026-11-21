@@ -118,18 +118,23 @@ pub enum NotUndoableReason {
     /// (`DeleteTimeEntry` journaled `PreImages` since #901 — restore
     /// machinery.)
     TrackingSurface,
-    /// Habit verbs whose inverse is lossy or unwatermarkable:
-    /// `LogHabit` (a pre-log absent window would become an explicit
-    /// count-0 row — a different stored fact), an absent-window
-    /// `AdjustHabitLog` (same lossiness; D24), and an `UpdateHabit`
-    /// addressing the conversion seam (no clock slot to watermark
-    /// against; D25). (`DeleteHabit` journaled `PreImages` since #901 —
-    /// restore machinery.)
+    /// Habit verbs whose inverse is lossy or unwatermarkable: an
+    /// absent-window `AdjustHabitLog` (a `count: 0` inverse would forge
+    /// an explicit count-0 row where the pre-state had none — D24), and
+    /// an `UpdateHabit` addressing the conversion seam (no clock slot
+    /// to watermark against; D25). (`DeleteHabit` journaled `PreImages`
+    /// since #901 — restore machinery.) Dated supersession (2026-11-21,
+    /// habit-family UX plan R-7): `LogHabit` is journal-invertible
+    /// since 2026-11-21 (habit-family UX plan R-7) — the fence no
+    /// longer covers it; the audited correction valve and the
+    /// conversion seam keep theirs.
     HabitSurface,
     /// Reflection verbs are not undoable in v1 (DR-7 D-J7), for three
     /// recorded reasons: (i) the inverse of a record is a tombstone —
     /// a *different stored fact* than row-absence, exactly the lossiness
-    /// that made `LogHabit` `HabitSurface`; (ii) un-delete would
+    /// that made the absent-window `AdjustHabitLog` `HabitSurface`
+    /// (`LogHabit` itself left the fence — journal-invertible since
+    /// 2026-11-21, habit-family UX plan R-7); (ii) un-delete would
     /// resurrect with a minted-then-inverted clock — the tracking
     /// close/reopen asymmetry (ADR 0017) in mirror; (iii) the family's
     /// own `UpdateReflection`/`DeleteReflection` verbs are the recovery

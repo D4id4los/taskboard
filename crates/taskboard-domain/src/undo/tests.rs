@@ -333,8 +333,9 @@ fn record_habit_log_capture_carries_the_pre_row_and_post_stamp() {
             other => panic!("expected HabitCreated, got {other:?}"),
         }
     };
-    // Seed the window row (via LogHabit — itself excluded, but the row
-    // it writes is the adjust's pre-image source).
+    // Seed the window row (via LogHabit — journal-invertible since
+    // 2026-11-21, habit-family UX plan R-7; the row it writes is the
+    // adjust's pre-image source).
     h.exec(&StateCommand::LogHabit { habit })
         .expect("seeded the row");
     let key = *h.disk.habits.log.keys().next().expect("log row");
@@ -1493,8 +1494,10 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
             NotUndoableReason::TrackingSurface
         ))
     ));
-    // Habit surface (LogHabit: lossy to invert; CreateHabit is undoable
-    // now, so it is seeded first and simply becomes part of the line).
+    // Habit surface (the absent-window `AdjustHabitLog` keeps its D24
+    // fence — R-7's 2026-11-21 supersession removed `LogHabit` from the
+    // fence only; CreateHabit is undoable now, so it is seeded first
+    // and simply becomes part of the line).
     h.exec(&StateCommand::CreateHabit {
         board,
         title: "habit".into(),
@@ -1502,7 +1505,15 @@ fn not_undoable_heads_refuse_and_name_the_reason() {
     })
     .expect("created");
     let habit = *h.disk.habits.habits.keys().next().expect("habit row");
-    h.exec(&StateCommand::LogHabit { habit }).expect("logged");
+    h.exec(&StateCommand::AdjustHabitLog {
+        habit,
+        window: crate::habit::WindowStart::of_period(
+            crate::habit::PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+        ),
+        count: 3,
+    })
+    .expect("the backfill itself is legal");
     assert!(matches!(
         h.exec(&StateCommand::Undo),
         Err(CommandError::TargetNotUndoable(
