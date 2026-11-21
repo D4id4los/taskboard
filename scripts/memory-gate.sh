@@ -94,6 +94,14 @@ command -v flock >/dev/null || {
   exit 1
 }
 
+# Holder liveness (#1110): detection-only classification of the lock
+# record — alive / likely-hung / gone. Sourced, never executed; the
+# helper carries its own --self-test. Law: no gate kills, signals, or
+# steals from a live holder regardless of CPU profile
+# (docs/agent_dispatch.org, the two-mode law amendment).
+# shellcheck source=gate-lock-liveness.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gate-lock-liveness.sh"
+
 floor="${MEMORY_GATE_MIN_AVAIL_MIB:-8192}"
 timeout="${MEMORY_GATE_TIMEOUT:-3600}"
 poll="${MEMORY_GATE_POLL:-30}"
@@ -159,6 +167,22 @@ if [[ "${1:-}" == "--status" ]]; then
     echo "memory-gate: lock is HELD: $lock_file"
     echo "  holder info (best effort — the lock itself lives in the kernel):"
     sed 's/^/    /' "$lock_file" 2>/dev/null || true
+    # #1110: one short liveness probe — prev CPU sample now, the
+    # helper's internal cur sample ~1s later. The "lock is FREE/HELD"
+    # lines above are the machine-readable contract and are unchanged;
+    # this is an addition, report-only.
+    status_pid=$(gate_holder_pid "$lock_file" 2>/dev/null) || status_pid=""
+    status_cpu_prev=""
+    if [[ -n $status_pid ]]; then
+      status_cpu_prev=$(gate_holder_cpu "$status_pid" 2>/dev/null) || status_cpu_prev=""
+    fi
+    sleep 1
+    case $(gate_holder_liveness "$lock_file" "$status_cpu_prev" 2>/dev/null || echo unknown) in
+      likely-hung)
+        echo "  holder liveness: likely-hung (no CPU time in the ~1s probe — triage that lane)" ;;
+      gone)
+        echo "  holder liveness: gone (the pid no longer exists; flock releases on death)" ;;
+    esac
   fi
   if avail="$(avail_mib)"; then
     echo "memory-gate: MemAvailable ${avail} MiB (floor: ${floor} MiB)"
@@ -184,6 +208,35 @@ common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 lock_file="${common_dir%/}/memory-gate.lock"
 
 holder_info() { tr '\n' ';' <"$lock_file" 2>/dev/null || true; }
+holder_field() { # holder_field <key> — one field from the holder record
+  grep -oE "(^|[[:space:]])${1}=[^[:space:]]*" "$lock_file" 2>/dev/null \
+    | head -n 1 | sed "s/.*${1}=//"
+}
+
+# Liveness tick (#1110): sample the holder record, keep the previous
+# CPU sample across calls, count consecutive zero-delta polls. Sets
+# globals: holder_class, holder_pid_now, hung_polls. Detection-only —
+# the classification changes the WAIT MESSAGE, never behavior.
+holder_pid_now=""
+holder_class="unknown"
+hung_polls=0
+liveness_tick() {
+  holder_pid_now=$(gate_holder_pid "$lock_file" 2>/dev/null) || holder_pid_now=""
+  local cur_cpu=""
+  if [[ -n $holder_pid_now ]]; then
+    cur_cpu=$(gate_holder_cpu "$holder_pid_now" 2>/dev/null) || cur_cpu=""
+  fi
+  holder_class=$(gate_holder_liveness "$lock_file" "${prev_cpu:-}" 2>/dev/null || true)
+  if [[ $holder_class == likely-hung ]]; then
+    hung_polls=$((hung_polls + 1))
+  else
+    hung_polls=0
+  fi
+  prev_cpu=$cur_cpu
+}
+hung_note() { # the #1110 hung-holder wait line (branch/started from the record)
+  echo "memory-gate: held by a likely-hung pid ${holder_pid_now:-?} (branch $(holder_field branch), started $(holder_field started); no CPU time in ~$((hung_polls * poll))s — triage that lane)" >&2
+}
 
 start_ts="$(date +%s)"
 deadline() {
@@ -193,12 +246,21 @@ deadline() {
 
 # Phase 1: acquire the build lock (bounded).
 exec 9>>"$lock_file" # creates if missing; this fd carries the lock
+prev_cpu=""
 while ! flock -w "$poll" 9; do
   if deadline; then
     echo "memory-gate: gave up after ${timeout}s — ${lock_file} still held by: $(holder_info)" >&2
     exit 1
   fi
-  echo "memory-gate: waiting for the memory-gate lock, held by: $(holder_info)" >&2
+  liveness_tick
+  # (#1110) 3 consecutive zero-CPU-delta polls (~90s at the default
+  # 30s poll) surface the holder as likely-hung; report-only — wait
+  # duration, timeout and exit codes unchanged.
+  if (( hung_polls >= 3 )); then
+    hung_note
+  else
+    echo "memory-gate: waiting for the memory-gate lock, held by: $(holder_info)" >&2
+  fi
 done
 waited="$(($(date +%s) - start_ts))"
 branch="$(git branch --show-current 2>/dev/null || echo unknown)"
@@ -213,6 +275,14 @@ while ! avail="$(avail_mib)" || (( avail < floor )); do
   if deadline; then
     echo "memory-gate: gave up after ${timeout}s — MemAvailable ${avail:-?} MiB below floor ${floor} MiB" >&2
     exit 1
+  fi
+  liveness_tick
+  # (#1110) the phase-2 holder is this gate process itself ($$), and a
+  # sleeping waiter trivially shows a zero CPU delta — the hung line
+  # is surfaced only when the record names a foreign pid (defensive
+  # against a racing overwrite), never against self.
+  if [[ -n $holder_pid_now && $holder_pid_now != "$$" ]] && (( hung_polls >= 3 )); then
+    hung_note
   fi
   echo "memory-gate: MemAvailable ${avail:-?} MiB below floor ${floor} MiB — waiting" >&2
   sleep "$poll"
