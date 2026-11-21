@@ -1254,7 +1254,7 @@ fn seeded_config_file(dir: &std::path::Path, db: &std::path::Path, body: &str) -
 }
 
 fn minimal_toml(extra: impl std::fmt::Display) -> String {
-    format!("[storage]\ndb_path = '%DB%'\n[app]\nshutdown_timeout_secs = 2\n{extra}")
+    format!("[storage]\ndb_path = '%DB%'\n[app]\nshutdown_timeout_secs = 1\n{extra}")
 }
 
 // ---------------------------------------------------------------------------
