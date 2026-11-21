@@ -853,6 +853,74 @@ fn us8_s1_row_renders_the_streak_badge() {
     );
 }
 
+/// US-9/S1 (AC-1/AC-3): the statistics section renders the domain
+/// fns' typed values — the populated history carries the met/
+/// scheduled pair and the best streak; the empty twin carries the
+/// typed empty state, never a 0 %.
+#[test]
+fn us9_s1_statistics_render_the_typed_values() {
+    let (_fx, mut state) = fixture::golden_state();
+    state_habit_with_history(&mut state);
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        pinned_settings(false),
+        move |harness| {
+            harness.driver.advance_time(0);
+            open_history_from_menu(harness);
+            let section = harness.handle.window().get_habit_history().stats;
+            assert!(
+                !section.adherence_empty,
+                "the populated history is not the empty state"
+            );
+            assert!(section.adherence_met >= 1, "the met window counts");
+            assert!(section.adherence_scheduled >= section.adherence_met);
+            assert_eq!(section.best_streak, 1, "the met run back of the pendings");
+        },
+    );
+}
+
+/// US-9/S1's empty twin (AC-3): a habit with no log rows renders the
+/// typed empty state — adherence-empty, never a 0 % posture.
+#[test]
+fn us9_s1_empty_history_renders_the_typed_empty_state() {
+    let (_fx, mut state) = fixture::golden_state();
+    // The fixture without rows: the habit alone.
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = taskboard_domain::habit::Habit {
+        id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "empty".to_owned(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerDay(
+            taskboard_domain::NonZeroCount::new(1).unwrap(),
+        ),
+        order: 0,
+        anchor_time: None,
+        anchor_day: None,
+        clocks: taskboard_domain::habit::HabitClocks::all(fixture::PINNED_NOW),
+        continued_from: None,
+        deleted: false,
+        by: None,
+    };
+    state.habits.habits.insert(habit.id, habit);
+    support::harness::run_journey_no_escape_with_settings(
+        state,
+        pinned_settings(false),
+        move |harness| {
+            harness.driver.advance_time(0);
+            open_history_from_menu(harness);
+            let section = harness.handle.window().get_habit_history().stats;
+            assert!(
+                section.adherence_empty,
+                "the empty history is the typed empty state, never 0 %"
+            );
+            assert_eq!(section.adherence_met, 0);
+            assert_eq!(section.adherence_scheduled, 0);
+            assert_eq!(section.best_streak, 0);
+        },
+    );
+}
+
 /// The kiosk gate (R-3): the history dialog is absent on the
 /// appliance — the opener dispatch is structurally inert and the
 /// mount bit never arms; the badge (W-9) still renders (display
