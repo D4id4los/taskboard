@@ -2129,12 +2129,14 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 230,
+        menu_rank: 990,
         description: "Opens the inline quota editor over the focused tracker's progress phrase (a one-number edit; the period kind stays).",
         // Section-scoped (the HabitLog R-11 ruling's exact twin): the
         // row's own affordance is the invocation; the key (O-8 parity,
-        // UX plan W-11) routes over the focused row.
-        menu_group: None,
+        // UX plan W-11) routes over the focused row. Group-page row
+        // (the H4 family posture) — never the root quick page (the
+        // G6 curation budget).
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::HabitCreate,
@@ -2167,11 +2169,12 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 204,
+        menu_rank: 995,
         description: "Routes the quota popover's confirm: UpdateHabit with the minted target over the habit's current period kind.",
         // Internal dispatch verb (the HabitCreateCommit twin): the
-        // popover's Confirm button is its only affordance.
-        menu_group: None,
+        // popover's Confirm button is its only affordance. Group-page
+        // row (the H4 family posture).
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::HabitRepair,
@@ -3097,6 +3100,10 @@ mod tests {
             // context's Escape rung.
             ActionId::ExportDialogOpen,
             ActionId::ExportDialogClose,
+            // The inline quota edit (HF2, W-5 #961) + its internal
+            // commit verb.
+            ActionId::HabitQuotaEdit,
+            ActionId::HabitQuotaCommit,
         ];
         for id in ALL {
             assert_eq!(REGISTRY.iter().filter(|e| e.id == *id).count(), 1);

@@ -1032,9 +1032,9 @@ expression: rows
     - global
   category: task
   enabled: true
-  menu_rank: 205
+  menu_rank: 990
   description: "Opens the inline quota editor over the focused tracker's progress phrase (a one-number edit; the period kind stays)."
-  menu_group: ~
+  menu_group: task
 - id: habit.create
   label: Add habit…
   contexts:
@@ -1059,9 +1059,9 @@ expression: rows
     - global
   category: task
   enabled: true
-  menu_rank: 206
+  menu_rank: 995
   description: "Routes the quota popover's confirm: UpdateHabit with the minted target over the habit's current period kind."
-  menu_group: ~
+  menu_group: task
 - id: habit.repair
   label: Add make-up
   contexts:

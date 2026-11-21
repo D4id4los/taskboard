@@ -3184,7 +3184,8 @@ fn one_shot_bits_are_total() {
         .pause_draft()
         .convert_target()
         .recur_edit_target()
-        .recur_draft_rule();
+        .recur_draft_rule()
+        .habit_quota_draft();
     let mut seen = OneShotSet::default();
     for entry in crate::actions::REGISTRY {
         let declared = route_consumes(entry.id);
@@ -3202,7 +3203,7 @@ fn one_shot_bits_are_total() {
     // one-shot, no two constants share a bit.
     assert_eq!(
         full.0.count_ones(),
-        29,
+        30,
         "every one-shot field owns a distinct bit"
     );
     // The conversion confirm is the fix's flagship pair: exactly its
