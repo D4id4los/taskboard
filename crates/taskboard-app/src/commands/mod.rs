@@ -137,7 +137,7 @@ pub enum CommandError {
     /// US-2): the set lattice plus the batch-only classes (bad arity,
     /// duplicate key) — matches!-able at the arm.
     #[error("config batch set refused")]
-    ConfigBatch(#[from] crate::commands::config::ConfigBatchError),
+    ConfigBatch(#[from] crate::commands::config::ConfigBatchEditError),
     /// The in-process core failed to boot.
     #[error("core bootstrap failed")]
     Bootstrap(Box<BootstrapError>),
@@ -552,19 +552,25 @@ impl CommandError {
                 crate::commands::config::ConfigSetError::Rejected(_) => "config-write-rejected",
             },
             Self::ConfigBatch(err) => match err {
-                crate::commands::config::ConfigBatchError::DuplicateKey { .. } => {
+                crate::commands::config::ConfigBatchEditError::DuplicateKey { .. } => {
                     "config-duplicate-key"
                 }
-                crate::commands::config::ConfigBatchError::EnvLocked { .. } => "config-env-locked",
-                crate::commands::config::ConfigBatchError::UnknownKey { .. } => {
+                crate::commands::config::ConfigBatchEditError::EnvLocked { .. } => {
+                    "config-env-locked"
+                }
+                crate::commands::config::ConfigBatchEditError::UnknownKey { .. } => {
                     "config-unknown-key"
                 }
                 // `BadArity` is `BadValue`-class per the plan (US-2/S1):
                 // the even-pair grammar's refusal shares the kind.
-                crate::commands::config::ConfigBatchError::BadArity
-                | crate::commands::config::ConfigBatchError::BadValue { .. } => "config-bad-value",
-                crate::commands::config::ConfigBatchError::Io(_) => "config-write-failed",
-                crate::commands::config::ConfigBatchError::Rejected(_) => "config-write-rejected",
+                crate::commands::config::ConfigBatchEditError::BadArity
+                | crate::commands::config::ConfigBatchEditError::BadValue { .. } => {
+                    "config-bad-value"
+                }
+                crate::commands::config::ConfigBatchEditError::Io(_) => "config-write-failed",
+                crate::commands::config::ConfigBatchEditError::Rejected(_) => {
+                    "config-write-rejected"
+                }
             },
             Self::Bootstrap(err) => match **err {
                 BootstrapError::InstanceLocked { .. } => "instance-locked",

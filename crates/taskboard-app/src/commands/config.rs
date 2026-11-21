@@ -521,15 +521,15 @@ pub(crate) async fn set_with_locked(
 ///
 /// # Errors
 ///
-/// [`ConfigBatchError`] — the typed refusal classes (the batch
+/// [`ConfigBatchEditError`] — the typed refusal classes (the batch
 /// lattice, shared with `config set`; `BadValue` is set-only).
 pub async fn unset(
     config_path: Option<std::path::PathBuf>,
     keys: &[String],
-) -> Result<ConfigBatchUnsetView, ConfigBatchError> {
+) -> Result<ConfigBatchUnsetView, ConfigBatchEditError> {
     let write_path = AppConfig::write_path(config_path);
     let locked = AppConfig::env_overridden_keys(Some(write_path.as_path()))
-        .map_err(|err| ConfigBatchError::Io(std::io::Error::other(err.to_string())))?;
+        .map_err(|err| ConfigBatchEditError::Io(std::io::Error::other(err.to_string())))?;
     unset_batch_with_locked(&write_path, keys, &locked, None).await
 }
 
@@ -545,9 +545,9 @@ async fn unset_batch_with_locked(
     keys: &[String],
     locked: &std::collections::BTreeSet<String>,
     engine: Option<&taskboard_state::EngineHandle>,
-) -> Result<ConfigBatchUnsetView, ConfigBatchError> {
+) -> Result<ConfigBatchUnsetView, ConfigBatchEditError> {
     if keys.is_empty() {
-        return Err(ConfigBatchError::BadArity);
+        return Err(ConfigBatchEditError::BadArity);
     }
     // Parse ALL keys before anything is touched (US-1/S1): each resolves
     // in the knob table, naming the offender. Unset carries no values,
@@ -555,13 +555,13 @@ async fn unset_batch_with_locked(
     let mut parsed_keys: Vec<(String, ConfigKey)> = Vec::new();
     for key in keys {
         let parsed = ConfigKey::from_dotted(key)
-            .ok_or_else(|| ConfigBatchError::UnknownKey { key: key.clone() })?;
+            .ok_or_else(|| ConfigBatchEditError::UnknownKey { key: key.clone() })?;
         parsed_keys.push((key.clone(), parsed));
     }
     // Env-guard ALL keys before the write (US-1/S2), naming the pin.
     for (key, _) in &parsed_keys {
         if locked.contains(key) {
-            return Err(ConfigBatchError::EnvLocked { key: key.clone() });
+            return Err(ConfigBatchEditError::EnvLocked { key: key.clone() });
         }
     }
     // Duplicate check after the guards (US-1/S3, AC-5): removal is
@@ -570,7 +570,7 @@ async fn unset_batch_with_locked(
     let mut seen = std::collections::BTreeSet::new();
     for (key, _) in &parsed_keys {
         if !seen.insert(key.as_str()) {
-            return Err(ConfigBatchError::DuplicateKey { key: key.clone() });
+            return Err(ConfigBatchEditError::DuplicateKey { key: key.clone() });
         }
     }
     let removals: Vec<(String, String)> = parsed_keys
@@ -599,13 +599,13 @@ async fn unset_batch_with_locked(
                 .find(|key| locked.contains(**key))
                 .map(|key| (*key).to_owned())
                 .unwrap_or_default();
-            ConfigBatchError::EnvLocked { key }
+            ConfigBatchEditError::EnvLocked { key }
         }
         SettingsWriteError::Overlay(overlay) => match overlay {
-            OverlayError::Io(io) => ConfigBatchError::Io(io),
-            OverlayError::Rejected(config_err) => ConfigBatchError::Rejected(config_err),
+            OverlayError::Io(io) => ConfigBatchEditError::Io(io),
+            OverlayError::Rejected(config_err) => ConfigBatchEditError::Rejected(config_err),
         },
-        SettingsWriteError::Config(config_err) => ConfigBatchError::Rejected(config_err),
+        SettingsWriteError::Config(config_err) => ConfigBatchEditError::Rejected(config_err),
     })?;
     let applied_live = outcome.apply == LiveApply::Applied;
     let entries = parsed_keys
@@ -646,7 +646,7 @@ pub fn render_set_text(view: &ConfigSetView) -> String {
 /// parse/guard/duplicate chain runs before the document load — the
 /// prove skeleton is never invoked on a doomed batch).
 #[derive(Debug, thiserror::Error)]
-pub enum ConfigBatchError {
+pub enum ConfigBatchEditError {
     /// Zero pairs or an odd argv count for `config set` (`<k1> <v1>
     /// [<k2> <v2> …]`), or zero keys for `config unset` (`<k1> [<k2>
     /// …]`) — the arity grammars refuse before anything is touched
@@ -753,14 +753,14 @@ fn batch_edit(parsed: ConfigKey, typed: &TypedSetting) -> crate::settings_overla
 ///
 /// # Errors
 ///
-/// [`ConfigBatchError`] — the typed refusal classes.
+/// [`ConfigBatchEditError`] — the typed refusal classes.
 pub async fn set_batch(
     config_path: Option<std::path::PathBuf>,
     pairs: &[String],
-) -> Result<ConfigBatchSetView, ConfigBatchError> {
+) -> Result<ConfigBatchSetView, ConfigBatchEditError> {
     let write_path = AppConfig::write_path(config_path);
     let locked = AppConfig::env_overridden_keys(Some(write_path.as_path()))
-        .map_err(|err| ConfigBatchError::Io(std::io::Error::other(err.to_string())))?;
+        .map_err(|err| ConfigBatchEditError::Io(std::io::Error::other(err.to_string())))?;
     set_batch_with_locked(&write_path, pairs, &locked, None).await
 }
 
@@ -775,9 +775,9 @@ async fn set_batch_with_locked(
     pairs: &[String],
     locked: &std::collections::BTreeSet<String>,
     engine: Option<&taskboard_state::EngineHandle>,
-) -> Result<ConfigBatchSetView, ConfigBatchError> {
+) -> Result<ConfigBatchSetView, ConfigBatchEditError> {
     if pairs.is_empty() || !pairs.len().is_multiple_of(2) {
-        return Err(ConfigBatchError::BadArity);
+        return Err(ConfigBatchEditError::BadArity);
     }
     // Parse ALL pairs before anything is touched (US-2/S1): each key
     // resolves in the knob table, each value parses against its
@@ -785,16 +785,16 @@ async fn set_batch_with_locked(
     let mut parsed_pairs: Vec<(String, ConfigKey, TypedSetting)> = Vec::new();
     for [key, value] in pairs.as_chunks::<2>().0 {
         let parsed = ConfigKey::from_dotted(key)
-            .ok_or_else(|| ConfigBatchError::UnknownKey { key: key.clone() })?;
+            .ok_or_else(|| ConfigBatchEditError::UnknownKey { key: key.clone() })?;
         let Ok(typed) = parsed.parse_value(value) else {
-            return Err(ConfigBatchError::BadValue { key: key.clone() });
+            return Err(ConfigBatchEditError::BadValue { key: key.clone() });
         };
         parsed_pairs.push((key.clone(), parsed, typed));
     }
     // Env-guard ALL keys before the write (US-2/S2), naming the pin.
     for (key, _, _) in &parsed_pairs {
         if locked.contains(key) {
-            return Err(ConfigBatchError::EnvLocked { key: key.clone() });
+            return Err(ConfigBatchEditError::EnvLocked { key: key.clone() });
         }
     }
     // Duplicate check after the guards (US-2/S3, AC-5): last-wins is
@@ -802,7 +802,7 @@ async fn set_batch_with_locked(
     let mut seen = std::collections::BTreeSet::new();
     for (key, _, _) in &parsed_pairs {
         if !seen.insert(key.as_str()) {
-            return Err(ConfigBatchError::DuplicateKey { key: key.clone() });
+            return Err(ConfigBatchEditError::DuplicateKey { key: key.clone() });
         }
     }
     let edits: Vec<crate::settings_overlay::BatchEdit> = parsed_pairs
@@ -831,13 +831,13 @@ async fn set_batch_with_locked(
                 .find(|key| locked.contains(**key))
                 .map(|key| (*key).to_owned())
                 .unwrap_or_default();
-            ConfigBatchError::EnvLocked { key }
+            ConfigBatchEditError::EnvLocked { key }
         }
         SettingsWriteError::Overlay(overlay) => match overlay {
-            OverlayError::Io(io) => ConfigBatchError::Io(io),
-            OverlayError::Rejected(config_err) => ConfigBatchError::Rejected(config_err),
+            OverlayError::Io(io) => ConfigBatchEditError::Io(io),
+            OverlayError::Rejected(config_err) => ConfigBatchEditError::Rejected(config_err),
         },
-        SettingsWriteError::Config(config_err) => ConfigBatchError::Rejected(config_err),
+        SettingsWriteError::Config(config_err) => ConfigBatchEditError::Rejected(config_err),
     })?;
     let applied_live = outcome.apply == LiveApply::Applied;
     let entries = parsed_pairs
@@ -1806,13 +1806,13 @@ mod set_tests {
         let err = set_batch(Some(path.clone()), &[])
             .await
             .expect_err("zero pairs refuse");
-        assert!(matches!(err, ConfigBatchError::BadArity), "{err:?}");
+        assert!(matches!(err, ConfigBatchEditError::BadArity), "{err:?}");
 
         // Odd count: same class.
         let err = set_batch(Some(path.clone()), &["focus.work_mins".to_owned()])
             .await
             .expect_err("an odd argv refuses");
-        assert!(matches!(err, ConfigBatchError::BadArity), "{err:?}");
+        assert!(matches!(err, ConfigBatchEditError::BadArity), "{err:?}");
 
         // Unknown key named.
         let err = set_batch(
@@ -1827,7 +1827,7 @@ mod set_tests {
         .await
         .expect_err("the unknown key refuses");
         assert!(
-            matches!(err, ConfigBatchError::UnknownKey { ref key } if key == "not.a.knob"),
+            matches!(err, ConfigBatchEditError::UnknownKey { ref key } if key == "not.a.knob"),
             "the refusal names the offending key: {err:?}"
         );
 
@@ -1845,7 +1845,7 @@ mod set_tests {
         .await
         .expect_err("the malformed value refuses");
         assert!(
-            matches!(err, ConfigBatchError::BadValue { ref key } if key == "reminders.tick_secs"),
+            matches!(err, ConfigBatchEditError::BadValue { ref key } if key == "reminders.tick_secs"),
             "the refusal names the offending key: {err:?}"
         );
         assert_eq!(
@@ -1883,7 +1883,7 @@ mod set_tests {
         .await
         .expect_err("the pinned key refuses the whole batch");
         assert!(
-            matches!(err, ConfigBatchError::EnvLocked { ref key } if key == "reminders.tick_secs"),
+            matches!(err, ConfigBatchEditError::EnvLocked { ref key } if key == "reminders.tick_secs"),
             "the typed refusal names the pinned key: {err:?}"
         );
         let text = std::fs::read_to_string(&path).expect("read");
@@ -1920,7 +1920,7 @@ mod set_tests {
         .await
         .expect_err("the duplicate refuses");
         assert!(
-            matches!(err, ConfigBatchError::DuplicateKey { ref key } if key == "reminders.tick_secs"),
+            matches!(err, ConfigBatchEditError::DuplicateKey { ref key } if key == "reminders.tick_secs"),
             "the typed refusal names the duplicated key: {err:?}"
         );
         let text = std::fs::read_to_string(&path).expect("read");
@@ -2115,7 +2115,7 @@ mod set_tests {
         .await
         .expect_err("the crossing pair refuses the whole batch");
         assert!(
-            matches!(err, ConfigBatchError::Rejected(_)),
+            matches!(err, ConfigBatchEditError::Rejected(_)),
             "typed Rejected: {err:?}"
         );
         assert_eq!(
@@ -2147,7 +2147,7 @@ mod set_tests {
         .await
         .expect_err("the crossing pair refuses the whole batch");
         assert!(
-            matches!(err, ConfigBatchError::Rejected(_)),
+            matches!(err, ConfigBatchEditError::Rejected(_)),
             "typed Rejected: {err:?}"
         );
         assert_eq!(
@@ -2261,7 +2261,7 @@ mod set_tests {
         let err = unset(Some(path.clone()), &[])
             .await
             .expect_err("zero keys refuses");
-        assert!(matches!(err, ConfigBatchError::BadArity), "{err:?}");
+        assert!(matches!(err, ConfigBatchEditError::BadArity), "{err:?}");
         let err = unset(
             Some(path.clone()),
             &["reminders.tick_secs".to_owned(), "no.such_key".to_owned()],
@@ -2269,7 +2269,7 @@ mod set_tests {
         .await
         .expect_err("the unknown key refuses the batch");
         assert!(
-            matches!(err, ConfigBatchError::UnknownKey { ref key } if key == "no.such_key"),
+            matches!(err, ConfigBatchEditError::UnknownKey { ref key } if key == "no.such_key"),
             "the refusal names the offender: {err:?}"
         );
         let text = std::fs::read_to_string(&path);
@@ -2298,7 +2298,7 @@ mod set_tests {
         .await
         .expect_err("the pinned key refuses the batch");
         assert!(
-            matches!(err, ConfigBatchError::EnvLocked { ref key } if key == "focus.work_mins"),
+            matches!(err, ConfigBatchEditError::EnvLocked { ref key } if key == "focus.work_mins"),
             "the refusal names the pin: {err:?}"
         );
         let text = std::fs::read_to_string(&path);
@@ -2324,7 +2324,7 @@ mod set_tests {
         .await
         .expect_err("the repeat refuses");
         assert!(
-            matches!(err, ConfigBatchError::DuplicateKey { ref key } if key == "reminders.tick_secs"),
+            matches!(err, ConfigBatchEditError::DuplicateKey { ref key } if key == "reminders.tick_secs"),
             "the refusal names the repeat: {err:?}"
         );
         let text = std::fs::read_to_string(&path);
