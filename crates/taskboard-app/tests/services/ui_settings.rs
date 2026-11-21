@@ -2353,3 +2353,143 @@ async fn move_reports_a_queued_outbox_typed() {
     drop(tx);
     forwarder.await.expect("forwarder joins cleanly");
 }
+
+// -- the #1113 re-homed env-composing legs ---------------------------
+//
+// The three ui_requests legs that compose the process env in
+// production (the guard/persist reads) live here, under the suite's
+// `taskboard_env_lock()` — runnable under any ambient, the
+// hostile-env oracle by construction (#865/#1113).
+
+/// A config whose files lane is spawnable (`[files_sync] enabled`
+/// with a resolvable Nextcloud anchor) at the workspace's write path.
+fn write_files_lane_config(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        "[ui]\nscale = 1.0\n\
+         [[sync.connectors]]\nname = \"work\"\nbackend = \"nextcloud\"\n\
+         server_url = \"https://c.example\"\nusername = \"alice\"\n\
+         [files_sync]\nenabled = true\nanchor = \"work\"\n",
+    )
+    .expect("seed files-lane config");
+}
+
+/// US-6 (the files-sync-status plan D-7) — the undo-window
+/// Restore arm's guards refuse typed: a gone board is `Gone`;
+/// with no files lane configured the ceremony refuses typed
+/// (`FilesSyncDisabled`) — the ceremony's own undo leg is the
+/// stage gate, never a reimplemented undo.
+#[tokio::test]
+async fn us6_ac1_restore_guards_refuse_typed() {
+    let _env = crate::common::taskboard_env_lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+    let (app, workspace) = booted_workspace(config, Arc::new(FakeCredentialStore::default())).await;
+    let unbound = create_board(&app, "loose").await;
+
+    let gone = taskboard_app::ui_requests::undo_board_move(
+        &workspace,
+        taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
+    )
+    .await
+    .expect_err("a gone board refuses");
+    assert_eq!(gone, SettingsError::Gone);
+    let refused = taskboard_app::ui_requests::undo_board_move(&workspace, unbound)
+        .await
+        .expect_err("no files lane configured refuses typed");
+    assert_eq!(refused, SettingsError::FilesSyncDisabled);
+}
+
+/// US-4/S2 — the Publish arm's guards refuse typed: deck-bound
+/// and files-bound boards are `BindRefused` (a stale row's
+/// mis-target), a disabled files lane is `FilesSyncDisabled`, a
+/// gone board is `Gone`.
+#[tokio::test]
+async fn us4_s2_publish_guards_refuse_deck_bound() {
+    let _env = crate::common::taskboard_env_lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    write_files_lane_config(&config);
+    let (app, workspace) = booted_workspace(config, Arc::new(FakeCredentialStore::default())).await;
+
+    let deck_bound = create_board(&app, "deck board").await;
+    let files_bound = create_board(&app, "files board").await;
+    app.engine
+        .execute(taskboard_domain::StateCommand::BindBoard {
+            board: deck_bound,
+            remote: taskboard_domain::RemoteBoardId::deck(7),
+            connector: taskboard_domain::ConnectorId::from("work"),
+        })
+        .await
+        .expect("deck bind lands");
+    app.engine
+        .execute(taskboard_domain::StateCommand::BindBoard {
+            board: files_bound,
+            remote: taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
+            connector: taskboard_domain::ConnectorId::from("files-sync"),
+        })
+        .await
+        .expect("files bind lands");
+
+    let deck = taskboard_app::ui_requests::publish_board_to_files(&workspace, deck_bound)
+        .await
+        .expect_err("a deck-bound board refuses");
+    assert_eq!(deck, SettingsError::BindRefused);
+    let files = taskboard_app::ui_requests::publish_board_to_files(&workspace, files_bound)
+        .await
+        .expect_err("a files-bound board refuses");
+    assert_eq!(files, SettingsError::BindRefused);
+    let gone = taskboard_app::ui_requests::publish_board_to_files(
+        &workspace,
+        taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
+    )
+    .await
+    .expect_err("a gone board refuses");
+    assert_eq!(gone, SettingsError::Gone);
+
+    // A lane-off config refuses before the board guards touch the
+    // state (D7's guard order — the cheap config check first).
+    let dir_off = tempfile::tempdir().expect("tempdir");
+    let config_off = dir_off.path().join("taskboard.toml");
+    std::fs::write(&config_off, "[ui]\nscale = 1.0\n").expect("seed");
+    let (app_off, workspace_off) =
+        booted_workspace(config_off, Arc::new(FakeCredentialStore::default())).await;
+    let unbound = create_board(&app_off, "loose").await;
+    let disabled = taskboard_app::ui_requests::publish_board_to_files(&workspace_off, unbound)
+        .await
+        .expect_err("a lane-off config refuses");
+    assert_eq!(disabled, SettingsError::FilesSyncDisabled);
+}
+
+/// The live lane: a hand-to-the-port write lands in the file AND
+/// the engine publishes the new snapshot (`Applied`) — the
+/// US-1/US-3 choreography in one place.
+#[tokio::test]
+async fn the_port_applies_live_to_a_real_engine() {
+    let _env = crate::common::taskboard_env_lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(&config, "[reminders]\ntick_secs = 30\n").expect("seed config");
+    let (_app, workspace) =
+        booted_workspace(config, Arc::new(FakeCredentialStore::default())).await;
+    let locked = std::collections::BTreeSet::new();
+    let outcome = taskboard_app::ui_requests::run_settings_write(
+        workspace.config_write_path.as_path(),
+        &locked,
+        &["reminders.tick_secs"],
+        |path| taskboard_app::settings_overlay::set_reminder_tick(path, 45),
+        Some(&workspace.engine),
+    )
+    .await
+    .expect("the write lands");
+    assert_eq!(
+        outcome.apply,
+        taskboard_app::ui_requests::LiveApply::Applied,
+        "the live lane"
+    );
+    let published = workspace.engine.shared_state().load();
+    assert_eq!(u64::from(published.settings.tick_secs), 45);
+    let text = std::fs::read_to_string(workspace.config_write_path.as_path()).expect("file");
+    assert!(text.contains("tick_secs = 45"), "the file wrote: {text}");
+}
