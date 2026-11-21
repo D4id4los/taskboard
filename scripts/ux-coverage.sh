@@ -587,6 +587,33 @@ self_test() {
     rc=1
   fi
 
+  # 13. #1073 symlink-spelled invocation: when the script and the scan
+  #     root are addressed through a symlink, dirname keeps the invoked
+  #     spelling and the fixture prune silently never matched (the
+  #     tiered sort then ranked the fixture's seam_inventory over the
+  #     real one, flipping resolved wiring rows to INVENTORY-MISS).
+  #     The fixture-only probe row must read MISSING through symlinks,
+  #     exactly as self-test 9 does through plain paths.
+  local repo13="$tmp/repo13"
+  mkdir -p "$repo13/scripts/fixtures" "$repo13/tests"
+  cp "${BASH_SOURCE[0]}" "$repo13/scripts/"
+  cp -r "$fx" "$repo13/scripts/fixtures/"
+  printf '// StateCommand variants probe (#967/#1073): this token lives only\n// inside the fixture tree, which is never evidence.\n' \
+    >>"$repo13/scripts/fixtures/ux-coverage-fixture/tree/messages.rs"
+  cp "$fx/tree/tests/"*.rs "$repo13/tests/"
+  ln -s "$repo13" "$tmp/repo13-link"
+  bash "$tmp/repo13-link/scripts/ux-coverage.sh" "$fx/plan-fixturepin.md" --gate --root "$tmp/repo13-link" \
+    >"$tmp/symlink.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'command StateCommand variants → MISSING$' "$tmp/symlink.out" || true)
+  i=$(grep -c 'INVENTORY-MISS (' "$tmp/symlink.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 && $i -eq 0 ]]; then
+    echo "self-test 13 (#1073 symlink-spelled invocation still prunes the fixture tree): PASS"
+  else
+    echo "self-test 13 (#1073 symlink-spelled invocation still prunes the fixture tree): FAIL (exit $code, $c probe MISSING, $i INVENTORY-MISS)"
+    sed 's/^/    /' "$tmp/symlink.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -638,7 +665,14 @@ main() {
   local EVID_ROOT=$root
   local FX_ROOT=""
   local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # (#1073) realpath both roots: dirname keeps the INVOKED spelling —
+  # when the script (or --root) is addressed through a symlink, find
+  # walks the resolved path and a literal `-path "$FX_ROOT" -prune`
+  # never matches, silently un-pruning the fixture tree (the tiered
+  # sort then ranks the fixture's seam_inventory over the real one).
+  # `pwd -P` resolves; the evidence-scoped prune actually prunes.
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  root=$(cd "$root" && pwd -P)
   if [[ -d "$script_dir/fixtures/ux-coverage-fixture" ]] \
      && ! [[ "$root" -ef "$script_dir/fixtures/ux-coverage-fixture" ]] \
      && [[ "$root/" != "$script_dir/fixtures/ux-coverage-fixture/"* ]]; then
