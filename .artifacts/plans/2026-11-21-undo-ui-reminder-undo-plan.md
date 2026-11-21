@@ -245,12 +245,20 @@ task-editing plan's, unchanged).
 
 ## 6. Wiring inventory
 
+<!-- Gate-grammar normalization (2026-11-22, the #1181 classes):
+the W-row cells below carry the exact accepted row semantics,
+re-flowed into the parser's bare-token grammar (callbacks/commands
+cells bare or em-dash; semicolon-separated command tokens; the
+unstep-nominated tests mapped through bound-test lines in §8). The
+prose the earlier cells carried survives in the paragraph after the
+table and in §8; no row's meaning changed. -->
+
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | (none — domain) | (none) | (none) | `synthesize_undo` new arms over `PreImage::ReminderRule` | — | `StateCommand::Undo` (existing arm; new inverse synthesis for `AddReminderRule`/`RemoveReminderRule`/`ClearReminderRules` entries) | — (no UI row) | US-1/S2, US-2/S2, US-3/S2 | crates/taskboard-domain/src/undo/tests.rs::us1_s4_removed_rule_resurrects_verbatim |
-| W-2 | (none — domain) | (none) | (none) | `record_entry` classification re-arms (ReminderSurface → PreImages for the three verbs) | — | `StateCommand::AddReminderRule`, `StateCommand::RemoveReminderRule`, `StateCommand::ClearReminderRules` (journal-side; they gain undoable facts) | — | US-1/S1, US-2/S1, US-3/S1 | crates/taskboard-domain/src/undo/tests.rs::us2_s4_added_rule_deletes_again |
-| W-3 | (none — presentation) | (none) | (none) | `command_label` three new arms | — | — (pure display derivation over existing commands) | — (no command; the row exists so the label contract is greppable) | US-1/S3, US-2/S3 | crates/taskboard-domain/src/journal.rs::command_label — fold assertion via state tests (typed Option/contents, never text) |
-| W-4 | ui adapter (existing toast lane) | existing undo toast | existing `AppUndo` handler (unchanged) | existing `install_seam!` undo path (unchanged) | `ActionId::AppUndo` (existing) | `StateCommand::Undo` (existing) | — (no new affordance; this row records that the existing wiring needs zero change) | US-1/S2, US-2/S2 | crates/taskboard-ui-slint/tests/journeys/undo_ui_reminder_undo_journeys.rs::us1_s2_undo_restores_removed_rule_row |
+| W-1 | (none — domain) | (none) | — | `synthesize_undo` new arms over `PreImage::ReminderRule` | — | StateCommand::RemoveReminderRule | — (no UI row; the add's synthesized inverse — the remove/clear inverse is the #900 action-level verbatim resurrect, no command) | US-1/S2, US-2/S2, US-3/S2 | crates/taskboard-domain/src/undo/tests.rs::us1_s4_removed_rule_resurrects_verbatim crates/taskboard-domain/src/undo/tests.rs::us3_s4_cleared_set_resurrects_id_ascending |
+| W-2 | (none — domain) | (none) | — | `record_entry` classification re-arms (ReminderSurface → PreImages for the three verbs) | — | StateCommand::AddReminderRule; StateCommand::RemoveReminderRule; StateCommand::ClearReminderRules | — (journal-side; the three verbs gain undoable facts) | US-1/S1, US-2/S1, US-3/S1 | crates/taskboard-domain/src/undo/tests.rs::us2_s4_added_rule_deletes_again |
+| W-3 | (none — presentation) | (none) | — | `command_label` three new arms | — | — | — (no command; pure display derivation over existing commands — the row exists so the label contract is greppable) | US-1/S3, US-2/S3 | crates/taskboard-domain/src/journal/tests.rs::us1_s3_command_label_arms_present |
+| W-4 | ui adapter (existing toast lane) | existing undo toast | — | existing `install_seam!` undo path (unchanged) | ActionId::AppUndo | StateCommand::Undo | — (no new affordance; the existing AppUndo handler needs zero change — the row proves the composition end-to-end through the UI driver) | US-1/S2, US-2/S2 | crates/taskboard-ui-slint/tests/journeys/undo_ui_reminder_undo_journeys.rs::us1_s2_undo_restores_removed_rule_row crates/taskboard-ui-slint/tests/journeys/undo_ui_reminder_undo_journeys.rs::us2_s2_undo_deletes_added_rule_row |
 
 Rows W-1–W-3 have no `.slint` callback by design: UF1's delta is
 engine-side; the user-visible change is that existing affordances
@@ -276,6 +284,17 @@ items — every catalogue entry exists because US-1/US-2/US-3's steps
 plan against it.
 
 ## 8. Verification plan
+
+<!-- Gate-grammar normalization (2026-11-22): the steps whose covering
+test does not carry the step's own ID prefix map through bound-test
+lines (the #768 grammar) — the covering test names the assertion
+point, not a re-run of the step. -->
+
+bound-test: US-1/S1 -> crates/taskboard-ui-slint/tests/journeys/undo_ui_reminder_undo_journeys.rs::us1_s2_undo_restores_removed_rule_row
+bound-test: US-2/S1 -> crates/taskboard-ui-slint/tests/journeys/undo_ui_reminder_undo_journeys.rs::us2_s2_undo_deletes_added_rule_row
+bound-test: US-2/S3 -> crates/taskboard-ui-slint/tests/journeys/undo_ui_reminder_undo_journeys.rs::us2_s2_undo_deletes_added_rule_row
+bound-test: US-3/S1 -> crates/taskboard-domain/src/undo/tests.rs::us3_s4_cleared_set_resurrects_id_ascending
+bound-test: US-3/S2 -> crates/taskboard-domain/src/undo/tests.rs::us3_s4_cleared_set_resurrects_id_ascending
 
 - **Journey tests** (step-ID-named,
   `crates/taskboard-ui-slint/tests/journeys/undo_ui_reminder_undo_journeys.rs`):
