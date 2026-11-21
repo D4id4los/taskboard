@@ -1116,6 +1116,15 @@ expression: rows
   menu_rank: 970
   description: "Opens the habit editor at the reminder-override row (base, offset, time, snooze)."
   menu_group: ~
+- id: habit.history
+  label: Habit history
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 245
+  description: "Opens the habit's history: the month-grid heatmap and the statistics (adherence, best streak, per-window counts)."
+  menu_group: task
 - id: habit.remove
   label: Remove habit
   contexts:

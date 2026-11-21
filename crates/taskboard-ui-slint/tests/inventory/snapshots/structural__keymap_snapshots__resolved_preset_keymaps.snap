@@ -1,6 +1,7 @@
 ---
 source: crates/taskboard-ui-slint/tests/inventory/keymap_snapshots.rs
 assertion_line: 115
+
 expression: rows
 ---
 - preset: standard
@@ -99,6 +100,8 @@ expression: rows
         - sequence:
             - Ctrl+Shift+q
           action: habit.quota-edit
+            - Ctrl+Shift+i
+          action: habit.history
         - sequence:
             - Ctrl+Shift+u
           action: habit.unlog
@@ -764,6 +767,9 @@ expression: rows
             - Ctrl+Shift+h
           action: habit.create
         - sequence:
+            - Ctrl+Shift+i
+          action: habit.history
+        - sequence:
             - Ctrl+n
           action: nav.focus-down
         - sequence:
@@ -1347,6 +1353,8 @@ expression: rows
         - sequence:
             - Ctrl+Shift+q
           action: habit.quota-edit
+            - Ctrl+Shift+i
+          action: habit.history
         - sequence:
             - t
           action: task.due-today
