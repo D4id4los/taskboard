@@ -41,11 +41,32 @@ pub struct SqliteTaskRepository {
     /// are read-only relics — decoded by this rule only when a decode
     /// consumer exists (chunk 4); never backfilled at boot.
     pub(crate) default_connector: ConnectorId,
-    /// The degraded-load diagnostics cell (plan D-B2-6): the last
-    /// successful load's journal-quarantine report, taken once by the
-    /// engine's boot hydration call site over the
+    /// The degraded-load diagnostics channel (plan D-B2-6, #1137): the
+    /// last successful load's journal-quarantine report, taken once by
+    /// the engine's boot hydration call site over the
     /// [`LoadDiagnosticsSource`] hop. `None` after a healthy load.
-    pub(crate) diagnostics: std::sync::Arc<std::sync::Mutex<Option<LoadDiagnostics>>>,
+    ///
+    /// AGENTS §3 reserves Mutex-free primitives for cross-actor hops:
+    /// the signal travels on a `tokio::sync::watch` channel (the
+    /// sender side, shared by the `Clone`d repository), not in a
+    /// `Mutex<Option<T>>` cell. The `Mutex` around the internal
+    /// receiver below guards *receiver state only* (the version mark
+    /// read by `borrow_and_update` needs `&mut`), never the payload —
+    /// the lock is taken and released synchronously inside
+    /// `take_load_diagnostics`, never across an `.await`.
+    ///
+    /// Take-once leniency documented at the type (A1): the contract is
+    /// exactly one consumption per load because there is exactly one
+    /// consumer. If a second receiver/consumer ever appears, the
+    /// take-once contract must be re-stated on the
+    /// [`LoadDiagnosticsSource`] trait.
+    pub(crate) diagnostics: std::sync::Arc<tokio::sync::watch::Sender<Option<LoadDiagnostics>>>,
+    /// The consumption-side receiver, `Arc`-shared so every `Clone` of
+    /// the repository consumes from the ONE receiver state (a per-clone
+    /// receiver would fork the seen-version mark and replay signals);
+    /// see [`Self::diagnostics`].
+    pub(crate) diagnostics_rx:
+        std::sync::Arc<std::sync::Mutex<tokio::sync::watch::Receiver<Option<LoadDiagnostics>>>>,
 }
 
 /// The typed `Corrupted` construction helper for the decode paths: the
@@ -1038,10 +1059,22 @@ impl TaskRepository for SqliteTaskRepository {
 
 impl LoadDiagnosticsSource for SqliteTaskRepository {
     fn take_load_diagnostics(&self) -> Option<LoadDiagnostics> {
-        self.diagnostics
+        // (#1137) the domain trait's take-once contract (persistence.rs:
+        // "one consumption per load, never a replayed signal") maps onto
+        // the watch channel as `has_changed()` gate + `borrow_and_update()`:
+        // consuming marks the version read, so the immediately repeated
+        // call observes no change and returns `None`.
+        let mut rx = self
+            .diagnostics_rx
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !rx.has_changed().unwrap_or(false) {
+            return None;
+        }
+        // `borrow_and_update()`'s `Ref` derefs to the channel value, so
+        // the `.clone()` here clones the inner `Option<LoadDiagnostics>`
+        // by value (the `Clone` bound plan D-1137-a relies on).
+        rx.borrow_and_update().clone()
     }
 }
 
@@ -1062,10 +1095,11 @@ impl SqliteTaskRepository {
         // Clear any stale diagnostics up front: only THIS load's
         // quarantine pass may publish a signal (one degraded event per
         // degraded load, never a replay of an older load's report).
-        *self
-            .diagnostics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        // (#1137) on the watch channel this is a `None` send — clearing
+        // a stale pending value one step earlier than the Mutex cell's
+        // take-once did, and marking the receiver changed so a take
+        // between the two sends reads `None` (not the stale `Some`).
+        let _ = self.diagnostics.send(None);
         // One read transaction around all SELECTs: the single pooled
         // connection would otherwise be released between queries, and a
         // concurrent `apply` could interleave — yielding a state mixing
@@ -1770,14 +1804,11 @@ impl SqliteTaskRepository {
             {
                 tracing::warn!(error = %err, "journal head re-pin failed; next load retries");
             }
-            *self
-                .diagnostics
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(LoadDiagnostics {
+            let _ = self.diagnostics.send(Some(LoadDiagnostics {
                 details: quarantine_details,
                 dropped,
                 head,
-            });
+            }));
         }
         tracing::trace!(
             boards = state.boards.len(),

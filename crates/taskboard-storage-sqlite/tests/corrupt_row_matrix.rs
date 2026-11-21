@@ -515,3 +515,148 @@ proptest! {
         .expect("property case passes");
     }
 }
+
+// ---- #1137 diagnostics hop: watch channel take-once semantics --------
+
+/// Corrupts a row through a raw second connection WITHOUT closing and
+/// reopening the fixture: the #1137 take-once tests need two sequential
+/// degraded loads on the SAME repository instance (a `reopen` would swap
+/// in a fresh diagnostics channel and sidestep the property under test).
+async fn corrupt_in_place(db: &FileDb, sql: &'static str, bind: String) {
+    let pool = SqlitePool::connect(&format!("sqlite://{}", db.path().display()))
+        .await
+        .expect("raw connection");
+    sqlx::query(sql)
+        .bind(bind)
+        .execute(&pool)
+        .await
+        .expect("corrupting update");
+    pool.close().await;
+}
+
+fn take(db: &FileDb) -> Option<u32> {
+    db.repo()
+        .load_diagnostics()
+        .expect("diagnostics source")
+        .take_load_diagnostics()
+        .map(|d| d.dropped)
+}
+
+/// (a) a degraded load publishes its diagnostics exactly once: the
+/// immediate second take is `None` — the watch channel's mark-read-on-
+/// consume replaces the Mutex cell's `.take()` (no replay).
+#[tokio::test]
+async fn a_degraded_loads_diagnostics_are_taken_exactly_once() {
+    let mut db = FileDb::new().await;
+    let ids = CountingIds::new();
+    let entries = seed_chain(&mut db, &ids, 2).await;
+    corrupt(
+        &mut db,
+        "UPDATE command_journal SET payload = 'not json' WHERE id = ?1",
+        entry_id(&entries, 0),
+    )
+    .await;
+
+    db.repo().load().await.expect("quarantined load succeeds");
+    let first = take(&db).expect("degraded load published diagnostics");
+    assert!(first >= 1, "floor, not ceiling");
+    assert!(
+        take(&db).is_none(),
+        "the immediate second take observes no change"
+    );
+    db.close().await;
+}
+
+/// (b) a healthy load after a degraded one clears a stale pending
+/// report — the next take is `None`, never the old load's replay (#1137:
+/// the load start sends `None`, preserving the take-once semantics one
+/// step earlier than the old Mutex cell did).
+#[tokio::test]
+async fn a_healthy_load_clears_a_stale_pending_diagnostics_report() {
+    let mut db = FileDb::new().await;
+    let ids = CountingIds::new();
+    let entries = seed_chain(&mut db, &ids, 2).await;
+    corrupt(
+        &mut db,
+        "UPDATE command_journal SET payload = 'not json' WHERE id = ?1",
+        entry_id(&entries, 0),
+    )
+    .await;
+
+    db.repo().load().await.expect("degraded load succeeds");
+    assert!(take(&db).is_some(), "the degraded load published");
+    // Repair the corruption in place (same repository instance, same
+    // channel): the next load quarantines nothing, so it must CLEAR the
+    // pending-report state — a `None` send — and the take reads `None`,
+    // never the old load's replay. (A second load of the same corrupt
+    // file is degraded again by design — one report per degraded load —
+    // so the healthy-clear property needs the rows actually repaired.)
+    corrupt_in_place(
+        &db,
+        "DELETE FROM command_journal WHERE id = ?1",
+        entry_id(&entries, 0),
+    )
+    .await;
+    corrupt_in_place(
+        &db,
+        "DELETE FROM command_journal WHERE id = ?1",
+        entry_id(&entries, 1),
+    )
+    .await;
+    db.repo().load().await.expect("healthy load succeeds");
+    assert!(
+        take(&db).is_none(),
+        "the healthy load cleared, not replayed"
+    );
+    db.close().await;
+}
+
+/// (c) two sequential degraded loads on the same repository publish
+/// each report exactly once, in order — the watch channel carries every
+/// load's own report, none replayed, none lost.
+#[tokio::test]
+async fn two_sequential_degraded_loads_yield_each_diagnostics_exactly_once_in_order() {
+    let mut db = FileDb::new().await;
+    let ids = CountingIds::new();
+    let entries = seed_chain(&mut db, &ids, 2).await;
+    corrupt(
+        &mut db,
+        "UPDATE command_journal SET payload = 'not json' WHERE id = ?1",
+        entry_id(&entries, 0),
+    )
+    .await;
+
+    db.repo()
+        .load()
+        .await
+        .expect("first degraded load succeeds");
+    let first = take(&db).expect("first degraded load published");
+    assert!(take(&db).is_none(), "first report consumed once");
+
+    // Seed a fresh one-entry line on the surviving (now empty) journal
+    // and degrade exactly it — a second degraded load on the SAME
+    // repository instance.
+    let second_entry = journal_entry(&ids, None, 900);
+    db.repo()
+        .apply(vec![PersistenceAction::RecordJournal(second_entry.clone())])
+        .await
+        .expect("seed second line");
+    corrupt_in_place(
+        &db,
+        "UPDATE command_journal SET payload = 'not json' WHERE id = ?1",
+        second_entry.id.as_uuid().to_string(),
+    )
+    .await;
+
+    db.repo()
+        .load()
+        .await
+        .expect("second degraded load succeeds");
+    let second = take(&db).expect("second degraded load published its own report");
+    assert_ne!(
+        first, second,
+        "the second report is the second load's, not a replay of the first"
+    );
+    assert!(take(&db).is_none(), "second report consumed once");
+    db.close().await;
+}
