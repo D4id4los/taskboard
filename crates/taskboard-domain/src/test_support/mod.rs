@@ -45,7 +45,10 @@ pub use reminders::{
     reminder_snooze_strategy, task_map_strategy,
 };
 pub use remote::{push_outcome_strategy, remote_task_strategy, snapshot_strategy};
-pub use state::{app_state_strategy, persisted_state_strategy, push_ready_state_strategy};
+pub use state::{
+    app_state_strategy, persisted_state_strategy, push_ready_cross_board_state_strategy,
+    push_ready_state_strategy,
+};
 pub mod reflection_strategies;
 pub mod tracking_strategies;
 pub use habit_strategies::{

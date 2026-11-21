@@ -635,6 +635,86 @@ fn repair_for_push_phase(mut state: PersistedState) -> PersistedState {
     state
 }
 
+/// The cross-board extension of [`push_ready_state_strategy`] for the
+/// push-phase equivalence property
+/// (`pipeline.rs::apply_push_report_equals_the_pipeline_push_phase`):
+/// the same push-phase shape **plus** a second, unbound, live board
+/// targeted by one outbox op — the divergence class of issue #1080
+/// ("a board op targets an *unbound* board while a *bound live* board
+/// exists"). Built as [`repair_for_push_phase`] (reused verbatim)
+/// followed by a total, minimal-repair cross-board step; the
+/// single-board value space is unchanged, so the union of the two
+/// strategies widens the property's domain without narrowing anything.
+pub fn push_ready_cross_board_state_strategy() -> impl Strategy<Value = PersistedState> {
+    persisted_state_strategy().prop_map(cross_board_repair)
+}
+
+/// The total, minimal-repair cross-board step layered on
+/// [`repair_for_push_phase`]: synthesize an unbound live second board
+/// (fresh [`crate::ids::BoardId`], `remote: None`, epoch clocks) when
+/// the repaired state has none, and append one `UpdateBoard` op
+/// targeting it (fresh `OpId`, queued at [`repair_seen`]) — always,
+/// since the freshly minted board id cannot collide with a drawn op's
+/// target. Synthesized ids via `uuid::new_v4` inside
+/// `prop_map` follow the R3 precedent (constant, not fresh RNG, for
+/// timestamps) — shrinking stays structural.
+fn cross_board_repair(state: PersistedState) -> PersistedState {
+    let mut state = repair_for_push_phase(state);
+    let bound = state
+        .boards
+        .values()
+        .find(|b| b.remote.is_some() && !b.deleted)
+        .expect("repair_for_push_phase bound a live board");
+    debug_assert_eq!(
+        state
+            .boards
+            .values()
+            .filter(|b| b.remote.is_some() && !b.deleted)
+            .count(),
+        1,
+        "exactly one bound live board exists"
+    );
+    let second_id = crate::ids::BoardId::from_uuid(uuid::Uuid::new_v4());
+    let board = Board {
+        id: second_id,
+        // Deliberately unbound: the divergence class requires an op
+        // targeting a board with no server relationship while a bound
+        // live board exists.
+        remote: None,
+        // Drawn title/color: cloned off the bound board so the
+        // synthesized board reuses the draw's randomness instead of a
+        // fresh RNG stream.
+        title: bound.title.clone(),
+        color: bound.color.clone(),
+        archived: false,
+        deleted: false,
+        clocks: crate::entities::BoardClocks {
+            color: crate::entities::BoardClocks::epoch(),
+            archived: crate::entities::BoardClocks::epoch(),
+            deleted: crate::entities::BoardClocks::epoch(),
+            title: crate::entities::BoardClocks::epoch(),
+        },
+        authors: crate::entities::BoardAuthors::default(),
+        remote_seen: None,
+    };
+    state.boards.insert(second_id, board);
+    // The divergence trigger, always appended: `second_id` is freshly
+    // minted, so no drawn op can already target it.
+    state.outbox.push(PendingOp {
+        op_id: crate::outbox::OpId(uuid::Uuid::new_v4()),
+        op: LocalOp::UpdateBoard(second_id),
+        queued_at: repair_seen(),
+    });
+    debug_assert!(
+        state
+            .boards
+            .get(&second_id)
+            .is_some_and(|b| b.remote.is_none() && !b.deleted),
+        "the second board is unbound and live"
+    );
+    state
+}
+
 /// Repairs clause 4: every bound stack, label, and task gets a remote
 /// baseline; entities already carrying one keep their drawn value.
 fn repair_seen_clauses(state: &mut PersistedState, seen: DateTime<Utc>) {

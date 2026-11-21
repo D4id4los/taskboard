@@ -5409,7 +5409,9 @@ mod tests {
 
             #[test]
             fn apply_push_report_equals_the_pipeline_push_phase(
-                state in test_support::push_ready_state_strategy(),
+                state in test_support::push_ready_state_strategy()
+                    .boxed()
+                    .prop_union(test_support::push_ready_cross_board_state_strategy().boxed()),
                 pushes in proptest::collection::vec(
                     (
                         test_support::op_id_strategy(),
