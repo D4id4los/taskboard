@@ -1004,6 +1004,9 @@ mod tests {
             ActionId::SeriesPause,
             ActionId::HabitEdit,
             ActionId::SeriesPauseCommit,
+            // The HF3 history opener joins at rank 245 (the registry's
+            // reviewed row; mounts the read-role projection dialog).
+            ActionId::HabitHistory,
             ActionId::HabitRemove,
             ActionId::SeriesResume,
             ActionId::HabitRemoveConfirm,
