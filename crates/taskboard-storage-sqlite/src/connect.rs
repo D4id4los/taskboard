@@ -58,10 +58,12 @@ async fn open_with(
         migrations_embedded = MIGRATOR.iter().count(),
         "sqlite database opened; schema ensured"
     );
+    let (diagnostics_tx, diagnostics_rx) = tokio::sync::watch::channel(None);
     Ok(SqliteTaskRepository {
         pool,
         default_connector,
-        diagnostics: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        diagnostics: std::sync::Arc::new(diagnostics_tx),
+        diagnostics_rx: std::sync::Arc::new(std::sync::Mutex::new(diagnostics_rx)),
     })
 }
 
