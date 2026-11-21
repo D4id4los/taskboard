@@ -144,7 +144,12 @@ journal:
           at: ~
           insistence: normal
       facts:
-        NotUndoable: ReminderSurface
+        PreImages:
+          images:
+            - ReminderRule:
+                id: 00000000-0000-0000-0000-000000000009
+                before: ~
+          watermark: []
       ops:
         - 00000000-0000-0000-0000-00000000000a
       pushed: false
