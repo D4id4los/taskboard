@@ -72,6 +72,12 @@ pub struct KeymapShell {
     /// this holds; disarmed by the Escape close, the last row's exit,
     /// or rows emptying. Synced by the adapter.
     pub notification_surface: bool,
+    /// The export dialog is open (the J2 export plan W-1): the sixth
+    /// modal context — the scope stack flips to
+    /// `[ExportDialog, ViInsert, Global]` and the `ExportDialog` mask
+    /// makes it total. Adapter-owned VM (not a flow); synced at the
+    /// open/close seams.
+    pub export_dialog: bool,
     pub view: Option<ContextId>,
     /// The [`crate::router::DispatchCtx`] carried to the router.
     pub focused_task: Option<taskboard_domain::TaskId>,
@@ -340,7 +346,11 @@ impl KeymapShell {
             | UiEffect::BoardArchive
             | UiEffect::BoardReset
             | UiEffect::BoardReconcile
-            | UiEffect::NotificationVerb(_) => {}
+            | UiEffect::NotificationVerb(_)
+            // The export dialog's mount bit is the adapter's VM (the
+            // J2 export plan W-1) — the shell records nothing.
+            | UiEffect::ExportDialogOpen
+            | UiEffect::ExportDialogClose => {}
         }
         true
     }

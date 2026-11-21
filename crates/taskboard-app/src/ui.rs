@@ -190,6 +190,12 @@ pub fn bare_invocation_route(mode: crate::config::AppMode, tty: bool, display: b
 /// it. Calling on an unvalidated `[ui]` table panics — same rule as
 /// `AppConfig::server_url`/`username`.
 #[must_use]
+/// The export dialog's hand-over defaults (the J2 export plan
+/// D-2/D-3): the compile-time feature fact as a runtime flag, the
+/// export family's resolved home (the pdf leg's default resolution —
+/// `[export] pdf_dir`, else `~/Documents/taskboard`, else the
+/// platform data dir), and the `[export] open_after_export`
+/// posture.
 pub fn resolve_ui_settings(
     ui: &crate::config::UiSection,
     boot_offset: chrono::FixedOffset,
@@ -230,6 +236,10 @@ pub fn resolve_ui_settings(
         stack_widths: ui.stack_widths.clone(),
         connectors: Vec::new(), // filled by the lifecycle (spawn sites) from the full config
         boards: Vec::new(),     // filled by the lifecycle from the engine state (r2 D32)
+        // The export dialog's defaults: filled by the lifecycle (the
+        // spawn sites) from the full config (the general snapshot's
+        // seed-then-overwrite shape).
+        export: taskboard_ui_slint::requests::ExportDialogDefaults::default(),
         keymap_preset: match ui.keymap.preset {
             crate::config::KeymapPreset::Standard => taskboard_ui_slint::keymap::Preset::Standard,
             crate::config::KeymapPreset::Emacs => taskboard_ui_slint::keymap::Preset::Emacs,
@@ -261,6 +271,33 @@ pub fn resolve_ui_settings(
 /// `[preferences] day_start_time` (config validation owns the refusal)
 /// plus the device's fixed UTC offset at derivation time — the
 /// `day_window` consumers contract verbatim.
+/// The export dialog's hand-over defaults (the J2 export plan
+/// D-2/D-3): the compile-time feature fact as a runtime flag, the
+/// export family's resolved home (the pdf leg's default resolution —
+/// `[export] pdf_dir`, else `~/Documents/taskboard`, else the
+/// platform data dir), and the `[export] open_after_export`
+/// posture.
+#[must_use]
+pub fn resolve_export_defaults(
+    config: &crate::config::AppConfig,
+) -> taskboard_ui_slint::requests::ExportDialogDefaults {
+    let dir = crate::export_paths::default_pdf_dir(
+        config
+            .export
+            .pdf_dir
+            .as_deref()
+            .map(crate::export_paths::expand_tilde)
+            .as_deref(),
+        dirs::data_dir().as_deref(),
+    );
+    taskboard_ui_slint::requests::ExportDialogDefaults {
+        pdf_available: cfg!(feature = "pdf-export"),
+        pdf_dir: dir.display().to_string(),
+        export_dir: dir.display().to_string(),
+        open_after: config.export.open_after_export,
+    }
+}
+
 #[must_use]
 pub fn resolve_day_start(
     config: &crate::config::AppConfig,
@@ -799,6 +836,10 @@ pub async fn run_desktop(
     // The general snapshot before the workspace consumes the write
     // path (one read of the boot env, plan D1).
     ui_settings.general = resolve_settings_snapshot(&app.config, &config_write_path);
+    // The export dialog's defaults (the J2 export plan D-2/D-3): the
+    // config postures minted at hand-over (the general snapshot's
+    // precedent).
+    ui_settings.export = resolve_export_defaults(&app.config);
     let (requests_tx, requests_rx) = crate::ui_requests::ui_request_channel();
     let request_forwarder = crate::ui_requests::spawn_ui_request_forwarder(
         requests_rx,
@@ -816,6 +857,14 @@ pub async fn run_desktop(
             // boots authorless there, plan D-2).
             device_json: crate::board_move_ceremony::default_device_json().ok(),
             connector_owners: app.connector_owners.clone(),
+            export: crate::ui_requests::ExportWorkspace {
+                config: std::sync::Arc::new(app.config.clone()),
+                // The desktop lifecycle's typed permission (the
+                // trap-c law): the viewer open is allowed here and
+                // nowhere else — the kiosk workspace never shells
+                // out.
+                may_open_viewer: true,
+            },
         },
     );
 

@@ -15,6 +15,7 @@ import { ActionMenu, MenuEntryModel, QuickBarEntryModel } from "compositions/act
 import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
 import { CaptureOverlay } from "compositions/capture-overlay.slint";
 import { RecurEditor, RecurEditorModel } from "compositions/recur-editor.slint";
+import { ExportDialog, ExportDialogModel } from "compositions/export-dialog.slint";
 import { ReviewWalkOverlay, ReviewWalkModel } from "views/review-walk-overlay.slint";
 import { FocusOverlay, FocusRowModel } from "compositions/focus-overlay.slint";
 import { Toolbar } from "compositions/toolbar.slint";
@@ -355,6 +356,40 @@ export component AppWindow inherits Window {
     // exactly while Flow::EditRecur holds.
     in-out property <bool> recur-editor-open: false;
     in-out property <RecurEditorModel> recur-editor-model;
+    // The export dialog's window-level mount bit + pushed model (the
+    // J2 export plan W-1..W-5). The mount bit is adapter-minted (the
+    // ActionId::ExportDialogOpen route and the Settings row's seam);
+    // a kiosk hand-over never mints it (R-2).
+    in-out property <bool> export-dialog-mounted: false;
+    in-out property <ExportDialogModel> export-model;
+    // The dialog's seams (W-3/W-4/W-5): the pickers'/fields' mirrors,
+    // the Run dispatch, and the close (Escape's ladder lands here —
+    // nothing dispatches, the pending reply drops).
+    // slint: export-dialog-open / export-dialog-close — the W-1 mount
+    // pair: the open callback is the window-level entry-point front
+    // (the adapter routes the same action the menu item and the
+    // Settings row drive); the close is the dismissal seam.
+    pure callback export-dialog-open();
+    pure callback export-spec-picked(int, int);
+    pure callback export-field-edited(int, string);
+    pure callback export-open-after-toggled();
+    // slint: export-run — the W-4 Run dispatch seam.
+    pure callback export-run();
+    pure callback export-dialog-close();
+    // slint: export-outcome-shown — the W-5 display fold: the reply
+    // drain invokes it when the typed outcome settles; the handler
+    // folds the settled outcome into the dialog's model.
+    pure callback export-outcome-shown();
+    // The Settings view's Export row (W-2): the same mount arm the
+    // action routes.
+    pure callback export-settings-open();
+    // The dialog's outcome notification: the model's outcome fold
+    // crossing into the rendered fact re-arms the observation seam.
+    changed export-model => {
+        if (root.export-model.outcome-kind != 0) {
+            root.export-outcome-shown();
+        }
+    }
     in-out property <string> capture-initial-text;
     in-out property <int> palette-selected-index: 0;
     in-out property <[PaletteRowModel]> palette-model: [];
@@ -614,6 +649,7 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.settings): SettingsView {
                 back-clicked() => root.settings-back-clicked();
+                export-settings-open() => root.export-settings-open();
                 view-mounted() => root.settings-view-mounted();
                 field-edited(f, t) => root.settings-field-edited(f, t);
                 save-clicked(s, u, p) => root.settings-save-clicked(s, u, p);
@@ -1543,6 +1579,39 @@ export component AppWindow inherits Window {
             detach-arm-clicked() => root.recur-detach-arm-clicked();
             detach-confirm-clicked() => root.recur-detach-confirm-clicked();
             detach-cancel-clicked() => root.recur-detach-cancel-clicked();
+            }
+        }
+        // The export dialog (the J2 export plan W-1): on the
+        // ModalDialogHost base, confirm-kind — an outside click
+        // dismisses with nothing dispatched (US-1/AC-2); the Run
+        // button rides the host's button model (the busy gate).
+        if (root.export-dialog-mounted): ModalDialogHost {
+            open: true;
+            title: "Export";
+            kind: DialogKind.confirm;
+            body-preferred-width: 560px * Theme.base-scale;
+            walk-stops: 1;
+            viewport-floor: status.y;
+            buttons: [
+                { label: "Close", role: DialogButtonRole.dismiss, enabled: true, autofocus: false },
+                { label: "Run", role: DialogButtonRole.accept, enabled: root.export-model.run-enabled, autofocus: false },
+            ];
+            button-invoked(index) => {
+                if (index == 0) {
+                    root.export-dialog-close();
+                } else {
+                    root.export-run();
+                }
+            }
+            dismissed => root.export-dialog-close();
+            accepted => root.export-dialog-close();
+            ExportDialog {
+                model: root.export-model;
+                spec-picked(control, index) => root.export-spec-picked(control, index);
+                field-edited(field, text) => root.export-field-edited(field, text);
+                open-after-toggled() => root.export-open-after-toggled();
+                run-clicked() => root.export-run();
+                close-clicked() => root.export-dialog-close();
             }
         }
         if (root.palette-open): ModalDialogHost {

@@ -48,6 +48,24 @@ expression: rows
   menu_rank: 10
   description: "Opens or closes the settings view: sync connections, keymap preset, UI scale."
   menu_group: ~
+- id: app.export-dialog
+  label: Export…
+  contexts:
+    - global
+  category: application
+  enabled: true
+  menu_rank: 25
+  description: "Opens the export dialog: tracking csv/json and the pdf today sheet, with the CLI verb's filters."
+  menu_group: ~
+- id: app.export-dialog-close
+  label: Close export dialog
+  contexts:
+    - export-dialog
+  category: application
+  enabled: true
+  menu_rank: 990
+  description: Closes the export dialog; nothing dispatches and any running export completes independently.
+  menu_group: ~
 - id: app.help
   label: Open help
   contexts:

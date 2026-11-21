@@ -825,6 +825,7 @@ fn kiosk_rotation_handover(
     })
 }
 
+#[allow(clippy::too_many_lines)] // one lifecycle sequence, kept flat
 async fn run_kiosk(
     config: AppConfig,
     config_path: Option<std::path::PathBuf>,
@@ -897,6 +898,10 @@ async fn run_kiosk(
             // write path (one read of the boot env, plan D1).
             ui_settings.general =
                 taskboard_app::ui::resolve_settings_snapshot(&app.config, &config_write_path);
+            // The export dialog's defaults ride the hand-over (the
+            // general snapshot's precedent); the kiosk never mounts
+            // the dialog (R-2), the postures are inert facts.
+            ui_settings.export = taskboard_app::ui::resolve_export_defaults(&app.config);
             let (requests_tx, requests_rx) = taskboard_app::ui_requests::ui_request_channel();
             let request_forwarder = taskboard_app::ui_requests::spawn_ui_request_forwarder(
                 requests_rx,
@@ -914,6 +919,13 @@ async fn run_kiosk(
                     // (bootstrap boots authorless there, plan D-2).
                     device_json: taskboard_app::board_move_ceremony::default_device_json().ok(),
                     connector_owners: app.connector_owners.clone(),
+                    // The kiosk workspace's typed permission (the
+                    // trap-c law): the viewer open is NEVER allowed
+                    // here — no shell-out on kiosk (R-2).
+                    export: taskboard_app::ui_requests::ExportWorkspace {
+                        config: std::sync::Arc::new(app.config.clone()),
+                        may_open_viewer: false,
+                    },
                 },
             );
 

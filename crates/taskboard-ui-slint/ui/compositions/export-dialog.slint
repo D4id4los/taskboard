@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The export dialog (the J2 export plan W-1–W-5): the settings/menu-
+// anchored front over the CLI `export` verb's grammar — family,
+// format, the since/until/task/board filters, the pdf leg's typed
+// layout + destination + open-after-export, and the typed outcome
+// area. A dumb client: every field's text/validity and the outcome
+// ride the pushed model (the recur-editor contract — the widget never
+// holds state); every edit mirrors up the moment it happens.
+//
+// D-4: without the pdf-export feature the pdf leg's controls render
+// DISABLED with an honest caption — the flag (`model.pdf-available`)
+// is the only oracle; the caption is never asserted.
+//
+// D-2/D-3 destination semantics: the field pre-fills EMPTY; the
+// placeholder carries the config default home; an empty field mints
+// `out: None` and the engine resolves the config default (the dated
+// file name is engine-derived at run time — the module doc's
+// rationale).
+
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TippedField } from "../widgets/tipped-field.slint";
+import { TextField, FieldValidity } from "../widgets/text-field.slint";
+import { SegmentedControl } from "../widgets/segmented-control.slint";
+import { CheckBox } from "../widgets/check-box.slint";
+
+// The dialog's pushed model (the recur-editor shape): the pickers'
+// typed indices, the fields' verbatim text, the enabled/busy/outcome
+// folds. Index contracts (documented once, mapped at the adapter):
+// family 0/1 = Tracking/Pdf; format 0/1 = Csv/Json; layout 0..4 =
+// Fold/A4/A5/A6; outcome-kind 0/1/2 = none/written/refused;
+// refusal -1 = none, else the canonical kind order the adapter docs.
+export struct ExportDialogModel {
+    family: int,
+    format: int,
+    layout: int,
+    since: string,
+    since-validity: FieldValidity,
+    until: string,
+    until-validity: FieldValidity,
+    task: string,
+    board: string,
+    destination: string,
+    destination-placeholder: string,
+    open-after: bool,
+    pdf-available: bool,
+    busy: bool,
+    run-enabled: bool,
+    outcome-kind: int,
+    outcome-path: string,
+    refusal: int,
+}
+
+export component ExportDialog inherits Rectangle {
+    in property <ExportDialogModel> model;
+
+    // The edit mirrors (W-3/W-4): every pick/edit rides up the moment
+    // it happens; the adapter owns the buffer (one truth).
+    // slint: export-spec-picked
+    callback spec-picked(int, int);
+    // slint: export-field-edited
+    callback field-edited(int, string);
+    // slint: export-open-after-toggled
+    callback open-after-toggled();
+    // slint: export-run-clicked
+    callback run-clicked();
+    // slint: export-dialog-close
+    callback close-clicked();
+
+    VerticalLayout {
+        padding: Theme.space-3;
+        spacing: Theme.space-2;
+
+        // -- The family picker (W-3) --
+        SegmentedControl {
+            options: ["Tracking", "Pdf today sheet"];
+            selected-index: root.model.family;
+            group-label: "Data family";
+            picked(index) => root.spec-picked(0, index);
+        }
+
+        // -- The tracking leg: format + filters + destination (D-3) --
+        if (root.model.family == 0): VerticalLayout {
+            spacing: Theme.space-2;
+            SegmentedControl {
+                options: ["CSV", "JSON"];
+                selected-index: root.model.format;
+                group-label: "Format";
+                picked(index) => root.spec-picked(1, index);
+            }
+            TippedField {
+                label: "Since (UTC date)";
+                help: "Only entries starting on/after this day; empty = no filter.";
+                placeholder: "2026-11-01";
+                initial-text: root.model.since;
+                validity: root.model.since-validity;
+                selected-on-focus: true;
+                edited(text) => root.field-edited(0, text);
+                accepted(text) => root.field-edited(0, text);
+            }
+            TippedField {
+                label: "Until (UTC date)";
+                help: "Only entries starting on/before this day; empty = no filter.";
+                placeholder: "2026-11-21";
+                initial-text: root.model.until;
+                validity: root.model.until-validity;
+                selected-on-focus: true;
+                edited(text) => root.field-edited(1, text);
+                accepted(text) => root.field-edited(1, text);
+            }
+            TippedField {
+                label: "Task filter";
+                help: "A task uuid, a unique 8+ character prefix, or an exact live title; empty = all tasks.";
+                initial-text: root.model.task;
+                selected-on-focus: true;
+                edited(text) => root.field-edited(2, text);
+                accepted(text) => root.field-edited(2, text);
+            }
+            TippedField {
+                label: "Board filter";
+                help: "A board uuid or an exact live board title; empty = all boards.";
+                initial-text: root.model.board;
+                selected-on-focus: true;
+                edited(text) => root.field-edited(3, text);
+                accepted(text) => root.field-edited(3, text);
+            }
+            TippedField {
+                label: "Destination file";
+                help: "Where the file is written; empty = the export dir's default (dated file name).";
+                placeholder: root.model.destination-placeholder;
+                initial-text: root.model.destination;
+                selected-on-focus: true;
+                edited(text) => root.field-edited(4, text);
+                accepted(text) => root.field-edited(4, text);
+            }
+        }
+
+        // -- The pdf leg: layout + destination + open-after (D-2) --
+        if (root.model.family == 1): VerticalLayout {
+            spacing: Theme.space-2;
+            // D-4: the pdf controls' enabled gate is the model flag —
+            // a build without the feature renders them disabled with
+            // the honest caption below.
+            SegmentedControl {
+                options: ["Fold (A4 → A6 booklet)", "A4", "A5", "A6"];
+                selected-index: root.model.layout;
+                group-label: "Print layout";
+                segment-enabled: [
+                    root.model.pdf-available, root.model.pdf-available,
+                    root.model.pdf-available, root.model.pdf-available,
+                ];
+                picked(index) => root.spec-picked(2, index);
+            }
+            // The bare TextField (not the TippedField pair): the
+            // D-4 disabled arm needs the read-only gate, which the
+            // tipped wrapper does not forward.
+            TextField {
+                label: "Destination file";
+                description: "Where the pdf is written; empty = the configured pdf dir's default (dated file name).";
+                placeholder: root.model.destination-placeholder;
+                initial-text: root.model.destination;
+                read-only: !root.model.pdf-available;
+                selected-on-focus: true;
+                edited(text) => root.field-edited(4, text);
+                accepted(text) => root.field-edited(4, text);
+            }
+            CheckBox {
+                checked: root.model.open-after && root.model.pdf-available;
+                focusable: root.model.pdf-available;
+                checked-label: "Open in the system viewer after export";
+                unchecked-label: "Open in the system viewer after export";
+                toggled => {
+                    if (root.model.pdf-available) {
+                        root.open-after-toggled();
+                    }
+                }
+            }
+            if (!root.model.pdf-available): RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: "The pdf today sheet is not part of this build (the pdf-export feature is off); the tracking exports below its family are unaffected.";
+            }
+        }
+
+        // -- The busy posture (D-5): display only; the Run gate's
+        //    disable rides the host's button model --
+        if (root.model.busy): RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: "Running the export…";
+        }
+
+        // -- The outcome area (W-5): the typed outcome's fold — the
+        //    written file fact or the refusal kind. Display only; the
+        //    refusal stays mounted with the filter state intact. --
+        if (root.model.outcome-kind == 1): RoleText {
+            role: Typography.caption;
+            text-color: Semantic.success;
+            text: "Written: " + root.model.outcome-path;
+            overflow: elide;
+        }
+        if (root.model.outcome-kind == 2): RoleText {
+            role: Typography.caption;
+            text-color: Semantic.danger;
+            text: "The export refused (kind " + root.model.refusal + "); the filters are intact — correct the failing field and run again.";
+            overflow: elide;
+        }
+    }
+}

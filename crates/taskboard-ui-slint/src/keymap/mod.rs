@@ -1445,6 +1445,11 @@ mod tests {
                     ContextId::Labels,
                     ContextId::ReviewWalk,
                     ContextId::RecurEditor,
+                    // The export dialog (the J2 export plan W-1): the
+                    // adapter-owned VM's modal context (the trap-c
+                    // sibling posture — the newest modal masks like
+                    // its peers).
+                    ContextId::ExportDialog,
                     // The alarm window (T-22, #805): the newest modal
                     // surface masks like its peers.
                     ContextId::AlarmWindow,

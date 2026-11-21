@@ -622,15 +622,31 @@ fn export_tracking_on(
     query: &ExportQuery,
 ) -> Result<ExportPayload, CommandError> {
     let state = app.engine.shared_state().load_full();
+    export_tracking_state(&state, query)
+}
+
+/// The tracking leg over a loaded state snapshot (the drain's W-6
+/// seam — the GUI request arm calls this on the forwarder's engine
+/// handle; the CLI lanes call the `&App` wrapper above). One body,
+/// two frontends: the O-5 parity law is a function boundary, not a
+/// copy.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) fn export_tracking_state(
+    state: &taskboard_domain::AppState,
+    query: &ExportQuery,
+) -> Result<ExportPayload, CommandError> {
     let task = query
         .task
         .as_deref()
-        .map(|selector| super::tasks::resolve_task(&state, selector))
+        .map(|selector| super::tasks::resolve_task(state, selector))
         .transpose()?;
     let board = query
         .board
         .as_deref()
-        .map(|selector| super::resolve_live_board(&state, selector))
+        .map(|selector| super::resolve_live_board(state, selector))
         .transpose()?;
     let since_stamp = query.since.map(day_start);
     let until_stamp = query
@@ -645,7 +661,7 @@ fn export_tracking_on(
         .filter(|entry| since_stamp.is_none_or(|start| entry.start >= start))
         .filter(|entry| until_stamp.is_none_or(|end| entry.start < end))
         .filter(|entry| task.is_none_or(|task| entry.task == task))
-        .filter(|entry| board.is_none_or(|board| stack_belongs_to_board(&state, entry, board)))
+        .filter(|entry| board.is_none_or(|board| stack_belongs_to_board(state, entry, board)))
         .collect();
     rows.sort_by_key(|entry| (entry.start, entry.id));
     Ok(ExportPayload::Tracking {
@@ -1641,6 +1657,25 @@ pub(crate) fn export_pdf_on(
     query: &ExportQuery,
     lane: PdfLane,
 ) -> Result<crate::commands::output::PdfExportReceipt, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    export_pdf_state(&state, config, query, lane)
+}
+
+/// The pdf leg over a loaded state snapshot (the drain's W-6 seam —
+/// the GUI request arm calls this on the forwarder's engine handle;
+/// the CLI lanes call the `&App` wrapper above). One body, two
+/// frontends: the O-5 parity law is a function boundary, not a copy.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+#[cfg(feature = "pdf-export")]
+pub(crate) fn export_pdf_state(
+    state: &taskboard_domain::AppState,
+    config: &crate::config::AppConfig,
+    query: &ExportQuery,
+    lane: PdfLane,
+) -> Result<crate::commands::output::PdfExportReceipt, CommandError> {
     use crate::pdf::deliver::{PdfDestination, SheetName, expand_tilde, open_in_viewer};
     use crate::pdf::layout::PrintLayout;
 
@@ -1673,9 +1708,7 @@ pub(crate) fn export_pdf_on(
 
     let now = Utc::now();
     let calendar = config.resolved_day_calendar();
-    let state = app.engine.shared_state().load_full();
-    let day = crate::pdf::layout::print_day(&state, now, calendar);
-    drop(state);
+    let day = crate::pdf::layout::print_day(state, now, calendar);
     let fonts = crate::pdf::render::FontAssets::embedded();
     let sheets = crate::pdf::layout::layout_day(
         &day,

@@ -374,6 +374,179 @@ pub struct KeymapUpdate {
     pub preset: Preset,
 }
 
+/// The export dialog's data family (the J2 export plan's W-3 grammar,
+/// R-3's parity ruling): `Tracking` is the csv/json leg, `Pdf` the
+/// today-sheet leg. Exactly the CLI's families the plan carries — no
+/// more (R-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExportFamily {
+    /// The time entries (csv/json; the D-T15 payload).
+    #[default]
+    Tracking,
+    /// The printable today sheet (the pdf leg; a build without the
+    /// pdf-export feature renders the controls disabled with an
+    /// honest caption — D-4 — and a dispatched pdf spec is refused
+    /// typed app-side).
+    Pdf,
+}
+
+/// The tracking leg's payload format (the CLI's `ExportFormat`
+/// mirror; `Csv` the default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExportFileFormat {
+    /// RFC-4180 CSV with a header row (the default).
+    #[default]
+    Csv,
+    /// A single-line JSON array.
+    Json,
+}
+
+/// The pdf leg's print layout — a typed closed enum, never free text
+/// (the OP2 trap): the layout picker's options are these four, the
+/// CLI's `PdfLayout` grammar verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PdfLayoutChoice {
+    /// The foldable A4 sheet → four-page A6 booklet (the default).
+    #[default]
+    Fold,
+    /// Single-sided A4, two columns.
+    A4,
+    /// Single-sided A5.
+    A5,
+    /// Single-sided A6.
+    A6,
+}
+
+/// The assembled export run (the plan §7 command contract): the
+/// fields mirror the CLI `export` verb's grammar. The dialog mints
+/// it at Run; the app-side drain executes the SAME export engine the
+/// CLI verb drives (one engine, two frontends — the O-5 parity law).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExportSpec {
+    /// The data family (the tracking csv/json leg by default).
+    pub what: ExportFamily,
+    /// The payload format (tracking leg; `Csv` the default).
+    pub format: ExportFileFormat,
+    /// Only entries starting on/after this UTC day (inclusive).
+    pub since: Option<chrono::NaiveDate>,
+    /// Only entries starting before the day after this UTC day.
+    pub until: Option<chrono::NaiveDate>,
+    /// The optional live-task selector (uuid | prefix | exact title).
+    pub task: Option<String>,
+    /// The optional live-board selector (exact uuid | exact title).
+    pub board: Option<String>,
+    /// The pdf leg's print layout (`None` = the config default).
+    pub layout: Option<PdfLayoutChoice>,
+    /// The explicit destination file (`None` = the engine's config
+    /// default: the pdf leg's `[export] pdf_dir` + the dated file
+    /// name; the csv/json leg's export dir + the dated file name —
+    /// D-3's GUI destination).
+    pub out: Option<std::path::PathBuf>,
+    /// Open the written pdf in the system viewer after export (pdf
+    /// leg only; the dialog checkbox's value, pre-filled from
+    /// `[export] open_after_export` — D-2). The app-side open is
+    /// typed-permission-aware: the kiosk workspace never shells out.
+    pub open_after: bool,
+}
+
+/// The typed refusal kinds the export run can answer with (D-5).
+/// Mapped from the engine's typed errors at the drain; the dialog
+/// renders the kind, never the engine's message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportRefusal {
+    /// The pdf family dispatched on a build without the pdf-export
+    /// feature (D-4's honest-absence arm at the trust boundary).
+    PdfUnavailable,
+    /// Tracking-only filters under a leg that rejects them.
+    FiltersNotApplicable,
+    /// Pdf-only options under a leg that rejects them.
+    OptionsNotApplicable,
+    /// The task selector matched nothing (or was ambiguous).
+    BadTaskFilter,
+    /// The board selector matched no live board.
+    BadBoardFilter,
+    /// The configured default layout key is unknown.
+    UnknownPdfLayout,
+    /// The destination path could not be minted or written (pdf leg).
+    PdfPath,
+    /// The pdf render failed.
+    PdfRender,
+    /// The destination file could not be written (csv/json leg).
+    DestinationUnwritable,
+    /// The request lane dropped the run (full or closed) — the
+    /// infrastructure refusal, never an engine verdict.
+    LaneDropped,
+    /// The engine refused with a typed error outside the export
+    /// family's named kinds (the closed set's catch-all — the dialog
+    /// renders the kind, never the engine's message text).
+    EngineRefused,
+}
+
+/// The refusal kinds' canonical index order (the dialog's refusal
+/// rendering address; the adapter maps the typed kind onto it, the
+/// journeys read the same function — one table, no drift).
+pub const REFUSAL_KINDS: &[ExportRefusal] = &[
+    ExportRefusal::PdfUnavailable,
+    ExportRefusal::FiltersNotApplicable,
+    ExportRefusal::OptionsNotApplicable,
+    ExportRefusal::BadTaskFilter,
+    ExportRefusal::BadBoardFilter,
+    ExportRefusal::UnknownPdfLayout,
+    ExportRefusal::PdfPath,
+    ExportRefusal::PdfRender,
+    ExportRefusal::DestinationUnwritable,
+    ExportRefusal::LaneDropped,
+    ExportRefusal::EngineRefused,
+];
+
+/// The refusal kind's dialog index (the rendering address; -1 when
+/// the kind is outside the canonical table — unrepresentable for a
+/// closed enum, kept total for the boundary).
+#[must_use]
+pub fn refusal_index(kind: ExportRefusal) -> i32 {
+    REFUSAL_KINDS
+        .iter()
+        .position(|candidate| *candidate == kind)
+        .map_or(-1, |i| i32::try_from(i).unwrap_or(-1))
+}
+
+/// The typed oneshot reply of `ExportRun` (D-5): the written-file
+/// fact or a typed refusal kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportRunOutcome {
+    /// The engine wrote the file at this path.
+    Written {
+        /// The written file's path.
+        path: std::path::PathBuf,
+    },
+    /// The run refused typed; the dialog stays mounted with its
+    /// filter state intact.
+    Refused(ExportRefusal),
+}
+
+/// The export dialog's config defaults (D-2/D-3), minted app-side at
+/// hand-over (the `general` snapshot precedent): the pdf leg's
+/// destination dir, the csv/json leg's export dir, and the
+/// open-after-export posture. `pdf_available` is the compile-time
+/// feature fact rendered as a runtime flag so a default build's pdf
+/// controls stay mounted-but-disabled with an honest caption (D-4).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExportDialogDefaults {
+    /// Whether the pdf-export feature is compiled into the running
+    /// binary (the pdf controls' enabled gate — D-4's fold flag).
+    pub pdf_available: bool,
+    /// The resolved default pdf destination directory (the
+    /// `[export] pdf_dir` fact, `~` expanded; the platform fallback
+    /// when unset) — the dialog's destination pre-fill.
+    pub pdf_dir: String,
+    /// The resolved export dir (the csv/json leg's default file
+    /// home — D-3's "under the export dir").
+    pub export_dir: String,
+    /// The `[export] open_after_export` posture (the checkbox's
+    /// pre-fill — D-2).
+    pub open_after: bool,
+}
+
 #[derive(Debug)]
 pub enum UiRequest {
     /// The full per-board stack-width snapshot (round-1 D21):
@@ -639,6 +812,16 @@ pub enum UiRequest {
         /// non-anchor card).
         anchor: Option<String>,
         reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
+    },
+    /// The export dialog's Run (the J2 export plan W-4/W-6, D-5): the
+    /// assembled spec drives the SAME export engine the CLI `export`
+    /// verb drives (one engine, two frontends); the typed oneshot
+    /// reply carries the written-file fact or the refusal kind. The
+    /// drain consumes the reply even when the dialog closed first
+    /// (US-2/S2's escape law — no orphaned UI wait).
+    ExportRun {
+        spec: ExportSpec,
+        reply: oneshot::Sender<ExportRunOutcome>,
     },
 }
 

@@ -847,10 +847,12 @@ mod tests {
         vec![ContextId::Board, ContextId::ViNormal, ContextId::Global]
     }
 
-    /// T-1 — the curated root page: the four quick rows in rank
-    /// order, then the parent rows in group order (every group's page
-    /// is non-empty over the board chain; six since the round-2
-    /// Stack/Board split, five since round-3 D27b filters the
+    /// T-1 — the curated root page: the five quick rows in rank
+    /// order (the export dialog's data verb joins between the capture
+    /// verb and the undo pair — the J2 export plan's D-1 menu entry
+    /// point, rank 25), then the parent rows in group order (every
+    /// group's page is non-empty over the board chain; six since the
+    /// round-2 Stack/Board split, five since round-3 D27b filters the
     /// preset-irrelevant Mode group under the standard preset), then
     /// Quit last.
     #[test]
@@ -861,6 +863,7 @@ mod tests {
         for id in [
             ActionId::AppSettings,
             ActionId::CaptureQuick,
+            ActionId::ExportDialogOpen,
             ActionId::AppUndo,
             ActionId::AppRedo,
         ] {

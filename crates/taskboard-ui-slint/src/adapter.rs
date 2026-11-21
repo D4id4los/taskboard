@@ -741,6 +741,22 @@ pub(crate) struct Adapter {
     /// The files-sync chip lane (DR-8 chunk 4, D-FH5): `None` when the
     /// substrate actor is off — the chip stays hidden.
     files_sync: Option<tokio::sync::watch::Receiver<crate::presentation::FilesSyncChip>>,
+    /// The export dialog's config defaults (the J2 export plan D-2/D-3):
+    /// the hand-over's minted postures the dialog VM seeds from.
+    export_defaults: crate::requests::ExportDialogDefaults,
+    /// The export dialog's VM (W-1..W-5): `None` = unmounted — the
+    /// mount bit the window's `export-dialog-open` flag mirrors. A
+    /// kiosk never seeds it (R-2).
+    export_vm: Option<crate::export_dialog::ExportVm>,
+    /// The pending export run's reply half (W-4/W-5): `Some` between
+    /// the Run dispatch and the settled reply; the close seam DROPS it
+    /// (US-2/S2 — the app-side run completes or refuses
+    /// independently, the drain consumes the reply). The install
+    /// drain and the cadence tick poll it non-blocking.
+    export_reply: Option<oneshot::Receiver<crate::requests::ExportRunOutcome>>,
+    /// The settled outcome's stash between the reply poll and the
+    /// `export-outcome-shown` fold (the re-entrancy law above).
+    export_settled: Option<crate::requests::ExportRunOutcome>,
     rotation: Option<crate::view_state::KioskRotation>,
     /// The rotation flip's single-shot dwell timer (K13). Armed by
     /// `install` only when `rotation` is present, re-armed by the
@@ -862,6 +878,15 @@ impl Adapter {
         window.set_recur_editor_open(recur_open);
         if recur_open {
             window.set_recur_editor_model(self.recur_editor_model());
+        }
+        // The export dialog's window-level mirrors (the J2 export
+        // plan W-1..W-5): the mount bit rides the VM; the model
+        // re-seeds every pass (the recur-editor contract — the
+        // widget never holds state).
+        let export_open = self.export_vm.is_some();
+        window.set_export_dialog_mounted(export_open);
+        if export_open {
+            window.set_export_model(self.export_dialog_model());
         }
         let palette_selected = match self.view_state.flow() {
             crate::view_state::Flow::Palette { selected } => *selected,
@@ -2138,6 +2163,10 @@ impl Adapter {
             self.notification_cursor = Some(cursor.min(self.tables.notifications.len() - 1));
         }
         self.shell.notification_surface = self.notification_cursor.is_some();
+        // The export dialog's mirror (the J2 export plan W-1): the
+        // adapter-owned VM's truth (not a flow), synced like the
+        // modal booleans above.
+        self.shell.export_dialog = self.export_vm.is_some();
         // Round 2 (D19): the reopen gate's done stamp, from the same
         // focused task — the router stays pure.
         self.shell.focused_task_done = self
@@ -2880,7 +2909,7 @@ impl Adapter {
         if self.shell.menu.open && self.menu_kind == MenuKind::Main {
             let flow = self.view_state.flow().clone();
             let states = self.entry_states(&state, &flow);
-            self.root_entries = menu::root_page(&self.keymap, &self.menu_chain, &states);
+            self.root_entries = self.mint_root_entries(&states);
             self.menu_entries = match self.active_submenu() {
                 Some(crate::menu::Submenu::Group(group)) => {
                     menu::group_page(&self.keymap, &self.menu_chain, &states, group)
@@ -4914,6 +4943,26 @@ impl Adapter {
                     self.view_state.open_settings()
                 }
             }
+            // -- the export dialog (the J2 export plan W-1) --
+            // Kiosk: the dispatch is structurally inert (R-2 — the
+            // dialog does not mount; the entry points are filtered
+            // at the menu mint and the Settings view is unreachable).
+            (_, UiEffect::ExportDialogOpen) if self.kiosk => Vec::new(),
+            // The dialog is a Nav-class view intent (the settings
+            // opener's shape): under a held flow the resolver settles
+            // first and re-runs against Flow::None — the arms below
+            // are the flowless cells only (the pair matrix's law).
+            (Flow::None, UiEffect::ExportDialogOpen) if self.export_vm.is_some() => Vec::new(),
+            (Flow::None, UiEffect::ExportDialogOpen) => {
+                self.export_vm = Some(crate::export_dialog::ExportVm::seeded(
+                    &self.export_defaults,
+                ));
+                // The mount never dispatches anything (US-1/S1 — pure
+                // presentation state); the refresh pushes the seeded
+                // model.
+                vec![FlowOutcome::RefreshNow]
+            }
+            (Flow::None, UiEffect::ExportDialogClose) => self.export_dialog_close_outcomes(),
             // -- the plan-next-day surface (#622, D-4/D-3) --
             // Kiosk: the dispatch is structurally inert (the
             // entries-overlay refusal's layer 3 — D-5).
@@ -6112,8 +6161,7 @@ impl Adapter {
                     let state = self.state.load_full();
                     let flow = self.view_state.flow().clone();
                     let states = self.entry_states(&state, &flow);
-                    self.root_entries =
-                        menu::root_page(&self.keymap, &self.menu_chain, &states);
+                    self.root_entries = self.mint_root_entries(&states);
                 }
                 self.menu_entries = self.root_entries.clone();
                 self.shell.apply(&effect, self.menu_entries.len());
@@ -6356,7 +6404,12 @@ impl Adapter {
             // carrier intents interpret like every view intent — the
             // kiosk refusal and the walk arms live in the table.
             | UiEffect::OpenReviewWalk
-            | UiEffect::ReviewWalk(_) => self.interpret(window, effect),
+            | UiEffect::ReviewWalk(_)
+            // The export dialog's pair (the J2 export plan W-1): the
+            // interpretation table owns the arms — the mount bit is
+            // the adapter's VM.
+            | UiEffect::ExportDialogOpen
+            | UiEffect::ExportDialogClose => self.interpret(window, effect),
         }
         // The pass's tail: the identity diff decides (see the entry
         // comment). The explicit dismisses below (the menu's
@@ -7582,6 +7635,247 @@ impl Adapter {
                     "request channel full or closed; the settings auto-list was dropped"
                 );
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // -- the export dialog (the J2 export plan W-1..W-5) ---------------
+    // ------------------------------------------------------------------
+
+    /// The root page's mint (the kiosk gate, R-2): the export
+    /// dialog's action-menu entry point is ABSENT on kiosk — the
+    /// matrix ruling the plan §2 records (no kiosk affordance), not
+    /// a greyed row (D-4's disabled-with-caption doctrine is the
+    /// dialog's own posture, not the entry points').
+    fn mint_root_entries(
+        &self,
+        states: &std::collections::BTreeMap<ActionId, bool>,
+    ) -> Vec<MenuEntry> {
+        let mut page = menu::root_page(&self.keymap, &self.menu_chain, states);
+        if self.kiosk {
+            page.retain(|entry| entry.action != Some(ActionId::ExportDialogOpen));
+        }
+        page
+    }
+
+    /// The close's outcomes (the interpretation arm's body, shared
+    /// with the seam): the VM and the pending reply drop (US-2/S2's
+    /// escape law — nothing dispatches, the app-side run completes
+    /// or refuses independently), the insert mode unwinds.
+    fn export_dialog_close_outcomes(&mut self) -> Vec<FlowOutcome> {
+        if self.export_vm.take().is_none() {
+            return Vec::new();
+        }
+        self.export_reply = None;
+        if self.shell.mode == Mode::Insert {
+            vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
+        } else {
+            vec![FlowOutcome::RefreshNow]
+        }
+    }
+
+    /// The pickers' mirror (W-3): the typed index contract mapped at
+    /// the trust boundary — a stale index is absorbed (the silent
+    /// law). The family pick clears the outcome (a new family's run
+    /// is a new fact).
+    pub(crate) fn export_spec_picked(&mut self, control: i32, index: i32) {
+        use crate::export_dialog::{FAMILY_PICKED, FORMAT_PICKED, LAYOUT_PICKED};
+        use crate::requests::{ExportFamily, ExportFileFormat, PdfLayoutChoice};
+        let Some(vm) = self.export_vm.as_mut() else {
+            return;
+        };
+        match control {
+            FAMILY_PICKED => {
+                vm.family = match index {
+                    0 => ExportFamily::Tracking,
+                    1 => ExportFamily::Pdf,
+                    _ => return,
+                };
+                vm.outcome = None;
+            }
+            FORMAT_PICKED => {
+                vm.format = match index {
+                    0 => ExportFileFormat::Csv,
+                    1 => ExportFileFormat::Json,
+                    _ => return,
+                };
+            }
+            LAYOUT_PICKED => {
+                vm.layout = match index {
+                    0 => PdfLayoutChoice::Fold,
+                    1 => PdfLayoutChoice::A4,
+                    2 => PdfLayoutChoice::A5,
+                    3 => PdfLayoutChoice::A6,
+                    _ => return,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// The fields' mirror (W-3): verbatim text into the buffer (the
+    /// one truth); validity folds at the push pass.
+    pub(crate) fn export_field_edited(&mut self, field: i32, text: &str) {
+        use crate::export_dialog::{
+            FIELD_BOARD, FIELD_DESTINATION, FIELD_SINCE, FIELD_TASK, FIELD_UNTIL,
+        };
+        let Some(vm) = self.export_vm.as_mut() else {
+            return;
+        };
+        match field {
+            FIELD_SINCE => vm.since = text.into(),
+            FIELD_UNTIL => vm.until = text.into(),
+            FIELD_TASK => vm.task = text.into(),
+            FIELD_BOARD => vm.board = text.into(),
+            FIELD_DESTINATION => vm.destination = text.into(),
+            _ => {}
+        }
+    }
+
+    /// The open-after checkbox's mirror (the pdf leg's D-2 control;
+    /// the widget gates the dispatch on the feature flag).
+    pub(crate) fn export_open_after_toggled(&mut self) {
+        let Some(vm) = self.export_vm.as_mut() else {
+            return;
+        };
+        vm.open_after = !vm.open_after;
+    }
+
+    /// The Run dispatch (W-4, D-5): the trust boundary re-checks the
+    /// gate (never trusts the widget's enabled fold), mints the spec
+    /// verbatim from the buffer, and sends over the request lane
+    /// with the oneshot reply half. Busy posture on the send; a
+    /// full/closed lane is the typed Failed outcome (the F-3
+    /// warn-and-drop convention would orphan the wait).
+    pub(crate) fn export_run_clicked(&mut self, window: &AppWindow) {
+        let Some(vm) = self.export_vm.as_mut() else {
+            return;
+        };
+        if !vm.run_enabled(&self.export_defaults) {
+            return;
+        }
+        let spec = vm.mint_spec();
+        let (reply, reply_rx) = oneshot::channel();
+        let request = crate::requests::UiRequest::ExportRun { spec, reply };
+        if self.requests.try_send(request).is_err() {
+            // The lane died or is full: a typed failure, never a
+            // silent absorb (the busy posture must not strand).
+            vm.busy = false;
+            vm.outcome = Some(crate::requests::ExportRunOutcome::Refused(
+                crate::requests::ExportRefusal::LaneDropped,
+            ));
+            self.finish_mutation(window);
+            return;
+        }
+        vm.busy = true;
+        vm.outcome = None;
+        self.export_reply = Some(reply_rx);
+        self.finish_mutation(window);
+    }
+
+    /// The reply poll (W-5, D-5): the non-blocking poll the other
+    /// drains run — a settled reply lifts the busy posture and
+    /// STASHES the outcome for the display fold; the caller then
+    /// invokes the window's `export-outcome-shown` callback OUTSIDE
+    /// the adapter borrow (the re-entrancy law — the fold handler
+    /// re-enters). A closed lane counts as settled (the sender died —
+    /// the app half dropped the reply). Returns whether the callback
+    /// must fire.
+    pub(crate) fn poll_export_run(&mut self) -> bool {
+        let Some(rx) = self.export_reply.as_mut() else {
+            return false;
+        };
+        let settled = match rx.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(oneshot::error::TryRecvError::Empty) => return false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                tracing::warn!("the export run reply lane died; the slot clears");
+                Some(crate::requests::ExportRunOutcome::Refused(
+                    crate::requests::ExportRefusal::LaneDropped,
+                ))
+            }
+        };
+        self.export_reply = None;
+        if let Some(vm) = self.export_vm.as_mut() {
+            vm.busy = false;
+        }
+        self.export_settled = settled;
+        true
+    }
+
+    /// The W-5 display fold (the `export-outcome-shown` handler): the
+    /// stashed settled outcome lands in the dialog's VM and the push
+    /// re-renders the outcome area. No settled stash = absorbed (a
+    /// stray dispatch).
+    pub(crate) fn export_outcome_fold(&mut self, window: &AppWindow) {
+        let Some(outcome) = self.export_settled.take() else {
+            return;
+        };
+        if let Some(vm) = self.export_vm.as_mut() {
+            vm.outcome = Some(outcome);
+        }
+        self.finish_mutation(window);
+    }
+
+    /// The dialog's pushed model (the recur-editor contract: the
+    /// adapter computes it per pass, the widget never holds state).
+    fn export_dialog_model(&self) -> crate::ExportDialogModel {
+        use crate::requests::ExportRunOutcome as Outcome;
+        let vm = self
+            .export_vm
+            .as_ref()
+            .expect("the model mints only while the dialog holds");
+        let family = match vm.family {
+            crate::requests::ExportFamily::Tracking => 0,
+            crate::requests::ExportFamily::Pdf => 1,
+        };
+        let format = match vm.format {
+            crate::requests::ExportFileFormat::Csv => 0,
+            crate::requests::ExportFileFormat::Json => 1,
+        };
+        let layout = match vm.layout {
+            crate::requests::PdfLayoutChoice::Fold => 0,
+            crate::requests::PdfLayoutChoice::A4 => 1,
+            crate::requests::PdfLayoutChoice::A5 => 2,
+            crate::requests::PdfLayoutChoice::A6 => 3,
+        };
+        let (outcome_kind, outcome_path, refusal) = match &vm.outcome {
+            None => (crate::export_dialog::OUTCOME_NONE, String::new(), -1),
+            Some(Outcome::Written { path }) => (
+                crate::export_dialog::OUTCOME_WRITTEN,
+                path.display().to_string(),
+                -1,
+            ),
+            Some(Outcome::Refused(kind)) => (
+                crate::export_dialog::OUTCOME_REFUSED,
+                String::new(),
+                crate::export_dialog::ExportVm::refusal_index(*kind),
+            ),
+        };
+        crate::ExportDialogModel {
+            family,
+            format,
+            layout,
+            since: SharedString::from(vm.since.clone()),
+            since_validity: crate::export_dialog::ExportVm::date_validity(&vm.since),
+            until: SharedString::from(vm.until.clone()),
+            until_validity: crate::export_dialog::ExportVm::date_validity(&vm.until),
+            task: SharedString::from(vm.task.clone()),
+            board: SharedString::from(vm.board.clone()),
+            destination: SharedString::from(vm.destination.clone()),
+            // The config default home as the placeholder (D-2/D-3):
+            // the engine resolves the dated file name at run time.
+            destination_placeholder: SharedString::from(match vm.family {
+                crate::requests::ExportFamily::Tracking => self.export_defaults.export_dir.clone(),
+                crate::requests::ExportFamily::Pdf => self.export_defaults.pdf_dir.clone(),
+            }),
+            open_after: vm.open_after,
+            pdf_available: self.export_defaults.pdf_available,
+            busy: vm.busy,
+            run_enabled: vm.run_enabled(&self.export_defaults),
+            outcome_kind,
+            outcome_path: SharedString::from(outcome_path),
+            refusal,
         }
     }
 
@@ -10217,6 +10511,7 @@ pub(crate) fn install(
     frozen_now: Option<chrono::DateTime<chrono::Utc>>,
     rotation: Option<crate::view_state::KioskRotation>,
     general: crate::requests::SettingsSnapshot,
+    export_defaults: crate::requests::ExportDialogDefaults,
     state: Arc<ArcSwap<AppState>>,
     status_timer: Rc<slint::Timer>,
     rotation_timer: Rc<slint::Timer>,
@@ -10392,6 +10687,10 @@ pub(crate) fn install(
         notice: None,
         delivery_health,
         files_sync,
+        export_defaults,
+        export_vm: None,
+        export_reply: None,
+        export_settled: None,
     }));
     // The status auto-clear's fire closure (r2 D28): weak handles
     // only — no Rc cycle. Armed by `set_settings_outcome` from the
@@ -10440,6 +10739,11 @@ pub(crate) fn install(
     window
         .global::<UiStatus>()
         .set_startup_keymap_findings(i32::try_from(startup.keymap_findings).unwrap_or(i32::MAX));
+    // The export row's mount gate (the J2 export plan W-2, R-2): the
+    // kiosk hand-over's model-side absence — minted once at install.
+    window
+        .global::<crate::SettingsModel>()
+        .set_export_affordance(!kiosk);
     // The D31 help-text constants: presentation constants, pushed once
     // at mount (they never vary at runtime).
     {
@@ -10610,6 +10914,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_habit_seams(window, adapter);
     install_recur_seams(window, adapter);
     install_recur_editor_seams(window, adapter);
+    install_export_seam(window, adapter);
     install_habit_editor_seams(window, adapter);
     install_settings_seams(window, adapter);
 }
@@ -10804,6 +11109,68 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// funnel re-mints the whole draft and dispatches nothing on an
 /// invalid parse (the trust boundary never trusts the widget); the
 /// detach strip routes its two-step through the action layer.
+/// The export dialog's seams (the J2 export plan W-1..W-5): the
+/// pickers'/fields' mirrors, the Run dispatch, the close (Escape's
+/// action rides the router — click ≡ key), and the Settings row's
+/// opener (W-2 — the same mount arm the action routes).
+#[allow(clippy::too_many_lines)] // one wiring sequence, kept flat
+fn install_export_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // W-1's open callback (the window-level mount front): the same
+    // action route the menu item drives (click ≡ key).
+    install_seam!(window: window.on_export_dialog_open, adapter: adapter; // slint: export-dialog-open / export-dialog-close (the W-1 pair; the close seam below carries the dismissal half)
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ExportDialogOpen);
+
+    });
+    // W-2: the Settings view's Export… row (the same mount arm the
+    // action-menu item routes — D-1's two entry points converge).
+    install_seam!(window: window.on_export_settings_open, adapter: adapter; // slint: export-settings-open
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ExportDialogOpen);
+
+    });
+    // W-1's close: the host's Close button / outside click land here;
+    // the route is the Escape rung's exact dispatch.
+    install_seam!(window: window.on_export_dialog_close, adapter: adapter; // slint: export-dialog-close
+    bind mut (a, window), args (), {        a.route(&window, ActionId::ExportDialogClose);
+
+    });
+    // W-3: the family/format/layout pickers — the typed index
+    // contract mapped at the adapter (never free text).
+    install_seam!(window: window.on_export_spec_picked, adapter: adapter; // slint: export-spec-picked
+    bind mut (a, window), args (control, index), {        a.export_spec_picked(control, index);
+        a.finish_mutation(&window);
+
+    });
+    // W-3: the filter/destination fields' two-way mirror.
+    install_seam!(window: window.on_export_field_edited, adapter: adapter; // slint: export-field-edited
+    bind mut (a, window), args (field, text), {        a.export_field_edited(field, &text);
+        a.finish_mutation(&window);
+
+    });
+    // W-3/W-2 (D-2): the open-after-export checkbox.
+    install_seam!(window: window.on_export_open_after_toggled, adapter: adapter; // slint: export-open-after-toggled
+    bind mut (a, window), args (), {        a.export_open_after_toggled();
+        a.finish_mutation(&window);
+
+    });
+    // W-4: the Run dispatch (the typed oneshot over the request lane).
+    install_seam!(window: window.on_export_run, adapter: adapter; // slint: export-run
+    bind mut (a, window), args (), {        a.export_run_clicked(&window);
+
+    });
+    // W-5: the settled outcome's display fold — the reply drain
+    // invokes the callback outside the adapter borrow (the
+    // re-entrancy law); the handler folds the stashed outcome into
+    // the VM.
+    install_seam!(window: window.on_export_outcome_shown, adapter: adapter; // slint: export-outcome-shown
+    bind mut (a, window), args (), {        a.export_outcome_fold(&window);
+
+    });
+}
+
+/// The recurrence editor's seams (round-7 D-7.1): the pattern/bound
+/// picks, the field mirrors (invalid parse — the trust boundary
+/// never trusts the widget), and the detach strip routes its
+/// two-step through the action layer.
 #[allow(clippy::too_many_lines)] // one seam table; splitting hides the editor
 fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     use crate::level_state::{MonthlyMode, RecurBoundKind, RecurPatternKind};
@@ -15974,6 +16341,12 @@ impl crate::UiHandle {
         let mapped = match view {
             None => {
                 self.adapter.borrow_mut().resolver.reset();
+                return;
+            }
+            // The export dialog's context never reaches the view
+            // seam (the adapter's VM owns the mount; the modal
+            // contexts' view mapping is the flows' contract).
+            Some(ContextId::ExportDialog) => {
                 return;
             }
             Some(ContextId::Today) => crate::view_state::ViewId::Today,

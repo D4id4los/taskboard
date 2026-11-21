@@ -1,6 +1,5 @@
 ---
-source: crates/taskboard-ui-slint/tests/keymap_snapshots.rs
-assertion_line: 115
+source: crates/taskboard-ui-slint/tests/inventory/keymap_snapshots.rs
 expression: rows
 ---
 - preset: standard
@@ -529,6 +528,11 @@ expression: rows
         - sequence:
             - Escape
           action: task.track-entry-dismiss
+    - context: export-dialog
+      bindings:
+        - sequence:
+            - Escape
+          action: app.export-dialog-close
     - context: labels
       bindings:
         - sequence:
@@ -1184,6 +1188,11 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.prev-control
+    - context: export-dialog
+      bindings:
+        - sequence:
+            - Escape
+          action: app.export-dialog-close
     - context: labels
       bindings:
         - sequence:
@@ -1702,6 +1711,11 @@ expression: rows
         - sequence:
             - Escape
           action: task.track-entry-dismiss
+    - context: export-dialog
+      bindings:
+        - sequence:
+            - Escape
+          action: app.export-dialog-close
     - context: labels
       bindings:
         - sequence:

@@ -27,6 +27,8 @@ mod board_ceremonies_journeys;
 mod board_move_journeys;
 #[path = "journeys/detail_shortcuts_journeys.rs"]
 mod detail_shortcuts_journeys;
+#[path = "journeys/export_journeys.rs"]
+mod export_journeys;
 #[path = "journeys/focus_coverage.rs"]
 mod focus_coverage;
 #[path = "journeys/focus_law_journeys.rs"]
