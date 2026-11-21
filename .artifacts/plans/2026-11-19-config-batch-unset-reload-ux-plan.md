@@ -307,6 +307,7 @@ lane.
 | W-6 | crates/taskboard-app/src/repl.rs | — | — | the relay resolver's config-verb match widens to Set / Unset / Reload (one parse authority; the daemon's arm executes) | — | — | — | US-1/S5, US-2/S2 | crates/taskboard-app/src/repl.rs::us2_s2_reload_rides_the_config_relay |
 | W-7 | crates/taskboard-app/src/ipc/server.rs | — | — | the daemon Exec dispatch: the reload verb reaches `handle_daemon`'s new arm (the relay lane's third config verb) | — | — | — | US-2/S2 | crates/taskboard-app/src/ipc/server.rs::us2_s2_relayed_reload_reaches_the_daemon_arm |
 | W-8 | crates/taskboard-app/src/commands/output.rs | — | — | the typed views' JSON emit: the unset batch view (per-key `none` entries + lane bit) and the reload view (outcome + path) | — | — | — | US-1/S6, US-2/S3 | crates/taskboard-app/src/commands/output.rs::us1_s6_batch_unset_view_carries_none_entries_and_the_lane_bit, crates/taskboard-app/src/commands/output.rs::us2_s3_reload_view_carries_outcome_and_path |
+| W-9 | crates/taskboard-app/src/commands/config.rs | — | — | US-2/S4's display-only leg: the published snapshot reflects a manual reload — the Settings editor renders the engine's published settings verbatim (no Slint delta, R-1); the pin asserts the published settings carry the file's truth after the daemon arm's `Applied` reload | — | — | — | US-2/S4 | crates/taskboard-app/src/commands/config.rs::us2_s4_the_published_snapshot_reflects_a_manual_reload |
 
 ## 7. Command-contract delta
 

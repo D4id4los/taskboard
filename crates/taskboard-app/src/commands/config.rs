@@ -2487,4 +2487,38 @@ mod set_tests {
         );
         app.shutdown().await;
     }
+
+    /// `us2_s4_the_published_snapshot_reflects_a_manual_reload`
+    /// (US-2/S4, W-9): the display-only leg — after the daemon arm's
+    /// `Applied` reload, the engine's published snapshot carries the
+    /// file's truth, which is exactly what the Settings editor renders
+    /// (no Slint delta, R-1).
+    #[tokio::test]
+    async fn us2_s4_the_published_snapshot_reflects_a_manual_reload() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = crate::test_support::standalone_boot_fixture("reload-snapshot").await;
+        let (path, app) = (fixture.config_path.clone(), fixture.app);
+        std::fs::write(&path, "[reminders]\ntick_secs = 55\n").expect("external edit");
+        let cmd = ConfigCmd::Reload;
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = handle_daemon(&cmd, &app, Some(&path), &mut daemon_io(&mut out, &mut err)).await;
+        assert_eq!(code, 0);
+        let view: ConfigReloadView =
+            serde_json::from_slice(&out).expect("the typed view travels as JSON");
+        assert_eq!(
+            view.outcome,
+            taskboard_domain::ConfigReloadOutcome::Applied,
+            "the reload applied"
+        );
+        assert_eq!(
+            app.engine.shared_state().load().settings.tick_secs,
+            taskboard_domain::TickSecs::new(55).expect("secs > 0"),
+            "the published snapshot the editor renders carries the file's truth"
+        );
+        app.shutdown().await;
+    }
 }
