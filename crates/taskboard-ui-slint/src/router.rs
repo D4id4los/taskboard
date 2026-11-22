@@ -91,6 +91,10 @@ pub enum UiEffect {
     /// (the modal discipline).
     OpenPalette,
     CloseMenu,
+    /// Open the undo branch picker (UF2, #353 W-1): mount only —
+    /// pure navigation, no command dispatch on open. The adapter
+    /// refuses on kiosk (the structural exclusion, R-2).
+    UndoBranchesOpen,
     /// Level-aware menu back (round-1 D6): a submenu steps back one
     /// level, the root closes.
     MenuBack,
@@ -589,6 +593,7 @@ impl UiEffect {
             Self::PickerKey(_) => EffectClass::Picker,
             Self::CancelMove => EffectClass::Cancel,
             Self::OpenMenu
+            | Self::UndoBranchesOpen
             | Self::CloseMenu
             | Self::MenuBack
             | Self::MenuNext
@@ -1406,6 +1411,10 @@ impl ActionRouter {
             // pin: the router emits a `StateCommand`, nothing else.
             ActionId::AppUndo => DispatchOutcome::Command(StateCommand::Undo),
             ActionId::AppRedo => DispatchOutcome::Command(StateCommand::Redo),
+            // The v2 extension (UF2, #353): the picker entry mounts the
+            // sibling-branch selection menu — the v1 reflexes above keep
+            // their exact semantics (trap b; US-3's fence).
+            ActionId::AppUndoBranches => DispatchOutcome::UiEffect(UiEffect::UndoBranchesOpen),
             // Menu cursor (D3).
             ActionId::MenuNext => DispatchOutcome::UiEffect(UiEffect::MenuNext),
             ActionId::MenuPrevious => DispatchOutcome::UiEffect(UiEffect::MenuPrevious),

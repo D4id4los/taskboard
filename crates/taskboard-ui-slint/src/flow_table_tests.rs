@@ -266,7 +266,11 @@ enum EK {
 fn key_of(effect: &UiEffect) -> EK {
     match effect {
         UiEffect::Exit => EK::Exit,
-        UiEffect::OpenMenu => EK::OpenMenu,
+        // The undo branch picker (UF2): its placement mirrors the
+        // menu family's (settled-then-mounted, Escape closes); the
+        // matrix key rides the menu class (the picker is a sibling
+        // modal, not a flow).
+        UiEffect::OpenMenu | UiEffect::UndoBranchesOpen => EK::OpenMenu,
         UiEffect::OpenPalette => EK::OpenPalette,
         UiEffect::CloseMenu => EK::CloseMenu,
         UiEffect::MenuBack => EK::MenuBack,
@@ -2960,6 +2964,7 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         // surface's own highlight (identity-preserving).
         | UiEffect::NotificationVerb(_) => DismissClass::IdentitySwap,
         UiEffect::OpenMenu
+        | UiEffect::UndoBranchesOpen
         | UiEffect::CloseMenu
         | UiEffect::BeginCreate { .. }
         | UiEffect::BeginCreateStack

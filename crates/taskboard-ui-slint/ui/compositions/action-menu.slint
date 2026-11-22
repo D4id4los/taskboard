@@ -12,6 +12,7 @@ import { MenuPanelFacts } from "../menu-facts.slint";
 import { IconKind } from "../widgets/icon.slint";
 import { IconButton } from "../widgets/icon-button.slint";
 import { MenuRow } from "../widgets/menu-row.slint";
+import { MenuShell } from "../widgets/menu-shell.slint";
 
 // The quick-bar row (UX-R8 chunk-5 D-2, US-1): the routing id (the
 // Rust vec is the resolver), the icon, and the shown/withheld verdict.
@@ -302,5 +303,108 @@ export component ActionMenu inherits Rectangle {
         border-width: Theme.focus-ring-width;
         border-color: Theme.focus-ring;
         border-radius: Theme.radius-medium;
+    }
+}
+
+// The undo branch picker (UF2, #353): the v2 extension's selection
+// menu, mounted from the undo affordance (W-1). The plain undo/redo
+// rows stay first (the BF-W-N2 doctrine — the reflex rows first), the
+// undo-step rows (the `recent` ancestors) and the sibling-branch rows
+// (the head's `branch_children`) follow as sections. Rows are
+// engine-derived typed projections (`UndoView`), never synthesized
+// here (trap c); a row's payload id IS its addressing (W-2/W-3 —
+// the UI is id-less over elements, not over journal nodes).
+export struct UndoPickerRowModel {
+    // The journal entry id (string form across the seam; the adapter
+    // re-types it at the trust boundary).
+    id: string,
+    // The engine-derived command label (`command_label`).
+    label: string,
+}
+
+export component UndoBranchPicker inherits Rectangle {
+    // The sibling branches (the head's `branch_children`, newest
+    // first) and the undo-step rows (the `recent` ancestors).
+    in property <[UndoPickerRowModel]> branch-rows;
+    in property <[UndoPickerRowModel]> target-rows;
+    // slint: undo-branches-open — the mount ack (W-1); the adapter
+    // syncs the models, nothing dispatches on open.
+    callback undo-branches-open();
+    // slint: undo-line-undo / undo-line-redo — the plain reflex rows
+    // (US-3: the v1 composes; click ≡ key, the same AppUndo/AppRedo
+    // route the keyboard uses).
+    callback undo-line-undo();
+    callback undo-line-redo();
+    // slint: undo-target-picked / undo-branch-picked — the row seams
+    // (W-3: UndoTo / W-2: RedoTo); the payload id is the addressing.
+    callback undo-target-picked(string);
+    callback undo-branch-picked(string);
+    // slint: undo-picker-dismissed — the outside click (AC-4: closes
+    // with nothing dispatched).
+    callback undo-picker-dismissed();
+
+    background: transparent;
+    init => { root.undo-branches-open(); }
+
+    width: 360px * Theme.base-scale;
+
+    MenuShell {
+        row-count: root.target-rows.length + root.branch-rows.length + 4;
+        VerticalLayout {
+            padding: Theme.space-2;
+            spacing: Theme.space-1;
+
+            // The plain reflex rows first (BF-W-N2).
+            MenuRow {
+                label: "Undo";
+                description: "Undoes the last change — the unchanged v1 reflex (US-3).";
+                hint-keys: [];
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Undo";
+                invoked => { root.undo-line-undo(); }
+            }
+            MenuRow {
+                label: "Redo";
+                description: "Re-applies the last undone change — the unchanged v1 reflex (US-3).";
+                hint-keys: [];
+                accessible-role: AccessibleRole.button;
+                accessible-label: "Redo";
+                invoked => { root.undo-line-redo(); }
+            }
+
+            // The undo-step rows (US-2: jump several steps back).
+            if (root.target-rows.length > 0): RoleText {
+                role: Typography.body-emphasized;
+                text-color: Theme.text-secondary;
+                text: "Undo steps";
+            }
+            for row in root.target-rows: MenuRow {
+                label: row.label;
+                description: "Jumps the undo line back to this point (US-2/S1).";
+                hint-keys: [];
+                accessible-role: AccessibleRole.button;
+                accessible-label: row.label;
+                invoked => { root.undo-target-picked(row.id); }
+            }
+
+            // The sibling branches (US-1: switch back to an abandoned
+            // branch).
+            if (root.branch-rows.length > 0): RoleText {
+                role: Typography.body-emphasized;
+                text-color: Theme.text-secondary;
+                text: "Branches";
+            }
+            for row in root.branch-rows: MenuRow {
+                label: row.label;
+                description: "Redoes down this abandoned branch (US-1/S2).";
+                hint-keys: [];
+                accessible-role: AccessibleRole.button;
+                accessible-label: row.label;
+                invoked => { root.undo-branch-picked(row.id); }
+            }
+
+            // AC-3: no abandoned branch — the section renders absent
+            // (the `if` above), the undo-step rows still mount.
+        }
     }
 }

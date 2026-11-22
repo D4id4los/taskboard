@@ -6955,7 +6955,10 @@ fn the_menu_curates_itself() {
         harness.press(ActionId::AppMenu);
         harness.driver.advance_time(0);
         let mut parent_ordinal = 0;
-        for _ in 0..20 {
+        // The walk budget rides the root page's length (the UF2
+        // picker's quick row sits behind the v1 undo/redo pair and
+        // shifts the parents down one row).
+        for _ in 0..24 {
             let k = keyboard!();
             let entries = k.get_menu_entries();
             #[allow(clippy::cast_sign_loss)] // the getter's −1 sentinel

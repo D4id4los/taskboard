@@ -297,6 +297,15 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     // Global
     (ActionId::AppUndo, ContextId::Global, &["Ctrl+Shift+z"]),
     (ActionId::AppRedo, ContextId::Global, &["Ctrl+y"]),
+    // The picker entry (UF2, #353): the branches chord rides behind
+    // the undo/redo pair; the vi preset stays chord-free (its
+    // alphabet is dense — the menu row is the vi path, O-8's case
+    // law: no forced chord where the alphabet objects).
+    (
+        ActionId::AppUndoBranches,
+        ContextId::Global,
+        &["Ctrl+Shift+e"],
+    ),
     (ActionId::AppMenu, ContextId::Global, &["Ctrl+Shift+m"]),
     (ActionId::AppExit, ContextId::Global, &["Ctrl+Shift+q"]),
     (ActionId::AppSettings, ContextId::Global, &["Ctrl+,"]),
@@ -746,6 +755,11 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AppExit, ContextId::Global, &["Ctrl+x", "Ctrl+c"]),
     (ActionId::AppUndo, ContextId::Global, &["Ctrl+x", "u"]),
     (ActionId::AppRedo, ContextId::Global, &["Ctrl+g", "Ctrl+/"]),
+    (
+        ActionId::AppUndoBranches,
+        ContextId::Global,
+        &["Ctrl+x", "b"],
+    ),
     (ActionId::AppMenu, ContextId::Global, &["Alt+x"]),
     (ActionId::AppHelp, ContextId::Global, &["Ctrl+h"]),
     (ActionId::AppSettings, ContextId::Global, &["Ctrl+x", "c"]),

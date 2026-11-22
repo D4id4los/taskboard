@@ -876,6 +876,13 @@ impl Adapter {
             // still shows `can_undo` (R-U6 refuses at planning, typed).
             (ActionId::AppUndo, state.undo.can_undo),
             (ActionId::AppRedo, state.undo.can_redo),
+            // The v2 picker entry (UF2, #353): desktop-only (R-2 — the
+            // structural exclusion), live when the line has anything to
+            // pick (a reflex row or a branch row).
+            (
+                ActionId::AppUndoBranches,
+                !self.kiosk && (state.undo.can_undo || state.undo.can_redo),
+            ),
             // The live pause arm (UX-R8 chunk-5 D-4): the commit row
             // greys unless the pause editor's draft is armed — the
             // TaskMoveCancel flow-grey precedent.
@@ -927,6 +934,10 @@ impl Adapter {
         let keyboard = window.global::<KeyboardState>();
         keyboard.set_vi_insert(self.shell.mode == crate::router::Mode::Insert);
         keyboard.set_menu_open(self.shell.menu.open);
+        // The undo branch picker's mount bit (UF2, #353); the models
+        // ride the open seam (a refresh never rewrites a live picker —
+        // the stale-row refusal is the typed contract, W-6).
+        keyboard.set_undo_picker_open(self.shell.undo_picker);
         // The picker grid's context mirror (round-3 D25): the harness
         // chain and the markup read the same fact.
         keyboard.set_date_picker_grid(self.shell.date_picker_grid);
@@ -969,6 +980,37 @@ impl Adapter {
             (None, Some(family)) => Some(crate::menu::Submenu::Task(family)),
             (None, None) => None,
         }
+    }
+
+    /// The undo branch picker's row models (UF2, #353 W-2/W-3): the
+    /// typed projections pushed one-way onto the window global —
+    /// sibling branches from `UndoView.branch_children`, undo-step
+    /// rows from the `recent` window. Rows carry the journal entry id
+    /// (string form across the seam; re-typed at the trust boundary)
+    /// and the engine-derived label. A close empties the bit; the
+    /// models stay (a refresh never rewrites a live picker — the
+    /// stale-row refusal is the typed contract, W-6).
+    fn sync_undo_picker_models(&self, window: &AppWindow) {
+        let keyboard = window.global::<KeyboardState>();
+        keyboard.set_undo_picker_open(self.shell.undo_picker);
+        if !self.shell.undo_picker {
+            return;
+        }
+        let undo = &self.state.load().undo;
+        let rows = |labels: &[taskboard_domain::UndoLabel]| -> Vec<crate::UndoPickerRowModel> {
+            labels
+                .iter()
+                .map(|row| crate::UndoPickerRowModel {
+                    id: row.id.as_uuid().to_string().into(),
+                    label: row.label.as_str().into(),
+                })
+                .collect()
+        };
+        keyboard.set_undo_picker_branch_rows(ModelRc::new(slint::VecModel::from(rows(
+            &undo.branch_children,
+        ))));
+        keyboard
+            .set_undo_picker_target_rows(ModelRc::new(slint::VecModel::from(rows(&undo.recent))));
     }
 
     /// The two-tier menu models (round-1 D6): the root page model
@@ -4499,7 +4541,9 @@ impl Adapter {
             // (dispatch-time gating, D-TS8 — the menu row degrades
             // through this same arm). The modal-takeover half of the
             // r2 D13 rule: the tip dies into the overlay.
-            (_, UiEffect::TrackEntriesOpen) if self.kiosk => Vec::new(),
+            (_, UiEffect::TrackEntriesOpen | UiEffect::UndoBranchesOpen) if self.kiosk => {
+                Vec::new()
+            }
             (
                 Flow::TrackEntries { .. } | Flow::TrackEntryForm { .. },
                 UiEffect::TrackEntriesOpen,
@@ -6324,6 +6368,25 @@ impl Adapter {
                 self.quit_requests += 1;
                 let _ = crate::quit();
             }
+            UiEffect::UndoBranchesOpen => {
+                // The kiosk structural exclusion (R-2): the entry
+                // renders absent, the effect is inert (the
+                // TrackEntriesOpen shape; the desktop-qualified E).
+                if self.kiosk {
+                    return;
+                }
+                // The picker mount (UF2 W-1): the modal-takeover
+                // trio — settle any foreign flow, kill the tooltip,
+                // reset the editing facts (the `OpenMenu` arm's
+                // exact shape) — then mount. Pure navigation: no
+                // command dispatch on open (the plan's W-1 row).
+                self.settle_foreign_flow_for_modal(window);
+                Self::dismiss_tooltip(window);
+                Self::reset_editing_facts(window);
+                self.shell.apply(&effect, self.menu_entries.len());
+                self.sync_menu_models(window);
+                self.sync_undo_picker_models(window);
+            }
             UiEffect::OpenMenu => {
                 // Round 3 (the matrix's OpenMenu cell, audit §5): a
                 // foreign flow settles first — the modal must not
@@ -6376,9 +6439,18 @@ impl Adapter {
                 } else {
                     self.apply_close_menu(window);
                 }
+                // The picker's dismissal shares the close (the AC-4
+                // law; the shell cleared the bit).
+                self.sync_undo_picker_models(window);
             }
             UiEffect::MenuBack => {
-                if self.shell.notification_surface {
+                if self.shell.undo_picker {
+                    // AC-4 (UF2): the picker's Escape closes with
+                    // nothing dispatched (it is a pure selection
+                    // menu).
+                    self.shell.undo_picker = false;
+                    self.sync_undo_picker_models(window);
+                } else if self.shell.notification_surface {
                     // The surface's Escape (US-6/W-6, D-N1): closes
                     // with nothing dispatched (rows keep their
                     // delivery state) and restores per the focus
@@ -7957,7 +8029,12 @@ impl Adapter {
     ) -> Vec<MenuEntry> {
         let mut page = menu::root_page(&self.keymap, &self.menu_chain, states);
         if self.kiosk {
-            page.retain(|entry| entry.action != Some(ActionId::ExportDialogOpen));
+            // The desktop-only rows render absent on kiosk (the
+            // ExportDialogOpen precedent; UF2 R-2 adds the picker).
+            page.retain(|entry| {
+                entry.action != Some(ActionId::ExportDialogOpen)
+                    && entry.action != Some(ActionId::AppUndoBranches)
+            });
         }
         page
     }
@@ -11275,6 +11352,7 @@ fn install_view_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_toolbar_seam(window, adapter);
     install_status_panel_seam(window, adapter);
     install_menu_dismiss_seam(window, adapter);
+    install_undo_seams(window, adapter);
     install_board_bar_seam(window, adapter);
     install_board_color_seams(window, adapter);
     install_board_bar_archived_seam(window, adapter);
@@ -12489,6 +12567,75 @@ fn install_toolbar_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind mut (a, window), args (), {        a.route(&window, ActionId::ViewToday);
 
     });
+}
+
+/// The undo branch picker's seams (UF2, #353): the W-1 mount ack, the
+/// plain reflex rows (click ≡ key — the same `AppUndo`/`AppRedo` route
+/// the keyboard uses), the W-2/W-3 row seams (the payload id re-typed
+/// at the trust boundary; a stale or foreign id dispatches nothing —
+/// the silent law), and the AC-4 outside-click dismissal.
+fn install_undo_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    install_seam!(window: window.on_undo_branches_open, adapter: adapter;
+        bind (a, window), args (), {
+        // The mount ack: the models are already current (the open arm
+        // minted them); this seam exists so the composition's init and
+        // any later re-open share one sync (nothing dispatches on
+        // open — the plan's W-1 row).
+        a.sync_undo_picker_models(&window);
+    });
+    install_seam!(window: window.on_undo_line_undo, adapter: adapter;
+        bind mut (a, window), args (), {
+        a.undo_picker_commit(&window, |a, window| a.route(window, ActionId::AppUndo));
+    });
+    install_seam!(window: window.on_undo_line_redo, adapter: adapter;
+        bind mut (a, window), args (), {
+        a.undo_picker_commit(&window, |a, window| a.route(window, ActionId::AppRedo));
+    });
+    install_seam!(window: window.on_undo_target_picked, adapter: adapter;
+        bind mut (a, window), args (id: slint::SharedString), {
+        let Some(target) = Adapter::parse_journal_id(&id) else { return; };
+        a.undo_picker_commit(&window, move |a, _window| {
+            a.send(taskboard_domain::StateCommand::UndoTo { target });
+        });
+    });
+    install_seam!(window: window.on_undo_branch_picked, adapter: adapter;
+        bind mut (a, window), args (id: slint::SharedString), {
+        let Some(target) = Adapter::parse_journal_id(&id) else { return; };
+        a.undo_picker_commit(&window, move |a, _window| {
+            a.send(taskboard_domain::StateCommand::RedoTo { target });
+        });
+    });
+    install_seam!(window: window.on_undo_picker_dismissed, adapter: adapter;
+        bind mut (a, window), args (), {
+        // AC-4: close with nothing dispatched.
+        a.shell.undo_picker = false;
+        a.sync_undo_picker_models(&window);
+    });
+}
+
+impl Adapter {
+    /// Re-types a row-carried journal id at the trust boundary (the
+    /// W-2/W-3 addressing law): a malformed string is absorbed (the
+    /// silent law — the stale-row case surfaces as the engine's typed
+    /// `TargetNotInLine` only for well-formed but moved ids).
+    fn parse_journal_id(id: &slint::SharedString) -> Option<taskboard_domain::JournalId> {
+        uuid::Uuid::parse_str(id)
+            .ok()
+            .map(taskboard_domain::JournalId::from_uuid)
+    }
+
+    /// The row-commit prelude: the picker closes first (the
+    /// close-then-dispatch shape — the `InvokeSelected` precedent,
+    /// bounded), then the closure dispatches.
+    fn undo_picker_commit(
+        &mut self,
+        window: &AppWindow,
+        dispatch: impl FnOnce(&mut Self, &AppWindow),
+    ) {
+        self.shell.undo_picker = false;
+        self.sync_undo_picker_models(window);
+        dispatch(self, window);
+    }
 }
 
 /// The dismissal layer's full close (round-1 D2): an outside click
