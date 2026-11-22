@@ -11,6 +11,7 @@
 import { Theme, Semantic, Tone } from "../theme.slint";
 import { TooltipState } from "tooltip.slint";
 import { Icon, IconKind } from "icon.slint";
+import { EditingFacts } from "../editing-facts.slint";
 
 // The vocabulary's home moved with the renderer (r4 D10); this
 // re-export keeps every call-site import unchanged.
@@ -79,6 +80,28 @@ export component IconButton inherits Rectangle {
                 accept
             } else {
                 reject
+            }
+        }
+        // The activation-focus census (the D18 reservation's input;
+        // round 5 A2, #1205's Enter attribution): a focused button
+        // claims its bare Return/Space — the resolver's action row
+        // yields and this key handler activates (click ≡ key). The
+        // latch/generation discipline is the ActivationStop's,
+        // replicated verbatim (the done-box precedent: kept in two
+        // copies, the widget-internal focus seam forbids sharing).
+        property <bool> focused: self.has-focus;
+        property <bool> activation-counted: false;
+        property <int> counted-generation: -1;
+        changed focused => {
+            if (self.counted-generation != EditingFacts.generation) {
+                self.counted-generation = EditingFacts.generation;
+                self.activation-counted = self.focused;
+                if (self.focused) {
+                    EditingFacts.activation-focus-count += 1;
+                }
+            } else if (self.focused != self.activation-counted) {
+                EditingFacts.activation-focus-count += self.focused ? 1 : -1;
+                self.activation-counted = self.focused;
             }
         }
     }

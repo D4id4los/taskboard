@@ -930,9 +930,17 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
 
 /// `emacs` continued after the shared [`HABIT_TODAY_ROWS`] block.
 static EMACS_S0B: &[(ActionId, ContextId, &[&str])] = &[
-    // Round 3 (W-SM-d, F26): the title re-arm — Return at detail is
-    // unambiguous once task-detail entry no longer auto-arms (emacs
-    // binds Return only at Board/Today for `task.edit`).
+    // Round 3 (W-SM-d, F26): the title re-arm. DATED SUPERSESSION
+    // 2026-11-22 (round 5 chunk A2, #1205): the round-3 assumption —
+    // "Return at detail is unambiguous once task-detail entry no
+    // longer auto-arms" — is falsified by the view's current shape:
+    // the detail is a full form now, and a context-wide Return row
+    // with no per-widget attribution stole the press from every
+    // census-less activation widget. The row stays as the
+    // no-claimant fallback (title-edit remains keyboard-reachable
+    // from the view at large); a focused form widget that owns an
+    // activation claims its Return first (the D18 reservation's
+    // activation-focus census, pushed by the widgets themselves).
     (ActionId::TaskTitleEdit, ContextId::TaskDetail, &["Return"]),
     // The recurrence editor's opener (round-7 D-7.1): the C-c
     // user-namespace's r — free at TaskDetail (the board family's
