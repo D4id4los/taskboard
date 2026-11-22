@@ -225,3 +225,100 @@ fn pdf_export_resolves_a_relative_out_against_the_cwd() {
     );
     let _ = std::fs::remove_file(expected);
 }
+
+/// The in-session dispatch leg (#1176): `--what pdf` routes through
+/// `dispatch_line`'s pdf arm — the export lands at the `--out` path
+/// (a real pdf, non-empty), exit 0. The `==` -> `!=` arm flip routes
+/// the pdf query to the data-family renderer, which never writes the
+/// out file — the typed fact flips.
+#[test]
+fn the_session_lane_routes_the_pdf_leg_to_the_pdf_renderer() {
+    use std::sync::Arc;
+
+    use clap::Parser as _;
+
+    use taskboard_app::cli::{Cli, Command, ExportWhat};
+    use taskboard_app::commands::{BasicSession, CommandIo, dispatch_line};
+    use taskboard_app::secrets::CredentialStore;
+
+    let dir = tempdir();
+    let config = common::standalone_config(dir.path(), "j-pdf-dispatch.db");
+    let store: Arc<dyn CredentialStore> = Arc::new(common::FakeCredentialStore::default());
+
+    // Parse the real argv so the clap surface owns the payload shape.
+    let cli = Cli::try_parse_from([
+        "taskboard",
+        "export",
+        "--what",
+        "pdf",
+        "--out",
+        dir.path().join("sheet.pdf").to_str().expect("utf-8 out"),
+        "--no-open",
+    ])
+    .expect("the argv parses");
+    let Command::Export {
+        what,
+        format,
+        since,
+        until,
+        task,
+        board,
+        layout,
+        out,
+        no_open,
+    } = cli.command.expect("an export command")
+    else {
+        panic!("the argv selects the export group");
+    };
+    assert_eq!(what, Some(ExportWhat::Pdf));
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let code = rt.block_on(async {
+        let app = taskboard_app::bootstrap::bootstrap_in(
+            config.clone(),
+            store,
+            Arc::new(taskboard_app::notifications::LogSink),
+            taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
+        )
+        .await
+        .expect("session boots");
+        let session = BasicSession {
+            config: config.clone(),
+            store: Arc::new(common::FakeCredentialStore::default()),
+            config_path: None,
+        };
+        let mut out_buf = Vec::new();
+        let mut err_buf = Vec::new();
+        let mut io = CommandIo {
+            out: &mut out_buf,
+            err: &mut err_buf,
+            json: true,
+        };
+        let code = dispatch_line(
+            &session,
+            &app,
+            Command::Export {
+                what,
+                format,
+                since,
+                until,
+                task,
+                board,
+                layout,
+                out,
+                no_open,
+            },
+            &mut io,
+        )
+        .await;
+        app.shutdown().await;
+        code
+    });
+    assert_eq!(code, 0, "the pdf leg exits 0");
+    let sheet = dir.path().join("sheet.pdf");
+    let bytes = std::fs::read(&sheet).expect("the pdf landed at --out");
+    assert!(
+        bytes.starts_with(b"%PDF-") && bytes.len() > 100,
+        "the out file is a real pdf, not a data dump"
+    );
+}
