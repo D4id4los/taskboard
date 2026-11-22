@@ -3502,13 +3502,26 @@ impl Adapter {
         self.seed_track_form(seed);
     }
 
+    /// The track-form's clock jurisdiction (#1214, the #921/#660
+    /// precedent): the parse anchor `today` derives through the
+    /// frozen-clock seam when one is mounted (`UiSettings::clock`'s
+    /// contract — every production hand-over passes `None` and reads
+    /// the wall clock exactly as before), so a test pinning
+    /// clock-derived form content reads one oracle and a local
+    /// midnight straddling a run cannot invert the seeded span.
+    fn track_form_today(&self) -> chrono::NaiveDate {
+        self.frozen_now
+            .map_or_else(chrono::Local::now, |now| now.with_timezone(&chrono::Local))
+            .date_naive()
+    }
+
     fn seed_track_form(&mut self, seed: Option<taskboard_domain::TimeEntryId>) {
         use chrono::TimeZone as _;
         let Flow::TrackEntryForm { .. } = self.view_state.flow() else {
             return;
         };
         let state = self.state.load_full();
-        let today = chrono::Local::now().date_naive();
+        let today = self.track_form_today();
         let entry = seed.and_then(|id| state.tracking.entries.get(&id));
         let start_local = entry.map(|e| chrono::Local.from_utc_datetime(&e.start.naive_utc()));
         let Some(form) = self.view_state.track_form_mut() else {
@@ -3559,7 +3572,7 @@ impl Adapter {
             return false;
         };
         let subject = *task;
-        let today = chrono::Local::now().date_naive();
+        let today = self.track_form_today();
         let parse = crate::presentation::parse_track_form(
             &form.date_text,
             &form.start_text,

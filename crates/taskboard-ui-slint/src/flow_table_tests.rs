@@ -1835,6 +1835,37 @@ fn rig(state: AppState) -> Rig {
     }
 }
 
+/// A rig mounted with the adapter's clock frozen at `now` (the
+/// `UiSettings::clock` seam, #660): clock-derived adapter reads — the
+/// track-form parse anchor `today` (#1214) — derive from the frozen
+/// instant instead of racing the wall clock. Production is unchanged
+/// (every production hand-over passes `None`).
+fn frozen_clock_rig(state: AppState, now: chrono::DateTime<chrono::Utc>) -> Rig {
+    let state = Arc::new(arc_swap::ArcSwap::from_pointee(state));
+    let (commands_tx, commands_rx) = mpsc::channel(64);
+    let (requests_tx, _requests_rx) = mpsc::channel(16);
+    let (_health_tx, health) =
+        tokio::sync::watch::channel(crate::presentation::DeliveryHealth::default());
+    let handle = mount(
+        state,
+        dummy_receiver(),
+        dummy_receiver(),
+        commands_tx,
+        requests_tx,
+        UiSettings {
+            clock: Some(now),
+            ..UiSettings::default()
+        },
+        health,
+        None,
+    )
+    .expect("mount succeeds on the null platform");
+    Rig {
+        handle,
+        commands_rx,
+    }
+}
+
 /// A rig mounted with an explicit keymap (the hint-projection legs'
 /// fixture continuity — the empty-map and per-preset empty legs).
 fn keyed_rig(state: AppState, keymap: crate::keymap::Keymap, preset: crate::keymap::Preset) -> Rig {
@@ -4072,10 +4103,18 @@ fn the_track_form_edit_commit_routes_the_exact_adjust_mask() {
 #[test]
 fn the_running_rows_edit_seeds_an_empty_end_and_the_mask_keeps_it_open() {
     on_slint_thread(|| {
+        // The fixture anchors to PINNED_NOW and the rig freezes the
+        // adapter's clock (`frozen_clock_rig`, #1214): the seeded
+        // wall-clocks and the commit's parse anchor both derive from
+        // the frozen instant, so a local midnight straddling the run
+        // can no longer invert the seeded span (the "23:59" typed end
+        // pairing before the seed's date). Deterministic by
+        // construction, not a run-timing mitigation.
+        let now = crate::test_platform::PINNED_NOW;
         let (mut state, fx) = fixture();
         let [a_id, _b, _c] = fx.tasks;
         let [s0, _s1] = fx.stacks;
-        let start = chrono::Utc::now();
+        let start = now;
         let entry = taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
         state.tracking.entries.insert(
             entry,
@@ -4091,7 +4130,7 @@ fn the_running_rows_edit_seeds_an_empty_end_and_the_mask_keeps_it_open() {
                 by: None,
             },
         );
-        let mut rig = rig(state);
+        let mut rig = frozen_clock_rig(state, now);
         let adapter = rig.adapter();
         mount_task_detail(&rig, &adapter, a_id, s0);
         {
