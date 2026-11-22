@@ -330,6 +330,14 @@ pub struct UndoView {
     pub head_label: Option<String>,
     /// The bounded recent-command window, newest first.
     pub recent: Vec<UndoLabel>,
+    /// The head's children — the redo candidates, i.e. the abandoned
+    /// sibling branches (UF2, #353): newest-first by the redo
+    /// tie-break's `(created_at, id)` order, bounded by the same cap
+    /// discipline as `recent` ([`UNDO_RECENT_WINDOW`]; kiosk memory
+    /// stays modest). Engine-derived typed projection — the UI renders
+    /// `command_label`, never synthesizes (trap c); never persisted;
+    /// derived at every publish like the rest of the view.
+    pub branch_children: Vec<UndoLabel>,
 }
 
 /// One recent-command row of the [`UndoView`].
@@ -348,6 +356,29 @@ impl UndoView {
         let can_redo = journal
             .head
             .is_some_and(|head| !journal.children_of(head).is_empty());
+        // Newest-first by the redo tie-break's own `(created_at, id)`
+        // order (the greatest child is the one repeated `Redo` would
+        // take), then the bounded window.
+        let branch_children: Vec<UndoLabel> = match journal.head {
+            Some(head) => {
+                let mut rows: Vec<(DateTime<Utc>, JournalId)> = journal
+                    .children_of(head)
+                    .into_iter()
+                    .map(|entry| (entry.created_at, entry.id))
+                    .collect();
+                rows.sort_by_key(|&(created_at, id)| std::cmp::Reverse((created_at, id)));
+                rows.into_iter()
+                    .take(UNDO_RECENT_WINDOW)
+                    .filter_map(|(_, id)| {
+                        journal.entry(id).map(|entry| UndoLabel {
+                            id,
+                            label: command_label(&entry.command),
+                        })
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
         UndoView {
             can_undo: head.is_some(),
             can_redo,
@@ -362,6 +393,7 @@ impl UndoView {
                     label: command_label(&entry.command),
                 })
                 .collect(),
+            branch_children,
         }
     }
 
@@ -386,7 +418,11 @@ impl UndoView {
                 .iter()
                 .any(|entry| entry.board == Some(board))
         });
+        // UF2 (N1): `branch_children` stays a global-line projection —
+        // the board-scoped picker ships with #355's scoping vehicle,
+        // so the per-board view carries the empty default.
         UndoView {
+            branch_children: Vec::new(),
             can_undo: head.is_some_and(|entry| entry.board == Some(board)),
             can_redo,
             head_label: head
@@ -475,7 +511,9 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::Undo
         | StateCommand::Redo
         | StateCommand::UndoOnBoard { .. }
-        | StateCommand::RedoOnBoard { .. } => "Undo/redo".into(),
+        | StateCommand::RedoOnBoard { .. }
+        | StateCommand::UndoTo { .. }
+        | StateCommand::RedoTo { .. } => "Undo/redo".into(),
         StateCommand::RequestSync => "Sync".into(),
         StateCommand::UpdateSettings { .. } => "Update settings".into(),
     }

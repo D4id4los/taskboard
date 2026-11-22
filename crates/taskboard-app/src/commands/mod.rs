@@ -687,7 +687,8 @@ impl CommandError {
                     taskboard_state::ExecuteError::Rejected(
                         taskboard_domain::CommandError::TargetNotUndoable(_)
                             | taskboard_domain::CommandError::TargetNoLongerInvertible { .. }
-                            | taskboard_domain::CommandError::UndoTargetHasDependents { .. },
+                            | taskboard_domain::CommandError::UndoTargetHasDependents { .. }
+                            | taskboard_domain::CommandError::TargetNotInLine,
                     )
                 ) =>
             {
@@ -703,6 +704,11 @@ impl CommandError {
                     }
                     taskboard_domain::CommandError::UndoTargetHasDependents { stack } => {
                         Some(stack.as_uuid().to_string())
+                    }
+                    taskboard_domain::CommandError::TargetNotInLine => {
+                        // No payload: the stale-row refusal names no
+                        // entity (the head is the fact).
+                        None
                     }
                     _ => unreachable!("guarded above"),
                 }
@@ -788,6 +794,8 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::NothingToRedoForBoard { .. } => "nothing-to-redo-for-board",
         D::TargetNotUndoable(_) => "target-not-undoable",
         D::TargetNoLongerInvertible { .. } => "target-not-invertible",
+        // UF2 (#353): the branch-picker's stale-row refusal.
+        D::TargetNotInLine => "target-not-in-line",
         D::UndoTargetHasDependents { .. } => "undo-target-has-dependents",
         // The #901 restore-family divergence refusal (ids are minted
         // once — a present same-id row is divergence, never clobbered).

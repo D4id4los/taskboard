@@ -606,3 +606,54 @@ fn undo_on_board_and_redo_on_board_commands_round_trip() {
         assert_eq!(back, command);
     }
 }
+
+// ---- UF2: the branch_children projection (#353) ------------------------
+
+/// US-1/AC-1 (W-4): the head's children derive as typed sibling rows —
+/// newest-first by the redo tie-break's `(created_at, id)` order, each
+/// carrying its journaled command's engine-derived label (trap c: the
+/// UI renders, never synthesizes).
+#[test]
+fn us1_ac1_branch_children_derive_with_labels() {
+    let ids = CountingIds::new();
+    let fork = entry_at(&ids, None, 100);
+    let mut older = entry_at(&ids, Some(fork.id), 200);
+    older.command = crate::messages::StateCommand::CreateTask {
+        title: "older".into(),
+        stack: crate::ids::StackId::from_uuid(uuid::Uuid::nil()),
+        order: 1,
+    };
+    let mut newer = entry_at(&ids, Some(fork.id), 300);
+    newer.command = crate::messages::StateCommand::MoveTask {
+        id: crate::ids::TaskId::from_uuid(uuid::Uuid::nil()),
+        stack: crate::ids::StackId::from_uuid(uuid::Uuid::nil()),
+        order: 2,
+    };
+    let journal = JournalState {
+        entries: vec![fork.clone(), older.clone(), newer.clone()],
+        head: Some(fork.id),
+    };
+    let view = UndoView::derive(&journal);
+    assert!(view.can_redo);
+    let children: Vec<_> = view.branch_children.iter().map(|row| row.id).collect();
+    assert_eq!(children, vec![newer.id, older.id], "newest sibling first");
+    assert_eq!(view.branch_children[0].label, "Move task");
+    assert_eq!(view.branch_children[1].label, "Create task");
+}
+
+/// US-1/AC-3 (W-4): no abandoned branch (the head has no children) —
+/// the sibling section derives empty while the line's other facts stay
+/// intact.
+#[test]
+fn us1_ac3_branch_children_empty_without_fork() {
+    let ids = CountingIds::new();
+    let only = entry_at(&ids, None, 100);
+    let journal = JournalState {
+        entries: vec![only.clone()],
+        head: Some(only.id),
+    };
+    let view = UndoView::derive(&journal);
+    assert_eq!(view.branch_children, [] as [UndoLabel; 0]);
+    assert!(view.can_undo);
+    assert!(!view.can_redo);
+}

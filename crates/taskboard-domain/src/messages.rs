@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::entities::Color;
 use crate::habit::{HabitTarget, WindowStart};
-use crate::ids::{BoardId, ConnectorId, HabitId, LabelId, RemoteBoardId, StackId, TaskId};
+use crate::ids::{
+    BoardId, ConnectorId, HabitId, JournalId, LabelId, RemoteBoardId, StackId, TaskId,
+};
 use crate::reminders::ReminderRef;
 use crate::remote::{PushOutcome, RemoteBoardSnapshot};
 use crate::state::SyncErrorKind;
@@ -662,6 +664,37 @@ pub enum StateCommand {
     RedoOnBoard {
         /// The board whose scope the redo answers to.
         board: BoardId,
+    },
+    /// Jump the undo line back to a named journal entry (UF2, #353):
+    /// the branch-picker's ancestor verb. Engine-routed like
+    /// [`StateCommand::Undo`] — the journal wrapper plans it (a bounded
+    /// walk of the existing `plan_undo` planner: one command, N
+    /// internal steps, each step's D-U2 pushed/retract behaviour
+    /// applied per entry) before the ordinary catalogue sees it. The
+    /// head lands exactly on `target`; the walk's receipt names the
+    /// final entry it undid. Typed refusals: `TargetNotInLine` (the id
+    /// is not an ancestor of the current head — a stale picker row
+    /// after an intervening edit), plus the planners' own refusals
+    /// surfaced unchanged. Never persisted.
+    UndoTo {
+        /// The journal entry the head must land on.
+        target: JournalId,
+    },
+    /// Redo down a chosen branch (UF2, #353): the branch-picker's
+    /// sibling verb — the one thing repeated `Redo` (the D5
+    /// greatest-child rule) cannot express. Engine-routed like
+    /// [`StateCommand::Redo`]: the walk first undoes back to the
+    /// target's fork (the deepest common ancestor of the head and the
+    /// target — the §7 law "undo to the fork, then redo down the
+    /// chosen sibling"), replans the forward intents along the
+    /// fork→target path, then keeps the greatest-child walk going to
+    /// the branch's tip — the head lands on the tip and the receipt
+    /// names it. `TargetNotInLine` when the target shares no fork with
+    /// the head (a stale picker row); the planners' refusals surface
+    /// unchanged. Never persisted.
+    RedoTo {
+        /// The journal entry naming the chosen branch.
+        target: JournalId,
     },
     /// Resurrect one tombstoned task from a journal pre-image — the
     /// inverse *instrument* of `DeleteTask`'s undo (ADR 0019 §11), not a
