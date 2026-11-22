@@ -1611,19 +1611,33 @@ export component AppWindow inherits Window {
         // The capture overlay on the ModalDialogHost base (round-9 W1,
         // D-W1-1's proof mount): the host carries the scrim, the
         // dismissal layer, the centering, and the walk arming — the
-        // site wires only its two existing intents. Outside click
-        // keeps capture's documented discard-and-close semantics
-        // (`kind: confirm`); the R-4 edit-kind flip for capture is a
-        // W2 migration decision, deliberately not here.
+        // site wires only its existing intents. #976 (SB1, R-4
+        // edit-kind flip, US-1): capture is an edit-kind dialog — an
+        // outside click routes the accept seam (`capture-accepted`);
+        // the empty-buffer close is `commit_capture`'s own arm, so an
+        // empty draft closes without committing. The W1 proof-mount's
+        // discard-and-close outside click retires here (the W2
+        // migration debt). Escape stays the explicit discard
+        // (`capture-dismiss-requested` via the action layer).
         if (root.capture-open): ModalDialogHost {
             open: true;
             title: "Capture";
-            kind: DialogKind.confirm;
+            kind: DialogKind.edit;
             body-preferred-width: 560px * Theme.base-scale;
             walk-stops: 1;
             viewport-floor: status.y;
             dismissed => root.capture-dismiss-requested();
-            accepted => root.capture-dismiss-requested();
+            // US-1/AC-1: the outside click commits AND closes — the
+            // accept seam (commit_capture) commits-and-continues by
+            // Return's grammar, so the scrim's accept resolution
+            // chains the existing dismissal seam after it (the buffer
+            // is already cleared; the empty draft never reaches the
+            // commit). No second accept seam is coined; Escape's
+            // explicit discard is untouched.
+            accepted => {
+                root.capture-accepted();
+                root.capture-dismiss-requested();
+            }
             CaptureOverlay {
                 initial-text: root.capture-initial-text;
                 capture-edited(text) => root.capture-text-edited(text);

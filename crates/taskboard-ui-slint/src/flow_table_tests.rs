@@ -1297,6 +1297,14 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         row(kind, E::SeriesDetach, exp(Z, held_flow_keep(kind)));
     }
     row(FK::RecurEditor, E::SeriesDetach, exp(Z, K(KRecur)));
+    // The Escape ladder (#976 SB1, US-2/S3 — the deliberate
+    // class-matrix amendment): the mode.normal resolution under the
+    // live editor is the explicit cancel — the clean close, nothing
+    // dispatches. This is the kept explicit arm the pair row pins
+    // over the Edit class's named-inert default (the old matrix cell
+    // pinned a limitation, not a contract); SetModeInsert/Activate
+    // stay the named inert via the class expectation.
+    row(FK::RecurEditor, E::SetModeNormal, exp(Z, N));
     // -- PLAN SURFACE rows (#622, D-3/D-4): from None the open
     //    toggles the view (flow-free), begin-place arms the form,
     //    remove-box is the one honest write; the swaps are inert

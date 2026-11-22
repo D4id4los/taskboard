@@ -4760,6 +4760,15 @@ impl Adapter {
             //    deliberately keeps the flow --
             (Flow::Capture, UiEffect::Activate) => self.view_state.commit_capture(),
             (Flow::Capture, UiEffect::SetMode(Mode::Normal)) => self.view_state.close_capture(),
+            // The recurrence editor's Escape ladder (#976 SB1,
+            // US-2/S3): the mode.normal resolution under the live
+            // editor is the explicit cancel — the clean close (the
+            // draft dies, nothing dispatches; the settle rule, not
+            // the commit funnel). Insert/Activate stay the named
+            // inert (the class row): only Escape cancels.
+            (Flow::EditRecur { .. }, UiEffect::SetMode(Mode::Normal)) => {
+                self.view_state.end_edit_recur()
+            }
             // vi's `i`/`a` open the view's editing flow rather than
             // flipping mode into the void (D5).
             (
@@ -13792,13 +13801,15 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     // Quick capture (chunk 10 D8): the buffer mirror, the Return
-    // commit (keeps the flow), and the scrim's discard-and-close
-    // (routed through the action layer's ModeNormal semantics).
+    // commit (keeps the flow), and the #976 outside-click accept
+    // (`commit_capture`'s empty-buffer arm closes without commit —
+    // the W1 proof-mount's discard-and-close outside click retired);
+    // Escape stays the explicit discard seam below.
     install_seam!(window: window.on_capture_text_edited, adapter: adapter; [bare_mut]
     bind mut (a), args (text), {        a.view_state.set_buffer(text.to_string());
 
     });
-    install_seam!(window: window.on_capture_accepted, adapter: adapter;
+    install_seam!(window: window.on_capture_accepted, adapter: adapter; // slint callback: capture-accepted (the Return commit AND the #976 edit-kind outside-click accept, US-1)
     bind mut (a, window), args (), {        let outcomes = a.view_state.commit_capture();
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
@@ -15154,12 +15165,20 @@ fn install_banner_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
 
-    install_seam!(window: window.on_banner_mute_clicked, adapter: adapter;
+    install_seam!(window: window.on_banner_mute_clicked, adapter: adapter; // #1011 (SB1 US-3): direction-aware — the row folds `state.reminders.muted`, so a muted task's control dispatches the mute-clearing command directly (the #733 twin grammar on the banner surface); the unmuted direction keeps the routed ReminderMute verb.
     bind mut (a, window), args (index), {        let Some(banner_row) = banner_row(&a, index) else {
         return;
     };
-    a.reminder_target = Some(banner_row.target);
-    a.route(&window, ActionId::ReminderMute);
+    if banner_row.muted {
+        a.send(taskboard_domain::StateCommand::SetTaskRemindersMuted {
+            task: banner_row.task,
+            muted: false,
+        });
+        a.finish_mutation(&window);
+    } else {
+        a.reminder_target = Some(banner_row.target);
+        a.route(&window, ActionId::ReminderMute);
+    }
 
     });
 

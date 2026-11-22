@@ -41,6 +41,8 @@ mod habit_family_journeys;
 mod habits_journey;
 #[path = "journeys/keymap_case_seam.rs"]
 mod keymap_case_seam;
+#[path = "journeys/small_gated_journeys.rs"]
+mod small_gated_journeys;
 #[path = "journeys/status_surface_journeys.rs"]
 mod status_surface_journeys;
 #[path = "journeys/tracker_journeys.rs"]
