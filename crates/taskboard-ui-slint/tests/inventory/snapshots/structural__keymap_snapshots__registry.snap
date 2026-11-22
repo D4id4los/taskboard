@@ -1241,7 +1241,7 @@ expression: rows
   category: task
   enabled: true
   menu_rank: 226
-  description: Moves the habit one slot up its section (the floor-midpoint order law; the menu stopgap until drag/keyboard reorder).
+  description: Moves the habit one slot up its section (the gap-index reorder; the engine resolves the orders).
   menu_group: ~
 - id: habit.move-down
   label: Move habit down
@@ -1250,7 +1250,7 @@ expression: rows
   category: task
   enabled: true
   menu_rank: 236
-  description: Moves the habit one slot down its section (the floor-midpoint order law; the menu stopgap until drag/keyboard reorder).
+  description: Moves the habit one slot down its section (the gap-index reorder; the engine resolves the orders).
   menu_group: ~
 - id: habit.convert-cancel
   label: Cancel conversion

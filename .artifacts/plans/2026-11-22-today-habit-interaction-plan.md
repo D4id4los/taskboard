@@ -180,6 +180,14 @@ index only.
     unset → the existing typed `NoTarget` refusal posture); down →
     `Some(position + 1)` (None at the bottom); payload type becomes
     `Option<(HabitId, usize)>` for `habit_move_up`/`habit_move_down`.
+    **Superseded by stage-2, 2026-11-22: down mints `position + 2`**
+    (`None` when `position + 2 > len`). This line's `position + 1`
+    contradicted §2.1's own diagnosis: the gap at `position + 1` is
+    the mover's own bottom edge — the engine's accepted in-place
+    no-op — so crossing the lower neighbour needs the gap after it,
+    `position + 2`. The code matches the supersession
+    (`presentation::habit_move_slots`, pinned by
+    `habit_move_slots_mint_target_indices`).
   - `on_habits_drop_asked` mints `target = gap` (clamped by the
     engine) and routes `ActionId::HabitMove` with the index payload;
     the router's three arms (`router.rs:1635–1656`) dispatch
@@ -260,7 +268,8 @@ Typed/structural outcomes only; no text assertions anywhere.
 - `habit_move_slots_mint_target_indices` — dense fixture: up at
   position 2 → `Some(1)`; up at 0 → None; down at last → None; else
   `Some(position + 1)`. (Red pre-fix: the current mint returns
-  floor-midpoint orders.)
+  floor-midpoint orders.) **Superseded 2026-11-22 (stage-2): down is
+  `position + 2`** — see the supersession note in §3 D1.
 - `habit_drop_target_is_the_gap_verbatim` — the drop seam's mapping
   is the gap, un-reordered.
 
