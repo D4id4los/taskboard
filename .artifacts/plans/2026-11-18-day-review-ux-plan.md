@@ -142,7 +142,7 @@ stateDiagram-v2
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | review-walk-overlay.slint (remounted on J2 host) | stage shell | walk-button-invoked | walk_cursor + clamp_review_walk | ActionId::ReviewWalkPlanner | UiRequest variants | ItemAddr issue rows | US-1/S1-S3 | journeys.rs::us1_s1_entry_opens_and_steps_forward |
+| W-1 | review-walk-overlay.slint (remounted on J2 host) | stage shell | walk-button-invoked | walk_cursor + clamp_review_walk | ActionId::ReviewWalkPlanner | — | ItemAddr issue rows | US-1/S1-S3 | journeys.rs::us1_s1_entry_opens_and_steps_forward |
 | W-2 | adapter.rs | empty-stage skip | — | clamp_review_walk extension | — | — | — | US-2/S1 | journeys.rs::us2_s1_empty_carry_stage_auto_skips |
 | W-3 | plan-next-day-view.slint | embedded planner mount | — | embedded-child (#716) | — | — | — | US-3/S1-S2 | journeys.rs::us3_s1_planner_embeds_and_back_returns_to_carry |
 | W-4 | app-window.slint | J2 modal host mount | — | review host | — | — | — | US-4 | journeys.rs::us4_s1_modal_containment |
@@ -184,3 +184,11 @@ nomination sketch; the shared journeys file is the evidence home):
     bound-test: US-2/S1 -> journeys.rs::us2_s1_empty_carry_stage_auto_skips
     bound-test: US-3/S1 -> journeys.rs::us3_s1_planner_embeds_and_back_returns_to_carry
     bound-test: US-3/S2 -> journeys.rs::us3_s2_planner_complete_advances_to_prompts
+
+## 11. Erratum — W-1 Commands cell (E1, 2026-11-22, #1164)
+
+*2026-11-22 (E1, #1164): W-1's Commands cell carried prose ("UiRequest
+variants"); the walk is flow-only — `ActionId::ReviewWalkPlanner`
+routes to `UiEffect::ReviewWalk` (router.rs), no `UiRequest` or
+`StateCommand` rides the row. Cell corrected to `—` (the gate scans
+declared tokens only).*

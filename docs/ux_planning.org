@@ -220,6 +220,18 @@ on_*= handler in =adapter.rs=); each command / =ActionId= token must
   §6 =Test= column MUST nominate each journey step's file. The r9
   plans already do. Existing files (e.g. =tests/journeys/habits_journey.rs=) are
   grandfathered; retro plans use the =bound-test:= mapping.
+
+  *Decade-band sampling law (#1250 convention; home:
+  =.artifacts/plans/2026-11-22-gate-journey-token-residue-plan.md= §9)*:
+  before numbering stories, the writing J-agent samples the next
+  unused =US-<decade>= band — grep the journeys tree for the
+  =us<N>_s= prefix family and pick a band with zero existing
+  =fn us<N>_= members, so a bare token never collides with an
+  earlier plan's tests. Round 5 used bands 1–7 and 21–26; round 6
+  starts sampling from the first fully-unused decade. Plan-scoped
+  token matching is deliberately NOT built; a recurrence of the
+  collision under this convention is the new evidence for that
+  matcher work.
 - For each **capability-matrix cell** marked with a story: that
   story's §4 table exists and all its steps are covered per the
   above (=AMBIGUOUS= poisons the citation like =MISSING= does); each

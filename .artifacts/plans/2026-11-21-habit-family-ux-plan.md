@@ -502,8 +502,8 @@ stateDiagram-v2
 | W-8 | ui/views/habit-history-view.slint | ModalDialog (W1, read role) + month grid | habit_history_month_flipped | adapter.rs::install_habit_history_seams | ActionId::HabitHistory | — | one-shot habit_history_target ctx field | US-7/S1, US-7/S2, US-7/S3, US-7/S4 (pure projection display only, reason per US-7/S2–S4) | crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us7_s1_history_dialog_mounts_from_the_menu, crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us7_s2_history_grid_renders_the_typed_window_states, crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us7_s3_pager_clamps_at_the_edges, crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us7_s4_close_leaves_zero_state_change |
 | W-9 | ui/widgets/badge.slint (consumer) | Badge (O-6) | — | presentation.rs::habit_row_model (streak value into the badge model) | — | — | display-only badge swap | US-8/S1 (display-only per US-8/S1) | crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us8_s1_row_renders_the_streak_badge |
 | W-10 | ui/views/habit-history-view.slint | statistics section (display) | — | presentation.rs::habit_statistics (typed stats projection) | — | — | display-only; CLI stats are the app-crate verb | US-9/S1, US-9/S2 (display-only per US-9/S1) | crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us9_s1_statistics_render_the_typed_values, crates/taskboard-app/src/commands/habits.rs::us9_s2_cli_stats_renders_the_typed_values |
-| W-11 | keymap/presets.rs | keymap preset entries | — (binding rows) | router mapping (pre-existing habit-verb routing) | `ActionId::HabitSkip`, `HabitPause`, `HabitResume`, `HabitQuotaEdit`, `HabitScheduleEdit`, `HabitReminderEdit`, `HabitHistory` | — (bindings only, verbs route via W-1..W-8) | Today context rows in all three presets (O-8 parity law) | US-1/S2, US-2/S2, US-4/S2, US-7/S1 | crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us1_s2_skip_key_routes_over_the_row_subject |
-| W-12 | ui/ global undo affordance (pre-existing surface, changed classification) | global Undo action | — (pre-existing `undo-asked` callback) | `adapter.rs::undo` routing (pre-existing) | `ActionId::Undo` (pre-existing) | `StateCommand::UndoLast` (classification changed per R-7) | no row addressing, global verb | US-1/S4, US-3/S1, US-3/S2, US-3/S3 | crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us3_s2_undo_reverts_the_logged_completion, crates/taskboard-state/tests/suite/undo.rs::us1_s4_undo_clears_the_skip_mark_through_the_global_line, crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us3_s1_log_arms_the_invertible_entry, crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us3_s3_row_reflects_the_reverted_count |
+| W-11 | keymap/presets.rs | keymap preset entries | — | router mapping (pre-existing habit-verb routing) | ActionId::HabitSkip | — | Today context rows in all three presets (O-8 parity law); the row binds the full seven-verb preset family — HabitSkip, HabitPause, HabitResume, HabitQuotaEdit, HabitScheduleEdit, HabitReminderEdit, HabitHistory — all routed via W-1..W-8, no new seams or commands | US-1/S2, US-2/S2, US-4/S2, US-7/S1 | crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us1_s2_skip_key_routes_over_the_row_subject |
+| W-12 | ui/ global undo affordance (pre-existing surface, changed classification) | global Undo action | — | adapter.rs::undo routing | ActionId::AppUndo | StateCommand::Undo | no row addressing, global verb | US-1/S4, US-3/S1, US-3/S2, US-3/S3 | crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us3_s2_undo_reverts_the_logged_completion, crates/taskboard-state/tests/suite/undo.rs::us1_s4_undo_clears_the_skip_mark_through_the_global_line, crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us3_s1_log_arms_the_invertible_entry, crates/taskboard-ui-slint/tests/journeys/habit_family_journeys.rs::us3_s3_row_reflects_the_reverted_count |
 
 ## 7. Command-contract delta
 
@@ -613,3 +613,26 @@ recorded implementation fact):
    moves to the Journey-steps cell — a cell must be exactly `—` for
    the gate's absence check, the OP1/OP2 erratum's rule).
 
+
+## 11. Erratum — W-11/W-12 token cells (E1, 2026-11-22, #1217)
+
+*2026-11-22 (E1, #1217): the §6 token cells must be bare tokens or
+exact `—` (one `ActionId::`-prefixed token per cell — the gate
+resolves a single token per cell; annotation prose defeats the
+absence check). W-11: the Callback and Commands cells carried
+annotations ("— (binding rows)", "— (bindings only, verbs route via
+W-1..W-8)") — both are bare `—` now; the ActionId cell listed seven
+comma-separated backticked tokens — it keeps ONE canonical token
+(`ActionId::HabitSkip`, the row's representative) and the full
+seven-verb enumeration moved into the Row-addressing prose. W-12: the
+parenthetical annotations moved here verbatim — the Callback cell was
+"— (pre-existing `undo-asked` callback)", the ActionId cell was
+"`ActionId::Undo` (pre-existing)", the Commands cell was
+"`StateCommand::UndoLast` (classification changed per R-7)". The
+honest shipped verbs are `ActionId::AppUndo` and `StateCommand::Undo`
+(per this plan's §10 erratum item 2 — the E1 chunk plan's
+"`ActionId::Undo` / `StateCommand::UndoLast`" spellings were the
+pre-implementation sketch names; this erratum supersedes them). The
+"pre-existing surface" and "changed classification" annotations on
+the W-12 Surface-file cell stay — that cell is prose, never a
+scanned token cell.*
