@@ -541,6 +541,150 @@ pub fn golden_state_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppState
     )
 }
 
+/// The enriched golden fixture (golden coverage wave, plan §5): the
+/// clean two-stack board **plus** the report §6 enrichment, as a
+/// superset constructor — `golden_state_at` itself stays byte-stable
+/// for the 27 committed goldens (the wave plan's fixture decision).
+/// Layers, all ASCII-titled and pinned/midnight-aligned:
+///
+/// - a label roster with chips incl. the `LABEL_CHIP_CAP` overflow
+///   (four memberships on `task0`, three chips render, `+1` folds),
+/// - one recurring task (`task2`, a daily series anchored at `now`'s
+///   local date — midnight-aligned by construction, date-space),
+/// - one reminder badge (an armed at-instant rule on `task1`, pinned
+///   `now + 24 h` — never the wall clock),
+/// - a second board ("dev", stack "c") whose task carries one
+///   long/overflow ASCII title (the card's overflow ellipsis),
+/// - one degraded sync state on the fixture board (`Offline` + two
+///   pending ops, the `journey_state_at` precedent) with
+///   `derive_sync_states` re-run last.
+///
+/// The review-card pin (#638) is inherited from [`golden_state_at`].
+#[allow(clippy::too_many_lines)] // the enrichment layers are each load-bearing
+#[must_use]
+pub fn golden_state_enriched_at(now: chrono::DateTime<chrono::Utc>) -> (Fixture, AppState) {
+    let (fixture, mut state) = golden_state_at(now);
+    let board_id = *state.boards.keys().next().expect("fixture board");
+
+    // The label roster + chip overflow on task0.
+    let mut memberships = std::collections::BTreeMap::new();
+    for (i, (title, hex)) in [
+        ("urgent", "#e5534b"),
+        ("reading", "#7aa2f7"),
+        ("chores", "#4ea784"),
+        ("someday", "#a6abbd"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = taskboard_domain::LabelId::from_uuid(uuid::Uuid::from_u128(
+            u128::try_from(0xA000 + i).unwrap_or(0),
+        ));
+        state.labels.insert(
+            id,
+            taskboard_domain::Label {
+                id,
+                remote: None,
+                board: board_id,
+                title: title.to_owned(),
+                color: Color::new(hex),
+                deleted: false,
+                clocks: taskboard_domain::LabelClocks {
+                    title: epoch(),
+                    color: epoch(),
+                    deleted: epoch(),
+                },
+                authors: taskboard_domain::entities::LabelAuthors::default(),
+                remote_seen: None,
+            },
+        );
+        memberships.insert(
+            id,
+            taskboard_domain::entities::MembershipState::Added { at: epoch() },
+        );
+    }
+    let mut task0 = state.tasks.get(&fixture.task0).expect("task0").clone();
+    task0.label_memberships = memberships;
+    state.tasks.insert(fixture.task0, task0);
+
+    // The recurring series on stack b's task (daily, anchored at the
+    // pin's local date — date-space, no wall clock).
+    let task2_id = state
+        .tasks
+        .values()
+        .find(|t| t.stack == fixture.stack_b)
+        .expect("stack b's task")
+        .id;
+    let mut task2 = state.tasks.get(&task2_id).expect("task2").clone();
+    task2.recur = Some(taskboard_domain::RecurRule {
+        series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(0x5EED)),
+        anchor: now.date_naive(),
+        pattern: taskboard_domain::RecurPattern::Daily {
+            every: taskboard_domain::EveryDays::new(1).expect("1 is a valid interval"),
+        },
+        bound: taskboard_domain::RecurBound::None,
+        continued_from: None,
+        paused_until: None,
+    });
+    state.tasks.insert(task2_id, task2);
+
+    // The reminder badge on task1: an armed at-instant rule pinned a
+    // day past `now` (the `add_armed_rule` shape without its wall
+    // clock read).
+    let rule_id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(0x9E1D));
+    let fire = now + TimeDelta::try_hours(24).unwrap();
+    let instant = taskboard_domain::AtInstant::whole_second(fire).expect("whole second");
+    state.reminders.rules.insert(
+        rule_id,
+        taskboard_domain::ReminderRule {
+            insistence: taskboard_domain::Insistence::Normal,
+            id: rule_id,
+            task: fixture.task1,
+            kind: taskboard_domain::ReminderKind::At(instant),
+            created_at: now,
+            updated_at: now,
+            by: None,
+        },
+    );
+
+    // The second board ("dev") with one long-titled task — the
+    // overflow ellipsis's pin, off the captured board's cards.
+    let dev_board = BoardId::from_uuid(uuid::Uuid::from_u128(0xD001));
+    let mut dev = board_fn(dev_board);
+    "dev".clone_into(&mut dev.title);
+    state.boards.insert(dev_board, dev);
+    let stack_c = StackId::from_uuid(uuid::Uuid::from_u128(0xC001));
+    state
+        .stacks
+        .insert(stack_c, stack(stack_c, dev_board, "c", 0));
+    let long_task = TaskId::from_uuid(uuid::Uuid::from_u128(0x7001));
+    let mut long = task(long_task, stack_c, 0);
+    "a very long ascii task title that overflows the card column width".clone_into(&mut long.title);
+    state.tasks.insert(long_task, long);
+
+    // The degraded sync state (the journey_state_at precedent):
+    // stored Offline + two fabricated pending ops, projection derived.
+    state.sync.set_stored(board_id, SyncPhase::Offline, None);
+    let ops: Vec<taskboard_domain::PendingOp> = (0..2)
+        .map(|i| taskboard_domain::PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(
+                u128::try_from(0x9100 + i).unwrap_or(0),
+            )),
+            op: taskboard_domain::LocalOp::UpdateTask(fixture.task1),
+            queued_at: epoch(),
+        })
+        .collect();
+    taskboard_domain::derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &ops,
+        &mut state.sync,
+    );
+    (fixture, state)
+}
+
 /// The n-stack clean board (r4 chunk 2, the plan's
 /// `golden_state_with_stacks`): one board, `n` stacks titled "a", "b",
 /// "c", … with one task each — the divider journeys' ≥3-column
@@ -732,6 +876,10 @@ pub fn triage_state() -> (TwoBoardFixture, AppState, TaskId) {
         &mut state.sync,
     );
     (fixture, state, caught)
+}
+
+fn board_fn(id: BoardId) -> Board {
+    board(id)
 }
 
 fn title_board(state: &mut AppState, id: BoardId, title: &str) {
