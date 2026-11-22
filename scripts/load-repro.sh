@@ -31,6 +31,7 @@ SELF_TEST=0
 # trap context that each one is actually gone before the pid files go
 # away. `kill -0` is polled with a bounded wait: SIGTERM delivery is
 # asynchronous, and a script has no asynchronous runtime to await.
+# shellcheck disable=SC2329 # registered via `trap cleanup EXIT INT TERM` below; shellcheck does not count trap registration as invocation
 cleanup() {
     for pid_file in "$SPIN_DIR"/*.pid; do
         # Glob unmatched: no children were recorded.

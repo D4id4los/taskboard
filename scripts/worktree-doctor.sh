@@ -150,6 +150,8 @@ done
 
 # Unregistered `*-WT-*` siblings (e.g. a plain dir left by a naming
 # deviation) never enter the sweep — warn so a human can decide.
+# (SC2012 waived for the ls below: the glob is the agent-controlled flat WT-suffix from AGENTS §8, not arbitrary user data)
+# shellcheck disable=SC2012
 while IFS= read -r orphan; do
   [ -n "$orphan" ] || continue
   echo "WARN  not a registered worktree (left alone): $orphan"

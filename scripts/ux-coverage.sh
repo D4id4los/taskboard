@@ -718,7 +718,7 @@ main() {
     [[ -n $rec ]] || continue
     kind=${rec#ROW }
     kind=${kind%% *}
-    rest=${rec#ROW $kind }
+    rest=${rec#ROW "$kind" }
     extra=${rest%% *}
     cells=${rest#* }
     case $kind in
@@ -772,10 +772,12 @@ main() {
     # normalizing only the step-half hyphen (never the US- one)
     step_id=${step/\/S-/\/S}
     declared_steps[$step_id]=1
-    jrn_steps[$idx]=$step
+  # shellcheck disable=SC2004 # idx is a plain integer loop index; the $ keeps the subscript unambiguous
+  jrn_steps[$idx]=$step
   done
   local b_line b_step b_name
   while IFS= read -r b_line; do
+    # shellcheck disable=SC2001 # trimming every leading-space char class; a ${var//} replacement cannot express a class
     b_line=$(sed 's/^[[:space:]]*//' <<<"$b_line")
     [[ $b_line =~ ^bound-test:[[:space:]]*(US-[0-9]+/S-?[0-9]+)[[:space:]]*-\>[[:space:]]*([A-Za-z0-9_/.-]+\.rs)::([A-Za-z0-9_]+)[[:space:]]*$ ]] || {
       echo "PARSE-ERROR: bound-tests: malformed line: $b_line" >&2

@@ -14,6 +14,18 @@ cargo fmt --all -- --check
 echo "[pre-commit] slint token lint"
 python3 scripts/check_slint_tokens.py
 
+# Shellcheck over scripts/*.sh (#907): every gate/harness script is
+# lint-clean by policy; deliberate idioms carry inline `# shellcheck
+# disable=` waivers with recorded rationale. Runs only when a
+# shellcheck binary exists (the dev image may not have one; CI's
+# Security & License lane is the authoritative run).
+if command -v shellcheck >/dev/null 2>&1; then
+  echo "[pre-commit] shellcheck scripts/*.sh"
+  shellcheck -x scripts/*.sh
+else
+  echo "[pre-commit] shellcheck not installed — skipped (CI runs it)"
+fi
+
 # Clippy is a real build (memory-heavy on a cold/incremental tree), so it
 # goes through the cross-worktree memory gate: builds take turns and never
 # start below the MemAvailable floor (2026-11-17 OOM incident). fmt and the

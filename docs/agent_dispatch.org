@@ -200,6 +200,18 @@ landed-state summary, not a from-scratch prompt.
 - Teardown anchors to the main checkout with an absolute path and is
   confirmed via =git worktree list= (AGENTS §8) — the dispatcher does
   this, not the stage-3 agent (see §2).
+- *Measurement hygiene (#1160, 2026-11-22)*: wall-clock numbers from
+  this box are only meaningful with load context, and an idle box is
+  the *only* recording condition. A timing captured while another
+  suite, build, or coverage run holds the box (check the flock
+  holder and MemAvailable first) is discarded, not recorded with a
+  caveat. Where measurements are recorded: runtime/benchmark reports
+  under =.artifacts/reports/= (each carries the box-load context of
+  its run: what else was running, MemAvailable, gate state); the
+  dispatch law's own timing claims (the L-chunk durations in §7, the
+  suite floors quoted in incident reports) cite those reports rather
+  than quoting raw numbers inline. A number whose run context cannot
+  be stated does not get written down.
 
 * 7. Chunk sizing & compression
 

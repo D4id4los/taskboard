@@ -59,7 +59,7 @@ gate_holder_cpu() { # gate_holder_cpu <pid> -> jiffies | rc 1
   rest=${stat##*) }
   read -ra f <<<"$rest"
   if (( ${#f[@]} < 13 )); then return 1; fi
-  printf '%s\n' "$(( ${f[11]} + ${f[12]} ))"
+  printf '%s\n' "$(( f[11] + f[12] ))"
 }
 
 gate_holder_liveness() { # gate_holder_liveness <lock_file> [<prev_cpu>]
