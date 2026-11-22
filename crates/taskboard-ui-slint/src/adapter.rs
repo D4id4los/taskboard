@@ -1666,10 +1666,20 @@ impl Adapter {
         // pair is an editing verb (the habit mint's HAB-14 reading):
         // the flip refuses and the dispatch takes the typed NoTarget.
         // A habit or focusless landing keeps the habit pair's path
-        // untouched (US-14/S3).
+        // untouched (US-14/S3). The twins' own ids mint too: the Task
+        // group page's menu rows route `TaskMoveUp`/`TaskMoveDown`
+        // directly (click ≡ key — the same dispatch entry, no stroke
+        // to flip), so the pair is live from the menu exactly as from
+        // the shared stroke.
         if self.view_state.view() == crate::view_state::ViewId::Today
             && !self.kiosk
-            && matches!(id, ActionId::HabitMoveUp | ActionId::HabitMoveDown)
+            && matches!(
+                id,
+                ActionId::HabitMoveUp
+                    | ActionId::HabitMoveDown
+                    | ActionId::TaskMoveUp
+                    | ActionId::TaskMoveDown
+            )
             && let Some(task) = self
                 .view_state
                 .walk_subject()
@@ -1678,7 +1688,7 @@ impl Adapter {
                     crate::presentation::RowSubject::Habit(_) => None,
                 })
         {
-            id = if matches!(id, ActionId::HabitMoveUp) {
+            id = if matches!(id, ActionId::HabitMoveUp | ActionId::TaskMoveUp) {
                 ActionId::TaskMoveUp
             } else {
                 ActionId::TaskMoveDown
