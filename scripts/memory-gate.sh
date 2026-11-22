@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # Memory gate: serialize build-vs-build peaks across worktrees and refuse
 # to start a memory-heavy command on a starved box (2026-11-17 OOM incident:
 # .artifacts/reports/2026-11-17-oom-incident-concurrency-learning-report.md —

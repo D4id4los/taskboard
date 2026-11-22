@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # Cross-worktree serialization for full quality-gate runs (AGENTS.md §10).
 #
 # Parallel agents in sibling worktrees OOM the box when several of them

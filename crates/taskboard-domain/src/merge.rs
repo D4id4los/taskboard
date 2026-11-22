@@ -6030,8 +6030,10 @@ mod duplicate_reconcile_tests {
             // shape expectation failed without any production
             // nondeterminism (the DEC-5 `(stamp, !is_bound)` tie-break
             // is deterministic; the degenerate shape is pinned by
-            // `the_degenerate_same_ref_group_characterizes_collapse`
-            // below). The shift maps `b2` onto `1..=1_000_000 \ {b1}`
+            // `a_same_ref_candidate_is_a_structural_no_op` below — the
+            // C5-era name; refreshed 2026-11-22 (#892: the
+            // byte-identical window closed when later rounds touched
+            // this file). The shift maps `b2` onto `1..=1_000_000 \ {b1}`
             // distribution-preservingly, so the collision shape can no
             // longer be drawn; the original failing seed stays in
             // `proptest-regressions/merge.txt` as the record of the

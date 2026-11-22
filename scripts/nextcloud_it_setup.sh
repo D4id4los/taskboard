@@ -19,7 +19,6 @@ COMPOSE_FILE="$ROOT/docker/nextcloud-test/compose.yaml"
 # owns two); the exported variable names follow the export prefix.
 SUFFIX="${TASKBOARD_IT_SUFFIX:-}"
 PROJECT="taskboard-it${SUFFIX}"
-CONTAINER="taskboard-it-nextcloud${SUFFIX}"
 PORT="${TASKBOARD_IT_PORT:-8370}"
 # Pinned Deck install (the 1.17.5 contract-fixture gate): empty default =
 # today's `occ app:install deck` (latest app-store version); a tag like
