@@ -1434,3 +1434,264 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
         "the document lane never broadcasts"
     );
 }
+
+// ---- I9/I10: the wiped-row strand (#1150) ------------------------------
+//
+// Board-carried ops whose board row was wiped strand outside both the
+// cycle (no binding ⇒ no cycle) and the orphan lane (`owning_board`
+// returned `Some` unconditionally). These pins watch the connector tier:
+// the ops drain after exactly one cycle, and a `RemoteMissing` drain
+// never re-pushes.
+
+/// The strand harness: the healthy seeded board/stack (so a cycle
+/// exists) plus five outbox ops addressing a board id whose row is
+/// absent, and the wire routes the drain needs — the pull, the
+/// capabilities probe, the flush's anchor create + first upload (the
+/// wiped board's flush trigger rides the healthy board's sidecar lane),
+/// and the two ref-delete DELETEs.
+mod strand_seed {
+    use super::*;
+    use taskboard_domain::{LocalOp, OpId, PendingOp};
+
+    /// The anchor-card create response (the convention-titled carrier).
+    fn anchor_card_json(card: u64, stamp: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": card, "title": "[taskboard] app-data",
+            "stackId": STACK, "type": "plain",
+            "order": 0, "lastModified": stamp, "labels": [],
+            "archived": false, "duedate": null, "done": null
+        })
+    }
+
+    fn attachment_json(stamp: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": 11, "type": "deck_file", "cardId": 70,
+            "createdAt": stamp, "lastModified": stamp, "deletedAt": 0,
+            "extendedData": {
+                "fileName": "taskboard-appdata.json", "filesize": 42,
+                "mimetype": "application/json", "mtime": stamp
+            }
+        })
+    }
+
+    /// The wiped board: an id no row in `state.boards` carries.
+    pub(crate) fn wiped_board() -> taskboard_domain::BoardId {
+        taskboard_domain::BoardId::from(uuid(50))
+    }
+
+    /// The healthy seed plus the five stranded ops (op ids 300–304),
+    /// all addressing the wiped board.
+    pub(crate) fn state_with_stranded_ops() -> taskboard_domain::PersistedState {
+        let mut state = seeded_state();
+        let wiped = wiped_board();
+        let stranded: [(u128, LocalOp); 5] = [
+            (300, LocalOp::UpdateBoard(wiped)),
+            (301, LocalOp::DeleteBoard(wiped)),
+            (302, LocalOp::FlushBoardAppData(wiped)),
+            (
+                303,
+                LocalOp::DeleteRemoteCard {
+                    board: wiped,
+                    card: taskboard_domain::RemoteCardRef {
+                        board: RemoteBoardId0::deck(BOARD),
+                        stack: taskboard_domain::RemoteStackId::deck(9),
+                        card: taskboard_domain::RemoteCardId::deck(777),
+                    },
+                },
+            ),
+            (
+                304,
+                LocalOp::DeleteRemoteStack {
+                    board: wiped,
+                    stack: taskboard_domain::RemoteStackRef {
+                        board: RemoteBoardId0::deck(BOARD),
+                        stack: taskboard_domain::RemoteStackId::deck(8),
+                    },
+                },
+            ),
+        ];
+        for (raw, op) in stranded {
+            state.outbox.push(PendingOp {
+                op_id: OpId(uuid(raw)),
+                op,
+                queued_at: ts(T),
+            });
+        }
+        state
+    }
+
+    /// Two stranded ref-deletes only (the no-double-apply pin's seed).
+    pub(crate) fn state_with_stranded_ref_deletes() -> taskboard_domain::PersistedState {
+        let mut state = seeded_state();
+        let wiped = wiped_board();
+        for (raw, op) in [
+            (
+                303,
+                LocalOp::DeleteRemoteCard {
+                    board: wiped,
+                    card: taskboard_domain::RemoteCardRef {
+                        board: RemoteBoardId0::deck(BOARD),
+                        stack: taskboard_domain::RemoteStackId::deck(9),
+                        card: taskboard_domain::RemoteCardId::deck(777),
+                    },
+                },
+            ),
+            (
+                304,
+                LocalOp::DeleteRemoteStack {
+                    board: wiped,
+                    stack: taskboard_domain::RemoteStackRef {
+                        board: RemoteBoardId0::deck(BOARD),
+                        stack: taskboard_domain::RemoteStackId::deck(8),
+                    },
+                },
+            ),
+        ] {
+            state.outbox.push(PendingOp {
+                op_id: OpId(uuid(raw)),
+                op,
+                queued_at: ts(T),
+            });
+        }
+        state
+    }
+
+    /// The routes a drain cycle addresses. `delete_status` is the
+    /// ref-delete answer (200 = the remote row existed; 404 = already
+    /// gone ⇒ `RemoteMissing`).
+    pub(crate) async fn mount_drain_routes(server: &MockServer, delete_status: u16) {
+        mount_pull(server, serde_json::json!([])).await;
+        // The capabilities probe (the flush lane's feature gates).
+        let body = serde_json::json!({
+            "ocs": {
+                "meta": { "statuscode": 200 },
+                "data": {
+                    "version": { "major": 33 },
+                    "capabilities": { "deck": { "version": "1.19.0" } },
+                },
+            }
+        });
+        Mock::given(method("GET"))
+            .and(path("/ocs/v2.php/cloud/capabilities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+        // The flush's Create ladder on the healthy carrier: anchor card
+        // create, then the first attachment upload.
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(anchor_card_json(70, T + 100)))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/{STACK}/cards/70/attachments"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(attachment_json(T + 100)))
+            .mount(server)
+            .await;
+        // The doomed remote card (stack 9, card 777) and stack (8): the
+        // delete answers `delete_status`; the 404 re-resolve reads the
+        // same listings (card 777 absent ⇒ `RemoteMissing`).
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/9/cards/777"
+            )))
+            .respond_with(
+                ResponseTemplate::new(delete_status).set_body_json(serde_json::json!({
+                    "id": 777, "title": "doomed", "stackId": 9, "type": "plain",
+                    "order": 0, "lastModified": T, "labels": [], "archived": false,
+                    "duedate": null, "done": null
+                })),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/index.php/apps/deck/api/v1.0/boards/{BOARD}/stacks/8"
+            )))
+            .respond_with(
+                ResponseTemplate::new(delete_status).set_body_json(serde_json::json!({
+                    "id": 8, "title": "doomed stack", "boardId": BOARD, "order": 0,
+                    "lastModified": T, "deletedAt": 0, "archived": false, "cards": []
+                })),
+            )
+            .mount(server)
+            .await;
+    }
+
+    /// The cycle's DELETE hit count (the ref-deletes' wire observable).
+    pub(crate) async fn delete_hits(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "DELETE")
+            .count()
+    }
+}
+
+/// I9 — the #1150 strand: five board-carried ops whose board row was
+/// wiped all drain after exactly one cycle — the row-targeting ones
+/// synthetically complete (the planner's missing-entity no-op), the
+/// ref-deletes land on the wire. Nothing strands, and the healthy
+/// board's cycle is otherwise unchanged.
+#[tokio::test(start_paused = true)]
+async fn i9_wiped_board_ops_drain_after_one_cycle() {
+    let server = std::sync::Arc::new(start_server().await);
+    strand_seed::mount_drain_routes(&server, 200).await;
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server, strand_seed::state_with_stranded_ops(), clock).await;
+    let (commands, _actor) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    nudge_cycle(&commands).await;
+
+    // One cycle drains all five: no strand (this is the red→green
+    // observable — pre-fix the ops sit in the outbox forever).
+    eventually(&stack.engine, |app| app.sync.aggregate().pending_ops == 0).await;
+    assert!(
+        stack.repo.snapshot().outbox.is_empty(),
+        "the engine persisted every completion"
+    );
+    // The ref-deletes reached the wire exactly once each.
+    assert_eq!(strand_seed::delete_hits(&stack.server).await, 2);
+}
+
+/// I10 — the no-double-apply pin: a stranded ref-delete the server
+/// answers 404 for completes as `RemoteMissing` and drains exactly
+/// once — the second cycle performs no further pushes for it.
+#[tokio::test(start_paused = true)]
+async fn i10_remote_missing_ref_delete_drains_exactly_once() {
+    let server = std::sync::Arc::new(start_server().await);
+    strand_seed::mount_drain_routes(&server, 404).await;
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(
+        server,
+        strand_seed::state_with_stranded_ref_deletes(),
+        clock,
+    )
+    .await;
+    let (commands, _actor) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    nudge_cycle(&commands).await;
+
+    // Cycle 1: both ref-deletes drain (each answered 404 ⇒ RemoteMissing).
+    eventually(&stack.engine, |app| app.sync.aggregate().pending_ops == 0).await;
+    let deletes_after_one = strand_seed::delete_hits(&stack.server).await;
+    assert_eq!(deletes_after_one, 2, "one delete attempt per ref");
+
+    // Cycle 2: nothing re-pushes — the drained ops are gone.
+    nudge_cycle(&commands).await;
+    eventually(&stack.engine, |app| {
+        app.sync.aggregate().phase == SyncPhase::Idle
+    })
+    .await;
+    assert_eq!(
+        strand_seed::delete_hits(&stack.server).await,
+        deletes_after_one,
+        "a drained RemoteMissing op never re-pushes"
+    );
+}
