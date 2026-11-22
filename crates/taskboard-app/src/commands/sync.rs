@@ -72,7 +72,10 @@ pub async fn run(
         .map(|spec| spec.name);
     let sink = crate::bootstrap::resolve_notifier_sink(&config);
     let app = crate::bootstrap::bootstrap(config, store, sink).await?;
-    let result = sync_on(&app, no_wait, timeout, scope.as_ref()).await;
+    // The one-shot verb owns no `CommandIo` (the `run_core` body shape)
+    // — the process lane is stdout, the same lane `println!` used.
+    let mut stdout = std::io::stdout();
+    let result = sync_on(&app, no_wait, timeout, scope.as_ref(), &mut stdout).await;
     let _ = app.shutdown().await;
     result
 }
@@ -115,11 +118,15 @@ fn scoped_sync_status(
 
 /// The sync steps on a booted core; the caller owns the shutdown (the
 /// session dispatcher calls this directly against the session core).
+/// Resurrect surfacing writes to `out` — the caller's stdout/`io.out`
+/// lane (the writer seam, #1229 plan D6: the `println!` shell bypassed
+/// `CommandIo` and was uncapturable).
 pub(crate) async fn sync_on(
     app: &crate::App,
     no_wait: bool,
     timeout: Duration,
     scope: Option<&taskboard_domain::ConnectorId>,
+    out: &mut (dyn std::io::Write + Send),
 ) -> Result<SyncOutcome, CommandError> {
     if no_wait {
         let view = SyncStatusView::new(&watched_status(&app.engine, scope));
@@ -130,7 +137,7 @@ pub(crate) async fn sync_on(
     // observable (the engine emits during report ingestion).
     let mut system_rx = app.system.subscribe();
     let outcome = sync_on_engine(&app.engine, timeout, scope).await?;
-    report_resurrections(app, &mut system_rx);
+    report_resurrections(app, &mut system_rx, out);
     Ok(outcome)
 }
 
@@ -168,6 +175,7 @@ pub(crate) async fn sync_on_engine(
 fn report_resurrections(
     app: &crate::App,
     system_rx: &mut tokio::sync::broadcast::Receiver<SystemEvent>,
+    out: &mut (dyn std::io::Write + Send),
 ) {
     let mut events = Vec::new();
     while let Ok(event) = system_rx.try_recv() {
@@ -176,7 +184,10 @@ fn report_resurrections(
     let state = app.engine.shared_state().load_full();
     for id in resurrected_tasks(&events) {
         let title = state.tasks.get(&id).map_or("", |t| t.title.as_str());
-        println!("sync: task \"{title}\" held unsynced work; re-created as a new card");
+        let _ = writeln!(
+            out,
+            "sync: task \"{title}\" held unsynced work; re-created as a new card"
+        );
     }
 }
 
@@ -530,7 +541,14 @@ mod detach_tests {
 
         assert_eq!(app.detach_connector().await, DetachOutcome::Detached);
 
-        let outcome = sync_on(&app, false, Duration::from_secs(1), None).await;
+        let outcome = sync_on(
+            &app,
+            false,
+            Duration::from_secs(1),
+            None,
+            &mut std::io::sink(),
+        )
+        .await;
         assert!(
             matches!(outcome, Err(CommandError::SyncUnavailable)),
             "expected the typed refusal, got {outcome:?}"
@@ -755,5 +773,99 @@ mod wait_tests {
             wait_for_sync_result(&fixture.engine, &startup, Duration::from_millis(50), None).await;
         assert!(matches!(outcome, SyncOutcome::TimedOut(_)));
         fixture.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod resurrect_surface_pins {
+    use super::report_resurrections;
+    use std::sync::Arc;
+
+    use taskboard_domain::{StateCommand, SystemEvent};
+
+    use crate::config::AppConfig;
+    use crate::secrets::{AppPassword, CredentialError, CredentialStore};
+
+    #[derive(Debug)]
+    struct FixedStore(AppPassword);
+
+    impl CredentialStore for FixedStore {
+        fn load(&self, _: &str, _: &str) -> Result<AppPassword, CredentialError> {
+            Ok(self.0.clone())
+        }
+        fn store(&self, _: &str, _: &str, _: AppPassword) -> Result<(), CredentialError> {
+            Err(CredentialError::Unsupported)
+        }
+        fn delete(&self, _: &str, _: &str) -> Result<(), CredentialError> {
+            Err(CredentialError::Unsupported)
+        }
+    }
+
+    async fn booted_app(dir: &tempfile::TempDir) -> crate::App {
+        let mut config = AppConfig::default();
+        config.nextcloud.server_url = Some("http://127.0.0.1:9".into());
+        config.nextcloud.username = Some("alice".into());
+        config.storage.db_path = Some(dir.path().join("taskboard.db"));
+        config.app.shutdown_timeout_secs = 2;
+        config.validate().expect("valid");
+        let store: Arc<dyn CredentialStore> = Arc::new(FixedStore(AppPassword::new("pw")));
+        crate::bootstrap::bootstrap(config, store, Arc::new(crate::notifications::LogSink))
+            .await
+            .expect("boots")
+    }
+
+    /// The writer-seam pin (#1229, plan §5/D6): N resurrect events
+    /// (with a duplicate, preserving the arrival-order duplicate law)
+    /// produce exactly N lines on the *injected writer*, in fold
+    /// order — the duplicated id's lines are equal, the distinct ids'
+    /// lines differ. Count + order are structural; the sentence is
+    /// never compared.
+    /// Captures a titled task; the id is state truth, read back from
+    /// the engine outcome.
+    async fn capture(app: &crate::App, title: &str) -> taskboard_domain::TaskId {
+        match app
+            .engine
+            .execute(StateCommand::CaptureTask {
+                title: title.to_owned(),
+                board: None,
+            })
+            .await
+            .expect("capture")
+        {
+            taskboard_domain::CommandOutcome::CreatedTask(id) => id,
+            other => panic!("capture outcome: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resurrect_events_render_exactly_n_lines_in_fold_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let app = booted_app(&dir).await;
+        let one = capture(&app, "resurrect-one").await;
+        let two = capture(&app, "resurrect-two").await;
+
+        let mut rx = app.system.subscribe();
+        app.system
+            .send(SystemEvent::TaskResurrected(one))
+            .expect("broadcast alive");
+        app.system
+            .send(SystemEvent::TaskResurrected(two))
+            .expect("broadcast alive");
+        app.system
+            .send(SystemEvent::TaskResurrected(one))
+            .expect("broadcast alive");
+
+        let mut sink: Vec<u8> = Vec::new();
+        report_resurrections(&app, &mut rx, &mut sink);
+        let text = String::from_utf8(sink).expect("utf-8 sink");
+        let lines: Vec<&str> = text.split('\n').filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 3, "two episodes + the duplicate = three lines");
+        assert_eq!(
+            lines[0], lines[2],
+            "the duplicated id renders the same line twice"
+        );
+        assert_ne!(lines[0], lines[1], "distinct ids render distinct lines");
+
+        app.shutdown().await;
     }
 }
