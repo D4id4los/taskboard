@@ -160,6 +160,11 @@ pub enum CommandError {
     /// is never done, so it idempotence-no-ops exactly as before.
     #[error("tracker tasks cannot be done")]
     TrackerTaskNotDoneable(TaskId),
+    /// A `TaskMoveUp`/`TaskMoveDown` stroke on the task that already
+    /// sits at the requested stack edge (US-14, #1031): the boundary
+    /// refuses typed — the compact move never wraps to the far end.
+    #[error("task is already at the stack boundary")]
+    TaskAtBoundary(TaskId),
     /// `PauseSeries` (or a convert verb) names a task that carries no
     /// recurrence rule — there is no series to pause/convert.
     #[error("task does not recur")]
@@ -713,6 +718,26 @@ fn bound_admits(app: &AppState, rule: &RecurRule, next_date: NaiveDate) -> bool 
         RecurBound::Count(n) => {
             u64::from(count_done_in_series(app, rule.series)) + 1 < u64::from(n.get())
         }
+    }
+}
+
+/// The drop-slot order (D-C13, US-14's shared arithmetic): the **floor
+/// midpoint of the drop slot's free interval** — `prev`/`next` are the
+/// orders bracketing the slot (`None` at either end; the empty row
+/// source mints 0). The ONE order arithmetic: the completion spawn's
+/// `insertion_order_after` expresses the same convention, the UI's
+/// drag gap and habit reorder pair delegate here
+/// (`presentation::habit_drop_order` is this function), and the
+/// `TaskMoveUp`/`TaskMoveDown` compact-move rule resolves its
+/// stack-adjacent slot through it — a second, divergent order
+/// arithmetic is the round's named finding.
+#[must_use]
+pub fn floor_midpoint_order(prev: Option<i64>, next: Option<i64>) -> i64 {
+    match (prev, next) {
+        (None, None) => 0,
+        (None, Some(next)) => next - 1,
+        (Some(prev), None) => prev + 1,
+        (Some(prev), Some(next)) => prev + (next - prev) / 2,
     }
 }
 
@@ -1328,6 +1353,59 @@ pub fn plan_command(
             updated.stack = target.id;
             updated.order = *order;
             // Composite intent: stack + order share one write clock.
+            updated.clocks.position = now;
+            updated.authors.position = author;
+            Ok(CommandPlan {
+                actions: vec![
+                    PersistenceAction::UpsertTask(updated),
+                    enqueue(LocalOp::MoveTask(*id), ids, now),
+                ],
+                outcome: CommandOutcome::Applied,
+            })
+        }
+        // The Today compact-move pair (US-14, #1031): the one-shot
+        // twins of the habit keyboard reorder. The engine resolves the
+        // stack-adjacent slot itself — the row source is the stack's
+        // live rows in the canonical `(order, id)` order (the same
+        // derivation the Today sections render from), and the slot
+        // arithmetic is the shared `floor_midpoint_order` (the drag
+        // gap's and the habit pair's exact convention: a gap-1
+        // neighbour ties, the canonical sort resolves). A boundary
+        // stroke refuses typed — the pair never wraps (US-14/AC-2).
+        StateCommand::TaskMoveUp { id } | StateCommand::TaskMoveDown { id } => {
+            let task = live_task(app, *id)?;
+            let up = matches!(command, StateCommand::TaskMoveUp { .. });
+            let mut rows: Vec<&Task> = app
+                .tasks
+                .values()
+                .filter(|t| t.is_live() && t.stack == task.stack)
+                .collect();
+            rows.sort_by_key(|t| (t.order, t.id));
+            let position = rows.iter().position(|t| t.id == *id);
+            let slot = position.and_then(|position| {
+                if up {
+                    let prev = position
+                        .checked_sub(1)
+                        .and_then(|i| rows.get(i))
+                        .map(|t| t.order);
+                    prev.map(|prev| floor_midpoint_order(Some(prev), Some(task.order)))
+                } else {
+                    rows.get(position + 1)
+                        .map(|t| t.order)
+                        .map(|next| floor_midpoint_order(Some(task.order), Some(next)))
+                }
+            });
+            let Some(order) = slot else {
+                return Err(CommandError::TaskAtBoundary(*id));
+            };
+            if order == task.order {
+                // The habit pair's accepted no-op: a gap-1 neighbour
+                // ties on the mover's own order, the canonical sort
+                // keeps the row where it is.
+                return Ok(no_op());
+            }
+            let mut updated = task.clone();
+            updated.order = order;
             updated.clocks.position = now;
             updated.authors.position = author;
             Ok(CommandPlan {
@@ -4748,6 +4826,210 @@ mod tests {
             ),
             Err(CommandError::UnknownLabel(missing_label))
         );
+    }
+
+    // ---- US-14 (#1031): the Today compact-move pair -----------------
+    // The engine resolves the stack-adjacent slot through the shared
+    // floor-midpoint arithmetic (`floor_midpoint_order` — the drag
+    // gap's and the habit pair's exact convention) and refuses the
+    // boundary typed: no wrap (the chunk plan's traps).
+
+    #[test]
+    fn us14_s1_task_move_up_resolves_the_floor_midpoint_slot() {
+        let (mut app, outbox) = base();
+        // Sibling below at 0, subject at 10: the free interval is
+        // (0, 10) — the shared floor midpoint lands at 5.
+        let mut sibling = task(TASK + 1, stack_id(), true);
+        sibling.order = 0;
+        app.tasks.insert(sibling.id, sibling);
+        let subject = app.tasks.get_mut(&task_id()).expect("subject");
+        subject.order = 10;
+        let plan = run(&app, &outbox, &StateCommand::TaskMoveUp { id: task_id() }).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.order, 5);
+        assert_eq!(updated.clocks.position, now());
+        let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
+            panic!("second action must be the enqueue");
+        };
+        assert!(matches!(op.op, LocalOp::MoveTask(id) if id == task_id()));
+    }
+
+    #[test]
+    fn us14_s1_task_move_down_resolves_the_floor_midpoint_slot() {
+        let (mut app, outbox) = base();
+        let mut sibling = task(TASK + 1, stack_id(), true);
+        sibling.order = 10;
+        app.tasks.insert(sibling.id, sibling);
+        let subject = app.tasks.get_mut(&task_id()).expect("subject");
+        subject.order = 0;
+        let plan = run(&app, &outbox, &StateCommand::TaskMoveDown { id: task_id() }).unwrap();
+        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+            panic!("first action must be the upsert");
+        };
+        assert_eq!(updated.order, 5);
+    }
+
+    #[test]
+    fn us14_s2_task_move_boundary_typed_refusal() {
+        // A single-task stack: both strokes sit at the boundary — the
+        // typed refusal, never a wrap.
+        let (app, outbox) = base();
+        assert_eq!(
+            run(&app, &outbox, &StateCommand::TaskMoveUp { id: task_id() }),
+            Err(CommandError::TaskAtBoundary(task_id()))
+        );
+        assert_eq!(
+            run(&app, &outbox, &StateCommand::TaskMoveDown { id: task_id() }),
+            Err(CommandError::TaskAtBoundary(task_id()))
+        );
+        // Two rows, subject on top: up refuses, down moves.
+        let (mut app, outbox) = base();
+        let mut sibling = task(TASK + 1, stack_id(), true);
+        sibling.order = 10;
+        app.tasks.insert(sibling.id, sibling);
+        let subject = app.tasks.get_mut(&task_id()).expect("subject");
+        subject.order = 0;
+        assert_eq!(
+            run(&app, &outbox, &StateCommand::TaskMoveUp { id: task_id() }),
+            Err(CommandError::TaskAtBoundary(task_id()))
+        );
+        // ... and the mirrored bottom boundary.
+        let mut subject = app.tasks.get_mut(&task_id()).expect("subject").clone();
+        subject.order = 10;
+        app.tasks.insert(subject.id, subject);
+        let mut sibling = app
+            .tasks
+            .get_mut(&(TaskId::from(uuid::Uuid::from_u128(u128::from(TASK + 1)))))
+            .expect("sibling")
+            .clone();
+        sibling.order = 0;
+        app.tasks.insert(sibling.id, sibling);
+        assert_eq!(
+            run(&app, &outbox, &StateCommand::TaskMoveDown { id: task_id() }),
+            Err(CommandError::TaskAtBoundary(task_id()))
+        );
+    }
+
+    #[test]
+    fn us14_task_move_adjacent_gap1_tie_is_the_accepted_no_op() {
+        // The habit pair's exact convention: a gap-1 neighbour ties the
+        // mover's own order (the canonical `(order, id)` sort keeps the
+        // row where it is) — the accepted no-op, not a second
+        // arithmetic.
+        let (mut app, outbox) = base();
+        let mut sibling = task(TASK + 1, stack_id(), true);
+        sibling.order = 2;
+        app.tasks.insert(sibling.id, sibling);
+        let subject = app.tasks.get_mut(&task_id()).expect("subject");
+        subject.order = 1;
+        let plan = run(&app, &outbox, &StateCommand::TaskMoveDown { id: task_id() }).unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+    }
+
+    #[test]
+    fn us14_task_move_unknown_task_is_the_typed_unknown() {
+        let (app, outbox) = base();
+        let missing = TaskId::from(uuid::Uuid::from_u128(4242));
+        assert_eq!(
+            run(&app, &outbox, &StateCommand::TaskMoveUp { id: missing }),
+            Err(CommandError::UnknownTask(missing))
+        );
+    }
+
+    // The chunk plan's Σ/order property (the habit pair's established
+    // pattern over the new engine rule): for randomized order
+    // vectors, a successful compact move permutes exactly one row's
+    // order, keeps it inside the bracket it stepped over, and the
+    // boundary rows refuse typed (no wrap).
+    proptest! {
+        #![proptest_config(crate::test_support::proptest_config(64))]
+
+        #[test]
+        fn us14_task_move_property_permutes_one_row_within_the_bracket(
+            orders in proptest::collection::vec(0i64..1000, 2..8),
+            pick in 0usize..8,
+            up in proptest::bool::ANY,
+        ) {
+            let (mut app, outbox) = base();
+            let stack = stack_id();
+            // A clean stack: `base()`'s task leaves (the property's row
+            // source is the generated vector alone).
+            app.tasks.remove(&task_id());
+            // Distinct orders (the strategy may repeat a draw).
+            let mut orders = orders;
+            orders.sort_unstable();
+            orders.dedup();
+            let n = orders.len();
+            let ids: Vec<TaskId> = (0..n)
+                .map(|i| {
+                    let t = task(TASK + 1 + u64::try_from(i).expect("id fits"), stack, true);
+                    app.tasks.insert(t.id, t.clone());
+                    t.id
+                })
+                .collect();
+            for (i, order) in orders.iter().enumerate() {
+                let t = app.tasks.get_mut(&ids[i]).expect("row");
+                t.order = *order;
+            }
+            let pick = pick % n;
+            let subject = ids[pick];
+            let command = if up {
+                StateCommand::TaskMoveUp { id: subject }
+            } else {
+                StateCommand::TaskMoveDown { id: subject }
+            };
+            let at_boundary = (up && pick == 0) || (!up && pick == n - 1);
+            match run(&app, &outbox, &command) {
+                Err(CommandError::TaskAtBoundary(id)) => {
+                    prop_assert!(at_boundary, "refusal only at the boundary");
+                    prop_assert_eq!(id, subject);
+                }
+                Err(error) => panic!("unexpected refusal {error:?}"),
+                Ok(plan) => {
+                    prop_assert!(!at_boundary, "a boundary stroke never plans");
+                    let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
+                        panic!("first action must be the upsert");
+                    };
+                    prop_assert_eq!(updated.id, subject);
+                    let bracket = if up {
+                        orders[pick - 1]..=orders[pick]
+                    } else {
+                        orders[pick]..=orders[pick + 1]
+                    };
+                    prop_assert!(
+                        bracket.contains(&updated.order),
+                        "the new order stays inside the stepped bracket"
+                    );
+                    // Σ/order: only the subject's order moved; every
+                    // other row is byte-identical, so the row set is a
+                    // one-row permutation of the source.
+                    let mut untouched: Vec<(i64, TaskId)> = app
+                        .tasks
+                        .values()
+                        .filter(|t| t.id != subject)
+                        .map(|t| (t.order, t.id))
+                        .collect();
+                    untouched.sort();
+                    let mut after: Vec<(i64, TaskId)> = app
+                        .tasks
+                        .values()
+                        .map(|t| {
+                            if t.id == subject {
+                                (updated.order, t.id)
+                            } else {
+                                (t.order, t.id)
+                            }
+                        })
+                        .collect();
+                    after.retain(|(_, id)| *id != subject);
+                    after.sort();
+                    prop_assert_eq!(untouched, after);
+                }
+            }
+        }
     }
 
     #[test]

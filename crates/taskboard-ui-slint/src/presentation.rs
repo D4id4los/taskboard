@@ -8082,15 +8082,16 @@ pub const fn habit_editing_enabled(kiosk: bool) -> bool {
 /// slot's free interval** over the row source's orders (the
 /// `insertion_order_after` convention, D-C13 — the UI computes
 /// midpoints, the planner stamps the absolute value). `prev`/`next`
-/// are the orders bracketing the slot (`None` at either end).
+/// are the orders bracketing the slot (`None` at either end). A
+/// delegate: the arithmetic lives in the domain
+/// (`taskboard_domain::command::floor_midpoint_order`) since US-14
+/// (#1031) — the engine's compact-move rule speaks the SAME
+/// arithmetic, so there is exactly one order law (the round's
+/// no-second-arithmetic trap). The name stays for the habit pair's
+/// call sites and tests.
 #[must_use]
 pub fn habit_drop_order(prev: Option<i64>, next: Option<i64>) -> i64 {
-    match (prev, next) {
-        (None, None) => 0,
-        (None, Some(next)) => next - 1,
-        (Some(prev), None) => prev + 1,
-        (Some(prev), Some(next)) => prev + (next - prev) / 2,
-    }
+    taskboard_domain::command::floor_midpoint_order(prev, next)
 }
 
 /// The focused-subject key translation (chunk 8 D3): at the dispatch

@@ -769,9 +769,19 @@ pub struct ViewState {
     /// The planner's focused pane (J3 R-5, round 9 chunk 9): `0` =
     /// placed boxes, `1` = candidate pool — the `models.rs`
     /// `plan_position` pane numbering. The directional left/right
-    /// keys flip it; the in-pane walk is not landed (no planner
-    /// cursor seam today — the chunk plan §4's recorded scope).
+    /// keys flip it; the in-pane walk rides the K4 cursor state
+    /// (`plan_cursor`, US-15 — the typed inert retired, #1041).
     plan_focus_pane: usize,
+    /// The planner's in-pane row cursor (US-15, #1041): `None` =
+    /// disarmed; `Some(task)` = the walked row. The K4 selected-row
+    /// cursor state's planner adopter (R-9 — the rule cursor's exact
+    /// shape: adapter-owned presentation state, id-keyed like the
+    /// rule cursor because indices go stale on any roster change).
+    /// Armed by the first vertical directional stroke over the
+    /// focused pane's rows; cleared by the pane switch, the view
+    /// exit, the global cancel, and the refresh clamp (a dead id or
+    /// a pane that no longer holds it — the clamp law).
+    plan_cursor: Option<TaskId>,
 }
 
 /// The `Flow` the flow accessors return when no flow level is live —
@@ -969,6 +979,7 @@ impl ViewState {
             selection: BoardSelection::default(),
             pending_board_select: None,
             plan_focus_pane: 0,
+            plan_cursor: None,
         }
     }
 
@@ -1580,6 +1591,27 @@ impl ViewState {
         self.rule_cursor_disarmed = true;
     }
 
+    /// The planner's in-pane cursor (US-15, #1041): `Some(task)` while
+    /// armed on the walked row, `None` while disarmed. Pure
+    /// presentation — read by the Activate resolution (the row's own
+    /// seam) and the refresh clamp. Never synced, never journaled.
+    #[must_use]
+    pub const fn plan_cursor(&self) -> Option<TaskId> {
+        self.plan_cursor
+    }
+
+    /// The cursor's write (the rule cursor's select twin; the walk's
+    /// arming and stepping both land here — one write seam).
+    pub(crate) fn select_plan_cursor(&mut self, task: TaskId) {
+        self.plan_cursor = Some(task);
+    }
+
+    /// The planner cursor's typed clear (the lifecycle sites: the
+    /// pane switch, the global cancel, the refresh clamp).
+    pub(crate) fn clear_plan_cursor(&mut self) {
+        self.plan_cursor = None;
+    }
+
     /// The subject's live rule roster in id-table order — the exact
     /// derivation the row projection speaks (`state.reminders.rules`
     /// filtered to the subject), so the walk's landing and the
@@ -1810,13 +1842,15 @@ impl ViewState {
 
     /// The directional left/right kept arm on the planner (J3 R-5):
     /// the two-pane grammar's pane switch. Two panes, so both
-    /// directions toggle; Up/Down are not routed here (no in-pane
-    /// cursor seam today — the chunk plan §4's recorded scope, the
-    /// backlog issue carries the walk).
+    /// directions toggle; Up/Down ride the in-pane cursor (US-15,
+    /// #1041 — the K4 adopter). The switch is a cursor clear site
+    /// (US-15/S1's escape column; the K4 clear law — the cursor is
+    /// pane-scoped, never carried across panes, US-15/S4).
     pub fn switch_plan_pane(&mut self, direction: i32) -> Vec<FlowOutcome> {
         if self.view() != ViewId::PlanNextDay {
             return Vec::new(); // the typed no-op: the grammar is the planner's
         }
+        self.clear_plan_cursor();
         // Two panes: the step lands if it stays in `{0, 1}`, else it
         // toggles (a second Left from boxes wraps to the pool — the
         // two-value ring is the pane count's own geometry).

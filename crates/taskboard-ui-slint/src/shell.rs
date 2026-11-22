@@ -145,6 +145,7 @@ impl KeymapShell {
             habit_quota_draft: None,
             habit_move_up: None,
             habit_move_down: None,
+            task_move: None,
             plan_target: None,
             create_target: None,
             reminder_target: None,

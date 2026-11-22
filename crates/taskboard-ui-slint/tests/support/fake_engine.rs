@@ -44,6 +44,43 @@ impl FakeEngine {
     }
 }
 
+/// The compact-move pair's fake-side resolution (US-14, #1031): the
+/// same stack-adjacent slot the real engine plans — one step toward
+/// the named edge through the shared floor-midpoint arithmetic; the
+/// boundary is the fake's no-op (the typed refusal is the real
+/// engine's).
+fn apply_compact_move(state: &mut AppState, id: taskboard_domain::TaskId, up: bool) {
+    let Some(subject) = state.tasks.get(&id).cloned() else {
+        return;
+    };
+    let mut rows: Vec<&taskboard_domain::entities::Task> = state
+        .tasks
+        .values()
+        .filter(|t| t.is_live() && t.stack == subject.stack)
+        .collect();
+    rows.sort_by_key(|t| (t.order, t.id));
+    let Some(position) = rows.iter().position(|t| t.id == id) else {
+        return;
+    };
+    let prev = position
+        .checked_sub(1)
+        .and_then(|i| rows.get(i))
+        .map(|t| t.order);
+    let next = rows.get(position + 1).map(|t| t.order);
+    let order = if up {
+        prev.map(|prev| {
+            taskboard_domain::command::floor_midpoint_order(Some(prev), Some(subject.order))
+        })
+    } else {
+        next.map(|next| {
+            taskboard_domain::command::floor_midpoint_order(Some(subject.order), Some(next))
+        })
+    };
+    if let (Some(order), Some(task)) = (order, state.tasks.get_mut(&id)) {
+        task.order = order;
+    }
+}
+
 impl FakeEngine {
     /// Opens the boundary channel over `state` (the same `ArcSwap`
     /// [`taskboard_ui_slint::mount`] reads).
@@ -302,6 +339,15 @@ impl FakeEngine {
                         task.stack = stack;
                         task.order = order;
                     }
+                }
+                // The Today compact-move pair (US-14, #1031): the
+                // fake resolves the same slot arithmetic the real
+                // engine plans — one up-step/down-step per command.
+                StateCommand::TaskMoveUp { id } => {
+                    apply_compact_move(&mut state, id, true);
+                }
+                StateCommand::TaskMoveDown { id } => {
+                    apply_compact_move(&mut state, id, false);
                 }
                 StateCommand::MoveStack { id, order } => {
                     if let Some(stack) = state.stacks.get_mut(&id) {

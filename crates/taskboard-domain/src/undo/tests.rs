@@ -1249,6 +1249,37 @@ fn undo_of_move_restores_stack_and_order() {
 }
 
 #[test]
+fn undo_of_task_compact_move_restores_the_order_through_move_task() {
+    // US-14 (#1031): the compact-move pair shares `MoveTask`'s inverse
+    // class — the pre-image row's (stack, order) restores through the
+    // ordinary `MoveTask`, so the undo line carries one verb family
+    // for positional edits.
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let _below = h.task(stack, "below");
+    let subject = h.task(stack, "subject");
+    // Widen the gap so the up slot is an interior midpoint (subject
+    // pushed to 10, below stays at 1 → midpoint 5), then compact-move
+    // the subject up.
+    h.exec(&StateCommand::MoveTask {
+        id: subject,
+        stack,
+        order: 10,
+    })
+    .expect("widened");
+    h.exec(&StateCommand::TaskMoveUp { id: subject })
+        .expect("moved up");
+    assert_eq!(h.disk.tasks[&subject].order, 5, "the floor midpoint slot");
+    h.exec(&StateCommand::Undo).expect("undone");
+    let after = &h.disk.tasks[&subject];
+    // The pre-image is the compact move's own pre-state (order 10 —
+    // the widening landed before it), never a recomputation.
+    assert_eq!(after.order, 10, "the pre-image order restored");
+    assert_eq!(after.clocks.position, ts(h.now), "fresh position clock");
+}
+
+#[test]
 fn undo_of_rename_stack_restores_the_title() {
     let mut h = Harness::new();
     let board = h.board();

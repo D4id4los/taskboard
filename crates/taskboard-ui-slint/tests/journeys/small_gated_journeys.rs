@@ -1145,5 +1145,543 @@ fn us9_s3_roster_row_verb_uses_own_seam() {
             "the repeat disarms; nothing dispatched"
         );
         harness.assert_commands(&[]);
+// -- US-13: File-to candidate activation (#1030, W-14) -------------------
+
+/// The File-to journeys' fixture (the `journeys.rs` walk fixture's
+/// shape, inlined): the golden state plus an inbox board/stack with two
+/// triage rows, and task0 scheduled inside yesterday's window so the
+/// Day walk has a carry row.
+fn walk_fixture_state() -> (fixture::Fixture, taskboard_domain::AppState) {
+    let (fixture, mut state) = fixture::golden_state();
+    state.reflection.entries.clear();
+    let board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::new_v4());
+    state.boards.insert(
+        board,
+        taskboard_domain::entities::Board {
+            id: board,
+            remote: None,
+            title: "Inbox".to_owned(),
+            color: taskboard_domain::entities::Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::entities::BoardClocks {
+                title: taskboard_domain::entities::BoardClocks::epoch(),
+                color: taskboard_domain::entities::BoardClocks::epoch(),
+                archived: taskboard_domain::entities::BoardClocks::epoch(),
+                deleted: taskboard_domain::entities::BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::BoardAuthors::default(),
+            remote_seen: None,
+        },
+    );
+    let inbox_stack = taskboard_domain::StackId::from_uuid(uuid::Uuid::new_v4());
+    state.stacks.insert(
+        inbox_stack,
+        taskboard_domain::entities::Stack {
+            id: inbox_stack,
+            remote: None,
+            board,
+            title: "Inbox".to_owned(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::entities::StackClocks {
+                title: taskboard_domain::entities::BoardClocks::epoch(),
+                order: taskboard_domain::entities::BoardClocks::epoch(),
+                deleted: taskboard_domain::entities::BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::StackAuthors::default(),
+            remote_seen: None,
+        },
+    );
+    for title in ["triage-me", "triage-me-too"] {
+        let task = taskboard_domain::entities::Task {
+            id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
+            remote: None,
+            label_memberships: std::collections::BTreeMap::new(),
+            title: title.to_owned(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: inbox_stack,
+            order: 0,
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::entities::TaskClocks {
+                title: taskboard_domain::entities::BoardClocks::epoch(),
+                description: taskboard_domain::entities::BoardClocks::epoch(),
+                duedate: taskboard_domain::entities::BoardClocks::epoch(),
+                scheduled: taskboard_domain::entities::BoardClocks::epoch(),
+                done: taskboard_domain::entities::BoardClocks::epoch(),
+                position: taskboard_domain::entities::BoardClocks::epoch(),
+                effort: taskboard_domain::entities::BoardClocks::epoch(),
+                importance: taskboard_domain::entities::BoardClocks::epoch(),
+                urgency: taskboard_domain::entities::BoardClocks::epoch(),
+                recur: taskboard_domain::entities::BoardClocks::epoch(),
+                kind: taskboard_domain::entities::BoardClocks::epoch(),
+                archived: taskboard_domain::entities::BoardClocks::epoch(),
+                deleted: taskboard_domain::entities::BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
+            remote_seen: None,
+            remote_baseline: None,
+        };
+        state.tasks.insert(task.id, task);
+    }
+    // task0 carries a scheduled anchor inside yesterday's window (the
+    // midnight-aligned convention; the harness calendar's vocabulary).
+    let calendar = fixture::harness_calendar();
+    let now = chrono::Utc::now();
+    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
+    let carry = calendar.instant(
+        yesterday,
+        chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
+    );
+    let mut task0 = state.tasks.get(&fixture.task0).expect("task0").clone();
+    task0.scheduled = Some(carry);
+    state.tasks.insert(fixture.task0, task0);
+    (fixture, state)
+}
+
+/// Opens the review walk over the fixture (the action route — the
+/// `mount_open_walk` shape).
+fn open_walk_over_fixture(harness: &mut support::harness::Harness) {
+    harness.handle.dispatch_action(ActionId::ReviewOpen);
+    harness.driver.advance_time(0);
+    assert!(
+        harness.handle.window().get_walk_model().open,
+        "the walk opened"
+    );
+    // Advance into the Inbox stage, then arm the File-to picker.
+    harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+    harness.driver.advance_time(0);
+    harness.handle.dispatch_action(ActionId::ReviewInboxFile);
+    harness.driver.advance_time(0);
+    assert!(
+        harness.handle.window().get_walk_model().filing,
+        "File to… armed the picker"
+    );
+}
+
+/// US-13/AC-1 (`us13_s1_candidate_key_activation_commits`): a
+/// candidate row activated through its accessible-button activation
+/// (the AT default action — the click ≡ key seam §7.1) arms THAT
+/// candidate, and the commit verb routes the ordinary `MoveTask` for
+/// the picked stack. The armed prev/next walk is untouched.
+#[test]
+fn us13_s1_candidate_key_activation_commits() {
+    let (fixture, state) = walk_fixture_state();
+    let stack_b = fixture.stack_b;
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1000, 900);
+        open_walk_over_fixture(harness);
+
+        // The first candidate arms by construction (index 0); the key
+        // activation on the SECOND candidate ("b") flips the arm. The
+        // picker's rows share one column, so the target is the "b"
+        // button that sits beside an "a" button (the modal's own list,
+        // never a look-alike behind it).
+        let column_of = |label: &str| -> Vec<f32> {
+            harness
+                .driver
+                .find_all_by_label(label)
+                .into_iter()
+                .filter(support::driver::Element::is_accessible_button)
+                .map(|element| element.absolute_position().x)
+                .collect()
+        };
+        let columns = column_of("a");
+        assert!(
+            !columns.is_empty(),
+            "the candidate rows render as accessible buttons"
+        );
+        let target = harness
+            .driver
+            .find_all_by_label("b")
+            .into_iter()
+            .filter(support::driver::Element::is_accessible_button)
+            .find(|element| {
+                columns
+                    .iter()
+                    .any(|column| (element.absolute_position().x - column).abs() < f32::EPSILON)
+            })
+            .expect("the armed picker's second candidate renders");
+        target.invoke_default_action();
+        harness.driver.advance_time(0);
+        assert_eq!(
+            harness.handle.window().get_walk_model().candidate_index,
+            1,
+            "the activated candidate is the armed one"
+        );
+
+        // The commit verb routes the ordinary seam for the picked
+        // stack — the armed picker's commit is unchanged.
+        harness.handle.dispatch_action(ActionId::ReviewFileCommit);
+        harness.driver.advance_time(0);
+        let drained = harness.engine.drain();
+        match drained.as_slice() {
+            [StateCommand::MoveTask { stack, .. }] => {
+                assert_eq!(*stack, stack_b, "the key-activated candidate");
+            }
+            other => panic!("one MoveTask, got {other:?}"),
+        }
+    });
+}
+
+/// US-13/AC-2 (`us13_s2_candidate_rows_accessible_button`): every
+/// candidate row is an accessible button (the structural check — the
+/// role read, never a label read).
+#[test]
+fn us13_s2_candidate_rows_accessible_button() {
+    let (_fixture, state) = walk_fixture_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1000, 900);
+        open_walk_over_fixture(harness);
+        let candidates: Vec<_> = harness
+            .driver
+            .find_all_by_label("a")
+            .into_iter()
+            .filter(support::driver::Element::is_accessible_button)
+            .collect();
+        assert!(
+            !candidates.is_empty(),
+            "the candidate row is an accessible button"
+        );
+    });
+}
+
+// -- US-14: Today task compact-move (#1031, W-15) ------------------------
+
+/// US-14/AC-1 (`us14_s1_task_move_up_dispatches`): Shift+Up over a
+/// task-focused walk dispatches `StateCommand::TaskMoveUp` (the R-8
+/// kind resolution — the shared stroke, no second binding), and the
+/// engine resolves the floor-midpoint slot (0, 10) → 5.
+#[test]
+fn us14_s1_task_move_up_dispatches() {
+    let (fx, mut state) = fixture::journey_state();
+    let task1 = fx.task1;
+    // Widen the stack-a gap so the up slot is an interior midpoint.
+    state.tasks.get_mut(&fx.task0).expect("task0").order = 0;
+    state.tasks.get_mut(&task1).expect("task1").order = 10;
+    support::harness::run_journey(state, move |harness| {
+        harness.handle.dispatch_action(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        // The walk lands on the first today row: the overdue task1.
+        harness.handle.dispatch_action(ActionId::NavFirstItem);
+        harness.driver.advance_time(0);
+        // The habit pair's stroke resolves to its task twin.
+        harness.handle.dispatch_action(ActionId::HabitMoveUp);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::TaskMoveUp { id }] => assert_eq!(*id, task1),
+            other => panic!("the task twin dispatched, got {other:?}"),
+        }
+        // The engine folded the midpoint slot in.
+        harness.engine.settle(&harness.handle);
+        assert_eq!(
+            harness.engine.snapshot().tasks[&task1].order,
+            5,
+            "the shared floor-midpoint arithmetic"
+        );
+    });
+}
+
+/// US-14/AC-2 (`us14_s2_task_move_boundary_typed_refusal`): a
+/// task-focused Shift+Up at the stack's top dispatches the command and
+/// the engine refuses typed — the order never wraps or changes.
+#[test]
+fn us14_s2_task_move_boundary_typed_refusal() {
+    let (fx, mut state) = fixture::journey_state();
+    let task1 = fx.task1;
+    // task1 at the stack top, sibling below.
+    state.tasks.get_mut(&fx.task0).expect("task0").order = 10;
+    state.tasks.get_mut(&task1).expect("task1").order = 0;
+    support::harness::run_journey(state, move |harness| {
+        harness.handle.dispatch_action(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFirstItem);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitMoveUp);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::TaskMoveUp { id }] => assert_eq!(*id, task1),
+            other => panic!("the task twin dispatched, got {other:?}"),
+        }
+        // The typed refusal resolves: the order stands (no wrap).
+        harness.engine.settle(&harness.handle);
+        assert_eq!(
+            harness.engine.snapshot().tasks[&task1].order,
+            0,
+            "the boundary stroke refused typed — the row holds"
+        );
+    });
+}
+
+/// US-14/AC-3 (`us14_s3_habit_pair_unchanged_on_habit_row`): the same
+/// Shift+Up stroke over a HABIT walk landing still routes the landed
+/// `MoveHabit` pair (the R-8 resolution is typed on the row kind — no
+/// habit regression).
+#[test]
+fn us14_s3_habit_pair_unchanged_on_habit_row() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    for (order, title) in [(0, "water"), (10, "stretch")] {
+        let habit = taskboard_domain::habit::Habit {
+            id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+            board,
+            title: title.to_owned(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(2).expect("quota"),
+            ),
+            order,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: taskboard_domain::habit::HabitClocks::all(chrono::Utc::now()),
+            continued_from: None,
+            deleted: false,
+            by: None,
+            paused_until: None,
+        };
+        state.habits.habits.insert(habit.id, habit);
+    }
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        // The walk lands on the LAST row: the second habit (the
+        // widened domain's tail — tasks lead, habits follow).
+        harness.handle.dispatch_action(ActionId::NavLastItem);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitMoveUp);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::MoveHabit { order: 5, .. }] => {}
+            other => panic!("the habit pair routed unchanged, got {other:?}"),
+        }
+    });
+}
+
+// -- US-15: the planner in-pane cursor (#1041, W-16) ---------------------
+
+/// The planner journeys' fixture: task2 scheduled into tomorrow's
+/// morning (a placed box), task0/task1 unplaced (the pool).
+fn planner_fixture() -> (
+    fixture::Fixture,
+    taskboard_domain::AppState,
+    taskboard_domain::TaskId,
+) {
+    let (fx, mut state) = fixture::golden_state();
+    let calendar = fixture::harness_calendar();
+    let now = chrono::Utc::now();
+    let tomorrow = calendar.today(now).succ_opt().expect("tomorrow");
+    let box_instant = calendar.instant(
+        tomorrow,
+        chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
+    );
+    // The box: stack b's task (the fixture's third row).
+    let box_task = state
+        .tasks
+        .values()
+        .find(|task| task.stack == fx.stack_b)
+        .expect("stack b's task")
+        .id;
+    let mut boxed = state.tasks.get(&box_task).expect("box task").clone();
+    boxed.scheduled = Some(box_instant);
+    state.tasks.insert(box_task, boxed);
+    (fx, state, box_task)
+}
+
+/// The plan model's cursor bits: `(boxes, pool)` armed flags.
+fn plan_cursor_bits(harness: &support::harness::Harness) -> (Vec<bool>, Vec<bool>) {
+    let model = harness.handle.window().get_plan_model();
+    let boxes: Vec<bool> = (0..model.boxes.row_count())
+        .map(|i| model.boxes.row_data(i).expect("row").cursor)
+        .collect();
+    let pool: Vec<bool> = (0..model.pool.row_count())
+        .map(|i| model.pool.row_data(i).expect("row").cursor)
+        .collect();
+    (boxes, pool)
+}
+
+/// US-15/AC-1 (`us15_s1_planner_cursor_arms`): the first vertical
+/// stroke arms the K4 cursor on the focused pane's first row (the
+/// typed inert retires), and the armed row's verb key dispatches the
+/// row's own seam.
+#[test]
+fn us15_s1_planner_cursor_arms() {
+    let (_fx, state, _box_task) = planner_fixture();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1200, 900);
+        harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![false], vec![false, false]),
+            "a fresh planner is disarmed"
+        );
+        // The first vertical stroke arms at the boxes pane's row 0
+        // (arm-then-step) — the recorded inert retired.
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![true], vec![false, false]),
+            "the arming stroke lands row 0"
+        );
+        // The armed row's verb key dispatches the row's OWN seam: the
+        // place form arms for the box (the click twin's resolution).
+        harness.handle.dispatch_action(ActionId::TaskEdit);
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_plan_model().placing,
+            "the cursor'd row's place form armed"
+        );
+    });
+}
+
+/// US-15/AC-2 (`us15_s2_planner_cursor_walks_clamped`): the armed
+/// cursor walks the focused pane's rows with clamp at both edges (no
+/// wrap), and Left/Right still switch the pane.
+#[test]
+fn us15_s2_planner_cursor_walks_clamped() {
+    let (_fx, state, _box_task) = planner_fixture();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1200, 900);
+        harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+        harness.driver.advance_time(0);
+        // Arm on the single box row; the pane clamps both ways.
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![true], vec![false, false]),
+            "the last row clamps (no wrap)"
+        );
+        harness.handle.dispatch_action(ActionId::NavFocusUp);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFocusUp);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![true], vec![false, false]),
+            "row 0 clamps (no wrap)"
+        );
+        // Left switches to the pool pane; the cursor clears (the K4
+        // clear law — the cursor is pane-scoped).
+        harness.handle.dispatch_action(ActionId::NavFocusLeft);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![false], vec![false, false]),
+            "the pane switch cleared the cursor"
+        );
+        // The pool pane walks and clamps.
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![false], vec![true, false]),
+            "the pool pane armed at row 0"
+        );
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![false], vec![false, true]),
+            "the pool cursor walked to row 1"
+        );
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFocusUp);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFocusUp);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![false], vec![true, false]),
+            "the pool cursor clamped back at row 0"
+        );
+    });
+}
+
+/// US-15/AC-3 (`us15_s3_planner_row_verb_uses_own_seam`): the armed
+/// POOL row's verb key dispatches the pool row's own seam — the place
+/// form arms with the pool row's empty seed (the pool click twin's
+/// resolution), never a foreign verb.
+#[test]
+fn us15_s3_planner_row_verb_uses_own_seam() {
+    let (_fx, state, _box_task) = planner_fixture();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1200, 900);
+        harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+        harness.driver.advance_time(0);
+        // Left to the pool pane, arm row 0.
+        harness.handle.dispatch_action(ActionId::NavFocusLeft);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![false], vec![true, false]),
+            "armed on the pool's first row"
+        );
+        harness.handle.dispatch_action(ActionId::TaskEdit);
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_plan_model().placing,
+            "the pool row's own place seam armed"
+        );
+        assert_eq!(
+            harness.handle.window().get_plan_time_text().trim(),
+            "",
+            "the pool row seeds empty (the click twin's seed rule)"
+        );
+    });
+}
+
+/// US-15/AC-4 (`us15_s4_pane_switch_preserves_cursor_law`): the K4
+/// clear/transfer law — a cursor never survives a pane switch in
+/// either direction (pane-scoped, never carried), and the switch
+/// itself stays the landed grammar.
+#[test]
+fn us15_s4_pane_switch_preserves_cursor_law() {
+    let (_fx, state, _box_task) = planner_fixture();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1200, 900);
+        harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![true], vec![false, false]),
+            "armed on the box"
+        );
+        harness.handle.dispatch_action(ActionId::NavFocusLeft);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFocusRight);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![false], vec![false, false]),
+            "the round-trip switch left no cursor behind"
+        );
+        // The empty-handed pane's stroke re-arms cleanly.
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![true], vec![false, false]),
+            "the fresh arming lands row 0"
+        );
     });
 }

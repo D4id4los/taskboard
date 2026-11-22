@@ -17,7 +17,7 @@
 // layer's (the walk context binds it), never a widget handler.
 
 import { Theme, Typography, RoleText } from "../theme.slint";
-import { TextButton, TextButtonSize } from "../widgets/text-button.slint";
+import { TextButton, TextButtonSize, TextButtonEmphasis } from "../widgets/text-button.slint";
 import { MultiLineEditor } from "../widgets/multi-line-editor.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { ListView } from "../widgets/listview.slint";
@@ -154,7 +154,7 @@ export component ReviewWalkOverlay inherits Rectangle {
     callback keep-clicked();
     callback file-prev-clicked();
     callback file-next-clicked();
-    callback candidate-activated(int);
+    callback candidate_activated(int);
     callback file-commit-clicked();
     callback tomorrow-clicked();
     callback pick-clicked();
@@ -296,20 +296,27 @@ export component ReviewWalkOverlay inherits Rectangle {
         if (root.model.stage-kind == 0 && root.model.filing): VerticalLayout {
             vertical-stretch: 0;
             spacing: Theme.space-1;
+            // US-13 (#1030): the candidates are accessible buttons —
+            // the W3 TextButton primitive carries the role, the tab
+            // stop and the Return/Space activation, so click ≡ key on
+            // the same `candidate_activated` seam (the armed prev/next
+            // walk is unchanged, US-13/S2). The armed candidate's
+            // former text-primary lift reads as the cta emphasis
+            // (raised bg) — the same "this row is the picked one"
+            // affordance, typed on the primitive's axis.
             for candidate[index] in root.model.candidates: HorizontalLayout {
                 vertical-stretch: 0;
-                candidate-text := RoleText {
+                // slint: candidate_activated — the candidate commit
+                // seam; click, Return/Space and the AT default action
+                // all route it.
+                TextButton {
                     vertical-stretch: 0;
-                    role: Typography.caption;
-                    text: candidate;
-                    text-color: index == root.model.candidate-index
-                        ? Theme.text-primary
-                        : Theme.text-secondary;
-                }
-                TouchArea {
-                    width: candidate-text.preferred-width;
-                    height: candidate-text.preferred-height;
-                    clicked => root.candidate-activated(index);
+                    size: TextButtonSize.compact;
+                    label: candidate;
+                    emphasis: index == root.model.candidate-index
+                        ? TextButtonEmphasis.cta
+                        : TextButtonEmphasis.normal;
+                    clicked => root.candidate_activated(index);
                 }
             }
             HorizontalLayout {
