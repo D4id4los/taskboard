@@ -412,3 +412,67 @@ async fn t6_board_selector_resolves_and_refuses_typed() {
     };
     assert_eq!(err.error_kind(), "ambiguous-board");
 }
+
+/// The breaks render family's structural pins (#1229, plan §4/D5):
+/// line arity is a pure function of the typed payload (one line per
+/// rule, the empty family's own line), and each render distinguishes
+/// payloads differing in a branch field — a wholesale replacement
+/// (`""`/`"xyzzy"`/`String::new()`) collapses the arity and the
+/// injectivity at once. No prose oracle.
+#[test]
+fn breaks_render_arity_and_distinguishment() {
+    use taskboard_app::commands::output::{
+        BreakAddReceipt, BreakRemoveReceipt, BreakRuleRow, BreaksList,
+    };
+    use taskboard_domain::Insistence;
+
+    let rule = |id: &str, label: &str, insistence: Insistence| BreakRuleRow {
+        rule_id: id.to_owned(),
+        label: label.to_owned(),
+        threshold_seconds: 60,
+        threshold: "1m".to_owned(),
+        insistence,
+    };
+    let list = |rules: Vec<BreakRuleRow>| breaks::render_text_list(&BreaksList { rules });
+    assert_eq!(
+        list(vec![
+            rule("r1", "a", Insistence::Normal),
+            rule("r2", "b", Insistence::Alarm)
+        ])
+        .split('\n')
+        .count(),
+        2,
+        "one line per rule"
+    );
+    assert_eq!(
+        list(Vec::new()).split('\n').count(),
+        1,
+        "the empty family renders its own line"
+    );
+    assert_ne!(
+        list(vec![rule("r1", "a", Insistence::Normal)]),
+        list(vec![rule("r1", "a", Insistence::Alarm)]),
+        "the insistence branch must surface"
+    );
+
+    let add = |insistence: Insistence| {
+        breaks::render_text_add(&BreakAddReceipt {
+            rule_id: "r".to_owned(),
+            label: "l".to_owned(),
+            threshold_seconds: 90,
+            threshold: "90m".to_owned(),
+            insistence,
+        })
+    };
+    assert_eq!(add(Insistence::Normal).split('\n').count(), 1);
+    assert_ne!(add(Insistence::Normal), add(Insistence::Alarm));
+
+    let remove = |label: &str| {
+        breaks::render_text_remove(&BreakRemoveReceipt {
+            rule_id: "r".to_owned(),
+            label: label.to_owned(),
+        })
+    };
+    assert_eq!(remove("a").split('\n').count(), 1);
+    assert_ne!(remove("a"), remove("b"), "the label must surface");
+}

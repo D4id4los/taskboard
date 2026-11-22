@@ -1810,3 +1810,30 @@ mod tests {
         assert_eq!(back.outcome, taskboard_domain::ConfigReloadOutcome::Applied);
     }
 }
+
+#[cfg(all(test, feature = "pdf-export"))]
+mod open_failure_pins {
+    use super::{OpenError, OpenFailure};
+
+    /// The typed mapping pin (#1229, output.rs): every viewer-open
+    /// failure maps to its distinct typed variant — never
+    /// `Default::default()`.
+    #[test]
+    fn open_errors_map_to_their_distinct_typed_variants() {
+        assert_eq!(
+            OpenFailure::from(&OpenError::NotFound),
+            OpenFailure::NotFound
+        );
+        assert_eq!(
+            OpenFailure::from(&OpenError::Spawn(std::io::Error::other("x"))),
+            OpenFailure::Spawn
+        );
+        assert_eq!(
+            OpenFailure::from(&OpenError::NoDisplay),
+            OpenFailure::NoDisplay
+        );
+        assert_ne!(OpenFailure::NotFound, OpenFailure::Spawn);
+        assert_ne!(OpenFailure::Spawn, OpenFailure::NoDisplay);
+        assert_ne!(OpenFailure::NotFound, OpenFailure::NoDisplay);
+    }
+}

@@ -988,3 +988,142 @@ async fn a2_tasks_done_on_a_tracker_fails_typed() {
     let v = serde_json::to_value(&envelope).unwrap();
     assert_eq!(v["error"]["kind"], "tracker-not-doneable");
 }
+
+/// The tasks render family's structural pins (#1229): the list renders
+/// one header per stack, one line per task, the sync line, and the
+/// standalone note's presence law; the mutation and undo receipts are
+/// single-line and distinguish their branch fields. The logout render
+/// distinguishes the config-cleared and connector arms (#1175's
+/// renderer).
+#[test]
+#[allow(clippy::too_many_lines)] // one table per renderer family, kept flat for review
+fn tasks_render_arity_and_distinguishment() {
+    use taskboard_app::commands::logout;
+    use taskboard_app::commands::output::JournalVerb;
+    use taskboard_app::commands::output::{
+        BoardReceipt, JournalReceipt, LogoutReceipt, MutationReceipt, StackGroup, SyncStatusView,
+        TaskList, TaskRow,
+    };
+
+    let sync_view = |pending: u32| SyncStatusView {
+        phase: "idle".to_owned(),
+        last_success: None,
+        pending_ops: pending,
+        error_kind: None,
+        cycles: 0,
+        pushes: 0,
+        pulls: 0,
+        failures: 0,
+        offline_episodes: 0,
+        last_cycle_ms: None,
+        sidecar: None,
+    };
+    let task_row = |title: &str, done: bool| TaskRow {
+        id: format!(
+            "00000000-0000-0000-0000-00000000000{}",
+            if title == "a" { 1 } else { 2 }
+        ),
+        title: title.to_owned(),
+        done,
+        order: 0,
+        duedate: None,
+        due_marker: None,
+        stack_id: "s".to_owned(),
+        stack_title: "stack".to_owned(),
+        labels: Vec::new(),
+        scheduled: None,
+        effort: None,
+        importance: None,
+        urgency: None,
+    };
+    let list = |standalone: bool, rows: Vec<TaskRow>| {
+        tasks::render_text_list(
+            &TaskList {
+                stacks: vec![StackGroup {
+                    id: "s".to_owned(),
+                    title: "stack".to_owned(),
+                    order: 0,
+                    tasks: rows,
+                }],
+                sync: sync_view(0),
+            },
+            standalone,
+        )
+    };
+    let two = list(false, vec![task_row("a", false), task_row("b", true)]);
+    assert_eq!(two.split('\n').count(), 4, "header + two tasks + sync line");
+    assert_ne!(
+        list(false, vec![task_row("a", false)]),
+        list(false, vec![task_row("a", true)]),
+        "the done marker must surface"
+    );
+    assert_ne!(
+        list(false, vec![task_row("a", false)]),
+        list(true, vec![task_row("a", false)]),
+        "the standalone note's presence law must surface"
+    );
+
+    let receipt = |done: bool, labels: Vec<String>| {
+        tasks::render_text_receipt(&MutationReceipt {
+            id: "t".to_owned(),
+            title: "task".to_owned(),
+            stack_id: "s".to_owned(),
+            stack_title: "stack".to_owned(),
+            order: 1,
+            done,
+            labels,
+        })
+    };
+    assert_eq!(receipt(false, Vec::new()).split('\n').count(), 1);
+    assert_ne!(receipt(false, Vec::new()), receipt(true, Vec::new()));
+    assert_ne!(
+        receipt(false, Vec::new()),
+        receipt(false, vec!["red".to_owned()]),
+        "the labels suffix must surface"
+    );
+
+    let undo = |verb: JournalVerb, label: Option<String>| {
+        tasks::render_text_undo(&JournalReceipt {
+            verb,
+            entry: "e".to_owned(),
+            label,
+        })
+    };
+    assert_eq!(undo(JournalVerb::Undo, None).split('\n').count(), 1);
+    assert_ne!(
+        undo(JournalVerb::Undo, None),
+        undo(JournalVerb::Redo, None),
+        "the undo/redo arm must surface"
+    );
+    assert_ne!(
+        undo(JournalVerb::Undo, None),
+        undo(JournalVerb::Undo, Some("l".to_owned())),
+        "the label arm must surface"
+    );
+
+    let logout_render = |cleared: bool| {
+        logout::render_text(&LogoutReceipt {
+            server_url: "https://cloud.example.com".to_owned(),
+            username: "alice".to_owned(),
+            config_cleared: cleared,
+            daemon_connector: None,
+            session_connector: None,
+        })
+    };
+    assert_eq!(logout_render(true).split('\n').count(), 1);
+    assert_ne!(
+        logout_render(true),
+        logout_render(false),
+        "the config-cleared arm must surface"
+    );
+
+    let renamed = |title: &str| {
+        boards::render_text_rename(&BoardReceipt {
+            id: "b".to_owned(),
+            title: title.to_owned(),
+            color: "0082c9".to_owned(),
+        })
+    };
+    assert_eq!(renamed("a").split('\n').count(), 1);
+    assert_ne!(renamed("a"), renamed("b"), "the title must surface");
+}

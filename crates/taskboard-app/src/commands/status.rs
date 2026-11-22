@@ -1443,3 +1443,26 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod render_pins {
+    use super::age_phrase;
+
+    /// The age phrase's structural pin (#1229, plan D7 boundary): the
+    /// phrase is a pure function of the two instants and distinguishes
+    /// them — a wholesale replacement (`""`/`"xyzzy"`/`String::new()`)
+    /// collapses the injectivity and the non-emptiness at once. The
+    /// bucket boundaries themselves are #1267's (out of this chunk).
+    #[test]
+    fn age_phrase_distinguishes_instants_and_is_never_empty() {
+        let then = chrono::Utc::now();
+        let at = |secs: i64| age_phrase(then, then + chrono::TimeDelta::try_seconds(secs).unwrap());
+        let now_phrase = at(10);
+        assert!(!now_phrase.trim().is_empty(), "the phrase is never empty");
+        assert!(!now_phrase.contains('\n'), "the phrase is one line");
+        assert_ne!(now_phrase, at(90), "the minute bucket must surface");
+        assert_ne!(at(90), at(7_200), "the hour bucket must surface");
+        assert_ne!(at(7_200), at(172_800), "the day bucket must surface");
+        assert_eq!(at(30), at(30), "deterministic in the two instants");
+    }
+}
