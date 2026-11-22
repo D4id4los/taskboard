@@ -105,6 +105,11 @@ parse_plan() {
       s = line; sub(/^\|/, "", s); sub(/\|[[:space:]]*$/, "", s)
       split(s, c, "|")
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", c[i])
+      # (#1181) strip inline code spans wholesale: `` `ActionId::X` ``
+      # must parse exactly like the bare token. The plan grammar never
+      # nests backticks, so a single-level strip is lossless for every
+      # token-bearing cell; prose cells never matched anyway.
+      gsub(/`/, "", c[i])
       return c[i]
     }
     function issep(line,   s, n, i) {
@@ -614,6 +619,39 @@ self_test() {
     rc=1
   fi
 
+  # 14. #1181 inline code spans in the §6 wiring row: the ActionId /
+  #     Commands cells wrap prefixed tokens in backticks. Pre-#1181
+  #     the spans defeated token parsing (every token MISSING);
+  #     post-#1181 cellget strips the spans and the row resolves
+  #     exactly like the bare plan.md equivalent (exit 0, 1 BOUND).
+  bash "${BASH_SOURCE[0]}" "$fx/plan-backtickprefix.md" --gate --root "$fx/tree" \
+    >"$tmp/btprefix.out" 2>&1 && code=0 || code=$?
+  n=$(grep -c ' BOUND (' "$tmp/btprefix.out" || true)
+  m=$(grep -c 'MISSING$' "$tmp/btprefix.out" || true)
+  if [[ $code -eq 0 && $n -eq 1 && $m -eq 0 ]]; then
+    echo "self-test 14 (#1181 backticked prefixed wiring tokens resolve, exit 0): PASS"
+  else
+    echo "self-test 14 (#1181 backticked prefixed wiring tokens resolve, exit 0): FAIL (exit $code, $n BOUND, $m MISSING)"
+    sed 's/^/    /' "$tmp/btprefix.out"
+    rc=1
+  fi
+
+  # 15. #1181 inline code spans in §4/§6/§8: backticked Step tokens,
+  #     Dispatches cells, journey-step / Test nominations and a
+  #     backticked bound-test step id must resolve exactly like the
+  #     bare plan.md equivalent (exit 0, 1 BOUND).
+  bash "${BASH_SOURCE[0]}" "$fx/plan-backtickstep.md" --gate --root "$fx/tree" \
+    >"$tmp/btstep.out" 2>&1 && code=0 || code=$?
+  n=$(grep -c ' BOUND (' "$tmp/btstep.out" || true)
+  m=$(grep -c 'MISSING$' "$tmp/btstep.out" || true)
+  if [[ $code -eq 0 && $n -eq 1 && $m -eq 0 ]]; then
+    echo "self-test 15 (#1181 backticked step/bound-test tokens resolve, exit 0): PASS"
+  else
+    echo "self-test 15 (#1181 backticked step/bound-test tokens resolve, exit 0): FAIL (exit $code, $n BOUND, $m MISSING)"
+    sed 's/^/    /' "$tmp/btstep.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -779,12 +817,13 @@ main() {
   while IFS= read -r b_line; do
     # shellcheck disable=SC2001 # trimming every leading-space char class; a ${var//} replacement cannot express a class
     b_line=$(sed 's/^[[:space:]]*//' <<<"$b_line")
-    [[ $b_line =~ ^bound-test:[[:space:]]*(US-[0-9]+/S-?[0-9]+)[[:space:]]*-\>[[:space:]]*([A-Za-z0-9_/.-]+\.rs)::([A-Za-z0-9_]+)[[:space:]]*$ ]] || {
+    [[ $b_line =~ ^bound-test:[[:space:]]*(\`?US-[0-9]+/S-?[0-9]+\`?)[[:space:]]*-\>[[:space:]]*([A-Za-z0-9_/.-]+\.rs)::([A-Za-z0-9_]+)[[:space:]]*$ ]] || {
       echo "PARSE-ERROR: bound-tests: malformed line: $b_line" >&2
       exit 2
     }
     b_step=${BASH_REMATCH[1]}
     b_name=${BASH_REMATCH[3]}
+    b_step=${b_step//\`/} # (#1181) an inline code span around the step id
     b_step=${b_step/\/S-/\/S}
     if [[ -z ${declared_steps[$b_step]:-} ]]; then
       echo "PARSE-ERROR: bound-tests: unknown step id: ${BASH_REMATCH[1]}" >&2
