@@ -394,3 +394,84 @@ pub async fn timers_line(
         ),
     }
 }
+
+#[cfg(test)]
+mod timer_rows_tests {
+    use super::*;
+    use chrono::TimeDelta;
+    use taskboard_domain::Insistence;
+    use uuid::Uuid;
+
+    fn alarm(raw: u128, fire_at: DateTime<Utc>) -> taskboard_domain::AdhocAlarm {
+        taskboard_domain::AdhocAlarm {
+            id: AdhocAlarmId::from_uuid(Uuid::from_u128(raw)),
+            label: format!("alarm {raw:x}"),
+            fire_at,
+            insistence: Insistence::Normal,
+            created_at: crate::test_support::frozen_now(),
+        }
+    }
+
+    fn state_with(alarms: &[taskboard_domain::AdhocAlarm]) -> AppState {
+        let mut state = AppState::default();
+        for a in alarms {
+            state.reminders.alarms.insert(a.id, a.clone());
+        }
+        state
+    }
+
+    /// The boundary table (plan §3 #19): a future alarm carries
+    /// `remaining` and is not overdue; the *exact* instant is the cut —
+    /// `remaining` collapses to `None` while `overdue` flips `true`
+    /// (both `delta > 0` and `effective_at <= now` flips die here); the
+    /// past is overdue with no remaining.
+    #[test]
+    fn timer_rows_boundaries_future_exact_and_past() {
+        let now = crate::test_support::frozen_now();
+        let future = now + TimeDelta::try_seconds(60).unwrap();
+        let state = state_with(&[alarm(1, future)]);
+        let rows = timer_rows(&state, now);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].overdue);
+        assert_eq!(rows[0].remaining, Some(TimeDelta::try_seconds(60).unwrap()));
+
+        let state = state_with(&[alarm(1, now)]);
+        let rows = timer_rows(&state, now);
+        assert!(rows[0].overdue, "the exact instant is the overdue cut");
+        assert_eq!(rows[0].remaining, None, "zero delta carries no remaining");
+
+        let state = state_with(&[alarm(1, now - TimeDelta::try_seconds(60).unwrap())]);
+        let rows = timer_rows(&state, now);
+        assert!(rows[0].overdue);
+        assert_eq!(rows[0].remaining, None);
+    }
+
+    /// Rows render in canonical `(fire_at, id)` order regardless of map
+    /// insertion order.
+    #[test]
+    fn timer_rows_sort_by_fire_at_then_id() {
+        let now = crate::test_support::frozen_now();
+        let t = |s: i64| now + TimeDelta::try_seconds(s).unwrap();
+        let early = alarm(2, t(10));
+        let late = alarm(1, t(20));
+        let late_twin = alarm(3, t(20));
+        let state = state_with(&[late, late_twin, early]);
+        let rows = timer_rows(&state, now);
+        let ids: Vec<u128> = rows
+            .iter()
+            .map(|r| Uuid::parse_str(&r.alarm_id).unwrap().as_u128())
+            .collect();
+        assert_eq!(ids, vec![2, 1, 3], "(fire_at, id) ascending");
+    }
+
+    /// Adhoc alarms are always occurrence-bearing (`alarm_occurrence`
+    /// of an existing alarm row is `Some`), so the `filter_map`'s
+    /// `None` leg is defensive — no test row can mint it; noted per the
+    /// plan's no-quality-ceilings law rather than force-fed.
+    #[test]
+    fn every_stored_alarm_yields_a_row() {
+        let now = crate::test_support::frozen_now();
+        let state = state_with(&[alarm(1, now), alarm(2, now)]);
+        assert_eq!(timer_rows(&state, now).len(), 2);
+    }
+}
