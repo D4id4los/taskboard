@@ -1772,7 +1772,12 @@ async fn connect_command(
 /// nudges the daemon serving the same database to drop its connector.
 /// The nudge never changes the exit code (D5): the secret *is* deleted;
 /// degradations ride stderr.
-async fn logout_command(io: &mut CommandIo<'_>, config_path: Option<PathBuf>) -> u8 {
+///
+/// `pub` to mirror the peer one-shot dispatches (`repeat_command`,
+/// `breaks_command`, …) — the test tier drives the dispatcher tier
+/// directly (#1175). The session lane intercepts `Logout` as a
+/// ceremony; `dispatch_line`'s own arm stays unreachable through it.
+pub async fn logout_command(io: &mut CommandIo<'_>, config_path: Option<PathBuf>) -> u8 {
     let path = AppConfig::config_path(config_path)
         .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_CONFIG_PATH));
     match AppConfig::extract_raw(Some(&path)) {
