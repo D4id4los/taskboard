@@ -597,17 +597,21 @@ static STANDARD_S0B: &[(ActionId, ContextId, &[&str])] = &[
     // detail rows. The pause chord's spelling is the R-7 move — the
     // plan's Ctrl+Shift+r candidate is SeriesEdit's landed round-7
     // chord in this preset's TaskDetail, the collision authority fails
-    // the suite, and the spelling moves (never a quiet drop); the free
-    // `p` carries the pause mnemonic in every preset. Ctrl+Shift+u is
-    // free in this preset's detail chain. The kind toggle shadows the
-    // global CaptureQuick chord inside the detail chain only — the
+    // the suite, and the spelling moves (never a quiet drop). The
+    // second move is the global-shadow law: Ctrl+Shift+p is
+    // ViewPlanNextDay's global stroke, and the detail chain's shadow
+    // breaks the planner-reach contract (J-P5) — the free `w` (the
+    // wait mnemonic; Ctrl+Shift-free in this preset's detail chain and
+    // in the Global set) carries the pair. Ctrl+Shift+u is free in
+    // this preset's detail chain. The kind toggle shadows the global
+    // CaptureQuick chord inside the detail chain only — the
     // context-precedence shadow is the recorded cost (the emacs
     // C-c Ctrl+s snooze precedent), the identity is distinct
     // (Ctrl+Shift+k ≠ Ctrl+k).
     (
         ActionId::SeriesPause,
         ContextId::TaskDetail,
-        &["Ctrl+Shift+p"],
+        &["Ctrl+Shift+w"],
     ),
     (
         ActionId::SeriesResume,
@@ -1098,7 +1102,7 @@ static EMACS_S0B: &[(ActionId, ContextId, &[&str])] = &[
     (
         ActionId::SeriesPause,
         ContextId::TaskDetail,
-        &["Ctrl+Shift+p"],
+        &["Ctrl+Shift+w"],
     ),
     (
         ActionId::SeriesResume,
@@ -1648,7 +1652,7 @@ static VI_S1: &[(ActionId, ContextId, &[&str])] = &[
     (
         ActionId::SeriesPause,
         ContextId::TaskDetail,
-        &["Ctrl+Shift+p"],
+        &["Ctrl+Shift+w"],
     ),
     (
         ActionId::SeriesResume,
@@ -1659,6 +1663,13 @@ static VI_S1: &[(ActionId, ContextId, &[&str])] = &[
         ActionId::TaskToggleTracker,
         ContextId::TaskDetail,
         &["g", "k"],
+    ),
+    // US-10 (W-11, #1091): the disarm chord — free in this preset's
+    // detail chain (the shared spelling).
+    (
+        ActionId::RowCursorDisarm,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+a"],
     ),
 ];
 

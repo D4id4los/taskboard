@@ -352,6 +352,7 @@ fn key_of(effect: &UiEffect) -> EK {
         UiEffect::SeriesPauseOpen
         | UiEffect::RowMenuRequested
         | UiEffect::RowCursorDisarm
+        | UiEffect::BreakRuleRemoveArm
         | UiEffect::HabitPauseOpen
         | UiEffect::HabitConvertArm
         | UiEffect::HabitConvertCancel
@@ -2984,10 +2985,12 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             // The recur row's intents (issue #506) and HF1's pause
             // editor opener: view intents — no modal takeover, the
             // flags ride the next pass. The rule cursor's disarm
-            // chord (US-10, W-11, #1091) mutates only the cursor's
-            // own highlight (identity-preserving).
+            // chord (US-10, W-11, #1091) and the roster remove's arm
+            // step (US-9, W-10) mutate only their own highlights
+            // (identity-preserving).
             | UiEffect::SeriesPauseOpen
             | UiEffect::RowCursorDisarm
+            | UiEffect::BreakRuleRemoveArm
             | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitRemoveArm

@@ -2049,7 +2049,11 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::RowMenu,
         label: "Open row menu",
-        contexts: GLOBAL,
+        // The Today context (the row verbs' context, the
+        // HabitScheduleEdit posture): the verb is never a root-page
+        // quick row — the preset strokes are its truth, the curated
+        // page stays curated.
+        contexts: &[ContextId::Today],
         category: Category::Menu,
         enabled: true,
         menu_rank: 940,
@@ -2061,7 +2065,9 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::RowCursorDisarm,
         label: "Disarm row cursor",
-        contexts: GLOBAL,
+        // The TaskDetail context (the cursor's home surface, the
+        // RowMenu posture): never a root-page quick row.
+        contexts: &[ContextId::TaskDetail],
         category: Category::Task,
         enabled: true,
         menu_rank: 930,

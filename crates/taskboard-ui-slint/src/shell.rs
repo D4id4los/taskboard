@@ -348,6 +348,9 @@ impl KeymapShell {
             // is a view-state flip the shell never records.
             | UiEffect::RowMenuRequested
             | UiEffect::RowCursorDisarm
+            // The roster remove's arm step (US-9) is an adapter-side
+            // staging toggle; the shell records nothing.
+            | UiEffect::BreakRuleRemoveArm
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm

@@ -764,6 +764,7 @@ fn push_timers(
     kiosk: bool,
     board: Option<taskboard_domain::BoardId>,
     break_rule_armed_index: i32,
+    break_rule_selected: Option<taskboard_domain::BreakRuleId>,
     tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
@@ -819,6 +820,9 @@ fn push_timers(
             alarm_rung: row.insistence == taskboard_domain::Insistence::Alarm,
             board: SharedString::from(row.board_title.clone()),
             armed: i32::try_from(index).is_ok_and(|i| i == break_rule_armed_index),
+            // The roster cursor's emphasis (US-9, W-10, the rule
+            // list's `selected` convention).
+            selected: break_rule_selected.is_some_and(|cursor| cursor == row.rule),
         })
         .collect();
     timer_mutations
@@ -1292,6 +1296,7 @@ pub fn push(
         kiosk,
         vs.board(),
         break_rule_armed_index,
+        vs.break_rule_cursor(),
         &mut tables,
         models,
     );
