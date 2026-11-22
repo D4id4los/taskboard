@@ -25,9 +25,7 @@
 use crate::support;
 
 use std::ops::ControlFlow;
-use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use i_slint_core::item_tree::{ItemRc, ParentItemTraversalMode};
 use i_slint_core::items::{FocusScope, TextInput, TouchArea};
 use i_slint_core::lengths::{LogicalPoint, LogicalRect};
@@ -36,7 +34,7 @@ use slint::ComponentHandle as _;
 use slint::Model as _;
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fixture;
-use support::health::detached_health;
+use support::harness::Harness;
 use taskboard_domain::AppState;
 use taskboard_ui_slint::actions::ActionId;
 use taskboard_ui_slint::keymap::stroke::parse;
@@ -233,44 +231,31 @@ struct Finding {
     rect: LogicalRect,
 }
 
-/// A mounted fixture: the handle plus the driver bound to it.
-struct Mounted {
-    driver: SlintDriver,
-    handle: UiHandle,
-    _engine: support::fake_engine::FakeEngine,
-    requests: tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>,
+/// A mounted fixture: the shared B4a harness (#1172 — the former
+/// private raw-ArcSwap mount preamble dissolved into the harness; the
+/// no-escape variant preserves this file's own posture, the fixtures
+/// dispatch their routed navigation explicitly). The typed request
+/// lane stays reachable through the harness's `requests_rx`.
+type Mounted = Harness;
+
+fn try_next_request(mounted: &Mounted) -> Option<taskboard_ui_slint::requests::UiRequest> {
+    mounted
+        .requests_rx
+        .lock()
+        .expect("requests lock")
+        .try_recv()
+        .ok()
 }
 
 fn mount(state: AppState, settings: UiSettings, size: (u32, u32)) -> Mounted {
-    let state = Arc::new(ArcSwap::from_pointee(state));
-    let (commands, engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
-    let (requests_tx, requests) = tokio::sync::mpsc::channel(16);
-    let (_system_tx, system_rx) = tokio::sync::broadcast::channel(4);
-    let (_signals_tx, signals_rx) = tokio::sync::broadcast::channel(4);
-    let handle = taskboard_ui_slint::mount(
-        state,
-        signals_rx,
-        system_rx,
-        commands,
-        requests_tx,
-        settings,
-        detached_health(),
-        None,
-    )
-    .expect("mount succeeds on the testing backend");
-    let mut driver = SlintDriver::default();
-    driver.bind(&handle);
+    let mut mounted =
+        Harness::mount_no_escape_with_settings(SlintDriver::default(), state, settings);
     // Each fixture picks a size that lays its whole surface out inside
     // the viewport: the scan's visibility filter then needs no
     // scrolling to reach the lower sections.
-    driver.set_window_size(size.0, size.1);
-    driver.advance_time(0);
-    Mounted {
-        driver,
-        handle,
-        _engine: engine,
-        requests,
-    }
+    mounted.driver.set_window_size(size.0, size.1);
+    mounted.driver.advance_time(0);
+    mounted
 }
 
 /// The settings precedent's size: every section laid out unscrolled.
@@ -282,7 +267,7 @@ const TALL: (u32, u32) = (1000, 6000);
 /// and drains the auto lane, clearing the request lane for the test's
 /// own requests.
 fn settle_auto_lists(mounted: &mut Mounted) {
-    while let Ok(request) = mounted.requests.try_recv() {
+    while let Some(request) = try_next_request(mounted) {
         let taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. } = request
         else {
             panic!("the mount routed only auto-lists");
@@ -309,8 +294,8 @@ fn list_remotes(mounted: &mut Mounted, connector: &str, rows: &[(u64, &str)]) {
         .handle
         .window()
         .invoke_settings_refresh_clicked(i32::try_from(deck).expect("fits"));
-    let Ok(taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. }) =
-        mounted.requests.try_recv()
+    let Some(taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. }) =
+        try_next_request(mounted)
     else {
         panic!("the refresh routed a listing");
     };

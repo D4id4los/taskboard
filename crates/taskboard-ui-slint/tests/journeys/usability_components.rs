@@ -11,6 +11,7 @@ use crate::support;
 use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fixture;
 use support::golden_compare::Rgba8Image;
+use support::harness::Harness;
 use support::health::detached_health;
 
 use std::sync::Arc;
@@ -20,39 +21,6 @@ use slint::ComponentHandle as _;
 use arc_swap::ArcSwap;
 use taskboard_ui_slint::UiSettings;
 
-/// The populated board fixture, mounted at `scale` and sized to
-/// `(width, height)` — the shared arrange step of the geometry proofs.
-fn mount_populated(
-    driver: &mut SlintDriver,
-    scale: f64,
-    width: u32,
-    height: u32,
-) -> taskboard_ui_slint::UiHandle {
-    let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
-    let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
-    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
-    let (_htx, health) =
-        tokio::sync::watch::channel(taskboard_ui_slint::presentation::DeliveryHealth::default());
-    let handle = taskboard_ui_slint::mount(
-        state,
-        dummy_signals(),
-        dummy_system(),
-        commands,
-        requests_tx,
-        UiSettings {
-            scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
-            ..UiSettings::default()
-        },
-        health,
-        None,
-    )
-    .expect("mount succeeds on the testing backend");
-    driver.bind(&handle);
-    driver.advance_time(0); // instantiate conditionals
-    driver.set_window_size(width, height);
-    handle
-}
-
 fn dummy_signals() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
     let (_tx, rx) = tokio::sync::broadcast::channel(4);
     rx
@@ -61,6 +29,32 @@ fn dummy_signals() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineS
 fn dummy_system() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent> {
     let (_tx, rx) = tokio::sync::broadcast::channel(4);
     rx
+}
+
+/// The populated board fixture, mounted at `scale` and sized to
+/// `(width, height)` — the shared arrange step of the geometry proofs.
+/// (#1172) The former private raw-ArcSwap preamble is the shared B4a
+/// harness now: the job's driver is moved into the harness (the mount
+/// binds it) and written back bound, so the callers' `driver` surface
+/// is unchanged. The harness holds the engine/request halves alive
+/// for the mount's lifetime — behavior-additive, no assertion change.
+fn mount_populated(
+    driver: &mut SlintDriver,
+    scale: f64,
+    width: u32,
+    height: u32,
+) -> taskboard_ui_slint::UiHandle {
+    let state = fixture::golden_state().1;
+    let settings = UiSettings {
+        scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
+        ..UiSettings::default()
+    };
+    let mut harness =
+        Harness::mount_on_driver_no_escape_with_settings(std::mem::take(driver), state, settings);
+    harness.driver.advance_time(0); // instantiate conditionals
+    harness.driver.set_window_size(width, height);
+    *driver = harness.driver;
+    harness.handle
 }
 
 /// The longest horizontal run of exactly `rgb` in the image's top
