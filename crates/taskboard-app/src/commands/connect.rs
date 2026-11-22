@@ -1074,3 +1074,81 @@ mod tests {
         assert_eq!(json["attached"], true);
     }
 }
+
+#[cfg(test)]
+mod overlay_tests {
+    use crate::config::AppConfig;
+
+    /// The `is_inline_table()` guard's own case (plan §3 #21c): a plain
+    /// array of inline tables navigates the generic leg — the inline
+    /// entry's identity keys are *inserted*. With the guard broken
+    /// (replaced `true`), this path bails and the write is refused —
+    /// every decode below flips.
+    #[test]
+    fn the_inline_table_array_world_rewrites_the_first_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &config,
+            "[app]\nmode = \"desktop\"\n\n[sync]\nconnectors = [ { name = \"nc\", backend = \"nextcloud\", server_url = \"https://old.example\", username = \"old\" } ]\n",
+        )
+        .expect("seed config");
+        super::write_config_overlay(&config, "https://new.example", "alice", false)
+            .expect("the inline entry is writable");
+        let decoded = AppConfig::extract_file_only(Some(&config)).expect("decodes");
+        let connectors = decoded.sync.connectors.expect("the array survives");
+        assert_eq!(connectors.len(), 1);
+        assert_eq!(connectors[0].server_url, "https://new.example");
+        assert_eq!(connectors[0].username, "alice");
+        assert_eq!(
+            decoded.nextcloud.server_url, None,
+            "the scalar world's [nextcloud] table is never added in the array world"
+        );
+    }
+
+    /// The array-of-tables world: the first entry's identity keys are
+    /// rewritten; the second entry is untouched; no `backend` key rides
+    /// along when `switch_backend` is false.
+    #[test]
+    fn the_array_of_tables_world_rewrites_only_the_first_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &config,
+            "[[sync.connectors]]\nname = \"nc\"\nbackend = \"nextcloud\"\nserver_url = \"https://old.example\"\nusername = \"old\"\n\n[[sync.connectors]]\nname = \"other\"\nbackend = \"nextcloud\"\nserver_url = \"https://keep.example\"\nusername = \"keep\"\n",
+        )
+        .expect("seed config");
+        super::write_config_overlay(&config, "https://new.example", "alice", false)
+            .expect("the AOT entry is writable");
+        let decoded = AppConfig::extract_file_only(Some(&config)).expect("decodes");
+        let connectors = decoded.sync.connectors.expect("the array survives");
+        assert_eq!(connectors.len(), 2);
+        assert_eq!(connectors[0].server_url, "https://new.example");
+        assert_eq!(connectors[0].username, "alice");
+        assert_eq!(
+            connectors[1].server_url, "https://keep.example",
+            "the second entry is operator territory — untouched"
+        );
+        assert_eq!(connectors[1].username, "keep");
+        assert_eq!(
+            decoded.sync.backend, None,
+            "no backend key rides along without the switch"
+        );
+    }
+
+    /// A connectors array carrying no entries is the typed write
+    /// refusal — the `wrote == false` guard leg.
+    #[test]
+    fn an_empty_connectors_array_refuses_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("taskboard.toml");
+        std::fs::write(
+            &config,
+            "[app]\nmode = \"desktop\"\n\n[sync]\nconnectors = []\n",
+        )
+        .expect("seed config");
+        assert!(
+            super::write_config_overlay(&config, "https://new.example", "alice", false).is_err()
+        );
+    }
+}

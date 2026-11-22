@@ -900,6 +900,20 @@ pub(crate) fn map_deck_error(err: DeckError) -> CommandError {
 /// `NoOp` where the planner allows it); any other reply is an engine
 /// contract bug — surfaced as the generic engine kind, never
 /// misreported as a user error.
+///
+/// # Mutant disposition (plan `2026-11-22-commands-predicate-coverage`
+/// §4 D4, #1231)
+///
+/// The `_ => Err(outcome_mismatch())` arms at the call sites are
+/// *engine-contract guards*: they are reachable only when the engine
+/// violates its own reply catalogue, and the real engine over the
+/// sanctioned in-memory fake cannot produce those outcomes (an engine
+/// that lies would need a mock, which the fakes-over-mocks law
+/// forbids). They are deliberately excluded from the cargo-mutants
+/// kill-target set — documented survivors by construction, per the
+/// recorded-disposition law; the *reachable* outcome arms (the
+/// Applied/NoOp/HabitCreated mappings) are kill targets and pinned by
+/// the predicate tables.
 pub(crate) fn outcome_mismatch() -> CommandError {
     CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone))
 }

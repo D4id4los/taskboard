@@ -1789,3 +1789,208 @@ mod tests {
         let _ = HabitState::default();
     }
 }
+
+#[cfg(test)]
+mod engine_seam_tests {
+    use super::*;
+    use crate::test_support::standalone_boot_fixture;
+    use taskboard_domain::habit::AnchorDay;
+
+    async fn minted_board(
+        fixture: &crate::test_support::StandaloneFixture,
+    ) -> taskboard_domain::BoardId {
+        let CommandOutcome::CreatedBoard(id) = fixture
+            .app
+            .engine
+            .execute(StateCommand::CreateBoard {
+                title: "habits".to_owned(),
+                color: taskboard_domain::Color::new("0082c9"),
+            })
+            .await
+            .expect("board mints")
+        else {
+            panic!("CreateBoard always mints");
+        };
+        id
+    }
+
+    fn daily() -> HabitTarget {
+        HabitTarget::PerDay(NonZeroCount::new(1).expect("1 is nonzero"))
+    }
+
+    /// The plain create: the receipt reads the minted row back from the
+    /// published state (never an input echo).
+    #[tokio::test]
+    async fn add_creates_and_reads_the_row_back() {
+        let fixture = standalone_boot_fixture("pred-habit-add").await;
+        let board = minted_board(&fixture).await;
+        let receipt = add_on(
+            &fixture.app,
+            "water",
+            daily(),
+            Some(board),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("habits add");
+        let row = receipt.habit.expect("the minted row reads back");
+        assert_eq!(row.title, "water");
+        assert_eq!(row.target_phrase, "1/day");
+        assert!(row.chip.is_none());
+        let _ = fixture.app.shutdown().await;
+    }
+
+    /// The sparse immediate edit: `--at`/`--description`/`--day` land
+    /// on the published row — each field-deletion mutant drops exactly
+    /// one of these legs.
+    #[tokio::test]
+    async fn add_routes_the_sparse_edit_onto_the_minted_row() {
+        let fixture = standalone_boot_fixture("pred-habit-sparse").await;
+        let board = minted_board(&fixture).await;
+        let at = chrono::NaiveTime::from_hms_opt(7, 30, 0).expect("07:30");
+        let day = DayEdit::Set(AnchorDay::Weekday(chrono::Weekday::Mon));
+        let receipt = add_on(
+            &fixture.app,
+            "run",
+            daily(),
+            Some(board),
+            Some(at),
+            Some("morning miles".to_owned()),
+            Some(day),
+        )
+        .await
+        .expect("habits add");
+        let row = receipt.habit.expect("the edited row reads back");
+        assert_eq!(row.chip, Some(at));
+        let state = fixture.app.engine.shared_state().load_full();
+        let stored = state
+            .habits
+            .habits
+            .values()
+            .find(|h| h.title == "run")
+            .expect("the habit row");
+        assert_eq!(stored.description, "morning miles");
+        assert_eq!(
+            stored.anchor_day,
+            Some(taskboard_domain::habit::AnchorDay::Weekday(
+                chrono::Weekday::Mon
+            ))
+        );
+        let _ = fixture.app.shutdown().await;
+    }
+
+    /// The `changed` disjunct (plan §3 #13): a field-only edit flips it
+    /// via `mask_hit`, a pure reorder flips it via `moved`, and a
+    /// vacuous edit keeps it `false` — each leg of the `mask_hit ||
+    /// moved` table.
+    #[tokio::test]
+    async fn update_changed_tracks_the_edit_and_move_disjuncts() {
+        let fixture = standalone_boot_fixture("pred-habit-update").await;
+        let board = minted_board(&fixture).await;
+        let receipt = add_on(
+            &fixture.app,
+            "water",
+            daily(),
+            Some(board),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("habits add");
+        let row = receipt.habit.expect("minted");
+        let id = taskboard_domain::HabitId::from(
+            uuid::Uuid::parse_str(&row.habit_id).expect("receipt uuid"),
+        );
+        // Field-only edit ⇒ mask_hit.
+        let mask = update_on(
+            &fixture.app,
+            "water",
+            Some("water daily".to_owned()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the update lands");
+        assert!(mask.changed, "a field edit flips mask_hit");
+        // Pure reorder ⇒ moved.
+        let reorder = update_on(
+            &fixture.app,
+            "water daily",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the reorder lands");
+        assert!(reorder.changed, "a reorder flips moved");
+        // Vacuous (the identical title again) ⇒ neither disjunct.
+        let vacuous = update_on(
+            &fixture.app,
+            "water daily",
+            Some("water daily".to_owned()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the vacuous edit is accepted");
+        assert!(!vacuous.changed, "the identical edit is the typed no-op");
+        let _ = id;
+        let _ = fixture.app.shutdown().await;
+    }
+
+    /// The tombstone receipt (plan §3 #14): the log survives and the
+    /// receipt names the surviving row count; the repeat is the
+    /// accepted non-deleted receipt.
+    #[tokio::test]
+    async fn rm_tombstones_and_the_log_survives() {
+        let fixture = standalone_boot_fixture("pred-habit-rm").await;
+        let board = minted_board(&fixture).await;
+        let receipt = add_on(
+            &fixture.app,
+            "water",
+            daily(),
+            Some(board),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("habits add");
+        let habit_id = receipt.habit.expect("minted").habit_id.clone();
+        let _ = log_on(&fixture.app, "water").await.expect("the log lands");
+        let removed = rm_on(&fixture.app, "water").await.expect("the rm lands");
+        assert!(removed.deleted);
+        assert_eq!(removed.log_rows, 1, "the log row survives the tombstone");
+        // The repeat is the typed unknown: rm's resolver is live-only
+        // (a tombstone never resolves, by uuid or title — the restore
+        // family owns tombstone addressing), so the NoOp receipt arm
+        // inside `rm_on` is unreachable from the seam (a recorded
+        // survivor per plan §4 D4, not a kill target).
+        let err = rm_on(&fixture.app, &habit_id)
+            .await
+            .expect_err("the tombstone no longer resolves");
+        assert!(matches!(err, CommandError::UnknownHabit { .. }));
+        let _ = fixture.app.shutdown().await;
+    }
+}
