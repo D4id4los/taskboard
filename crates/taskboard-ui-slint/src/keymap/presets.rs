@@ -601,8 +601,9 @@ static STANDARD_S0B: &[(ActionId, ContextId, &[&str])] = &[
     // second move is the global-shadow law: Ctrl+Shift+p is
     // ViewPlanNextDay's global stroke, and the detail chain's shadow
     // breaks the planner-reach contract (J-P5) — the free `w` (the
-    // wait mnemonic; Ctrl+Shift-free in this preset's detail chain and
-    // in the Global set) carries the pair. Ctrl+Shift+u is free in
+    // wait mnemonic; the `w` letter is unclaimed in this preset's
+    // detail chain and in the Global set, bare or Ctrl+Shift-chorded)
+    // carries the pair. Ctrl+Shift+u is free in
     // this preset's detail chain. The kind toggle shadows the global
     // CaptureQuick chord inside the detail chain only — the
     // context-precedence shadow is the recorded cost (the emacs
