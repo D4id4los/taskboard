@@ -719,6 +719,24 @@ expression: rows
   menu_rank: 95
   description: Cancels the active move flow without moving anything (Escape; under emacs also Ctrl+g).
   menu_group: task
+- id: task.move-up
+  label: Move task up
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 96
+  description: Moves the focused Today task one step up its stack order; the boundary refuses typed (no wrap).
+  menu_group: task
+- id: task.move-down
+  label: Move task down
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 97
+  description: Moves the focused Today task one step down its stack order; the boundary refuses typed (no wrap).
+  menu_group: task
 - id: task.delete
   label: Delete task
   contexts:
