@@ -68,7 +68,9 @@ at UX-plan level — never a chunk-local surprise.
   centralization's W6 wave (#954): =ui/widgets/menu-shell.slint::MenuShell=
   is the menu family's panel chrome (raised surface, focus-ring
   border, drop shadow, clip, the row-count height cap
-  =min(row-count·space-6, space-6·6)= behind =cap-rows=; the
+  =min(row-count·space-6, space-6·6)= unconditionally (the
+  =cap-rows= knob retired 2026-11-22, #1128 — it had no
+  distinguishing consumer); the
   corner radius rides the consumer — both flyouts ship
   =radius-small=, D-12's byte-identity bar) and
   =ui/widgets/menu-row.slint::MenuRow= is the one row anatomy,

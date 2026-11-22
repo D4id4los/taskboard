@@ -2,7 +2,10 @@
 // The menu-panel shell (round-9 W6, O-6 / #954): the chrome of the
 // menu family's window-level panels — raised surface, focus-ring
 // border, drop shadow, clip, and the row-count height cap
-// (min(row-count·space-6, space-6·6)). The flyouts mount it (D-4);
+// (min(row-count·space-6, space-6·6)) — the cap is the shell's
+// unconditional law (#1128 removed the toggleable knob 2026-11-22; a
+// future uncapped consumer grows an explicit height mode only when
+// it exists, the same defer law as D-5). The flyouts mount it (D-4);
 // the action menu is deliberately NOT a shell consumer — its
 // fill-to-floor height law and its own radius stay at the
 // composition (D-3's split: the shell owns chrome, the composition
@@ -18,19 +21,12 @@ import { Theme, Semantic } from "../theme.slint";
 export component MenuShell inherits Rectangle {
     // The pushed row count — the height cap's only input.
     in property <int> row-count: 0;
-    // The cap (the flyouts pass true — their six-row scroll cap). No
-    // false consumer exists today (the action menu is not a shell
-    // mount, D-3); the knob names the contract boundary the plan's
-    // D-1 recorded.
-    in property <bool> cap-rows: true;
     // The flyouts' radius-small vs the recorded sketch's
     // radius-medium: the corner radius rides the consumer (D-12's
     // byte-identity bar — both flyouts ship radius-small today).
     in property <length> corner-radius: Theme.radius-medium;
 
-    height: root.cap-rows
-        ? min(root.row-count * Theme.space-6, Theme.space-6 * 6)
-        : self.preferred-height;
+    height: min(root.row-count * Theme.space-6, Theme.space-6 * 6);
     background: Theme.surface-raised;
     border-width: Theme.focus-ring-width;
     border-color: Semantic.focus-ring;
