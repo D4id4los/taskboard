@@ -13808,7 +13808,7 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     bind mut (a, window), args (), {        a.open_habit_history_from_subject(&window);
 
     });
-    install_seam!(window: window.on_habit_history_month_flipped, adapter: adapter; // slint callback: habit-history-month-flipped (the HF3 W-8 pager's flip seam, US-7/S3 — the adapter clamps against the can-page facts)
+    install_seam!(window: window.on_habit_history_month_flipped, adapter: adapter; // slint callback: habit_history_month_flipped (the HF3 W-8 pager's flip seam, US-7/S3 — the adapter clamps against the can-page facts)
     bind mut (a, window), args (delta), {        let month_open = a.view_state.habit_history().1.is_some();
         if month_open {
             let clamped = {
@@ -13844,7 +13844,7 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         }
 
     });
-    install_seam!(window: window.on_habit_history_close_requested, adapter: adapter; // slint callback: habit-history-close-requested (the HF3 W-8 read-role dismissal seam, US-7/S4 — zero state change)
+    install_seam!(window: window.on_habit_history_close_requested, adapter: adapter; // slint callback: habit_history_close_requested (the HF3 W-8 read-role dismissal seam, US-7/S4 — zero state change)
     bind mut (a, window), args (), {        let outcomes = a.view_state.close_habit_history();
     a.apply_outcomes(&window, &outcomes);
     a.finish_mutation(&window);
