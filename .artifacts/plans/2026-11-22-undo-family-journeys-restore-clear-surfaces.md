@@ -1,0 +1,357 @@
+# UX Journey Plan — undo family, chunk D1i: the GUI restore surfaces + ClearReminderRules first-class
+
+<!--
+Copied from .artifacts/templates/ux-journey-plan.md; guidance comment
+retained per the template's own instruction. This is the round-5 undo
+family's journey plan for chunk D1i (`feat/restore-clear-surfaces`,
+#1146 + #1154). The sibling plan for D1ii is
+2026-11-22-undo-family-journeys-browse-parity.md. The per-chunk
+implementation plans cite this file as Origin.
+-->
+
+- **Date**: 2026-11-22
+- **Kind**: UX journey plan — user stories, journeys, flows, wiring
+  contract for the restore-verb family's GUI surfaces and the
+  `ClearReminderRules` first-class affordance. No implementation
+  decisions beyond the command contract.
+- **Origin**: backlog issues #1146 (GUI restore surfaces; the round-4
+  CLI-first plan
+  `.artifacts/plans/2026-11-21-parity-restore-journeys-restore-cli.md`
+  §2 R-1's recorded home) and #1154 (`ClearReminderRules` has no
+  first-class surface; homed by
+  `.artifacts/plans/2026-11-21-undo-ui-reminder-undo-plan.md` §1 N5 /
+  §2 R-3); the round-5 scope report §D (wave 4, undo family, "two
+  chunks + journeys"); the landed base: the three engine verbs
+  (`StateCommand::RestoreLabel` / `RestoreTimeEntry` / `RestoreHabit`,
+  `crates/taskboard-domain/src/messages.rs:773-800`), the #993-pinned
+  receipts (`LabelRestored` / `HabitRestored` / `EntryRestored`),
+  the #1187 operator ruling (restores are undoable; undo re-deletes),
+  and UF1's reminder catalogue (the `PreImage::ReminderRule`
+  pre-images make `ClearReminderRules` undoable; its undo-synthesis
+  entry already landed in UF1).
+- **Status**: DRAFT — GATE-PAUSED pending operator acceptance (the
+  dispatcher owns the acceptance gate).
+- **Surfaces touched**: the labels overlay
+  (`ui/compositions/labels-overlay.slint` — tombstoned-restore rows),
+  the habits composition (`ui/compositions/habits.slint` — context
+  restore row), the task-editor rule list
+  (`ui/compositions/rule-list.slint` — the clear-all row), the adapter
+  seams + a typed tombstone-roster projection widening (domain,
+  additive). No journal migration, no storage change.
+- **Platform scope**: desktop for all three stories (context menus and
+  the editor rule list are editing surfaces); kiosk renders the new
+  affordances absent (R-2/R-3) and keeps the CLI as its restore path
+  (the CLI verbs already shipped in round 4's chunk RS).
+- **Test-root**: crates/taskboard-ui-slint/tests (GUI chunk; the
+  per-plan journey file naming law applies:
+  `tests/journeys/undo_family_restore_clear_surfaces_journeys.rs`).
+
+## 1. Scope & goals
+
+**What the user can now do that they couldn't**: resurrect a
+tombstoned label or habit directly in the GUI where they deleted it —
+no terminal round-trip — and clear a task's reminder rules with one
+armed confirm instead of deleting rules one by one. Until now the
+restore verbs were CLI-only (round 4's chunk RS) and
+`ClearReminderRules` had zero entry points on any surface (UF1 landed
+its undoability; #1154 kept the surfaceless verb visible).
+
+**Goals**:
+
+- G1: a typed tombstone-roster projection, additive on the publish
+  path: `RestoreRoster { tombstoned_labels: Vec<RestoreRow>,
+  tombstoned_habits: Vec<RestoreRow> }` derived at every publish like
+  `UndoView` (engine-derived ids + names; the UI renders, never
+  synthesizes; bounded; never persisted). This is the row source the
+  GUI restore affordances read — without it the overlays cannot show
+*what* is restorable.
+- G2: the labels overlay gains a bounded "deleted labels" restore
+  section: one row per tombstoned label, each dispatching
+  `StateCommand::RestoreLabel { id }` through an armed-confirm
+  ceremony (the shared ceremony law — restore is a state-changing
+  verb, the armed strip names the consequence).
+- G3: the habits composition gains a context-menu restore row for the
+  tombstoned habit (same armed-confirm grammar; the log is never
+  touched, D26).
+- G4: the task-editor rule list gains a first-class "clear all rules"
+  row dispatching `StateCommand::ClearReminderRules { task }` —
+  destructive-last ordering (BF-W-N2), armed-confirm grammar, and
+  undoable via UF1's pre-images for free.
+
+**Non-goals (each with a home)**:
+
+- N1: a GUI time-entry restore affordance (the `track restore` GUI
+  leg of #1146) — a hard-deleted row has no surface row to act on and
+  the payload assembly (task/start/end/kind/id) is exactly what the
+  CLI flags already do (D-4 of the round-4 CLI plan); a GUI would
+  re-ask the user for facts the CLI grammar carries naturally.
+  Deferred, not silently absent — R-1 records it. Home: #1146 stays
+  open for this leg; D1i closes only the labels/habits legs.
+- N2: bulk restore (restore-all rows) — one-per-idea; no motivation on
+  record. Home: backlog issue filed with this plan.
+- N3: reminder-mute undo (`SetTaskRemindersMuted`) — #1153's
+  `NotUndoable(ReminderSurface)` posture is adjacent but **not
+  reopened**; mute stays a one-click self-healing toggle (the SC-W-N4
+  doctrine). This plan does not touch it. Home: #1153.
+- N4: restoring tombstoned tasks/stacks from these rosters — task and
+  stack restore have their own recovery paths (`RestoreTask` /
+  `RestoreStack` routing family); the rosters here are label/habit
+  scoped. Home: this plan §2 R-4.
+
+### Recorded decisions
+
+| ID | Decision | Alternatives rejected |
+|---|---|---|
+| D-1 | **The GUI restore rows read a new typed `RestoreRoster` projection**, not the existing undo `recent` window. The journal's pre-images are the undo line's internal shape; tombstones live in the entity maps. A publish-derived roster (ids + names, bounded) keeps the UI id-less and engine-derived. | Deriving restore candidates from journal `Delete*` pre-images (couples the GUI to journal internals; tombstones outlive the retention window). |
+| D-2 | **Armed-confirm grammar on all three new affordances.** Restore and clear-all are state-changing verbs on gathered context; the shared ceremony law and BF-W-N2 (destructive rows last) apply. `ClearReminderRules` on a task with zero rules is an accepted no-op — the row renders disabled there rather than ceremony-ing a no-op. | Click-through dispatch (a mis-click resurrects/clears silently); no-confirm for clear (it is the destructive one). |
+| D-3 | **Time-entry restore stays CLI-only** (N1/R-1): payload assembly is a form, and the CLI flag grammar is that form. Revisit only if a GUI payload-assembly surface gains its own motivation. | A journal-payload restore row (exposes journal internals; the round-4 plan's R-3 rationale applies verbatim). |
+| D-4 | **Kiosk renders the new affordances absent** (desktop-qualified rows); kiosk restore rides the already-shipped CLI verbs. Consistent with UF2's R-2 posture (kiosk viewers are not editors of recovery ceremonies). | Shrinking the overlays' kiosk variants to half-mounted menus. |
+
+## 2. Capability × surface matrix
+
+| Capability | Board | TaskDetail | Today | Review | Settings | Capture | CLI |
+|---|---|---|---|---|---|---|---|
+| label.restore | — (R-2) | — (R-2) | — (R-2) | — (R-2) | E (US-1 — the labels overlay's restore section) | — (R-2) | E (pre-existing, `labels restore`) |
+| habit.restore | — (R-2) | — (R-2) | E (US-2 — the habits composition's context row) | — (R-2) | — (R-2) | — (R-2) | E (pre-existing, `habits restore`) |
+| timeentry.restore | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | — (R-1) | E (pre-existing, `track restore`) |
+| reminder_rule.clear | — (R-3) | E (US-3 — the task-editor rule list's clear-all row) | — (R-3) | — (R-3) | — (R-3) | — (R-3) | — (R-4) |
+
+**Rulings** (every deliberate absence):
+
+| ID | Ruling | Reason | Home |
+|---|---|---|---|
+| R-1 | `timeentry.restore` gains no GUI cell in this chunk | D-3: payload assembly is a form the CLI flags already are; no GUI motivation on record | #1146 (stays open for this leg; D1i closes labels/habits only) |
+| R-2 | The restore rows appear only on the surface where the entity's management lives (labels overlay in Settings; habits composition in Today) — all other GUI cells absent | A restore affordance belongs at the delete site's surface (recognition over recall); scattering restore rows across every view duplicates ceremony for nothing | This plan §1 G2/G3 |
+| R-3 | `reminder_rule.clear` is TaskDetail-only | Rules are per-task editor state; a clear-all belongs in the rule list it clears, nowhere else | This plan §1 G4 |
+| R-4 | `reminder_rule.clear` gains no CLI verb in this chunk | #1154 asks for a *first-class* surface; the task editor's rule list is the natural one. A CLI spelling (`tasks rules clear <task>`) is unmotivated today — rules are edited in the editor | Backlog issue filed with this plan |
+| R-5 | Kiosk: all three new affordances render absent | D-4; the CLI carries the kiosk restore path already | This plan D-4 |
+| R-6 | No bulk-restore rows | N2; one-per-idea | Backlog issue filed with this plan |
+
+## 3. User stories
+
+### US-1 — Restore a deleted label from the labels overlay
+
+- **Story**: When I deleted a label and realize a task's tagging
+  history still needs it, I want to see it listed in the labels
+  overlay's deleted section and restore it with one armed confirm so
+  that membership recovery (`AssignLabel`) is reachable again without
+  opening a terminal.
+- **Platforms**: desktop.
+- **Entry points**: the labels overlay's "deleted" restore section
+  (mounted with the overlay; visible only when the roster is
+  non-empty), row context menu → restore row.
+- **Priority**: P1.
+- **Acceptance**:
+  - AC-1: Given a tombstoned label When the overlay mounts Then the
+    restore section lists it with its name (roster projection
+    non-empty, typed rows) — verified by journey test.
+  - AC-2: Given an armed confirm on a restore row When it commits
+    Then `StateCommand::RestoreLabel { id }` dispatches and the
+    receipt is `CommandOutcome::LabelRestored { label }`; the label
+    re-appears live with pre-tombstone values — verified by journey
+    test + state snapshot.
+  - AC-3: Given a live label id (stale roster) When restore plans
+    Then the engine's accepted no-op receipt surfaces and nothing
+    breaks — verified by journey test (typed outcome).
+  - AC-4: Given cancel/Escape at the armed strip Then nothing
+    dispatches — verified by journey test.
+
+### US-2 — Restore a deleted habit from the habits composition
+
+- **Story**: When I deleted a habit and want it back with its history
+  intact, I want a context-menu restore row on the habits surface so
+  that the tracker resumes with pre-tombstone values verbatim (the
+  log is never touched, D26).
+- **Platforms**: desktop.
+- **Entry points**: the habits composition's context menu (the
+  `context-requested` seam) → restore row, present when the roster's
+  habit section is non-empty.
+- **Priority**: P1.
+- **Acceptance**:
+  - AC-1: Given a tombstoned habit When the context menu opens Then
+    the restore row is present naming the habit — verified by journey
+    test.
+  - AC-2: Given the armed confirm When it commits Then
+    `StateCommand::RestoreHabit { id }` dispatches and the receipt is
+    `CommandOutcome::HabitRestored { habit }`; the tracking log is
+    unchanged — verified by journey test + snapshot.
+  - AC-3: Given Escape at the armed strip Then nothing dispatches —
+    verified by journey test.
+
+### US-3 — Clear a task's reminder rules
+
+- **Story**: When a task has accumulated several reminder rules and I
+  want them all gone, I want one "clear all rules" row in the rule
+  list so that I don't delete rules one by one.
+- **Platforms**: desktop.
+- **Entry points**: the task-editor rule list's clear-all row
+  (destructive-last, BF-W-N2); disabled when zero rules exist.
+- **Priority**: P1.
+- **Acceptance**:
+  - AC-1: Given a task with n ≥ 1 rules When the armed clear commits
+    Then `StateCommand::ClearReminderRules { task }` dispatches once
+    and the rule list renders empty — verified by journey test.
+  - AC-2: Given the clear journaled When `Undo` runs Then the rules
+    come back (UF1's `PreImage::ReminderRule` synthesis; one undo
+    step restores all n) — verified by domain fold test + journey
+    test.
+  - AC-3: Given zero rules When the list renders Then the clear row
+    is disabled (typed structural fact, not text) — verified by
+    journey test.
+  - AC-4: Given Escape at the armed strip Then nothing dispatches —
+    verified by journey test.
+
+### US-4 — The undo line composes (regression fence)
+
+- **Story**: As a user I want the new GUI verbs to ride the same
+  undoable journal facts as their CLI siblings so that restoring or
+  clearing from the GUI is undoable exactly like round 4 shipped.
+- **Platforms**: both (CLI legs pre-existing).
+- **Entry points**: `ActionId::AppUndo` / CLI `tasks undo` (both
+  unchanged).
+- **Priority**: P1.
+- **Acceptance**:
+  - AC-1: Given a GUI restore When undone Then the row re-tombstones
+    (the #1187 re-delete law, GUI-leg) — verified by journey test.
+  - AC-2: Given the GUI shipped When the CLI verbs run Then their
+    behaviour is unchanged (the existing `it_restore_cli.rs` corpus
+    passes untouched) — verified by the existing test file passing.
+
+## 4. Journey specs
+
+### US-1 — Restore a deleted label
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-1/S1 | Labels overlay (Settings), deleted-labels section | Open the overlay | — (display only; roster read) | The section lists tombstoned labels with names, from `RestoreRoster.tombstoned_labels` (bounded) | Empty roster → the section renders absent; no dead chrome |
+| US-1/S2 | Restore row | Click restore | — (arms the ceremony, no dispatch) | The armed-confirm strip mounts naming the label and the consequence | Escape / cancel disarms, nothing dispatched (US-1/S4) |
+| US-1/S3 | Armed strip | Confirm | `StateCommand::RestoreLabel { id }` | `LabelRestored { label }` receipt; the label flips live with pre-tombstone values; the roster re-derives (row leaves the section); the toast lane names the typed fact | Stale live target → the accepted no-op receipt; nothing breaks (AC-3) |
+| US-1/S4 | Armed strip | Escape / cancel | — (none) | Strip dismounts, no dispatch, no state change | — (this step is the escape) |
+
+### US-2 — Restore a deleted habit
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-2/S1 | Habits composition context menu | Right-click / context-request on the habits surface | — (menu mount only) | The menu carries the restore row (last, BF-W-N2) when `RestoreRoster.tombstoned_habits` is non-empty, naming the habit | No tombstoned habits → the row renders absent; menu unchanged otherwise |
+| US-2/S2 | Restore row | Click restore | — (arms the ceremony) | Armed strip names the habit; the log-untouched fact (D26) is part of the strip's consequence | Escape disarms (US-2/S4) |
+| US-2/S3 | Armed strip | Confirm | `StateCommand::RestoreHabit { id }` | `HabitRestored { habit }` receipt; the habit flips live verbatim, fresh tombstone clock, log untouched; roster re-derives | Stale live target → accepted no-op receipt |
+| US-2/S4 | Armed strip | Escape / cancel | — (none) | Nothing dispatched | — (escape) |
+
+### US-3 — Clear a task's reminder rules
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-3/S1 | Task-editor rule list | Open a task's editor with n ≥ 1 rules | — (display only) | The clear-all row renders enabled, destructive-last | Zero rules → the row renders disabled (AC-3) |
+| US-3/S2 | Clear-all row | Click clear | — (arms the ceremony) | Armed strip names the task and the n-rules consequence | Escape disarms (US-3/S4) |
+| US-3/S3 | Armed strip | Confirm | `StateCommand::ClearReminderRules { task }` | One journaled entry carrying n `PreImage::ReminderRule` facts; the list renders empty; the toast names the typed receipt | Unknown/gone task (stale editor) → the typed rejection surfaces, rules unchanged |
+| US-3/S4 | Armed strip | Escape / cancel | — (none) | Nothing dispatched | — (escape) |
+| US-3/S5 | Global undo reflex | `ActionId::AppUndo` after S3 | `StateCommand::Undo` (synthesized inverse per UF1) | All n rules restored in one undo step | `tasks redo` re-clears (the escape back) |
+
+### US-4 — The undo line composes (regression fence)
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-4/S1 | Global undo reflex after a GUI restore | `ActionId::AppUndo` | `StateCommand::Undo` (synthesized `Delete*` inverse) | The restored row re-tombstones (the #1187 law, GUI leg) | `tasks redo` re-restores |
+| US-4/S2 | CLI (pre-existing) | `taskboard labels restore` / `habits restore` / `track restore` | unchanged engine verbs | Byte-identical to round-4 behaviour (existing corpus passes) | unchanged typed refusals |
+
+## 5. Interaction flows
+
+```mermaid
+flowchart TD
+  L[Labels overlay mounts] --> R1[RestoreRoster.tombstoned_labels rows]
+  R1 -->|restore click| A1[Armed strip: label restore]
+  A1 -->|confirm| C1[StateCommand::RestoreLabel id]
+  A1 -->|Escape| X1[Nothing dispatched]
+  H[Habits context menu] --> R2[RestoreRoster.tombstoned_habits row]
+  R2 --> A2[Armed strip: habit restore]
+  A2 -->|confirm| C2[StateCommand::RestoreHabit id]
+  A2 -->|Escape| X2[Nothing dispatched]
+  E[Task-editor rule list] --> R3[Clear-all row, n >= 1]
+  R3 --> A3[Armed strip: clear n rules]
+  A3 -->|confirm| C3[StateCommand::ClearReminderRules task]
+  A3 -->|Escape| X3[Nothing dispatched]
+  C1 --> U[Undo line: synthesized inverse]
+  C2 --> U
+  C3 --> U
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Armed: restore/clear click (ceremony arms)
+    Armed --> Idle: Escape / cancel (no dispatch)
+    Armed --> Committing: confirm
+    Committing --> Idle: receipt (Restored/cleared) + roster re-derive
+    Committing --> Idle: typed refusal/no-op receipt, entity unchanged
+```
+
+## 6. Wiring inventory
+
+| ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
+|---|---|---|---|---|---|---|---|---|---|
+| W-1 | (none — domain projection) | (none) | — | `RestoreRoster::derive` on the publish path (the `UndoView::derive` precedent; additive `AppState` field) | — | — | — (derived projection, no command; US-1/S1 and US-2/S1's row source) | US-1/S1, US-2/S1 | crates/taskboard-domain/src/roster/tests.rs::us1_s1_restore_roster_derives_tombstoned_rows, crates/taskboard-domain/src/roster/tests.rs::us1_s1_live_rows_stay_out_of_the_roster |
+| W-2 | ui/compositions/labels-overlay.slint | Deleted-labels section rows | label_restore_requested | adapter.rs::install_label_seams | — | StateCommand::RestoreLabel | ItemAddr kind: roster row (roster index → typed id at the adapter seam; the UI stays id-less) | US-1/S1, US-1/S2, US-1/S3 | crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us1_s1_overlay_lists_tombstoned_label, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us1_s2_restore_arm_mounts_the_strip, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us1_s3_restore_label_dispatches_and_receipts, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us1_s3_stale_live_target_is_accepted_noop |
+| W-3 | ui/compositions/habits.slint | Context-menu restore row | habit_restore_asked | adapter.rs::install_habit_seams | — | StateCommand::RestoreHabit | ItemAddr kind: roster row (same kind as W-2) | US-2/S1, US-2/S2, US-2/S3 | crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us2_s1_context_menu_carries_restore_row, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us2_s2_habit_restore_arm_mounts_the_strip, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us2_s3_restore_habit_dispatches_log_untouched |
+| W-4 | ui/compositions/rule-list.slint | Clear-all-rules row | rules_clear_asked | adapter.rs::install_rule_seams | — | StateCommand::ClearReminderRules | — (task-scoped row; the editor scope carries the task id) | US-3/S1, US-3/S2, US-3/S3 | crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us3_s1_clear_row_disabled_at_zero_rules, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us3_s2_clear_arm_mounts_the_strip, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us3_s3_clear_all_dispatches_once |
+| W-5 | ui adapter (armed-confirm ceremony host) | the shared armed strip | — | adapter.rs::install_ceremony_seams (the existing armed-confirm grammar; W-2/W-3/W-4 all arm through it) | — | — | — (ceremony host, no new command; US-1/S2, US-2/S2, US-3/S2 arm here) | US-1/S2, US-1/S4, US-2/S2, US-2/S4, US-3/S2, US-3/S4 | crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us1_s2_restore_arm_mounts_the_strip, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us1_s4_escape_disarms_without_dispatch, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us2_s2_habit_restore_arm_mounts_the_strip, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us2_s4_escape_disarms_without_dispatch, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us3_s2_clear_arm_mounts_the_strip, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us3_s4_escape_disarms_without_dispatch |
+| W-6 | ui adapter (existing toast lane) | existing outcome notice | — | adapter.rs::arm_outcome_notice (the unchanged lane; the pinned receipts ride it) | — | — | — (receipt rendering, unchanged lane) | US-1/S3, US-2/S3, US-3/S3 | crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us1_s3_restore_label_dispatches_and_receipts |
+| W-7 | (none — domain) | (none) | — | undo synthesis: `ClearReminderRules` inverse + `Restore*` re-delete synthesis (already landed in UF1/#1187 — this row is the fence, no new engine work) | — | StateCommand::Undo | — | US-3/S5, US-4/S1 | crates/taskboard-domain/src/undo/tests.rs::us3_s5_clear_reminder_rules_undo_restores_all_rules, crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs::us4_s1_gui_restore_undo_redeletes |
+
+## 7. Command-contract delta
+
+| Kind | Name | Payload sketch | Journeys |
+|---|---|---|---|
+| StateCommand | `RestoreLabel` | exists — unchanged (`id: LabelId`) | US-1/S3 |
+| StateCommand | `RestoreHabit` | exists — unchanged (`id: HabitId`) | US-2/S3 |
+| StateCommand | `ClearReminderRules` | exists — unchanged (`task: TaskId`); gains its first GUI dispatch path | US-3/S3 |
+| StateCommand | — | no new variants: the engine verbs and their undoability all exist (UF1/#1187/#993 landed); this chunk is surface + projection work | — |
+| AppState projection | `RestoreRoster` | `{ tombstoned_labels: Vec<RestoreRow>, tombstoned_habits: Vec<RestoreRow> }`, `RestoreRow { id, name }` — publish-derived, bounded, never persisted, additive | US-1/S1, US-2/S1 |
+| UiRequest | — | none (the ceremony arms adapter-side over the existing grammar) | — |
+| ActionId | — | none (the affordances are pointer/context-menu rows; keyboard parity rides the menu-family law, not new ids) | — |
+
+## 8. Verification plan
+
+- **Journey tests**
+  (`crates/taskboard-ui-slint/tests/journeys/undo_family_restore_clear_surfaces_journeys.rs`):
+  `us1_s1_overlay_lists_tombstoned_label`,
+  `us1_s3_restore_label_dispatches_and_receipts`,
+  `us1_s3_stale_live_target_is_accepted_noop`,
+  `us1_s4_escape_disarms_without_dispatch`,
+  `us2_s1_context_menu_carries_restore_row`,
+  `us2_s3_restore_habit_dispatches_log_untouched`,
+  `us3_s1_clear_row_disabled_at_zero_rules`,
+  `us3_s3_clear_all_dispatches_once`,
+  `us3_s4_escape_disarms_without_dispatch`,
+  `us4_s1_gui_restore_undo_redeletes`.
+- **Seam tests**: the three new adapter callbacks dispatch the exact
+  command payloads; the armed strips dispatch nothing on Escape.
+- **Fold/presentation tests** (domain, exact-name nominated):
+  `roster/tests.rs::us1_s1_restore_roster_derives_tombstoned_rows`,
+  `roster/tests.rs::us1_s1_live_rows_stay_out_of_the_roster`,
+  `undo/tests.rs::us3_s5_clear_reminder_rules_undo_restores_all_rules`.
+- **Bound-test nominations** (the #768 grammar — the CLI fence legs
+  ride the existing round-4 corpus, which must pass untouched):
+  bound-test: US-4/S2 -> crates/taskboard-app/tests/it_restore_cli.rs::us1_s3_labels_restore_undo_redeletes_the_restored_row
+- **Snapshot**: the `RestoreRoster` widening is the one deliberate
+  insta regeneration pass; any corpus diff beyond the additive
+  projection field is a finding.
+- **Kiosk gates**: all three affordances render absent on kiosk
+  (R-5) — pinned by composition probes asserting platform-qualified
+  absence (structural, not pixel).
+- **Manual**: the armed strips' consequence copy (does the strip name
+  what will come back / how many rules go?) — judged at the stage-3
+  walkthrough per the recognition-over-recall doctrine; the deleted
+  section's prominence likewise.
+
+## 9. Definition of done
+
+- [ ] `scripts/ux-coverage.sh <this file> --gate` exits 0
+- [ ] Every P1 story's journey completes end-to-end including escapes
+      (US-1..US-4)
+- [ ] Walkthrough protocol executed at stage 3; findings resolved or
+      homed
+- [ ] All matrix absences carry rulings (R-1..R-6); census updated:
+      the `label.restore` / `habit.restore` / `reminder_rule.clear`
+      rows gain their GUI cells
+- [ ] Non-goals filed as backlog issues: N2 (bulk restore), R-4's CLI
+      spelling
