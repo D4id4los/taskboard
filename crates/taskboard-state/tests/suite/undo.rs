@@ -1445,3 +1445,101 @@ async fn adjust_habit_log_newest_keeps_the_typed_fence() {
         "typed refusal: {err:?}"
     );
 }
+
+/// The #1207 never-silent pin (round 5 chunk A2, D-A2-4): an edit
+/// session over the reported shape — a start date set, then further
+/// edits — undoes as APPLIED (the head moves, the published state
+/// flips back) or as a TYPED refusal; "undo did nothing" is the
+/// bug class the pin forbids. The matched arms are the contract:
+/// `Undone` with a state delta, or the typed `TargetNotUndoable` /
+/// scope refusals — any other answer (an `Ok` that changes nothing,
+/// an untyped error) fails the pin.
+#[tokio::test]
+async fn an_edit_session_undo_is_applied_or_typed_refusal_never_silent() {
+    let mut rig = Rig::start().await;
+    let board = rig
+        .state()
+        .boards
+        .keys()
+        .next()
+        .copied()
+        .expect("seed board");
+    let stack = expect_created_stack(
+        rig.run(StateCommand::CreateStack {
+            board,
+            title: "stack".into(),
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    let task = expect_created_task(
+        rig.run(StateCommand::CreateTask {
+            title: "t".into(),
+            stack,
+            order: 1,
+        })
+        .await
+        .expect("accepted"),
+    );
+    // The reported edit shape: the start date first, then further
+    // edits — each an `UpdateTask` over the journal's PreImages
+    // class.
+    let start = common::ts(T0);
+    rig.run(StateCommand::UpdateTask {
+        id: task,
+        changes: taskboard_domain::TaskChanges {
+            scheduled: Some(Some(start)),
+            ..taskboard_domain::TaskChanges::default()
+        },
+    })
+    .await
+    .expect("the start-date edit is accepted");
+    rig.run(StateCommand::UpdateTask {
+        id: task,
+        changes: taskboard_domain::TaskChanges {
+            title: Some("edited".into()),
+            ..taskboard_domain::TaskChanges::default()
+        },
+    })
+    .await
+    .expect("the title edit is accepted");
+    let undoable_before = rig.state().undo.can_redo;
+
+    // The undo verb: applied or typed refusal, never silent.
+    match rig.run(StateCommand::Undo).await {
+        Ok(CommandOutcome::Undone { .. }) => {
+            let app = rig.state();
+            assert!(
+                !undoable_before,
+                "a fresh line has no redo branch (the cursor's pre-undo read)"
+            );
+            assert!(
+                app.undo.can_redo,
+                "an applied undo moved the journal cursor (the redo branch opened)"
+            );
+            assert_eq!(
+                app.tasks[&task].title, "t",
+                "the applied undo retracted the last edit (the state moved)"
+            );
+        }
+        Ok(other) => panic!(
+            "undo answered {other:?} without moving the state — the silent no-op class (#1207)"
+        ),
+        Err(ExecuteError::Rejected(
+            taskboard_domain::CommandError::TargetNotUndoable(_)
+            | taskboard_domain::CommandError::NothingToUndo
+            | taskboard_domain::CommandError::NothingToUndoForBoard { .. },
+        )) => {
+            // The typed refusal: the contract's other half. The head
+            // did not move and the refusal is repeatable — a
+            // deterministic answer, never a swallowed one.
+            let redo_after = rig.state().undo.can_redo;
+            assert_eq!(
+                redo_after, undoable_before,
+                "a refusal never moves the head"
+            );
+        }
+        Err(other) => panic!("undo failed untyped: {other:?}"),
+    }
+}
