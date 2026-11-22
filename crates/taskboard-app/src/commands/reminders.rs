@@ -709,13 +709,18 @@ mod predicate_tests {
 
     /// A prefix hitting only *another task's* rule is a miss, not a
     /// candidate (D-R3's scoping law — the resolution is task-local).
+    /// The target task carries its own rule too, so the filtered list
+    /// is non-empty and the `==` flip (which returns the *parsed*
+    /// selector id on any non-matching hit) resolves a foreign rule
+    /// instead of refusing — the observable flip.
     #[test]
     fn resolve_rule_scopes_to_the_target_task() {
         let task: u128 = 0x11;
         let other: u128 = 0x12;
+        let own = rule(0x1234_5679_0000_0000_0000_0000_0000_0009, task, offset(30));
         let foreign = rule(0x1234_5678_0000_0000_0000_0000_0000_0001, other, offset(10));
         let full = foreign.id.as_uuid().to_string();
-        let state = rules_state(task, &[foreign]);
+        let state = rules_state(task, &[own, foreign]);
         assert!(matches!(
             resolve_rule(&state, TaskId::from_uuid(Uuid::from_u128(task)), &full),
             Err(CommandError::UnknownReminderRule(_))
