@@ -633,9 +633,9 @@ fn us6_s3_badge_installs_no_command_callbacks() {
 /// seed; the habits journey's `state_habit` shape, quota reduced so a
 /// single log reaches the repair-closing quota).
 fn seed_repair_habit(state: &mut taskboard_domain::AppState) -> taskboard_domain::HabitId {
+    use taskboard_domain::NonZeroCount;
     use taskboard_domain::habit::{Habit, HabitClocks, HabitTarget};
     use taskboard_domain::ids::HabitId;
-    use taskboard_domain::NonZeroCount;
     let board = *state.boards.keys().next().expect("fixture board");
     let id = HabitId::from_uuid(uuid::Uuid::now_v7());
     state.habits.habits.insert(
@@ -712,10 +712,7 @@ fn us8_s2_repair_no_window_typed_refusal() {
     {
         let calendar = fixture::harness_calendar();
         let today = calendar.today(chrono::Utc::now());
-        let prev = taskboard_domain::habit::period_before(
-            taskboard_domain::PeriodKind::Day,
-            today,
-        );
+        let prev = taskboard_domain::habit::period_before(taskboard_domain::PeriodKind::Day, today);
         state.habits.log.insert(
             taskboard_domain::HabitLogKey {
                 habit,
@@ -741,5 +738,90 @@ fn us8_s2_repair_no_window_typed_refusal() {
         );
         harness.driver.advance_time(0);
         harness.assert_commands(&[]);
+    });
+}
+
+// -- US-11: the series pause/resume chords -------------------------------
+
+/// US-11/AC-1 (`us11_s1_series_pause_chord_resolves`): an active
+/// series' Ctrl+Shift+p opens the recur row's inline pause editor over
+/// the viewed subject — the chord twin of the pause affordance's view
+/// intent. The spelling is the R-7 move (the plan's Ctrl+Shift+r is
+/// `SeriesEdit`'s landed chord in the standard preset).
+#[test]
+fn us11_s1_series_pause_chord_resolves() {
+    let (fx, mut state) = fixture::golden_state();
+    seed_daily_recur(&mut state, fx.task0);
+    support::harness::run_journey(state, move |harness| {
+        mount_task_detail(harness);
+        harness.stroke(
+            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+p")
+                .expect("the US-11 pause spelling parses"),
+        );
+        harness.driver.advance_time(0);
+        assert!(
+            harness.handle.window().get_task_model().recur_pause_open,
+            "the chord opens the pause editor (the click seam's twin)"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
+/// US-11/AC-2 (`us11_s2_series_resume_chord_resolves`): a paused
+/// series' Ctrl+Shift+u routes the resume — `PauseSeries { until:
+/// None }`, the field-clear twin the recur row's resume seam routes.
+#[test]
+fn us11_s2_series_resume_chord_resolves() {
+    let (fx, mut state) = fixture::golden_state();
+    seed_daily_recur(&mut state, fx.task0);
+    if let Some(task) = state.tasks.get_mut(&fx.task0) {
+        let rule = task.recur.as_mut().expect("seeded head rule");
+        rule.paused_until =
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 10, 25).expect("fixture date"));
+    }
+    support::harness::run_journey(state, move |harness| {
+        mount_task_detail(harness);
+        harness.stroke(
+            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+u")
+                .expect("the US-11 resume spelling parses"),
+        );
+        harness.driver.advance_time(0);
+        let drained = harness.engine.drain();
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [StateCommand::PauseSeries { until: None, .. }]
+            ),
+            "the resume chord clears the pause at the boundary, got {drained:?}"
+        );
+    });
+}
+
+// -- US-12: the tracker-kind toggle binding ------------------------------
+
+/// US-12/AC-1 (`us12_s1_kind_toggle_chord_resolves`): the kind-toggle
+/// key at the detail (the preset spelling — standard's Ctrl+Shift+k)
+/// resolves `ActionId::TaskToggleTracker` — the tracker-kind flag, the
+/// R-8 smart toggle's distinct neighbour.
+#[test]
+fn us12_s1_kind_toggle_chord_resolves() {
+    let (fx, state) = fixture::golden_state();
+    let task = fx.task0;
+    support::harness::run_journey(state, move |harness| {
+        mount_task_detail(harness);
+        harness.stroke(
+            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+k")
+                .expect("the US-12 spelling parses"),
+        );
+        harness.driver.advance_time(0);
+        let drained = harness.engine.drain();
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [StateCommand::UpdateTask { id, changes, .. }]
+                    if *id == task && changes.kind.is_some()
+            ),
+            "the kind toggle flips the tracker flag at the boundary, got {drained:?}"
+        );
     });
 }
