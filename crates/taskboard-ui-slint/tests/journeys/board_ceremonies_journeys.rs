@@ -637,3 +637,53 @@ fn d5_kiosk_gates_the_ceremony_verbs_absent() {
         );
     });
 }
+
+/// The tombstone seam leg (#1183, AC-3): a tombstoned board is never
+/// the ceremony subject. The keyboard path's backstop posture,
+/// hand-built: an `AppState` whose only board is a tombstone mounts,
+/// and the `BoardArchive` verb's arm/confirm grammar is fully inert —
+/// no consent strip arms (the selection normalize repairs a dead
+/// selection to no live board), nothing dispatches, and the
+/// snapshot's board set is identical (the tombstone stays a
+/// tombstone, never archived). The pointer menu's greyed ceremony
+/// rows are the same verdict's click twin (OP1 US-1/S1); one verb
+/// carries the seam claim — `BoardReset` and `BoardReconcile` read
+/// the same liveness posture, and the engine-side typed refusal
+/// (`CommandError::BoardDeleted`) stays domain-pinned as the failure
+/// path's fact behind the unreachability.
+#[test]
+fn a_tombstoned_board_is_never_the_ceremony_subject() {
+    ceremony_journey(|mut state| {
+        let board = fixture_board(&state);
+        {
+            let row = state.boards.get_mut(&board).expect("fixture board");
+            row.deleted = true;
+        }
+        let mut harness = CeremonyHarness::mount(state, false);
+        // The arm stroke and the confirm twin both land: the grammar
+        // cannot reach a tombstone.
+        harness.dispatch(ActionId::BoardArchive);
+        assert_eq!(
+            harness.letter().mode,
+            CeremonyLetterMode::None,
+            "no consent strip arms over a tombstone"
+        );
+        harness.dispatch(ActionId::BoardArchive); // the confirm twin
+        assert_eq!(
+            harness.letter().mode,
+            CeremonyLetterMode::None,
+            "the strip stays unmounted through the confirm stroke"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "no ceremony command dispatches against the tombstone"
+        );
+        // The board set is identical: the tombstone stayed a tombstone
+        // (not archived, not resurrected, not removed).
+        let snapshot = harness.engine.snapshot();
+        let row = snapshot.boards.get(&board).expect("the tombstone survives");
+        assert!(row.deleted, "still a tombstone");
+        assert!(!row.archived, "never archived");
+        assert_eq!(snapshot.boards.len(), 1, "the board set is identical");
+    });
+}
