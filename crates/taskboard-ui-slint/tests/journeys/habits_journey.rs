@@ -1569,3 +1569,62 @@ fn a1_click_selects_the_row() {
         );
     });
 }
+
+/// D3 (stage-1 plan §3, stage-2's residual verification duty), CLICK
+/// leg: a real pointer click (press + release at the card's window
+/// coordinates, through the `DragArea`/`gap-zone := DropArea` full-size
+/// sibling overlay) reaches `TaskCard::clicked` and seats the walk
+/// cursor — the #1200 fix is real at the true pointer seam, no
+/// interception.
+///
+/// The DRAG leg of this duty is an open finding (commented on #1198):
+/// a real pointer press+move+release over a habit row never reaches
+/// the `gap-zone := DropArea`'s `dropped` callback in this harness —
+/// pressed at the card centre and at the left padding, past the slop,
+/// against a board-control drag whose identical `DragArea`+child-
+/// `DropArea` shape demonstrably works through the same driver (the
+/// virtualisation probe). Per the plan's stop rule this is filed, not
+/// blind-patched: the suspected mechanism is the habit `DragArea`'s
+/// touch region (`height: habit-card.preferred-height`) not matching
+/// the card's realized geometry, but that needs a GUI-level diagnosis
+/// (D3a's redesign chunk) before any z-order or geometry edit.
+#[test]
+fn a1_d3_the_real_pointer_click_reaches_the_habit_rows() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    dense_three_habits(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.handle.dispatch_action(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            rendered_section(harness),
+            vec!["alpha", "bravo", "charlie"],
+            "the section renders on Today"
+        );
+
+        // The real click reaches the card under the gap-zone overlay:
+        // the emphasis ring paints on the clicked row.
+        let alpha = harness
+            .driver
+            .find_by_label("bravo")
+            .expect("the bravo row renders");
+        let (x, y) = support::driver::centre(&alpha);
+        harness.driver.click_at(x, y);
+        harness.driver.advance_time(0);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            emphasis_of(harness),
+            vec![false, true, false],
+            "the real pointer click selected the row"
+        );
+    });
+}
+
+/// The emphasis bits over the habits model (the D3 smoke's read seam;
+/// the walk-cursor render fact).
+fn emphasis_of(harness: &Harness) -> Vec<bool> {
+    let model = harness.handle.window().get_habits_model();
+    (0..model.row_count())
+        .map(|i| model.row_data(i).expect("row").card.emphasis)
+        .collect()
+}
