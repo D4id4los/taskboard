@@ -622,3 +622,196 @@ pub async fn remind_line(
         ),
     }
 }
+
+#[cfg(test)]
+mod predicate_tests {
+    use super::*;
+    use taskboard_domain::{Insistence, ReminderKind, ReminderOffset, ReminderRuleId};
+    use uuid::Uuid;
+
+    fn rule(raw: u128, task_raw: u128, offset: ReminderOffset) -> taskboard_domain::ReminderRule {
+        taskboard_domain::ReminderRule {
+            id: ReminderRuleId::from_uuid(Uuid::from_u128(raw)),
+            task: TaskId::from_uuid(Uuid::from_u128(task_raw)),
+            kind: ReminderKind::DueOffset(offset),
+            insistence: Insistence::Normal,
+            created_at: crate::test_support::frozen_now(),
+            updated_at: crate::test_support::frozen_now(),
+            by: None,
+        }
+    }
+
+    fn rules_state(task_raw: u128, rules: &[taskboard_domain::ReminderRule]) -> AppState {
+        let mut state = AppState::default();
+        for r in rules {
+            state.reminders.rules.insert(r.id, r.clone());
+        }
+        let _ = task_raw;
+        state
+    }
+
+    fn offset(mins: i64) -> ReminderOffset {
+        ReminderOffset::parse_text_form(&format!("{mins}m")).expect("the offset parses")
+    }
+
+    /// The selector ladder over one task's rules: exact uuid, unique
+    /// ≥8-char prefix, then the offset text form. The `==` flips make
+    /// every positive case resolve a *wrong* rule or nothing — each
+    /// positive pin flips (plan §3 #15).
+    #[test]
+    fn resolve_rule_hits_uuid_then_unique_prefix_then_offset_text() {
+        let task: u128 = 0x11;
+        let a = rule(0x1234_5678_0000_0000_0000_0000_0000_0001, task, offset(10));
+        let id = a.id;
+        let state = rules_state(task, &[a, rule(2, task, offset(30))]);
+        let full = id.as_uuid().to_string();
+        assert_eq!(
+            resolve_rule(&state, TaskId::from_uuid(Uuid::from_u128(task)), &full)
+                .expect("exact uuid"),
+            id
+        );
+        assert_eq!(
+            resolve_rule(&state, TaskId::from_uuid(Uuid::from_u128(task)), &full[..8])
+                .expect("unique prefix"),
+            id
+        );
+        assert_eq!(
+            resolve_rule(&state, TaskId::from_uuid(Uuid::from_u128(task)), "10m")
+                .expect("offset text form"),
+            id,
+            "the dedup-unique offset text resolves its rule"
+        );
+    }
+
+    /// A shared prefix within the task's rules is the typed ambiguity
+    /// naming both candidates.
+    #[test]
+    fn resolve_rule_ambiguous_prefix_names_candidates() {
+        let task: u128 = 0x11;
+        let a = rule(0x1234_5670_0000_0000_0000_0000_0000_0001, task, offset(10));
+        let b = rule(0x1234_5670_0000_0000_0000_0000_0000_0002, task, offset(30));
+        let state = rules_state(task, &[a, b]);
+        let shared =
+            ReminderRuleId::from_uuid(Uuid::from_u128(0x1234_5670_0000_0000_0000_0000_0000_0001))
+                .as_uuid()
+                .to_string();
+        let err = resolve_rule(
+            &state,
+            TaskId::from_uuid(Uuid::from_u128(task)),
+            &shared[..8],
+        )
+        .expect_err("two prefix hits");
+        let CommandError::AmbiguousReminderRule { candidates } = &err else {
+            panic!("a shared prefix is the typed ambiguity, got {err:?}");
+        };
+        assert_eq!(candidates.len(), 2);
+    }
+
+    /// A prefix hitting only *another task's* rule is a miss, not a
+    /// candidate (D-R3's scoping law — the resolution is task-local).
+    #[test]
+    fn resolve_rule_scopes_to_the_target_task() {
+        let task: u128 = 0x11;
+        let other: u128 = 0x12;
+        let foreign = rule(0x1234_5678_0000_0000_0000_0000_0000_0001, other, offset(10));
+        let full = foreign.id.as_uuid().to_string();
+        let state = rules_state(task, &[foreign]);
+        assert!(matches!(
+            resolve_rule(&state, TaskId::from_uuid(Uuid::from_u128(task)), &full),
+            Err(CommandError::UnknownReminderRule(_))
+        ));
+    }
+
+    /// A sub-gate selector skips the prefix pass; a non-matching offset
+    /// text and a full miss are the typed unknown (never another
+    /// task's rule).
+    #[test]
+    fn resolve_rule_refuses_misses_typedly() {
+        let task: u128 = 0x11;
+        let a = rule(0x1234_5678_0000_0000_0000_0000_0000_0001, task, offset(10));
+        let state = rules_state(task, &[a]);
+        let t = TaskId::from_uuid(Uuid::from_u128(task));
+        assert!(matches!(
+            resolve_rule(&state, t, "1234"),
+            Err(CommandError::UnknownReminderRule(_))
+        ));
+        assert!(
+            matches!(
+                resolve_rule(&state, t, "5m"),
+                Err(CommandError::UnknownReminderRule(_))
+            ),
+            "a different offset is not a candidate"
+        );
+        assert!(matches!(
+            resolve_rule(&state, t, "zzz"),
+            Err(CommandError::UnknownReminderRule(_))
+        ));
+    }
+
+    // ---- collapse (the mode switch, plan §3 #16) ---------------------------
+    //
+    // The `off || on` flip: under `&&` the `off`-alone row falls to
+    // unreachable (`Mute{muted: true}` is the only observer), the
+    // `on`-alone row collapses to the *wrong* `Add` mode — this table
+    // flips both.
+
+    #[allow(clippy::fn_params_excessive_bools)] // the clap flag bag IS the shape under test
+    fn remind(
+        list: bool,
+        clear: bool,
+        remove: Option<String>,
+        off: bool,
+        on: bool,
+    ) -> crate::cli::TasksCmd {
+        crate::cli::TasksCmd::Remind {
+            task: Some("t".to_owned()),
+            before: None,
+            insistence: None,
+            list,
+            clear,
+            remove,
+            off,
+            on,
+        }
+    }
+
+    #[test]
+    fn collapse_yields_every_remind_mode() {
+        assert!(matches!(
+            collapse(remind(true, false, None, false, false)),
+            Some(RemindInvocation::List)
+        ));
+        assert!(matches!(
+            collapse(remind(false, true, None, false, false)),
+            Some(RemindInvocation::Clear(_))
+        ));
+        assert!(matches!(
+            collapse(remind(false, false, Some("r".to_owned()), false, false)),
+            Some(RemindInvocation::Remove { rule, .. }) if rule == "r"
+        ));
+        assert!(
+            matches!(
+                collapse(remind(false, false, None, true, false)),
+                Some(RemindInvocation::Mute { muted: true, .. })
+            ),
+            "--off alone mutes"
+        );
+        assert!(
+            matches!(
+                collapse(remind(false, false, None, false, true)),
+                Some(RemindInvocation::Mute { muted: false, .. })
+            ),
+            "--on alone unmutes — the || flip-killer"
+        );
+        assert!(matches!(
+            collapse(remind(false, false, None, false, false)),
+            Some(RemindInvocation::Add { .. })
+        ));
+    }
+
+    /// A non-Remind `tasks` subcommand never collapses to a remind mode.
+    #[test]
+    fn collapse_is_none_for_non_remind_subcommands() {
+        assert!(collapse(crate::cli::TasksCmd::List { stack: None }).is_none());
+    }
+}

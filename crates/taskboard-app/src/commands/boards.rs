@@ -1118,7 +1118,22 @@ pub async fn select_prelude(
     let spec = crate::commands::resolve_connector(config, connector)?;
     let client = client_for_spec(&spec, store)?;
     let listing = client.boards().await.map_err(map_deck_error)?;
-    let entry = listing
+    let entry = validated_listing_entry(&listing, board);
+    entry
+        .map(|entry| (entry, spec))
+        .ok_or(CommandError::UnknownBoard(board))
+}
+
+/// The fresh-listing pre-validation predicate, extracted pure (plan D2,
+/// #1231): the listing-find conjuncts (`b.id == board && !b.archived &&
+/// b.is_live()`) decide which remote board the bind ceremony may mint
+/// from. The IO shell around it (`select_prelude`) stays
+/// integration-tier; this predicate is unit-reachable without a client.
+fn validated_listing_entry(
+    listing: &[taskboard_sync_nextcloud::model::Board],
+    board: u64,
+) -> Option<BoardsListEntry> {
+    listing
         .iter()
         .find(|b| b.id == board && !b.archived && b.is_live())
         .map(|b| BoardsListEntry {
@@ -1126,10 +1141,7 @@ pub async fn select_prelude(
             title: b.title.clone(),
             archived: b.archived,
             deleted: !b.is_live(),
-        });
-    entry
-        .map(|entry| (entry, spec))
-        .ok_or(CommandError::UnknownBoard(board))
+        })
 }
 
 /// The bind ceremony's shared tail (D3-7): nudge the engine
@@ -1670,5 +1682,58 @@ mod spec_tests {
         let (server, user) = observed.0.lock().expect("lock").clone();
         assert_eq!(server, "https://b.example");
         assert_eq!(user, "ub");
+    }
+}
+
+#[cfg(test)]
+mod select_listing_tests {
+    use super::validated_listing_entry;
+    use taskboard_sync_nextcloud::{DeckColor, model};
+
+    /// The listing predicate's flip table (plan §3 #5, D2): a live
+    /// matching entry passes; an archived one, a tombstoned one, and a
+    /// wrong id are all refusals (`UnknownBoard`) — deleting a conjunct
+    /// lets the refused shape through, and each refused row flips.
+    fn listing_board(id: u64, archived: bool, deleted_at: i64) -> model::Board {
+        model::Board {
+            id,
+            title: format!("board {id}"),
+            color: DeckColor::from_hex("0082c9").expect("valid hex"),
+            deleted_at,
+            last_modified: 0,
+            archived,
+            shared: 0,
+            owner: None,
+            users: Vec::new(),
+            labels: Vec::new(),
+            acl: Vec::new(),
+            permissions: None,
+        }
+    }
+
+    #[test]
+    fn validated_listing_entry_passes_only_the_live_unarchived_match() {
+        let listing = [
+            listing_board(1, false, 0),
+            listing_board(2, true, 0),
+            listing_board(3, false, 5),
+        ];
+        // The live match.
+        let entry = validated_listing_entry(&listing, 1).expect("live match");
+        assert_eq!(entry.id, 1);
+        assert_eq!(entry.title, "board 1");
+        assert!(!entry.deleted);
+        assert!(!entry.archived);
+        // Archived refused.
+        assert!(validated_listing_entry(&listing, 2).is_none());
+        // Tombstoned refused (`is_live() == false`).
+        assert!(validated_listing_entry(&listing, 3).is_none());
+        // Wrong id refused.
+        assert!(validated_listing_entry(&listing, 9).is_none());
+        // The tombstone's entry shape carries `deleted` when it ever
+        // did pass — structural honesty of the projection.
+        let dead = listing_board(4, false, 7);
+        let listing2 = [listing_board(9, false, 0), dead];
+        assert!(validated_listing_entry(&listing2, 4).is_none());
     }
 }

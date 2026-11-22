@@ -387,3 +387,80 @@ pub async fn breaks_line(
         ),
     }
 }
+
+#[cfg(test)]
+mod resolve_rule_tests {
+    use super::*;
+    use taskboard_domain::{Insistence, WorkThreshold};
+    use uuid::Uuid;
+
+    fn rule(raw: u128, label: &str) -> taskboard_domain::BreakRule {
+        taskboard_domain::BreakRule {
+            id: BreakRuleId::from_uuid(Uuid::from_u128(raw)),
+            board: taskboard_domain::BoardId::from_uuid(Uuid::from_u128(0xB0)),
+            label: label.to_owned(),
+            threshold: WorkThreshold::try_new(
+                chrono::TimeDelta::try_minutes(25).expect("representable"),
+            )
+            .expect("positive threshold"),
+            insistence: Insistence::Normal,
+            created_at: crate::test_support::frozen_now(),
+            by: None,
+        }
+    }
+
+    fn state_with(rules: &[taskboard_domain::BreakRule]) -> AppState {
+        let mut state = AppState::default();
+        for r in rules {
+            state.reminders.break_rules.insert(r.id, r.clone());
+        }
+        state
+    }
+
+    /// The twin ladder (the `resolve_alarm` shape): exact uuid → unique
+    /// ≥8-char prefix → unique case-folded label prefix, with the typed
+    /// ambiguity and unknown arms.
+    #[test]
+    fn resolve_rule_hits_uuid_then_prefix_then_label_prefix() {
+        let a = rule(0x1234_5678_0000_0000_0000_0000_0000_0001, "stretch");
+        let id = a.id;
+        let state = state_with(&[a, rule(2, "walk")]);
+        let full = id.as_uuid().to_string();
+        assert_eq!(resolve_rule(&state, &full).expect("exact uuid"), id);
+        assert_eq!(resolve_rule(&state, &full[..8]).expect("unique prefix"), id);
+        assert_eq!(
+            resolve_rule(&state, "STRE").expect("case-folded label prefix"),
+            id,
+            "label matching is a case-folded prefix, not a substring"
+        );
+        assert!(
+            matches!(
+                resolve_rule(&state, "tch"),
+                Err(CommandError::UnknownBreakRule(_))
+            ),
+            "a suffix is not a prefix"
+        );
+    }
+
+    /// A shared prefix is the typed alarm-class ambiguity; misses are
+    /// the typed unknown.
+    #[test]
+    fn resolve_rule_ambiguous_prefix_and_misses() {
+        let a = rule(0x1234_5670_0000_0000_0000_0000_0000_0001, "twin-a");
+        let b = rule(0x1234_5670_0000_0000_0000_0000_0000_0002, "twin-b");
+        let state = state_with(&[a, b]);
+        let shared =
+            BreakRuleId::from_uuid(Uuid::from_u128(0x1234_5670_0000_0000_0000_0000_0000_0001))
+                .as_uuid()
+                .to_string();
+        let err = resolve_rule(&state, &shared[..8]).expect_err("two prefix hits");
+        assert!(
+            matches!(err, CommandError::AmbiguousAdhocAlarm { .. }),
+            "the shared prefix names both candidates"
+        );
+        assert!(matches!(
+            resolve_rule(&state, "zzzz"),
+            Err(CommandError::UnknownBreakRule(_))
+        ));
+    }
+}

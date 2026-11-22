@@ -774,13 +774,13 @@ pub async fn redo(
 /// best-effort label from the published `UndoView.recent` window (the
 /// just-touched entry is the most recently appended one, so it is
 /// in-window in every reachable v1 case — the `Option` keeps the type
-/// total without coupling to window arithmetic).
+/// total without coupling to window arithmetic). Pure over the
+/// snapshot (plan D1, #1231): the caller owns the one load.
 fn journal_receipt(
-    app: &crate::App,
+    state: &AppState,
     verb: JournalVerb,
     entry: taskboard_domain::JournalId,
 ) -> JournalReceipt {
-    let state = app.engine.shared_state().load_full();
     let label = state
         .undo
         .recent
@@ -802,7 +802,8 @@ fn journal_receipt(
 pub(crate) async fn undo_on(app: &crate::App) -> Result<JournalReceipt, CommandError> {
     match app.engine.execute(StateCommand::Undo).await? {
         taskboard_domain::CommandOutcome::Undone { entry } => {
-            Ok(journal_receipt(app, JournalVerb::Undo, entry))
+            let state = app.engine.shared_state().load_full();
+            Ok(journal_receipt(&state, JournalVerb::Undo, entry))
         }
         _ => unreachable!("Undo plans into Undone and typed refusals only"),
     }
@@ -816,8 +817,302 @@ pub(crate) async fn undo_on(app: &crate::App) -> Result<JournalReceipt, CommandE
 pub(crate) async fn redo_on(app: &crate::App) -> Result<JournalReceipt, CommandError> {
     match app.engine.execute(StateCommand::Redo).await? {
         taskboard_domain::CommandOutcome::Redone { entry } => {
-            Ok(journal_receipt(app, JournalVerb::Redo, entry))
+            let state = app.engine.shared_state().load_full();
+            Ok(journal_receipt(&state, JournalVerb::Redo, entry))
         }
         _ => unreachable!("Redo plans into Redone and typed refusals only"),
+    }
+}
+
+#[cfg(test)]
+mod predicate_tests {
+    use super::*;
+    use taskboard_domain::BoardId;
+    use uuid::Uuid;
+
+    fn stack(raw: u128, title: &str, order: i64, deleted: bool) -> Stack {
+        let mut s =
+            crate::test_support::seed_stack(raw, BoardId::from(Uuid::from_u128(0xB0)), order);
+        s.title = title.to_owned();
+        s.deleted = deleted;
+        s
+    }
+
+    fn task(
+        raw: u128,
+        stack_raw: u128,
+        title: &str,
+        order: i64,
+    ) -> taskboard_domain::entities::Task {
+        let mut t = crate::test_support::seed_task(
+            raw,
+            StackId::from_uuid(Uuid::from_u128(stack_raw)),
+            order,
+        );
+        t.title = title.to_owned();
+        t
+    }
+
+    fn state_with(
+        stacks: &[Stack],
+        boards: &[taskboard_domain::Board],
+        tasks: &[taskboard_domain::entities::Task],
+    ) -> AppState {
+        let mut state = AppState::default();
+        for s in stacks {
+            state.stacks.insert(s.id, s.clone());
+        }
+        for b in boards {
+            state.boards.insert(b.id, b.clone());
+        }
+        for t in tasks {
+            state.tasks.insert(t.id, t.clone());
+        }
+        state
+    }
+
+    // ---- resolve_stack (the triage table, plan §3 #6) ----------------------
+
+    /// Zero live stacks ⇒ the typed `NoStacks` refusal (the arm-0
+    /// deletion survivor, M6 census).
+    #[test]
+    fn resolve_stack_with_no_live_stacks_refuses_no_stacks() {
+        let state = state_with(&[stack(1, "gone", 0, true)], &[], &[]);
+        assert!(matches!(
+            resolve_stack(&state, None),
+            Err(CommandError::NoStacks)
+        ));
+    }
+
+    /// Exactly one live stack resolves without a selector.
+    #[test]
+    fn resolve_stack_with_one_live_stack_resolves_it() {
+        let only = stack(1, "only", 0, false);
+        let id = only.id;
+        let state = state_with(&[stack(2, "gone", 1, true), only], &[], &[]);
+        assert_eq!(resolve_stack(&state, None).expect("one live stack"), id);
+    }
+
+    /// Many live stacks without a selector are ambiguous, naming every
+    /// candidate title in canonical `(order, id)` order.
+    #[test]
+    fn resolve_stack_with_many_live_stacks_is_ambiguous_naming_candidates() {
+        let a = stack(1, "alpha", 0, false);
+        let b = stack(2, "beta", 1, false);
+        let state = state_with(&[b, a], &[], &[]);
+        let err = resolve_stack(&state, None).expect_err("many live stacks");
+        let CommandError::AmbiguousStack { candidates } = err else {
+            panic!("many live stacks are the typed ambiguity, got {err:?}");
+        };
+        assert_eq!(candidates, vec!["alpha".to_owned(), "beta".to_owned()]);
+    }
+
+    /// An exact live-stack uuid wins; a uuid-shaped miss falls through
+    /// to the title pass; an exact title matches.
+    #[test]
+    fn resolve_stack_uuid_wins_then_title_matches() {
+        let a = stack(0x1234_5678_0000_0000_0000_0000_0000_0001, "alpha", 0, false);
+        let id = a.id;
+        let state = state_with(&[a, stack(2, "beta", 1, false)], &[], &[]);
+        let full = id.as_uuid().to_string();
+        assert_eq!(
+            resolve_stack(&state, Some(&full)).expect("exact uuid"),
+            id,
+            "the live uuid hit resolves before the title pass"
+        );
+        // A uuid-shaped selector that hits nothing falls through to the
+        // title pass (the resolve_task law), so an unparseable-but-live
+        // title still resolves.
+        let ghost = Uuid::from_u128(0xfeed).to_string();
+        assert_eq!(
+            resolve_stack(&state, Some("beta")).expect("exact title"),
+            StackId::from_uuid(Uuid::from_u128(2))
+        );
+        assert!(matches!(
+            resolve_stack(&state, Some(&ghost)),
+            Err(CommandError::UnknownStack(_))
+        ));
+    }
+
+    /// Duplicate titles across stacks are the typed ambiguity even with
+    /// an exact selector; a tombstone never resolves (title pass
+    /// included).
+    #[test]
+    fn resolve_stack_duplicate_titles_are_ambiguous_and_tombstones_invisible() {
+        let a = stack(1, "twin", 0, false);
+        let b = stack(2, "twin", 1, false);
+        let dead = stack(3, "ghost", 2, true);
+        let state = state_with(&[a, b, dead], &[], &[]);
+        let err = resolve_stack(&state, Some("twin")).expect_err("two twins");
+        assert!(matches!(err, CommandError::AmbiguousStack { .. }));
+        assert!(matches!(
+            resolve_stack(&state, Some("ghost")),
+            Err(CommandError::UnknownStack(_))
+        ));
+    }
+
+    // ---- resolve_target (the remap table, plan §3 #7) ----------------------
+
+    /// Zero live *boards* remaps `NoStacks` onto the sanctioned
+    /// zero-live-boards ambiguity (the empty-candidates shape).
+    #[test]
+    fn resolve_target_remaps_no_stacks_to_the_empty_board_ambiguity_when_boardless() {
+        let state = state_with(&[], &[], &[]);
+        assert!(matches!(
+            resolve_target(&state, None),
+            Err(CommandError::AmbiguousBoard { candidates }) if candidates.is_empty()
+        ));
+    }
+
+    /// With a live board, the plain `NoStacks` answer stands (the
+    /// `(err, _)` arm — the remap must not fire in the boardful world).
+    #[test]
+    fn resolve_target_keeps_no_stacks_when_a_board_is_live() {
+        let state = state_with(&[], &[crate::test_support::seed_board(0xB1)], &[]);
+        assert!(matches!(
+            resolve_target(&state, None),
+            Err(CommandError::NoStacks)
+        ));
+    }
+
+    // ---- resolve_task / resolve_task_exact_any (plan §3 #10) ---------------
+
+    fn tasks_state() -> AppState {
+        let a = task(0x1234_5678_0000_0000_0000_0000_0000_0001, 0x51, "alpha", 0);
+        let b = task(0x1234_5679_0000_0000_0000_0000_0000_0002, 0x51, "beta", 1);
+        let tomb = {
+            let mut t = task(0x9999_0000_0000_0000_0000_0000_0000_0003, 0x51, "buried", 2);
+            t.deleted = true;
+            t
+        };
+        state_with(&[], &[], &[a, b, tomb])
+    }
+
+    /// The uuid → unique ≥8-char prefix → title cascade, each leg's
+    /// hit, ambiguity, and miss.
+    #[test]
+    fn resolve_task_cascade_hits_uuid_then_unique_prefix_then_title() {
+        let state = tasks_state();
+        let alpha_id =
+            TaskId::from_uuid(Uuid::from_u128(0x1234_5678_0000_0000_0000_0000_0000_0001));
+        let full = alpha_id.as_uuid().to_string();
+        assert_eq!(resolve_task(&state, &full).expect("exact uuid"), alpha_id);
+        assert_eq!(
+            resolve_task(&state, &full[..8]).expect("unique prefix"),
+            alpha_id,
+            "an 8-char prefix unique in the live set resolves"
+        );
+        assert_eq!(
+            resolve_task(&state, "beta").expect("exact title"),
+            TaskId::from_uuid(Uuid::from_u128(0x1234_5679_0000_0000_0000_0000_0000_0002))
+        );
+    }
+
+    /// A shared prefix is the typed ambiguity naming both titles; a
+    /// short selector skips the prefix pass; a full miss is the typed
+    /// unknown.
+    #[test]
+    fn resolve_task_ambiguous_prefix_and_short_selector_and_miss() {
+        let state = tasks_state();
+        // The two tasks share the "12345678"/"12345679" — craft a real
+        // shared prefix instead: both uuids start "1234567" only (7
+        // chars, below the gate). Use full-length prefix collision via
+        // a dedicated twin pair.
+        let twin_a = task(0x1234_5670_0000_0000_0000_0000_0000_0001, 0x51, "twin-a", 3);
+        let twin_b = task(0x1234_5670_0000_0000_0000_0000_0000_0002, 0x51, "twin-b", 4);
+        let mut state2 = state.clone();
+        state2.tasks.insert(twin_a.id, twin_a);
+        state2.tasks.insert(twin_b.id, twin_b);
+        let shared = TaskId::from_uuid(Uuid::from_u128(0x1234_5670_0000_0000_0000_0000_0000_0001))
+            .as_uuid()
+            .to_string();
+        let err = resolve_task(&state2, &shared[..8]).expect_err("two prefix hits");
+        let CommandError::AmbiguousTask { candidates } = &err else {
+            panic!("a shared prefix is the typed ambiguity, got {err:?}");
+        };
+        assert_eq!(candidates.len(), 2);
+        // A sub-gate selector never enters the prefix pass: it goes
+        // straight to titles.
+        assert!(matches!(
+            resolve_task(&state, "1234"),
+            Err(CommandError::UnknownTask(_))
+        ));
+        assert!(matches!(
+            resolve_task(&state, "nope"),
+            Err(CommandError::UnknownTask(_))
+        ));
+    }
+
+    /// Duplicate titles are the typed ambiguity with both candidates.
+    #[test]
+    fn resolve_task_duplicate_titles_are_ambiguous() {
+        let mut state = AppState::default();
+        let a = task(1, 0x51, "same", 0);
+        let b = task(2, 0x51, "same", 1);
+        state.tasks.insert(a.id, a);
+        state.tasks.insert(b.id, b);
+        let err = resolve_task(&state, "same").expect_err("two same titles");
+        assert!(
+            matches!(err, CommandError::AmbiguousTask { .. }),
+            "duplicate titles name their candidates"
+        );
+    }
+
+    /// The delete-repeat fallback: a tombstone resolves by exact uuid
+    /// only, never by prefix or title.
+    #[test]
+    fn resolve_task_exact_any_hits_tombstones_by_exact_uuid_only() {
+        let state = tasks_state();
+        let tomb_id = TaskId::from_uuid(Uuid::from_u128(0x9999_0000_0000_0000_0000_0000_0000_0003));
+        let full = tomb_id.as_uuid().to_string();
+        assert_eq!(
+            resolve_task_exact_any(&state, &full).expect("tombstone uuid"),
+            tomb_id
+        );
+        assert!(matches!(
+            resolve_task_exact_any(&state, &full[..8]),
+            Err(CommandError::UnknownTask(_))
+        ));
+        assert!(matches!(
+            resolve_task_exact_any(&state, "buried"),
+            Err(CommandError::UnknownTask(_))
+        ));
+    }
+
+    // ---- journal_receipt (plan §3 #11, the D1 `&AppState` seam) ------------
+
+    /// An in-window recent entry yields its label; an absent entry is
+    /// the total `None` (the `l.id == entry` flip makes the lookup
+    /// never match — every positive case flips).
+    #[test]
+    fn journal_receipt_reads_the_label_from_the_recent_window() {
+        use taskboard_domain::{JournalId, UndoLabel, UndoView};
+        let mut state = AppState::default();
+        let in_window = JournalId::from_uuid(Uuid::from_u128(1));
+        let other = JournalId::from_uuid(Uuid::from_u128(2));
+        state.undo = UndoView {
+            recent: vec![
+                UndoLabel {
+                    id: in_window,
+                    label: "renamed".to_owned(),
+                },
+                UndoLabel {
+                    id: other,
+                    label: "created".to_owned(),
+                },
+            ],
+            ..UndoView::default()
+        };
+        let receipt = journal_receipt(&state, JournalVerb::Undo, in_window);
+        assert_eq!(receipt.label.as_deref(), Some("renamed"));
+        assert_eq!(receipt.verb, JournalVerb::Undo);
+        assert_eq!(receipt.entry, in_window.as_uuid().to_string());
+        let ghost = JournalId::from_uuid(Uuid::from_u128(3));
+        assert!(
+            journal_receipt(&state, JournalVerb::Redo, ghost)
+                .label
+                .is_none(),
+            "an out-of-window entry carries no label"
+        );
     }
 }

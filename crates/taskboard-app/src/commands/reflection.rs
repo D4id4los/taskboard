@@ -853,3 +853,121 @@ mod tests {
         assert!(mask.flags_add.is_empty() && mask.flags_remove.is_empty());
     }
 }
+
+#[cfg(test)]
+mod filtered_rows_tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+    use taskboard_domain::{ReflectionAttributes, ReflectionId};
+    use uuid::Uuid;
+
+    fn entry(
+        raw: u128,
+        cadence: ReviewCadence,
+        start: DateTime<Utc>,
+        deleted: bool,
+    ) -> taskboard_domain::ReflectionEntry {
+        taskboard_domain::ReflectionEntry {
+            id: ReflectionId::from_uuid(Uuid::from_u128(raw)),
+            cadence,
+            day: start.date_naive(),
+            window_start: start,
+            window_end: start + chrono::TimeDelta::try_hours(24).unwrap(),
+            text: String::new(),
+            attributes: ReflectionAttributes::default(),
+            created_at: crate::test_support::frozen_now(),
+            updated_at: crate::test_support::frozen_now(),
+            deleted,
+        }
+    }
+
+    fn day(n: u32) -> DateTime<Utc> {
+        super::super::track::day_start(chrono::NaiveDate::from_ymd_opt(2026, 11, n).unwrap())
+    }
+
+    fn state_with(entries: &[taskboard_domain::ReflectionEntry]) -> AppState {
+        let mut state = AppState::default();
+        for e in entries {
+            state.reflection.entries.insert(e.id, e.clone());
+        }
+        state
+    }
+
+    fn ids(rows: &[ReflectionRow]) -> Vec<u128> {
+        rows.iter()
+            .map(|r| Uuid::parse_str(&r.entry_id).unwrap().as_u128())
+            .collect()
+    }
+
+    /// The boundary table (plan §3 #20): cadence match/mismatch, the
+    /// inclusive `since` day-start, the exclusive `until` next-day
+    /// boundary, the tombstone exclusion, and the `(window_start, id)`
+    /// canonical order.
+    #[test]
+    fn filtered_rows_boundaries_and_order() {
+        let d1 = taskboard_domain::ReflectionEntry {
+            deleted: false,
+            ..entry(1, ReviewCadence::Day, day(1), false)
+        };
+        let d1_b = entry(2, ReviewCadence::Day, day(1), false);
+        let w1 = entry(3, ReviewCadence::Week, day(1), false);
+        let d2 = entry(4, ReviewCadence::Day, day(2), false);
+        let dead = entry(5, ReviewCadence::Day, day(1), true);
+        let state = state_with(&[d2, dead, w1, d1_b, d1.clone()]);
+
+        // Unfiltered: live rows only, canonical (window_start, id).
+        let all = filtered_rows(&state, &ListFilters::default());
+        assert_eq!(ids(&all), vec![1, 2, 3, 4]);
+
+        // Cadence match/mismatch.
+        assert_eq!(
+            ids(&filtered_rows(
+                &state,
+                &ListFilters {
+                    cadence: Some(ReviewCadence::Day),
+                    ..ListFilters::default()
+                }
+            )),
+            vec![1, 2, 4]
+        );
+
+        // `since` is inclusive at the day start; the day-2 row only
+        // from day 2.
+        assert_eq!(
+            ids(&filtered_rows(
+                &state,
+                &ListFilters {
+                    since: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()),
+                    ..ListFilters::default()
+                }
+            )),
+            vec![4]
+        );
+
+        // `until` is exclusive at the *next* day start — the boundary
+        // the mutant flips: day 1 stays in, day 2 is out.
+        assert_eq!(
+            ids(&filtered_rows(
+                &state,
+                &ListFilters {
+                    until: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()),
+                    ..ListFilters::default()
+                }
+            )),
+            vec![1, 2, 3]
+        );
+
+        // Combined window [day2, day2]: only the day-2 row.
+        assert_eq!(
+            ids(&filtered_rows(
+                &state,
+                &ListFilters {
+                    since: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()),
+                    until: Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()),
+                    ..ListFilters::default()
+                }
+            )),
+            vec![4]
+        );
+    }
+}
