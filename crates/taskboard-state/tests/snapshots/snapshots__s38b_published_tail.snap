@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
+assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -22,4 +23,5 @@ undo:
   can_redo: false
   head_label: ~
   recent: []
+  branch_children: []
 last_updated: "2026-06-15T00:00:00Z"
