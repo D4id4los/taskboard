@@ -807,6 +807,11 @@ fn domain_error_kind(err: &taskboard_domain::CommandError) -> &'static str {
         D::UnknownReflection(_) => "unknown-reflection",
         D::InvalidReviewWindow => "invalid-review-window",
         D::InvalidRating => "invalid-rating",
+        // The Today compact-move boundary (US-14, #1031): the pair
+        // refuses typed at the stack edge — its own JSON kind (the
+        // legibility rule; a consumer can tell the boundary from an
+        // unknown task).
+        D::TaskAtBoundary(_) => "task-at-boundary",
     }
 }
 

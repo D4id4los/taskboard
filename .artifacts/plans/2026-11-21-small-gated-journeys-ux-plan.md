@@ -571,9 +571,9 @@ whole-snapshot leg. No row's meaning changed. -->
 | W-11 | task-detail rule list | disarm chord row (preset tables ×3) | — | adapter `interpret_action` → cursor disarm | ActionId::RowCursorDisarm | — | preset rows Std/emacs/vi, TaskDetail context (ViewState; see journey steps) | US-10/S1, US-10/S2 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us10_s1_disarm_chord_disarms_cursor; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us10_s2_disarm_unarmed_inert |
 | W-12 | task-detail series rows | pause/resume chord rows (preset tables ×3) | — | adapter `interpret_action` → series seams | ActionId::SeriesPause | ActionId::SeriesResume | preset rows Std/emacs/vi, TaskDetail context (existing command paths; the resume chord's routed id rides the Commands cell — the parser's action cell is single-token, see the erratum) | US-11/S1, US-11/S2 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us11_s1_series_pause_chord_resolves; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us11_s2_series_resume_chord_resolves |
 | W-13 | task-detail menu/verb rows | kind-toggle chord rows (preset tables ×3) | — | adapter `interpret_action` → the toggle seam | ActionId::TaskToggleTracker | — | preset rows Std/emacs/vi, TaskDetail context (existing command path) | US-12/S1 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us12_s1_kind_toggle_chord_resolves |
-| W-14 | review-walk-overlay File-to picker | candidate rows as accessible buttons | fileto-candidate-activated | `install_seam!` on the candidate activation → the candidate's commit seam (click ≡ key) | — | — | ItemAddr kind FileToCandidate (routes the existing commit path; no command — see journey steps) | US-13/S1, US-13/S2 | journeys/small_gated_journeys.rs::us13_s1_candidate_key_activation_commits; journeys/small_gated_journeys.rs::us13_s2_candidate_rows_accessible_button |
-| W-15 | today task rows | compact-move resolution | task-move-requested | adapter directional/kind resolution → the move seam | — | StateCommand::TaskMoveUp, StateCommand::TaskMoveDown | ItemAddr kind TaskRow (Today order; Shift+Up/Down stay the shared strokes) | US-14/S1, US-14/S2, US-14/S3 | journeys/small_gated_journeys.rs::us14_s1_task_move_up_dispatches; journeys/small_gated_journeys.rs::us14_s2_task_move_boundary_typed_refusal; journeys/small_gated_journeys.rs::us14_s3_habit_pair_unchanged_on_habit_row |
-| W-16 | planner composition | pane row cursor (K4) | — | adapter directional arm/walk over `models.rs::plan_position` panes (replaces the typed inert arm) | — | — | ItemAddr kind PlannerRow (ViewState cursor; row verbs ride existing seams — see journey steps) | US-15/S1, US-15/S2, US-15/S3, US-15/S4 | journeys/small_gated_journeys.rs::us15_s1_planner_cursor_arms; journeys/small_gated_journeys.rs::us15_s2_planner_cursor_walks_clamped; journeys/small_gated_journeys.rs::us15_s3_planner_row_verb_uses_own_seam; journeys/small_gated_journeys.rs::us15_s4_pane_switch_preserves_cursor_law |
+| W-14 | review-walk-overlay File-to picker | candidate rows as accessible buttons | walk_candidate_activated | `install_seam!` on the candidate activation → the candidate's commit seam (click ≡ key) | — | — | ItemAddr kind FileToCandidate (routes the existing commit path; no command — see journey steps) | US-13/S1, US-13/S2 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us13_s1_candidate_key_activation_commits; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us13_s2_candidate_rows_accessible_button |
+| W-15 | today task rows | compact-move resolution | — | adapter directional/kind resolution → the move seam (no slint callback — the R-8 kind resolution flips the shared stroke at the dispatch entry; see journey steps) | — | StateCommand::TaskMoveUp | ItemAddr kind TaskRow (Today order; Shift+Up/Down stay the shared strokes) | US-14/S1, US-14/S2, US-14/S3 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us14_s1_task_move_up_dispatches; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us14_s2_task_move_boundary_typed_refusal; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us14_s3_habit_pair_unchanged_on_habit_row |
+| W-16 | planner composition | pane row cursor (K4) | — | adapter directional arm/walk over `models.rs::plan_position` panes (replaces the typed inert arm) | — | — | ItemAddr kind PlannerRow (ViewState cursor; row verbs ride existing seams — see journey steps) | US-15/S1, US-15/S2, US-15/S3, US-15/S4 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us15_s1_planner_cursor_arms; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us15_s2_planner_cursor_walks_clamped; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us15_s3_planner_row_verb_uses_own_seam; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us15_s4_pane_switch_preserves_cursor_law |
 
 ## 7. Command-contract delta
 
@@ -645,6 +645,20 @@ behavior unchanged):
   callback was coined — the flip is the pure reroute §7 already
   records; the four cited callbacks were renamed kebab→snake in the
   markup (generated Rust names identical).
+- **PR2's rows join the class (the chunk's stage-2 landing,
+  2026-11-22)**: W-14's `fileto-candidate-activated` is the existing
+  `walk_candidate_activated` host seam (the overlay's internal
+  `candidate_activated` forwards it; the candidate rows became
+  accessible TextButtons — the #1030 adoption; click ≡ key on the same
+  seam); W-15's `task-move-requested` callback is `—` (no slint
+  callback exists or is needed — the R-8 kind resolution flips the
+  shared Shift+Up/Down stroke at the adapter's dispatch entry, the
+  command delta's twin grammar), and the Commands cell cites
+  `StateCommand::TaskMoveUp` (the parser reads one command per cell;
+  `StateCommand::TaskMoveDown` is the routing twin of the same
+  landing, proven by `us14_s1`/`us14_s2`'s exact-command assertions).
+  W-16 needs no callback (adapter directional arm over the K4 cursor
+  state; the census cell cites `models.rs::plan_position`).
 - **Test nominations made root-relative**: the §6 Test cells for
   W-1..W-4 nominate
   `crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::…`

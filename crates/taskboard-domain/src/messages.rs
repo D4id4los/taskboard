@@ -65,6 +65,25 @@ pub enum StateCommand {
         /// Requested sort order.
         order: i64,
     },
+    /// Move a task one step up its stack's order (US-14, #1031): the
+    /// Today-scope compact-move twin of the habit pair. The engine
+    /// resolves the stack-adjacent slot through the shared
+    /// floor-midpoint drop arithmetic (`command::floor_midpoint_order`
+    /// — the one order arithmetic the drag gap and the habit pair also
+    /// speak). A boundary stroke (already the stack's first live row)
+    /// is the typed refusal — never a wrap.
+    TaskMoveUp {
+        /// Task to move.
+        id: TaskId,
+    },
+    /// Move a task one step down its stack's order (US-14, #1031).
+    /// See [`StateCommand::TaskMoveUp`] for the shared semantics; a
+    /// boundary stroke (already the stack's last live row) refuses
+    /// typed.
+    TaskMoveDown {
+        /// Task to move.
+        id: TaskId,
+    },
     /// Delete (tombstone) a task.
     DeleteTask {
         /// Task to delete.

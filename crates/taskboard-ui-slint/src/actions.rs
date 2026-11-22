@@ -339,6 +339,14 @@ pub enum ActionId {
     TaskUnschedule,
     TaskMove,
     TaskMoveCancel,
+    /// The Today compact-move pair (US-14, #1031): the R-8 task twins
+    /// of the shared Shift+Up/Down stroke — internal dispatch ids, no
+    /// preset rows (the habit pair's strokes resolve to them by the
+    /// focused row kind, never a second binding). Each routes
+    /// `StateCommand::TaskMoveUp`/`TaskMoveDown`; the engine refuses
+    /// the boundary typed (no wrap).
+    TaskMoveUp,
+    TaskMoveDown,
     TaskDelete,
     StackNext,
     StackPrev,
@@ -797,6 +805,8 @@ impl ActionId {
             Self::TaskUnschedule => "task.unschedule",
             Self::TaskMove => "task.move",
             Self::TaskMoveCancel => "task.move.cancel",
+            Self::TaskMoveUp => "task.move-up",
+            Self::TaskMoveDown => "task.move-down",
             Self::TaskDelete => "task.delete",
             Self::StackNext => "stack.next",
             Self::StackPrev => "stack.prev",
@@ -1777,6 +1787,30 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_rank: 95,
         description: "Cancels the active move flow without moving anything (Escape; under emacs also Ctrl+g).",
         menu_group: Some(MenuGroup::Task),
+    },
+    // The Today compact-move pair (US-14, #1031): internal dispatch
+    // ids like the habit pair's — the shared Shift+Up/Down stroke
+    // resolves to them by focused row kind (R-8), so no preset rows
+    // exist and the menu never lists them.
+    ActionEntry {
+        id: ActionId::TaskMoveUp,
+        label: "Move task up",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 227,
+        description: "Moves the focused Today task one step up its stack order; the boundary refuses typed (no wrap).",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::TaskMoveDown,
+        label: "Move task down",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 228,
+        description: "Moves the focused Today task one step down its stack order; the boundary refuses typed (no wrap).",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::TaskDelete,
@@ -3092,6 +3126,8 @@ mod tests {
             ActionId::TaskDueToday,
             ActionId::TaskMove,
             ActionId::TaskMoveCancel,
+            ActionId::TaskMoveUp,
+            ActionId::TaskMoveDown,
             ActionId::TaskDelete,
             ActionId::StackNext,
             ActionId::StackPrev,

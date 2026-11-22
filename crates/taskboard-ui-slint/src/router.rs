@@ -1114,6 +1114,12 @@ pub struct DispatchCtx {
     /// `MoveHabit` from theirs (`NoTarget` without one).
     pub habit_move_up: Option<(taskboard_domain::HabitId, i64)>,
     pub habit_move_down: Option<(taskboard_domain::HabitId, i64)>,
+    /// The Today compact-move pair's one-shot subject (US-14, #1031):
+    /// the focused task row, minted at the R-8 kind resolution (the
+    /// shared Shift+Up/Down stroke flipped to its task twins).
+    /// `task.move-up`/`task.move-down` route `StateCommand::TaskMoveUp`
+    /// /`TaskMoveDown` from it (`NoTarget` without one).
+    pub task_move: Option<TaskId>,
     /// The repair affordance's resolved target (issue #506, plan D-7):
     /// the `(habit, window, post-count)` triple presentation's
     /// `habit_repair_target` computed — what you click is what
@@ -1244,6 +1250,11 @@ impl OneShotSet {
     // bit past the HF1 pause addition (bit 28 landed with HF1; sharing
     // one would cross-consume — the OR-based pin can't see it).
     pub(crate) const HABIT_QUOTA_DRAFT: u32 = 1 << 29;
+    // The Today compact-move pair's one-shot subject (US-14, #1031):
+    // the R-8 task twin of the habit reorder pair — both ids
+    // (`TaskMoveUp`/`TaskMoveDown`) consume the same cell; the routing
+    // id carries the direction.
+    pub(crate) const TASK_MOVE: u32 = 1 << 30;
     pub(crate) const PATTERN_DRAFT: u32 = 1 << 19;
     pub(crate) const SERIES_TARGET: u32 = 1 << 20;
     pub(crate) const PAUSE_DRAFT: u32 = 1 << 21;
@@ -1312,6 +1323,9 @@ impl OneShotSet {
     pub(crate) const fn habit_move_down(self) -> Self {
         self.set(Self::HABIT_MOVE_DOWN)
     }
+    pub(crate) const fn task_move(self) -> Self {
+        self.set(Self::TASK_MOVE)
+    }
     pub(crate) const fn habit_repair(self) -> Self {
         self.set(Self::HABIT_REPAIR)
     }
@@ -1374,6 +1388,9 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::HabitMove => OneShotSet::default().habit_move(),
         A::HabitMoveUp => OneShotSet::default().habit_move_up(),
         A::HabitMoveDown => OneShotSet::default().habit_move_down(),
+        // The Today compact-move pair (US-14): the R-8 twins share one
+        // subject cell; the routing id is the direction.
+        A::TaskMoveUp | A::TaskMoveDown => OneShotSet::default().task_move(),
         A::HabitRepair => OneShotSet::default().habit_repair(),
         A::HabitConvertToSeries => OneShotSet::default().habit_convert_target().pattern_draft(),
         A::HabitRemoveConfirm => OneShotSet::default().habit_remove_target(),
@@ -1635,6 +1652,22 @@ impl ActionRouter {
                     Some((habit, order)) => {
                         DispatchOutcome::Command(StateCommand::MoveHabit { habit, order })
                     }
+                    None => DispatchOutcome::NoTarget,
+                }
+            }
+            // The Today compact-move pair (US-14, #1031): the R-8 task
+            // twins of the shared Shift+Up/Down stroke — the direction
+            // rides the routing id, the subject is the one-shot minted
+            // at the kind resolution; the engine's shared floor-midpoint
+            // rule resolves the slot and refuses the boundary typed.
+            ActionId::TaskMoveUp | ActionId::TaskMoveDown => {
+                let up = matches!(id, ActionId::TaskMoveUp);
+                match ctx.task_move {
+                    Some(task) => DispatchOutcome::Command(if up {
+                        StateCommand::TaskMoveUp { id: task }
+                    } else {
+                        StateCommand::TaskMoveDown { id: task }
+                    }),
                     None => DispatchOutcome::NoTarget,
                 }
             }
@@ -2342,6 +2375,7 @@ mod tests {
             habit_pause_target: None,
             habit_move_up: None,
             habit_move_down: None,
+            task_move: None,
             create_target: None,
             reminder_target: None,
             board_target: None,

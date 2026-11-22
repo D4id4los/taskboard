@@ -524,6 +524,11 @@ pub(crate) struct Adapter {
     /// `habit.move-up`/`habit.move-down` dispatch, then cleared.
     habit_move_up: Option<(taskboard_domain::HabitId, i64)>,
     habit_move_down: Option<(taskboard_domain::HabitId, i64)>,
+    /// The Today compact-move pair's one-shot subject (US-14, #1031):
+    /// minted at the R-8 kind resolution (the shared Shift+Up/Down
+    /// stroke flipped to its task twins under a task walk landing),
+    /// consumed by the dispatch, then cleared.
+    task_move: Option<taskboard_domain::TaskId>,
     /// The open object menu's subject (H2 D1): `RowSubject::Habit` for
     /// the habit context menu, `RowSubject::Task` for every task
     /// card's menu — the arm/cancel effects' re-projection reads it
@@ -1614,7 +1619,7 @@ impl Adapter {
         // preset tables stay the stroke truth; click ≡ key holds in
         // both directions). The identity for every pointer path and
         // every task/focusless walk by construction.
-        let id = crate::presentation::translate_for_subject(id, self.view_state.walk_subject());
+        let mut id = crate::presentation::translate_for_subject(id, self.view_state.walk_subject());
         // The selection's verb intercept (UX-R8 D-6, US-4/S3–S4): a
         // non-empty selection turns Complete/Delete — and the multi
         // bar's schedule trio (J5 US-2) — into the per-task sequences
@@ -1651,6 +1656,35 @@ impl Adapter {
         // task landing a typed `None`), the pointer click fact
         // otherwise; a stale click fact can never answer a task
         // walk's stroke.
+        //
+        // The R-8 kind resolution (US-14, #1031): the shared
+        // Shift+Up/Down stroke is bound to the habit pair (Today
+        // context); under a TASK walk landing the stroke flips to its
+        // task twins — the twin law, one stroke one binding (the
+        // preset tables stay the stroke truth; no second binding is
+        // coined). Today-scoped because the binding is. On kiosk the
+        // pair is an editing verb (the habit mint's HAB-14 reading):
+        // the flip refuses and the dispatch takes the typed NoTarget.
+        // A habit or focusless landing keeps the habit pair's path
+        // untouched (US-14/S3).
+        if self.view_state.view() == crate::view_state::ViewId::Today
+            && !self.kiosk
+            && matches!(id, ActionId::HabitMoveUp | ActionId::HabitMoveDown)
+            && let Some(task) = self
+                .view_state
+                .walk_subject()
+                .and_then(|subject| match subject {
+                    crate::presentation::RowSubject::Task(task) => Some(task),
+                    crate::presentation::RowSubject::Habit(_) => None,
+                })
+        {
+            id = if matches!(id, ActionId::HabitMoveUp) {
+                ActionId::TaskMoveUp
+            } else {
+                ActionId::TaskMoveDown
+            };
+            self.task_move = Some(task);
+        }
         if let Some(habit) = self.effective_habit() {
             match id {
                 ActionId::HabitLog | ActionId::HabitSkip if self.habit_target.is_none() => {
@@ -1777,6 +1811,9 @@ impl Adapter {
         if wants.wants(crate::router::OneShotSet::HABIT_MOVE_DOWN) {
             ctx.habit_move_down = self.habit_move_down.take();
         }
+        if wants.wants(crate::router::OneShotSet::TASK_MOVE) {
+            ctx.task_move = self.task_move.take();
+        }
         if wants.wants(crate::router::OneShotSet::HABIT_REPAIR) {
             ctx.habit_repair = self.habit_repair.take();
         }
@@ -1867,9 +1904,11 @@ impl Adapter {
             // O-7 Q5): a target-less dispatch surfaces on the
             // status-notice lane from the action's registry
             // description — one law at one place, not per-verb spot
-            // fixes (the subjectless habit verb, the stale one-shot,
-            // the un-armed convert, and a Shift+Up on a task row are
-            // covered by construction). `Disabled` keeps its posture:
+            // fixes (the subjectless habit verb, the stale one-shot
+            // and the un-armed convert are covered by construction;
+            // US-14's R-8 resolution gave the Shift+Up-on-a-task-row
+            // stroke its task twins, so the residual NoTarget is a
+            // focusless stroke). `Disabled` keeps its posture:
             // the disabled-row notice is already armed at the
             // registry arm (invoke_entry's T-19 twin).
             DispatchOutcome::Disabled => {}
@@ -3036,6 +3075,18 @@ impl Adapter {
             (self.reflection_active, self.reflection_armed),
             self.habit_edit_draft.as_ref(),
         );
+        // The planner cursor's clamp/prune (US-15, #1041 — the K4
+        // law's refresh clamp, the rule cursor's reconcile arm): a
+        // dead id, a foreign view, or a pane that no longer holds the
+        // cursor clears it — never a stale row answering a stroke.
+        if self.view_state.view() != crate::view_state::ViewId::PlanNextDay
+            || !self
+                .view_state
+                .plan_cursor()
+                .is_some_and(|cursor| self.plan_pane_rows().contains(&cursor))
+        {
+            self.view_state.clear_plan_cursor();
+        }
         // The create-focus handoff's hint half (UX-R8 chunk-5 D-7):
         // the tables are fresh — edge-trigger the FocusScrollHint
         // global toward the newly focused card (the machinery chunk 4
@@ -5039,6 +5090,19 @@ impl Adapter {
                 self.activate_rule_cursor(&state, window);
                 Vec::new()
             }
+            // The planner cursor's activation (US-15/S3, #1041): over
+            // an armed cursor, Activate dispatches the cursor'd row's
+            // OWN seam — the same `PlanBeginPlace` the row's
+            // click/AT-action seam routes (click ≡ key; the rule
+            // cursor's parity law). Disarmed, the planner's Activate
+            // falls through to `interpret_begin` untouched.
+            (Flow::None, UiEffect::Activate)
+                if self.view_state.view() == crate::view_state::ViewId::PlanNextDay
+                    && self.view_state.plan_cursor().is_some() =>
+            {
+                self.activate_plan_cursor(window);
+                Vec::new()
+            }
             (
                 Flow::None,
                 effect @ (UiEffect::Activate
@@ -5075,6 +5139,7 @@ impl Adapter {
                 // cancel stays unambiguously a clear (the rule
                 // cursor's D-2 site 5 twin).
                 self.view_state.clear_break_rule_cursor();
+                self.view_state.clear_plan_cursor();
                 self.view_state.clear_selection()
             }
             (Flow::None, UiEffect::FocusNext) => {
@@ -5821,6 +5886,82 @@ impl Adapter {
         }
     }
 
+    /// The focused planner pane's rows (US-15): the id tables' flat
+    /// `plan_rows` split at `plan_box_count` — the exact derivation
+    /// the two panes render, so the walk's landing and the rendered
+    /// rows agree by construction.
+    fn plan_pane_rows(&self) -> &[taskboard_domain::TaskId] {
+        let boxes = self.tables.plan_box_count.min(self.tables.plan_rows.len());
+        match self.view_state.plan_focus_pane() {
+            0 => &self.tables.plan_rows[..boxes],
+            _ => &self.tables.plan_rows[boxes..],
+        }
+    }
+
+    /// The planner cursor's walk (US-15, #1041 — the rule cursor's
+    /// `walk_rule_cursor` law over the pane's id table): the first
+    /// vertical stroke over a non-empty pane arms the cursor at row 0
+    /// (arm-then-step — the arming stroke does not move past row 0);
+    /// each further stroke steps within the pane, clamping at both
+    /// edges (no wrap — the ends hold). An empty pane is the typed
+    /// no-op (never arm). The cursor state is the K4 field in the
+    /// view state (R-9), the mechanics live here because the pane's
+    /// row source is the adapter-owned id tables.
+    fn walk_plan_cursor(&mut self, direction: i32) -> Vec<FlowOutcome> {
+        let rows = self.plan_pane_rows().to_vec();
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        let current = self
+            .view_state
+            .plan_cursor()
+            .and_then(|cursor| rows.iter().position(|id| *id == cursor));
+        let Some(current) = current else {
+            self.view_state.select_plan_cursor(rows[0]);
+            return vec![FlowOutcome::RefreshNow];
+        };
+        let next = i64::from(direction) + i64::try_from(current).unwrap_or(0);
+        match rows.get(usize::try_from(next).unwrap_or(usize::MAX)) {
+            Some(task) => {
+                self.view_state.select_plan_cursor(*task);
+                vec![FlowOutcome::RefreshNow]
+            }
+            None => Vec::new(), // clamp: no wrap, the ends hold
+        }
+    }
+
+    /// The planner cursor's activation (US-15/S3): the cursor'd row's
+    /// own seam — `PlanBeginPlace` with the one-shot `plan_target`
+    /// minted exactly as the row's click/AT-action seam mints it, the
+    /// placed row's instant seed and the pool row's empty seed riding
+    /// verbatim. A cursor whose task died pre-dispatch absorbs (the
+    /// stale-id rule): the cursor holds, nothing dispatches (the
+    /// refresh clamp prunes it at the next pass). The cursor survives
+    /// the verb — the clamp, never the verb's own hand, retires it.
+    fn activate_plan_cursor(&mut self, window: &AppWindow) {
+        let Some(task) = self.view_state.plan_cursor() else {
+            return;
+        };
+        let Some(flat) = self.tables.plan_rows.iter().position(|id| *id == task) else {
+            return; // the stale-id absorb
+        };
+        self.plan_target = Some(task);
+        self.route(window, ActionId::PlanBeginPlace);
+        if flat >= self.tables.plan_box_count {
+            // The pool row's seed rule: the mounting field shows empty.
+            window.set_plan_time_text(SharedString::new());
+        } else {
+            // A placed row's re-open seeds the form from the box's
+            // instant (D-3): echo the seeded buffer so the mounting
+            // field shows it.
+            window.set_plan_time_text(SharedString::from(
+                self.view_state
+                    .plan_place()
+                    .map_or(String::new(), |place| place.time_text.clone()),
+            ));
+        }
+    }
+
     /// The edit flows' commit/discard arms (D5/D9; the round-2
     /// lifecycle flows included), factored out of the table.
     fn interpret_edit(
@@ -5975,11 +6116,16 @@ impl Adapter {
             // behavior kept). The tail owns the rows.
             (ViewId::TaskDetail | ViewId::Settings | ViewId::Status, _) => Vec::new(),
             // The planner (J3 R-5): left/right switch the pane
-            // (boxes ↔ pool); up/down are the recorded inert until an
-            // in-pane cursor seam exists (backlog follow-up).
+            // (boxes ↔ pool); up/down arm and walk the K4 cursor over
+            // the focused pane's rows (US-15, #1041 — the recorded
+            // typed inert retires; R-9: the cursor rides the K4 state,
+            // never a second cursor mechanism).
             (ViewId::PlanNextDay, Direction::Left) => self.view_state.switch_plan_pane(-1),
             (ViewId::PlanNextDay, Direction::Right) => self.view_state.switch_plan_pane(1),
-            (ViewId::PlanNextDay, Direction::Up | Direction::Down) => Vec::new(),
+            (ViewId::PlanNextDay, Direction::Up | Direction::Down) => {
+                let step = i32::from(direction == Direction::Down) * 2 - 1;
+                self.walk_plan_cursor(step)
+            }
             // Review: no `NavFocus*` preset rows are bound in its
             // context (the CONTROL_NAV set excludes it) — the
             // explicit exclusion; the surface keeps its own cursors.
@@ -11227,6 +11373,7 @@ pub(crate) fn install(
         habit_move: None,
         habit_move_up: None,
         habit_move_down: None,
+        task_move: None,
         menu_row_subject: None,
         habit_repair: None,
         habit_convert_target: None,

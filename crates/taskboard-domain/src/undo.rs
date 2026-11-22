@@ -222,6 +222,11 @@ fn record_entry(
         | StateCommand::UpdateTask { .. }
         | StateCommand::SetTaskDone { .. }
         | StateCommand::MoveTask { .. }
+        // The Today compact-move pair (US-14): positional edits like
+        // `MoveTask` — the pre-image task row drives the inverse, so
+        // the pair shares the `MoveTask` inverse class verbatim.
+        | StateCommand::TaskMoveUp { .. }
+        | StateCommand::TaskMoveDown { .. }
         | StateCommand::DeleteTask { .. }
         | StateCommand::CreateStack { .. }
         | StateCommand::RenameStack { .. }
@@ -460,6 +465,8 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         StateCommand::UpdateTask { id, .. }
         | StateCommand::SetTaskDone { id, .. }
         | StateCommand::MoveTask { id, .. }
+        | StateCommand::TaskMoveUp { id }
+        | StateCommand::TaskMoveDown { id }
         | StateCommand::PauseSeries { head: id, .. }
         | StateCommand::DeleteTask { id }
         | StateCommand::SetTaskRemindersMuted { task: id, .. }
@@ -1114,6 +1121,12 @@ impl JournalEntry {
             | StateCommand::PauseSeries { .. } => Ok(InverseClass::UpdateTask),
             StateCommand::SetTaskDone { .. } => Ok(InverseClass::SetTaskDone),
             StateCommand::MoveTask { .. } => Ok(InverseClass::MoveTask),
+            // The Today compact-move pair (US-14): the shared
+            // `MoveTask` inverse — the pre-image row's (stack, order)
+            // restores the position through the ordinary `MoveTask`.
+            StateCommand::TaskMoveUp { .. } | StateCommand::TaskMoveDown { .. } => {
+                Ok(InverseClass::MoveTask)
+            }
             StateCommand::DeleteTask { .. } => Ok(InverseClass::DeleteTask),
             StateCommand::CreateStack { .. } => Ok(InverseClass::CreatedStack),
             StateCommand::DeleteStack { .. } => Ok(InverseClass::DeletedStack),

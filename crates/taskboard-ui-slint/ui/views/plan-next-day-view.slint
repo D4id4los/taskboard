@@ -25,6 +25,9 @@ export struct PlanRowModel {
     // The carried misses' overdue tint (the card's own decoration
     // communicates the miss).
     overdue: bool,
+    // The K4 walk cursor's armed bit (US-15, #1041): exactly one row
+    // of the focused pane carries it while armed (the armed styling).
+    cursor: bool,
 }
 
 export struct PlanModel {
@@ -122,8 +125,16 @@ export component PlanNextDayView inherits FocusScope {
                             }
                             box-touch := TouchArea {
                                 clicked => { root.box-activated(bindex); }
-                                box-row-card := TaskCard {
-                                    model: box.card;
+                                box-row-card := Rectangle {
+                                    // The K4 walk cursor's armed styling
+                                    // (US-15, #1041): the tint is the
+                                    // wrapper's background — the card
+                                    // keeps its own decoration on top.
+                                    background: box.cursor ? Theme.surface-hover : transparent;
+                                    border-radius: Theme.radius-small;
+                                    TaskCard {
+                                        model: box.card;
+                                    }
                                 }
                             }
                         }
@@ -289,6 +300,17 @@ export component PlanNextDayView inherits FocusScope {
                             width: Theme.focus-ring-width;
                             height: pool-card.preferred-height;
                             background: pool-row.overdue ? Semantic.overdue : transparent;
+                            border-radius: Theme.radius-small;
+                        }
+                        // The K4 walk cursor's armed styling (US-15,
+                        // #1041): the walked row's hover tint — the
+                        // same affordance class the rule cursor
+                        // renders (the overdue accent above stays
+                        // independent).
+                        Rectangle {
+                            width: Theme.focus-ring-width;
+                            height: pool-card.preferred-height;
+                            background: pool-row.cursor ? Semantic.focus-ring : transparent;
                             border-radius: Theme.radius-small;
                         }
                         pool-hit := FocusScope {

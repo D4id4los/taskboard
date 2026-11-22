@@ -474,7 +474,7 @@ export component AppWindow inherits Window {
     callback walk-keep-clicked();
     callback walk-file-prev-clicked();
     callback walk-file-next-clicked();
-    callback walk-candidate-activated(int);
+    callback walk_candidate_activated(int);
     callback walk-file-commit-clicked();
     callback walk-tomorrow-clicked();
     callback walk-pick-clicked();
@@ -1869,7 +1869,7 @@ export component AppWindow inherits Window {
                 keep-clicked() => root.walk-keep-clicked();
                 file-prev-clicked() => root.walk-file-prev-clicked();
                 file-next-clicked() => root.walk-file-next-clicked();
-                candidate-activated(index) => root.walk-candidate-activated(index);
+                candidate_activated(index) => root.walk_candidate_activated(index);
                 file-commit-clicked() => root.walk-file-commit-clicked();
                 tomorrow-clicked() => root.walk-tomorrow-clicked();
                 pick-clicked() => root.walk-pick-clicked();

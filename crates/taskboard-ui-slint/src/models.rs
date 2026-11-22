@@ -3665,6 +3665,10 @@ fn plan_row(
         time: SharedString::from(time),
         effort: SharedString::from(presentation::effort_phrase(task.effort)),
         overdue,
+        // The walk cursor's armed bit (US-15, #1041): the push pass
+        // stamps it against the view state's cursor — the builder
+        // never arms (the K4 law: one write seam).
+        cursor: false,
     }
 }
 
@@ -4089,7 +4093,7 @@ fn push_plan_next_day(
             continue;
         }
         plan_rows.push(*id);
-        boxes.push(plan_row(
+        let mut row = plan_row(
             state,
             models,
             task,
@@ -4100,7 +4104,11 @@ fn push_plan_next_day(
             day.now,
             &presentation::plan_box_time_phrase(task.scheduled, calendar),
             false,
-        ));
+        );
+        // The planner cursor's armed bit (US-15, #1041): the walked
+        // row renders the emphasis (the K4 armed styling).
+        row.cursor = vs.plan_cursor().is_some_and(|cursor| cursor == *id);
+        boxes.push(row);
     }
     let boxes_handle = models.plan_boxes.handle_or_insert_with();
     mutations += models.plan_boxes.diff(&boxes);
@@ -4114,7 +4122,7 @@ fn push_plan_next_day(
             continue;
         }
         plan_rows.push(*id);
-        pool.push(plan_row(
+        let mut row = plan_row(
             state,
             models,
             task,
@@ -4125,7 +4133,9 @@ fn push_plan_next_day(
             day.now,
             "",
             task.duedate.is_some_and(|d| d < next_start),
-        ));
+        );
+        row.cursor = vs.plan_cursor().is_some_and(|cursor| cursor == *id);
+        pool.push(row);
     }
     let pool_handle = models.plan_pool.handle_or_insert_with();
     mutations += models.plan_pool.diff(&pool);
