@@ -6039,6 +6039,27 @@ impl Adapter {
         }
     }
 
+    /// The plan-place begin tail (#1237): mint the one-shot
+    /// `plan_target`, route `PlanBeginPlace`, then the seed echo — a
+    /// placed row's re-open seeds the form from the box's instant
+    /// (D-3), a pool row's mounting field shows empty. One helper,
+    /// three call sites (the cursor activation and the box/pool
+    /// click/AT-action seams); behavior-identical to the inlined
+    /// tails it replaces.
+    fn begin_plan_place(&mut self, window: &AppWindow, task: TaskId, placed: bool) {
+        self.plan_target = Some(task);
+        self.route(window, ActionId::PlanBeginPlace);
+        if placed {
+            window.set_plan_time_text(SharedString::from(
+                self.view_state
+                    .plan_place()
+                    .map_or(String::new(), |place| place.time_text.clone()),
+            ));
+        } else {
+            window.set_plan_time_text(SharedString::new());
+        }
+    }
+
     /// The planner cursor's activation (US-15/S3): the cursor'd row's
     /// own seam — `PlanBeginPlace` with the one-shot `plan_target`
     /// minted exactly as the row's click/AT-action seam mints it, the
@@ -6054,21 +6075,7 @@ impl Adapter {
         let Some(flat) = self.tables.plan_rows.iter().position(|id| *id == task) else {
             return; // the stale-id absorb
         };
-        self.plan_target = Some(task);
-        self.route(window, ActionId::PlanBeginPlace);
-        if flat >= self.tables.plan_box_count {
-            // The pool row's seed rule: the mounting field shows empty.
-            window.set_plan_time_text(SharedString::new());
-        } else {
-            // A placed row's re-open seeds the form from the box's
-            // instant (D-3): echo the seeded buffer so the mounting
-            // field shows it.
-            window.set_plan_time_text(SharedString::from(
-                self.view_state
-                    .plan_place()
-                    .map_or(String::new(), |place| place.time_text.clone()),
-            ));
-        }
+        self.begin_plan_place(window, task, flat < self.tables.plan_box_count);
     }
 
     /// The edit flows' commit/discard arms (D5/D9; the round-2
@@ -13284,15 +13291,7 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return; // a stale index degrades to a no-op
     };
-    a.plan_target = Some(task);
-    a.route(&window, ActionId::PlanBeginPlace);
-    // A placed row's re-open seeds the form from the box's instant
-    // (D-3): echo the seeded buffer so the mounting field shows it.
-    window.set_plan_time_text(SharedString::from(
-        a.view_state
-            .plan_place()
-            .map_or(String::new(), |place| place.time_text.clone()),
-    ));
+    a.begin_plan_place(&window, task, true);
 
     });
 
@@ -13309,9 +13308,7 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     else {
         return; // a stale index degrades to a no-op
     };
-    a.plan_target = Some(task);
-    a.route(&window, ActionId::PlanBeginPlace);
-    window.set_plan_time_text(SharedString::new());
+    a.begin_plan_place(&window, task, false);
 
     });
 
