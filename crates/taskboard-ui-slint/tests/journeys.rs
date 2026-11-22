@@ -23385,7 +23385,7 @@ fn us1_s2_the_menu_log_row_routes_the_row_source_habit() {
 /// midpoint of the correct free interval — the row seam's exact
 /// arithmetic, minted at menu open from the section's live order.
 #[test]
-fn the_menu_reorder_rows_mint_the_floor_midpoint_slots() {
+fn the_menu_reorder_rows_mint_the_gap_index_slots() {
     let (_fx, mut state) = fixture::golden_state();
     let board = *state.boards.keys().next().expect("fixture board");
     // Two habits: stored orders 0 and 10.
@@ -23419,9 +23419,11 @@ fn the_menu_reorder_rows_mint_the_floor_midpoint_slots() {
     support::harness::run_journey(state, move |harness| {
         harness.press(ActionId::ViewToday);
         harness.driver.advance_time(0);
-        // The FIRST row's menu: move-down targets the gap between
-        // orders 0 and 10 → floor midpoint 5; move-up has no slot
-        // above (refuses typed as NoTarget).
+        // #1198 chunk A1 D1: the slots are target gap indices into
+        // the section's live sequence — the engine resolves the
+        // orders. The FIRST row's menu: move-down crosses the lower
+        // neighbour (gap 2); move-up has no slot above (refuses typed
+        // as NoTarget).
         harness
             .handle
             .window()
@@ -23430,12 +23432,12 @@ fn the_menu_reorder_rows_mint_the_floor_midpoint_slots() {
         harness.handle.dispatch_action(ActionId::HabitMoveDown);
         harness.driver.advance_time(0);
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveHabit { order, .. }] => {
-                assert_eq!(*order, 5, "the floor midpoint of (0, 10)");
+            [StateCommand::HabitReorder { target, .. }] => {
+                assert_eq!(*target, 2, "the gap below the lower neighbour");
             }
             other => panic!("the reorder routed, got {other:?}"),
         }
-        // The LAST row's menu: move-up targets the same gap.
+        // The LAST row's menu: move-up targets the head gap.
         harness
             .handle
             .window()
@@ -23444,8 +23446,8 @@ fn the_menu_reorder_rows_mint_the_floor_midpoint_slots() {
         harness.handle.dispatch_action(ActionId::HabitMoveUp);
         harness.driver.advance_time(0);
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveHabit { order, .. }] => {
-                assert_eq!(*order, 5, "the floor midpoint from below");
+            [StateCommand::HabitReorder { target, .. }] => {
+                assert_eq!(*target, 0, "the gap above the upper neighbour");
             }
             other => panic!("the reorder routed, got {other:?}"),
         }

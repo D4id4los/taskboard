@@ -518,9 +518,10 @@ pub enum ActionId {
     /// The habit menu's reorder pair (H2 D4, the menu stopgap until
     /// H3's drag/keys reorder): the direction rides the routing id —
     /// a single `HabitMove` id cannot carry the drop slot through the
-    /// one-shot grammar — each id routes `MoveHabit` with the floor
-    /// midpoint of its slot's free interval (the row seam's exact
-    /// arithmetic, computed at menu open).
+    /// one-shot grammar — each id routes `HabitReorder` with its
+    /// slot's target gap index (#1198 chunk A1 D1; the engine
+    /// resolves the orders), minted at menu open by the row seam's
+    /// one arithmetic (`presentation::habit_move_slots`).
     HabitMoveUp,
     HabitMoveDown,
     /// The armed conversion's cancel step (H2 D4, O-7 Q3): disarms
