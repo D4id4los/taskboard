@@ -34,7 +34,7 @@ cap-fit rule wins over the group count, recorded here as a deviation.
 | M2 | config.rs, capture.rs | 2589 | `config.rs`+`capture.rs` filters | **window 1 complete** (102 mutants: 46 missed, 35 caught, 21 unviable; capture.rs's mutant set folded into the same run) | 35 | 46 | 21 | 0 | 84 m (window 1) | under |
 | M3 | boards.rs, labels.rs, stacks.rs | 2273 | three `--file` args | **COMPLETED across two windows + continuation** (window 1: 90 executed — 54 missed, 18 caught, 18 unviable; continuation: 54 re-executed — 53 missed, 1 caught) | 19 | 54 | 18 | 0 | ~2 h + 83 m | window 1 tripped the 7200 s cap (rc=124, partial results intact — the cap template's designed SIGINT path) |
 | M4 | track.rs, find.rs, repeat.rs | 2762 | three `--file` args | **COMPLETED across two windows** (window 1 cap-tripped at 52 executed — 45 missed, 7 caught; window 2 finished the remainder: 148-discovered universe minus 396 cumulative excludes) | 8 | 45 | 0 | 0 | 84 m + 84 m | window 1 tripped the cap (rc=124) |
-| M5 | habits.rs, status.rs | 2583 | `--file 'crates/taskboard-app/src/commands/habits.rs' --file 'crates/taskboard-app/src/commands/status.rs'` | pending | — | — | — | — | — | — |
+| M5 | habits.rs, status.rs | 2583 | two `--file` args | **COMPLETED in one window** (85 mutants) | 33 | 29 | 23 | 0 | 82 m | under |
 | M6 | connect.rs, reflection.rs, tasks.rs | 2754 | `--file 'crates/taskboard-app/src/commands/connect.rs' --file 'crates/taskboard-app/src/commands/reflection.rs' --file 'crates/taskboard-app/src/commands/tasks.rs'` | pending | — | — | — | — | — | — |
 | M7 | timers.rs, breaks.rs, reminders.rs, sync.rs, logout.rs, output.rs | 3314 | six `--file` args | pending | — | — | — | — | — | — |
 
@@ -197,6 +197,28 @@ home.
   the find-tier projection gap and the export-window predicates are
   recorded in the lane report's final census table with their
   kill-test sketches.
+
+### M5 survivor census (29)
+
+One window, 85 mutants: 29 missed / 33 caught / 23 unviable
+(`mutants-tmp/logs/M5.log`, snapshot `mutants.out-M5-final`). Shape:
+
+| Cluster | Mutants | Count |
+|---|---|---|
+| `habits.rs` add/update/rm outcome-arm deletions + `HabitChanges` field deletions + `||`→`&&` flips (add_on 363, update_on 555) | `habits.rs:363–588` | 8 |
+| `habit_rows >= → <` (the streak-window filter) | `habits.rs:689` | 1 |
+| render prose family (`habits.rs render_text`, `status.rs age_phrase` replacements) | `habits.rs:723,776`, `status.rs:479` | 4 |
+| exit-code family (`habits_command`/`habits_line` → 0/1) | `habits.rs:803,818` | 4 |
+| `age_phrase` boundary flips (`<` → `==`/`>`/`<=` at the 60s/60m/24h bucket cuts) | `status.rs:480–484` | 9 |
+| `board_line == → !=` | `status.rs:508` | 1 |
+| `update_on ||→&&` (incl. outcome arms above counted once) | — | (folded) |
+
+Disposition classes as before: outcome-arm/field/exit-code clusters →
+trivial TDD kills (the engine fixtures already exist in the habits
+test tier); `age_phrase` boundary flips → killable with a boundary
+table test over fixed instants (clock-law compliant: the function
+takes the instants, not the clock); render prose → family issue.
+
 
 
 
