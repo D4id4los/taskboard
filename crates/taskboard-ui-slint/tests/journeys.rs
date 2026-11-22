@@ -4000,9 +4000,10 @@ fn every_settings_field_carries_its_info_tip() {
         };
         assert_eq!(
             distinct_spots(driver, "LabeledField::help-tip"),
-            14,
-            "the three sign-in fields, the seven general fields, \
-                 and the four focus minute fields each carry a tip"
+            15,
+            "the three sign-in fields, the eight general fields (the \
+                 Files row's poll cadence field included, #1083), and \
+                 the four focus minute fields each carry a tip"
         );
         for id in [
             "SettingsView::help-scale",
