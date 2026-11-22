@@ -105,9 +105,9 @@ export component TodayView inherits FocusScope {
     // bool is the insistence rung's alarm bit.
     callback timers-break-create-accepted(string, string, bool) -> bool;
     callback timers-break-threshold-edited(string);
-    callback timers-break-remove-clicked(int);
-    callback timers-break-remove-confirmed(int);
-    callback timers-break-remove-cancelled();
+    callback timers_break_remove_clicked(int);
+    callback timers_break_remove_confirmed(int);
+    callback timers_break_remove_cancelled();
     in property <FieldValidity> break-threshold-validity;
     in property <string> break-threshold-error-hint;
     // The habits section (DR-6/6, §4.6): after the timers block,
@@ -224,9 +224,9 @@ export component TodayView inherits FocusScope {
                         root.timers-break-create-accepted(label, threshold, alarm)
                     }
                     break-threshold-edited(t) => root.timers-break-threshold-edited(t);
-                    break-remove-clicked(r) => root.timers-break-remove-clicked(r);
-                    break-remove-confirmed(r) => root.timers-break-remove-confirmed(r);
-                    break-remove-cancelled() => root.timers-break-remove-cancelled();
+                    break_remove_clicked(r) => root.timers_break_remove_clicked(r);
+                    break_remove_confirmed(r) => root.timers_break_remove_confirmed(r);
+                    break_remove_cancelled() => root.timers_break_remove_cancelled();
                     break-threshold-validity: root.break-threshold-validity;
                     break-threshold-error-hint: root.break-threshold-error-hint;
                 }

@@ -85,9 +85,9 @@ export component TimersSection inherits Rectangle {
     // The staged remove (the armed-confirm grammar, UX R-2): the row's
     // remove affordance arms (arming dispatches nothing), the strip's
     // Confirm routes the verb, Cancel disarms.
-    callback break-remove-clicked(int);
-    callback break-remove-confirmed(int);
-    callback break-remove-cancelled();
+    callback break_remove_clicked(int);
+    callback break_remove_confirmed(int);
+    callback break_remove_cancelled();
     // The awaiting (fired ∧ ¬dismissed) alarms count — a non-
     // interactive pointer badge to the notification surface (D-P15).
     in property <int> timers-awaiting;
@@ -313,7 +313,7 @@ export component TimersSection inherits Rectangle {
                             icon: IconKind.remove;
                             tone: rule-row.armed ? Tone.danger : Tone.info;
                             label: "Remove break rule";
-                            clicked => root.break-remove-clicked(rule-index);
+                            clicked => root.break_remove_clicked(rule-index);
                         }
                     }
                 }
@@ -327,8 +327,8 @@ export component TimersSection inherits Rectangle {
                     message: "Deletes this rule and its recorded firings; this cannot be undone.";
                     confirm-label: "Confirm remove rule";
                     cancel-label: "Cancel remove rule";
-                    confirmed => root.break-remove-confirmed(rule-index);
-                    cancelled => root.break-remove-cancelled();
+                    confirmed => root.break_remove_confirmed(rule-index);
+                    cancelled => root.break_remove_cancelled();
                 }
                 }
             }

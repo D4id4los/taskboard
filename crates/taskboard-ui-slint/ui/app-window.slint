@@ -351,9 +351,9 @@ export component AppWindow inherits Window {
     pure callback timers-break-create-toggled();
     pure callback timers-break-create-accepted(string, string, bool) -> bool;
     pure callback timers-break-threshold-edited(string);
-    pure callback timers-break-remove-clicked(int);
-    pure callback timers-break-remove-confirmed(int);
-    pure callback timers-break-remove-cancelled();
+    pure callback timers_break_remove_clicked(int);
+    pure callback timers_break_remove_confirmed(int);
+    pure callback timers_break_remove_cancelled();
     // The habits section (DR-6/6): the active board's tracker rows —
     // rendering is not kiosk-gated, the affordances are.
     in-out property <[HabitCardModel]> habits-model;
@@ -667,9 +667,9 @@ export component AppWindow inherits Window {
                     root.timers-break-create-accepted(label, threshold, alarm)
                 }
                 timers-break-threshold-edited(t) => root.timers-break-threshold-edited(t);
-                timers-break-remove-clicked(r) => root.timers-break-remove-clicked(r);
-                timers-break-remove-confirmed(r) => root.timers-break-remove-confirmed(r);
-                timers-break-remove-cancelled() => root.timers-break-remove-cancelled();
+                timers_break_remove_clicked(r) => root.timers_break_remove_clicked(r);
+                timers_break_remove_confirmed(r) => root.timers_break_remove_confirmed(r);
+                timers_break_remove_cancelled() => root.timers_break_remove_cancelled();
                 habits: root.habits-model;
                 habits-editing-enabled: root.habits-editing-enabled;
                 habits-row-activated(r) => root.habits-row-activated(r);

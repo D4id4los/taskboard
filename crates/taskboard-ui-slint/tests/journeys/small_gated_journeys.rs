@@ -1061,13 +1061,12 @@ fn roster_row(
         .expect("the roster row renders")
 }
 
-/// US-9/AC-1+AC-2 (`us9_s1_roster_cursor_arms` /
-/// `us9_s2_roster_cursor_walks_clamped`): the today walk's landing on
-/// the roster arms the K4 cursor at the first row; further verticals
-/// walk with clamp at the end (no wrap — the ends hold); the armed
-/// styling rides the row model's `selected` flag.
+/// US-9/AC-1 (`us9_s1_roster_cursor_arms`): the today walk's landing
+/// on the roster arms the K4 cursor at the first row (arm-on-first-
+/// vertical via the walk's entry rule); the armed styling rides the
+/// row model's `selected` flag.
 #[test]
-fn us9_s1_roster_cursor_arms_and_us9_s2_roster_cursor_walks_clamped() {
+fn us9_s1_roster_cursor_arms() {
     let (_fixture, mut state) = fixture::journey_state();
     seed_break_rules(&mut state);
     support::harness::run_journey_no_escape(state, move |harness| {
@@ -1078,9 +1077,24 @@ fn us9_s1_roster_cursor_arms_and_us9_s2_roster_cursor_walks_clamped() {
         harness.driver.advance_time(0);
         assert!(
             roster_row(harness, 0).selected,
-            "the landing stroke arms the cursor on roster row 0 (US-9/S1)"
+            "the landing stroke arms the cursor on roster row 0"
         );
-        // S2: the walk proceeds, clamps at the last row.
+        harness.assert_commands(&[]);
+    });
+}
+
+/// US-9/AC-2 (`us9_s2_roster_cursor_walks_clamped`): from the armed
+/// first row the verticals walk the roster and clamp at the last row
+/// (no wrap — the ends hold).
+#[test]
+fn us9_s2_roster_cursor_walks_clamped() {
+    let (_fixture, mut state) = fixture::journey_state();
+    seed_break_rules(&mut state);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert!(roster_row(harness, 0).selected, "armed on row 0");
         harness.press(ActionId::NavFocusDown);
         harness.driver.advance_time(0);
         assert!(
