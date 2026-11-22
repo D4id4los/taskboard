@@ -1077,3 +1077,87 @@ async fn j20_journal_export_is_raw_under_json() {
         "no receipt envelope wrapped the payload"
     );
 }
+
+/// The reflection render family's structural pins (#1229): one line
+/// per entry (or the empty family's line), single-line receipts, and
+/// the rating arms (both ratings vs partial vs none) must surface.
+#[test]
+fn reflection_render_arity_and_distinguishment() {
+    use taskboard_app::commands::output::{
+        ReflectionAddReceipt, ReflectionDeleteReceipt, ReflectionEditReceipt, ReflectionRow,
+        ReflectionsList,
+    };
+
+    let stamp = chrono::Utc::now();
+    let row = |id: &str, mood: Option<u8>, energy: Option<u8>| ReflectionRow {
+        entry_id: id.to_owned(),
+        cadence: "daily".to_owned(),
+        day: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("date"),
+        window_start: stamp,
+        window_end: stamp,
+        text: "body".to_owned(),
+        mood,
+        energy,
+        flags: Vec::new(),
+        extra_flags: Vec::new(),
+        created_at: stamp,
+        updated_at: stamp,
+    };
+    let list =
+        |entries: Vec<ReflectionRow>| reflection::render_text_list(&ReflectionsList { entries });
+    assert_eq!(
+        list(vec![row("r1", None, None), row("r2", None, None)])
+            .split('\n')
+            .count(),
+        2,
+        "one line per entry"
+    );
+    assert_eq!(
+        list(Vec::new()).split('\n').count(),
+        1,
+        "the empty family renders its own line"
+    );
+    assert_ne!(
+        list(vec![row("r1", Some(3), Some(4))]),
+        list(vec![row("r1", None, None)]),
+        "the both-ratings arm must surface"
+    );
+    assert_ne!(
+        list(vec![row("r1", Some(3), None)]),
+        list(vec![row("r1", Some(3), Some(4))]),
+        "the partial-rating arm must surface"
+    );
+
+    let add_some = reflection::render_text_add(&ReflectionAddReceipt {
+        created: true,
+        entry: Some(row("r1", None, None)),
+    });
+    let add_none = reflection::render_text_add(&ReflectionAddReceipt {
+        created: true,
+        entry: None,
+    });
+    assert_eq!(add_some.split('\n').count(), 1);
+    assert_ne!(add_some, add_none, "the empty-entry arm must surface");
+
+    let edit = |changed: bool| {
+        reflection::render_text_edit(&ReflectionEditReceipt {
+            changed,
+            entry: row("r1", None, None),
+        })
+    };
+    assert_eq!(edit(true).split('\n').count(), 1);
+    assert_ne!(edit(true), edit(false));
+
+    let delete = |id: &str| {
+        reflection::render_text_delete(&ReflectionDeleteReceipt {
+            entry_id: id.to_owned(),
+            entry: row("r1", None, None),
+        })
+    };
+    assert_eq!(delete("r1").split('\n').count(), 1);
+    assert_ne!(delete("r1"), delete("r2"), "the entry id must surface");
+
+    let show = reflection::render_text_show(&row("r1", None, None));
+    assert_eq!(show.split('\n').count(), 1);
+    assert_ne!(show, reflection::render_text_show(&row("r2", None, None)));
+}

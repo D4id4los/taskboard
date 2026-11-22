@@ -311,3 +311,63 @@ async fn h05_unknown_selectors_miss_typedly_and_empty_lists_succeed() {
         .expect_err("typed miss");
     assert_eq!(err.error_kind(), "unknown-habit");
 }
+
+/// The habits render family's structural pins (#1229): one line per
+/// listed habit, the empty family's own line, and the row branch
+/// fields (the description column's presence law, the met suffix)
+/// must surface.
+#[test]
+fn habits_render_arity_and_distinguishment() {
+    use taskboard_app::commands::output::{HabitListView, HabitRow};
+
+    let row = |title: &str, description: &str, met: bool| HabitRow {
+        habit_id: format!(
+            "00000000-0000-0000-0000-00000000000{}",
+            if title == "a" { 1 } else { 2 }
+        ),
+        title: title.to_owned(),
+        description: description.to_owned(),
+        target_phrase: "8/day".to_owned(),
+        count: 0,
+        quota: 8,
+        streak: 0,
+        chip: None,
+        met,
+    };
+    let listed = |habits: Vec<HabitRow>| {
+        habits::render_text(&habits::HabitOutcome::Listed(HabitListView { habits }))
+    };
+    assert_eq!(
+        listed(vec![row("a", "", false), row("b", "", false)])
+            .split('\n')
+            .count(),
+        2,
+        "one line per habit"
+    );
+    assert_eq!(
+        listed(Vec::new()).split('\n').count(),
+        1,
+        "the empty family renders its own line"
+    );
+    let plain = listed(vec![row("a", "", false)]);
+    assert_ne!(
+        plain,
+        listed(vec![row("a", "desc", false)]),
+        "the description column's presence law must surface"
+    );
+    assert_ne!(
+        plain,
+        listed(vec![row("a", "", true)]),
+        "the met suffix must surface"
+    );
+
+    // The single-line receipt arm: the row (or its absence) surfaces.
+    let added_some = habits::render_text(&habits::HabitOutcome::Added(HabitAddReceipt {
+        habit: Some(row("a", "", false)),
+    }));
+    let added_none = habits::render_text(&habits::HabitOutcome::Added(HabitAddReceipt {
+        habit: None,
+    }));
+    assert_eq!(added_some.split('\n').count(), 1);
+    assert_ne!(added_some, added_none, "the row-less arm must surface");
+}

@@ -1232,3 +1232,102 @@ async fn r13_json_envelope_carries_insistence() {
         "the machine envelope carries the rung"
     );
 }
+
+/// The reminders render family's structural pins (#1229): one line per
+/// rule, the empty family's own line, single-line receipts, and the
+/// branch fields (insistence, mute, the dedup `added` arm, the clear
+/// count noun arm) must surface.
+#[test]
+#[allow(clippy::too_many_lines)] // one table per renderer family, kept flat for review
+fn reminders_render_arity_and_distinguishment() {
+    use taskboard_app::commands::output::{
+        ReminderAddReceipt, ReminderClearReceipt, ReminderMuteReceipt, ReminderRemoveReceipt,
+        ReminderRow, RemindersList,
+    };
+    use taskboard_domain::Insistence;
+
+    let row = |id: &str, title: &str, insistence: Insistence, muted: bool| ReminderRow {
+        id: id.to_owned(),
+        task_id: "t".to_owned(),
+        task_title: title.to_owned(),
+        before: "10m".to_owned(),
+        created_at: chrono::Utc::now(),
+        task_muted: muted,
+        insistence,
+    };
+    let list = |rules: Vec<ReminderRow>| reminders::render_text_list(&RemindersList { rules });
+    assert_eq!(
+        list(vec![
+            row("r1", "a", Insistence::Normal, false),
+            row("r2", "b", Insistence::Alarm, true),
+        ])
+        .split('\n')
+        .count(),
+        2,
+        "one line per rule"
+    );
+    assert_eq!(
+        list(Vec::new()).split('\n').count(),
+        1,
+        "the empty family renders its own line"
+    );
+    assert_ne!(
+        list(vec![row("r1", "a", Insistence::Normal, false)]),
+        list(vec![row("r1", "a", Insistence::Alarm, false)]),
+        "the insistence branch must surface"
+    );
+    assert_ne!(
+        list(vec![row("r1", "a", Insistence::Normal, false)]),
+        list(vec![row("r1", "a", Insistence::Normal, true)]),
+        "the mute branch must surface"
+    );
+
+    let add = |added: bool, insistence: Insistence| {
+        reminders::render_text_add(&ReminderAddReceipt {
+            rule_id: "r".to_owned(),
+            task_id: "t".to_owned(),
+            task_title: "task".to_owned(),
+            before: "10m".to_owned(),
+            added,
+            insistence,
+        })
+    };
+    assert_eq!(add(true, Insistence::Normal).split('\n').count(), 1);
+    assert_ne!(
+        add(true, Insistence::Normal),
+        add(false, Insistence::Normal),
+        "the dedup arm must surface"
+    );
+    assert_ne!(add(true, Insistence::Normal), add(true, Insistence::Alarm));
+
+    let remove = |title: &str| {
+        reminders::render_text_remove(&ReminderRemoveReceipt {
+            rule_id: "r".to_owned(),
+            task_id: "t".to_owned(),
+            task_title: title.to_owned(),
+            before: "10m".to_owned(),
+        })
+    };
+    assert_eq!(remove("a").split('\n').count(), 1);
+    assert_ne!(remove("a"), remove("b"));
+
+    let clear = |removed: usize| {
+        reminders::render_text_clear(&ReminderClearReceipt {
+            task_id: "t".to_owned(),
+            task_title: "task".to_owned(),
+            removed,
+        })
+    };
+    assert_eq!(clear(1).split('\n').count(), 1);
+    assert_ne!(clear(1), clear(2), "the singular/plural arm must surface");
+
+    let mute = |muted: bool| {
+        reminders::render_text_mute(&ReminderMuteReceipt {
+            task_id: "t".to_owned(),
+            task_title: "task".to_owned(),
+            muted,
+        })
+    };
+    assert_eq!(mute(true).split('\n').count(), 1);
+    assert_ne!(mute(true), mute(false), "the mute arm must surface");
+}

@@ -1066,3 +1066,43 @@ async fn us4_s1_cli_rule_replace_preserves_paused_until() {
         "the re-set mint preserves the series pause"
     );
 }
+
+/// The repeat render's structural pins (#1229): exactly one line, and
+/// the rule's presence arm plus the pause/bound fields must surface
+/// (a wholesale replacement collapses both).
+#[test]
+fn repeat_render_arity_and_distinguishment() {
+    use taskboard_app::commands::output::{RecurRuleReceipt, RepeatReceipt};
+
+    let receipt = |rule: Option<RecurRuleReceipt>| RepeatReceipt {
+        task_id: "t".to_owned(),
+        task_title: "task".to_owned(),
+        rule,
+    };
+    let rule = |pattern: &str, paused_until: Option<chrono::NaiveDate>| RecurRuleReceipt {
+        series: "s".to_owned(),
+        anchor: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).expect("date"),
+        pattern: pattern.to_owned(),
+        bound: String::new(),
+        next: None,
+        paused_until,
+    };
+    let on = repeat::render_text_repeat(&receipt(Some(rule("--daily", None))));
+    let off = repeat::render_text_repeat(&receipt(None));
+    assert_eq!(on.split('\n').count(), 1);
+    assert_eq!(off.split('\n').count(), 1);
+    assert_ne!(on, off, "the set vs cleared arm must surface");
+    assert_ne!(
+        repeat::render_text_repeat(&receipt(Some(rule("--daily", None)))),
+        repeat::render_text_repeat(&receipt(Some(rule("--weekly", None)))),
+        "the pattern must surface"
+    );
+    assert_ne!(
+        repeat::render_text_repeat(&receipt(Some(rule("--daily", None)))),
+        repeat::render_text_repeat(&receipt(Some(rule(
+            "--daily",
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 2, 1).expect("date")),
+        )))),
+        "the paused phrase must surface"
+    );
+}

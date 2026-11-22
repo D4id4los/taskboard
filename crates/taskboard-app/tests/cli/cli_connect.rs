@@ -1116,3 +1116,60 @@ async fn m8_an_explicit_standalone_file_never_migrates() {
         "the file is byte-untouched — no migration happened"
     );
 }
+
+/// The connect render's structural pins (#1229): exactly one line, and
+/// every branch field (the env-store arm, the backend switch, the
+/// re-point, the cleartext warning, the attach arms) must surface —
+/// a wholesale replacement collapses the injectivity lattice.
+#[test]
+fn connect_render_distinguishes_every_branch_field() {
+    use taskboard_app::commands::output::ConnectReceipt;
+    use taskboard_app::commands::output::DaemonAttachState;
+
+    let receipt = |stored: &str, switched: bool, repointed: bool, cleartext: bool| ConnectReceipt {
+        server_url: "https://cloud.example.com".to_owned(),
+        username: "alice".to_owned(),
+        verified: true,
+        stored: stored.to_owned(),
+        backend_switched: switched,
+        repointed,
+        cleartext_transport: cleartext,
+        attached: None,
+        daemon_connector: None,
+    };
+    let render = |r: &ConnectReceipt| connect::render_text(r);
+    let base = render(&receipt("keyring", false, false, false));
+    assert_eq!(base.split('\n').count(), 1, "the receipt is one line");
+    assert_ne!(
+        base,
+        render(&receipt("env", false, false, false)),
+        "the env-store arm must surface"
+    );
+    assert_ne!(
+        base,
+        render(&receipt("keyring", true, false, false)),
+        "the backend-switch arm must surface"
+    );
+    assert_ne!(
+        base,
+        render(&receipt("keyring", false, true, false)),
+        "the re-point arm must surface"
+    );
+    assert_ne!(
+        base,
+        render(&receipt("keyring", false, false, true)),
+        "the cleartext warning must surface"
+    );
+
+    let mut attached = receipt("keyring", false, false, false);
+    attached.attached = Some(true);
+    assert_ne!(base, render(&attached), "the attached arm must surface");
+    let mut daemon_attached = receipt("keyring", false, false, false);
+    daemon_attached.daemon_connector = Some(DaemonAttachState::Attached);
+    assert_ne!(
+        base,
+        render(&daemon_attached),
+        "the daemon-attached arm must surface"
+    );
+    assert_ne!(render(&attached), render(&daemon_attached));
+}

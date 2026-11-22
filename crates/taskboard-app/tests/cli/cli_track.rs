@@ -1396,3 +1396,122 @@ async fn t_kind_status_tracked_today_excludes_respite() {
 fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::from_timestamp(secs, 0).expect("valid instant")
 }
+
+/// The track render family's structural pins (#1229): status renders
+/// one line per open entry plus the day total; list renders one line
+/// per entry (or the empty family's line); the receipts are
+/// single-line and distinguish the branch fields (`started`,
+/// `stopped`, `changed`, `deleted`, the closed-entry set, the open
+/// end).
+#[test]
+#[allow(clippy::too_many_lines)] // one table per renderer family, kept flat for review
+fn track_render_arity_and_distinguishment() {
+    use taskboard_app::commands::output::{
+        TrackAdjustReceipt, TrackDeleteReceipt, TrackEntryRow, TrackListView, TrackLogReceipt,
+        TrackStartReceipt, TrackStatusView, TrackStopReceipt,
+    };
+    use taskboard_domain::command::CommandOutcome;
+    use taskboard_domain::tracking::TimeEntryKind;
+
+    let stamp = chrono::Utc::now();
+    let entry_row = |id: &str, end: Option<chrono::DateTime<chrono::Utc>>| TrackEntryRow {
+        entry_id: id.to_owned(),
+        task_id: "t".to_owned(),
+        task_title: "task".to_owned(),
+        start: stamp,
+        end,
+        duration_seconds: 60,
+        kind: TimeEntryKind::Work,
+    };
+    let status = |open: Vec<TrackEntryRow>| {
+        track::render_text_status(&TrackStatusView {
+            open,
+            tracked_today_seconds: 60,
+        })
+    };
+    assert_eq!(
+        status(vec![entry_row("e1", None), entry_row("e2", Some(stamp))])
+            .split('\n')
+            .count(),
+        3,
+        "one line per open entry plus the day total"
+    );
+    // The contract: the nothing-running line plus the day total —
+    // the total line renders for every status payload.
+    assert_eq!(status(Vec::new()).split('\n').count(), 2);
+
+    let list = |entries: Vec<TrackEntryRow>| track::render_text_list(&TrackListView { entries });
+    assert_eq!(
+        list(vec![entry_row("e1", None), entry_row("e2", Some(stamp))])
+            .split('\n')
+            .count(),
+        2,
+        "one line per entry"
+    );
+    assert_ne!(
+        list(vec![entry_row("e1", None)]),
+        list(vec![entry_row("e1", Some(stamp))]),
+        "the open/closed end arm must surface"
+    );
+
+    let start = |started: bool, closed: Vec<String>| {
+        track::render_text_start(&TrackStartReceipt {
+            started,
+            entry: entry_row("e1", None),
+            closed,
+        })
+    };
+    assert_eq!(start(true, Vec::new()).split('\n').count(), 1);
+    assert_ne!(start(true, Vec::new()), start(false, Vec::new()));
+    assert_ne!(start(true, Vec::new()), start(true, vec!["e0".to_owned()]));
+
+    let stop = |entries: Vec<TrackEntryRow>| {
+        track::render_text_stop(&TrackStopReceipt {
+            stopped: !entries.is_empty(),
+            entries,
+        })
+    };
+    assert_eq!(
+        stop(vec![entry_row("e1", Some(stamp))]).split('\n').count(),
+        1
+    );
+    assert_eq!(
+        stop(Vec::new()).split('\n').count(),
+        1,
+        "the stopped=false arm is its own line"
+    );
+    assert_ne!(stop(vec![entry_row("e1", Some(stamp))]), stop(Vec::new()));
+
+    let log = |end: Option<chrono::DateTime<chrono::Utc>>| {
+        track::render_text_log(&TrackLogReceipt {
+            entry: entry_row("e1", end),
+        })
+    };
+    assert_eq!(log(Some(stamp)).split('\n').count(), 1);
+    assert_ne!(log(Some(stamp)), log(None));
+
+    let adjust = |changed: bool| {
+        track::render_text_adjust(&TrackAdjustReceipt {
+            changed,
+            entry: entry_row("e1", Some(stamp)),
+        })
+    };
+    assert_eq!(adjust(true).split('\n').count(), 1);
+    assert_ne!(adjust(true), adjust(false));
+
+    let delete = |deleted: bool| {
+        track::render_text_delete(&TrackDeleteReceipt {
+            entry_id: "e1".to_owned(),
+            deleted,
+        })
+    };
+    assert_eq!(delete(true).split('\n').count(), 1);
+    assert_ne!(delete(true), delete(false));
+
+    let restored = track::render_text_restore(&CommandOutcome::EntryRestored {
+        id: taskboard_domain::ids::TimeEntryId::from(uuid::Uuid::nil()),
+    });
+    let noop = track::render_text_restore(&CommandOutcome::NoOp);
+    assert_eq!(restored.split('\n').count(), 1);
+    assert_ne!(restored, noop, "the restore vs no-op arm must surface");
+}

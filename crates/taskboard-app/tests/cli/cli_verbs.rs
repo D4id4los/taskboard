@@ -1873,3 +1873,50 @@ async fn diag_teardown_who_burns_the_shutdown_budget() {
 fn ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
+
+/// The sync render's structural pins (#1229): every `SyncOutcome`
+/// kind renders its own single line — the outcome-kind table is a
+/// pure function of the typed payload, so a `==` -> `!=` arm flip or
+/// a wholesale replacement collapses the pairwise distinctness.
+#[test]
+fn sync_render_outcome_kind_table_is_pairwise_distinct() {
+    use taskboard_app::commands::output::SyncStatusView;
+    use taskboard_app::commands::sync::{self, SyncOutcome};
+    use taskboard_domain::SyncErrorKind;
+
+    let view = SyncStatusView {
+        phase: "idle".to_owned(),
+        last_success: None,
+        pending_ops: 1,
+        error_kind: None,
+        cycles: 0,
+        pushes: 0,
+        pulls: 0,
+        failures: 0,
+        offline_episodes: 0,
+        last_cycle_ms: None,
+        sidecar: None,
+    };
+    let outcomes = [
+        SyncOutcome::Succeeded(view.clone()),
+        SyncOutcome::Failed(SyncErrorKind::Network, view.clone()),
+        SyncOutcome::TimedOut(view.clone()),
+        SyncOutcome::NoWait(view),
+    ];
+    for outcome in &outcomes {
+        assert_eq!(
+            sync::render_text(outcome).split('\n').count(),
+            1,
+            "each outcome kind renders exactly one line"
+        );
+    }
+    for (i, a) in outcomes.iter().enumerate() {
+        for b in outcomes.iter().skip(i + 1) {
+            assert_ne!(
+                sync::render_text(a),
+                sync::render_text(b),
+                "distinct outcome kinds must render distinct lines"
+            );
+        }
+    }
+}

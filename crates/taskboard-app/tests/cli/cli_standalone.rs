@@ -701,3 +701,271 @@ async fn us2_s4_resolution_is_the_shared_exactly_one_live_board_rule() {
     };
     assert_eq!(candidates.len(), 2, "every live board is a candidate");
 }
+
+/// The board/label/stack/find render families' structural pins
+/// (#1229): list renderers are one line per row plus the empty
+/// family's line; receipts are single-line and distinguish their
+/// branch fields (the wiped-refs arm, the bound-remote arms, the
+/// archived/deleted markers, the destruct verb and bound-remote arm).
+#[test]
+#[allow(clippy::too_many_lines)] // one table per renderer family, kept flat for review
+fn board_label_stack_find_render_arity_and_distinguishment() {
+    use taskboard_app::commands::find::{self, FindRow};
+    use taskboard_app::commands::output::{
+        BoardDestructReceipt, BoardReceipt, BoardsListEntry, FilesPublishReceipt, LabelReceipt,
+        LabelRow, RebindReceipt, ReconcileReceipt, SelectReceipt, StackDeleteReceipt, StackReceipt,
+        SyncStatusView, UnbindReceipt,
+    };
+    use taskboard_app::commands::{labels, stacks};
+
+    let sync_view = SyncStatusView {
+        phase: "idle".to_owned(),
+        last_success: None,
+        pending_ops: 0,
+        error_kind: None,
+        cycles: 0,
+        pushes: 0,
+        pulls: 0,
+        failures: 0,
+        offline_episodes: 0,
+        last_cycle_ms: None,
+        sidecar: None,
+    };
+    let entry = |id: u64, title: &str, archived: bool, deleted: bool| BoardsListEntry {
+        id,
+        title: title.to_owned(),
+        archived,
+        deleted,
+    };
+    let board_list = |entries: Vec<BoardsListEntry>| boards::render_text_list(&entries);
+    assert_eq!(
+        board_list(vec![
+            entry(1, "a", false, false),
+            entry(2, "b", true, false)
+        ])
+        .split('\n')
+        .count(),
+        2,
+        "one line per board"
+    );
+    assert_eq!(
+        board_list(Vec::new()).split('\n').count(),
+        1,
+        "the empty family renders its own line"
+    );
+    assert_ne!(
+        board_list(vec![entry(1, "a", false, false)]),
+        board_list(vec![entry(1, "a", true, false)]),
+        "the archived marker must surface"
+    );
+    assert_ne!(
+        board_list(vec![entry(1, "a", false, false)]),
+        board_list(vec![entry(1, "a", false, true)]),
+        "the deleted marker must surface"
+    );
+
+    let select = |wiped: Option<usize>| {
+        boards::render_text_select(&SelectReceipt {
+            board: entry(1, "a", false, false),
+            sync: sync_view.clone(),
+            wiped_refs: wiped,
+        })
+    };
+    assert_eq!(select(None).split('\n').count(), 1);
+    assert_ne!(
+        select(None),
+        select(Some(3)),
+        "the wiped-refs arm must surface"
+    );
+
+    let publish = |remote: &str| {
+        boards::render_text_files_publish(&FilesPublishReceipt {
+            board_id: "b".to_owned(),
+            files_remote_id: remote.to_owned(),
+            title: "a".to_owned(),
+            archived: false,
+            deleted: false,
+            sync: sync_view.clone(),
+        })
+    };
+    assert_eq!(publish("f1").split('\n').count(), 1);
+    assert_ne!(
+        publish("f1"),
+        publish("f2"),
+        "the files remote id must surface"
+    );
+
+    let unbind = |bound: Option<u64>| {
+        boards::render_text_unbind(&UnbindReceipt {
+            board: "b".to_owned(),
+            bound_remote: bound,
+            stranded_ops: 2,
+            kept_refs: 1,
+        })
+    };
+    assert_eq!(unbind(None).split('\n').count(), 1);
+    assert_ne!(
+        unbind(None),
+        unbind(Some(7)),
+        "the bound-remote arm must surface"
+    );
+
+    let reconcile = |tasks_merged: usize| {
+        boards::render_text_reconcile(&ReconcileReceipt {
+            board: "b".to_owned(),
+            stacks: 1,
+            labels: 2,
+            tasks: tasks_merged,
+            cancelled_ops: 0,
+        })
+    };
+    assert_eq!(reconcile(3).split('\n').count(), 1);
+    assert_ne!(reconcile(3), reconcile(4), "the merge count must surface");
+
+    let rebind = |connection: &str| {
+        boards::render_text_rebind(&RebindReceipt {
+            board: "b".to_owned(),
+            connection: connection.to_owned(),
+        })
+    };
+    assert_eq!(rebind("c1").split('\n').count(), 1);
+    assert_ne!(rebind("c1"), rebind("c2"));
+
+    let board_receipt = |title: &str| BoardReceipt {
+        id: "b".to_owned(),
+        title: title.to_owned(),
+        color: "0082c9".to_owned(),
+    };
+    assert_eq!(
+        boards::render_text_create(&board_receipt("a"))
+            .split('\n')
+            .count(),
+        1
+    );
+    assert_ne!(
+        boards::render_text_create(&board_receipt("a")),
+        boards::render_text_create(&board_receipt("c")),
+    );
+    assert_ne!(
+        boards::render_text_board_edit(&board_receipt("a")),
+        boards::render_text_board_edit(&BoardReceipt {
+            color: "ff0000".to_owned(),
+            ..board_receipt("a")
+        }),
+        "the color must surface"
+    );
+
+    let destruct = |verb: &str, bound: Option<u64>| {
+        boards::render_text_destruct(&BoardDestructReceipt {
+            board: "b".to_owned(),
+            verb: verb.to_owned(),
+            stacks: 1,
+            tasks: 2,
+            labels: 3,
+            pending_ops: 4,
+            bound_remote: bound,
+        })
+    };
+    assert_eq!(destruct("deleted", None).split('\n').count(), 1);
+    assert_ne!(
+        destruct("deleted", None),
+        destruct("reset", None),
+        "the verb must surface"
+    );
+    assert_ne!(
+        destruct("deleted", None),
+        destruct("deleted", Some(9)),
+        "the bound-remote arm must surface"
+    );
+
+    let label_rows = |rows: Vec<LabelRow>| labels::render_text_list(&rows);
+    let label_row = |title: &str| LabelRow {
+        id: "l".to_owned(),
+        title: title.to_owned(),
+        color: "red".to_owned(),
+        assigned_tasks: 1,
+    };
+    assert_eq!(
+        label_rows(vec![label_row("a"), label_row("b")])
+            .split('\n')
+            .count(),
+        2
+    );
+    assert_eq!(
+        label_rows(Vec::new()).split('\n').count(),
+        1,
+        "the empty family renders its own line"
+    );
+    assert_ne!(
+        label_rows(vec![label_row("a")]),
+        label_rows(vec![label_row("b")])
+    );
+
+    let label_receipt = |color: &str| {
+        labels::render_text_receipt(&LabelReceipt {
+            id: "l".to_owned(),
+            title: "a".to_owned(),
+            color: color.to_owned(),
+        })
+    };
+    assert_eq!(label_receipt("red").split('\n').count(), 1);
+    assert_ne!(
+        label_receipt("red"),
+        label_receipt("blue"),
+        "the color must surface"
+    );
+
+    let stack_add = |order: i64| {
+        stacks::render_text_add(&StackReceipt {
+            id: "s".to_owned(),
+            title: "stack".to_owned(),
+            order,
+        })
+    };
+    assert_eq!(stack_add(1).split('\n').count(), 1);
+    assert_ne!(stack_add(1), stack_add(2), "the position must surface");
+
+    let stack_delete = |cascaded: usize| {
+        stacks::render_text_delete(&StackDeleteReceipt {
+            id: "s".to_owned(),
+            title: "stack".to_owned(),
+            cascaded_tasks: cascaded,
+        })
+    };
+    assert_eq!(stack_delete(2).split('\n').count(), 1);
+    assert_ne!(
+        stack_delete(2),
+        stack_delete(3),
+        "the cascade count must surface"
+    );
+
+    let find_rows = |rows: Vec<FindRow>| find::render_text_list(&rows);
+    let find_row = |kind: &str, title: &str| FindRow {
+        kind: kind.to_owned(),
+        id: "x".to_owned(),
+        title: title.to_owned(),
+        context: None,
+    };
+    assert_eq!(
+        find_rows(vec![find_row("task", "a"), find_row("board", "b")])
+            .split('\n')
+            .count(),
+        2,
+        "one line per hit"
+    );
+    assert_eq!(
+        find_rows(Vec::new()).split('\n').count(),
+        1,
+        "the empty family renders its own line"
+    );
+    assert_ne!(
+        find_rows(vec![find_row("task", "a")]),
+        find_rows(vec![find_row("board", "a")]),
+        "the kind column must surface"
+    );
+    assert_ne!(
+        find_rows(vec![find_row("task", "a")]),
+        find_rows(vec![find_row("task", "b")]),
+        "the title must surface"
+    );
+}

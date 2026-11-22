@@ -345,3 +345,66 @@ async fn t_add_insistence_receipt_and_list_row_carry_the_level() {
     let receipt = run_add(&config, "quiet tea", &["--in", "2m"]).await;
     assert_eq!(receipt.insistence, Insistence::Normal);
 }
+
+/// The timers render family's structural pins (#1229): one line per
+/// timer row (plus the empty family's line), single-line receipts,
+/// and the branch fields (insistence, label) must surface.
+#[test]
+fn timers_render_arity_and_distinguishment() {
+    use taskboard_app::commands::output::{
+        TimerAddReceipt, TimerCancelReceipt, TimerRow, TimersList,
+    };
+    use taskboard_domain::Insistence;
+
+    let stamp = chrono::Utc::now();
+    let row = |id: &str, label: &str, insistence: Insistence| TimerRow {
+        alarm_id: id.to_owned(),
+        label: label.to_owned(),
+        fire_at: stamp,
+        effective_at: stamp,
+        overdue: false,
+        remaining: None,
+        insistence,
+    };
+    let list = |timers: Vec<TimerRow>| timers::render_text_list(&TimersList { timers });
+    assert_eq!(
+        list(vec![
+            row("a1", "tea", Insistence::Normal),
+            row("a2", "call", Insistence::Alarm)
+        ])
+        .split('\n')
+        .count(),
+        2,
+        "one line per timer"
+    );
+    assert_eq!(
+        list(Vec::new()).split('\n').count(),
+        1,
+        "the empty family renders its own line"
+    );
+    assert_ne!(
+        list(vec![row("a1", "tea", Insistence::Normal)]),
+        list(vec![row("a1", "tea", Insistence::Alarm)]),
+        "the insistence branch must surface"
+    );
+
+    let add = |insistence: Insistence| {
+        timers::render_text_add(&TimerAddReceipt {
+            alarm_id: "a1".to_owned(),
+            label: "tea".to_owned(),
+            fire_at: stamp,
+            insistence,
+        })
+    };
+    assert_eq!(add(Insistence::Normal).split('\n').count(), 1);
+    assert_ne!(add(Insistence::Normal), add(Insistence::Alarm));
+
+    let cancel = |label: &str| {
+        timers::render_text_cancel(&TimerCancelReceipt {
+            alarm_id: "a1".to_owned(),
+            label: label.to_owned(),
+        })
+    };
+    assert_eq!(cancel("tea").split('\n').count(), 1);
+    assert_ne!(cancel("tea"), cancel("call"), "the label must surface");
+}

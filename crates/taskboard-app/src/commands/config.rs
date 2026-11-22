@@ -2696,3 +2696,67 @@ mod config_write_lane_tests {
         std::fs::remove_dir_all(path.parent().expect("dir")).ok();
     }
 }
+
+#[cfg(test)]
+mod render_pins {
+    /// The config render's structural pins (#1229, cluster E): the
+    /// line count is the fixed field list from the fn contract (path,
+    /// backend, validity, then the sections' fields), the
+    /// `invalid_kind` line appears iff the diagnostic is present, and
+    /// the render distinguishes views differing in any field.
+    #[test]
+    fn config_render_arity_and_distinguishment() {
+        use super::{ConfigView, render_text};
+        use crate::config::AppConfig;
+
+        let view =
+            |backend: &str, valid: bool, invalid_kind: Option<&str>, server: Option<&str>| {
+                let mut config = AppConfig::default();
+                config.nextcloud.server_url = server.map(str::to_owned);
+                ConfigView {
+                    config_path: None,
+                    backend: backend.to_owned(),
+                    valid,
+                    invalid_kind: invalid_kind.map(str::to_owned),
+                    config,
+                }
+            };
+        let base = render_text(&view("standalone", true, None, None));
+        // 13 fixed fields: config_path, backend, valid, app.mode,
+        // app.shutdown_timeout_secs, nextcloud.server_url,
+        // nextcloud.username, nextcloud.credential_store,
+        // storage.db_path, sync.backend, sync.poll_interval_secs,
+        // sync.backoff_initial_secs, sync.backoff_max_secs.
+        assert_eq!(
+            base.split('\n').count(),
+            13,
+            "the contract's fixed field list"
+        );
+        assert_ne!(
+            base,
+            render_text(&view("standalone", false, Some("some-kind"), None)),
+            "the invalid_kind diagnostic line must surface"
+        );
+        assert_eq!(
+            render_text(&view("standalone", false, Some("some-kind"), None))
+                .split('\n')
+                .count(),
+            14,
+        );
+        assert_ne!(
+            base,
+            render_text(&view("nextcloud", true, None, None)),
+            "the backend must surface"
+        );
+        assert_ne!(
+            base,
+            render_text(&view(
+                "standalone",
+                true,
+                None,
+                Some("https://cloud.example.com")
+            )),
+            "the server url must surface"
+        );
+    }
+}
