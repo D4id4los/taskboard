@@ -2940,6 +2940,61 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
+        StateCommand::HabitReorder { habit: id, target } => {
+            let habit = live_habit(app, *id)?;
+            // One row source: the same canonical `(order, id)`
+            // enumeration the Today section renders from, so the gap
+            // index the UI mints names the rows the user saw.
+            let mut rows: Vec<Habit> = app
+                .habits
+                .habits
+                .values()
+                .filter(|row| row.is_live() && row.board == habit.board)
+                .cloned()
+                .collect();
+            rows.sort_by_key(|row| (row.order, row.id));
+            let position = rows
+                .iter()
+                .position(|row| row.id == *id)
+                .expect("the live guard enumerated the mover");
+            // The pointer grammar's past-end gap clamps to the append
+            // slot; the mover's own edges are the accepted in-place
+            // drops (the board's `confirm_drag_move` precedent).
+            let target = (*target).min(rows.len());
+            if target == position || target == position + 1 {
+                return Ok(no_op());
+            }
+            let moved = rows.remove(position);
+            let insert_at = if target <= position {
+                target
+            } else {
+                target - 1
+            };
+            rows.insert(insert_at, moved);
+            // Renumber the section dense `0..n` (D1's recorded
+            // decision): the section stays gap-free forever, which is
+            // what keeps every future slot expressible. Only the
+            // changed rows upsert, each stamping its own order clock,
+            // with the board's flush riding the batch.
+            let mut actions: Vec<PersistenceAction> = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, row)| {
+                    let order = i64::try_from(index).ok()?;
+                    (row.order != order).then(|| {
+                        let mut updated = row.clone();
+                        updated.order = order;
+                        updated.clocks.order = now;
+                        PersistenceAction::UpsertHabit(updated)
+                    })
+                })
+                .collect();
+            actions.push(board_flush(habit.board, ids, now));
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::Applied,
+            })
+        }
         StateCommand::LogHabit { habit: id } => {
             let habit = live_habit(app, *id)?;
             // No NoOp branch — every invocation is exactly one increment
@@ -10922,6 +10977,274 @@ mod tests {
         )
         .unwrap();
         assert_eq!(repeat, no_op());
+    }
+
+    // ---- HabitReorder (#1198, chunk A1 D1): the engine-side reorder
+    // over dense integer orders — the UI mints a gap index, the
+    // engine resolves and renumbers the section. The pre-fix path
+    // (UI-minted absolute `MoveHabit` orders) cannot express any of
+    // these pins: a dense list has no free integer, so every slot is
+    // either the mover's own order (no-op) or an occupied order
+    // (the (order, id) tiebreak lottery).
+
+    /// A dense fixture: `count` live habits on one board with orders
+    /// exactly 0..count, ids minted from HABIT+0.. — the section
+    /// shape after `append_order_after` appends.
+    fn reorder_app(count: usize) -> (AppState, Vec<PendingOp>, Vec<HabitId>) {
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let mut ids = vec![habit_id()];
+        for k in 1..count {
+            let id = HabitId::from(uuid::Uuid::from_u128(u128::from(HABIT + k as u64)));
+            let mut row = habit_row(crate::habit::HabitTarget::PerDay(
+                crate::habit::NonZeroCount::new(1).unwrap(),
+            ));
+            row.id = id;
+            row.title = format!("habit {k}");
+            row.order = i64::try_from(k).unwrap();
+            app.habits.habits.insert(id, row);
+            ids.push(id);
+        }
+        (app, outbox, ids)
+    }
+
+    /// The section's canonical `(order, id)` id sequence with the
+    /// plan's upserts applied — the sequence the Today section
+    /// renders from.
+    fn canonical_seq(app: &AppState, plan: &CommandPlan) -> Vec<HabitId> {
+        let mut habits = app.habits.habits.clone();
+        for action in &plan.actions {
+            if let PersistenceAction::UpsertHabit(habit) = action {
+                habits.insert(habit.id, habit.clone());
+            }
+        }
+        let mut rows: Vec<(i64, HabitId)> = habits
+            .values()
+            .filter(|habit| !habit.deleted)
+            .map(|habit| (habit.order, habit.id))
+            .collect();
+        rows.sort();
+        rows.into_iter().map(|(_, id)| id).collect()
+    }
+
+    #[test]
+    fn habit_reorder_dense_orders_swaps_the_adjacent_upper_neighbour() {
+        let (app, outbox, ids) = reorder_app(3); // [A, B, C] orders 0,1,2
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::HabitReorder {
+                habit: ids[1],
+                target: 0,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(canonical_seq(&app, &plan), vec![ids[1], ids[0], ids[2]]);
+    }
+
+    #[test]
+    fn habit_reorder_dense_orders_swaps_the_adjacent_lower_neighbour() {
+        let (app, outbox, ids) = reorder_app(3);
+        // B at position 1 crosses C by dropping at the gap after C
+        // (gap 3 = the append slot); gap 2 is B's own bottom edge —
+        // the accepted in-place no-op.
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::HabitReorder {
+                habit: ids[1],
+                target: 3,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(canonical_seq(&app, &plan), vec![ids[0], ids[2], ids[1]]);
+    }
+
+    #[test]
+    fn habit_reorder_long_distance_lands_between_the_crossed_rows() {
+        // Dense: [A, B, C, D], drop D at gap 1 → [A, D, B, C].
+        let (app, outbox, ids) = reorder_app(4);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::HabitReorder {
+                habit: ids[3],
+                target: 1,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            canonical_seq(&app, &plan),
+            vec![ids[0], ids[3], ids[1], ids[2]]
+        );
+        // Sparse: the same move over orders {0, 10, 20, 30} lands
+        // identically — the engine never reads the integers' spacing.
+        let (mut app, outbox, ids) = reorder_app(4);
+        for (k, id) in ids.iter().enumerate() {
+            app.habits.habits.get_mut(id).unwrap().order = i64::try_from(k).unwrap() * 10;
+        }
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::HabitReorder {
+                habit: ids[3],
+                target: 1,
+            },
+        )
+        .expect("planned");
+        assert_eq!(
+            canonical_seq(&app, &plan),
+            vec![ids[0], ids[3], ids[1], ids[2]]
+        );
+    }
+
+    #[test]
+    fn habit_reorder_in_place_gaps_are_the_accepted_no_op() {
+        let (app, outbox, ids) = reorder_app(3);
+        // B at position 1: its own gaps are 1 and 2.
+        for target in [1usize, 2] {
+            let plan = run(
+                &app,
+                &outbox,
+                &StateCommand::HabitReorder {
+                    habit: ids[1],
+                    target,
+                },
+            )
+            .expect("planned");
+            assert_eq!(plan, no_op(), "gap {target} is in place");
+        }
+    }
+
+    #[test]
+    fn habit_reorder_clamps_the_past_end_gap() {
+        let (app, outbox, ids) = reorder_app(3);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::HabitReorder {
+                habit: ids[0],
+                target: 9,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(canonical_seq(&app, &plan), vec![ids[1], ids[2], ids[0]]);
+    }
+
+    #[test]
+    fn habit_reorder_refuses_unknown_and_deleted_typed() {
+        let (mut app, outbox, ids) = reorder_app(2);
+        let unknown = HabitId::from(uuid::Uuid::from_u128(u128::from(HABIT + 99)));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::HabitReorder {
+                habit: unknown,
+                target: 0,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CommandError::UnknownHabit(id) if id == unknown));
+        app.habits.habits.get_mut(&ids[1]).unwrap().deleted = true;
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::HabitReorder {
+                habit: ids[1],
+                target: 0,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CommandError::HabitDeleted(id) if id == ids[1]));
+    }
+
+    #[test]
+    fn habit_reorder_stamps_and_flushes() {
+        let (app, outbox, ids) = reorder_app(3);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::HabitReorder {
+                habit: ids[1],
+                target: 0,
+            },
+        )
+        .expect("planned");
+        // Every order-changed row upserts with a fresh order clock.
+        let moved: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::UpsertHabit(habit) => Some(habit),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(moved.len(), 2, "both crossed rows re-stamp");
+        for habit in &moved {
+            assert_eq!(habit.clocks.order, now(), "fresh order clock");
+        }
+        assert!(
+            plan.actions.iter().any(|action| matches!(
+                action,
+                PersistenceAction::EnqueueOp(pending)
+                    if matches!(pending.op, crate::outbox::LocalOp::FlushBoardAppData(_))
+            )),
+            "the board flush rides the batch"
+        );
+    }
+
+    proptest! {
+        /// The US-14 shape over the reorder verb: for randomized
+        /// section sizes and gap targets, an applied reorder yields
+        /// exactly the requested permutation of one row, and the
+        /// section's post orders stay dense (0..n, no duplicates).
+        #[test]
+        fn habit_reorder_yields_exactly_one_row_permutation(
+            count in 1usize..=6,
+            position in 0usize..8,
+            target in 0usize..9,
+        ) {
+            let pos = position % count;
+            let tgt = target % (count + 1); // the gap grammar is 0..=len
+            let (app, outbox, ids) = reorder_app(count);
+            let plan = run(
+                &app,
+                &outbox,
+                &StateCommand::HabitReorder { habit: ids[pos], target: tgt },
+            )
+            .unwrap();
+            let seq = canonical_seq(&app, &plan);
+            if tgt == pos || tgt == pos + 1 {
+                prop_assert_eq!(&plan, &no_op());
+                prop_assert_eq!(seq.len(), count);
+            } else {
+                prop_assert_eq!(plan.outcome, CommandOutcome::Applied);
+                let insert_at = if tgt <= pos { tgt } else { tgt - 1 };
+                let mut expected: Vec<HabitId> = ids.clone();
+                let moved = expected.remove(pos);
+                expected.insert(insert_at, moved);
+                prop_assert_eq!(seq, expected);
+            }
+            // Post orders are dense non-negative integers, duplicate-free.
+            let mut habits = app.habits.habits.clone();
+            for action in &plan.actions {
+                if let PersistenceAction::UpsertHabit(habit) = action {
+                    habits.insert(habit.id, habit.clone());
+                }
+            }
+            let mut orders: Vec<i64> = habits
+                .values()
+                .filter(|habit| !habit.deleted)
+                .map(|habit| habit.order)
+                .collect();
+            orders.sort_unstable();
+            prop_assert_eq!(orders, Vec::from_iter(0i64..i64::try_from(count).unwrap()));
+        }
     }
 
     #[test]

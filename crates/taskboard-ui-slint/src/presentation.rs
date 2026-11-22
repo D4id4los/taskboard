@@ -7596,9 +7596,8 @@ mod recur_badge_tests {
         }
         // Habit → series: the quota carries into the interval; the
         // anchors stay at the default.
-        let per_day = taskboard_domain::habit::HabitTarget::PerDay(
-            taskboard_domain::NonZeroCount::new(3).unwrap(),
-        );
+        let per_day =
+            taskboard_domain::HabitTarget::PerDay(taskboard_domain::NonZeroCount::new(3).unwrap());
         let pattern = convert_pattern_default(per_day);
         assert!(matches!(
             pattern,
@@ -8046,7 +8045,7 @@ pub fn convert_pattern_default(
         DayOfMonth, EveryDays, EveryWeeks, MonthlyAnchor, RecurPattern, WeekdaySet,
     };
     match target {
-        taskboard_domain::habit::HabitTarget::PerDay(n) => RecurPattern::Daily {
+        taskboard_domain::HabitTarget::PerDay(n) => RecurPattern::Daily {
             every: EveryDays::new(u16::try_from(n.get()).unwrap_or(u16::MAX))
                 .expect("the quota carried a minted count"),
         },
@@ -8078,20 +8077,38 @@ pub const fn habit_editing_enabled(kiosk: bool) -> bool {
     !kiosk
 }
 
-/// The reorder's drop-slot order: the **floor midpoint of the drop
-/// slot's free interval** over the row source's orders (the
-/// `insertion_order_after` convention, D-C13 — the UI computes
-/// midpoints, the planner stamps the absolute value). `prev`/`next`
-/// are the orders bracketing the slot (`None` at either end). A
-/// delegate: the arithmetic lives in the domain
-/// (`taskboard_domain::command::floor_midpoint_order`) since US-14
-/// (#1031) — the engine's compact-move rule speaks the SAME
-/// arithmetic, so there is exactly one order law (the round's
-/// no-second-arithmetic trap). The name stays for the habit pair's
-/// call sites and tests.
+/// The reorder pair's mint (#1198 chunk A1 D1 — one arithmetic, one
+/// home): **target gap indices** into the section's live `(order,
+/// id)` row source, never absolute orders — a dense list has no free
+/// integer to mint into, so the engine resolves the move
+/// (`StateCommand::HabitReorder`). Up steps to the row above's gap
+/// (`position - 1`); down crosses the lower neighbour
+/// (`position + 2` — `position + 1` is the mover's own bottom edge,
+/// the engine's in-place no-op). `None` at either end is the typed
+/// `NoTarget` refusal's input (the boundary posture, not an engine
+/// error). Menu open, keyboard walk, and drop gap all converge here.
+pub type HabitMoveSlots = (
+    Option<(taskboard_domain::HabitId, usize)>,
+    Option<(taskboard_domain::HabitId, usize)>,
+);
 #[must_use]
-pub fn habit_drop_order(prev: Option<i64>, next: Option<i64>) -> i64 {
-    taskboard_domain::command::floor_midpoint_order(prev, next)
+pub fn habit_move_slots(
+    state: &taskboard_domain::AppState,
+    habit: taskboard_domain::HabitId,
+) -> HabitMoveSlots {
+    let Some(row) = state.habits.habits.get(&habit) else {
+        return (None, None); // stale: no board, no position
+    };
+    let rows = live_habits_in_order(state, row.board);
+    let position = rows.iter().position(|h| h.id == habit);
+    let up = position
+        .and_then(|p| p.checked_sub(1))
+        .map(|target| (habit, target));
+    let down = position.and_then(|p| {
+        let target = p + 2;
+        (target <= rows.len()).then_some((habit, target))
+    });
+    (up, down)
 }
 
 /// The focused-subject key translation (chunk 8 D3): at the dispatch
@@ -8392,7 +8409,7 @@ mod habit_history_tests {
         std::collections::BTreeMap<taskboard_domain::HabitLogKey, taskboard_domain::HabitLogEntry>,
         taskboard_domain::DayCalendar,
     ) {
-        let habit = taskboard_domain::habit::Habit {
+        let habit = taskboard_domain::Habit {
             id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::from_u128(raw)),
             board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(900)),
             title: "water".to_owned(),
@@ -8406,7 +8423,7 @@ mod habit_history_tests {
             paused_until: None,
             scheduled_days: None,
             reminder: None,
-            clocks: taskboard_domain::habit::HabitClocks::all(
+            clocks: taskboard_domain::HabitClocks::all(
                 chrono::Utc
                     .with_ymd_and_hms(2026, 10, 1, 0, 0, 0)
                     .single()
@@ -9044,19 +9061,67 @@ mod habit_section_tests {
         assert!(!rows[2].off_schedule, "PerDay is inert (R-6)");
     }
 
-    /// T-19 (the order law): the drop slot's floor midpoint — one law
-    /// with the CLI's `--order` path at the planner.
+    /// The reorder pair's mint over a dense list (#1198): the slots
+    /// are target indices — up is the gap above, down crosses the
+    /// lower neighbour; the ends refuse (`None`, the typed `NoTarget`
+    /// posture). Red pre-fix: the mint produced floor-midpoint
+    /// absolute orders, which no-op or collide on a dense list.
     #[test]
-    fn habit_drop_order_takes_the_floor_midpoint_of_the_free_interval() {
-        assert_eq!(habit_drop_order(None, None), 0);
-        assert_eq!(habit_drop_order(None, Some(10)), 9);
-        assert_eq!(habit_drop_order(Some(10), None), 11);
-        assert_eq!(habit_drop_order(Some(10), Some(20)), 15);
+    fn habit_move_slots_mint_target_indices() {
+        let (mut state, board) = dense_habit_section(3); // orders 0,1,2
+        let ids: Vec<_> = {
+            let mut rows: Vec<_> = state
+                .habits
+                .habits
+                .values()
+                .map(|h| (h.order, h.id))
+                .collect();
+            rows.sort();
+            rows.into_iter().map(|(_, id)| id).collect()
+        };
+        // Middle row: up is the head gap, down crosses the tail row.
         assert_eq!(
-            habit_drop_order(Some(10), Some(11)),
-            10,
-            "a tied gap floors to the lower bound"
+            habit_move_slots(&state, ids[1]),
+            (Some((ids[1], 0)), Some((ids[1], 3)))
         );
+        // Top row: up refuses.
+        assert_eq!(habit_move_slots(&state, ids[0]).0, None);
+        // Bottom row: down refuses.
+        assert_eq!(habit_move_slots(&state, ids[2]).1, None);
+        let _ = board;
+        state.habits.habits.clear();
+    }
+
+    /// A dense section fixture: `count` live habits, orders 0..count,
+    /// on the fixture board.
+    fn dense_habit_section(
+        count: usize,
+    ) -> (taskboard_domain::AppState, taskboard_domain::BoardId) {
+        let mut state = taskboard_domain::AppState::default();
+        let board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        for k in 0..count {
+            let habit = taskboard_domain::Habit {
+                id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+                board,
+                title: format!("habit {k}"),
+                description: String::new(),
+                target: taskboard_domain::HabitTarget::PerDay(
+                    taskboard_domain::NonZeroCount::new(1).unwrap(),
+                ),
+                order: i64::try_from(k).unwrap(),
+                anchor_time: None,
+                anchor_day: None,
+                scheduled_days: None,
+                reminder: None,
+                clocks: taskboard_domain::HabitClocks::all(DateTime::<Utc>::UNIX_EPOCH),
+                continued_from: None,
+                deleted: false,
+                by: None,
+                paused_until: None,
+            };
+            state.habits.habits.insert(habit.id, habit);
+        }
+        (state, board)
     }
 
     // -- the concentration overlay (#496): pure derivations ------------

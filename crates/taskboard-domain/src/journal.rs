@@ -493,6 +493,7 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::CreateHabit { .. } => "Create habit".into(),
         StateCommand::UpdateHabit { .. } => "Edit habit".into(),
         StateCommand::MoveHabit { .. } => "Move habit".into(),
+        StateCommand::HabitReorder { .. } => "Reorder habit".into(),
         StateCommand::LogHabit { .. } => "Log habit".into(),
         StateCommand::SkipHabit { .. } => "Skip habit".into(),
         StateCommand::UnskipHabit { .. } => "Unskip habit".into(),

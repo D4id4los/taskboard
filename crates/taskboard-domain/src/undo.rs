@@ -300,7 +300,10 @@ fn record_entry(
         // 35′–42′; three record-time dynamic rules per §6/§7) ----------
         StateCommand::LogTime { .. }
         | StateCommand::CreateHabit { .. }
-        | StateCommand::MoveHabit { .. } => journaled_pre_images(app, actions),
+        | StateCommand::MoveHabit { .. }
+        // The reorder journals every touched row's pre-image (chunk A1
+        // D1): the inverse restores the whole section, not one row.
+        | StateCommand::HabitReorder { .. } => journaled_pre_images(app, actions),
         StateCommand::AdjustTimeEntry { id, .. } => {
             // D23/§7.1: an adjust that stamps an end onto an open entry
             // is inexpressible to invert — the change mask structurally
@@ -527,6 +530,7 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         | StateCommand::StopTracking => None,
         StateCommand::UpdateHabit { habit, .. }
         | StateCommand::MoveHabit { habit, .. }
+        | StateCommand::HabitReorder { habit, .. }
         | StateCommand::LogHabit { habit }
         | StateCommand::SkipHabit { habit }
         | StateCommand::UnskipHabit { habit }
@@ -1070,6 +1074,12 @@ enum InverseClass {
     UpdateHabit,
     /// `MoveHabit`: the order clock.
     MoveHabit,
+    /// `HabitReorder` (chunk A1 D1, #1198): the section's pre-move
+    /// orders restore as one journaled inverse step — the synthesis
+    /// batches one `MoveHabit` per touched pre-image row (each stamps
+    /// its own clock). The single-pre-image `MoveHabit` shape cannot
+    /// express a multi-row renumber and stays the CLI verb's class.
+    HabitReorder,
     /// `AdjustHabitLog`: the touched window's post-write row compared
     /// as a whole (count AND clock).
     AdjustHabitLog,
@@ -1143,6 +1153,7 @@ impl JournalEntry {
             StateCommand::CreateHabit { .. } => Ok(InverseClass::CreatedHabit),
             StateCommand::UpdateHabit { .. } => Ok(InverseClass::UpdateHabit),
             StateCommand::MoveHabit { .. } => Ok(InverseClass::MoveHabit),
+            StateCommand::HabitReorder { .. } => Ok(InverseClass::HabitReorder),
             StateCommand::SkipHabit { .. } | StateCommand::UnskipHabit { .. } => {
                 Ok(InverseClass::SkipHabit)
             }
@@ -2102,6 +2113,44 @@ fn synthesize_undo(
                 habit: pre.id,
                 order: pre.order,
             }])
+        }
+        InverseClass::HabitReorder => {
+            // The section's inverse (chunk A1 D1): one `MoveHabit` per
+            // touched pre-image row, each guarded by its own order
+            // watermark — the batch restores the whole pre-move
+            // sequence or refuses typed, never a partial restore.
+            let mut batch = Vec::new();
+            for image in images {
+                let Some(pre) = (match image {
+                    PreImage::Habit {
+                        before: Some(habit),
+                        ..
+                    } => Some(habit.as_ref()),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                let entity = JournalEntity::Habit(pre.id);
+                let Some(EntityStamps::Habit(clocks)) = watermark.0.get(&entity) else {
+                    return Err(refuse(entity, UndoField::Order));
+                };
+                let Some(current) = app.habits.habits.get(&pre.id) else {
+                    return Err(refuse(entity, UndoField::Order));
+                };
+                // The pre order position comes from the pre-image
+                // entity, never from the command payload.
+                if current.clocks.order != clocks.order {
+                    return Err(refuse(entity, UndoField::Order));
+                }
+                batch.push(StateCommand::MoveHabit {
+                    habit: pre.id,
+                    order: pre.order,
+                });
+            }
+            if batch.is_empty() {
+                return Err(CommandError::NothingToUndo);
+            }
+            Ok(batch)
         }
         InverseClass::SkipHabit => {
             // The mirror-verb inverse (HF1): the mark flips via

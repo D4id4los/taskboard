@@ -1428,8 +1428,9 @@ fn us14_s2_task_move_boundary_typed_refusal() {
 
 /// US-14/AC-3 (`us14_s3_habit_pair_unchanged_on_habit_row`): the same
 /// Shift+Up stroke over a HABIT walk landing still routes the landed
-/// `MoveHabit` pair (the R-8 resolution is typed on the row kind — no
-/// habit regression).
+/// reorder pair (the R-8 resolution is typed on the row kind — no
+/// habit regression; #1198 chunk A1 D1 re-based the payload onto the
+/// `HabitReorder` gap index).
 #[test]
 fn us14_s3_habit_pair_unchanged_on_habit_row() {
     let (_fx, mut state) = fixture::journey_state();
@@ -1465,7 +1466,7 @@ fn us14_s3_habit_pair_unchanged_on_habit_row() {
         harness.handle.dispatch_action(ActionId::HabitMoveUp);
         harness.driver.advance_time(0);
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveHabit { order: 5, .. }] => {}
+            [StateCommand::HabitReorder { target: 0, .. }] => {}
             other => panic!("the habit pair routed unchanged, got {other:?}"),
         }
     });

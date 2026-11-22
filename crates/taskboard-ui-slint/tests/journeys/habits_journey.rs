@@ -448,24 +448,23 @@ fn us3_s2_the_task_complete_stroke_and_shift_up_route_the_habit_verbs() {
 
         // Shift+Up on the focused habit: the walk's landing mints
         // the reorder one-shot through the shared arithmetic —
-        // the up slot sits between the head (0) and the row's own
-        // order (10), so the floor midpoint is 5.
+        // the up slot is the target gap index above the row
+        // (#1198 chunk A1 D1: the engine resolves the orders).
         harness.handle.dispatch_action(ActionId::HabitMoveUp);
         harness.driver.advance_time(0);
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveHabit { order: 5, .. }] => {}
-            other => panic!("the up slot mints the floor midpoint, got {other:?}"),
+            [StateCommand::HabitReorder { target: 0, .. }] => {}
+            other => panic!("the up slot mints the gap above, got {other:?}"),
         }
 
-        // The menu open over the same row re-mints the pair
-        // through the SAME shared helper — the equivalence probe:
-        // the boundary records commands without reordering the
-        // fixture, so the down slot's free interval is (10, None)
-        // → 11, and the mint sites agree by construction.
+        // The menu open over the SAME row re-mints the pair through
+        // the SAME shared helper (click ≡ key); the boundary records
+        // commands without reordering the fixture, so the head row's
+        // down slot crosses the lower neighbour — index 2.
         harness
             .handle
             .window()
-            .invoke_habits_context_requested(1, 120.0, 120.0);
+            .invoke_habits_context_requested(0, 120.0, 120.0);
         harness.driver.advance_time(0);
         assert!(
             keyboard(harness).get_menu_open(),
@@ -474,8 +473,8 @@ fn us3_s2_the_task_complete_stroke_and_shift_up_route_the_habit_verbs() {
         harness.handle.dispatch_action(ActionId::HabitMoveDown);
         harness.driver.advance_time(0);
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveHabit { order: 11, .. }] => {}
-            other => panic!("the tail slot mints the appended order, got {other:?}"),
+            [StateCommand::HabitReorder { target: 2, .. }] => {}
+            other => panic!("the down slot crosses the neighbour, got {other:?}"),
         }
     });
 }
@@ -555,22 +554,23 @@ fn us4_s1_the_gap_drop_reorders_across_the_habit_list() {
         harness.driver.advance_time(0);
         let window = harness.handle.window();
 
-        // The second row drops into the head gap: the slot's free
-        // interval is (None, 0) — the floor midpoint −1.
+        // The second row drops into the head gap: the one-shot is
+        // the gap index verbatim (#1198 chunk A1 D1 — the engine
+        // resolves the orders).
         window.invoke_habits_drop_asked(1, 0);
         harness.driver.advance_time(0);
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveHabit { order: -1, .. }] => {}
-            other => panic!("the head gap mints the leading order, got {other:?}"),
+            [StateCommand::HabitReorder { target: 0, .. }] => {}
+            other => panic!("the head gap mints the gap index, got {other:?}"),
         }
 
-        // A gap past the end clamps to the append slot: the row
-        // source's tail order + 1.
+        // A gap past the end is the append slot — the engine clamps;
+        // the UI mints the pointer's gap verbatim.
         window.invoke_habits_drop_asked(0, 99);
         harness.driver.advance_time(0);
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveHabit { order: 11, .. }] => {}
-            other => panic!("the over-run gap clamps to the append slot, got {other:?}"),
+            [StateCommand::HabitReorder { target: 99, .. }] => {}
+            other => panic!("the over-run gap rides verbatim, got {other:?}"),
         }
 
         // The kiosk pointer seam absorbs silently (the D5 gate).
@@ -1389,5 +1389,140 @@ fn us6_s2_override_save_routes_the_exact_command_and_s3_clears() {
             other => panic!("the clear leg routes the sparse changeset, got {other:?}"),
         }
         assert_eq!(window.get_current_view(), View::Board);
+    });
+}
+
+// ---- Chunk A1 (#1198, #1200): the reorder lands through the engine,
+// the click seats the walk cursor. ----
+
+/// A dense three-row section fixture (the `append_order_after` shape):
+/// ids and titles returned in canonical order so the journeys assert
+/// the id sequence, never row text.
+fn dense_three_habits(
+    state: &mut AppState,
+    board: taskboard_domain::BoardId,
+) -> Vec<(taskboard_domain::HabitId, &'static str)> {
+    let mut ids = Vec::new();
+    for (order, title) in [(0i64, "alpha"), (1, "bravo"), (2, "charlie")] {
+        state_habit_at(state, board, order, title);
+    }
+    let mut rows: Vec<_> = state
+        .habits
+        .habits
+        .values()
+        .map(|h| (h.order, h.id))
+        .collect();
+    rows.sort();
+    for (order, id) in rows {
+        let title = match order {
+            0 => "alpha",
+            1 => "bravo",
+            _ => "charlie",
+        };
+        ids.push((id, title));
+    }
+    ids
+}
+
+/// The section's rendered id sequence (the habits model's row order
+/// IS the canonical `(order, id)` sequence; titles are the rows'
+/// addresses, never a text oracle).
+fn rendered_section(harness: &Harness) -> Vec<&'static str> {
+    let model = harness.handle.window().get_habits_model();
+    (0..model.row_count())
+        .map(|i| {
+            let title = model
+                .row_data(i)
+                .expect("row")
+                .card
+                .title
+                .as_str()
+                .to_owned();
+            match title.as_str() {
+                "alpha" => "alpha",
+                "bravo" => "bravo",
+                "charlie" => "charlie",
+                other => panic!("unexpected row address {other}"),
+            }
+        })
+        .collect()
+}
+
+/// A1 (`a1_drop_moves_the_row_through_the_engine`, #1198): the drop
+/// seam's gap index routes `HabitReorder`, the engine step renumbers
+/// the section, and the refreshed model renders the moved sequence
+/// with dense orders.
+#[test]
+fn a1_drop_moves_the_row_through_the_engine() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let ids = dense_three_habits(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        assert_eq!(rendered_section(harness), vec!["alpha", "bravo", "charlie"]);
+
+        // The middle row drops into the head gap.
+        window.invoke_habits_drop_asked(1, 0);
+        harness.driver.advance_time(0);
+        let bravo = ids[1].0;
+        match harness.engine.drain().as_slice() {
+            [StateCommand::HabitReorder { habit, target: 0 }] => assert_eq!(*habit, bravo),
+            other => panic!("the drop routed the engine reorder, got {other:?}"),
+        }
+
+        // The engine step lands and the refresh renders the move.
+        harness.engine.settle(&harness.handle);
+        harness.driver.advance_time(0);
+        assert_eq!(rendered_section(harness), vec!["bravo", "alpha", "charlie"]);
+        let snapshot = harness.engine.snapshot();
+        let mut orders: Vec<_> = snapshot
+            .habits
+            .habits
+            .values()
+            .filter(|h| h.is_live() && h.board == board)
+            .map(|h| h.order)
+            .collect();
+        orders.sort_unstable();
+        assert_eq!(orders, vec![0, 1, 2], "the settled section stays dense");
+    });
+}
+
+/// A1 (`a1_menu_move_moves_the_row`, #1198): the context menu's
+/// Move-up row routes the reorder, the section swaps, and the undo
+/// line restores the pre-move sequence.
+#[test]
+fn a1_menu_move_moves_the_row() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    dense_three_habits(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+
+        // Open the menu over the middle row and take its Move-up row.
+        window.invoke_habits_context_requested(1, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        assert!(keyboard(harness).get_menu_open(), "the habit menu opened");
+        harness.handle.dispatch_action(ActionId::HabitMoveUp);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::HabitReorder { target: 0, .. }] => {}
+            other => panic!("the menu row routed the reorder, got {other:?}"),
+        }
+
+        // The engine step lands; undo restores the pre-move section.
+        harness.engine.settle(&harness.handle);
+        harness.driver.advance_time(0);
+        assert_eq!(rendered_section(harness), vec!["bravo", "alpha", "charlie"]);
+        harness.handle.dispatch_action(ActionId::AppUndo);
+        harness.driver.advance_time(0);
+        harness.engine.settle(&harness.handle);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            rendered_section(harness),
+            vec!["alpha", "bravo", "charlie"],
+            "the undo restored the pre-move sequence"
+        );
     });
 }
