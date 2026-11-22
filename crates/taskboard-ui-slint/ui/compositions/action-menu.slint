@@ -327,24 +327,24 @@ export component UndoBranchPicker inherits Rectangle {
     // first) and the undo-step rows (the `recent` ancestors).
     in property <[UndoPickerRowModel]> branch-rows;
     in property <[UndoPickerRowModel]> target-rows;
-    // slint: undo-branches-open — the mount ack (W-1); the adapter
+    // slint: undo_branches_open — the mount ack (W-1); the adapter
     // syncs the models, nothing dispatches on open.
-    callback undo-branches-open();
-    // slint: undo-line-undo / undo-line-redo — the plain reflex rows
+    callback undo_branches_open();
+    // slint: undo_line_undo / undo_line_redo — the plain reflex rows
     // (US-3: the v1 composes; click ≡ key, the same AppUndo/AppRedo
     // route the keyboard uses).
-    callback undo-line-undo();
-    callback undo-line-redo();
-    // slint: undo-target-picked / undo-branch-picked — the row seams
+    callback undo_line_undo();
+    callback undo_line_redo();
+    // slint: undo_target_picked / undo_branch_picked — the row seams
     // (W-3: UndoTo / W-2: RedoTo); the payload id is the addressing.
-    callback undo-target-picked(string);
-    callback undo-branch-picked(string);
-    // slint: undo-picker-dismissed — the outside click (AC-4: closes
+    callback undo_target_picked(string);
+    callback undo_branch_picked(string);
+    // slint: undo_picker_dismissed — the outside click (AC-4: closes
     // with nothing dispatched).
-    callback undo-picker-dismissed();
+    callback undo_picker_dismissed();
 
     background: transparent;
-    init => { root.undo-branches-open(); }
+    init => { root.undo_branches_open(); }
 
     width: 360px * Theme.base-scale;
 
@@ -361,7 +361,7 @@ export component UndoBranchPicker inherits Rectangle {
                 hint-keys: [];
                 accessible-role: AccessibleRole.button;
                 accessible-label: "Undo";
-                invoked => { root.undo-line-undo(); }
+                invoked => { root.undo_line_undo(); }
             }
             MenuRow {
                 label: "Redo";
@@ -369,7 +369,7 @@ export component UndoBranchPicker inherits Rectangle {
                 hint-keys: [];
                 accessible-role: AccessibleRole.button;
                 accessible-label: "Redo";
-                invoked => { root.undo-line-redo(); }
+                invoked => { root.undo_line_redo(); }
             }
 
             // The undo-step rows (US-2: jump several steps back).
@@ -384,7 +384,7 @@ export component UndoBranchPicker inherits Rectangle {
                 hint-keys: [];
                 accessible-role: AccessibleRole.button;
                 accessible-label: row.label;
-                invoked => { root.undo-target-picked(row.id); }
+                invoked => { root.undo_target_picked(row.id); }
             }
 
             // The sibling branches (US-1: switch back to an abandoned
@@ -400,7 +400,7 @@ export component UndoBranchPicker inherits Rectangle {
                 hint-keys: [];
                 accessible-role: AccessibleRole.button;
                 accessible-label: row.label;
-                invoked => { root.undo-branch-picked(row.id); }
+                invoked => { root.undo_branch_picked(row.id); }
             }
 
             // AC-3: no abandoned branch — the section renders absent

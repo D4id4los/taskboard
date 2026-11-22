@@ -247,12 +247,12 @@ stateDiagram-v2
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | ui/compositions/action-menu.slint | MenuShell picker mount (new composition) | `undo-branches-open` | `adapter.rs::install_undo_seams` (new `install_seam!` site or extension of the undo install block) | `ActionId::AppUndoBranches` | — (mount only; pure navigation — no command dispatch on open) | — (no list row) | US-1/S1, US-1/S4 | crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s1_picker_mounts_with_sections |
-| W-2 | ui/compositions/action-menu.slint | Picker sibling row (per `branch_children` entry) | `undo-branch-picked` | `adapter.rs::undo_branch_picked` | — (row-carried `JournalId`, not a global action) | `StateCommand::RedoTo { target }` | `ItemAddr` kind: journal-entry row (the payload id IS the addressing — the UI is id-less over elements, not over journal nodes) | US-1/S2 | crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s2_sibling_commit_redo_to |
-| W-3 | ui/compositions/action-menu.slint | Picker undo-step row (per `recent` ancestor) | `undo-target-picked` | `adapter.rs::undo_target_picked` | — (row-carried `JournalId`) | `StateCommand::UndoTo { target }` | journal-entry row (same kind as W-2) | US-2/S1 | crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us2_s1_ancestor_commit_undo_to |
-| W-4 | (none — domain projection) | (none) | (none) | `UndoView::derive` widening: `branch_children: Vec<UndoLabel>` (bounded) | — | — (derived projection, no command) | — | US-1/S1, US-1/S3 | crates/taskboard-domain/src/journal/tests.rs::us1_ac1_branch_children_derive_with_labels |
-| W-5 | (none — domain) | (none) | (none) | `plan_undo_to` / `plan_redo_to` (wrapping the existing planners in a bounded walk) | — | `StateCommand::UndoTo`, `StateCommand::RedoTo` | — | US-1/S2, US-2/S1, US-2/AC-2 | crates/taskboard-domain/src/undo/tests.rs::us2_ac2_stale_target_refuses_typed |
-| W-6 | ui adapter (existing toast lane) | existing outcome notice | existing handler | existing `arm_outcome_notice` lane | — | — (receipt rendering, unchanged lane) | — | US-1/S2 (failure path), US-2/S1 (failure path) | crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s2b_stale_target_toasts_typed_refusal |
+| W-1 | ui/compositions/action-menu.slint | MenuShell picker mount (new composition) | undo_branches_open | adapter.rs::install_undo_seams | ActionId::AppUndoBranches | — | — (mount only; pure navigation — no command dispatch on open, the plan's W-1 row) | US-1/S1, US-1/S4, US-3/S1 | crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s1_picker_mounts_with_sections, crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s1_kiosk_picker_entry_renders_absent, crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s4_escape_closes_without_dispatch, crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us3_s1_plain_rows_route_the_unchanged_v1_verbs |
+| W-2 | ui/compositions/action-menu.slint | Picker sibling row (per branch_children entry) | undo_branch_picked | adapter.rs::install_undo_seams | — | StateCommand::RedoTo | ItemAddr kind: journal-entry row (the payload id IS the addressing — the UI is id-less over elements, not over journal nodes) | US-1/S2, US-1/S3 | crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s2_sibling_commit_redo_to, crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s2b_stale_target_toasts_typed_refusal, crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s3_post_switch_state_reflects_branch |
+| W-3 | ui/compositions/action-menu.slint | Picker undo-step row (per recent ancestor) | undo_target_picked | adapter.rs::install_undo_seams | — | StateCommand::UndoTo | journal-entry row (same kind as W-2) | US-2/S1 | crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us2_s1_ancestor_commit_undo_to |
+| W-4 | (none — domain projection) | (none) | — | journal.rs UndoView::derive widening (branch_children: Vec UndoLabel, bounded) | — | — | — (derived projection, no command; US-1/S1 and US-1/S3's row source) | US-1/S1, US-1/S3 | crates/taskboard-domain/src/journal/tests.rs::us1_ac1_branch_children_derive_with_labels, crates/taskboard-domain/src/journal/tests.rs::us1_ac3_branch_children_empty_without_fork |
+| W-5 | (none — domain) | (none) | — | undo.rs plan_undo_to / plan_redo_to (wrapping the existing planners in a bounded walk) | — | StateCommand::UndoTo; StateCommand::RedoTo | — | US-1/S2, US-2/S1, US-2/AC-2 | crates/taskboard-domain/src/undo/tests.rs::us2_ac2_stale_target_refuses_typed, crates/taskboard-domain/src/undo/tests.rs::us2_ac1_undo_to_lands_head_exactly_on_target, crates/taskboard-domain/src/undo/tests.rs::us3_ac1_redo_greatest_child_unchanged_with_siblings, crates/taskboard-domain/src/undo/tests.rs::us1_s2b_walk_stops_at_unreachable_target, crates/taskboard-domain/src/undo/tests.rs::us1_s2_redo_to_takes_the_chosen_sibling_branch |
+| W-6 | ui adapter (existing toast lane) | existing outcome notice | — | adapter.rs::arm_outcome_notice (the existing handler; no new callback — the UF2 refusals ride the unchanged lane) | — | — | — (receipt rendering, unchanged lane; US-1/S2 and US-2/S1's failure paths) | US-1/S2 | crates/taskboard-ui-slint/tests/journeys/undo_ui_branch_picker_journeys.rs::us1_s2b_stale_target_toasts_typed_refusal |
 
 ## 7. Command-contract delta
 
@@ -292,6 +292,10 @@ stateDiagram-v2
 - **Kiosk gates**: the picker entry renders absent on kiosk (R-2) —
   pinned by the composition probe asserting the affordance's
   platform-qualified absence (structural, not pixel).
+- **Bound-test nominations** (the #768 grammar, the descriptively
+  named evidence the chunks' fold tests carry):
+  bound-test: US-2/S2 -> undo/tests.rs::us2_ac1_undo_to_lands_head_exactly_on_target
+  bound-test: US-3/S2 -> undo/tests.rs::us3_ac1_redo_greatest_child_unchanged_with_siblings
 - **Manual**: the label semantics of sibling rows (does "Move task"
   with its task name identify the branch well enough?) — judged at the
   stage-3 walkthrough per the recognition-over-recall doctrine; the
@@ -310,3 +314,19 @@ stateDiagram-v2
 - [ ] Non-goals filed as backlog issues: N2 (deep-history browsing),
       N3 (CLI parity for `UndoTo`/`RedoTo`) — numbers recorded on
       issue #353
+
+## 10. Erratum — gate-grammar conformance (2026-11-22, stage 2)
+
+Mechanical amendments only, no semantic change (the 28d35937
+precedent): the §6 wiring cells normalized to the parser's grammar —
+the snake callback spellings the slint source, the adapter
+`install_seam!` sites and `seam_inventory.rs` agree on (UF2's seams
+landed snake-first); the Commands cells that name an absence reduced
+to the bare `—` (the OP1/OP2 erratum's rule — the prose moved to the
+Row-addressing cell); the Test cells carry this chunk's full
+nomination set, including the kiosk-absence probe and the fence
+journey the §8 verification list already named. W-6's callback cell
+names the existing handler (`arm_outcome_notice`) instead of the prose
+"existing handler". The W-5 test nominations gained the walk tests'
+exact names (us2_ac1, us1_s2b, us1_s2, us3_ac1) — the §8 catalogue's
+names, verbatim.
