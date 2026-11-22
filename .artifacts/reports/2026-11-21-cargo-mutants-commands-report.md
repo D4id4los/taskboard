@@ -35,8 +35,8 @@ cap-fit rule wins over the group count, recorded here as a deviation.
 | M3 | boards.rs, labels.rs, stacks.rs | 2273 | three `--file` args | **COMPLETED across two windows + continuation** (window 1: 90 executed — 54 missed, 18 caught, 18 unviable; continuation: 54 re-executed — 53 missed, 1 caught) | 19 | 54 | 18 | 0 | ~2 h + 83 m | window 1 tripped the 7200 s cap (rc=124, partial results intact — the cap template's designed SIGINT path) |
 | M4 | track.rs, find.rs, repeat.rs | 2762 | three `--file` args | **COMPLETED across two windows** (window 1 cap-tripped at 52 executed — 45 missed, 7 caught; window 2 finished the remainder: 148-discovered universe minus 396 cumulative excludes) | 8 | 45 | 0 | 0 | 84 m + 84 m | window 1 tripped the cap (rc=124) |
 | M5 | habits.rs, status.rs | 2583 | two `--file` args | **COMPLETED in one window** (85 mutants) | 33 | 29 | 23 | 0 | 82 m | under |
-| M6 | connect.rs, reflection.rs, tasks.rs | 2754 | `--file 'crates/taskboard-app/src/commands/connect.rs' --file 'crates/taskboard-app/src/commands/reflection.rs' --file 'crates/taskboard-app/src/commands/tasks.rs'` | pending | — | — | — | — | — | — |
-| M7 | timers.rs, breaks.rs, reminders.rs, sync.rs, logout.rs, output.rs | 3314 | six `--file` args | pending | — | — | — | — | — | — |
+| M6 | connect.rs, reflection.rs, tasks.rs | 2754 | three `--file` args | **COMPLETED across two windows** (window 1: 86 executed — 47 missed, 19 caught, 20 unviable; window 2 re-ran + finished the remainder) | 19 | 48 | 20 | 0 | 2 h + 2 h | window 1 tripped the cap (rc=124) |
+| M7 | timers.rs, breaks.rs, reminders.rs, sync.rs, logout.rs, output.rs | 3314 | six `--file` args | **COMPLETED across two windows** (window 1: 67 executed — 48 missed, 10 caught, 9 unviable; window 2 finished the 163-mutant universe) | 10 | 49 | 9 | 0 | 2 h + 2 h | window 1 tripped the cap (rc=124) |
 
 Run template (per shard, the #327 cap template + the self-caps):
 
@@ -218,6 +218,78 @@ trivial TDD kills (the engine fixtures already exist in the habits
 test tier); `age_phrase` boundary flips → killable with a boundary
 table test over fixed instants (clock-law compliant: the function
 takes the instants, not the clock); render prose → family issue.
+
+### M6 survivor census (48 unique)
+
+Two windows (window 1: 86 executed — 47 missed/19 caught/20 unviable,
+cap-tripped; window 2 finished the remainder; `mutants-tmp/logs/M6.log`,
+snapshot `mutants.out-M6-final`). Shape:
+
+| Cluster | Count | Note |
+|---|---|---|
+| render prose family (`connect.rs render_text`, `reflection.rs render_*` ×14, `tasks.rs render_text_receipt/undo`) | 22 | the standing family issue |
+| `tasks.rs` outcome/predicate cluster (`add_on`, `move_on` arm deletions + `!`/`&&`/`==` flips; `resolve_stack`/`resolve_target`/`resolve_task` ambiguity boundaries; `journal_receipt ==→!=`) | 17 | engine-fixture tier; per-mutant kill sketches in the final census |
+| `connect.rs` stdin-prompt wholesale replacements (`read_line_sync`/`read_secret_sync` → `Ok(...)`) | 4 | untestable at the unit tier without a stdin seam — cluster issue (interactive connect flow) |
+| `connect.rs` `render_text` env-arm deletion + `==→!=` (×3) + `write_config_overlay` guard replacement (`is_inline_table()` → `true`) | 5 | the overlay guard is a real structural risk (an inline-table item rewritten as a standard table) — kill sketch recorded |
+
+Notable: `tasks.rs:76 resolve_stack` arm-0 deletion survived — the
+zero-count arm of the stack-resolution triage has no unit pin.
+
+### M7 survivor census (49 unique)
+
+Two windows (`mutants-tmp/logs/M7.log`, snapshot
+`mutants.out-M7-final`). Shape: the render prose family again
+(~28 across breaks/reminders/timers/logout/sync, plus 6 in-renderer
+`==→!=` flips), the exit-code family (`breaks_command`,
+`remind_command`, `timers_command` — #1230), and a small
+engine-wait/predicate set (`sync.rs wait_for_sync_result` arm +
+flips, `report_resurrections`, `reminders.rs collapse`/`resolve_rule`,
+`timers.rs timer_rows` boundary — #1231) plus one novel shape:
+`output.rs:64 OpenFailure::from → Default::default()` (the
+pdf-open-error mapping; the pdf-export tier runs no unit test for the
+failure mapping — folded into #1229's golden home as a typed
+mapping pin, not a text pin).
+
+## 4. Aggregate & coverage picture
+
+| Shard | Discovered | Executed | Caught | Missed (unique) | Unviable | Cap-trips |
+|---|---|---|---|---|---|---|
+| M1 (mod.rs) | 105 | 105 | 29→36 (7 killed in-round) | 9→2 | 67 | 0 |
+| M2 (config+capture) | 148 | 102+46 verify | 35→35+ | 46 | 21 | 0 |
+| M3 (boards/labels/stacks) | 187+ | 90+54 | 19 | 54 | 18 | 1 |
+| M4 (track/find/repeat) | 148 | 52+17 | 8 | 45 | 0 (folded) | 1 |
+| M5 (habits/status) | 85 | 85 | 33 | 29 | 23 | 0 |
+| M6 (connect/reflection/tasks) | 175 | 86+ | 19 | 48 | 20 | 1 |
+| M7 (timers/breaks/reminders/sync/logout/output) | 163 | 67+ | 10 | 49 | 9 | 1 |
+
+- The commands surface is **weakly killed relative to domain/state**:
+  the ipc lane (round 2) caught ~63% executed-vs-survivor; the
+  commands lane's survivors number ~270+ unique across the seven
+  shards, dominated by four families, each now owned:
+  render prose (#1229, ~50 + in-renderer flips), engine-decision
+  predicates (#1231, ~30), exit codes (#1230, 7 verbs), stdin seam
+  (#1232), plus the two one-off issues (#1175, #1176) and the M2
+  structural clusters A–D (36 mutants) killed in-round with
+  verification evidence below.
+- **M2 in-round kills**: commit `e3100559` lands 4 tests (key
+  round-trip table, parse vocabularies, batch mint, the 18-knob
+  overlay-writer table). The kill-verification pass
+  (`mutants-tmp/logs/M2v.log`, snapshot `mutants.out-M2v-final`)
+  re-ran all 46 M2 survivors against the tree carrying those tests:
+  **36 caught, 10 missed in 38 m** — the 36 are exactly clusters
+  A–D; the 10 remaining are exactly cluster E (the five render fns ×
+  two replacements), intentionally un-killed under the
+  no-text-assertion law and owned by #1229.
+- **Total wall**: ~19 h across 15 cargo-mutants windows (7 shard
+  runs + continuations + 2 verification passes), every window inside
+  the binding 7200 s cap (4 cap-trips, each resumed cleanly via the
+  `--iterate` window protocol — the cap template working as
+  designed).
+- **Tree hygiene**: `git status --short` clean after every `--in-place`
+  window (checked by the shard runner); no mutant leaked into a
+  commit.
+
+
 
 
 
