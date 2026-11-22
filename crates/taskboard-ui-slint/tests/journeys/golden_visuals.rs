@@ -1123,3 +1123,670 @@ fn the_review_ledger_golden_holds() {
         "goldens regenerated — review the PNG diff before landing"
     );
 }
+
+// -- golden coverage wave (r4 S7): the seven gap goldens ------------------
+//
+// One golden per zero-coverage surface at the doc-publishable sweet
+// spot (scale 1.0, 1000×900) over the enriched fixture
+// (`fixture::golden_state_enriched_at` — the wave plan's superset
+// decision: `golden_state_at` stays byte-stable for the 27). Every
+// wall-derived caption rides the frozen `UiSettings::clock` and the
+// fixture's pinned/midnight-aligned stamps; every overlay open asserts
+// a typed precondition (the mount's view/state field) before the
+// renderer-presence snapshot.
+
+use slint::ComponentHandle as _;
+use slint::Model as _;
+use taskboard_domain::Color;
+use taskboard_ui_slint::View;
+use taskboard_ui_slint::actions::ActionId;
+use taskboard_ui_slint::keymap::Stroke;
+
+/// The gap goldens' shared path shape: `<surface>-1.0-1000.png`.
+fn gap_golden_path(surface: &str) -> PathBuf {
+    PathBuf::from(format!(
+        "{}/tests/goldens/{surface}-1.0-1000.png",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+/// The enriched fixture mounted at the wave's capture settings.
+fn enriched_state() -> taskboard_domain::AppState {
+    fixture::golden_state_enriched_at(fixture::PINNED_NOW).1
+}
+
+/// D2 — the quick-capture overlay open over the enriched board: the
+/// draft field, the commit affordance, and the scrim over the cards.
+#[test]
+fn the_capture_overlay_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::CaptureQuick);
+                    driver.advance_time(0);
+                    assert!(
+                        handle.window().get_capture_open(),
+                        "typed precondition: the capture overlay is open"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "capture overlay open over the board",
+                    scale: 1.0,
+                },
+                1000,
+                &gap_golden_path("capture-overlay"),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// D4 — the two-tier action menu: the app menu open with a group's
+/// page invoked (the fly-out beside the root panel). The context quick
+/// bar's pixels stay with the action-menu-bar probe (the object menu
+/// opens pointer-only; the two tiers are this capture's subject).
+#[test]
+fn the_action_menu_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::AppMenu);
+                    driver.advance_time(0);
+                    // Walk the cursor to the first submenu-parent row
+                    // (the journeys' two-tier idiom), then invoke it.
+                    let entries = handle
+                        .window()
+                        .global::<taskboard_ui_slint::KeyboardState>()
+                        .get_menu_entries();
+                    let parent = (0..entries.row_count())
+                        .find(|i| entries.row_data(*i).is_some_and(|row| row.submenu))
+                        .expect("the root page carries a submenu parent");
+                    for _ in 0..parent {
+                        handle.dispatch_action(ActionId::MenuNext);
+                    }
+                    handle.dispatch_action(ActionId::MenuInvoke);
+                    driver.advance_time(0);
+                    let keyboard = handle
+                        .window()
+                        .global::<taskboard_ui_slint::KeyboardState>();
+                    assert!(
+                        keyboard.get_menu_open() && keyboard.get_menu_active_group() >= 0,
+                        "typed precondition: the menu's second tier is open"
+                    );
+                    assert!(
+                        keyboard.get_menu_submenu_entries().row_count() > 0,
+                        "typed precondition: the submenu model is mounted"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "action menu; root panel + invoked group page",
+                    scale: 1.0,
+                },
+                1000,
+                &gap_golden_path("action-menu"),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// D9 — the plan-next-day view over the enriched fixture: the pool
+/// and the placement boxes for tomorrow.
+#[test]
+fn the_plan_next_day_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::ViewPlanNextDay);
+                    driver.advance_time(0);
+                    assert_eq!(
+                        handle.window().get_current_view(),
+                        View::PlanNextDay,
+                        "typed precondition: the plan view is mounted"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "plan-next-day view; pool + placement boxes",
+                    scale: 1.0,
+                },
+                1000,
+                &gap_golden_path("plan-next-day"),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// D8 — the review-walk overlay: the deliberate-due variant the walk
+/// journeys use (the reflection pin cleared, an Inbox board with
+/// triage rows, `task0` scheduled inside yesterday's window so the
+/// Day walk carries a row), walk open over the board. Phrase
+/// stability: the carry stamp is midnight/calendar-aligned off
+/// `fixture::PINNED_NOW`, the pass's clock frozen at the same instant.
+fn walk_golden_state() -> taskboard_domain::AppState {
+    let (fixture, mut state) = fixture::golden_state_at(fixture::PINNED_NOW);
+    // The surfacing card cleared (the pin law's deliberate due shape).
+    state.reflection.entries.clear();
+    let inbox_board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(0x1900));
+    let mut inbox = taskboard_domain::Board {
+        id: inbox_board,
+        remote: None,
+        title: "Inbox".to_owned(),
+        color: Color::new(""),
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::BoardClocks {
+            title: taskboard_domain::BoardClocks::epoch(),
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
+        remote_seen: None,
+    };
+    inbox.id = inbox_board;
+    state.boards.insert(inbox_board, inbox);
+    let inbox_stack = taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(0x1901));
+    state.stacks.insert(
+        inbox_stack,
+        taskboard_domain::Stack {
+            id: inbox_stack,
+            remote: None,
+            board: inbox_board,
+            title: "Inbox".to_owned(),
+            order: 0,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::StackClocks {
+                title: taskboard_domain::BoardClocks::epoch(),
+                order: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::StackAuthors::default(),
+            remote_seen: None,
+        },
+    );
+    for (i, title) in ["triage-me", "triage-me-too"].into_iter().enumerate() {
+        let id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(
+            u128::try_from(0x1902 + i).unwrap_or(0),
+        ));
+        let mut triage = taskboard_domain::Task {
+            id,
+            remote: None,
+            title: title.to_owned(),
+            description: String::new(),
+            duedate: None,
+            scheduled: None,
+            done: None,
+            stack: inbox_stack,
+            order: 0,
+            label_memberships: std::collections::BTreeMap::new(),
+            effort: None,
+            importance: None,
+            urgency: None,
+            recur: None,
+            kind: taskboard_domain::entities::TaskKind::Standard,
+            archived: false,
+            deleted: false,
+            clocks: taskboard_domain::TaskClocks {
+                title: taskboard_domain::BoardClocks::epoch(),
+                description: taskboard_domain::BoardClocks::epoch(),
+                duedate: taskboard_domain::BoardClocks::epoch(),
+                scheduled: taskboard_domain::BoardClocks::epoch(),
+                done: taskboard_domain::BoardClocks::epoch(),
+                position: taskboard_domain::BoardClocks::epoch(),
+                effort: taskboard_domain::BoardClocks::epoch(),
+                importance: taskboard_domain::BoardClocks::epoch(),
+                urgency: taskboard_domain::BoardClocks::epoch(),
+                recur: taskboard_domain::BoardClocks::epoch(),
+                kind: taskboard_domain::BoardClocks::epoch(),
+                archived: taskboard_domain::BoardClocks::epoch(),
+                deleted: taskboard_domain::BoardClocks::epoch(),
+            },
+            authors: taskboard_domain::entities::TaskAuthors::default(),
+            remote_seen: None,
+            remote_baseline: None,
+        };
+        // The carry anchor: task0 scheduled inside yesterday's window
+        // (the walk journeys' midnight-aligned convention).
+        if i == 0 {
+            let calendar = fixture::harness_calendar();
+            let yesterday = calendar
+                .today(fixture::PINNED_NOW)
+                .pred_opt()
+                .expect("yesterday");
+            triage.scheduled = Some(calendar.instant(
+                yesterday,
+                chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
+            ));
+        }
+        state.tasks.insert(id, triage);
+    }
+    let _ = fixture;
+    state
+}
+
+/// D8's capture: the walk overlay (guidance + inbox stage) over the
+/// deliberate-due fixture.
+#[test]
+fn the_review_walk_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(walk_golden_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::ReviewOpen);
+                    driver.advance_time(0);
+                    assert!(
+                        handle.window().get_walk_model().open,
+                        "typed precondition: the review walk is open"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_at + cleared pin + Inbox board + carry-scheduled task0",
+                    state: "review walk overlay; guidance + inbox stage rows",
+                    scale: 1.0,
+                },
+                1000,
+                &gap_golden_path("review-walk"),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// D3 — the search palette with results: the palette open in insert
+/// mode, the query typed through the same `press_stroke` path the
+/// journeys use, the roster hits mounted. The fixture constructor and
+/// the mount run in this test's own body (the typing seam needs the
+/// bound driver before the snapshot).
+#[test]
+fn the_search_palette_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                scale_settings(1.0),
+                detached_health(),
+                None,
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            handle.dispatch_action(ActionId::PaletteSearch);
+            driver.advance_time(0);
+            assert!(
+                handle.window().get_palette_open(),
+                "typed precondition: the palette is open"
+            );
+            for ch in "task".chars() {
+                driver.press_stroke(Stroke {
+                    key: ch,
+                    ctrl: false,
+                    alt: false,
+                    shift: false,
+                    meta: false,
+                });
+            }
+            driver.advance_time(0);
+            assert!(
+                handle.window().get_palette_model().row_count() > 0,
+                "typed precondition: the query hits the roster"
+            );
+            driver.set_window_size(1000, HEIGHT);
+            let snapshot = driver.snapshot();
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (1000, HEIGHT),
+                "renderer-presence contract at the palette golden"
+            );
+            let path = gap_golden_path("search-palette");
+            if regen {
+                let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+                std::fs::write(&path, bytes).expect("writes");
+                manifest_record(
+                    &path,
+                    &GoldenMeta {
+                        fixture: "golden_state_enriched_at(PINNED_NOW)",
+                        state: "search palette open; typed query with roster hits",
+                        scale: 1.0,
+                    },
+                    1000,
+                    HEIGHT,
+                );
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, &snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// D1 — the settings view, populated: the enriched fixture's two
+/// boards in the roster, a bound Deck connection card whose listing
+/// renders one bound row (the Disconnect stop) and one free row (the
+/// picker + Create stops). The request lane stays alive: the mount's
+/// auto-listings and the refresh are answered through it (the
+/// component journeys' `settings_fixture` shape).
+#[allow(clippy::too_many_lines)] // the request/reply dance is the capture's body
+#[test]
+fn the_settings_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let (_fx, mut state) = fixture::golden_state_enriched_at(fixture::PINNED_NOW);
+            let bound = state
+                .boards
+                .values_mut()
+                .find(|board| !board.deleted && !board.archived)
+                .expect("a live board");
+            bound.remote = Some(taskboard_domain::RemoteBoardBinding {
+                board: taskboard_domain::RemoteBoardId::deck(900),
+                connector: taskboard_domain::ConnectorId::from("nextcloud"),
+            });
+            let state = Arc::new(ArcSwap::from_pointee(state));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(16);
+            let settings = UiSettings {
+                clock: Some(fixture::PINNED_NOW),
+                connectors: ["nextcloud", "legacy"]
+                    .into_iter()
+                    .map(|name| taskboard_ui_slint::requests::ConnectorInfo {
+                        name: name.into(),
+                        server_url: format!("https://{name}.example"),
+                        username: "alice".into(),
+                        backend: taskboard_ui_slint::requests::ConnectorBackend::Nextcloud,
+                    })
+                    .collect(),
+                ..UiSettings::default()
+            };
+            let handle = taskboard_ui_slint::mount(
+                Arc::clone(&state),
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                settings,
+                detached_health(),
+                None,
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            // The mount's auto-listings: answered empty, lane drained.
+            while let Ok(request) = requests_rx.try_recv() {
+                let taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. } =
+                    request
+                else {
+                    panic!("the mount routed only auto-lists");
+                };
+                reply.send(Ok(Vec::new())).expect("the reply lane is alive");
+            }
+            handle.drain_auto_listings();
+            handle.dispatch_action(ActionId::AppSettings);
+            driver.advance_time(0);
+            assert_eq!(
+                handle.window().get_current_view(),
+                View::Settings,
+                "typed precondition: the settings view is mounted"
+            );
+            // The Deck connector's refresh, answered with one bound and
+            // one free remote row (the connection card's populated state).
+            let items = handle
+                .window()
+                .global::<taskboard_ui_slint::SettingsModel>()
+                .get_connection_items();
+            let deck = (0..items.row_count())
+                .find(|&i| {
+                    items.row_data(i).is_some_and(|item| {
+                        item.kind == taskboard_ui_slint::ConnectionItemKind::Deck
+                            && item.title == "nextcloud"
+                    })
+                })
+                .expect("the connector's Deck row renders");
+            handle
+                .window()
+                .invoke_settings_refresh_clicked(i32::try_from(deck).expect("the row index fits"));
+            let Ok(taskboard_ui_slint::requests::UiRequest::ListRemoteBoards { reply, .. }) =
+                requests_rx.try_recv()
+            else {
+                panic!("the refresh routed a listing");
+            };
+            let rows = [("server board", 900_u64)]
+                .into_iter()
+                .map(|(title, id)| taskboard_ui_slint::requests::RemoteBoardRow {
+                    remote_id: taskboard_domain::RemoteBoardId::deck(id),
+                    title: title.to_owned(),
+                })
+                .collect();
+            reply.send(Ok(rows)).expect("the reply lane is alive");
+            handle.drain_setting_replies();
+            driver.advance_time(0);
+            driver.set_window_size(1000, HEIGHT);
+            let snapshot = driver.snapshot();
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (1000, HEIGHT),
+                "renderer-presence contract at the settings golden"
+            );
+            let path = gap_golden_path("settings");
+            if regen {
+                let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+                std::fs::write(&path, bytes).expect("writes");
+                manifest_record(
+                    &path,
+                    &GoldenMeta {
+                        fixture: "golden_state_enriched_at + bound Deck connection",
+                        state: "settings view; connection cards + board roster rows",
+                        scale: 1.0,
+                    },
+                    1000,
+                    HEIGHT,
+                );
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, &snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// D10 — the alarm window with awaiting rows: the lazily mounted
+/// second window, built directly over the enriched fixture + one
+/// delivered alarm (the app window mounts first only to register the
+/// bundled fonts — the same registration the pass relies on). The row
+/// phrases derive from the pinned render clock (`notification_phrase`
+/// against `fixture::PINNED_NOW`), so the elapsed captions are
+/// byte-stable by construction.
+#[test]
+fn the_alarm_window_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let mut state = enriched_state();
+            let fired = fixture::PINNED_NOW - chrono::TimeDelta::try_minutes(30).unwrap();
+            // The Alarm insistence rung: the alarm window's rows are
+            // the alarm-insistent awaiting set (the presentation
+            // filter), so the fixture mints through the rung variant.
+            let alarm = fixture::add_alarm_with_rung(
+                &mut state,
+                "tea is ready",
+                fired,
+                taskboard_domain::Insistence::Alarm,
+            );
+            fixture::deliver_alarm(&mut state, alarm, fired);
+            // The font registration rides the app window's mount.
+            let app_state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            let (commands, _engine) =
+                support::fake_engine::FakeEngine::channel(Arc::clone(&app_state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let _app = taskboard_ui_slint::mount(
+                app_state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                scale_settings(1.0),
+                detached_health(),
+                None,
+            )
+            .expect("mount succeeds on the testing backend");
+            let defaults = state.settings.reminder_defaults();
+            let calendar = state
+                .settings
+                .day_calendar(taskboard_ui_slint::UiSettings::default().boot_offset);
+            let rows = taskboard_ui_slint::presentation::alarm_window_rows(
+                &state,
+                &defaults,
+                calendar,
+                fixture::PINNED_NOW,
+            );
+            assert!(
+                !rows.is_empty(),
+                "typed precondition: the alarm has an awaiting row"
+            );
+            let window = taskboard_ui_slint::AlarmWindow::new()
+                .expect("the alarm window instantiates on the testing backend");
+            let model: Vec<taskboard_ui_slint::AlarmRowModel> = rows
+                .iter()
+                .map(|row| taskboard_ui_slint::AlarmRowModel {
+                    title: row.title.clone().into(),
+                    phrase: taskboard_ui_slint::presentation::notification_phrase(
+                        row.occurrence,
+                        fixture::PINNED_NOW,
+                    )
+                    .into(),
+                })
+                .collect();
+            window.set_rows(slint::ModelRc::new(slint::VecModel::from(model)));
+            window.show().expect("show on the testing platform");
+            driver.advance_time(0);
+            let buffer = window.window().take_snapshot().expect(
+                "the software renderer captures the alarm window \
+                         (renderer-presence contract)",
+            );
+            let snapshot =
+                Rgba8Image::new(buffer.width(), buffer.height(), buffer.as_bytes().to_vec());
+            let path = gap_golden_path("alarm-window");
+            if regen {
+                let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+                std::fs::write(&path, bytes).expect("writes");
+                manifest_record(
+                    &path,
+                    &GoldenMeta {
+                        fixture: "golden_state_enriched_at + add_alarm/deliver_alarm",
+                        state: "alarm window; awaiting rows with elapsed phrases",
+                        scale: 1.0,
+                    },
+                    snapshot.width,
+                    snapshot.height,
+                );
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, &snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}

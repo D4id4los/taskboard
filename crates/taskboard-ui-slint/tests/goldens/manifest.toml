@@ -159,3 +159,45 @@ name = "icon-probe-1.0-396"
 fixture = "icon_probe.slint composition (19 vendored assets)"
 state = "icon probe window; kinds wall + tone ladder + button box"
 axes = { scale = 1.0, width = 392, height = 372 }
+
+[[golden]]
+name = "plan-next-day-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "plan-next-day view; pool + placement boxes"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "capture-overlay-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "capture overlay open over the board"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "search-palette-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "search palette open; typed query with roster hits"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "review-walk-1.0-1000"
+fixture = "golden_state_at + cleared pin + Inbox board + carry-scheduled task0"
+state = "review walk overlay; guidance + inbox stage rows"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "settings-1.0-1000"
+fixture = "golden_state_enriched_at + bound Deck connection"
+state = "settings view; connection cards + board roster rows"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "action-menu-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "action menu; root panel + invoked group page"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "alarm-window-1.0-1000"
+fixture = "golden_state_enriched_at + add_alarm/deliver_alarm"
+state = "alarm window; awaiting rows with elapsed phrases"
+axes = { scale = 1.0, width = 384, height = 128 }
