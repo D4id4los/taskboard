@@ -2522,3 +2522,177 @@ mod set_tests {
         app.shutdown().await;
     }
 }
+
+#[cfg(test)]
+mod config_key_mapping_tests {
+    use super::batch_edit;
+    use super::{ConfigKey, TypedSetting};
+    use crate::config::SinkChoice;
+
+    /// Every variant round-trips through its dotted key — the M2 sweep
+    /// (S3 lane, #327) found each `from_dotted` arm deletable with the
+    /// full suite green.
+    #[test]
+    fn every_config_key_round_trips_through_its_dotted_name() {
+        let all: [(ConfigKey, &str); 18] = [
+            (ConfigKey::DayStart, "preferences.day_start_time"),
+            (ConfigKey::RemindersEnabled, "reminders.enabled"),
+            (ConfigKey::TickSecs, "reminders.tick_secs"),
+            (ConfigKey::ReminderBefore, "reminders.default_before"),
+            (ConfigKey::ReminderSink, "reminders.sink"),
+            (ConfigKey::PollInterval, "sync.poll_interval_secs"),
+            (ConfigKey::BackoffInitial, "sync.backoff_initial_secs"),
+            (ConfigKey::BackoffMax, "sync.backoff_max_secs"),
+            (ConfigKey::DueSoonDays, "ui.due_soon_days"),
+            (ConfigKey::FocusEnabled, "focus.enabled"),
+            (ConfigKey::FocusWorkMins, "focus.work_mins"),
+            (ConfigKey::FocusBreakMins, "focus.break_mins"),
+            (ConfigKey::FocusChain, "focus.chain"),
+            (ConfigKey::FocusLongBreakMins, "focus.long_break_mins"),
+            (ConfigKey::FocusLongBreakEvery, "focus.long_break_every"),
+            (ConfigKey::FocusNotify, "focus.notify"),
+            (ConfigKey::FilesSyncEnabled, "files_sync.enabled"),
+            (ConfigKey::FilesSyncPollSecs, "files_sync.poll_secs"),
+        ];
+        for (key, dotted) in all {
+            assert_eq!(ConfigKey::from_dotted(dotted), Some(key), "{dotted}");
+            assert_eq!(
+                key.dotted(),
+                dotted.split_once('.').expect("two-part"),
+                "{dotted}"
+            );
+        }
+        assert!(ConfigKey::from_dotted("not.a.knob").is_none());
+    }
+
+    /// The boolean and sink vocabularies are the parse predicate — the
+    /// M2 sweep found the `true`/`false`/`auto`/`log`/`desktop` arms
+    /// deletable with the full suite green.
+    #[test]
+    fn the_bool_and_sink_predicates_accept_their_vocabulary() {
+        assert!(matches!(
+            ConfigKey::RemindersEnabled.parse_value("true"),
+            Ok(TypedSetting::Bool(true))
+        ));
+        assert!(matches!(
+            ConfigKey::RemindersEnabled.parse_value("false"),
+            Ok(TypedSetting::Bool(false))
+        ));
+        assert!(ConfigKey::RemindersEnabled.parse_value("yes").is_err());
+        assert!(matches!(
+            ConfigKey::ReminderSink.parse_value("auto"),
+            Ok(TypedSetting::Sink(SinkChoice::Auto))
+        ));
+        assert!(matches!(
+            ConfigKey::ReminderSink.parse_value("log"),
+            Ok(TypedSetting::Sink(SinkChoice::Log))
+        ));
+        assert!(matches!(
+            ConfigKey::ReminderSink.parse_value("desktop"),
+            Ok(TypedSetting::Sink(SinkChoice::Desktop))
+        ));
+        assert!(ConfigKey::ReminderSink.parse_value("somewhere").is_err());
+    }
+
+    /// The typed value mints the toml item with its (section, key) —
+    /// the M2 sweep found six `batch_edit` arms deletable with the
+    /// full suite green.
+    #[test]
+    fn batch_edit_mints_the_typed_value_as_the_toml_item() {
+        let be = batch_edit(ConfigKey::DueSoonDays, &TypedSetting::DueSoonDays(14));
+        assert_eq!(be.section, "ui");
+        assert_eq!(be.key, "due_soon_days");
+        assert_eq!(be.item.to_string(), "14");
+        let be = batch_edit(ConfigKey::RemindersEnabled, &TypedSetting::Bool(true));
+        assert_eq!(be.item.to_string(), "true");
+        let be = batch_edit(ConfigKey::FocusLongBreakEvery, &TypedSetting::FocusEvery(4));
+        assert_eq!(be.item.to_string(), "4");
+        let be = batch_edit(
+            ConfigKey::ReminderBefore,
+            &TypedSetting::Before(
+                taskboard_domain::ReminderOffset::parse_text_form("1h30m").expect("parses"),
+            ),
+        );
+        assert_eq!(be.item.to_string(), "\"1h30m\"");
+        let be = batch_edit(
+            ConfigKey::ReminderSink,
+            &TypedSetting::Sink(SinkChoice::Log),
+        );
+        assert_eq!(be.item.to_string(), "\"log\"");
+        let be = batch_edit(
+            ConfigKey::DayStart,
+            &TypedSetting::DayStart(chrono::NaiveTime::from_hms_opt(7, 30, 0).expect("valid time")),
+        );
+        assert_eq!(be.item.to_string(), "\"07:30\"");
+    }
+}
+
+#[cfg(test)]
+mod config_write_lane_tests {
+    use super::{AppConfig, set};
+
+    /// The #984 dated-pin gate (`set_tests::clean_ambient`'s doc).
+    fn clean_ambient() -> bool {
+        !std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
+    }
+
+    fn temp_config(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "taskboard-config-write-{tag}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir.join("taskboard.toml")
+    }
+
+    /// Every knob lands through its own overlay writer — the M2 sweep
+    /// (S3 lane, #327) found 13 `write` arms deletable with the full
+    /// suite green (only `reminders.tick_secs` was pinned before).
+    #[tokio::test]
+    async fn every_knob_writes_through_its_overlay_writer() {
+        if !clean_ambient() {
+            return;
+        }
+        let knobs: [(&str, &str); 18] = [
+            ("preferences.day_start_time", "07:30"),
+            ("reminders.enabled", "true"),
+            ("reminders.tick_secs", "45"),
+            ("reminders.default_before", "10m"),
+            ("reminders.sink", "desktop"),
+            ("sync.poll_interval_secs", "120"),
+            ("sync.backoff_initial_secs", "30"),
+            ("sync.backoff_max_secs", "600"),
+            ("ui.due_soon_days", "14"),
+            ("focus.enabled", "true"),
+            ("focus.work_mins", "25"),
+            ("focus.break_mins", "5"),
+            ("focus.chain", "false"),
+            ("focus.long_break_mins", "15"),
+            ("focus.long_break_every", "4"),
+            ("focus.notify", "false"),
+            ("files_sync.enabled", "true"),
+            ("files_sync.poll_secs", "60"),
+        ];
+        let path = temp_config("table");
+        let _ = std::fs::remove_file(&path);
+        // `files_sync.enabled`'s prove gate refuses when no Nextcloud
+        // connector resolves (`FilesSyncWithoutNextcloud`) — seed the
+        // identity the backend resolution requires (`sync_backend`
+        // reads `nextcloud.server_url`).
+        std::fs::write(
+            &path,
+            "[nextcloud]\nserver_url = \"https://example.test\"\nusername = \"u\"\ncredential_store = \"file\"\n",
+        )
+        .expect("seed config");
+        for (key, value) in knobs {
+            set(Some(path.clone()), key, value)
+                .await
+                .unwrap_or_else(|err| panic!("{key} writes: {err:?}"));
+            assert!(
+                AppConfig::extract_file_only(Some(path.as_path())).is_ok(),
+                "{key} leaves a bootable config"
+            );
+        }
+        std::fs::remove_dir_all(path.parent().expect("dir")).ok();
+    }
+}
