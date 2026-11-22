@@ -257,6 +257,16 @@ fn p5_the_probe_golden_holds() {
             let bytes = golden_compare::encode_png(snapshot).expect("encodes");
             std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
             std::fs::write(&path, bytes).expect("writes");
+            // The manifest entry (wave plan §4): the probe's golden is
+            // part of the checked-in corpus, so its regen upserts too.
+            support::golden_manifest::record(&support::golden_manifest::GoldenEntry {
+                name: "icon-probe-1.0-396".to_owned(),
+                fixture: "icon_probe.slint composition (19 vendored assets)".to_owned(),
+                state: "icon probe window; kinds wall + tone ladder + button box".to_owned(),
+                scale: 1.0,
+                width: snapshot.width,
+                height: snapshot.height,
+            });
             return;
         }
         let bytes = std::fs::read(&path)

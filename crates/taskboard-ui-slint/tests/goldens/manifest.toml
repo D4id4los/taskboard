@@ -1,0 +1,161 @@
+[[golden]]
+name = "board-0.5-600"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "board view; two stacks, three tasks, running-timer chip"
+axes = { scale = 0.5, width = 600, height = 900 }
+
+[[golden]]
+name = "today-0.5-600"
+fixture = "today_overdue_state_at(PINNED_NOW)"
+state = "today view; overdue rows, tracked-time chip"
+axes = { scale = 0.5, width = 600, height = 900 }
+
+[[golden]]
+name = "review-empty-1.0-1000"
+fixture = "golden_state_at; tracking + reflection entries cleared"
+state = "review view; empty tier (both sections folded)"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "task-view-focus-cell-1.0-900"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "task detail; the D18 focus ring on the due row"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "kiosk-board-0.5-1000"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "kiosk rotation; board mode (modes[0])"
+axes = { scale = 0.5, width = 1000, height = 900 }
+
+[[golden]]
+name = "track-entries-1.0-1000"
+fixture = "golden_state_at + two closed fixed-instant entries"
+state = "time-entries overlay; closed rows + armed deletes"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "focus-overlay-1.0-1000"
+fixture = "golden_state_at + FocusTiming settings"
+state = "concentration overlay; work caption + pool + quick note"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "task-view-0.5-900"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "task detail; header/summary/description regions"
+axes = { scale = 0.5, width = 1000, height = 900 }
+
+[[golden]]
+name = "notification-3.0-1000"
+fixture = "golden_state_at + deliver_task_notification + add_alarm"
+state = "notification surface; one task row + one alarm row"
+axes = { scale = 3.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "kiosk-today-0.5-1000"
+fixture = "today_overdue_state_at(PINNED_NOW)"
+state = "kiosk rotation; today mode after one forced flip"
+axes = { scale = 0.5, width = 1000, height = 900 }
+
+[[golden]]
+name = "board-0.5-1000"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "board view; two stacks, three tasks, running-timer chip"
+axes = { scale = 0.5, width = 1000, height = 900 }
+
+[[golden]]
+name = "today-0.5-1000"
+fixture = "today_overdue_state_at(PINNED_NOW)"
+state = "today view; overdue rows, tracked-time chip"
+axes = { scale = 0.5, width = 1000, height = 900 }
+
+[[golden]]
+name = "review-ledger-1.0-1000"
+fixture = "golden_state_at + add_completed_task x3 + one rated Day journal"
+state = "review view; ledger rows + reflection sections"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "task-view-0.5-500"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "task detail; header/summary/description regions"
+axes = { scale = 0.5, width = 1000, height = 500 }
+
+[[golden]]
+name = "board-0.5-1500"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "board view; two stacks, three tasks, running-timer chip"
+axes = { scale = 0.5, width = 1500, height = 900 }
+
+[[golden]]
+name = "today-0.5-1500"
+fixture = "today_overdue_state_at(PINNED_NOW)"
+state = "today view; overdue rows, tracked-time chip"
+axes = { scale = 0.5, width = 1500, height = 900 }
+
+[[golden]]
+name = "task-view-1.5-900"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "task detail; header/summary/description regions"
+axes = { scale = 1.5, width = 1000, height = 900 }
+
+[[golden]]
+name = "board-3.0-600"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "board view; two stacks, three tasks, running-timer chip"
+axes = { scale = 3.0, width = 600, height = 900 }
+
+[[golden]]
+name = "today-3.0-600"
+fixture = "today_overdue_state_at(PINNED_NOW)"
+state = "today view; overdue rows, tracked-time chip"
+axes = { scale = 3.0, width = 600, height = 900 }
+
+[[golden]]
+name = "task-view-1.5-500"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "task detail; header/summary/description regions"
+axes = { scale = 1.5, width = 1000, height = 500 }
+
+[[golden]]
+name = "board-3.0-1000"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "board view; two stacks, three tasks, running-timer chip"
+axes = { scale = 3.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "today-3.0-1000"
+fixture = "today_overdue_state_at(PINNED_NOW)"
+state = "today view; overdue rows, tracked-time chip"
+axes = { scale = 3.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "task-view-3.0-900"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "task detail; header/summary/description regions"
+axes = { scale = 3.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "board-3.0-1500"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "board view; two stacks, three tasks, running-timer chip"
+axes = { scale = 3.0, width = 1500, height = 900 }
+
+[[golden]]
+name = "task-view-3.0-500"
+fixture = "golden_state_at(PINNED_NOW)"
+state = "task detail; header/summary/description regions"
+axes = { scale = 3.0, width = 1000, height = 500 }
+
+[[golden]]
+name = "today-3.0-1500"
+fixture = "today_overdue_state_at(PINNED_NOW)"
+state = "today view; overdue rows, tracked-time chip"
+axes = { scale = 3.0, width = 1500, height = 900 }
+
+[[golden]]
+name = "icon-probe-1.0-396"
+fixture = "icon_probe.slint composition (19 vendored assets)"
+state = "icon probe window; kinds wall + tone ladder + button box"
+axes = { scale = 1.0, width = 392, height = 372 }

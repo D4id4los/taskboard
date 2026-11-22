@@ -34,10 +34,14 @@
 //! # Regeneration — an explicit, reviewed step
 //!
 //! `TASKBOARD_REGEN_GOLDENS=1 cargo nextest run -p taskboard-ui-slint
-//! --test golden_visuals` rewrites the PNGs and *fails* the run
+//! --test journey_suites` rewrites the PNGs and *fails* the run
 //! afterwards, so a regen run can never be mistaken for a pass. CI
 //! never sets the variable: it compares only. The PR's PNG diff **is**
-//! the review artefact (GitHub renders the images).
+//! the review artefact (GitHub renders the images). Each regen also
+//! upserts the golden's `tests/goldens/manifest.toml` entry (`support
+//! ::golden_manifest`, wave plan §4): the checked-in manifest is
+//! harness-generated, and the `the_manifest_bijects_with_the_golden_
+//! corpus` test verifies it against the committed file set.
 
 use crate::support;
 
@@ -80,6 +84,33 @@ fn regen_requested() -> bool {
     std::env::var_os("TASKBOARD_REGEN_GOLDENS").is_some_and(|v| v == "1")
 }
 
+/// The manifest metadata a capture site supplies (wave plan §4): the
+/// fixture constructor (not prose), a structural state note, and the
+/// mounted scale.
+struct GoldenMeta<'a> {
+    fixture: &'a str,
+    state: &'a str,
+    scale: f64,
+}
+
+/// The regen path's manifest upsert: name = the PNG stem, axes from
+/// the capture. No-op on the compare path.
+fn manifest_record(path: &Path, meta: &GoldenMeta, width: u32, height: u32) {
+    let name = path
+        .file_stem()
+        .expect("the golden path has a stem")
+        .to_string_lossy()
+        .into_owned();
+    support::golden_manifest::record(&support::golden_manifest::GoldenEntry {
+        name,
+        fixture: meta.fixture.to_owned(),
+        state: meta.state.to_owned(),
+        scale: meta.scale,
+        width,
+        height,
+    });
+}
+
 fn scale_settings(scale: f64) -> UiSettings {
     UiSettings {
         scale: taskboard_ui_slint::UiScale::new(scale).expect("valid"),
@@ -96,11 +127,13 @@ fn scale_settings(scale: f64) -> UiSettings {
 /// `settings`, bind, let `frame` do the capture-specific steps (a
 /// view escape, the kiosk rotation dwell), snapshot at `width` ×
 /// HEIGHT, and regen-or-compare against `path`.
+#[allow(clippy::too_many_arguments)] // each capture-site parameter is load-bearing
 fn capture_golden(
     driver: &mut SlintDriver,
     state: Arc<ArcSwap<taskboard_domain::AppState>>,
     settings: UiSettings,
     frame: impl FnOnce(&mut SlintDriver, &taskboard_ui_slint::UiHandle),
+    meta: &GoldenMeta,
     width: u32,
     path: &Path,
     regen: bool,
@@ -140,6 +173,7 @@ fn capture_golden(
         let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
         std::fs::write(path, bytes).expect("writes");
+        manifest_record(path, meta, width, HEIGHT);
         return;
     }
     let bytes = std::fs::read(path)
@@ -148,6 +182,36 @@ fn capture_golden(
         golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
     golden_compare::matches(&golden, &snapshot)
         .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+}
+
+/// The manifest ↔ corpus bijection (wave plan §4, #1140): the lowest
+/// layer for the manifest's own behavior — every committed PNG has
+/// exactly one manifest entry and vice versa, and the width/height
+/// axes match the decoded PNG dimensions (the scale axis is capture
+/// metadata, not PNG-derivable — recorded, not PNG-verified).
+#[test]
+fn the_manifest_bijects_with_the_golden_corpus() {
+    let entries = support::golden_manifest::read_entries().expect("the manifest parses");
+    assert!(!entries.is_empty(), "the golden corpus is nonempty");
+    let mut pngs: Vec<(String, u32, u32)> = Vec::new();
+    let dir = PathBuf::from(format!("{}/tests/goldens", env!("CARGO_MANIFEST_DIR")));
+    for file in std::fs::read_dir(&dir).expect("the goldens dir is readable") {
+        let path = file.expect("a dir entry").path();
+        if path.extension().is_some_and(|extension| extension == "png") {
+            let stem = path
+                .file_stem()
+                .expect("the PNG has a stem")
+                .to_string_lossy()
+                .into_owned();
+            let bytes = std::fs::read(&path).expect("the PNG is readable");
+            let image: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed PNG decodes");
+            pngs.push((stem, image.width, image.height));
+        }
+    }
+    support::golden_manifest::verify_corpus(&entries, &pngs)
+        .expect("the manifest bijects with the corpus");
+    assert_eq!(entries.len(), pngs.len(), "bijective on both sides");
 }
 
 #[test]
@@ -184,6 +248,11 @@ fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: 
         // Today default (chunk 10 D2) before the first frame.
         |_driver, handle| {
             handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
+        },
+        &GoldenMeta {
+            fixture: "golden_state_at(PINNED_NOW)",
+            state: "board view; two stacks, three tasks, running-timer chip",
+            scale,
         },
         width,
         &golden_path(scale, width),
@@ -249,6 +318,16 @@ fn the_focused_cell_golden_pins_the_ring() {
             if regen {
                 let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
                 std::fs::write(&path, bytes).expect("writes");
+                manifest_record(
+                    &path,
+                    &GoldenMeta {
+                        fixture: "golden_state_at(PINNED_NOW)",
+                        state: "task detail; the D18 focus ring on the due row",
+                        scale: 1.0,
+                    },
+                    TASK_VIEW_WIDTH,
+                    900,
+                );
                 return;
             }
             let bytes = std::fs::read(&path)
@@ -323,6 +402,11 @@ fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) 
         // The today goldens capture the TODAY view: no escape — the
         // desktop default is the capture subject.
         |_, _| {},
+        &GoldenMeta {
+            fixture: "today_overdue_state_at(PINNED_NOW)",
+            state: "today view; overdue rows, tracked-time chip",
+            scale,
+        },
         width,
         &today_golden_path(scale, width),
         regen,
@@ -381,6 +465,19 @@ fn capture_kiosk(driver: &mut SlintDriver, mode: &str, regen: bool) {
             fixture::golden_state_at(fixture::PINNED_NOW).1,
         ))
     };
+    let meta = if mode == "today" {
+        GoldenMeta {
+            fixture: "today_overdue_state_at(PINNED_NOW)",
+            state: "kiosk rotation; today mode after one forced flip",
+            scale: KIOSK_SCALE,
+        }
+    } else {
+        GoldenMeta {
+            fixture: "golden_state_at(PINNED_NOW)",
+            state: "kiosk rotation; board mode (modes[0])",
+            scale: KIOSK_SCALE,
+        }
+    };
     capture_golden(
         driver,
         state,
@@ -393,6 +490,7 @@ fn capture_kiosk(driver: &mut SlintDriver, mode: &str, regen: bool) {
                 driver.advance_time(1_000);
             }
         },
+        &meta,
         KIOSK_WIDTH,
         &kiosk_golden_path(mode, KIOSK_SCALE, KIOSK_WIDTH),
         regen,
@@ -486,6 +584,11 @@ fn the_notification_golden_holds() {
                 Arc::new(ArcSwap::from_pointee(state)),
                 scale_settings(3.0),
                 |_, _| {},
+                &GoldenMeta {
+                    fixture: "golden_state_at + deliver_task_notification + add_alarm",
+                    state: "notification surface; one task row + one alarm row",
+                    scale: 3.0,
+                },
                 1000,
                 &PathBuf::from(format!(
                     "{}/tests/goldens/notification-3.0-1000.png",
@@ -592,6 +695,16 @@ fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: b
         let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
         std::fs::write(&path, bytes).expect("writes");
+        manifest_record(
+            &path,
+            &GoldenMeta {
+                fixture: "golden_state_at(PINNED_NOW)",
+                state: "task detail; header/summary/description regions",
+                scale,
+            },
+            TASK_VIEW_WIDTH,
+            height,
+        );
         return;
     }
     let bytes = std::fs::read(&path)
@@ -675,6 +788,16 @@ fn the_focus_overlay_golden_holds() {
                 let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
                 std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
                 std::fs::write(&path, bytes).expect("writes");
+                manifest_record(
+                    &path,
+                    &GoldenMeta {
+                        fixture: "golden_state_at + FocusTiming settings",
+                        state: "concentration overlay; work caption + pool + quick note",
+                        scale: 1.0,
+                    },
+                    1000,
+                    HEIGHT,
+                );
                 return;
             }
             let bytes = std::fs::read(&path)
@@ -704,6 +827,7 @@ fn the_focus_overlay_golden_holds() {
 /// deliberately absent — its spent phrase is second-precise, the
 /// #496 golden's recorded wall-second exclusion; the running mark's
 /// structure stays with the pure-layer and journey pins.
+#[allow(clippy::too_many_lines)] // the fixture's fixed-instant minting is the point
 #[test]
 fn the_track_entries_golden_holds() {
     pin_utc_zone();
@@ -799,6 +923,16 @@ fn the_track_entries_golden_holds() {
                 let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
                 std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
                 std::fs::write(&path, bytes).expect("writes");
+                manifest_record(
+                    &path,
+                    &GoldenMeta {
+                        fixture: "golden_state_at + two closed fixed-instant entries",
+                        state: "time-entries overlay; closed rows + armed deletes",
+                        scale: 1.0,
+                    },
+                    1000,
+                    HEIGHT,
+                );
                 return;
             }
             let bytes = std::fs::read(&path)
@@ -855,6 +989,11 @@ fn the_review_empty_golden_holds() {
                 state,
                 scale_settings(1.0),
                 |_, handle| enter_review(handle),
+                &GoldenMeta {
+                    fixture: "golden_state_at; tracking + reflection entries cleared",
+                    state: "review view; empty tier (both sections folded)",
+                    scale: 1.0,
+                },
                 1000,
                 &PathBuf::from(format!(
                     "{}/tests/goldens/review-empty-1.0-1000.png",
@@ -965,6 +1104,11 @@ fn the_review_ledger_golden_holds() {
                 state,
                 settings,
                 |_, handle| enter_review(handle),
+                &GoldenMeta {
+                    fixture: "golden_state_at + add_completed_task x3 + one rated Day journal",
+                    state: "review view; ledger rows + reflection sections",
+                    scale: 1.0,
+                },
                 1000,
                 &PathBuf::from(format!(
                     "{}/tests/goldens/review-ledger-1.0-1000.png",
