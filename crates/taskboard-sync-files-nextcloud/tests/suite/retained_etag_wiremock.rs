@@ -445,6 +445,16 @@ fn info_path(id: &str) -> String {
 struct Harness {
     server: RetentionServer,
     transport: WebDavFilesTransport,
+    // The mounted server's ownership anchor (#1165–#1170): the
+    // `MockServer` handle must live as long as the harness — dropped
+    // at constructor end it starts wiremock's async shutdown
+    // mid-test, the listener closes, and the OS hands the ephemeral
+    // port to a concurrently starting suite member's server; the
+    // test's remaining requests then land on the *other* test's
+    // stateful model (second attach 412, foreign journals — the
+    // flaky class). Holding the handle is the structural fix: the
+    // server cannot die before the test does.
+    _mounted: MockServer,
     ctx: SyncContext,
     st: LoopState,
     status_tx: watch::Sender<taskboard_sync_files_nextcloud::status::FilesSyncStatus>,
@@ -506,6 +516,7 @@ impl Harness {
         Self {
             server,
             transport,
+            _mounted: mounted,
             ctx,
             st: LoopState::default(),
             status_tx,
