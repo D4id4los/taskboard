@@ -591,3 +591,111 @@ fn vanished_subject_restore_falls_to_the_view_scope() {
         );
     });
 }
+
+/// The #1203 layer oracle (round 5 A2 D-A2-2): the four emacs chords
+/// at the detail, one leg per named layer. (a) A non-field widget
+/// focused: the chord resolves to a directional effect and the
+/// traversal tail steps the control walk — the typed outcome is the
+/// focused element's address moving, zero commands. (b) A text field
+/// focused: the editor scope's in-field cursor commands lawfully
+/// consume the chords (the K2 US-1 AC-1 text guard) — the editor
+/// stays open, the walk never moves. (c) An edit flow open: the
+/// chain's top context shadows the detail rows — the due editor
+/// stays open, the walk stays clamped inside the host.
+#[test]
+fn directional_chords_layer_oracle_at_the_detail() {
+    golden_state_journey(|_state| {
+        let preset = Preset::Emacs;
+        let mut harness = JourneyHarness::mount(detail_fixture_state(), preset);
+        open_detail_first_card(&mut harness, preset);
+
+        // (a) The traversal tail's layer: the walk steps and comes
+        // back — resolved effects move focus, zero commands.
+        walk_to(&mut harness, preset, "Edit due date");
+        harness
+            .driver
+            .press_stroke(parse("Ctrl+f").expect("Ctrl+f parses"));
+        harness.advance();
+        let after_forward = harness.driver.focused_label();
+        assert_ne!(
+            after_forward.as_deref(),
+            Some("Edit due date"),
+            "C-f steps the control walk off the due cell"
+        );
+        harness
+            .driver
+            .press_stroke(parse("Ctrl+b").expect("Ctrl+b parses"));
+        harness.advance();
+        assert_eq!(
+            harness.driver.focused_label().as_deref(),
+            Some("Edit due date"),
+            "C-b steps the control walk back onto the due cell"
+        );
+        harness.assert_commands(&[]);
+
+        // (b) The editor scope's layer: inside the title editor the
+        // chords are the field's cursor commands — the editor stays
+        // open, the walk never moves.
+        walk_to(&mut harness, preset, "Edit title");
+        harness
+            .driver
+            .press_stroke(parse("Return").expect("Return parses"));
+        harness.advance();
+        assert!(title_edit_open(&harness), "the title editor is open");
+        let text_focus = |h: &JourneyHarness| {
+            h.handle
+                .window()
+                .global::<taskboard_ui_slint::EditingFacts>()
+                .get_text_focus_count()
+        };
+        let focus_in_field = text_focus(&harness) > 0;
+        harness
+            .driver
+            .press_stroke(parse("Ctrl+f").expect("Ctrl+f parses"));
+        harness.advance();
+        harness
+            .driver
+            .press_stroke(parse("Ctrl+n").expect("Ctrl+n parses"));
+        harness.advance();
+        assert!(
+            title_edit_open(&harness) && text_focus(&harness) > 0,
+            "the in-field chords never leave the editor"
+        );
+        assert!(
+            focus_in_field,
+            "the title editor's field holds the focus (the guard's input)"
+        );
+
+        // The flow-end leg: Escape discards, the walk re-arms.
+        for _ in 0..4 {
+            if !title_edit_open(&harness) {
+                break;
+            }
+            harness
+                .driver
+                .press_stroke(parse("Escape").expect("Escape parses"));
+            harness.advance();
+        }
+        assert!(!title_edit_open(&harness), "Escape discarded the edit");
+
+        // (c) The context-chain layer: with the due editor's flow
+        // open, the chords cannot walk the view — the flow stays, the
+        // field keeps the focus (the masked host's clamp).
+        harness.driver.click_by_label("Edit due date");
+        harness.advance();
+        let due_open_now = harness.handle.window().get_task_model().due_open;
+        assert!(due_open_now, "the due editor is open");
+        harness
+            .driver
+            .press_stroke(parse("Ctrl+n").expect("Ctrl+n parses"));
+        harness.advance();
+        harness
+            .driver
+            .press_stroke(parse("Ctrl+f").expect("Ctrl+f parses"));
+        harness.advance();
+        assert!(
+            harness.handle.window().get_task_model().due_open,
+            "the chords never walk out of the open flow"
+        );
+    });
+}
