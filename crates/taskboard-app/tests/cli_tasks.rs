@@ -15,6 +15,8 @@ mod common;
 
 #[path = "cli/cli_editing.rs"]
 mod cli_editing;
+#[path = "cli/cli_exit_codes.rs"]
+mod cli_exit_codes;
 #[path = "cli/cli_habits.rs"]
 mod cli_habits;
 #[path = "cli/cli_journal.rs"]
