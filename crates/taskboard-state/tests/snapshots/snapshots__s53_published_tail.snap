@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
+assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -28,4 +29,7 @@ undo:
       label: Create task
     - id: 00000000-0000-0000-0000-000000000003
       label: Create stack
+  branch_children:
+    - id: 00000000-0000-0000-0000-000000000008
+      label: Delete stack
 last_updated: "1970-01-01T10:04:00Z"

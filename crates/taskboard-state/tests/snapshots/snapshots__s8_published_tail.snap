@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
+assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -28,4 +29,5 @@ undo:
       label: Set board color
     - id: 00000000-0000-0000-0000-000000000002
       label: Create board
+  branch_children: []
 last_updated: "1970-01-01T10:04:00Z"
