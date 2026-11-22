@@ -51,6 +51,8 @@ uuid.workspace = true
 proptest.workspace = true
 serde.workspace = true
 png.workspace = true
+# The golden manifest's comment-preserving upsert/parse (workspace-pinned)
+toml_edit.workspace = true
 # The journey/golden harness (design §8.1/Q8): the exact-pin testing
 # backend, dev-only — the shipped feature set gains nothing.
 i-slint-backend-testing.workspace = true

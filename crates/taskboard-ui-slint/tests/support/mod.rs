@@ -14,6 +14,7 @@ pub mod fake_engine;
 pub mod fixture;
 pub mod focus_journey;
 pub mod golden_compare;
+pub mod golden_manifest;
 pub mod guard;
 pub mod harness;
 pub mod health;
