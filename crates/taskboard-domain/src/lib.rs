@@ -192,4 +192,7 @@ pub use tracking::{
 pub use tracking_stats::{
     DayTotal, WindowSplit, WorkBlockReading, daily_split_series, window_split, work_blocks,
 };
-pub use undo::{journal_push_marks, plan_journaled_command, plan_redo, plan_undo, pre_images};
+pub use undo::{
+    journal_push_marks, plan_journaled_command, plan_redo, plan_redo_to, plan_undo, plan_undo_to,
+    pre_images,
+};

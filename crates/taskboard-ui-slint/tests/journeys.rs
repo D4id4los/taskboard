@@ -739,6 +739,7 @@ fn the_undo_rows_grey_from_the_published_undo_view() {
             can_redo: true,
             head_label: None,
             recent: vec![],
+            branch_children: Vec::new(),
         };
         harness.engine.replace_state(live, &harness.handle);
         harness.driver.advance_time(0);
@@ -761,6 +762,7 @@ fn invoking_the_undo_rows_sends_the_engine_verbs() {
         can_redo: true,
         head_label: None,
         recent: vec![],
+        branch_children: Vec::new(),
     };
     support::harness::run_journey(state, move |harness| {
         harness.press(ActionId::AppMenu);
@@ -21980,6 +21982,7 @@ fn us3_s2_main_menu_dwell_regrey_stands() {
             can_redo: false,
             head_label: None,
             recent: vec![],
+            branch_children: Vec::new(),
         };
         harness.engine.replace_state(live, &harness.handle);
         harness.driver.advance_time(REPAINT_CADENCE_MS);

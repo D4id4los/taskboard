@@ -152,6 +152,12 @@ pub fn plan_journaled_command(
             now,
             author,
         ),
+        StateCommand::UndoTo { target } => plan_undo_to(
+            app, outbox, journal, *target, ids, defaults, day, now, author,
+        ),
+        StateCommand::RedoTo { target } => plan_redo_to(
+            app, outbox, journal, *target, ids, defaults, day, now, author,
+        ),
         command => {
             let plan = plan_command(app, outbox, command, ids, defaults, day, now, author)?;
             if plan.actions.is_empty() {
@@ -409,6 +415,8 @@ fn record_entry(
         | StateCommand::Redo
         | StateCommand::UndoOnBoard { .. }
         | StateCommand::RedoOnBoard { .. }
+        | StateCommand::UndoTo { .. }
+        | StateCommand::RedoTo { .. }
         | StateCommand::RequestSync
         | StateCommand::UpdateSettings { .. } => {
             UndoFacts::NotUndoable(NotUndoableReason::BoardCeremony)
@@ -524,6 +532,8 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         | StateCommand::Redo
         | StateCommand::UndoOnBoard { .. }
         | StateCommand::RedoOnBoard { .. }
+        | StateCommand::UndoTo { .. }
+        | StateCommand::RedoTo { .. }
         | StateCommand::RequestSync
         | StateCommand::UpdateSettings { .. } => None,
     }
@@ -918,6 +928,25 @@ pub fn plan_redo(
         .filter(|entry| scope_covers(scope, entry.board))
         .max_by_key(|entry| (entry.created_at, entry.id))
         .ok_or_else(|| nothing_to_redo(scope))?;
+    plan_redo_of_entry(app, outbox, target, ids, defaults, day, now, author)
+}
+
+/// The redo of one *chosen* child (D5's freedom made explicit): replan
+/// the forward intent through the catalogue, apply the D-U2 push-boundary
+/// flip, move the head. Shared by [`plan_redo`] (the greatest child) and
+/// [`plan_redo_to`] (the picker's chosen sibling — the one thing repeated
+/// `Redo` cannot express).
+#[allow(clippy::too_many_arguments)] // plan_command's own shape, threaded
+fn plan_redo_of_entry(
+    app: &AppState,
+    outbox: &[PendingOp],
+    target: &JournalEntry,
+    ids: &dyn IdGenerator,
+    defaults: &ReminderDefaults,
+    day: DayCalendar,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+) -> Result<CommandPlan, CommandError> {
     if let UndoFacts::NotUndoable(reason) = target.facts {
         return Err(CommandError::TargetNotUndoable(reason));
     }
@@ -1153,6 +1182,8 @@ impl JournalEntry {
             | StateCommand::Redo
             | StateCommand::UndoOnBoard { .. }
             | StateCommand::RedoOnBoard { .. }
+            | StateCommand::UndoTo { .. }
+            | StateCommand::RedoTo { .. }
             | StateCommand::RequestSync
             | StateCommand::UpdateSettings { .. } => Err(CommandError::TargetNotUndoable(
                 NotUndoableReason::BoardCeremony,
@@ -2316,3 +2347,317 @@ fn task_changes_from_pre(
 
 #[cfg(test)]
 mod tests;
+
+// ---- the UF2 walk planners (#353) --------------------------------------
+//
+// `UndoTo`/`RedoTo` wrap the existing planners in a bounded walk: one
+// command, N internal steps, each step's batch planned by the same
+// `plan_undo`/`plan_redo` machinery and *simulated forward* between
+// steps so every subsequent step plans against the state its
+// predecessor produced. The simulation is the engine's own executable
+// contract — `apply_actions` over a `PersistedState` mirror, the
+// `Harness::exec` precedent — so the interpreted intermediate states
+// are identical to what the engine will apply from the merged batch.
+
+/// The walk's forward mirror: the persisted shape `apply_actions`
+/// advances, seeded from the planner's three inputs. Pure — the engine
+/// applies the merged batch to the real store; this mirror only lets
+/// step *k+1* plan against step *k*'s result.
+struct WalkMirror {
+    disk: crate::persistence::PersistedState,
+}
+
+impl WalkMirror {
+    fn seed(app: &AppState, outbox: &[PendingOp], journal: &JournalState) -> Self {
+        // Validators and sync-status rows are not carried: undo/redo
+        // plans never read or emit them (board ceremonies — the only
+        // validators' writers — are `NotUndoable`, so no walk step can
+        // reach them; the derived `sync` projection re-derives from the
+        // outbox on every view).
+        let mut disk = crate::persistence::PersistedState {
+            boards: app.boards.clone(),
+            stacks: app.stacks.clone(),
+            tasks: app.tasks.clone(),
+            labels: app.labels.clone(),
+            reminders: app.reminders.clone(),
+            tracking: app.tracking.clone(),
+            habits: app.habits.clone(),
+            reflection: app.reflection.clone(),
+            roaming: app.roaming.clone(),
+            ..crate::persistence::PersistedState::default()
+        };
+        disk.outbox = outbox.to_vec();
+        disk.journal = journal.clone();
+        Self { disk }
+    }
+
+    fn app(&self) -> AppState {
+        let mut persisted = self.disk.clone();
+        crate::state::derive_sync_states(
+            &persisted.boards,
+            &persisted.stacks,
+            &persisted.tasks,
+            &persisted.labels,
+            &persisted.outbox,
+            &mut persisted.sync,
+        );
+        AppState::from(persisted)
+    }
+
+    fn advance(&mut self, actions: &[PersistenceAction]) {
+        crate::persistence::apply_actions(&mut self.disk, actions);
+    }
+
+    fn outbox(&self) -> Vec<PendingOp> {
+        self.disk.outbox.clone()
+    }
+
+    fn journal(&self) -> &JournalState {
+        &self.disk.journal
+    }
+}
+
+/// Walk budget: the line's own length bounds every walk (each step
+/// consumes one head or takes one child), so the loop is total — the
+/// guard is a belt-and-braces against a planner that stops moving the
+/// head, not a semantic cap.
+fn walk_budget(journal: &JournalState) -> usize {
+    journal.entries.len() + 1
+}
+
+/// Jumps the undo line back to `target` (UF2, #353): the ancestor verb.
+/// `target` must be an ancestor of the current head through the
+/// journal's `parent` pointers — no journal migration, the tree shape
+/// is consumed, never rewritten (the UF2 trap a). The walk repeats
+/// [`plan_undo`] (global scope) until the head lands exactly on
+/// `target`; every intermediate step's batch (inverse upserts, the
+/// D-U2 retraction/flush op behaviours, the head move) is merged in
+/// order, and the receipt names the walk's final undone entry. A
+/// target already at the head is the accepted no-op (zero actions, the
+/// engine's empty-batch reply).
+///
+/// # Errors
+///
+/// [`CommandError::TargetNotInLine`] when the id is not an ancestor of
+/// the head (or the line is empty); every planner refusal mid-walk
+/// surfaces verbatim and leaves the head unmoved (an error plan emits
+/// no actions — the merged batch never half-applies).
+#[allow(clippy::too_many_arguments)] // plan_command's own shape, threaded
+pub fn plan_undo_to(
+    app: &AppState,
+    outbox: &[PendingOp],
+    journal: &JournalState,
+    target: crate::ids::JournalId,
+    ids: &dyn IdGenerator,
+    defaults: &ReminderDefaults,
+    day: DayCalendar,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+) -> Result<CommandPlan, CommandError> {
+    // The line-membership question is the parent walk: the head must
+    // reach `target` through `parent` pointers (eviction-pruned ids
+    // refuse here too — `entry` returns `None` and the chain breaks).
+    let mut on_line = false;
+    let mut cursor = journal.head;
+    while let Some(id) = cursor {
+        if id == target {
+            on_line = true;
+            break;
+        }
+        cursor = journal.entry(id).and_then(|entry| entry.parent);
+    }
+    if !on_line {
+        return Err(CommandError::TargetNotInLine);
+    }
+    let mut mirror = WalkMirror::seed(app, outbox, journal);
+    let mut merged = Vec::new();
+    let mut final_entry = target;
+    let budget = walk_budget(journal);
+    for _ in 0..budget {
+        let Some(head) = mirror.journal().head else {
+            return Err(CommandError::TargetNotInLine);
+        };
+        if head == target {
+            break;
+        }
+        let plan = plan_undo(
+            &mirror.app(),
+            &mirror.outbox(),
+            mirror.journal(),
+            UndoScope::Global,
+            ids,
+            defaults,
+            day,
+            now,
+            author,
+        )?;
+        if let CommandOutcome::Undone { entry } = plan.outcome {
+            final_entry = entry;
+        }
+        mirror.advance(&plan.actions);
+        merged.extend(plan.actions);
+    }
+    Ok(CommandPlan {
+        actions: merged,
+        outcome: CommandOutcome::Undone { entry: final_entry },
+    })
+}
+
+/// Redoes down a chosen branch to `target` (UF2, #353): the sibling
+/// verb. Repeated `Redo` (D5 greatest-child) cannot express this
+/// choice, which is the verb's entire reason to exist. The walk's
+/// three legs, per the plan's §7 law ("undo to the target's fork then
+/// redo down the chosen sibling to the tip"): undo back to the fork
+/// (the deepest common ancestor of head and target, via the same
+/// `plan_undo` machinery), replan the forward intents along the
+/// fork→target path ([`plan_redo_of_entry`] per step), then keep the
+/// greatest-child walk going ([`plan_redo`]) to the branch's tip — the
+/// head lands on the tip and the receipt names it (the plan's S2 law:
+/// the presented state reflects the branch's head).
+///
+/// # Errors
+///
+/// [`CommandError::TargetNotInLine`] when the target shares no fork
+/// with the head (a stale picker row after an intervening edit, or a
+/// foreign/evicted id); planner refusals mid-walk surface verbatim,
+/// head unmoved from the last committed step — and since an error plan
+/// emits no actions, from the walk's start.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // plan_command's shape; three documented walk legs in one plan
+pub fn plan_redo_to(
+    app: &AppState,
+    outbox: &[PendingOp],
+    journal: &JournalState,
+    target: crate::ids::JournalId,
+    ids: &dyn IdGenerator,
+    defaults: &ReminderDefaults,
+    day: DayCalendar,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+) -> Result<CommandPlan, CommandError> {
+    // The reachability question (the plan's §7 law: "undo to the
+    // target's fork then redo down the chosen sibling to the tip"):
+    // walk both ancestor chains to their deepest common node — the
+    // fork. No common node ⇒ the target is not on the head's tree ⇒
+    // `TargetNotInLine` (the stale-picker-row case).
+    let chain = |journal: &JournalState, mut id: Option<crate::ids::JournalId>| {
+        let mut chain = Vec::new();
+        while let Some(entry_id) = id {
+            chain.push(entry_id);
+            id = journal.entry(entry_id).and_then(|entry| entry.parent);
+        }
+        chain
+    };
+    let head = journal.head.ok_or(CommandError::TargetNotInLine)?;
+    let head_chain = chain(journal, Some(head));
+    let target_chain = chain(journal, Some(target));
+    if target_chain.is_empty() {
+        return Err(CommandError::TargetNotInLine);
+    }
+    let fork = target_chain
+        .iter()
+        .find(|id| head_chain.contains(id))
+        .ok_or(CommandError::TargetNotInLine)?;
+    let mut mirror = WalkMirror::seed(app, outbox, journal);
+    let mut merged = Vec::new();
+    let mut final_entry = head;
+    let budget = walk_budget(journal);
+    // Phase 0: the undo-to-fork leg. While the head sits above the
+    // fork, the walk repeats `plan_undo` until the head lands on it —
+    // the same per-entry D-U2 behaviour `UndoTo` applies.
+    let mut steps = 0;
+    while mirror.journal().head != Some(*fork) {
+        steps += 1;
+        if steps > budget {
+            return Err(CommandError::TargetNotInLine);
+        }
+        let plan = plan_undo(
+            &mirror.app(),
+            &mirror.outbox(),
+            mirror.journal(),
+            UndoScope::Global,
+            ids,
+            defaults,
+            day,
+            now,
+            author,
+        )?;
+        if let CommandOutcome::Undone { entry } = plan.outcome {
+            final_entry = entry;
+        }
+        mirror.advance(&plan.actions);
+        merged.extend(plan.actions);
+    }
+    // Phase 1: the redo-down-the-chosen-sibling leg — the child path
+    // fork→target replanned forward, one [`plan_redo_of_entry`] per
+    // step (each against the previous step's mirror).
+    let child_path: Vec<crate::ids::JournalId>;
+    {
+        // The fork→target path: walk the target's parent pointers back
+        // to the fork, then reverse.
+        let mut path = Vec::new();
+        let mut cursor = Some(target);
+        while let Some(id) = cursor {
+            if id == *fork {
+                break;
+            }
+            path.push(id);
+            cursor = journal.entry(id).and_then(|entry| entry.parent);
+        }
+        if cursor != Some(*fork) {
+            return Err(CommandError::TargetNotInLine);
+        }
+        path.reverse();
+        child_path = path;
+    }
+    for step_id in &child_path {
+        let entry = mirror
+            .journal()
+            .entry(*step_id)
+            .ok_or(CommandError::TargetNotInLine)?;
+        let plan = plan_redo_of_entry(
+            &mirror.app(),
+            &mirror.outbox(),
+            entry,
+            ids,
+            defaults,
+            day,
+            now,
+            author,
+        )?;
+        if let CommandOutcome::Redone { entry } = plan.outcome {
+            final_entry = entry;
+        }
+        mirror.advance(&plan.actions);
+        merged.extend(plan.actions);
+    }
+    // Phase 2: the greatest-child walk to the branch's tip (S2: the
+    // head lands on the tip — the branch's own head).
+    for _ in 0..budget {
+        let Some(tip) = mirror.journal().head else {
+            break;
+        };
+        if mirror.journal().children_of(tip).is_empty() {
+            break;
+        }
+        let plan = plan_redo(
+            &mirror.app(),
+            &mirror.outbox(),
+            mirror.journal(),
+            UndoScope::Global,
+            ids,
+            defaults,
+            day,
+            now,
+            author,
+        )?;
+        if let CommandOutcome::Redone { entry } = plan.outcome {
+            final_entry = entry;
+        }
+        mirror.advance(&plan.actions);
+        merged.extend(plan.actions);
+    }
+    Ok(CommandPlan {
+        actions: merged,
+        outcome: CommandOutcome::Redone { entry: final_entry },
+    })
+}

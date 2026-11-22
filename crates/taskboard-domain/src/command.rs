@@ -256,6 +256,13 @@ pub enum CommandError {
         /// The divergent clocked field.
         field: crate::journal::UndoField,
     },
+    /// A `UndoTo`/`RedoTo` target (UF2, #353) is not reachable from the
+    /// current head: for undo, the id is not an ancestor of the head;
+    /// for redo, it is not a descendant. The stale-picker-row case — an
+    /// intervening edit moved the head between the picker's mount and
+    /// the commit. Typed (`matches!`-asserted), head unmoved.
+    #[error("the target is not on the current undo line")]
+    TargetNotInLine,
     /// `CreateStack`'s undo found the created stack occupied: the tasks
     /// created or moved in since carry no pre-image stamps — presence,
     /// not clock divergence, so it refuses typed instead of cascading
@@ -3385,7 +3392,9 @@ pub fn plan_command(
         StateCommand::Undo
         | StateCommand::Redo
         | StateCommand::UndoOnBoard { .. }
-        | StateCommand::RedoOnBoard { .. } => Err(CommandError::EngineRouted),
+        | StateCommand::RedoOnBoard { .. }
+        | StateCommand::UndoTo { .. }
+        | StateCommand::RedoTo { .. } => Err(CommandError::EngineRouted),
         StateCommand::RequestSync => Ok(CommandPlan {
             actions: Vec::new(),
             outcome: CommandOutcome::SyncRequested,

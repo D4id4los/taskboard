@@ -4890,3 +4890,276 @@ fn a_skip_of_an_empty_window_inverts_to_the_unmarked_row() {
     );
     assert_eq!(h.disk.habits.log[&key].count, 0);
 }
+
+// ---- UF2: the UndoTo/RedoTo walk planners (#353) -----------------------
+
+/// Builds the fork fixture the walk tests share: board → stack → task
+/// "alpha" (entry 1), undo, task "beta" (entry 2) — two sibling
+/// branches under the stack's fork, head on "beta".
+fn fork_fixture() -> (Harness, crate::ids::JournalId, crate::ids::JournalId) {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let _alpha = h.task(stack, "alpha");
+    h.exec(&StateCommand::Undo).expect("undo alpha");
+    let _beta = h.task(stack, "beta");
+    let beta_entry = h.journal.entries.last().expect("beta journaled").id;
+    let alpha_entry = h.journal.entries[h.journal.entries.len() - 2].id;
+    (h, alpha_entry, beta_entry)
+}
+
+/// US-2/AC-1 (W-5): the ancestor walk lands the head exactly on the
+/// target — every intermediate inverse applied (the task the newer
+/// entries created is gone from state), one merged batch, the receipt
+/// naming the walk's final undone entry.
+#[test]
+fn us2_ac1_undo_to_lands_head_exactly_on_target() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let alpha = h.task(stack, "alpha");
+    let beta = h.task(stack, "beta");
+    let gamma = h.task(stack, "gamma");
+    let alpha_entry = h.journal.entries[2].id;
+    let beta_entry = h.journal.entries[3].id;
+    let gamma_entry = h.journal.entries[4].id;
+    // Batch shape: one plan, N steps' inverses, one head move onto the
+    // target (the walk's internal head moves name the interim entries).
+    let plan = h
+        .exec_plan(&StateCommand::UndoTo {
+            target: alpha_entry,
+        })
+        .expect("the ancestor walk commits");
+    let target_moves = plan
+        .actions
+        .iter()
+        .filter(|action| {
+            matches!(action, PersistenceAction::MoveJournalHead(Some(id)) if *id == alpha_entry)
+        })
+        .count();
+    assert_eq!(target_moves, 1, "the walk ends on the target's head move");
+    assert!(matches!(plan.outcome, CommandOutcome::Undone { entry } if entry == beta_entry));
+    assert_eq!(
+        h.journal.head,
+        Some(alpha_entry),
+        "head lands on the target"
+    );
+    assert!(h.journal.entry(gamma_entry).is_some());
+    // The state reflects the earlier point: beta and gamma are gone
+    // (their inverses tombstoned them), alpha still stands.
+    let tasks = h.app().tasks;
+    assert!(tasks.get(&alpha).is_some_and(|task| !task.deleted));
+    assert!(tasks.get(&beta).is_some_and(|task| task.deleted));
+    assert!(tasks.get(&gamma).is_some_and(|task| task.deleted));
+}
+
+/// US-2/AC-2 (W-5): a target not on the current line refuses typed —
+/// `TargetNotInLine` for both verbs, head unmoved — the stale picker
+/// row after an intervening edit. `RedoTo` additionally refuses a
+/// non-descendant sibling that `UndoTo` accepts (the direction law).
+#[test]
+fn us2_ac2_stale_target_refuses_typed() {
+    let (mut h, alpha_entry, beta_entry) = fork_fixture();
+    // Head is beta; alpha is a *sibling*, not an ancestor: UndoTo
+    // refuses typed.
+    let now = h.tick();
+    let err = plan_undo_to(
+        &h.app(),
+        &h.outbox,
+        &h.journal,
+        alpha_entry,
+        &h.ids,
+        &crate::reminders::ReminderDefaults::default(),
+        Harness::day(),
+        now,
+        None,
+    )
+    .expect_err("a sibling is not an ancestor");
+    assert!(matches!(err, CommandError::TargetNotInLine));
+    assert_eq!(h.journal.head, Some(beta_entry), "head unmoved");
+    // And an unknown/evicted id refuses for both verbs (no fork in
+    // common with the head — the stale-picker-row case).
+    let stranger = h.ids.new_journal_id();
+    let now = h.tick();
+    let err = plan_undo_to(
+        &h.app(),
+        &h.outbox,
+        &h.journal,
+        stranger,
+        &h.ids,
+        &crate::reminders::ReminderDefaults::default(),
+        Harness::day(),
+        now,
+        None,
+    )
+    .expect_err("a foreign id is not on the line");
+    assert!(matches!(err, CommandError::TargetNotInLine));
+    let now = h.tick();
+    let err = plan_redo_to(
+        &h.app(),
+        &h.outbox,
+        &h.journal,
+        stranger,
+        &h.ids,
+        &crate::reminders::ReminderDefaults::default(),
+        Harness::day(),
+        now,
+        None,
+    )
+    .expect_err("a foreign id is not reachable");
+    assert!(matches!(err, CommandError::TargetNotInLine));
+}
+
+/// US-1/S2b (W-5): the walk stops at a `NotUndoable` entry on the path
+/// — the planner's own typed refusal surfaces verbatim (never a skip),
+/// and because an error plan emits no actions the head stays exactly
+/// where the walk started.
+#[test]
+fn us1_s2b_walk_stops_at_unreachable_target() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let _alpha = h.task(stack, "alpha");
+    let board_entry = h.journal.entries[0].id;
+    let alpha_entry = h.journal.entries[2].id;
+    // Splice a `NotUndoable` surface entry between the board ceremony
+    // and the task entry (the by-hand construction is the only way to
+    // place a refusing entry below an undoable one — real surfaces
+    // cannot journal a newer entry above an undone line). The walk's
+    // law: the refusal stops the walk before crossing it, and the
+    // ceremony's ancestors stay unreachable with it.
+    let mut fence = h.journal.entries[1].clone();
+    fence.id = h.ids.new_journal_id();
+    fence.parent = Some(board_entry);
+    fence.command = StateCommand::SnoozeReminder {
+        reminder: crate::reminders::ReminderRef::Adhoc(crate::ids::AdhocAlarmId::from_uuid(
+            uuid::Uuid::nil(),
+        )),
+        occurrence: chrono::DateTime::from_timestamp(1_000, 0).expect("timestamp"),
+        postpone: chrono::TimeDelta::try_seconds(600).expect("positive duration"),
+    };
+    fence.facts = UndoFacts::NotUndoable(crate::journal::NotUndoableReason::ReminderSurface);
+    let fence_id = fence.id;
+    h.journal.entries.insert(2, fence);
+    h.journal.entries[3].parent = Some(fence_id);
+    // The splice rides the disk mirror too — the wrapper's exec
+    // re-reads the journal from the persisted shape.
+    h.disk.journal = h.journal.clone();
+    h.sync();
+    let beta_entry = h.journal.entries[3].id;
+    assert_eq!(h.journal.head, Some(beta_entry));
+    // The walk to the board ceremony stops at the fence: the planner's
+    // typed refusal surfaces verbatim (never a skip), and because an
+    // error plan emits no actions the head stays where the walk began.
+    let now = h.tick();
+    let err = plan_undo_to(
+        &h.app(),
+        &h.outbox,
+        &h.journal,
+        board_entry,
+        &h.ids,
+        &crate::reminders::ReminderDefaults::default(),
+        Harness::day(),
+        now,
+        None,
+    )
+    .expect_err("the fence blocks the walk");
+    assert!(
+        matches!(
+            err,
+            CommandError::TargetNotUndoable(crate::journal::NotUndoableReason::ReminderSurface)
+        ),
+        "the walk refuses before crossing the unreachable entry"
+    );
+    assert_eq!(h.journal.head, Some(beta_entry), "head unmoved");
+    // The bounded target just below the fence (the fence itself) still
+    // serves — landing *on* a refusing entry needs no crossing.
+    let outcome = h
+        .exec(&StateCommand::UndoTo { target: fence_id })
+        .expect("the walk stops exactly at the fence");
+    assert!(matches!(outcome, CommandOutcome::Undone { .. }));
+    assert_eq!(h.journal.head, Some(fence_id));
+    // The alpha entry (now parented under the fence) is unchanged.
+    assert_eq!(
+        h.journal.entry(alpha_entry).map(|e| e.parent),
+        Some(Some(fence_id))
+    );
+}
+
+/// US-3/AC-1 (W-5): the regression fence — plain `Redo` keeps the D5
+/// greatest-child choice even with two siblings present. The picker
+/// never changes the reflex's semantics; `RedoTo` is the only way to
+/// the non-greatest branch.
+#[test]
+fn us3_ac1_redo_greatest_child_unchanged_with_siblings() {
+    let (mut h, _alpha_entry, beta_entry) = fork_fixture();
+    // The reflex's starting point is the picker's: the head sits at
+    // the fork (beta undone), two siblings beneath it.
+    h.exec(&StateCommand::Undo)
+        .expect("undo beta back to the fork");
+    let outcome = h.exec(&StateCommand::Redo).expect("redo plans");
+    match outcome {
+        CommandOutcome::Redone { entry } => {
+            assert_eq!(entry, beta_entry, "greatest child (newest) wins");
+        }
+        other => panic!("expected Redone, got {other:?}"),
+    }
+}
+
+/// US-1/S2 (W-5): the sibling walk — `RedoTo` takes the *non-greatest*
+/// branch (the one thing repeated `Redo` cannot express), replans the
+/// forward intents, and lands the head on the chosen branch's tip with
+/// the receipt naming it. The v1 composes: plain `Redo` afterwards has
+/// no children left on the chosen branch.
+#[test]
+fn us1_s2_redo_to_takes_the_chosen_sibling_branch() {
+    let (mut h, alpha_entry, _beta_entry) = fork_fixture();
+    // Without the picker verb, repeated Redo lands on beta (the fence
+    // above); with it, alpha is reachable directly.
+    let now = h.tick();
+    let plan = plan_redo_to(
+        &h.app(),
+        &h.outbox,
+        &h.journal,
+        alpha_entry,
+        &h.ids,
+        &crate::reminders::ReminderDefaults::default(),
+        Harness::day(),
+        now,
+        None,
+    )
+    .expect("the sibling walk plans");
+    // One merged batch, one final head move onto the branch tip.
+    let head_moves = plan
+        .actions
+        .iter()
+        .filter(|action| {
+            matches!(action, PersistenceAction::MoveJournalHead(Some(id)) if *id == alpha_entry)
+        })
+        .count();
+    assert_eq!(head_moves, 1, "the walk ends on the branch tip's move");
+    assert!(matches!(plan.outcome, CommandOutcome::Redone { .. }));
+    // Commit through the wrapper and verify the terminal state.
+    let outcome = h
+        .exec(&StateCommand::RedoTo {
+            target: alpha_entry,
+        })
+        .expect("the sibling walk commits");
+    match outcome {
+        CommandOutcome::Redone { entry } => assert_eq!(entry, alpha_entry, "the tip is named"),
+        other => panic!("expected Redone, got {other:?}"),
+    }
+    assert_eq!(h.journal.head, Some(alpha_entry));
+    // The presented state reflects the chosen branch's head: the walk
+    // undid beta back to the fork, then replanned alpha's forward
+    // intent (a fresh live row — redo is a new edit).
+    let tasks = h.app().tasks;
+    let alpha_live = tasks
+        .values()
+        .any(|task| task.title == "alpha" && !task.deleted);
+    let beta_live = tasks
+        .values()
+        .any(|task| task.title == "beta" && !task.deleted);
+    assert!(alpha_live, "the chosen branch's content is live");
+    assert!(!beta_live, "the abandoned sibling stays parked");
+}
