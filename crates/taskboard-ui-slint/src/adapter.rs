@@ -5605,15 +5605,7 @@ impl Adapter {
                 window.invoke_mask_focus(next);
             } else {
                 let flag = self.walk_reentry.clone();
-                let skip_text_stops =
-                    self.view_state.view() == crate::view_state::ViewId::TaskDetail;
-                Self::dispatch_traversal(
-                    window,
-                    &flag,
-                    backwards,
-                    skip_text_stops,
-                    &self.walk_timer,
-                );
+                Self::dispatch_traversal(window, &flag, backwards, &self.walk_timer);
             }
         }
         // The scroll actions (round-3 D26): the focused container
@@ -5834,7 +5826,6 @@ impl Adapter {
         window: &AppWindow,
         walk_reentry: &Rc<std::cell::Cell<bool>>,
         backwards: bool,
-        skip_text_stops: bool,
         timer: &slint::Timer,
     ) {
         // Deferred (see the field's doc): the callback fires outside
@@ -5871,20 +5862,24 @@ impl Adapter {
                         });
                     }
                 };
-                inject(win, &tab);
-                // The text-input swallow (#1203, round 5 A2): a
+                // The text-input dead-end (#1203, round 5 A2): a
                 // `TextInput` accepts the synthetic Tab without moving
-                // the traversal — the detail's form fields grabbed the
-                // step and the walk dead-ended there (the view's lower
-                // half was unreachable past the effort field). Text
-                // fields are verb-entered, never walk stops — AT THE
-                // DETAIL, where the full form lives: the other views'
-                // stop inventories keep their field stops byte-legacy
-                // (the walk-coverage suites' reading-order contracts).
-                // Re-injection is bounded — one press stays one stop
-                // per FIELD, never a loop.
-                if skip_text_stops {
-                    for _ in 0..4 {
+                // the traversal — the step that LANDS on a field is a
+                // legitimate stop (the fields are ladder stops, the
+                // walk-coverage inventories' reading-order contracts),
+                // but a step FROM a field went nowhere and the walk
+                // dead-ended (the detail's lower half was unreachable
+                // past the effort field). When the walk departs a
+                // field, re-inject until the traversal actually moves
+                // off text focus (bounded — one press stays one stop,
+                // never a loop).
+                let departing_a_field = window
+                    .global::<crate::EditingFacts>()
+                    .get_text_focus_count()
+                    > 0;
+                inject(win, &tab);
+                if departing_a_field {
+                    for _ in 0..3 {
                         if window
                             .global::<crate::EditingFacts>()
                             .get_text_focus_count()

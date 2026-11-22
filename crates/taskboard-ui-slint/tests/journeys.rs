@@ -20148,8 +20148,13 @@ fn us4_s1_cross_board_walk_parks_focus_on_the_row() {
 
 /// US-1/S1+S2 (the census's picker family, rows 5/14): the priority
 /// picker opened from the detail records the origin at open and
-/// restores into the title cell at Escape — the typed fact lands and
-/// the closed cell physically holds slint focus.
+/// restores into the opener's own cell at Escape — the typed fact
+/// lands and the cell physically holds slint focus. DATED
+/// SUPERSESSION 2026-11-22 (round 5 chunk A2, #1205's per-seam
+/// detail restore cells): the r8 pin recorded the title-cell
+/// collapse (kind 4) — the census's single detail cell — which the
+/// chunk law replaces with the opener's own cell (the importance
+/// field, kind 9).
 #[test]
 fn us1_s1_picker_close_restores_the_invoking_field() {
     let (_fixture, state) = fixture::journey_state();
@@ -20169,14 +20174,15 @@ fn us1_s1_picker_close_restores_the_invoking_field() {
             !harness.handle.window().get_task_model().importance_open,
             "the picker closed"
         );
-        // The restore fact: seam PriorityDue (3), anchor kind 4
-        // (the detail's title cell), a fresh nonce.
+        // The restore fact: seam PriorityDue (3), anchor kind 9 (the
+        // importance cell — the opener's own cell, the A2 law), a
+        // fresh nonce.
         let (seam, kind, a, b, nonce) = focus_facts(&*harness);
-        assert_eq!((seam, kind, a, b), (3, 4, -1, -1), "the origin fact");
+        assert_eq!((seam, kind, a, b), (3, 9, -1, -1), "the origin fact");
         assert_eq!(nonce, facts_before.4 + 1, "one-shot edge");
         assert!(
-            focused_carries(&*harness, "value-stop"),
-            "the title cell holds slint focus"
+            focused_carries(&*harness, "field-scope"),
+            "the importance cell's field holds slint focus"
         );
     });
 }

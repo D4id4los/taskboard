@@ -55,10 +55,11 @@ fn open_detail_first_card(harness: &mut JourneyHarness, preset: Preset) {
 
 /// Walks the control ladder until the addressed element holds slint
 /// focus (labels are element addresses, never assertion text). A
-/// ladder step onto a text field arms insert mode; the walk exits it
-/// (the mode flip only — focus stays) and keeps stepping. The guard
-/// bounds the ladder; a miss is a structural finding, not a text
-/// mismatch.
+/// ladder step onto a text field engages insert mode — the in-field
+/// guard lawfully consumes the chords there — so the walk stroke
+/// becomes the native Tab (unbound in the insert chain; the
+/// stop-inventory journey's recorded idiom). The guard bounds the
+/// ladder; a miss is a structural finding, not a text mismatch.
 fn walk_to(harness: &mut JourneyHarness, preset: Preset, address: &str) {
     let mut guard = 0;
     while harness.driver.focused_label().as_deref() != Some(address) {
@@ -67,13 +68,13 @@ fn walk_to(harness: &mut JourneyHarness, preset: Preset, address: &str) {
             "the walk never landed on {address:?} (at {:?})",
             harness.driver.focused_label()
         );
-        if harness.chain().first() == Some(&ContextId::ViInsert) {
+        if harness.chain().contains(&ContextId::ViInsert) {
             harness
                 .driver
-                .press_stroke(parse("Escape").expect("Escape parses"));
-            harness.advance();
+                .press_stroke(parse("Tab").expect("Tab parses"));
+        } else {
+            harness.press_preset(preset, ActionId::NavFocusDown);
         }
-        harness.press_preset(preset, ActionId::NavFocusDown);
         harness.advance();
         guard += 1;
     }
