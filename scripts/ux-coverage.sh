@@ -652,6 +652,31 @@ self_test() {
     rc=1
   fi
 
+  # 16. #1186 relative --root spelling: the fixture prune compares
+  #     canonical paths, so `--root .` (invoked from the scan root)
+  #     must prune identically — the fixture-only probe row reads
+  #     MISSING, no INVENTORY-MISS (pre-a1069da6 EVID_ROOT kept the
+  #     invoked spelling and the prune silently un-pruned).
+  local repo16="$tmp/repo16"
+  mkdir -p "$repo16/scripts/fixtures" "$repo16/tests"
+  cp "${BASH_SOURCE[0]}" "$repo16/scripts/"
+  cp -r "$fx" "$repo16/scripts/fixtures/"
+  printf '// StateCommand variants probe (#967/#1186): this token lives only\n// inside the fixture tree, which is never evidence.\n' \
+    >>"$repo16/scripts/fixtures/ux-coverage-fixture/tree/messages.rs"
+  cp "$fx/tree/tests/"*.rs "$repo16/tests/"
+  (cd "$repo16" && bash scripts/ux-coverage.sh \
+    "$repo16/scripts/fixtures/ux-coverage-fixture/plan-fixturepin.md" \
+    --gate --root . >"$tmp/relroot.out" 2>&1) && code=0 || code=$?
+  c=$(grep -c 'command StateCommand variants → MISSING$' "$tmp/relroot.out" || true)
+  i=$(grep -c 'INVENTORY-MISS (' "$tmp/relroot.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 && $i -eq 0 ]]; then
+    echo "self-test 16 (#1186 relative --root spelling still prunes the fixture tree): PASS"
+  else
+    echo "self-test 16 (#1186 relative --root spelling still prunes the fixture tree): FAIL (exit $code, $c probe MISSING, $i INVENTORY-MISS)"
+    sed 's/^/    /' "$tmp/relroot.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
