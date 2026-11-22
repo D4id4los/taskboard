@@ -28,20 +28,32 @@ pub(crate) const HEADLESS_RENDERER: bool = false;
 mod action_menu_bar_probe_tests;
 #[path = "probes/board_bar_probe_tests.rs"]
 mod board_bar_probe_tests;
+#[path = "probes/board_window_max_probe_tests.rs"]
+mod board_window_max_probe_tests;
 #[path = "probes/dropdown_probe_tests.rs"]
 mod dropdown_probe_tests;
 #[path = "probes/editor_viewport_probe_tests.rs"]
 mod editor_viewport_probe_tests;
 #[path = "probes/focus_seam_probe_tests.rs"]
 mod focus_seam_probe_tests;
+#[path = "probes/habit_history_window_max_probe_tests.rs"]
+mod habit_history_window_max_probe_tests;
 #[path = "probes/menu_shell_probe_tests.rs"]
 mod menu_shell_probe_tests;
 #[path = "probes/overlay_migration_probe_tests.rs"]
 mod overlay_migration_probe_tests;
 #[path = "probes/plan_window_max_probe_tests.rs"]
 mod plan_window_max_probe_tests;
+#[path = "probes/review_window_max_probe_tests.rs"]
+mod review_window_max_probe_tests;
+#[path = "probes/settings_window_max_probe_tests.rs"]
+mod settings_window_max_probe_tests;
 #[path = "probes/slider_grab_probe_tests.rs"]
 mod slider_grab_probe_tests;
+#[path = "probes/stack_window_max_probe_tests.rs"]
+mod stack_window_max_probe_tests;
+#[path = "probes/today_window_max_probe_tests.rs"]
+mod today_window_max_probe_tests;
 #[path = "probes/walk_probe_tests.rs"]
 mod walk_probe_tests;
 #[path = "probes/widget_framework_probe_tests.rs"]

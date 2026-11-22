@@ -59,6 +59,9 @@ export struct HabitHistoryModel {
 }
 
 export component HabitHistoryView inherits Rectangle {
+    // The severing cap (J4 US-3 AC-2; the task-view precedent): the
+    // root's layout merge must never bound the OS window's max width.
+    max-width: Theme.layout-severing-max-width;
     in property <HabitHistoryModel> model;
     // slint: history-month-flipped — the pager's typed delta
     // (−1 back, +1 forward); the adapter clamps at the model's

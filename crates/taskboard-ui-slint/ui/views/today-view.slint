@@ -56,6 +56,9 @@ export struct TodayModel {
 }
 
 export component TodayView inherits FocusScope {
+    // The severing cap (J4 US-3 AC-2; the task-view precedent): the
+    // root's layout merge must never bound the OS window's max width.
+    max-width: Theme.layout-severing-max-width;
     in property <TodayModel> today;
     // The window's logical height, pushed from the app window (the
     // #373 D-7 section bound's base): deliberately NOT a
