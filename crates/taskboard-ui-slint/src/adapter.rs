@@ -1701,6 +1701,17 @@ impl Adapter {
                 _ => {}
             }
         }
+        // US-11 (W-12, #1067): the resume chord mints the series
+        // one-shot from the viewed subject exactly as the recur row's
+        // click seam does — click ≡ key; a subjectless dispatch stays
+        // the typed NoTarget (the router arm's refusal). The guard
+        // keeps a pre-minted seam target (the pointer twin) authoritative.
+        if id == ActionId::SeriesResume
+            && self.series_target.is_none()
+            && let Some(task) = self.view_state.subject_task()
+        {
+            self.series_target = Some(task);
+        }
         let wants = crate::router::route_consumes(id);
         let mut ctx = self.shell.dispatch_ctx();
         if wants.wants(crate::router::OneShotSet::CREATE_TARGET) {
@@ -4600,6 +4611,12 @@ impl Adapter {
                     self.series_target = Some(task);
                     self.recur_pause_open = true;
                     self.recur_confirm_armed = false;
+                    // The open echo rides adapter-owned flags outside
+                    // the state Arc — the unchanged-refresh guard
+                    // would eat the pass (the armed-create-form
+                    // precedent, the HabitConvertArm twin; the US-11
+                    // chord shares the arm, so click ≡ key holds).
+                    self.refresh_forced(window);
                 }
                 Vec::new()
             }

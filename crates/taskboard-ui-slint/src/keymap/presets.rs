@@ -576,6 +576,33 @@ static STANDARD_S0B: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::TaskDetail,
         &["Ctrl+Shift+e"],
     ),
+    // The series row's chords (US-11, W-12, #1067) and the
+    // tracker-kind toggle (US-12, W-13, #1068): the parity remainder's
+    // detail rows. The pause chord's spelling is the R-7 move — the
+    // plan's Ctrl+Shift+r candidate is SeriesEdit's landed round-7
+    // chord in this preset's TaskDetail, the collision authority fails
+    // the suite, and the spelling moves (never a quiet drop); the free
+    // `p` carries the pause mnemonic in every preset. Ctrl+Shift+u is
+    // free in this preset's detail chain. The kind toggle shadows the
+    // global CaptureQuick chord inside the detail chain only — the
+    // context-precedence shadow is the recorded cost (the emacs
+    // C-c Ctrl+s snooze precedent), the identity is distinct
+    // (Ctrl+Shift+k ≠ Ctrl+k).
+    (
+        ActionId::SeriesPause,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+p"],
+    ),
+    (
+        ActionId::SeriesResume,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+u"],
+    ),
+    (
+        ActionId::TaskToggleTracker,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+k"],
+    ),
     // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
     // D-10): the CUA F-key family continues after F10 — F11 free in
     // this preset (F1-F10 and F12 were bound; verified). The
@@ -1037,6 +1064,28 @@ static EMACS_S0B: &[(ActionId, ContextId, &[&str])] = &[
         ActionId::TaskEffortClear,
         ContextId::TaskDetail,
         &["Ctrl+c", "X"],
+    ),
+    // The series row's chords (US-11, W-12, #1067) and the
+    // tracker-kind toggle (US-12, W-13, #1068): the chord spellings
+    // are free in this preset's detail chain — the shared pause/resume
+    // pair (the R-7 note on standard's Ctrl+Shift+r collision does not
+    // reach this preset) and the C-c user-namespace's bare k for the
+    // kind toggle (the plan's emacs candidate; the bare second stroke
+    // rides the row-verb convention).
+    (
+        ActionId::SeriesPause,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+p"],
+    ),
+    (
+        ActionId::SeriesResume,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+u"],
+    ),
+    (
+        ActionId::TaskToggleTracker,
+        ContextId::TaskDetail,
+        &["Ctrl+c", "k"],
     ),
     // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
     // D-10 with the C-5 re-picks recorded): the plan's C-c C-o and
@@ -1560,6 +1609,27 @@ static VI_S1: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::TaskTrackEntries, ContextId::TaskDetail, &["E"]),
     (ActionId::TaskEffortEdit, ContextId::TaskDetail, &["f"]),
     (ActionId::TaskEffortClear, ContextId::TaskDetail, &["F"]),
+    // The series row's chords (US-11, W-12, #1067) and the
+    // tracker-kind toggle (US-12, W-13, #1068): the shared chord
+    // spellings (free in this preset's detail chain; the R-7 note on
+    // standard's Ctrl+Shift+r does not reach here) and the g-family's
+    // free k second stroke for the kind toggle (the plan's vi
+    // candidate; exact-match-first keeps bare k's motion exact).
+    (
+        ActionId::SeriesPause,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+p"],
+    ),
+    (
+        ActionId::SeriesResume,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+u"],
+    ),
+    (
+        ActionId::TaskToggleTracker,
+        ContextId::TaskDetail,
+        &["g", "k"],
+    ),
 ];
 
 static VI_S2: &[(ActionId, ContextId, &[&str])] = &[

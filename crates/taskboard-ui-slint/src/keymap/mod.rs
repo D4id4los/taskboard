@@ -501,6 +501,45 @@ mod tests {
         }
     }
 
+    /// US-11/US-12 (W-12/W-13, #1067/#1068): the series chords and the
+    /// tracker-kind toggle resolve in each preset's detail chain — and
+    /// the kind toggle's binding is distinct from `TaskTrackToggle`'s
+    /// (the R-8 smart verb) in every preset.
+    #[test]
+    fn the_series_and_kind_toggle_rows_resolve_in_the_detail_chains() {
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            let chain: Vec<ContextId> = match preset {
+                Preset::Vi => vec![
+                    ContextId::TaskDetail,
+                    ContextId::ViNormal,
+                    ContextId::Global,
+                ],
+                _ => vec![ContextId::TaskDetail, ContextId::Global],
+            };
+            for verb in [
+                ActionId::SeriesPause,
+                ActionId::SeriesResume,
+                ActionId::TaskToggleTracker,
+            ] {
+                assert!(
+                    keymap.first_binding_display(verb, &chain).is_some(),
+                    "{preset:?} does not resolve {verb} in the detail chain"
+                );
+            }
+            let toggle = keymap
+                .first_binding_display(ActionId::TaskToggleTracker, &chain)
+                .expect("the kind toggle resolves");
+            let smart = keymap
+                .first_binding_display(ActionId::TaskTrackToggle, &chain)
+                .expect("the smart toggle resolves");
+            assert_ne!(
+                toggle, smart,
+                "{preset:?}: the kind toggle and the smart toggle share a binding"
+            );
+        }
+    }
+
     /// T6 — core-verb coverage (D8/D9/D21): every core verb has ≥ 1
     /// binding in every preset, so no preset is a second-class
     /// citizen (Q14). The vi preset additionally carries the mode

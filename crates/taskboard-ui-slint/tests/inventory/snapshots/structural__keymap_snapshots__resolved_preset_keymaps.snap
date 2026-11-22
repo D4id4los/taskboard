@@ -366,11 +366,20 @@ expression: rows
             - Ctrl+Shift+e
           action: task.effort-clear
         - sequence:
+            - Ctrl+Shift+k
+          action: task.toggle-tracker
+        - sequence:
             - Ctrl+Shift+l
           action: label.manage
         - sequence:
+            - Ctrl+Shift+p
+          action: series.pause
+        - sequence:
             - Ctrl+Shift+r
           action: series.edit
+        - sequence:
+            - Ctrl+Shift+u
+          action: series.resume
         - sequence:
             - Up
           action: nav.focus-up
@@ -1043,6 +1052,10 @@ expression: rows
           action: task.track-start
         - sequence:
             - Ctrl+c
+            - k
+          action: task.toggle-tracker
+        - sequence:
+            - Ctrl+c
             - Ctrl+n
           action: task.schedule-tomorrow
         - sequence:
@@ -1085,6 +1098,12 @@ expression: rows
         - sequence:
             - Ctrl+p
           action: nav.focus-up
+        - sequence:
+            - Ctrl+Shift+p
+          action: series.pause
+        - sequence:
+            - Ctrl+Shift+u
+          action: series.resume
         - sequence:
             - Alt+v
           action: view.scroll-up
@@ -1490,14 +1509,24 @@ expression: rows
             - i
           action: task.title-edit
         - sequence:
+            - g
+            - k
+          action: task.toggle-tracker
+        - sequence:
             - Ctrl+Shift+l
           action: label.manage
+        - sequence:
+            - Ctrl+Shift+p
+          action: series.pause
         - sequence:
             - r
           action: series.edit
         - sequence:
             - s
           action: task.scheduled-edit
+        - sequence:
+            - Ctrl+Shift+u
+          action: series.resume
         - sequence:
             - y
           action: task.schedule-today
