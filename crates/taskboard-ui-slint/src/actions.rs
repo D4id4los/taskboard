@@ -1791,7 +1791,8 @@ pub const REGISTRY: &[ActionEntry] = &[
     // The Today compact-move pair (US-14, #1031): internal dispatch
     // ids like the habit pair's — the shared Shift+Up/Down stroke
     // resolves to them by focused row kind (R-8), so no preset rows
-    // exist and the menu never lists them.
+    // exist; the Task group page lists the twins themselves (the menu
+    // rows mint the same one-shot at the dispatch entry).
     ActionEntry {
         id: ActionId::TaskMoveUp,
         label: "Move task up",

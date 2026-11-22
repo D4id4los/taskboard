@@ -1145,6 +1145,9 @@ fn us9_s3_roster_row_verb_uses_own_seam() {
             "the repeat disarms; nothing dispatched"
         );
         harness.assert_commands(&[]);
+    });
+}
+
 // -- US-13: File-to candidate activation (#1030, W-14) -------------------
 
 /// The File-to journeys' fixture (the `journeys.rs` walk fixture's
@@ -1464,6 +1467,32 @@ fn us14_s3_habit_pair_unchanged_on_habit_row() {
         match harness.engine.drain().as_slice() {
             [StateCommand::MoveHabit { order: 5, .. }] => {}
             other => panic!("the habit pair routed unchanged, got {other:?}"),
+        }
+    });
+}
+
+/// US-14/AC-1, menu front (`us14_s4_task_move_menu_row_routes_the_pair`):
+/// the Task group page's twin row dispatches the pair's own id — the
+/// one-shot mints at the shared dispatch entry, so the menu row is
+/// live (click ≡ key: the same command the shared stroke routes).
+#[test]
+fn us14_s4_task_move_menu_row_routes_the_pair() {
+    let (fx, mut state) = fixture::journey_state();
+    let task1 = fx.task1;
+    state.tasks.get_mut(&fx.task0).expect("task0").order = 0;
+    state.tasks.get_mut(&task1).expect("task1").order = 10;
+    support::harness::run_journey(state, move |harness| {
+        harness.handle.dispatch_action(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFirstItem);
+        harness.driver.advance_time(0);
+        // The menu front: the twins' own id, exactly as the Task
+        // group page's row routes it.
+        harness.handle.dispatch_action(ActionId::TaskMoveUp);
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::TaskMoveUp { id }] => assert_eq!(*id, task1),
+            other => panic!("the menu row routed the pair, got {other:?}"),
         }
     });
 }
