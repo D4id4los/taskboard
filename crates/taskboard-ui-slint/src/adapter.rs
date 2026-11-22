@@ -5605,7 +5605,15 @@ impl Adapter {
                 window.invoke_mask_focus(next);
             } else {
                 let flag = self.walk_reentry.clone();
-                Self::dispatch_traversal(window, &flag, backwards, &self.walk_timer);
+                let skip_text_stops =
+                    self.view_state.view() == crate::view_state::ViewId::TaskDetail;
+                Self::dispatch_traversal(
+                    window,
+                    &flag,
+                    backwards,
+                    skip_text_stops,
+                    &self.walk_timer,
+                );
             }
         }
         // The scroll actions (round-3 D26): the focused container
@@ -5826,6 +5834,7 @@ impl Adapter {
         window: &AppWindow,
         walk_reentry: &Rc<std::cell::Cell<bool>>,
         backwards: bool,
+        skip_text_stops: bool,
         timer: &slint::Timer,
     ) {
         // Deferred (see the field's doc): the callback fires outside
@@ -5865,21 +5874,26 @@ impl Adapter {
                 inject(win, &tab);
                 // The text-input swallow (#1203, round 5 A2): a
                 // `TextInput` accepts the synthetic Tab without moving
-                // the traversal — the form's fields grabbed the step
-                // and the walk dead-ended there (the detail's lower
+                // the traversal — the detail's form fields grabbed the
+                // step and the walk dead-ended there (the view's lower
                 // half was unreachable past the effort field). Text
-                // fields are verb-entered, never walk stops: re-inject
-                // past any field the step landed in (bounded — one
-                // press stays one stop per FIELD, never a loop).
-                for _ in 0..4 {
-                    if window
-                        .global::<crate::EditingFacts>()
-                        .get_text_focus_count()
-                        == 0
-                    {
-                        break;
+                // fields are verb-entered, never walk stops — AT THE
+                // DETAIL, where the full form lives: the other views'
+                // stop inventories keep their field stops byte-legacy
+                // (the walk-coverage suites' reading-order contracts).
+                // Re-injection is bounded — one press stays one stop
+                // per FIELD, never a loop.
+                if skip_text_stops {
+                    for _ in 0..4 {
+                        if window
+                            .global::<crate::EditingFacts>()
+                            .get_text_focus_count()
+                            == 0
+                        {
+                            break;
+                        }
+                        inject(win, &tab);
                     }
-                    inject(win, &tab);
                 }
                 reentry.set(false);
             },
