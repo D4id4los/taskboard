@@ -67,6 +67,256 @@ pub(crate) struct StandaloneFixture {
 /// `taskboard-{tag}.toml` with the reminders tick, points the storage
 /// at the fixture's tempdir, and boots the standalone core against
 /// [`RefusingStore`].
+// ---- The predicate-engine fixture (plan `2026-11-22-commands-predicate-coverage` §2) ----
+//
+// The commands-layer decision predicates (selector ambiguity triage,
+// outcome mapping, freshness/wait predicates) need the real engine over
+// a *seeded* persisted state at unit cost. The fixture composes only
+// existing domain fakes (`InMemoryRepository::with_state`,
+// `CountingIds`) plus one shared frozen clock — the wiring is the only
+// new code (the #981 dedup law: no per-test-module local doubles).
+use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
+use taskboard_domain::{
+    Clock, IdGenerator, NotifierMessage, SettingsSnapshot, SyncCommand, SyncReport, SystemEvent,
+    TaskRepository,
+};
+use taskboard_state::{DayRollConfig, spawn_state_engine};
+
+/// The fixture's frozen instant (2023-11-14T22:13:20Z). Deterministic —
+/// the clock-discipline law: no fixture output may depend on the wall
+/// clock (`testing_strategy` §6.1–6.2).
+#[must_use]
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) fn frozen_now() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("the frozen instant exists")
+}
+
+/// A frozen [`Clock`]: `now` is a constant. The one shared impl the
+/// predicate fixture needs (the ~7 scattered local doubles' fold is
+/// #1264, out of scope here).
+#[derive(Debug)]
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) struct FrozenClock;
+
+impl Clock for FrozenClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        frozen_now()
+    }
+}
+
+/// The real engine over the seeded in-memory repo, with quiet lanes.
+/// The fixture owns every lane half the engine holds a receiver for, so
+/// nothing closes early; `shutdown` signals and joins.
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) struct PredicateEngineFixture {
+    /// The engine handle (the predicates' only input surface).
+    pub(crate) engine: taskboard_state::EngineHandle,
+    /// The system broadcast's sender — tests arm `seen_change`-class
+    /// signals by sending here (the engine's `subscribe()` consumers
+    /// observe it).
+    pub(crate) system: tokio::sync::broadcast::Sender<SystemEvent>,
+    sync_out: tokio::sync::mpsc::Sender<SyncCommand>,
+    reports: tokio::sync::mpsc::Sender<SyncReport>,
+    notifier: tokio::sync::mpsc::Sender<NotifierMessage>,
+    join: tokio::task::JoinHandle<()>,
+}
+
+/// Spawns the real state engine over `state` (the sanctioned fake
+/// repository) with [`CountingIds`] and the frozen clock. Quiet lanes:
+/// no sync actor is wired, so `RequestSync` answers `NoOp` — the wait
+/// predicates under test take the engine handle directly.
+///
+/// # Panics
+///
+/// Via `expect` when the engine fails to boot — the in-memory repo
+/// cannot corrupt, so a boot failure is a fixture bug, not test data.
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) async fn predicate_engine(
+    state: taskboard_domain::PersistedState,
+) -> PredicateEngineFixture {
+    let repo: Arc<dyn TaskRepository> = Arc::new(InMemoryRepository::with_state(state));
+    let ids: Arc<dyn IdGenerator> = Arc::new(CountingIds::new());
+    let clock: Arc<dyn Clock> = Arc::new(FrozenClock);
+    let (sync_out, sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
+    let (reports, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
+    let (system, system_rx_parked) = tokio::sync::broadcast::channel::<SystemEvent>(64);
+    let system_rx = system.subscribe();
+    let (notifier, notifications_rx) = tokio::sync::mpsc::channel::<NotifierMessage>(64);
+    let (engine, join) = spawn_state_engine(
+        repo,
+        ids,
+        clock,
+        sync_out.clone(),
+        report_rx,
+        system.clone(),
+        system_rx,
+        notifier.clone(),
+        SettingsSnapshot::default(),
+        DayRollConfig::disabled(),
+        None,
+    )
+    .await
+    .expect("the in-memory repo boots");
+    // Park the receiving halves in this scope tuple so nothing closes
+    // while the engine runs (a closed lane is inert by contract, but
+    // the fixture's quiet-lane shape keeps them open).
+    std::mem::forget((sync_in, notifications_rx, system_rx_parked));
+    PredicateEngineFixture {
+        engine,
+        system,
+        sync_out,
+        reports,
+        notifier,
+        join,
+    }
+}
+
+impl PredicateEngineFixture {
+    /// The published state snapshot (the predicates' `&AppState` input).
+    #[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+    pub(crate) fn state(&self) -> taskboard_domain::AppState {
+        (*self.engine.shared_state().load_full()).clone()
+    }
+
+    /// Signals shutdown and joins the actor (the fixture's teardown).
+    #[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+    pub(crate) async fn shutdown(self) {
+        let _ = self.system.send(SystemEvent::Shutdown);
+        let _ = self.join.await;
+    }
+}
+
+// ---- Seed mints (the PersistedState composers) -----------------------------
+//
+// Fixed-u128 raw ids keep the seeded graphs' identities legible in the
+// assertions. Rows mint all-epoch clocks (remote-wins semantics, the
+// same base the snapshot strategies use) and are open structs — tests
+// edit fields directly instead of growing a parameter per flag.
+
+/// A live, unbound local board from `raw`.
+#[must_use]
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) fn seed_board(raw: u128) -> taskboard_domain::Board {
+    taskboard_domain::Board {
+        id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(raw)),
+        remote: None,
+        title: format!("board {raw:x}"),
+        color: taskboard_domain::Color::new(taskboard_domain::entities::DEFAULT_BOARD_COLOR),
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::BoardClocks {
+            title: taskboard_domain::BoardClocks::epoch(),
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
+        remote_seen: None,
+    }
+}
+
+/// A live stack of `board` from `raw`, at `order`.
+#[must_use]
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) fn seed_stack(
+    raw: u128,
+    board: taskboard_domain::BoardId,
+    order: i64,
+) -> taskboard_domain::Stack {
+    taskboard_domain::Stack {
+        id: taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(raw)),
+        remote: None,
+        board,
+        title: format!("stack {raw:x}"),
+        order,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::StackClocks {
+            title: taskboard_domain::BoardClocks::epoch(),
+            order: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
+        authors: taskboard_domain::entities::StackAuthors::default(),
+        remote_seen: None,
+    }
+}
+
+/// A live, open task of `stack` from `raw`, at `order`.
+#[must_use]
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) fn seed_task(
+    raw: u128,
+    stack: taskboard_domain::StackId,
+    order: i64,
+) -> taskboard_domain::entities::Task {
+    taskboard_domain::entities::Task {
+        id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(raw)),
+        remote: None,
+        title: format!("task {raw:x}"),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack,
+        order,
+        label_memberships: std::collections::BTreeMap::new(),
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
+        archived: false,
+        deleted: false,
+        clocks: all_epoch_task_clocks(),
+        authors: taskboard_domain::entities::TaskAuthors::default(),
+        remote_seen: None,
+        remote_baseline: None,
+    }
+}
+
+/// A live label of `board` from `raw`.
+#[must_use]
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) fn seed_label(raw: u128, board: taskboard_domain::BoardId) -> taskboard_domain::Label {
+    taskboard_domain::Label {
+        id: taskboard_domain::LabelId::from_uuid(uuid::Uuid::from_u128(raw)),
+        remote: None,
+        board,
+        title: format!("label {raw:x}"),
+        color: taskboard_domain::Color::new(taskboard_domain::entities::DEFAULT_BOARD_COLOR),
+        deleted: false,
+        clocks: taskboard_domain::LabelClocks {
+            title: taskboard_domain::BoardClocks::epoch(),
+            color: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
+        authors: taskboard_domain::entities::LabelAuthors::default(),
+        remote_seen: None,
+    }
+}
+
+/// All-epoch task clocks (never locally written; the strategy base).
+#[must_use]
+#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
+pub(crate) fn all_epoch_task_clocks() -> taskboard_domain::entities::TaskClocks {
+    let e = taskboard_domain::BoardClocks::epoch();
+    taskboard_domain::entities::TaskClocks {
+        title: e,
+        description: e,
+        duedate: e,
+        scheduled: e,
+        done: e,
+        position: e,
+        effort: e,
+        importance: e,
+        urgency: e,
+        recur: e,
+        kind: e,
+        archived: e,
+        deleted: e,
+    }
+}
+
 pub(crate) async fn standalone_boot_fixture(tag: &str) -> StandaloneFixture {
     let dir = tempfile::tempdir().expect("tempdir");
     let config_path = dir.path().join(format!("taskboard-{tag}.toml"));
