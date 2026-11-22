@@ -25,6 +25,8 @@ pub(crate) const HEADLESS_RENDERER: bool = true;
 mod board_ceremonies_journeys;
 #[path = "journeys/board_move_journeys.rs"]
 mod board_move_journeys;
+#[path = "journeys/detail_focus_journeys.rs"]
+mod detail_focus_journeys;
 #[path = "journeys/detail_shortcuts_journeys.rs"]
 mod detail_shortcuts_journeys;
 #[path = "journeys/export_journeys.rs"]
