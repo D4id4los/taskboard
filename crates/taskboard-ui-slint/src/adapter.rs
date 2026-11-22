@@ -5843,16 +5843,43 @@ impl Adapter {
                 reentry.set(true);
                 let win = window.window();
                 let tab: slint::SharedString = "\t".into();
-                if backwards {
-                    let shift: slint::SharedString =
-                        slint::platform::Key::into(slint::platform::Key::Shift);
-                    win.dispatch_event(slint::platform::WindowEvent::KeyPressed {
-                        text: shift.clone(),
-                    });
-                    win.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: tab });
-                    win.dispatch_event(slint::platform::WindowEvent::KeyReleased { text: shift });
-                } else {
-                    win.dispatch_event(slint::platform::WindowEvent::KeyPressed { text: tab });
+                let inject = |win: &slint::Window, tab: &slint::SharedString| {
+                    if backwards {
+                        let shift: slint::SharedString =
+                            slint::platform::Key::into(slint::platform::Key::Shift);
+                        win.dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                            text: shift.clone(),
+                        });
+                        win.dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                            text: tab.clone(),
+                        });
+                        win.dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                            text: shift,
+                        });
+                    } else {
+                        win.dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                            text: tab.clone(),
+                        });
+                    }
+                };
+                inject(win, &tab);
+                // The text-input swallow (#1203, round 5 A2): a
+                // `TextInput` accepts the synthetic Tab without moving
+                // the traversal — the form's fields grabbed the step
+                // and the walk dead-ended there (the detail's lower
+                // half was unreachable past the effort field). Text
+                // fields are verb-entered, never walk stops: re-inject
+                // past any field the step landed in (bounded — one
+                // press stays one stop per FIELD, never a loop).
+                for _ in 0..4 {
+                    if window
+                        .global::<crate::EditingFacts>()
+                        .get_text_focus_count()
+                        == 0
+                    {
+                        break;
+                    }
+                    inject(win, &tab);
                 }
                 reentry.set(false);
             },
