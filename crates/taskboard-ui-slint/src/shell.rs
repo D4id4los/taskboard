@@ -78,6 +78,12 @@ pub struct KeymapShell {
     /// makes it total. Adapter-owned VM (not a flow); synced at the
     /// open/close seams.
     pub export_dialog: bool,
+    /// The undo branch picker is open (UF2, #353): a desktop-only
+    /// selection menu mounted off the undo affordance (R-2 — kiosk
+    /// viewers keep the v1 reflex). Pure navigation: the picker
+    /// dispatches nothing until a row commits. Synced by the adapter
+    /// (the `export_dialog` precedent).
+    pub undo_picker: bool,
     pub view: Option<ContextId>,
     /// The [`crate::router::DispatchCtx`] carried to the router.
     pub focused_task: Option<taskboard_domain::TaskId>,
@@ -186,6 +192,9 @@ impl KeymapShell {
         match *effect {
             UiEffect::Exit => return false,
             UiEffect::OpenMenu => {
+                // The picker and the menu are sibling modals (UF2):
+                // opening either closes the other.
+                self.undo_picker = false;
                 self.menu = MenuState {
                     open: true,
                     selected: 0,
@@ -195,7 +204,13 @@ impl KeymapShell {
                     root_selected: 0,
                 };
             }
-            UiEffect::CloseMenu => self.menu = MenuState::default(),
+            UiEffect::CloseMenu => {
+                self.menu = MenuState::default();
+                // The picker's dismissal shares the close (AC-4: an
+                // outside click / Escape closes with nothing
+                // dispatched).
+                self.undo_picker = false;
+            }
             UiEffect::MenuBack => {
                 // Level-aware (round-1 D6): a submenu page steps back
                 // to the root with the cursor restored on the parent
@@ -211,6 +226,10 @@ impl KeymapShell {
                     self.menu.active_group = None;
                     self.menu.selected = self.menu.root_selected;
                     self.menu.len = menu_len;
+                } else if self.undo_picker {
+                    // The picker's Escape ladder (UF2 AC-4): the first
+                    // Escape closes the picker with nothing dispatched.
+                    self.undo_picker = false;
                 } else {
                     self.menu = MenuState::default();
                 }
@@ -224,6 +243,13 @@ impl KeymapShell {
                 if self.menu.len > 0 {
                     self.menu.selected = (self.menu.selected + self.menu.len - 1) % self.menu.len;
                 }
+            }
+            UiEffect::UndoBranchesOpen => {
+                // The picker mount (UF2 W-1): pure navigation — no
+                // command dispatch on open. Mounting closes the menu
+                // (sibling modals).
+                self.menu = MenuState::default();
+                self.undo_picker = true;
             }
             UiEffect::InvokeSelected => {
                 // The adapter performs the close-then-redispatch (D16);

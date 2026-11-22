@@ -254,6 +254,9 @@ pub enum ActionId {
     AppMenu,
     AppUndo,
     AppRedo,
+    /// The undo branch picker's entry (UF2, #353): mounts the
+    /// sibling-branch selection menu (desktop-only; R-2).
+    AppUndoBranches,
     AppSettings,
     AppHelp,
     /// The export dialog's opener (the J2 export plan US-1, D-1):
@@ -731,6 +734,7 @@ impl ActionId {
             Self::AppMenu => "app.menu",
             Self::AppUndo => "app.undo",
             Self::AppRedo => "app.redo",
+            Self::AppUndoBranches => "app.undo-branches",
             Self::AppSettings => "app.settings",
             Self::StatusPanelOpen => "app.status-panel-open",
             Self::AppHelp => "app.help",
@@ -1049,6 +1053,19 @@ pub const REGISTRY: &[ActionEntry] = &[
         enabled: true,
         menu_rank: 40,
         description: "Re-applies the last undone change as a new edit. Content the server deleted is re-created as a new remote card.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::AppUndoBranches,
+        label: "Undo branches…",
+        contexts: GLOBAL,
+        category: Category::Application,
+        enabled: true,
+        // The picker row rides directly behind the v1 pair (the
+        // BF-W-N2 doctrine: the reflex rows first, the less-common
+        // rows after).
+        menu_rank: 50,
+        description: "Opens the undo branch picker: abandoned redo branches and earlier line points, as rows. The plain undo and redo reflexes stay unchanged.",
         menu_group: None,
     },
     ActionEntry {
@@ -2983,6 +3000,7 @@ mod tests {
             ActionId::AppMenu,
             ActionId::AppUndo,
             ActionId::AppRedo,
+            ActionId::AppUndoBranches,
             ActionId::AppSettings,
             ActionId::StatusPanelOpen,
             ActionId::AppHelp,

@@ -11,7 +11,13 @@
 import { BoardCeremonyLetter, CeremonyLetterModel, CeremonyLetterMode } from "compositions/board-ceremony-letter.slint";
 import { Theme, Typography, Semantic, RoleText } from "theme.slint";
 import { Responsive, Breakpoint } from "responsive.slint";
-import { ActionMenu, MenuEntryModel, QuickBarEntryModel } from "compositions/action-menu.slint";
+import {
+    ActionMenu,
+    MenuEntryModel,
+    QuickBarEntryModel,
+    UndoBranchPicker,
+    UndoPickerRowModel,
+} from "compositions/action-menu.slint";
 import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
 import { CaptureOverlay } from "compositions/capture-overlay.slint";
 import { RecurEditor, RecurEditorModel } from "compositions/recur-editor.slint";
@@ -141,6 +147,11 @@ export global KeyboardState {
     // The picker grid's focus mirror (round-3 D25): the adapter
     // pushes the shell fact; the harness chain reads it.
     in-out property <bool> date-picker-grid: false;
+    // The undo branch picker (UF2, #353): the mount bit and the two
+    // row models (the adapter pushes; the composition renders).
+    in-out property <bool> undo-picker-open: false;
+    in-out property <[UndoPickerRowModel]> undo-picker-branch-rows: [];
+    in-out property <[UndoPickerRowModel]> undo-picker-target-rows: [];
 }
 
 // The Q15 startup-warning state (rendered by the status bar).
@@ -1604,6 +1615,33 @@ export component AppWindow inherits Window {
             invoke-quick-bar(index) => root.menu-quick-bar-invoked(index);
         }
 
+        // The undo branch picker (UF2, #353): the backdrop's outside
+        // click dismisses with nothing dispatched (AC-4); the panel
+        // rides the same anchor law as the menu (bounded on all four
+        // edges, below the toolbar, above the status bar).
+        if (KeyboardState.undo-picker-open): undo-picker-backdrop := TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => root.undo-picker-dismissed();
+        }
+        if (KeyboardState.undo-picker-open): UndoBranchPicker {
+            x: max(Theme.space-2,
+                   min((root.width - self.width) / 2,
+                       root.width - self.width - Theme.space-2));
+            y: max(Theme.space-2,
+                   min(Theme.space-6,
+                       status.y - self.height - Theme.space-1));
+            branch-rows: KeyboardState.undo-picker-branch-rows;
+            target-rows: KeyboardState.undo-picker-target-rows;
+            // slint: undo-branches-open (the Rust seam on_undo_branches_open)
+            undo-branches-open() => root.undo-branches-open();
+            undo-line-undo() => root.undo-line-undo();
+            undo-line-redo() => root.undo-line-redo();
+            undo-target-picked(id) => root.undo-target-picked(id);
+            undo-branch-picked(id) => root.undo-branch-picked(id);
+            undo-picker-dismissed() => root.undo-picker-dismissed();
+        }
+
         // The tooltip host (usability D3, round-1 D9/D10): mounted
         // while content exists so the size hand-off can measure it;
         // opacity-0 until the Rust placement lands (`placed`), then
@@ -1932,6 +1970,15 @@ export component AppWindow inherits Window {
     // The D2 dismissal layer: an outside click is a dismissal, not a
     // level-up — the adapter routes the full close.
     pure callback menu-dismiss-requested();
+    // The undo branch picker's seams (UF2, #353): W-1's mount ack, the
+    // plain reflex rows, the W-2/W-3 row seams, and the AC-4
+    // outside-click dismissal.
+    pure callback undo-branches-open();
+    pure callback undo-line-undo();
+    pure callback undo-line-redo();
+    pure callback undo-target-picked(string);
+    pure callback undo-branch-picked(string);
+    pure callback undo-picker-dismissed();
     // The search palette's seams (#348): per-keystroke ranking, the
     // outside-click close, and row activation.
     pure callback palette-query-edited(string);

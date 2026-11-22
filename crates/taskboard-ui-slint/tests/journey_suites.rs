@@ -47,6 +47,8 @@ mod small_gated_journeys;
 mod status_surface_journeys;
 #[path = "journeys/tracker_journeys.rs"]
 mod tracker_journeys;
+#[path = "journeys/undo_ui_branch_picker_journeys.rs"]
+mod undo_ui_branch_picker_journeys;
 #[path = "journeys/undo_ui_reminder_undo_journeys.rs"]
 mod undo_ui_reminder_undo_journeys;
 #[path = "journeys/usability_components.rs"]
