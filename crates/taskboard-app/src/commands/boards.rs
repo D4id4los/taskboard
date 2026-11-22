@@ -1737,3 +1737,435 @@ mod select_listing_tests {
         assert!(validated_listing_entry(&listing2, 4).is_none());
     }
 }
+
+#[cfg(test)]
+mod engine_fixture_tests {
+    use super::*;
+    use crate::test_support::{predicate_engine, seed_board, seed_label, seed_stack, seed_task};
+    use taskboard_domain::{
+        BoardId, ConnectorId, PersistedState, RemoteBoardBinding, RemoteBoardId, RemoteCardId,
+        RemoteCardRef, RemoteLabelId, RemoteLabelRef, RemoteStackId, RemoteStackRef, StackId,
+        SyncCounters, SyncErrorKind, SyncPhase, SyncStates, SyncStatus,
+    };
+    use uuid::Uuid;
+
+    const A: u128 = 0xB1;
+    const B: u128 = 0xB2;
+
+    fn board(raw: u128, remote: Option<RemoteBoardBinding>) -> taskboard_domain::Board {
+        let mut b = seed_board(raw);
+        b.remote = remote;
+        b
+    }
+
+    fn stack(raw: u128, board_raw: u128, deleted: bool, remote: bool) -> taskboard_domain::Stack {
+        let mut s = seed_stack(raw, BoardId::from_uuid(Uuid::from_u128(board_raw)), 0);
+        s.deleted = deleted;
+        if remote {
+            s.remote = Some(RemoteStackRef {
+                board: RemoteBoardId::deck(1),
+                stack: RemoteStackId::deck(u64::try_from(raw).expect("small raw")),
+            });
+        }
+        s
+    }
+
+    fn task(
+        raw: u128,
+        stack_raw: u128,
+        deleted: bool,
+        remote: bool,
+    ) -> taskboard_domain::entities::Task {
+        let mut t = seed_task(raw, StackId::from_uuid(Uuid::from_u128(stack_raw)), 0);
+        t.deleted = deleted;
+        if remote {
+            t.remote = Some(RemoteCardRef {
+                board: RemoteBoardId::deck(1),
+                stack: RemoteStackId::deck(u64::try_from(stack_raw).expect("small raw")),
+                card: RemoteCardId::deck(u64::try_from(raw).expect("small raw")),
+            });
+        }
+        t
+    }
+
+    fn label(raw: u128, board_raw: u128, deleted: bool, remote: bool) -> taskboard_domain::Label {
+        let mut l = seed_label(raw, BoardId::from_uuid(Uuid::from_u128(board_raw)));
+        l.deleted = deleted;
+        if remote {
+            l.remote = Some(RemoteLabelRef {
+                board: RemoteBoardId::deck(1),
+                label: RemoteLabelId::deck(u64::try_from(raw).expect("small raw")),
+            });
+        }
+        l
+    }
+
+    fn bound_deck(deck: u64) -> RemoteBoardBinding {
+        RemoteBoardBinding {
+            connector: ConnectorId::from("nc"),
+            board: RemoteBoardId::deck(deck),
+        }
+    }
+
+    /// The shared graph: board A (deck-bound) with a live+remote and a
+    /// deleted stack, a live+remote and a deleted task on the live
+    /// stack, a live+remote and a deleted label; board B (files-bound)
+    /// with one plain stack/task/label.
+    fn seeded_state() -> PersistedState {
+        let mut p = PersistedState::default();
+        p.boards.insert(
+            BoardId::from_uuid(Uuid::from_u128(A)),
+            board(A, Some(bound_deck(42))),
+        );
+        p.boards.insert(
+            BoardId::from_uuid(Uuid::from_u128(B)),
+            board(
+                B,
+                Some(RemoteBoardBinding {
+                    connector: ConnectorId::from("nc"),
+                    board: RemoteBoardId::files(Uuid::from_u128(B)),
+                }),
+            ),
+        );
+        for s in [
+            stack(0x51, A, false, true),
+            stack(0x52, A, true, false),
+            stack(0x53, B, false, false),
+        ] {
+            p.stacks.insert(s.id, s);
+        }
+        for t in [
+            task(0x61, 0x51, false, true),
+            task(0x62, 0x51, true, false),
+            task(0x63, 0x53, false, false),
+        ] {
+            p.tasks.insert(t.id, t);
+        }
+        for l in [
+            label(0x71, A, false, true),
+            label(0x72, A, true, false),
+            label(0x73, B, false, false),
+        ] {
+            p.labels.insert(l.id, l);
+        }
+        p
+    }
+
+    // ---- read_scope (plan §3 #1) -------------------------------------------
+
+    /// The scoping filters: the named board's *live* descendants only,
+    /// tombstones excluded, the neighbour board's rows invisible, the
+    /// remote refs counted in `descendant_refs`, and the deck payload
+    /// extracted for `bound_remote` (a files binding is `None` here).
+    /// The `s.board == board.id` / `t.is_live()` / `!l.deleted` /
+    /// `as_deck()` flips each move exactly one count or the payload.
+    #[tokio::test]
+    async fn read_scope_scopes_the_live_descendants_and_extracts_the_deck_binding() {
+        let fixture = predicate_engine(seeded_state()).await;
+        let a = BoardId::from_uuid(Uuid::from_u128(A));
+        let scope = read_scope(&fixture.engine, a)
+            .await
+            .expect("board A scopes");
+        assert_eq!(
+            scope.stacks, 2,
+            "A's stacks, tombstone included in the raw set"
+        );
+        assert_eq!(scope.tasks, 1, "only the live task of A's stacks");
+        assert_eq!(scope.labels, 1, "only A's live label");
+        assert_eq!(
+            scope.descendant_refs, 3,
+            "the live+remote stack/task/label refs"
+        );
+        assert_eq!(scope.bound_remote, Some(42));
+        assert_eq!(scope.pending_ops, 0, "the quiet outbox is empty");
+
+        let b = BoardId::from_uuid(Uuid::from_u128(B));
+        let scope = read_scope(&fixture.engine, b)
+            .await
+            .expect("board B scopes");
+        assert_eq!(scope.stacks, 1);
+        assert_eq!(scope.tasks, 1);
+        assert_eq!(scope.labels, 1);
+        assert_eq!(scope.descendant_refs, 0, "B carries no remote refs");
+        assert_eq!(scope.bound_remote, None, "a files binding is not a deck id");
+        fixture.shutdown().await;
+    }
+
+    /// The mid-race miss arm: an id absent from the published state is
+    /// the engine-rejected `UnknownBoard` shape, not a user class.
+    #[tokio::test]
+    async fn read_scope_refuses_a_missing_board_as_the_engine_rejection() {
+        let fixture = predicate_engine(PersistedState::default()).await;
+        let ghost = BoardId::from_uuid(Uuid::from_u128(0x999));
+        let Err(err) = read_scope(&fixture.engine, ghost).await else {
+            panic!("the ghost board must miss");
+        };
+        let CommandError::Engine(boxed) = err else {
+            panic!("the miss is the engine-rejected shape, got {err:?}");
+        };
+        assert!(matches!(*boxed, taskboard_state::ExecuteError::Rejected(
+                taskboard_domain::CommandError::UnknownBoard(id)
+            ) if id == ghost));
+        fixture.shutdown().await;
+    }
+
+    // ---- files_bind_on (plan §3 #3) -----------------------------------------
+
+    /// A live unbound board binds onto the files tier: the committed
+    /// binding is the files remote minted from the board's own uuid.
+    #[tokio::test]
+    async fn files_bind_on_binds_a_live_unbound_board() {
+        let mut p = PersistedState::default();
+        let b = seed_board(0xB3);
+        let id = b.id;
+        p.boards.insert(id, b);
+        let fixture = predicate_engine(p).await;
+        files_bind_on(&fixture.engine, id).await.expect("binds");
+        let bound = fixture.state().boards[&id].clone();
+        assert_eq!(
+            bound.remote.expect("bound").board.as_files(),
+            Some(id.as_uuid()),
+            "the files remote id mints from the board uuid"
+        );
+        fixture.shutdown().await;
+    }
+
+    /// The live-row refusal table: unknown, tombstoned, archived, and
+    /// already-bound (deck-bound and files-bound refuse alike) — each
+    /// typed before the bind command runs (US-2/S2–S3).
+    #[tokio::test]
+    async fn files_bind_on_refuses_the_gone_and_bound_rows_typedly() {
+        let mut p = PersistedState::default();
+        let mut deleted = seed_board(0xB4);
+        deleted.deleted = true;
+        let mut archived = seed_board(0xB5);
+        archived.archived = true;
+        let mut bound = seed_board(0xB6);
+        bound.remote = Some(bound_deck(7));
+        let (del_id, arc_id, bound_id) = (deleted.id, archived.id, bound.id);
+        p.boards.insert(deleted.id, deleted);
+        p.boards.insert(archived.id, archived);
+        p.boards.insert(bound.id, bound);
+        let fixture = predicate_engine(p).await;
+        let ghost = BoardId::from_uuid(Uuid::from_u128(0x999));
+
+        let engine_rejected = |err: CommandError| -> taskboard_domain::CommandError {
+            let CommandError::Engine(boxed) = err else {
+                panic!("expected the engine-rejected shape, got {err:?}");
+            };
+            match *boxed {
+                taskboard_state::ExecuteError::Rejected(rejected) => rejected,
+                other => panic!("expected a rejection, got {other:?}"),
+            }
+        };
+        let err = engine_rejected(
+            files_bind_on(&fixture.engine, ghost)
+                .await
+                .expect_err("ghost"),
+        );
+        assert!(matches!(err, taskboard_domain::CommandError::UnknownBoard(id) if id == ghost));
+        let err = engine_rejected(
+            files_bind_on(&fixture.engine, del_id)
+                .await
+                .expect_err("deleted"),
+        );
+        assert!(matches!(err, taskboard_domain::CommandError::BoardDeleted(id) if id == del_id));
+        assert!(matches!(
+            files_bind_on(&fixture.engine, arc_id).await,
+            Err(CommandError::BoardArchived { board }) if board == arc_id
+        ));
+        let err = engine_rejected(
+            files_bind_on(&fixture.engine, bound_id)
+                .await
+                .expect_err("bound"),
+        );
+        assert!(
+            matches!(err,
+                taskboard_domain::CommandError::BoardAlreadyBound { board, bound }
+                    if board == bound_id && bound == RemoteBoardId::deck(7)),
+            "the bound guard is the duplicate-publish risk's enforcer"
+        );
+        fixture.shutdown().await;
+    }
+
+    // ---- publish_on's pre-IO guards (plan §3 #2) -----------------------------
+
+    fn dead_client() -> DeckClient {
+        DeckClient::new("http://127.0.0.1:9", "alice", "pw").expect("client builds")
+    }
+
+    /// The bound-board guard: a deck-bound board refuses with
+    /// `BoardAlreadyBound` *before* any remote create runs (the
+    /// duplicate-publish risk the mutation would unlock). The dead
+    /// client proves no IO attempt happened on the refusal path.
+    #[tokio::test]
+    async fn publish_on_refuses_an_already_bound_board_before_io() {
+        let mut p = PersistedState::default();
+        let b = board(0xB7, Some(bound_deck(42)));
+        let id = b.id;
+        p.boards.insert(id, b);
+        let fixture = predicate_engine(p).await;
+        let client = dead_client();
+        let Err(err) = publish_on(
+            &fixture.engine,
+            &client,
+            None,
+            Duration::from_millis(50),
+            &ConnectorId::from("nc"),
+        )
+        .await
+        else {
+            panic!("bound boards refuse");
+        };
+        let CommandError::Engine(boxed) = err else {
+            panic!("the bound guard folds into the engine rejection shape, got {err:?}");
+        };
+        assert!(matches!(*boxed,
+            taskboard_state::ExecuteError::Rejected(
+                taskboard_domain::CommandError::BoardAlreadyBound { board, bound }
+            ) if board == id && bound == RemoteBoardId::deck(42)));
+        fixture.shutdown().await;
+    }
+
+    /// A `--board` id that names nothing refuses the engine-rejected
+    /// unknown shape (resolution precedes IO).
+    #[tokio::test]
+    async fn publish_on_refuses_an_unknown_board_before_io() {
+        let fixture = predicate_engine(PersistedState::default()).await;
+        let ghost = BoardId::from_uuid(Uuid::from_u128(0x999));
+        let client = dead_client();
+        let Err(err) = publish_on(
+            &fixture.engine,
+            &client,
+            Some(ghost),
+            Duration::from_millis(50),
+            &ConnectorId::from("nc"),
+        )
+        .await
+        else {
+            panic!("the ghost board refuses");
+        };
+        let CommandError::Engine(boxed) = err else {
+            panic!("the unknown shape is the engine rejection, got {err:?}");
+        };
+        assert!(matches!(*boxed,
+            taskboard_state::ExecuteError::Rejected(taskboard_domain::CommandError::UnknownBoard(id)) if id == ghost));
+        fixture.shutdown().await;
+    }
+
+    // ---- wait_for_adoption (plan §3 #4) ---------------------------------------
+
+    fn row(phase: SyncPhase, cycles: u64) -> SyncStatus {
+        SyncStatus {
+            counters: SyncCounters {
+                cycles,
+                ..SyncCounters::default()
+            },
+            phase,
+            last_success: None,
+            ..SyncStatus::default()
+        }
+    }
+
+    fn adopted_state(sync_row: SyncStatus) -> PersistedState {
+        let mut p = PersistedState::default();
+        let b = board(0xB8, Some(bound_deck(7)));
+        let id = b.id;
+        p.boards.insert(id, b);
+        p.sync = SyncStates::with_row(id, sync_row);
+        p
+    }
+
+    /// Fresh settled + Idle + the binding present ⇒ the receipt (the
+    /// `fresh_settled` deletion never returns success — this positive
+    /// case flips).
+    #[tokio::test]
+    async fn wait_for_adoption_returns_the_receipt_when_fresh_settled_and_bound() {
+        let p = adopted_state(row(SyncPhase::Idle, 1));
+        let id = BoardId::from_uuid(Uuid::from_u128(0xB8));
+        let fixture = predicate_engine(p).await;
+        let receipt = wait_for_adoption(
+            &fixture.engine,
+            id,
+            RemoteBoardId::deck(7),
+            None,
+            Duration::from_millis(200),
+        )
+        .await
+        .expect("fresh settled adoption");
+        assert_eq!(receipt.board.id, 7);
+        fixture.shutdown().await;
+    }
+
+    /// A fresh `Failed` phase is the typed `SyncFailed` carrying the
+    /// classification.
+    #[tokio::test]
+    async fn wait_for_adoption_carries_a_fresh_failure() {
+        let p = adopted_state(row(
+            SyncPhase::Failed {
+                last_error: SyncErrorKind::Network,
+            },
+            1,
+        ));
+        let id = BoardId::from_uuid(Uuid::from_u128(0xB8));
+        let fixture = predicate_engine(p).await;
+        let err = wait_for_adoption(
+            &fixture.engine,
+            id,
+            RemoteBoardId::deck(7),
+            None,
+            Duration::from_millis(200),
+        )
+        .await
+        .expect_err("fresh failure");
+        assert!(matches!(
+            err,
+            CommandError::SyncFailed(SyncErrorKind::Network)
+        ));
+        fixture.shutdown().await;
+    }
+
+    /// A stale `Syncing` row identical to the startup snapshot is never
+    /// fresh — the wait runs to the deadline and answers `SyncTimedOut`
+    /// (the `fresh_settled` staleness conjunct; virtual clock).
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_adoption_times_out_on_a_stale_syncing_row() {
+        let stale = row(SyncPhase::Syncing, 0);
+        let p = adopted_state(stale.clone());
+        let id = BoardId::from_uuid(Uuid::from_u128(0xB8));
+        let fixture = predicate_engine(p).await;
+        let err = wait_for_adoption(
+            &fixture.engine,
+            id,
+            RemoteBoardId::deck(7),
+            Some(&stale),
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("never settles");
+        assert!(matches!(err, CommandError::SyncTimedOut));
+        fixture.shutdown().await;
+    }
+
+    /// The `binding_present` conjunct's own test: a fresh settled row
+    /// with the board bound to a *different* remote keeps waiting to
+    /// the deadline — the receipt promises the binding too.
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_adoption_keeps_waiting_while_the_binding_mismatches() {
+        let mut p = adopted_state(row(SyncPhase::Idle, 1));
+        let id = BoardId::from_uuid(Uuid::from_u128(0xB8));
+        p.boards.get_mut(&id).expect("seeded").remote = Some(bound_deck(99));
+        let fixture = predicate_engine(p).await;
+        let err = wait_for_adoption(
+            &fixture.engine,
+            id,
+            RemoteBoardId::deck(7),
+            None,
+            Duration::from_millis(50),
+        )
+        .await
+        .expect_err("the mismatched binding is not adoption");
+        assert!(matches!(err, CommandError::SyncTimedOut));
+        fixture.shutdown().await;
+    }
+}

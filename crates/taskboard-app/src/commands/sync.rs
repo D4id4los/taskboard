@@ -577,3 +577,183 @@ mod resurrect_fold_tests {
         assert_eq!(resurrected_tasks(&[]).len(), 0);
     }
 }
+
+#[cfg(test)]
+mod wait_tests {
+    use super::{SyncOutcome, wait_for_sync_result};
+    use crate::test_support::{PredicateEngineFixture, predicate_engine, seed_board};
+    use std::time::Duration;
+    use taskboard_domain::{
+        ConnectorId, PersistedState, RemoteBoardBinding, RemoteBoardId, SyncCounters,
+        SyncErrorKind, SyncPhase, SyncStates, SyncStatus,
+    };
+
+    const BOARD: u128 = 0xC1;
+    const SPAM_BOARD: u128 = 0xC2;
+
+    fn status(cycles: u64, phase: SyncPhase) -> SyncStatus {
+        SyncStatus {
+            counters: SyncCounters {
+                cycles,
+                ..SyncCounters::default()
+            },
+            phase,
+            last_success: None,
+            ..SyncStatus::default()
+        }
+    }
+
+    /// One deck-bound board carrying the seeded sync row (the aggregate
+    /// fold over a single row is the row itself).
+    fn seeded(row: SyncStatus) -> PersistedState {
+        let mut p = PersistedState::default();
+        let mut b = seed_board(BOARD);
+        b.remote = Some(RemoteBoardBinding {
+            connector: ConnectorId::from("nc"),
+            board: RemoteBoardId::deck(1),
+        });
+        let id = b.id;
+        p.boards.insert(id, b);
+        // The unbound twin the signal spam renames (a bound board's
+        // rename would flip its row to `Syncing`).
+        let spam = seed_board(SPAM_BOARD);
+        p.boards.insert(spam.id, spam);
+        p.sync = SyncStates::with_row(id, row);
+        p
+    }
+
+    /// Boots the fixture over the seeded row; `startup` is the explicit
+    /// pre-nudge snapshot the wait decides freshness against (the
+    /// single-read capture law — never re-read).
+    async fn fixture_with(
+        row: SyncStatus,
+        startup: SyncStatus,
+    ) -> (PredicateEngineFixture, SyncStatus) {
+        let fixture = predicate_engine(seeded(row)).await;
+        (fixture, startup)
+    }
+
+    /// The pre-nudge snapshot of a core that has not seen a report yet:
+    /// the zero cycle, Idle default.
+    fn fresh_startup() -> SyncStatus {
+        SyncStatus::default()
+    }
+
+    /// Fresh cycle + Idle ⇒ `Succeeded` (the generation counter
+    /// advanced past the startup snapshot).
+    #[tokio::test]
+    async fn a_fresh_idle_cycle_is_succeeded() {
+        let (fixture, startup) = fixture_with(status(1, SyncPhase::Idle), fresh_startup()).await;
+        let outcome =
+            wait_for_sync_result(&fixture.engine, &startup, Duration::from_millis(200), None).await;
+        assert!(matches!(outcome, SyncOutcome::Succeeded(_)));
+        fixture.shutdown().await;
+    }
+
+    /// Fresh cycle + `Failed` ⇒ `Failed` carrying the classification.
+    #[tokio::test]
+    async fn a_fresh_failure_is_failed() {
+        let (fixture, startup) = fixture_with(
+            status(
+                1,
+                SyncPhase::Failed {
+                    last_error: SyncErrorKind::Network,
+                },
+            ),
+            fresh_startup(),
+        )
+        .await;
+        let outcome =
+            wait_for_sync_result(&fixture.engine, &startup, Duration::from_millis(200), None).await;
+        assert!(matches!(
+            outcome,
+            SyncOutcome::Failed(SyncErrorKind::Network, _)
+        ));
+        fixture.shutdown().await;
+    }
+
+    /// A stale persisted `Failed` identical to the startup snapshot
+    /// publishes nothing (S0-indistinguishability): the wait runs to
+    /// the deadline and reports the phase it is stuck with — `Failed`
+    /// (the loop's own doc names this leg; it is *not* an early fresh
+    /// verdict, which the next test pins by the signal arm).
+    #[tokio::test(start_paused = true)]
+    async fn a_stale_persisted_failure_never_becomes_a_fresh_verdict() {
+        let stale = status(
+            0,
+            SyncPhase::Failed {
+                last_error: SyncErrorKind::Network,
+            },
+        );
+        let (fixture, startup) = fixture_with(stale.clone(), stale).await;
+        let outcome =
+            wait_for_sync_result(&fixture.engine, &startup, Duration::from_millis(50), None).await;
+        assert!(
+            matches!(outcome, SyncOutcome::Failed(SyncErrorKind::Network, _)),
+            "the deadline leg reports the stale phase verbatim"
+        );
+        fixture.shutdown().await;
+    }
+
+    /// The signal-armed leg: a state change was published (the seen
+    /// signal) while the row is still the stale `Failed` — the wait
+    /// returns `Failed` long before its (virtual) deadline. The
+    /// `seen_change || status != startup` flip (`||` → `&&`) keeps
+    /// waiting out the whole deadline instead — the same variant, an
+    /// order of magnitude later, so the pin is the early arm firing
+    /// without fresh counters.
+    #[tokio::test(start_paused = true)]
+    async fn a_published_change_arms_the_stale_failure_leg() {
+        let stale = status(
+            0,
+            SyncPhase::Failed {
+                last_error: SyncErrorKind::Auth,
+            },
+        );
+        let (fixture, startup) = fixture_with(stale.clone(), stale).await;
+        let engine = fixture.engine.clone();
+        let waiter = tokio::spawn(async move {
+            wait_for_sync_result(&engine, &startup, Duration::from_secs(600), None).await
+        });
+        // A 50 ms-cadence publish spam (virtual time): the waiter's
+        // subscription arms inside its first loop pass, so one of the
+        // publishes is guaranteed observed well inside its deadline —
+        // the arm-before-evidence race cannot starve the `seen_change`
+        // conjunct. `UpdateSettings` is the one accepted command that
+        // publishes and signals *unconditionally* (a no-op-planned
+        // edit signals nothing, and a bound board's rename would mark
+        // its row `Syncing`, masking the stale-Failed leg under the
+        // patience arm) — and it never touches the watched sync rows.
+        let spam_engine = fixture.engine.clone();
+        let spam = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let command = taskboard_domain::StateCommand::UpdateSettings {
+                    settings: taskboard_domain::SettingsSnapshot::default(),
+                };
+                if spam_engine.execute(command).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let outcome = waiter.await.expect("the waiter completes");
+        spam.abort();
+        assert!(matches!(
+            outcome,
+            SyncOutcome::Failed(SyncErrorKind::Auth, _)
+        ));
+        fixture.shutdown().await;
+    }
+
+    /// No report ever lands (a stale Idle row) ⇒ `TimedOut` at the
+    /// deadline — the honest no-evidence answer.
+    #[tokio::test(start_paused = true)]
+    async fn a_stale_idle_row_times_out() {
+        let idle = status(0, SyncPhase::Idle);
+        let (fixture, startup) = fixture_with(idle.clone(), idle).await;
+        let outcome =
+            wait_for_sync_result(&fixture.engine, &startup, Duration::from_millis(50), None).await;
+        assert!(matches!(outcome, SyncOutcome::TimedOut(_)));
+        fixture.shutdown().await;
+    }
+}
