@@ -53,6 +53,13 @@ export component MultiLineEditor inherits Rectangle {
     // the input holds focus and the buffer is non-empty; click fires
     // the same `accepted` seam — click ≡ Shift+Return.
     in property <bool> commit-affordance: false;
+    // The armed ring (US-5/W-5, D-F5's census-rider clause; round 5
+    // A2, #1204): the host's arm path — an armed-but-not-focused
+    // editor (the walk/restore case, the mount handoff's moments)
+    // renders the focus ring beside the input's own has-focus. The
+    // input mirror stays the commit affordance's input; this input
+    // only widens the border's OR.
+    in property <bool> armed: false;
 
     callback edited(string);
     callback accepted(string);
@@ -87,6 +94,10 @@ export component MultiLineEditor inherits Rectangle {
     // affordance's visibility rule, and the host's EditingFacts
     // reads all consult it.
     out property <bool> input-has-focus;
+    // The ring's typed observation seam (the probe-catalogue rule):
+    // the border's OR — the input's own focus beside the host's arm
+    // path (#1204's armed ring).
+    out property <bool> ring-visible: input-has-focus || armed;
 
     // The programmatic focus seam: the branch observes the token and
     // grabs (a root function cannot reach into the conditional
@@ -111,7 +122,7 @@ export component MultiLineEditor inherits Rectangle {
     // placeholder-derived floor is retired with it.
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
-    border-width: input-has-focus ? Theme.focus-ring-width : 0;
+    border-width: ring-visible ? Theme.focus-ring-width : 0;
     border-color: Semantic.focus-ring;
     clip: true;
     min-width: Theme.space-15;
