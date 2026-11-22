@@ -1737,7 +1737,8 @@ pub enum HabitsCmd {
         /// resolve — no title leg, tombstoned rows may share titles).
         habit: String,
     },
-    /// The habit's history: the canonical log windows with typed    /// states (met/pending/missed), chronological (HF3, US-7). A
+    /// The habit's history: the canonical log windows with typed
+    /// states (the grid vocabulary), chronological (HF3, US-7). A
     /// tombstoned habit's log still renders (US-7 AC-5).
     History {
         /// The habit (uuid | prefix | exact title — tombstones match
