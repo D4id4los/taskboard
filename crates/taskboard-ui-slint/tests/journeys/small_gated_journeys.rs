@@ -5,17 +5,24 @@
 //! chunk SB1's wiring rows): US-1 (the capture overlay's outside
 //! click commits the draft), US-2 (the recur editor's outside click
 //! accepts the staged pattern), US-3 (the banner mute control is
-//! direction-aware). SB2/PR1/PR2 add their rows to this shared file.
+//! direction-aware). SB2 adds US-4 (the read-only `ConfigReload`
+//! lane),
+//! US-5 (the Files row's `poll_secs` field), and US-6 (the degraded-boot
+//! badge).
 
 use crate::support;
 
-use support::driver::JourneyDriver as _;
+use support::driver::{DriverOptions, JourneyDriver as _, SlintDriver};
 use support::fixture;
+use support::harness::Harness;
 
 use chrono::TimeZone as _;
-use taskboard_domain::StateCommand;
+use slint::ComponentHandle as _;
+use taskboard_domain::{AppState, ConfigReloadOutcome, StateCommand, SystemEvent};
 use taskboard_ui_slint::actions::ActionId;
 use taskboard_ui_slint::keymap::stroke::parse;
+use taskboard_ui_slint::requests::{ApplySemantics, SettingsSnapshot, UiRequest};
+use taskboard_ui_slint::{ConfigReloadLaneState, FieldValidity, SettingsModel, SettingsOutcome};
 
 /// A fixed past due date (local midnight, UTC-typed like the
 /// domain's stamps): the overdue-banner predicate `duedate < now`
@@ -297,5 +304,325 @@ fn us3_s2_banner_mute_preserved() {
             task: task1,
             muted: true,
         }]);
+    });
+}
+
+/// The merged binary's one-platform mode (the suite's invariant).
+pub(crate) const HEADLESS_RENDERER: bool = true;
+
+fn run(body: impl FnOnce(AppState) + Send + 'static) {
+    let (_fixture, state) = fixture::golden_state();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: HEADLESS_RENDERER,
+        },
+        move |_driver| body(state),
+    );
+}
+
+fn harness_with(state: AppState, snapshot: SettingsSnapshot) -> Harness {
+    let settings = taskboard_ui_slint::UiSettings {
+        general: snapshot,
+        ..taskboard_ui_slint::UiSettings::default()
+    };
+    Harness::mount_with_settings(SlintDriver::default(), state, settings)
+}
+
+fn plain_harness(state: AppState) -> Harness {
+    Harness::mount_with_settings(
+        SlintDriver::default(),
+        state,
+        taskboard_ui_slint::UiSettings::default(),
+    )
+}
+
+/// The empty listing reply (the mount auto-lists' happy path).
+fn no_rows() -> Vec<taskboard_ui_slint::requests::RemoteBoardRow> {
+    Vec::new()
+}
+
+/// Answers the mount auto-lists so the request lane is clear for the
+/// test's own requests (the general-editor journeys' helper shape).
+fn settle_auto_lists(harness: &Harness) {
+    for request in harness.drain_requests() {
+        let UiRequest::ListRemoteBoards { reply, .. } = request else {
+            panic!("the mount routed only auto-lists");
+        };
+        reply.send(Ok(no_rows())).expect("the reply lane is alive");
+    }
+    harness.handle.drain_auto_listings();
+}
+
+/// The lane fixture: typed values, the poll key's `Live` verdict (the
+/// registry's own).
+fn snapshot_with_poll(poll_secs: Option<u64>) -> SettingsSnapshot {
+    let mut applies = std::collections::BTreeMap::new();
+    applies.insert("files_sync.poll_secs".to_owned(), ApplySemantics::live());
+    SettingsSnapshot {
+        day_start_time: chrono::NaiveTime::from_hms_opt(5, 30, 0).expect("fixture time"),
+        reminders_enabled: true,
+        reminder_tick_secs: 30,
+        reminder_before: "5m".to_owned(),
+        reminder_sink: taskboard_ui_slint::requests::ReminderSink::Auto,
+        poll_interval_secs: 30,
+        backoff_initial_secs: 5,
+        backoff_max_secs: 300,
+        due_soon_days: 1,
+        focus_enabled: false,
+        focus_work_mins: 25,
+        focus_break_mins: 5,
+        focus_chain: false,
+        focus_long_break_mins: 15,
+        focus_long_break_every: 4,
+        focus_notify: false,
+        files_sync_enabled: false,
+        files_sync_poll_secs: poll_secs,
+        files_sync_anchor: None,
+        env_overridden: std::collections::BTreeSet::new(),
+        facts: Vec::new(),
+        applies,
+    }
+}
+
+// -- US-4: the ConfigReload read-only lane (W-5, R-3) -----------------
+
+/// US-4/S1 (AC-1): an applied reload outcome folds the lane to the
+/// applied state — the typed presentation enum, never prose.
+#[test]
+fn us4_s1_reload_outcome_folds_applied() {
+    run(|state| {
+        let harness = plain_harness(state);
+        harness
+            .handle
+            .observe_system_event(&SystemEvent::ConfigReload(ConfigReloadOutcome::Applied));
+        let window = harness.handle.window();
+        let model = window.global::<SettingsModel>();
+        assert_eq!(
+            model.get_reload_lane_state(),
+            ConfigReloadLaneState::Applied,
+            "the applied outcome folds to the applied lane state"
+        );
+    });
+}
+
+/// US-4/S2 (AC-2): a refused outcome folds to the kept-last-known-good
+/// state — the kiosk operator's "why did my edit not take effect"
+/// answer, as a typed fold.
+#[test]
+fn us4_s2_refused_folds_kept() {
+    run(|state| {
+        let harness = plain_harness(state);
+        // Both refusal classes fold identically (the plan's rows name
+        // the kept state, not the decode stage).
+        harness
+            .handle
+            .observe_system_event(&SystemEvent::ConfigReload(
+                ConfigReloadOutcome::RefusedDecode,
+            ));
+        let window = harness.handle.window();
+        let model = window.global::<SettingsModel>();
+        assert_eq!(
+            model.get_reload_lane_state(),
+            ConfigReloadLaneState::Kept,
+            "a decode refusal folds to kept-last-known-good"
+        );
+        harness
+            .handle
+            .observe_system_event(&SystemEvent::ConfigReload(
+                ConfigReloadOutcome::RefusedValidate,
+            ));
+        assert_eq!(
+            model.get_reload_lane_state(),
+            ConfigReloadLaneState::Kept,
+            "a validate refusal folds to kept-last-known-good"
+        );
+    });
+}
+
+/// US-4 AC-3 (R-3, structural): the lane consumes the broadcast and
+/// dispatches nothing — no command reaches the engine and no request
+/// reaches the app lane, from either outcome class.
+#[test]
+fn us4_s3_lane_installs_no_command_callbacks() {
+    run(|state| {
+        let mut harness = plain_harness(state);
+        harness
+            .handle
+            .observe_system_event(&SystemEvent::ConfigReload(ConfigReloadOutcome::Applied));
+        harness
+            .handle
+            .observe_system_event(&SystemEvent::ConfigReload(
+                ConfigReloadOutcome::RefusedValidate,
+            ));
+        harness.assert_commands(&[]);
+        assert!(
+            harness.drain_requests().is_empty(),
+            "the read-only lane dispatches no app request"
+        );
+    });
+}
+
+// -- US-5: the Files row's poll_secs field (W-6, R-4) -----------------
+
+/// US-5/S1 (AC-1's UI seam): committing the field routes exactly one
+/// typed `SetFilesSyncPollSecs` intent with the parsed payload — the
+/// same staged-edit grammar every general field rides; the
+/// whole-snapshot `UpdateSettings` leg is pinned app-side
+/// (`us5_s1_poll_secs_rides_update_settings` in taskboard-app).
+#[test]
+fn us5_s1_poll_secs_rides_update_settings() {
+    run(|state| {
+        let mut harness = harness_with(state, snapshot_with_poll(Some(60)));
+        harness.press(ActionId::AppSettings);
+        settle_auto_lists(&harness);
+        let window = harness.handle.window();
+        let model = window.global::<SettingsModel>();
+
+        // The echo renders the committed snapshot value.
+        assert_eq!(model.get_files_poll_echo(), "60");
+        // Stage per keystroke, commit on Return's seam.
+        window.invoke_settings_field_edited(16, "90".into());
+        assert_eq!(model.get_files_poll_echo(), "90", "the draft is the echo");
+        window.invoke_files_poll_secs_committed(16, "90".into());
+        let mut requests = harness.drain_requests();
+        assert_eq!(requests.len(), 1, "exactly one typed intent");
+        let UiRequest::SetFilesSyncPollSecs { secs, reply } = requests.remove(0) else {
+            panic!("the poll intent routed");
+        };
+        assert_eq!(secs, 90, "the minted payload rides the lane");
+        // The reply echoes the fresh file value; the echo follows the
+        // reply, never the click.
+        reply
+            .send(Ok(snapshot_with_poll(Some(90))))
+            .expect("the reply lane is alive");
+        harness.handle.drain_setting_replies();
+        assert_eq!(model.get_files_poll_echo(), "90");
+        assert_eq!(model.get_last_outcome(), SettingsOutcome::Ok);
+    });
+}
+
+/// US-5/S2 (the cancel escape): a staged draft discarded on focus loss
+/// dispatches nothing and the echo reverts to the committed snapshot —
+/// the staged-edit cancel path is the field's standard escape.
+#[test]
+fn us5_s2_cancel_keeps_snapshot() {
+    run(|state| {
+        let mut harness = harness_with(state, snapshot_with_poll(Some(60)));
+        harness.press(ActionId::AppSettings);
+        settle_auto_lists(&harness);
+        let window = harness.handle.window();
+        let model = window.global::<SettingsModel>();
+        window.invoke_settings_field_edited(16, "120".into());
+        assert_eq!(model.get_files_poll_echo(), "120");
+        window.invoke_settings_general_focus_lost(16);
+        assert_eq!(
+            model.get_files_poll_echo(),
+            "60",
+            "the staged value dropped; the snapshot's echo returned"
+        );
+        assert!(
+            harness.drain_requests().is_empty(),
+            "a cancel dispatches nothing"
+        );
+    });
+}
+
+/// US-5 AC-2 (the typed `> 0` gate, the chunk plan's
+/// `poll_secs_typed_refusal_nonpositive` row): a non-positive commit
+/// refuses at the commit seam with the typed invalidity — the same
+/// gate the CLI knob answers to — and dispatches nothing.
+#[test]
+fn us5_s3_poll_secs_typed_refusal_nonpositive() {
+    run(|state| {
+        let mut harness = harness_with(state, snapshot_with_poll(Some(60)));
+        harness.press(ActionId::AppSettings);
+        settle_auto_lists(&harness);
+        let window = harness.handle.window();
+        let model = window.global::<SettingsModel>();
+        // The typed edit is staged per keystroke (the field's grammar):
+        // the draft is present under its invalid flavour after the
+        // refusal.
+        window.invoke_settings_field_edited(16, "0".into());
+        window.invoke_files_poll_secs_committed(16, "0".into());
+        assert!(
+            harness.drain_requests().is_empty(),
+            "a refused commit dispatches nothing"
+        );
+        assert_eq!(model.get_last_outcome(), SettingsOutcome::Rejected);
+        assert_eq!(
+            model.get_validity_files_poll(),
+            FieldValidity::Invalid,
+            "the typed refusal surfaces on the field's flavour"
+        );
+        assert_eq!(
+            model.get_files_poll_echo(),
+            "0",
+            "the draft stays visible under its invalid flavour"
+        );
+    });
+}
+
+// -- US-6: the degraded-boot badge (W-7, R-5) -------------------------
+
+/// US-6/S1 (AC-1): a degraded boot's broadcast renders the badge and it
+/// persists (a later unrelated event never clears it — R-5's
+/// persistent display).
+#[test]
+fn us6_s1_degraded_badge_renders() {
+    run(|state| {
+        let harness = plain_harness(state);
+        harness
+            .handle
+            .observe_system_event(&SystemEvent::JournalDegraded {
+                details: vec![taskboard_domain::persistence::CorruptionDetail::UNKNOWN],
+                dropped: 2,
+                head: None,
+            });
+        assert!(
+            harness.handle.window().get_journal_degraded_visible(),
+            "the badge renders on the degraded signal"
+        );
+        // Persistence: an unrelated episode does not dismiss it.
+        harness
+            .handle
+            .observe_system_event(&SystemEvent::SettingsChanged);
+        assert!(
+            harness.handle.window().get_journal_degraded_visible(),
+            "the badge persists (R-5: no dismiss, the next healthy boot replaces it)"
+        );
+    });
+}
+
+/// US-6/S2 (AC-2): a healthy boot — no degraded event arrived — shows
+/// no badge.
+#[test]
+fn us6_s2_healthy_boot_no_badge() {
+    run(|state| {
+        let harness = plain_harness(state);
+        assert!(
+            !harness.handle.window().get_journal_degraded_visible(),
+            "a healthy boot renders no badge"
+        );
+    });
+}
+
+/// US-6 AC-3 (R-5, structural): the badge lane is display-only — the
+/// degraded broadcast dispatches no command and no app request.
+#[test]
+fn us6_s3_badge_installs_no_command_callbacks() {
+    run(|state| {
+        let mut harness = plain_harness(state);
+        harness
+            .handle
+            .observe_system_event(&SystemEvent::JournalDegraded {
+                details: Vec::new(),
+                dropped: 1,
+                head: None,
+            });
+        harness.assert_commands(&[]);
+        assert!(
+            harness.drain_requests().is_empty(),
+            "the badge dispatches no app request"
+        );
     });
 }

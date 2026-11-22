@@ -1108,6 +1108,47 @@ pub fn resurrect_notice_phrase(title: &str) -> String {
     format!("\"{title}\" was deleted remotely while it had unsynced work \u{2014} re-created")
 }
 
+/// The `ConfigReload` lane's typed presentation (the small-gated
+/// journeys plan US-4/R-3): the read-only Settings lane renders one of
+/// these states — the fold is the lane's whole logic, and no command
+/// exists on the lane by construction (R-3: the UI never triggers or
+/// mutates a reload).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConfigReloadPresentation {
+    /// No outcome has landed this session (the lane renders nothing).
+    #[default]
+    Quiet,
+    /// `ConfigReloadOutcome::Applied` — the external edit proved
+    /// bootable and took effect.
+    Applied,
+    /// A refusal (`RefusedDecode`/`RefusedValidate`) — the engine kept
+    /// the last-known-good snapshot; this is the kiosk operator's "why
+    /// did my edit not take effect" answer.
+    KeptLastKnownGood,
+}
+
+/// The fold: [`ConfigReloadOutcome`] → the lane's presentation state.
+/// The quiet class covers the outcomes the lane deliberately does not
+/// surface (the no-op, the transient skip, the watcher-off posture,
+/// the next-start lane) — the plan's rows name exactly applied and
+/// kept-last-known-good (US-4/S1–S2).
+#[must_use]
+pub fn fold_config_reload(
+    outcome: &taskboard_domain::ConfigReloadOutcome,
+) -> ConfigReloadPresentation {
+    match outcome {
+        taskboard_domain::ConfigReloadOutcome::Applied => ConfigReloadPresentation::Applied,
+        taskboard_domain::ConfigReloadOutcome::RefusedDecode
+        | taskboard_domain::ConfigReloadOutcome::RefusedValidate => {
+            ConfigReloadPresentation::KeptLastKnownGood
+        }
+        taskboard_domain::ConfigReloadOutcome::Unchanged
+        | taskboard_domain::ConfigReloadOutcome::SkippedTransient
+        | taskboard_domain::ConfigReloadOutcome::EngineGone
+        | taskboard_domain::ConfigReloadOutcome::WatcherDisabled => ConfigReloadPresentation::Quiet,
+    }
+}
+
 /// The tracking chip's parts (DR-5/4, D-T17): the newest-open entry's
 /// task, its title SNAPSHOT (survives rename and deletion — the D-T2
 /// history ruling), and its start. `now` is data; nothing ticks.

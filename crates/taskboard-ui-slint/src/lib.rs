@@ -625,6 +625,10 @@ fn start_repaint_driver(
             if !events.is_empty() {
                 adapter.borrow_mut().record_system_events(&events);
             }
+            // The signal lanes' push (W-5/W-7): cheap two-property
+            // writes per tick — the ConfigReload lane and the
+            // degraded-boot badge ride the same cadence.
+            adapter.borrow_mut().push_signal_lanes(&window);
             // The delivery-health drain (round-3 chunk 7, D31): the
             // same non-blocking poll — a changed snapshot pushes the
             // chip and counts as changed (the Lagged semantics' twin:
@@ -1041,20 +1045,30 @@ impl UiHandle {
         }
     }
 
-    /// One connector-liveness episode (round-1 chunk 3, D8): the same
-    /// record-then-refresh path the system drain's pre-refresh hook
-    /// runs — both halves of it. The tick loop pushes the notice
+    /// One connector-liveness episode (round-1 chunk 3, D8): the
+    /// connector-named alias of [`UiHandle::observe_system_event`],
+    /// kept for the round-1 callers. The tick loop pushes the notice
     /// *before* the guarded `refresh` (the push is cheap enough to run
     /// unconditionally); the seam replays that order, because
     /// `refresh`'s unchanged early-return (#463) would otherwise skip
-    /// the notice half forever (issue #860). Public for the component
-    /// journeys (broadcast injection needs a live engine; the journeys'
-    /// harness has none).
+    /// the notice half forever (issue #860).
     pub fn observe_connector_episode(&self, event: &taskboard_domain::SystemEvent) {
+        self.observe_system_event(event);
+    }
+
+    /// The system-event observation seam (the small-gated journeys
+    /// plan W-5/W-7): records one broadcast episode through the same
+    /// fold the live drain rides and pushes both signal lanes — the
+    /// journeys' injection point for `ConfigReload` and
+    /// `JournalDegraded` (the connector episodes' seam precedent).
+    /// Public for the component journeys (broadcast injection needs a
+    /// live engine; the journeys' harness has none).
+    pub fn observe_system_event(&self, event: &taskboard_domain::SystemEvent) {
         if let Some(window) = self.window.as_weak().upgrade() {
             let mut adapter = self.adapter.borrow_mut();
             adapter.record_system_event(event);
             adapter.push_notice(&window);
+            adapter.push_signal_lanes(&window);
             adapter.refresh(&window);
         }
     }

@@ -703,6 +703,14 @@ async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
                 .await,
             );
         }
+        UiRequest::SetFilesSyncPollSecs { secs, reply } => {
+            let _ = reply.send(
+                run_editor_write(workspace, Field::FilesPollSecs, |path| {
+                    crate::settings_overlay::set_files_sync_poll_secs(path, secs)
+                })
+                .await,
+            );
+        }
     }
 }
 
@@ -914,6 +922,7 @@ fn map_overlay_error(field: Field, err: &crate::settings_overlay::OverlayError) 
 fn editor_guard_keys(field: Field) -> &'static [&'static str] {
     match field {
         Field::FilesSyncEnabled => &["files_sync.enabled", "files_sync.anchor"],
+        Field::FilesPollSecs => &["files_sync.poll_secs"],
         Field::Name | Field::ServerUrl | Field::Username | Field::Password | Field::Scale => &[],
         Field::DayStart => &["preferences.day_start_time"],
         Field::RemindersEnabled => &["reminders.enabled"],
@@ -958,6 +967,7 @@ fn editor_field_key(field: Field) -> &'static str {
         Field::FocusLongBreakEvery => "focus.long_break_every",
         Field::FocusNotify => "focus.notify",
         Field::FilesSyncEnabled => "files_sync.enabled",
+        Field::FilesPollSecs => "files_sync.poll_secs",
         // The connection-form fields never ride the editor writers.
         Field::Name | Field::ServerUrl | Field::Username | Field::Password | Field::Scale => "",
     }
@@ -969,7 +979,7 @@ fn editor_field_key(field: Field) -> &'static str {
 /// registry test cannot silently drift from the editor.
 #[cfg(test)]
 pub(crate) fn editor_field_keys() -> std::collections::BTreeSet<&'static str> {
-    const ALL: [Field; 22] = [
+    const ALL: [Field; 23] = [
         Field::Name,
         Field::ServerUrl,
         Field::Username,
@@ -992,6 +1002,7 @@ pub(crate) fn editor_field_keys() -> std::collections::BTreeSet<&'static str> {
         Field::FocusLongBreakEvery,
         Field::FocusNotify,
         Field::FilesSyncEnabled,
+        Field::FilesPollSecs,
     ];
     // Totality: the compiler refuses this match the moment `Field`
     // grows a variant the list above does not carry.
@@ -1018,7 +1029,8 @@ pub(crate) fn editor_field_keys() -> std::collections::BTreeSet<&'static str> {
             | Field::FocusLongBreakMins
             | Field::FocusLongBreakEvery
             | Field::FocusNotify
-            | Field::FilesSyncEnabled => {}
+            | Field::FilesSyncEnabled
+            | Field::FilesPollSecs => {}
         }
     }
     ALL.into_iter()
@@ -4175,6 +4187,78 @@ mod tests {
             "typed env refusal: {result:?}"
         );
         assert!(!writer_ran, "the writer never ran");
+    }
+
+    /// `us5_s1` (#1083, the small-gated journeys plan W-6/R-4): the
+    /// `poll_secs` editor lane rides the SAME live-write port as every
+    /// editor field — the file write lands through the landed B7b
+    /// overlay writer (the sole writer, no second one coined) and the
+    /// whole-snapshot `UpdateSettings` carries the value the engine
+    /// applies live (the registry's `Live` verdict honored).
+    #[tokio::test]
+    async fn us5_s1_poll_secs_rides_update_settings() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = port_workspace("[files_sync]\npoll_secs = 30\n").await;
+        let workspace = &fixture.workspace;
+        let snapshot = run_editor_write(workspace, Field::FilesPollSecs, |path| {
+            crate::settings_overlay::set_files_sync_poll_secs(path, 90)
+        })
+        .await
+        .expect("the write lands");
+        assert_eq!(
+            snapshot.files_sync_poll_secs,
+            Some(90),
+            "the reply echoes the fresh file value"
+        );
+        let published = workspace.engine.shared_state().load();
+        assert_eq!(
+            published
+                .settings
+                .files_sync_poll_secs
+                .map(taskboard_domain::TickSecs::get),
+            Some(90),
+            "the whole-snapshot UpdateSettings applied live"
+        );
+    }
+
+    /// `us5_s1`'s negative twin at the gate: a non-positive value that
+    /// reaches the lane past the field mirror is refused by the config
+    /// prove gate with own-blame attribution — the same typed gate the
+    /// CLI knob answers to (the R-4 single-refusal law).
+    #[tokio::test]
+    async fn us5_s1_poll_secs_zero_refuses_before_any_command() {
+        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
+        if !clean_ambient() {
+            return;
+        }
+        let fixture = port_workspace("[files_sync]\npoll_secs = 30\n").await;
+        let workspace = &fixture.workspace;
+        let result = run_editor_write(workspace, Field::FilesPollSecs, |path| {
+            crate::settings_overlay::set_files_sync_poll_secs(path, 0)
+        })
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(SettingsError::Invalid {
+                    field: Field::FilesPollSecs,
+                    kind: InvalidKind::OutOfRange
+                })
+            ),
+            "the typed > 0 gate: {result:?}"
+        );
+        let published = workspace.engine.shared_state().load();
+        assert_ne!(
+            published
+                .settings
+                .files_sync_poll_secs
+                .map(taskboard_domain::TickSecs::get),
+            Some(0),
+            "the engine never saw the refused write"
+        );
     }
 
     /// `us4_s3`: a validity-crossing write refuses at the port typed

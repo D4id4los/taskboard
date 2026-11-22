@@ -292,6 +292,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "settings_files_picked",
     "settings_refresh_clicked",
     "settings_files_board_action_clicked",
+    "files_poll_secs_committed", // the slint spelling: "files-poll-secs-committed" (J4 W-6)
     "settings_files_board_restore_clicked",
     "settings_publish_picked",
     "settings_remote_bind_picked",
