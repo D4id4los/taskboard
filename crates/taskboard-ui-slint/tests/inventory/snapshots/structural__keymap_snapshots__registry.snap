@@ -1,5 +1,6 @@
 ---
 source: crates/taskboard-ui-slint/tests/inventory/keymap_snapshots.rs
+assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -37,6 +38,15 @@ expression: rows
   enabled: true
   menu_rank: 40
   description: Re-applies the last undone change as a new edit. Content the server deleted is re-created as a new remote card.
+  menu_group: ~
+- id: app.undo-branches
+  label: Undo branches…
+  contexts:
+    - global
+  category: application
+  enabled: true
+  menu_rank: 50
+  description: "Opens the undo branch picker: abandoned redo branches and earlier line points, as rows. The plain undo and redo reflexes stay unchanged."
   menu_group: ~
 - id: app.settings
   label: Open settings
