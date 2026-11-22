@@ -721,6 +721,12 @@ pub struct ViewState {
     /// directional stroke at the task detail, cleared on view exit,
     /// subject change, and every foreign settle.
     rule_cursor: Option<taskboard_domain::ReminderRuleId>,
+    /// The disarm latch (US-10, W-11, #1091): set ONLY by the
+    /// `RowCursorDisarm` chord, cleared by every other clear site —
+    /// while set, the verticals' arming gate declines and the
+    /// chunk-9 control ladder owns the stroke again (the dedicated
+    /// escape hatch; the flow table's `armed --> disarmed` edge).
+    rule_cursor_disarmed: bool,
     /// The compact switcher's selected stack.
     selected_stack: Option<StackId>,
     /// The user-set stack column widths (round-1 D16), stored logical
@@ -943,6 +949,7 @@ impl ViewState {
             focused_task: None,
             focused_habit: None,
             rule_cursor: None,
+            rule_cursor_disarmed: false,
             selected_stack: None,
             stack_widths: BTreeMap::new(),
             retired: Vec::new(),
@@ -1519,9 +1526,23 @@ impl ViewState {
         self.rule_cursor = Some(rule);
     }
 
-    /// The rule cursor's typed clear (the D-2 lifecycle sites).
+    /// The rule cursor's typed clear (the D-2 lifecycle sites): every
+    /// site except the disarm chord lands here, so the chord's latch
+    /// resets with the cursor — a foreign settle re-opens the arming
+    /// gate.
     pub(crate) fn clear_rule_cursor(&mut self) {
         self.rule_cursor = None;
+        self.rule_cursor_disarmed = false;
+    }
+
+    /// The disarm chord's write (US-10, W-11, #1091): clears the
+    /// cursor AND latches the arming gate, so the verticals return to
+    /// the chunk-9 control ladder without a view exit or foreign
+    /// settle. Idempotent with the cursor disarmed (the adapter arms
+    /// the typed inert there).
+    pub(crate) fn disarm_rule_cursor(&mut self) {
+        self.rule_cursor = None;
+        self.rule_cursor_disarmed = true;
     }
 
     /// The subject's live rule roster in id-table order — the exact
@@ -1555,7 +1576,13 @@ impl ViewState {
     /// stroke would double-fire (the cursor arms AND the ladder
     /// steps).
     pub(crate) fn rule_walk_owns_stroke(&self, state: &AppState) -> bool {
-        self.subject_task.is_some() && !Self::rule_roster(state, self.subject_task).is_empty()
+        // The disarm latch (US-10): while set, the verticals belong to
+        // the control ladder again — the declarative row must agree
+        // with the walk's arming verdict or the stroke double-fires
+        // (the D-5 agreement law).
+        !self.rule_cursor_disarmed
+            && self.subject_task.is_some()
+            && !Self::rule_roster(state, self.subject_task).is_empty()
     }
 
     /// The walk's mechanics (J3 US-6 D-2, the `step_flat_domain` law):
@@ -1571,7 +1598,10 @@ impl ViewState {
         direction: i32,
     ) -> Vec<FlowOutcome> {
         let roster = Self::rule_roster(state, self.subject_task);
-        if roster.is_empty() {
+        if roster.is_empty() || self.rule_cursor_disarmed {
+            // The disarm latch (US-10): the stroke is the typed no-op
+            // here and `rule_walk_owns_stroke` declines it — the
+            // control-ladder row owns it instead.
             return Vec::new();
         }
         let current = self
@@ -1899,7 +1929,7 @@ impl ViewState {
                         // A fresh open is a new roster (D-2 site 3):
                         // the arm is roster-scoped, never carried
                         // across detail opens.
-                        self.rule_cursor = None;
+                        self.clear_rule_cursor();
                         self.subject_task = Some(task);
                         // The task/habit subjects are mutually
                         // exclusive mount facts (H4 D1) — same
@@ -2642,7 +2672,7 @@ impl ViewState {
         // cursor never survives under a mask. Both fronts land here —
         // the row affordances and the keyboard openers (click ≡ key
         // at the funnel).
-        self.rule_cursor = None;
+        self.clear_rule_cursor();
         self.write_flow(Flow::EditDate {
             task: task.id,
             field,
@@ -2670,7 +2700,7 @@ impl ViewState {
                 .is_some_and(taskboard_domain::Task::is_open)
         })?;
         // The recur overlay is a foreign settle (D-2 site 4).
-        self.rule_cursor = None;
+        self.clear_rule_cursor();
         self.write_flow(Flow::EditRecur { task });
         Some(task)
     }
@@ -3218,7 +3248,7 @@ impl ViewState {
     /// whenever asked.
     pub fn open_track_entries(&mut self, task: TaskId) -> Vec<FlowOutcome> {
         // The entries overlay is a foreign settle (D-2 site 4).
-        self.rule_cursor = None;
+        self.clear_rule_cursor();
         self.write_flow(Flow::TrackEntries { task });
         vec![FlowOutcome::RefreshNow]
     }
@@ -3271,7 +3301,7 @@ impl ViewState {
     pub fn open_labels(&mut self, subject: LabelOverlaySubject) -> Vec<FlowOutcome> {
         // A task-mounted labels overlay is a foreign settle (D-2
         // site 4); the board mount never holds a rule cursor.
-        self.rule_cursor = None;
+        self.clear_rule_cursor();
         self.write_flow(Flow::Labels { subject });
         vec![FlowOutcome::RefreshNow]
     }
@@ -4817,7 +4847,7 @@ impl ViewState {
                     .is_some_and(|rule| rule.task == subject)
             });
             if !on_roster || self.view() != ViewId::TaskDetail {
-                self.rule_cursor = None;
+                self.clear_rule_cursor();
             }
         }
         // UX-R8 D-4's reconcile arm: the selection repairs like the

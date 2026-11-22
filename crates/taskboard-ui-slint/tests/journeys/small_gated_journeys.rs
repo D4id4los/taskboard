@@ -931,3 +931,88 @@ fn us7_s3_row_menu_no_focus_typed_refusal() {
         harness.assert_commands(&[]);
     });
 }
+
+// -- US-10: the rule-cursor disarm chord ----------------------------------
+
+/// Arms the rule cursor the walk's own way (a seeded one-rule roster:
+/// the first vertical stroke arms at row 0) and returns the model
+/// row.
+fn arm_rule_cursor(harness: &mut support::harness::Harness) {
+    harness.press(ActionId::NavFocusDown);
+    harness.driver.advance_time(0);
+}
+
+/// The rule list's first row (the projection the cursor's emphasis
+/// reads).
+fn rule_row_zero(harness: &support::harness::Harness) -> taskboard_ui_slint::RuleRowModel {
+    harness
+        .handle
+        .window()
+        .get_task_model()
+        .rules
+        .row_data(0)
+        .expect("the seeded rule row renders")
+}
+
+/// US-10/AC-1 (`us10_s1_disarm_chord_disarms_cursor`): with the rule
+/// cursor armed, Ctrl+Shift+a disarms it — and the NEXT vertical no
+/// longer re-arms (the latch returns the verticals to the chunk-9
+/// control ladder without a view exit or foreign settle).
+#[test]
+fn us10_s1_disarm_chord_disarms_cursor() {
+    let (fx, mut state) = fixture::golden_state();
+    let rule = fixture::add_armed_rule(&mut state, fx.task0, 0x4242);
+    let _ = rule;
+
+    support::harness::run_journey(state, move |harness| {
+        mount_task_detail(harness);
+        harness.assert_commands(&[]);
+        arm_rule_cursor(harness);
+        assert!(
+            rule_row_zero(harness).selected,
+            "the arming stroke lands the cursor on row 0"
+        );
+        harness.stroke(
+            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+a")
+                .expect("the US-10 spelling parses"),
+        );
+        harness.driver.advance_time(0);
+        assert!(
+            !rule_row_zero(harness).selected,
+            "the chord disarms the cursor"
+        );
+        // The latch: the next vertical is the control ladder's — the
+        // cursor does not re-arm.
+        harness.press(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert!(
+            !rule_row_zero(harness).selected,
+            "the disarmed verticals stay off the cursor (the latch)"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
+/// US-10/AC-2 (`us10_s2_disarm_unarmed_inert`): with the cursor not
+/// armed, the chord is the typed inert — no state change, nothing
+/// dispatched.
+#[test]
+fn us10_s2_disarm_unarmed_inert() {
+    let (fx, mut state) = fixture::golden_state();
+    let rule = fixture::add_armed_rule(&mut state, fx.task0, 0x4243);
+    let _ = rule;
+    support::harness::run_journey(state, move |harness| {
+        mount_task_detail(harness);
+        harness.assert_commands(&[]);
+        harness.stroke(
+            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+a")
+                .expect("the US-10 spelling parses"),
+        );
+        harness.driver.advance_time(0);
+        assert!(
+            !rule_row_zero(harness).selected,
+            "the unarmed chord changes nothing"
+        );
+        harness.assert_commands(&[]);
+    });
+}

@@ -149,6 +149,11 @@ pub enum UiEffect {
     /// openers the pointer seams use; the subjectless refusal lives in
     /// the arm (the uniform law). Pure presentation — no command.
     RowMenuRequested,
+    /// The rule cursor's disarm chord (US-10, W-11, #1091): the
+    /// adapter disarms the armed cursor (the latch composes with the
+    /// armed-flow grammar) or surfaces the typed inert while
+    /// disarmed. Pure view-state — no command.
+    RowCursorDisarm,
     /// Arm the habit row's conversion confirm strip (issue #506): the
     /// adapter records the armed row; the dispatch itself waits for
     /// Confirm.
@@ -533,6 +538,7 @@ impl UiEffect {
             // state moves).
             | Self::SeriesPauseOpen
             | Self::RowMenuRequested
+            | Self::RowCursorDisarm
             | Self::HabitPauseOpen
             | Self::HabitConvertArm
             | Self::HabitConvertCancel
@@ -1737,6 +1743,9 @@ impl ActionRouter {
             // the subject resolution (and its typed refusal) is the
             // adapter arm's.
             ActionId::RowMenu => DispatchOutcome::UiEffect(UiEffect::RowMenuRequested),
+            // US-10 (W-11, #1091): the disarm is a view-state verb —
+            // the armed/disarmed fork is the adapter arm's.
+            ActionId::RowCursorDisarm => DispatchOutcome::UiEffect(UiEffect::RowCursorDisarm),
             ActionId::SeriesPauseCommit => match (ctx.series_target, ctx.pause_draft) {
                 (Some(head), Some(until)) => DispatchOutcome::Command(StateCommand::PauseSeries {
                     head,

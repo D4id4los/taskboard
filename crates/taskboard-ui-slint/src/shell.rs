@@ -344,8 +344,10 @@ impl KeymapShell {
             | UiEffect::TrackEntryDismiss
             // The row-menu opener is adapter-interpreted (US-7, W-8,
             // #1032); the shell records nothing (the adapter's menu
-            // state write owns the open).
+            // state write owns the open). The disarm chord (US-10)
+            // is a view-state flip the shell never records.
             | UiEffect::RowMenuRequested
+            | UiEffect::RowCursorDisarm
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
