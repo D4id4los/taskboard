@@ -226,6 +226,11 @@ pub enum Field {
     FocusNotify,
     // The account card's Files toggle (round-5 chunk 8, D-8.6).
     FilesSyncEnabled,
+    // The Files row's poll cadence field (#1083, the small-gated
+    // journeys plan W-6): the editor Field retires the CLI-only
+    // exception — the Field lattice and the B7b apply registry
+    // converge (the umbrella plan R-4).
+    FilesPollSecs,
 }
 
 /// How a field failed.
@@ -282,6 +287,11 @@ pub struct SettingsSnapshot {
     /// the anchor", a resolved fact — a raw-echo would force every
     /// consumer to re-resolve. `None` = no Nextcloud connector.
     pub files_sync_anchor: Option<String>,
+    /// `[files_sync] poll_secs` (the #1083 field's echo source): the
+    /// raw `Option` — `None` is the honest "unset, the default
+    /// cadence applies" fact (the config's own shape), never faked
+    /// into a number.
+    pub files_sync_poll_secs: Option<u64>,
     /// The dotted keys whose effective value is env-overridden (the
     /// plan D1/D16 per-key honesty overlay). Filled only at hand-over;
     /// empty on write replies (the UI keeps its hand-over set).
@@ -900,6 +910,19 @@ pub enum UiRequest {
     ExportRun {
         spec: ExportSpec,
         reply: oneshot::Sender<ExportRunOutcome>,
+    },
+    /// Persists `[files_sync] poll_secs` (the #1083 field, the
+    /// small-gated journeys plan W-6 / R-4): the SAME live-write port
+    /// every editor field rides — the app lane writes the file through
+    /// the landed `set_files_sync_poll_secs` overlay writer (the sole
+    /// writer, B7b) and publishes the whole-snapshot `UpdateSettings`;
+    /// no second writer is coined. `0` never reaches the lane: the
+    /// field mirror's `> 0` gate (the `secs_invalid_kind` parity with
+    /// the config's own refusal) refuses at the commit seam, and the
+    /// prove gate re-refuses with the config's own typed verdict.
+    SetFilesSyncPollSecs {
+        secs: u64,
+        reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
     },
 }
 

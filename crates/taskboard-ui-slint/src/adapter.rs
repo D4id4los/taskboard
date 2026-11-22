@@ -755,6 +755,15 @@ pub(crate) struct Adapter {
     /// presentation state (the liveness-map precedent); expiry rides
     /// the cadence tick's wall clock — no UI-held timer.
     notice: Option<Notice>,
+    /// The `ConfigReload` lane's typed presentation (W-5, R-3): the
+    /// last broadcast outcome's fold; `Quiet` until one lands. The
+    /// lane is read-only forever — nothing here dispatches.
+    reload_lane: crate::presentation::ConfigReloadPresentation,
+    /// The degraded-boot badge's persistent flag (W-7, R-5): set by
+    /// the first `JournalDegraded` broadcast, never cleared in-session
+    /// (display-only; the next healthy boot's fresh session starts
+    /// clean).
+    journal_degraded: bool,
     /// The OS-delivery health lane (round-3 chunk 7, D31): the watch
     /// receiver the app hands over at mount; drained non-blocking
     /// beside the two broadcasts — a failure repaints within one
@@ -7462,6 +7471,9 @@ struct SettingsVm {
     focus_break_draft: Option<String>,
     focus_long_break_draft: Option<String>,
     focus_every_draft: Option<String>,
+    /// The Files row's poll cadence field's staged buffer (#1083, W-6):
+    /// the general fields' grammar verbatim.
+    files_poll_secs_draft: Option<String>,
 }
 
 impl SettingsVm {
@@ -7542,6 +7554,10 @@ impl SettingsVm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GeneralField {
     DayStart,
+    /// The Files row's poll cadence (#1083, the small-gated journeys
+    /// plan W-6): rendered on the Files card, but the general fields'
+    /// staged-edit grammar verbatim — one machine, no second lane.
+    FilesPollSecs,
     TickSecs,
     ReminderBefore,
     PollInterval,
@@ -7562,6 +7578,10 @@ impl GeneralField {
     const FOCUS_BREAK_INDEX: usize = 13;
     const FOCUS_LONG_BREAK_INDEX: usize = 14;
     const FOCUS_EVERY_INDEX: usize = 15;
+    /// The Files row's poll cadence field (#1083): rides the general
+    /// fields' index contract (the focus minutes' 12–15 block's next
+    /// slot).
+    const FILES_POLL_INDEX: usize = 16;
 
     fn from_index(index: usize) -> Option<Self> {
         match index {
@@ -7576,6 +7596,7 @@ impl GeneralField {
             Self::FOCUS_BREAK_INDEX => Some(Self::FocusBreakMins),
             Self::FOCUS_LONG_BREAK_INDEX => Some(Self::FocusLongBreakMins),
             Self::FOCUS_EVERY_INDEX => Some(Self::FocusLongBreakEvery),
+            Self::FILES_POLL_INDEX => Some(Self::FilesPollSecs),
             _ => None,
         }
     }
@@ -7595,6 +7616,7 @@ impl GeneralField {
             Self::FocusBreakMins => "focus.break_mins",
             Self::FocusLongBreakMins => "focus.long_break_mins",
             Self::FocusLongBreakEvery => "focus.long_break_every",
+            Self::FilesPollSecs => "files_sync.poll_secs",
         }
     }
 
@@ -7611,6 +7633,7 @@ impl GeneralField {
             Self::FocusBreakMins => crate::requests::Field::FocusBreakMins,
             Self::FocusLongBreakMins => crate::requests::Field::FocusLongBreakMins,
             Self::FocusLongBreakEvery => crate::requests::Field::FocusLongBreakEvery,
+            Self::FilesPollSecs => crate::requests::Field::FilesPollSecs,
         }
     }
 
@@ -7619,9 +7642,11 @@ impl GeneralField {
     fn invalid(self, text: &str) -> Option<settings_form::InvalidKind> {
         match self {
             Self::DayStart => settings_form::day_start_invalid_kind(text),
-            Self::TickSecs | Self::PollInterval | Self::BackoffInitial | Self::BackoffMax => {
-                settings_form::secs_invalid_kind(text)
-            }
+            Self::TickSecs
+            | Self::PollInterval
+            | Self::BackoffInitial
+            | Self::BackoffMax
+            | Self::FilesPollSecs => settings_form::secs_invalid_kind(text),
             Self::ReminderBefore => settings_form::before_invalid_kind(text),
             Self::DueSoonDays => settings_form::due_soon_invalid_kind(text),
             Self::FocusWorkMins | Self::FocusBreakMins | Self::FocusLongBreakMins => {
@@ -7657,6 +7682,12 @@ impl GeneralField {
             Self::FocusBreakMins => snapshot.focus_break_mins.to_string(),
             Self::FocusLongBreakMins => snapshot.focus_long_break_mins.to_string(),
             Self::FocusLongBreakEvery => snapshot.focus_long_break_every.to_string(),
+            // The raw `Option` echo: unset renders empty (the honest
+            // "the default cadence applies" fact), a value renders its
+            // seconds.
+            Self::FilesPollSecs => snapshot
+                .files_sync_poll_secs
+                .map_or(String::new(), |secs| secs.to_string()),
         }
     }
 }
@@ -7759,6 +7790,27 @@ impl Adapter {
         window.set_notice_visible(visible);
     }
 
+    /// The two signal lanes' push half (the small-gated journeys plan
+    /// W-5/W-7): the `ConfigReload` lane's typed state and the
+    /// degraded-boot badge's flag, one write each per pass. Both lanes
+    /// are display-only by construction (R-3/R-5): no command, no
+    /// callback, no dismiss.
+    pub(crate) fn push_signal_lanes(&mut self, window: &AppWindow) {
+        let settings = window.global::<crate::SettingsModel>();
+        settings.set_reload_lane_state(match self.reload_lane {
+            crate::presentation::ConfigReloadPresentation::Quiet => {
+                crate::ConfigReloadLaneState::None
+            }
+            crate::presentation::ConfigReloadPresentation::Applied => {
+                crate::ConfigReloadLaneState::Applied
+            }
+            crate::presentation::ConfigReloadPresentation::KeptLastKnownGood => {
+                crate::ConfigReloadLaneState::Kept
+            }
+        });
+        window.set_journal_degraded_visible(self.journal_degraded);
+    }
+
     /// Records one system-event episode (the system drain's
     /// pre-refresh hook, D8): connector liveness and the resurrect
     /// notice are the recorded verdicts today.
@@ -7770,6 +7822,17 @@ impl Adapter {
             }
             E::ConnectorRestored(id) => {
                 self.settings.liveness.insert(id.to_string(), false);
+            }
+            E::ConfigReload(outcome) => {
+                // The read-only Settings lane's fold (W-5, R-3): the
+                // outcome surfaces, nothing dispatches.
+                self.reload_lane = crate::presentation::fold_config_reload(outcome);
+            }
+            E::JournalDegraded { .. } => {
+                // The degraded-boot badge (W-7, R-5): display-only and
+                // persistent — set once, never cleared in-session; the
+                // next healthy boot's fresh session replaces it.
+                self.journal_degraded = true;
             }
             E::TaskResurrected(id) => {
                 // The title resolves once, at event time, against the
@@ -9125,13 +9188,15 @@ impl Adapter {
             (GeneralField::FocusBreakMins, &vm.focus_break_draft),
             (GeneralField::FocusLongBreakMins, &vm.focus_long_break_draft),
             (GeneralField::FocusLongBreakEvery, &vm.focus_every_draft),
+            (GeneralField::FilesPollSecs, &vm.files_poll_secs_draft),
         ] {
             let predicate: fn(&str) -> Option<settings_form::InvalidKind> = match gf {
                 GeneralField::DayStart => settings_form::day_start_invalid_kind,
                 GeneralField::TickSecs
                 | GeneralField::PollInterval
                 | GeneralField::BackoffInitial
-                | GeneralField::BackoffMax => settings_form::secs_invalid_kind,
+                | GeneralField::BackoffMax
+                | GeneralField::FilesPollSecs => settings_form::secs_invalid_kind,
                 GeneralField::ReminderBefore => settings_form::before_invalid_kind,
                 GeneralField::DueSoonDays => settings_form::due_soon_invalid_kind,
                 GeneralField::FocusWorkMins
@@ -9239,6 +9304,16 @@ impl Adapter {
                     global.set_error_focus_every(error.into());
                     global.set_focus_every_env_locked(env_locked);
                     global.set_focus_every_on_restart(on_restart);
+                }
+                GeneralField::FilesPollSecs => {
+                    global.set_files_poll_echo(echo);
+                    global.set_validity_files_poll(validity);
+                    global.set_error_files_poll(error.into());
+                    global.set_files_poll_env_locked(env_locked);
+                    // The registry's verdict (R-4): poll_secs applies
+                    // live through the whole-snapshot lane; the same
+                    // app-stated fact every live row renders.
+                    global.set_files_poll_on_restart(on_restart);
                 }
             }
         }
@@ -9384,6 +9459,11 @@ impl Adapter {
             }
             GeneralField::FOCUS_EVERY_INDEX => {
                 self.settings.focus_every_draft = Some(text.to_owned());
+                self.push_settings(window);
+                return;
+            }
+            GeneralField::FILES_POLL_INDEX => {
+                self.settings.files_poll_secs_draft = Some(text.to_owned());
                 self.push_settings(window);
                 return;
             }
@@ -10267,6 +10347,10 @@ impl Adapter {
                 every: trimmed.parse().expect("validated focus-every parse"),
                 reply,
             },
+            GeneralField::FilesPollSecs => UiRequest::SetFilesSyncPollSecs {
+                secs: trimmed.parse().expect("validated seconds parse"),
+                reply,
+            },
         };
         self.clear_general_draft(gf);
         let sent = self.settings.send(
@@ -10564,6 +10648,19 @@ impl Adapter {
     /// The general fields' focus-loss seam (the scale field's
     /// grammar): a Return-less edit never dispatches — the staged
     /// draft dies and the echo re-renders from the committed value.
+    /// The Files row's poll cadence field's commit seam (#1083, W-6):
+    /// the general fields' funnel verbatim, under the plan row's own
+    /// seam address (`files-poll-secs-committed`) — one machine, the
+    /// whole-snapshot lane's single writer (R-4).
+    pub(crate) fn files_poll_secs_committed(
+        &mut self,
+        window: &AppWindow,
+        field: usize,
+        text: &str,
+    ) {
+        self.settings_general_committed(window, field, text);
+    }
+
     pub(crate) fn settings_general_focus_lost(&mut self, window: &AppWindow, field: usize) {
         let Some(gf) = GeneralField::from_index(field) else {
             return;
@@ -10582,6 +10679,7 @@ impl Adapter {
                 self.settings.focus_long_break_draft.take().is_some()
             }
             GeneralField::FocusLongBreakEvery => self.settings.focus_every_draft.take().is_some(),
+            GeneralField::FilesPollSecs => self.settings.files_poll_secs_draft.take().is_some(),
         };
         if cleared {
             self.push_settings(window);
@@ -10601,6 +10699,7 @@ impl Adapter {
             GeneralField::FocusBreakMins => self.settings.focus_break_draft = None,
             GeneralField::FocusLongBreakMins => self.settings.focus_long_break_draft = None,
             GeneralField::FocusLongBreakEvery => self.settings.focus_every_draft = None,
+            GeneralField::FilesPollSecs => self.settings.files_poll_secs_draft = None,
         }
     }
 
@@ -10972,6 +11071,8 @@ pub(crate) fn install(
         #[cfg(test)]
         derive_passes: 0,
         notice: None,
+        reload_lane: crate::presentation::ConfigReloadPresentation::Quiet,
+        journal_degraded: false,
         delivery_health,
         files_sync,
         export_defaults,
@@ -11058,6 +11159,7 @@ pub(crate) fn install(
         global.set_help_focus_long_break(status::HELP_FOCUS_LONG_BREAK_MINS.into());
         global.set_help_focus_every(status::HELP_FOCUS_LONG_BREAK_EVERY.into());
         global.set_help_focus_notify(status::HELP_FOCUS_NOTIFY.into());
+        global.set_help_files_poll(status::HELP_FILES_POLL_SECS.into());
     }
 
     {
@@ -16868,6 +16970,16 @@ fn install_settings_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The settings editor's general seams (the GUI settings editor
     // chunk): the same weak-handle wiring shape, one block per seam.
     {
+        // The Files row's poll cadence commit seam (#1083, W-6): the
+        // general fields' funnel under the plan row's own address.
+        install_seam!(window: window.on_files_poll_secs_committed, adapter: adapter; // files-poll-secs-committed
+        bind mut (a, window), args (field, text), {            let Ok(field) = usize::try_from(field) else {
+                return;
+            };
+            a
+                .files_poll_secs_committed(&window, field, &text);
+
+        });
         install_seam!(window: window.on_settings_general_committed, adapter: adapter;
         bind mut (a, window), args (field, text), {            let Ok(field) = usize::try_from(field) else {
                 return;

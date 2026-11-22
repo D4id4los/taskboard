@@ -114,6 +114,16 @@ export enum SettingsAdoptionPhase {
     refused,
 }
 
+// The ConfigReload lane's typed state (the small-gated journeys plan
+// US-4/R-3): the read-only reload-outcome row renders one of these.
+// Display-only — the lane installs no command callbacks (R-3).
+// slint: reload-lane-state
+export enum ConfigReloadLaneState {
+    none,
+    applied,
+    kept,
+}
+
 // One rendered connections item (the flat, positional projection of
 // the account cards — the adapter resolves every callback's item
 // index through its own address table; no id enters the model).
@@ -327,6 +337,17 @@ export global SettingsModel {
     in-out property <bool> focus-notify-env-locked: false;
     in-out property <bool> focus-notify-on-restart: false;
     in-out property <string> help-focus-notify: "";
+    // The Files row's poll cadence field (#1083, W-6): the general
+    // fields' echo/validity/error grammar verbatim.
+    in-out property <string> files-poll-echo: "";
+    in-out property <FieldValidity> validity-files-poll: FieldValidity.neutral;
+    in-out property <string> error-files-poll: "";
+    in-out property <bool> files-poll-env-locked: false;
+    in-out property <bool> files-poll-on-restart: false;
+    in-out property <string> help-files-poll: "";
+    // The ConfigReload lane's typed state (US-4, R-3): adapter-folded
+    // from the broadcast; display-only.
+    in-out property <ConfigReloadLaneState> reload-lane-state: ConfigReloadLaneState.none;
 }
 
 
@@ -691,6 +712,12 @@ export component SettingsView inherits FocusScope {
     // grammar). Field indices ride the `field-edited` contract
     // (5..11 = the general text fields, 12..15 = the focus minutes).
     callback general-committed(int, string);
+    // The Files row's poll cadence field's commit seam (#1083, the
+    // small-gated journeys plan W-6): the general fields' staged-edit
+    // grammar's own address — the adapter routes it through the same
+    // funnel, the plan's row names the seam.
+    // slint: files-poll-secs-committed
+    callback files-poll-secs-committed(int, string);
     callback general-focus-lost(int);
     callback reminders-picked(int);
     callback sink-picked(int);
@@ -852,6 +879,34 @@ export component SettingsView inherits FocusScope {
             }
             content := VerticalLayout {
                 spacing: Theme.space-3;
+
+        // -- reload outcomes (US-4, R-3 read-only lane) -----------------
+        // The kiosk operator's "why did my external config edit not
+        // take effect" row: applied vs kept-last-known-good, folded
+        // Rust-side. No callbacks are installed here — the lane
+        // never dispatches (the structural test pins it).
+        // slint: reload-lane-row
+        if SettingsModel.reload-lane-state != ConfigReloadLaneState.none: HorizontalLayout {
+            spacing: Theme.space-2;
+            accessible-role: AccessibleRole.text;
+            RoleText {
+                role: Typography.caption;
+                text-color: SettingsModel.reload-lane-state == ConfigReloadLaneState.applied
+                    ? Theme.text-secondary
+                    : Semantic.warning;
+                text: SettingsModel.reload-lane-state == ConfigReloadLaneState.applied
+                    ? "Config reload applied."
+                    : "Config edit refused — the last-known-good settings stay in effect.";
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Badge {
+                text: SettingsModel.reload-lane-state == ConfigReloadLaneState.applied ? "✓" : "!";
+                tone: SettingsModel.reload-lane-state == ConfigReloadLaneState.applied
+                    ? Tone.success
+                    : Tone.warning;
+            }
+        }
 
         // -- connections ------------------------------------------------
         RoleText {
@@ -1049,6 +1104,31 @@ export component SettingsView inherits FocusScope {
                         text: "Files sync mirrors this account's Files — takes effect at the next restart.";
                         text-color: Theme.text-secondary;
                         vertical-alignment: center;
+                    }
+                    // The poll cadence field (#1083, W-6/R-4): the general
+                    // fields' staged-edit grammar (commit on Return,
+                    // focus-loss discards) riding the whole-snapshot
+                    // UpdateSettings lane — no second writer.
+                    // slint: files-poll-secs-committed
+                    GeneralField {
+                        label: "Poll cadence (seconds)";
+                        placeholder: "90";
+                        help: SettingsModel.help-files-poll;
+                        field-index: 16;
+                        text <=> SettingsModel.files-poll-echo;
+                        validity: SettingsModel.validity-files-poll;
+                        error-text: SettingsModel.error-files-poll;
+                        env-locked: SettingsModel.files-poll-env-locked;
+                        on-restart: SettingsModel.files-poll-on-restart;
+                        edited(i, t) => {
+                            root.field-edited(i, t);
+                        }
+                        committed(i, t) => {
+                            root.files-poll-secs-committed(i, t);
+                        }
+                        focus-lost(i) => {
+                            root.general-focus-lost(i);
+                        }
                     }
                 }
                 // Roster rows (round-7 D-7.3): per-board badge + one

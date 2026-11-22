@@ -375,6 +375,7 @@ pub fn settings_snapshot_from_config(
         focus_notify: config.focus.notify,
         files_sync_enabled: config.files_sync.enabled,
         files_sync_anchor: resolved_files_sync_anchor_name(config),
+        files_sync_poll_secs: config.files_sync.poll_secs,
         env_overridden: std::collections::BTreeSet::new(),
         facts: settings_facts(config),
         applies: settings_applies(),
@@ -437,6 +438,7 @@ pub fn settings_snapshot_from_domain(
         focus_notify: settings.focus_notify,
         files_sync_enabled: config.files_sync.enabled,
         files_sync_anchor: resolved_files_sync_anchor_name(config),
+        files_sync_poll_secs: config.files_sync.poll_secs,
         env_overridden: std::collections::BTreeSet::new(),
         facts: settings_facts(config),
         applies: settings_applies(),
@@ -1140,7 +1142,9 @@ mod tests {
     /// a registry entry — or a registry key the editor never writes —
     /// fails here. `files_sync.anchor` has no `Field` variant (the
     /// row's lattice keys off the row, round-6 D-6.6), so it is
-    /// listed explicitly.
+    /// listed explicitly. #1083's editor Field landed (the
+    /// small-gated journeys plan W-6/R-4), so the `poll_secs`
+    /// exception has retired: `editor_field_keys` carries the key.
     #[test]
     fn the_registry_covers_exactly_the_editor_field_lattice() {
         let registry: std::collections::BTreeSet<&'static str> =
@@ -1149,11 +1153,6 @@ mod tests {
         assert!(
             expected.insert("files_sync.anchor"),
             "the anchor key is not an editor Field — listed once, here"
-        );
-        assert!(
-            expected.insert("files_sync.poll_secs"),
-            "the poll_secs key is CLI-only this chunk (no editor Field) — \
-             listed once, here; the exception shrinks when the field lands (#1083)"
         );
         assert_eq!(registry, expected);
     }

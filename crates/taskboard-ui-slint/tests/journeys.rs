@@ -9267,6 +9267,7 @@ fn us5_ac1_the_page_stays_usable_during_a_publish() {
         connectors: vec![connector_row("work")],
         general: taskboard_ui_slint::requests::SettingsSnapshot {
             files_sync_enabled: true,
+            files_sync_poll_secs: None,
             files_sync_anchor: Some("work".into()),
             ..taskboard_ui_slint::requests::SettingsSnapshot::default()
         },
@@ -9809,6 +9810,7 @@ fn two_card_settings() -> UiSettings {
         ],
         general: taskboard_ui_slint::requests::SettingsSnapshot {
             files_sync_enabled: true,
+            files_sync_poll_secs: None,
             files_sync_anchor: Some("a".into()),
             ..taskboard_ui_slint::requests::SettingsSnapshot::default()
         },
@@ -11157,6 +11159,7 @@ fn the_files_toggle_commits_on_pick_and_echoes_the_reply() {
         );
         let _ = reply.send(Ok(taskboard_ui_slint::requests::SettingsSnapshot {
             files_sync_enabled: true,
+            files_sync_poll_secs: None,
             files_sync_anchor: Some("work".into()),
             applies,
             ..taskboard_ui_slint::requests::SettingsSnapshot::default()
@@ -11183,6 +11186,7 @@ fn the_files_row_rides_every_nextcloud_card_with_per_card_truth() {
         ],
         general: taskboard_ui_slint::requests::SettingsSnapshot {
             files_sync_enabled: true,
+            files_sync_poll_secs: None,
             files_sync_anchor: Some("work".into()),
             ..taskboard_ui_slint::requests::SettingsSnapshot::default()
         },
@@ -11231,6 +11235,7 @@ fn the_files_pick_reanchors_only_when_turning_on_a_non_anchor_card() {
         ],
         general: taskboard_ui_slint::requests::SettingsSnapshot {
             files_sync_enabled: true,
+            files_sync_poll_secs: None,
             files_sync_anchor: Some("work".into()),
             ..taskboard_ui_slint::requests::SettingsSnapshot::default()
         },
@@ -14602,6 +14607,7 @@ fn general_snapshot() -> SettingsSnapshot {
         focus_long_break_every: 4,
         focus_notify: true,
         files_sync_enabled: false,
+        files_sync_poll_secs: None,
         files_sync_anchor: None,
         env_overridden: BTreeSet::new(),
         facts: vec![

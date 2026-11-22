@@ -109,6 +109,10 @@ export component StatusBar inherits Rectangle {
     in property <FilesSyncChipState> files-sync-state;
     in property <FilesSyncChipTone> files-sync-tone;
     in property <bool> files-sync-flagged;
+    // The degraded-boot badge (the small-gated journeys plan W-7,
+    // R-5): a persistent display-only badge — no click target, no
+    // dismiss (the badge is the honest terminal state).
+    in property <bool> journal-degraded-visible;
     callback tracking-stop-clicked();
     callback snooze-clicked(int);
     callback mute-clicked(int);
@@ -381,6 +385,25 @@ export component StatusBar inherits Rectangle {
                     tone: root.files-sync-tone == FilesSyncChipTone.danger
                         ? Tone.danger
                         : Tone.warning;
+                }
+            }
+
+            // The degraded-boot badge (W-7, R-5): undo history
+            // truncated, tasks intact. Display-only and persistent —
+            // the badge is the honest terminal state (no dismiss, no
+            // action rows).
+            // slint: journal-degraded-badge
+            if (root.journal-degraded-visible): HorizontalLayout {
+                spacing: Theme.space-2;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Semantic.warning;
+                    text: "Undo history truncated — tasks intact";
+                    vertical-alignment: center;
+                }
+                Badge {
+                    text: "!";
+                    tone: Tone.warning;
                 }
             }
 

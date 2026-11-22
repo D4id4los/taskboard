@@ -280,6 +280,14 @@ pub(crate) fn invalid_text(field: Field, kind: InvalidKind) -> &'static str {
             InvalidKind::OutOfRange => "Files sync needs a Nextcloud account.",
             InvalidKind::Duplicate => "Files sync is already set that way.",
         },
+        Field::FilesPollSecs => match kind {
+            InvalidKind::Empty => "Enter the files-sync poll cadence in seconds.",
+            InvalidKind::NotKebab | InvalidKind::BadUrl | InvalidKind::NotFinite => {
+                "Enter a whole number of seconds, e.g. 90."
+            }
+            InvalidKind::OutOfRange => "The poll cadence must be at least one second.",
+            InvalidKind::Duplicate => "That cadence is already set.",
+        },
     }
 }
 
@@ -319,6 +327,8 @@ pub const HELP_FOCUS_CHAIN: &str =
 pub const HELP_FOCUS_LONG_BREAK_MINS: &str = "The long-break length in whole minutes, 1 to 240.";
 pub const HELP_FOCUS_LONG_BREAK_EVERY: &str =
     "Every N completed work blocks the next break is long, 1 to 24.";
+pub const HELP_FILES_POLL_SECS: &str =
+    "How long the files-sync actor rests between scans, in whole seconds.";
 pub const HELP_FOCUS_NOTIFY: &str =
     "A gentle toast and chime at each runtime-driven phase boundary.";
 

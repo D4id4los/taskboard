@@ -47,6 +47,7 @@ import { DueEditor } from "compositions/due-editor.slint";
 export { DueDayModel }
 import {
     SettingsView,
+    ConfigReloadLaneState,
     SettingsModel,
     ConnectionRow,
     ConnectionItem,
@@ -57,7 +58,7 @@ import {
     SettingsBoardCopy,
     SettingsPublishCopy,
 } from "views/settings-view.slint";
-export { SettingsModel, ConnectionRow, ConnectionItem, ConnectionItemKind, SettingsBadgeTone, SettingsRowStatus, SettingsOutcome }
+export { SettingsModel, ConnectionRow, ConnectionItem, ConnectionItemKind, SettingsBadgeTone, SettingsRowStatus, SettingsOutcome, ConfigReloadLaneState }
 import { StatusPanel, StatusPanelFacts, StatusPanelData, StatusPanelPosture } from "compositions/status-panel.slint";
 import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { TaskCard } from "widgets/task-card.slint";
@@ -292,6 +293,9 @@ export component AppWindow inherits Window {
     callback settings-scale-focus-lost();
     // The settings editor's general seams (the GUI settings editor).
     callback settings-general-committed(int, string);
+    // The Files row's poll cadence commit seam (#1083, W-6): the
+    // plan row's own callback address, window-level.
+    callback files-poll-secs-committed(int, string);
     callback settings-general-focus-lost(int);
     callback settings-reminders-picked(int);
     callback settings-sink-picked(int);
@@ -379,6 +383,10 @@ export component AppWindow inherits Window {
     // slint: files-sync-tone / files-sync-flagged (US-1 D-1, #782)
     in-out property <FilesSyncChipTone> files-sync-tone;
     in-out property <bool> files-sync-flagged;
+    // The degraded-boot badge (the small-gated journeys plan W-7,
+    // R-5): display-only, persistent — set by the adapter's
+    // signal-lane pass, never cleared in-session, no dismiss.
+    in-out property <bool> journal-degraded-visible: false;
     // The jump-to search palette (#348): the model rows arrive ranked,
     // anchor-filtered, and capped from the Rust pass.
     in-out property <bool> palette-open: false;
@@ -718,6 +726,7 @@ export component AppWindow inherits Window {
                 scale-pressed() => root.settings-scale-pressed();
                 scale-released(v) => root.settings-scale-released(v);
                 general-committed(f, t) => root.settings-general-committed(f, t);
+                files-poll-secs-committed(f, t) => root.files-poll-secs-committed(f, t);
                 general-focus-lost(f) => root.settings-general-focus-lost(f);
                 reminders-picked(i) => root.settings-reminders-picked(i);
                 sink-picked(i) => root.settings-sink-picked(i);
@@ -903,6 +912,7 @@ export component AppWindow inherits Window {
                 files-sync-state: root.files-sync-state;
                 files-sync-tone: root.files-sync-tone;
                 files-sync-flagged: root.files-sync-flagged;
+                journal-degraded-visible: root.journal-degraded-visible;
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
                 mute-clicked(i) => root.banner_mute_clicked(i);
                 row-activated(i) => root.banner-row-activated(i);
