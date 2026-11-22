@@ -619,6 +619,13 @@ static STANDARD_S0B: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::TaskDetail,
         &["Ctrl+Shift+k"],
     ),
+    // US-10 (W-11, #1091): the rule cursor's disarm chord — free in
+    // this preset's detail chain.
+    (
+        ActionId::RowCursorDisarm,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+a"],
+    ),
     // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
     // D-10): the CUA F-key family continues after F10 — F11 free in
     // this preset (F1-F10 and F12 were bound; verified). The
@@ -1102,6 +1109,13 @@ static EMACS_S0B: &[(ActionId, ContextId, &[&str])] = &[
         ActionId::TaskToggleTracker,
         ContextId::TaskDetail,
         &["Ctrl+c", "k"],
+    ),
+    // US-10 (W-11, #1091): the disarm chord — free in this preset's
+    // detail chain (the shared spelling).
+    (
+        ActionId::RowCursorDisarm,
+        ContextId::TaskDetail,
+        &["Ctrl+Shift+a"],
     ),
     // The scheduled field's quick verbs (UX-R8 chunk-5 US-1/AC-5,
     // D-10 with the C-5 re-picks recorded): the plan's C-c C-o and

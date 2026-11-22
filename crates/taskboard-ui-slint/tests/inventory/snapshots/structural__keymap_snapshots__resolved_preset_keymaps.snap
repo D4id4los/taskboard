@@ -366,6 +366,9 @@ expression: rows
             - Ctrl+Space
           action: task.reopen
         - sequence:
+            - Ctrl+Shift+a
+          action: row.cursor-disarm
+        - sequence:
             - Ctrl+e
           action: task.effort-edit
         - sequence:
@@ -1031,6 +1034,9 @@ expression: rows
         - sequence:
             - Ctrl+Space
           action: task.reopen
+        - sequence:
+            - Ctrl+Shift+a
+          action: row.cursor-disarm
         - sequence:
             - Ctrl+b
           action: nav.focus-left

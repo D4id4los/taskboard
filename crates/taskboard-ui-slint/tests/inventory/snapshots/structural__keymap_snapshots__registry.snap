@@ -946,6 +946,15 @@ expression: rows
   menu_rank: 940
   description: "Opens the focused row's context menu — the keyboard twin of the row right-click."
   menu_group: ~
+- id: row.cursor-disarm
+  label: Disarm row cursor
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 930
+  description: "Disarms the rule list's selected-row cursor; the detail's vertical keys return to the control ladder."
+  menu_group: ~
 - id: task.track-toggle
   label: Toggle tracking
   contexts:

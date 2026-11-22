@@ -4629,6 +4629,22 @@ impl Adapter {
                 self.open_row_menu_keyboard(window);
                 Vec::new()
             }
+            // The rule cursor's disarm chord (US-10, W-11, #1091):
+            // armed — clear AND latch (the verticals return to the
+            // control ladder; the flow table's `armed --> disarmed`
+            // edge); disarmed — the typed inert (no state change).
+            // The other clear sites stay the only other clearers (the
+            // composition law: no second disarm site invented).
+            (_, UiEffect::RowCursorDisarm) => {
+                if self.view_state.rule_cursor().is_some() {
+                    self.view_state.disarm_rule_cursor();
+                    self.refresh_forced(window);
+                } else {
+                    self.arm_no_target_notice(ActionId::RowCursorDisarm);
+                    self.push_notice(window);
+                }
+                Vec::new()
+            }
             // The menu-routed conversion arms (cross-surface friction
             // plan D-2/D-3, #832): they route the real arming seams,
             // subject-resolved — the habit twin through the section's
@@ -6664,6 +6680,10 @@ impl Adapter {
             // every view intent — the subjectless refusal lives in
             // the arm.
             | UiEffect::RowMenuRequested
+            // The rule cursor's disarm chord (US-10, W-11, #1091)
+            // interprets like every view intent — the typed inert
+            // lives in the arm.
+            | UiEffect::RowCursorDisarm
             | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitConvertCancel

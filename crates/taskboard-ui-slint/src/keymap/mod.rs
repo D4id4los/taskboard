@@ -521,6 +521,9 @@ mod tests {
                 ActionId::SeriesPause,
                 ActionId::SeriesResume,
                 ActionId::TaskToggleTracker,
+                // US-10 (W-11, #1091): the disarm chord rides the same
+                // detail-chain parity law.
+                ActionId::RowCursorDisarm,
             ] {
                 assert!(
                     keymap.first_binding_display(verb, &chain).is_some(),

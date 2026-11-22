@@ -430,6 +430,15 @@ pub enum ActionId {
     /// refusal. The R-7 supersession: the one recorded id the D1
     /// no-coining ban exempts for this chunk.
     RowMenu,
+    /// The rule cursor's disarm chord (US-10, W-11, #1091): clears the
+    /// `TaskDetail` rule-list cursor while armed — the dedicated escape
+    /// hatch that returns the verticals to the chunk-9 control ladder
+    /// without a view exit or foreign settle — and the typed inert
+    /// while disarmed. Composes with the armed-flow grammar: the
+    /// disarm latches the cursor's arming gate; the existing clear
+    /// sites (view exit, foreign settle, global cancel) stay the only
+    /// other clearers.
+    RowCursorDisarm,
     /// The ONE smart tracking toggle (J3 R-8, round 9 chunk 11):
     /// start-if-idle, stop-if-running over the subject/one-shot
     /// target — distinct from `TaskToggleTracker` (the tracker-kind
@@ -829,6 +838,7 @@ impl ActionId {
             Self::TaskTrackStop => "task.track-stop",
             Self::TaskToggleTracker => "task.toggle-tracker",
             Self::RowMenu => "row.menu",
+            Self::RowCursorDisarm => "row.cursor-disarm",
             Self::TaskTrackToggle => "task.track-toggle",
             Self::TaskTrackEntries => "task.track-entries",
             Self::TaskEffortEdit => "task.effort-edit",
@@ -2046,6 +2056,18 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Opens the focused row's context menu — the keyboard twin of the row right-click.",
         menu_group: None,
     },
+    // The rule cursor's disarm chord (US-10, W-11, #1091). Not a menu
+    // row — a cursor verb (the RowMenu posture).
+    ActionEntry {
+        id: ActionId::RowCursorDisarm,
+        label: "Disarm row cursor",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 930,
+        description: "Disarms the rule list's selected-row cursor; the detail's vertical keys return to the control ladder.",
+        menu_group: None,
+    },
     // The ONE smart tracking toggle (J3 R-8, round 9 chunk 11): the
     // state-correct half of Start/Stop over the target — the card
     // play/pause control's routing re-rooted onto a registry id (one
@@ -3105,6 +3127,8 @@ mod tests {
             ActionId::TaskToggleTracker,
             // The focused row's context-menu opener (US-7, W-8, #1032).
             ActionId::RowMenu,
+            // The rule cursor's disarm chord (US-10, W-11, #1091).
+            ActionId::RowCursorDisarm,
             ActionId::TaskTrackToggle,
             ActionId::TaskTrackEntries,
             ActionId::TaskEffortEdit,
