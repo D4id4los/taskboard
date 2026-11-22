@@ -30,6 +30,19 @@ export global DatePickerFacts {
     in-out property <length> anchor-y;
     in-out property <length> anchor-width;
     in-out property <length> anchor-height;
+    // The picker overlay's anchor (the M2 mount's read, #1206): the
+    // editor overlay host's realized window-space panel rect, mirrored
+    // by the AnchorMirror at the M1 mount site (the #954 idiom on the
+    // host's `panel-*` out seams). The two-stage flow's re-anchor law:
+    // the picker must anchor to the *editor panel*, never the closed
+    // cell — with the host's G-2 law the field stays visible by
+    // construction. Stale while the editor is closed (the mirror only
+    // exists on the M1 mount) — harmless, the picker cannot open
+    // before the editor is realized.
+    in-out property <length> picker-anchor-x;
+    in-out property <length> picker-anchor-y;
+    in-out property <length> picker-anchor-width;
+    in-out property <length> picker-anchor-height;
 }
 
 // The timers setter popover's facts (r4 D33): the DatePickerFacts

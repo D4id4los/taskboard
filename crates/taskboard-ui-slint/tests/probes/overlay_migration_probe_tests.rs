@@ -378,3 +378,201 @@ fn om_us2_s1_arming_the_editor_closes_the_picker_and_vice_versa() {
         );
     });
 }
+
+// ---- #1206: the picker must never cover the *editor panel* ----------
+
+/// A window-space rect (the structural geometry oracle for #1206).
+#[derive(Debug)]
+struct Rect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl Rect {
+    fn read(x: f32, y: f32, w: f32, h: f32) -> Self {
+        Self { x, y, w, h }
+    }
+    /// Interval intersection on both axes is empty (the disjointness
+    /// law, stated once).
+    fn disjoint(&self, other: &Rect) -> bool {
+        self.y >= other.y + other.h
+            || self.y + self.h <= other.y
+            || self.x >= other.x + other.w
+            || self.x + self.w <= other.x
+    }
+}
+
+fn picker_panel(window: &OverlayMigrationProbe) -> Rect {
+    Rect::read(
+        window.get_picker_panel_x(),
+        window.get_picker_panel_y(),
+        window.get_picker_panel_width(),
+        window.get_picker_panel_height(),
+    )
+}
+
+fn editor_panel(window: &OverlayMigrationProbe) -> Rect {
+    Rect::read(
+        window.get_editor_panel_x(),
+        window.get_editor_panel_y(),
+        window.get_editor_panel_width(),
+        window.get_editor_panel_height(),
+    )
+}
+
+/// The staged-clear fixture: editor and picker both armed below the
+/// mid-window anchor (P1/P4's geometry base). The focus hand-over
+/// rides the `changed` edge (r4 D25's one-shot mechanism), a separate
+/// `set_task` so the edge actually fires.
+fn clip_fixture(window: &OverlayMigrationProbe, focused: bool) {
+    om_us2_s1_fixture(window, 100.0, 60.0, 600.0);
+    if focused {
+        window.set_task(TaskDetailModel {
+            due_open: true,
+            date_picker_open: true,
+            date_field_focus: true,
+            date_caption: "December".into(),
+            date_syntax_hint: "YYYY-MM-DD or +Nd".into(),
+            ..subject_model(true)
+        });
+        settle_geometry(window);
+    }
+}
+
+/// `om_us2_s2` (P1, #1206's acceptance): with the editor armed and
+/// the picker open, the picker panel and the editor host's realized
+/// panel are disjoint — the field, echo, and clear affordance live on
+/// that panel, so the clip is dead by construction (below arm).
+#[test]
+fn om_us2_s2_picker_panel_and_editor_panel_are_disjoint_below() {
+    run_probe(|window| {
+        clip_fixture(window, false);
+        let editor = editor_panel(window);
+        let picker = picker_panel(window);
+        assert!(
+            editor.w > 0.0 && editor.h > 0.0,
+            "the editor panel realizes"
+        );
+        assert!(
+            picker.w > 0.0 && picker.h > 0.0,
+            "the picker panel realizes"
+        );
+        assert!(
+            picker.disjoint(&editor),
+            "the picker panel covers the editor panel \
+             (picker {picker:?} vs editor {editor:?})"
+        );
+    });
+}
+
+/// `om_us2_s2`'s flip leg (P2): the closed-cell anchor near the
+/// viewport floor flips the editor panel above; the picker re-anchors
+/// to it and flips too — disjoint, and its bottom stays at or above
+/// the editor panel's top (the field never re-clips in the flip arm).
+#[test]
+fn om_us2_s2_flipped_picker_stays_clear_of_the_editor_panel() {
+    run_probe(|window| {
+        // Anchor just above the floor (850): both panels flip above.
+        om_us2_s1_fixture(window, 100.0, 800.0, 850.0);
+        assert!(
+            window.get_picker_flipped(),
+            "the picker resolves the flip arm near the floor"
+        );
+        let editor = editor_panel(window);
+        let picker = picker_panel(window);
+        assert!(
+            picker.disjoint(&editor),
+            "the flipped picker covers the editor panel \
+             (picker {picker:?} vs editor {editor:?})"
+        );
+        assert!(
+            picker.y + picker.h <= editor.y + 1.0,
+            "the flipped picker's bottom crosses the editor panel's top: \
+             picker bottom {} vs editor top {}",
+            picker.y + picker.h,
+            editor.y
+        );
+    });
+}
+
+/// `om_us2_s2`'s field band (P3): the field row — the element the
+/// user types into, addressed by its accessible label (labels are
+/// element addresses, never assertion text) — lies fully outside the
+/// picker panel. Guards against a fix that moves the overlap off the
+/// panel but back onto the field.
+#[test]
+fn om_us2_s2_the_field_band_stays_outside_the_picker_panel() {
+    run_probe(|window| {
+        clip_fixture(window, false);
+        let field = support::driver::find_by_label_on(window, "Due date entry")
+            .expect("the editor's field mounts");
+        let pos = field.absolute_position();
+        let size = field.size();
+        let field_rect = Rect::read(pos.x, pos.y, size.width, size.height);
+        let picker = picker_panel(window);
+        assert!(
+            field_rect.disjoint(&picker),
+            "the picker panel covers the field band \
+             (field {field_rect:?} vs picker {picker:?})"
+        );
+    });
+}
+
+/// `om_us2_s2`'s staged-clear leg (P4, symptom 2, typed outcome):
+/// with the picker open, the clear affordance's activation routes one
+/// `edited("")` through the probe's payload counter. The light-dismiss
+/// grammar (an outside click dismisses the picker first — r4 D24)
+/// makes the *raw* click path dismissal by design, so the pin drives
+/// the §7.1 click-equivalence seam; the raw-path reachability is
+/// P1/P3's disjointness itself.
+#[test]
+fn om_us2_s2_the_clear_affordance_routes_the_staged_empty_edit_with_the_picker_open() {
+    run_probe(|window| {
+        clip_fixture(window, true);
+        let clear = support::driver::find_by_label_on(window, "Clear")
+            .expect("the clear affordance mounts on the focused, non-empty field");
+        clear.invoke_default_action();
+        settle_geometry(window);
+        assert_eq!(
+            window.get_date_edited_empty_count(),
+            1,
+            "the staged clear routes exactly one edited(\"\")"
+        );
+    });
+}
+
+/// `om_us2_s2`'s keep-alive leg (P5): the picker anchor re-publishes
+/// when the editor panel's source moves while the picker is open —
+/// the mirror's `changed` edge (the R3 echo-growth analogue: a
+/// re-layout of the editor panel) — and the disjointness survives.
+#[test]
+fn om_us2_s2_the_picker_anchor_tracks_the_moved_editor_panel() {
+    run_probe(|window| {
+        clip_fixture(window, false);
+        let before = picker_panel(window);
+        // Move the closed-cell anchor: the editor host re-places its
+        // panel (the same keep-alive chain a scroll/echo-growth
+        // re-layout drives), the M1 mirror re-publishes, the picker
+        // re-places.
+        let facts = window.global::<DatePickerFacts>();
+        facts.set_anchor_x(400.0);
+        settle_geometry(window);
+        let editor = editor_panel(window);
+        let picker = picker_panel(window);
+        assert!(
+            (picker.x - editor.x).abs() <= 1.0,
+            "the picker anchor did not re-publish: picker x {} vs editor x {} \
+             (moved from {})",
+            picker.x,
+            editor.x,
+            before.x
+        );
+        assert!(
+            picker.disjoint(&editor),
+            "the moved picker covers the editor panel \
+             (picker {picker:?} vs editor {editor:?})"
+        );
+    });
+}
