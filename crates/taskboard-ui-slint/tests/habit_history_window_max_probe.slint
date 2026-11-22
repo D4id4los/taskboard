@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The window-max-width probe (#1029, the plan-next-day twin): the
+// real `HabitHistoryView` mounted with a default model — the
+// regression host for the window-max-width collapse (a bounded-max
+// row bounds the view root's layout max, and Slint's winit backend
+// then applies it as the OS window's max size). The assertion reads
+// the root layout info from Rust
+// (`probes/habit_history_window_max_probe_tests.rs`); the probe
+// only carries the mount.
+
+import { HabitHistoryView, HabitHistoryModel } from "../ui/views/habit-history-view.slint";
+
+export component WindowMaxProbe inherits Window {
+    // No explicit `width:`/`height:` bindings — an explicit width
+    // would replace the root's own layout info (the probe would read
+    // back its canvas, not the constraint merge under test).
+
+    in property <HabitHistoryModel> model;
+
+    HabitHistoryView {
+        width: 100%;
+        height: 100%;
+        model: root.model;
+    }
+}

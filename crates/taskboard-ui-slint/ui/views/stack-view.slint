@@ -18,6 +18,9 @@ export struct StackDetailModel {
 }
 
 export component StackView inherits FocusScope {
+    // The severing cap (J4 US-3 AC-2; the task-view precedent): the
+    // root's layout merge must never bound the OS window's max width.
+    max-width: Theme.layout-severing-max-width;
     in property <StackDetailModel> stack;
     callback task-activated(int);
     callback task-clicked(int);
