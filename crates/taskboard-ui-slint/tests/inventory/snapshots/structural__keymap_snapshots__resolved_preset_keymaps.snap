@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-ui-slint/tests/inventory/keymap_snapshots.rs
-assertion_line: 115
 expression: rows
 ---
 - preset: standard
@@ -93,6 +92,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+c
           action: habit.convert-arm
+        - sequence:
+            - Ctrl+Shift+d
+          action: habit.repair
         - sequence:
             - Ctrl+Shift+h
           action: habit.create
@@ -768,6 +770,9 @@ expression: rows
             - Ctrl+d
           action: task.delete
         - sequence:
+            - Ctrl+Shift+d
+          action: habit.repair
+        - sequence:
             - Ctrl+f
           action: nav.focus-right
         - sequence:
@@ -1351,6 +1356,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+c
           action: habit.convert-arm
+        - sequence:
+            - Ctrl+Shift+d
+          action: habit.repair
         - sequence:
             - Ctrl+Shift+h
           action: habit.create

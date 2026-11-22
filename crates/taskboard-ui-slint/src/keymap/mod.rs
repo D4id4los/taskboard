@@ -461,6 +461,9 @@ mod tests {
                 ActionId::HabitMoveDown,
                 ActionId::HabitConvertArm,
                 ActionId::HabitUndoLog,
+                // US-8 (W-9, #1057): the repair chord rides the same
+                // Today-context parity law.
+                ActionId::HabitRepair,
             ] {
                 assert!(
                     keymap.first_binding_display(verb, &chain).is_some(),

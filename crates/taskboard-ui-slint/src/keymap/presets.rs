@@ -160,6 +160,11 @@ const HABIT_TODAY_ROWS: &[(ActionId, ContextId, &[&str])] = &[
     // chord is free (Ctrl+Shift+t is ViewToday's global row; the
     // Today chain resolves Today first, so no shadow).
     (ActionId::HabitHistory, ContextId::Today, &["Ctrl+Shift+i"]),
+    // US-8 (W-9, #1057, O-8 parity): the streak-repair chord — the
+    // focused habit's key twin of the card strip's repair button
+    // (click ≡ key through the shared one-shot mint). The Today
+    // chain's `d` was free in every preset; the case-law spelling.
+    (ActionId::HabitRepair, ContextId::Today, &["Ctrl+Shift+d"]),
 ];
 
 /// The control walk's Tab/Shift+Tab pairs over the four view contexts (the standard/vi letter) — the Settings pair chains separately where each preset's textual position puts it.
