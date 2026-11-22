@@ -99,6 +99,19 @@ impl Harness {
         Self::mount_full_inner(driver, state, settings, files_sync, EscapeBoard::Yes)
     }
 
+    /// The pixel/geometry probes' variant (#1172 — the populated
+    /// preset of `usability_components.rs`): the caller owns the
+    /// driver (the `driver::run` job's), so the mount binds *that*
+    /// driver and hands the harness back around it. Behavior-additive
+    /// harness surface, no existing mount changes.
+    pub fn mount_on_driver_no_escape_with_settings(
+        driver: SlintDriver,
+        state: AppState,
+        settings: UiSettings,
+    ) -> Self {
+        Self::mount_full_inner(driver, state, settings, None, EscapeBoard::No)
+    }
+
     /// The today legs' variant (chunk 10 D12): the mount stays on the
     /// desktop's Today default — no central board escape. The former
     /// `TASKBOARD_JOURNEYS_STAY_ON_TODAY` env seam is gone (#1016
