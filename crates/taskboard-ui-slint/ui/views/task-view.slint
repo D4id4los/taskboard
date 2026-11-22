@@ -848,6 +848,21 @@ export component TaskView inherits FocusScope {
                         root.push-due-anchor();
                         root.due-edit-opened();
                     }
+                    // The per-seam restore claimant (round 5 A2, #1205):
+                    // the due editor's kind 7 — the opener's own cell,
+                    // never the title collapse. The nonce-wrap idiom is
+                    // the title cell's recorded watch shape.
+                    property <int> watch-restore-nonce: FocusFacts.nonce;
+                    init => {
+                        if (FocusFacts.anchor-kind == 7) {
+                            due-column.request-value-focus();
+                        }
+                    }
+                    changed watch-restore-nonce => {
+                        if (FocusFacts.anchor-kind == 7) {
+                            due-column.request-value-focus();
+                        }
+                    }
                 }
                 // The start-date column (round-3 D8/F14): the due
                 // column's twin, one look.
@@ -864,6 +879,19 @@ export component TaskView inherits FocusScope {
                     edit-asked() => {
                         root.push-scheduled-anchor();
                         root.scheduled-edit-opened();
+                    }
+                    // The scheduled editor's kind-8 claimant (the due
+                    // cell's twin, round 5 A2).
+                    property <int> watch-restore-nonce: FocusFacts.nonce;
+                    init => {
+                        if (FocusFacts.anchor-kind == 8) {
+                            scheduled-column.request-value-focus();
+                        }
+                    }
+                    changed watch-restore-nonce => {
+                        if (FocusFacts.anchor-kind == 8) {
+                            scheduled-column.request-value-focus();
+                        }
                     }
                 }
                 state-column := LabeledValueRow {
@@ -913,6 +941,14 @@ export component TaskView inherits FocusScope {
                         external-open-requested() => root.importance-edit-asked();
                         dismiss-asked() => root.priority-dismiss-requested();
                         row-activated(index) => root.priority-slot-clicked(index);
+                        // The importance picker's kind-9 restore claimant
+                        // (round 5 A2, #1205): the picker's opener cell.
+                        property <int> watch-restore-nonce: FocusFacts.nonce;
+                        changed watch-restore-nonce => {
+                            if (FocusFacts.anchor-kind == 9) {
+                                importance-dd.grab-field();
+                            }
+                        }
                     }
                 }
                 LabeledValueRow {
@@ -935,6 +971,13 @@ export component TaskView inherits FocusScope {
                         external-open-requested() => root.urgency-edit-asked();
                         dismiss-asked() => root.priority-dismiss-requested();
                         row-activated(index) => root.priority-slot-clicked(index);
+                        // The urgency picker's kind-10 restore claimant.
+                        property <int> watch-restore-nonce: FocusFacts.nonce;
+                        changed watch-restore-nonce => {
+                            if (FocusFacts.anchor-kind == 10) {
+                                urgency-dd.grab-field();
+                            }
+                        }
                     }
                 }
                 // The adapter-driven open edge (the #794 request-mirror
@@ -1046,12 +1089,20 @@ export component TaskView inherits FocusScope {
                     remove-description: "Detaches this label from the task.";
                     removed => { root.chip-unassign-clicked(index); }
                 }
-                IconButton {
+                add-label-button := IconButton {
                     icon: IconKind.plus;
                     tone: Tone.neutral;
                     label: "Add label";
                     description: "Opens the labels overlay: assign, create, edit, delete.";
                     clicked => root.labels-manage-asked();
+                    // The labels overlay's kind-11 restore claimant
+                    // (round 5 A2, #1205): the overlay's opener.
+                    property <int> watch-restore-nonce: FocusFacts.nonce;
+                    changed watch-restore-nonce => {
+                        if (FocusFacts.anchor-kind == 11) {
+                            add-label-button.grab();
+                        }
+                    }
                 }
             }
 
@@ -1059,12 +1110,20 @@ export component TaskView inherits FocusScope {
             // open tasks only — the recur row owns the edit side. The
             // timer icon keeps the recur family's identity; the label
             // is the hover tip.
-            if (!root.task.recur-visible && root.task.series-edit-visible): IconButton {
+            if (!root.task.recur-visible && root.task.series-edit-visible): add-repeat-button := IconButton {
                 icon: IconKind.timer;
                 tone: Tone.neutral;
                 label: "Add repeat: the task joins a recurring series";
                 enabled: root.task.series-edit-enabled;
                 clicked => root.series-edit-asked();
+                // The recur editor's kind-12 restore claimant (round 5
+                // A2, #1205): the rule-less open's opener button.
+                property <int> watch-restore-nonce: FocusFacts.nonce;
+                changed watch-restore-nonce => {
+                    if (FocusFacts.anchor-kind == 12) {
+                        add-repeat-button.grab();
+                    }
+                }
             }
 
             // The tracked-time summary row (r4 D17): the subject's
@@ -1112,6 +1171,14 @@ export component TaskView inherits FocusScope {
                         clicked => {
                             TooltipState.unhover();
                             root.task-track-entries-clicked();
+                        }
+                        // The entries overlay's kind-13 restore claimant
+                        // (round 5 A2, #1205): the overlay's opener.
+                        property <int> watch-restore-nonce: FocusFacts.nonce;
+                        changed watch-restore-nonce => {
+                            if (FocusFacts.anchor-kind == 13) {
+                                entries-button.grab();
+                            }
                         }
                     }
                     // The keep-alive mirror (the #954 AnchorMirror
@@ -1181,12 +1248,20 @@ export component TaskView inherits FocusScope {
                     // The edit-repeat affordance (round-7 D-7.1):
                     // beside the pattern echo, the same action as the
                     // add row and the Ctrl+R binding (click ≡ key).
-                    if (root.task.series-edit-visible): IconButton {
+                    if (root.task.series-edit-visible): edit-repeat-button := IconButton {
                         icon: IconKind.timer;
                         tone: Tone.neutral;
                         label: "Edit repeat: change the pattern or bound";
                         enabled: root.task.series-edit-enabled;
                         clicked => root.series-edit-asked();
+                        // The recurring subject's kind-12 claimant (the
+                        // add-repeat twin, round 5 A2).
+                        property <int> watch-restore-nonce: FocusFacts.nonce;
+                        changed watch-restore-nonce => {
+                            if (FocusFacts.anchor-kind == 12) {
+                                edit-repeat-button.grab();
+                            }
+                        }
                     }
                 }
                 if (root.task.recur-pause-open): HorizontalLayout {

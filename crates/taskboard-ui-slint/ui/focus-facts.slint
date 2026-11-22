@@ -7,7 +7,12 @@
 // convention: board column / today section in target-a, the row in
 // target-b; stack detail reads target-b alone), 2 stack header
 // (target-a = column), 3 board-bar cell (target-a = segment), 4 the
-// task detail's title cell, 5 its description cell. One view tree is
+// task detail's title cell, 5 its description cell, 6 its effort
+// field (the keyboard-opener seam), and — round 5 A2 (#1205's
+// per-seam detail restore cells) — 7 the due cell, 8 the scheduled
+// cell, 9 the importance cell, 10 the urgency cell, 11 the
+// add-label opener, 12 the recur opener, 13 the time-entries
+// opener. One view tree is
 // instantiated at a time (Q4), so the surfaces cannot disagree about
 // who consumes a fact. The nonce makes identical restores edge-
 // triggered (the FocusScrollHint discipline).

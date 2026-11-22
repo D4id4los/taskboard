@@ -235,6 +235,11 @@ pub(crate) enum FocusSeam {
     ConfirmDelete,
     BoardColorPick,
     PlanPlace,
+    /// The scheduled-date editor (round 5 A2, #1205): the due editor's
+    /// twin seam, split so the detail restore can land the scheduled
+    /// cell (the flow's `DateField` read at open time — the restore
+    /// never sees the flow).
+    ScheduledEditor,
 }
 
 impl FocusSeam {
@@ -260,6 +265,7 @@ impl FocusSeam {
             Self::ConfirmDelete => 15,
             Self::BoardColorPick => 16,
             Self::PlanPlace => 17,
+            Self::ScheduledEditor => 18,
         }
     }
 
@@ -271,6 +277,7 @@ impl FocusSeam {
         matches!(
             self,
             Self::DueEditor
+                | Self::ScheduledEditor
                 | Self::RecurEditor
                 | Self::LabelsOverlay
                 | Self::TrackEntries
@@ -1983,8 +1990,27 @@ impl Adapter {
         if chained(&|f| matches!(f, Flow::EditRecur { .. })) {
             return Some(FocusSeam::RecurEditor);
         }
-        if chained(&|f| matches!(f, Flow::EditDate { .. })) {
+        if chained(&|f| {
+            matches!(
+                f,
+                Flow::EditDate {
+                    field: crate::view_state::DateField::Due,
+                    ..
+                }
+            )
+        }) {
             return Some(FocusSeam::DueEditor);
+        }
+        if chained(&|f| {
+            matches!(
+                f,
+                Flow::EditDate {
+                    field: crate::view_state::DateField::Scheduled,
+                    ..
+                }
+            )
+        }) {
+            return Some(FocusSeam::ScheduledEditor);
         }
         if chained(&|f| matches!(f, Flow::EditTitle { .. })) {
             return Some(FocusSeam::TitleEditor);
@@ -2173,10 +2199,30 @@ impl Adapter {
         else {
             return false;
         };
-        // The detail's description editor restores into its own cell
-        // (census row 15), not the title's.
-        if kind == 4 && origin.seam == FocusSeam::DescriptionEditor {
-            kind = 5;
+        // The detail's per-seam cell table (round 5 A2, #1205's
+        // mechanism B): a `Task` anchor at `TaskDetail` resolves to
+        // kind 4 — the census's single detail cell — and the opener's
+        // identity used to be discarded there (every overlay restored
+        // onto the title). The seam names the opener's own cell; the
+        // view carries the matching claimants. Only the detail's
+        // collapse is remapped: overlays opened from row contexts
+        // keep their row anchors (kinds 1–3).
+        if kind == 4 {
+            kind = match origin.seam {
+                FocusSeam::DescriptionEditor => 5,
+                FocusSeam::DueEditor => 7,
+                FocusSeam::ScheduledEditor => 8,
+                FocusSeam::PriorityDue => 9,
+                FocusSeam::PriorityScheduled => 10,
+                FocusSeam::LabelsOverlay => 11,
+                FocusSeam::RecurEditor => 12,
+                FocusSeam::TrackEntries => 13,
+                // The seams with no detail cell of their own (the
+                // title editor — kind 4 is its own cell — the effort
+                // opener's kind-6 push, the modals) keep the resolved
+                // cell.
+                _ => 4,
+            };
         }
         let facts = window.global::<crate::FocusFacts>();
         facts.set_seam_id(origin.seam.id());
@@ -2204,7 +2250,7 @@ impl Adapter {
                 window.invoke_focus_stack_header(a);
             }
             3 => window.invoke_focus_board_cell(a),
-            4 | 5 => window.invoke_focus_detail_cell(kind),
+            4..=13 => window.invoke_focus_detail_cell(kind),
             _ => return false,
         }
         // The row restore's scroll-into-view half (the FocusScrollHint
