@@ -1069,6 +1069,19 @@ mod predicate_tests {
             resolve_task_exact_any(&state, &full).expect("tombstone uuid"),
             tomb_id
         );
+        // The live cascade refuses a tombstone's uuid-shaped selector
+        // (the uuid-hit guard's `==` flip would return the *dead* id
+        // instead of falling through — the observable flip).
+        assert!(matches!(
+            resolve_task(&state, &full),
+            Err(CommandError::UnknownTask(_))
+        ));
+        // So does any well-formed uuid naming no live row.
+        let ghost = Uuid::from_u128(0xdead_beef).to_string();
+        assert!(matches!(
+            resolve_task(&state, &ghost),
+            Err(CommandError::UnknownTask(_))
+        ));
         assert!(matches!(
             resolve_task_exact_any(&state, &full[..8]),
             Err(CommandError::UnknownTask(_))
@@ -1337,7 +1350,61 @@ mod engine_seam_tests {
         assert!(
             matches!(err, CommandError::AmbiguousStack { ref candidates } if candidates.is_empty())
         );
-        let _ = StackId::from_uuid(a_inbox.as_uuid());
+        let _ = fixture.app.shutdown().await;
+    }
+
+    /// A scoped *title* miss is the typed unknown (the zero-hit arm of
+    /// the scoped triage — its deletion routes the miss onto the
+    /// ambiguity arm's empty-candidates shape instead; the mutant
+    /// evidence window's arm-0 deletion survivor).
+    #[tokio::test]
+    async fn move_scoped_title_miss_is_the_typed_unknown() {
+        let fixture = standalone_boot_fixture("pred-move-miss").await;
+        let CommandOutcome::CreatedBoard(c) = fixture
+            .app
+            .engine
+            .execute(StateCommand::CreateBoard {
+                title: "c".to_owned(),
+                color: taskboard_domain::Color::new("0082c9"),
+            })
+            .await
+            .expect("board mints")
+        else {
+            panic!("CreateBoard always mints");
+        };
+        let CommandOutcome::CreatedStack(solo) = fixture
+            .app
+            .engine
+            .execute(StateCommand::CreateStack {
+                board: c,
+                title: "Solo".to_owned(),
+                order: 0,
+            })
+            .await
+            .expect("stack mints")
+        else {
+            panic!("CreateStack always mints");
+        };
+        let _ = add_on(
+            &fixture.app,
+            "mover".to_owned(),
+            Some(&solo.as_uuid().to_string()),
+        )
+        .await
+        .expect("the task lands on Solo");
+        let err = move_on(
+            &fixture.app,
+            "mover",
+            Some("Inbox"),
+            Some(&c.as_uuid().to_string()),
+            None,
+        )
+        .await
+        .expect_err("no Inbox on c");
+        assert!(
+            matches!(err, CommandError::UnknownStack(_)),
+            "a scoped title miss is the typed unknown, not the ambiguity shape"
+        );
         let _ = fixture.app.shutdown().await;
     }
 }
