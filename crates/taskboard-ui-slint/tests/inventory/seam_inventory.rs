@@ -203,6 +203,16 @@ const SEAM_INVENTORY: &[&str] = &[
     "habits_quota_dismissed",
     "habits_repair_clicked",
     "intercept_key",
+    // The undo branch picker's seams (UF2, #353): the mount ack, the
+    // plain reflex rows, the two row commits, the dismissal (callbacks
+    // "undo-branches-open" / "-line-undo" / "-line-redo" /
+    // "-target-picked" / "-branch-picked" / "-picker-dismissed").
+    "undo_branches_open",
+    "undo_line_undo",
+    "undo_line_redo",
+    "undo_target_picked",
+    "undo_branch_picked",
+    "undo_picker_dismissed",
     "menu_dismiss_requested",
     "menu_entry_invoked",
     "menu_level_back",

@@ -1622,7 +1622,7 @@ export component AppWindow inherits Window {
         if (KeyboardState.undo-picker-open): undo-picker-backdrop := TouchArea {
             width: 100%;
             height: 100%;
-            clicked => root.undo-picker-dismissed();
+            clicked => root.undo_picker_dismissed();
         }
         if (KeyboardState.undo-picker-open): UndoBranchPicker {
             x: max(Theme.space-2,
@@ -1633,13 +1633,13 @@ export component AppWindow inherits Window {
                        status.y - self.height - Theme.space-1));
             branch-rows: KeyboardState.undo-picker-branch-rows;
             target-rows: KeyboardState.undo-picker-target-rows;
-            // slint: undo-branches-open (the Rust seam on_undo_branches_open)
-            undo-branches-open() => root.undo-branches-open();
-            undo-line-undo() => root.undo-line-undo();
-            undo-line-redo() => root.undo-line-redo();
-            undo-target-picked(id) => root.undo-target-picked(id);
-            undo-branch-picked(id) => root.undo-branch-picked(id);
-            undo-picker-dismissed() => root.undo-picker-dismissed();
+            // slint: undo_branches_open (the Rust seam on_undo_branches_open)
+            undo_branches_open() => root.undo_branches_open();
+            undo_line_undo() => root.undo_line_undo();
+            undo_line_redo() => root.undo_line_redo();
+            undo_target_picked(id) => root.undo_target_picked(id);
+            undo_branch_picked(id) => root.undo_branch_picked(id);
+            undo_picker_dismissed() => root.undo_picker_dismissed();
         }
 
         // The tooltip host (usability D3, round-1 D9/D10): mounted
@@ -1973,12 +1973,12 @@ export component AppWindow inherits Window {
     // The undo branch picker's seams (UF2, #353): W-1's mount ack, the
     // plain reflex rows, the W-2/W-3 row seams, and the AC-4
     // outside-click dismissal.
-    pure callback undo-branches-open();
-    pure callback undo-line-undo();
-    pure callback undo-line-redo();
-    pure callback undo-target-picked(string);
-    pure callback undo-branch-picked(string);
-    pure callback undo-picker-dismissed();
+    pure callback undo_branches_open();
+    pure callback undo_line_undo();
+    pure callback undo_line_redo();
+    pure callback undo_target_picked(string);
+    pure callback undo_branch_picked(string);
+    pure callback undo_picker_dismissed();
     // The search palette's seams (#348): per-keystroke ranking, the
     // outside-click close, and row activation.
     pure callback palette-query-edited(string);
