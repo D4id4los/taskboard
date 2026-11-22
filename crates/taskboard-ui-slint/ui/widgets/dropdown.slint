@@ -234,6 +234,13 @@ export component Dropdown inherits Rectangle {
         }
     }
 
+    // The host's grab seam (the icon-button precedent): a restore
+    // claimant lands slint focus back on the closed field (round 5
+    // A2, #1205's per-seam detail restore cells).
+    public function grab-field() {
+        field-scope.focus();
+    }
+
     // Widget-local open state (the time-field pattern).
     in-out property <bool> open: false;
     // The keyboard highlight inside `rows`; re-anchored from the

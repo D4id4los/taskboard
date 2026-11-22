@@ -366,7 +366,16 @@ fn restore_importance_picker_lands_on_the_importance_cell() {
         let preset = Preset::Emacs;
         let mut harness = JourneyHarness::mount(detail_fixture_state(), preset);
         open_detail_first_card(&mut harness, preset);
-        harness.driver.click_by_label("Importance");
+        // The caption and the dropdown field share the accessible
+        // address; the click lands on the button-class element (the
+        // field's a11y default action — the open seam).
+        let field = harness
+            .driver
+            .find_all_by_label("Importance")
+            .into_iter()
+            .find(support::driver::Element::is_accessible_button)
+            .expect("the importance dropdown field is an a11y button");
+        field.invoke_default_action();
         harness.advance();
         assert!(
             harness.handle.window().get_task_model().importance_open,
