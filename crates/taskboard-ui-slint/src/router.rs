@@ -144,6 +144,11 @@ pub enum UiEffect {
     /// intent over the subject task — the adapter flips the model's
     /// `recur-pause-open` flag; any other flow/state is inert.
     SeriesPauseOpen,
+    /// The focused row's context-menu opener (US-7, W-8, #1032): the
+    /// adapter opens the walk subject's context menu through the same
+    /// openers the pointer seams use; the subjectless refusal lives in
+    /// the arm (the uniform law). Pure presentation — no command.
+    RowMenuRequested,
     /// Arm the habit row's conversion confirm strip (issue #506): the
     /// adapter records the armed row; the dispatch itself waits for
     /// Confirm.
@@ -527,6 +532,7 @@ impl UiEffect {
             // adapter's interpretation table owns them; no shell
             // state moves).
             | Self::SeriesPauseOpen
+            | Self::RowMenuRequested
             | Self::HabitPauseOpen
             | Self::HabitConvertArm
             | Self::HabitConvertCancel
@@ -1727,6 +1733,10 @@ impl ActionRouter {
             // is a view intent; commit and resume route the domain
             // verb from the recur row's one-shot target.
             ActionId::SeriesPause => DispatchOutcome::UiEffect(UiEffect::SeriesPauseOpen),
+            // US-7 (W-8, #1032): the opener is a pure view intent —
+            // the subject resolution (and its typed refusal) is the
+            // adapter arm's.
+            ActionId::RowMenu => DispatchOutcome::UiEffect(UiEffect::RowMenuRequested),
             ActionId::SeriesPauseCommit => match (ctx.series_target, ctx.pause_draft) {
                 (Some(head), Some(until)) => DispatchOutcome::Command(StateCommand::PauseSeries {
                     head,

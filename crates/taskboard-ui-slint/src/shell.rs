@@ -342,6 +342,10 @@ impl KeymapShell {
             // The habit trio's intents are adapter-interpreted view
             // intents (issue #506); the shell records nothing.
             | UiEffect::TrackEntryDismiss
+            // The row-menu opener is adapter-interpreted (US-7, W-8,
+            // #1032); the shell records nothing (the adapter's menu
+            // state write owns the open).
+            | UiEffect::RowMenuRequested
             | UiEffect::SeriesPauseOpen
             | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm

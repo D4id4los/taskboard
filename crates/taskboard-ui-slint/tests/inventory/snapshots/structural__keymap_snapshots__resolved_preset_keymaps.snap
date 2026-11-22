@@ -147,6 +147,9 @@ expression: rows
             - F10
           action: task.track-stop
         - sequence:
+            - Shift+F10
+          action: row.menu
+        - sequence:
             - F11
           action: task.schedule-today
         - sequence:
@@ -271,6 +274,9 @@ expression: rows
         - sequence:
             - F10
           action: task.track-stop
+        - sequence:
+            - Shift+F10
+          action: row.menu
         - sequence:
             - F11
           action: task.schedule-today
@@ -823,6 +829,9 @@ expression: rows
         - sequence:
             - Shift+Down
           action: habit.move-down
+        - sequence:
+            - Shift+F10
+          action: row.menu
     - context: board
       bindings:
         - sequence:
@@ -958,6 +967,9 @@ expression: rows
         - sequence:
             - Ctrl+Right
           action: stack.wider
+        - sequence:
+            - Shift+F10
+          action: row.menu
     - context: stack-detail
       bindings:
         - sequence:
@@ -1411,6 +1423,9 @@ expression: rows
         - sequence:
             - Shift+Down
           action: habit.move-down
+        - sequence:
+            - Shift+F10
+          action: row.menu
     - context: board
       bindings:
         - sequence:
@@ -1443,6 +1458,9 @@ expression: rows
         - sequence:
             - y
           action: task.schedule-today
+        - sequence:
+            - Shift+F10
+          action: row.menu
     - context: stack-detail
       bindings:
         - sequence:

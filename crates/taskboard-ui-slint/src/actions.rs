@@ -423,6 +423,13 @@ pub enum ActionId {
     TaskTrackStart,
     TaskTrackStop,
     TaskToggleTracker,
+    /// The focused row's context-menu opener (US-7, W-8, #1032): the
+    /// keyboard twin of the row right-click — the menu opens through
+    /// the same `menu_row_subject` fact the pointer seam uses (click
+    /// ≡ key by construction). A subjectless walk is the typed
+    /// refusal. The R-7 supersession: the one recorded id the D1
+    /// no-coining ban exempts for this chunk.
+    RowMenu,
     /// The ONE smart tracking toggle (J3 R-8, round 9 chunk 11):
     /// start-if-idle, stop-if-running over the subject/one-shot
     /// target — distinct from `TaskToggleTracker` (the tracker-kind
@@ -821,6 +828,7 @@ impl ActionId {
             Self::TaskTrackStart => "task.track-start",
             Self::TaskTrackStop => "task.track-stop",
             Self::TaskToggleTracker => "task.toggle-tracker",
+            Self::RowMenu => "row.menu",
             Self::TaskTrackToggle => "task.track-toggle",
             Self::TaskTrackEntries => "task.track-entries",
             Self::TaskEffortEdit => "task.effort-edit",
@@ -2024,6 +2032,20 @@ pub const REGISTRY: &[ActionEntry] = &[
         description: "Marks or unmarks the focused task as a tracker: a tracked, never-completed card.",
         menu_group: Some(MenuGroup::Task),
     },
+    // The focused row's context-menu opener (US-7, W-8, #1032): the
+    // keyboard twin of the row right-click. Not a menu row — the verb
+    // OPENS menus; its strokes are the preset rows' truth (the
+    // row-verb posture, the group-page geometry budget).
+    ActionEntry {
+        id: ActionId::RowMenu,
+        label: "Open row menu",
+        contexts: GLOBAL,
+        category: Category::Menu,
+        enabled: true,
+        menu_rank: 940,
+        description: "Opens the focused row's context menu — the keyboard twin of the row right-click.",
+        menu_group: None,
+    },
     // The ONE smart tracking toggle (J3 R-8, round 9 chunk 11): the
     // state-correct half of Start/Stop over the target — the card
     // play/pause control's routing re-rooted onto a registry id (one
@@ -3081,6 +3103,8 @@ mod tests {
             ActionId::TaskTrackStart,
             ActionId::TaskTrackStop,
             ActionId::TaskToggleTracker,
+            // The focused row's context-menu opener (US-7, W-8, #1032).
+            ActionId::RowMenu,
             ActionId::TaskTrackToggle,
             ActionId::TaskTrackEntries,
             ActionId::TaskEffortEdit,

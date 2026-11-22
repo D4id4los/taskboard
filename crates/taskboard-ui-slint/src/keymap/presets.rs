@@ -45,6 +45,7 @@ impl Preset {
             Self::Standard => chained(&[
                 STANDARD_S0,
                 HABIT_TODAY_ROWS,
+                ROW_MENU_ROWS,
                 STANDARD_S0B,
                 LABELS_CONTROL_WALK_ROWS,
                 STANDARD_S1,
@@ -60,6 +61,7 @@ impl Preset {
             Self::Emacs => chained(&[
                 EMACS_S0,
                 HABIT_TODAY_ROWS,
+                ROW_MENU_ROWS,
                 EMACS_S0B,
                 LABELS_CONTROL_WALK_ROWS,
                 EMACS_S1,
@@ -69,6 +71,7 @@ impl Preset {
             Self::Vi => chained(&[
                 VI_S0,
                 HABIT_TODAY_ROWS,
+                ROW_MENU_ROWS,
                 VI_S0B,
                 CONTROL_WALK_ROWS,
                 VI_S1,
@@ -165,6 +168,19 @@ const HABIT_TODAY_ROWS: &[(ActionId, ContextId, &[&str])] = &[
     // (click ≡ key through the shared one-shot mint). The Today
     // chain's `d` was free in every preset; the case-law spelling.
     (ActionId::HabitRepair, ContextId::Today, &["Ctrl+Shift+d"]),
+];
+
+/// The focused row's context-menu opener (US-7, W-8, #1032): the row
+/// right-click's keyboard twin, bound in the Board and Today contexts
+/// of every preset (the O-8 parity law; the shared block rides each
+/// preset's chain after the habit rows). Shift+F10 — the CUA
+/// context-menu convention — is a named-key row, free in both
+/// contexts of all three presets (the clock pair's F10 binds in the
+/// view contexts without the shift; the named-key identity keeps the
+/// shift bit distinct).
+const ROW_MENU_ROWS: &[(ActionId, ContextId, &[&str])] = &[
+    (ActionId::RowMenu, ContextId::Board, &["Shift+F10"]),
+    (ActionId::RowMenu, ContextId::Today, &["Shift+F10"]),
 ];
 
 /// The control walk's Tab/Shift+Tab pairs over the four view contexts (the standard/vi letter) — the Settings pair chains separately where each preset's textual position puts it.

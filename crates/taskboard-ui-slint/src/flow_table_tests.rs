@@ -350,6 +350,7 @@ fn key_of(effect: &UiEffect) -> EK {
         // opener: flag flips over the subject — no flow moves, no
         // command routes.
         UiEffect::SeriesPauseOpen
+        | UiEffect::RowMenuRequested
         | UiEffect::HabitPauseOpen
         | UiEffect::HabitConvertArm
         | UiEffect::HabitConvertCancel
@@ -2965,6 +2966,9 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::NotificationVerb(_) => DismissClass::IdentitySwap,
         UiEffect::OpenMenu
         | UiEffect::UndoBranchesOpen
+        // The row-menu opener mounts the modal menu too (US-7, W-8,
+        // #1032) — the same anchor-or-modal class.
+        | UiEffect::RowMenuRequested
         | UiEffect::CloseMenu
         | UiEffect::BeginCreate { .. }
         | UiEffect::BeginCreateStack

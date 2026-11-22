@@ -4620,6 +4620,15 @@ impl Adapter {
                 }
                 Vec::new()
             }
+            // The row-menu opener (US-7, W-8, #1032): the walk
+            // subject's context menu through the pointer seams' own
+            // openers — click ≡ key by construction; the keyboard
+            // anchor is the toolbar fallback (no pointer point). The
+            // subjectless walk is the typed refusal (the uniform law).
+            (_, UiEffect::RowMenuRequested) => {
+                self.open_row_menu_keyboard(window);
+                Vec::new()
+            }
             // The menu-routed conversion arms (cross-surface friction
             // plan D-2/D-3, #832): they route the real arming seams,
             // subject-resolved — the habit twin through the section's
@@ -6651,6 +6660,10 @@ impl Adapter {
             // intent (issue #506) — the kiosk/subject refusals live
             // in the arms.
             | UiEffect::SeriesPauseOpen
+            // The row-menu opener (US-7, W-8, #1032) interprets like
+            // every view intent — the subjectless refusal lives in
+            // the arm.
+            | UiEffect::RowMenuRequested
             | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitConvertCancel
@@ -7224,6 +7237,55 @@ impl Adapter {
     /// habit (the row click's focus-fact discipline), then open the
     /// curated page anchored at the pointer. Stale indices absorb
     /// silently (the notification-row guard shape).
+    /// The row-menu key's adapter half (US-7, W-8, #1032): the walk
+    /// subject's context menu through the pointer seams' own openers
+    /// (click ≡ key by construction). The keyboard anchor is the
+    /// toolbar fallback — the `Hamburger` anchor flipped after the
+    /// opener (the openers hard-code the pointer point; the keyboard
+    /// has none) — re-synced so the projection reads the anchor the
+    /// same pass. A subjectless walk (and a stale habit landing) is
+    /// the typed refusal.
+    fn open_row_menu_keyboard(&mut self, window: &AppWindow) {
+        let today = self.view_state.view() == crate::view_state::ViewId::Today;
+        match self.view_state.walk_subject() {
+            Some(crate::presentation::RowSubject::Habit(habit)) => {
+                let index = self.tables.habits.iter().position(|&row| row == habit);
+                if let Some(index) = index {
+                    self.open_habit_context_menu(window, 0.0, 0.0, index);
+                    self.menu_anchor = MenuAnchor::Hamburger;
+                    self.sync(window);
+                } else {
+                    self.arm_no_target_notice(ActionId::RowMenu);
+                    self.push_notice(window);
+                }
+            }
+            Some(crate::presentation::RowSubject::Task(task)) => {
+                // The today surface carries the due-today extra (the
+                // today context seam's curated row); the board's is
+                // the bare page (the same split the pointer seams
+                // speak).
+                let extra: &[ActionId] = if today {
+                    &[ActionId::TaskDueToday]
+                } else {
+                    &[]
+                };
+                self.open_task_context_menu(
+                    window,
+                    0.0,
+                    0.0,
+                    extra,
+                    Some(crate::presentation::RowSubject::Task(task)),
+                );
+                self.menu_anchor = MenuAnchor::Hamburger;
+                self.sync(window);
+            }
+            None => {
+                self.arm_no_target_notice(ActionId::RowMenu);
+                self.push_notice(window);
+            }
+        }
+    }
+
     fn open_habit_context_menu(&mut self, window: &AppWindow, x: f32, y: f32, index: usize) {
         settle_pointer_conflict(self, window);
         let Some(&habit) = self.tables.habits.get(index) else {

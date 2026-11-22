@@ -540,6 +540,25 @@ mod tests {
         }
     }
 
+    /// US-7 (W-8, #1032): the row-menu opener resolves in the Board
+    /// and Today chains of every preset — the O-8 parity law, no
+    /// second-class card surface.
+    #[test]
+    fn every_preset_resolves_the_row_menu_in_the_board_and_today_chains() {
+        for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+            let keymap = Keymap::from_preset(preset);
+            for context in [ContextId::Board, ContextId::Today] {
+                let chain = [context, ContextId::Global];
+                assert!(
+                    keymap
+                        .first_binding_display(ActionId::RowMenu, &chain)
+                        .is_some(),
+                    "{preset:?} does not resolve row.menu in the {context} chain"
+                );
+            }
+        }
+    }
+
     /// T6 — core-verb coverage (D8/D9/D21): every core verb has ≥ 1
     /// binding in every preset, so no preset is a second-class
     /// citizen (Q14). The vi preset additionally carries the mode
