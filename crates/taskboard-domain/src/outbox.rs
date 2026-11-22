@@ -238,17 +238,31 @@ impl LocalOp {
     /// The board that owns this op's entity (board ops: themselves;
     /// stack ops: the stack's board; label ops: the label's board;
     /// task ops: the task's stack's board). `None` when the owning
-    /// entity row no longer exists (clear-board content wipes).
+    /// entity row no longer exists (clear-board content wipes) — for
+    /// board ops too (#1150): the board id rides the op, but a wiped
+    /// board row routes the op to the orphan lane, where the planner
+    /// synthetically completes row-targeting groups (`UpdateBoard` /
+    /// `DeleteBoard` / the flush trigger → `MaterializedOp::Noop`,
+    /// nothing sent) and materializes ref-deletes
+    /// (`DeleteRemoteCard` / `DeleteRemoteStack`) from the remote ref
+    /// alone — every terminal outcome (`Applied`, `RemoteMissing`)
+    /// drains the op. A live board row yields the unchanged
+    /// `Some(board)`.
     #[must_use]
     pub fn owning_board(&self, entities: &EntityTables<'_>) -> Option<BoardId> {
         match *self {
             // Board ops, ref-deletes (#150), and the task-less flush
-            // trigger attribute exactly: they carry their board.
+            // trigger attribute exactly: they carry their board — but
+            // doc-truth (#1150): only while the board row exists, so a
+            // wiped row routes the op to the orphan lane like every
+            // other wiped-entity op (the planner degrades it there).
             Self::UpdateBoard(board)
             | Self::DeleteBoard(board)
             | Self::DeleteRemoteCard { board, .. }
             | Self::DeleteRemoteStack { board, .. }
-            | Self::FlushBoardAppData(board) => Some(board),
+            | Self::FlushBoardAppData(board) => {
+                entities.boards.contains_key(&board).then_some(board)
+            }
             Self::CreateStack(stack)
             | Self::RenameStack(stack)
             | Self::MoveStack(stack)
@@ -477,20 +491,95 @@ mod tests {
         }
     }
 
+    fn board_row(raw: u128) -> Board {
+        let t = ts(100);
+        Board {
+            id: BoardId::from(Uuid::from_u128(raw)),
+            remote: None,
+            title: "board".into(),
+            color: crate::entities::Color::new("00ff00"),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::BoardClocks {
+                title: t,
+                color: crate::entities::BoardClocks::epoch(),
+                archived: crate::entities::BoardClocks::epoch(),
+                deleted: crate::entities::BoardClocks::epoch(),
+            },
+            authors: crate::entities::BoardAuthors::default(),
+            remote_seen: None,
+        }
+    }
+
     #[test]
-    fn board_ops_own_their_board_even_without_a_row() {
+    fn board_ops_resolve_only_while_the_board_row_exists() {
         let empty: BTreeMap<TaskId, Task> = BTreeMap::new();
         let stacks: BTreeMap<StackId, Stack> = BTreeMap::new();
         let labels: BTreeMap<LabelId, Label> = BTreeMap::new();
-        let boards: BTreeMap<BoardId, Board> = BTreeMap::new();
+        let live = BoardId::from(Uuid::from_u128(1));
+        let wiped = BoardId::from(Uuid::from_u128(2));
+        let mut boards = BTreeMap::new();
+        boards.insert(live, board_row(1));
         let t = tables(&empty, &stacks, &labels, &boards);
-        let board = BoardId::from(Uuid::from_u128(9));
-        assert_eq!(
-            LocalOp::UpdateBoard(board).owning_board(&t),
-            Some(board),
-            "board ops resolve themselves"
-        );
-        assert_eq!(LocalOp::DeleteBoard(board).owning_board(&t), Some(board));
+        let card_ref = crate::ids::RemoteCardRef {
+            board: crate::ids::RemoteBoardId::deck(42),
+            stack: crate::ids::RemoteStackId::deck(7),
+            card: crate::ids::RemoteCardId::deck(517),
+        };
+        let stack_ref = crate::ids::RemoteStackRef {
+            board: crate::ids::RemoteBoardId::deck(42),
+            stack: crate::ids::RemoteStackId::deck(8),
+        };
+        for (op, name) in [
+            (LocalOp::UpdateBoard(wiped), "update_board"),
+            (LocalOp::DeleteBoard(wiped), "delete_board"),
+            (
+                LocalOp::DeleteRemoteCard {
+                    board: wiped,
+                    card: card_ref,
+                },
+                "delete_remote_card",
+            ),
+            (
+                LocalOp::DeleteRemoteStack {
+                    board: wiped,
+                    stack: stack_ref,
+                },
+                "delete_remote_stack",
+            ),
+            (LocalOp::FlushBoardAppData(wiped), "flush_board_app_data"),
+        ] {
+            assert_eq!(
+                op.owning_board(&t),
+                None,
+                "a wiped board row strands no owner ({name}): the op rides the orphan lane (#1150)"
+            );
+        }
+        for (op, name) in [
+            (LocalOp::UpdateBoard(live), "update_board"),
+            (LocalOp::DeleteBoard(live), "delete_board"),
+            (
+                LocalOp::DeleteRemoteCard {
+                    board: live,
+                    card: card_ref,
+                },
+                "delete_remote_card",
+            ),
+            (
+                LocalOp::DeleteRemoteStack {
+                    board: live,
+                    stack: stack_ref,
+                },
+                "delete_remote_stack",
+            ),
+            (LocalOp::FlushBoardAppData(live), "flush_board_app_data"),
+        ] {
+            assert_eq!(
+                op.owning_board(&t),
+                Some(live),
+                "a live board row keeps the unchanged attribution ({name})"
+            );
+        }
     }
 
     #[test]
@@ -575,15 +664,17 @@ mod tests {
     }
 
     #[test]
-    fn the_flush_trigger_owns_its_board_and_targets_no_task() {
+    fn the_flush_trigger_targets_no_task() {
         let board = BoardId::from(Uuid::from_u128(1));
         let empty: BTreeMap<TaskId, Task> = BTreeMap::new();
         let stacks: BTreeMap<StackId, Stack> = BTreeMap::new();
         let labels: BTreeMap<LabelId, Label> = BTreeMap::new();
-        let boards: BTreeMap<BoardId, Board> = BTreeMap::new();
+        let mut boards = BTreeMap::new();
+        boards.insert(board, board_row(1));
         let t = tables(&empty, &stacks, &labels, &boards);
         let op = LocalOp::FlushBoardAppData(board);
-        // No entity graph: the board rides the op itself.
+        // The board row exists: the trigger attributes to it (the wiped
+        // row case is `board_ops_resolve_only_while_the_board_row_exists`).
         assert_eq!(op.owning_board(&t), Some(board));
         assert!(!op_targets_task(&op, TaskId::from(Uuid::from_u128(9))));
     }
@@ -607,32 +698,25 @@ mod tests {
     }
 
     #[test]
-    fn ref_delete_ops_own_their_board_and_target_no_task() {
-        let board = BoardId::from(Uuid::from_u128(1));
-        let card_ref = crate::ids::RemoteCardRef {
-            board: crate::ids::RemoteBoardId::deck(42),
-            stack: crate::ids::RemoteStackId::deck(7),
-            card: crate::ids::RemoteCardId::deck(517),
-        };
-        let stack_ref = crate::ids::RemoteStackRef {
-            board: crate::ids::RemoteBoardId::deck(42),
-            stack: crate::ids::RemoteStackId::deck(8),
-        };
-        let empty: BTreeMap<TaskId, Task> = BTreeMap::new();
-        let stacks: BTreeMap<StackId, Stack> = BTreeMap::new();
-        let labels: BTreeMap<LabelId, Label> = BTreeMap::new();
-        let boards: BTreeMap<BoardId, Board> = BTreeMap::new();
-        let t = tables(&empty, &stacks, &labels, &boards);
+    fn ref_delete_ops_target_no_task() {
+        // The board-attribution predicate lives in
+        // `board_ops_resolve_only_while_the_board_row_exists`; this pin
+        // is the ref-deletes' id-scoping rule only.
         let card_op = LocalOp::DeleteRemoteCard {
-            board,
-            card: card_ref,
+            board: BoardId::from(Uuid::from_u128(1)),
+            card: crate::ids::RemoteCardRef {
+                board: crate::ids::RemoteBoardId::deck(42),
+                stack: crate::ids::RemoteStackId::deck(7),
+                card: crate::ids::RemoteCardId::deck(517),
+            },
         };
         let stack_op = LocalOp::DeleteRemoteStack {
-            board,
-            stack: stack_ref,
+            board: BoardId::from(Uuid::from_u128(1)),
+            stack: crate::ids::RemoteStackRef {
+                board: crate::ids::RemoteBoardId::deck(42),
+                stack: crate::ids::RemoteStackId::deck(8),
+            },
         };
-        assert_eq!(card_op.owning_board(&t), Some(board));
-        assert_eq!(stack_op.owning_board(&t), Some(board));
         assert!(!op_targets_task(&card_op, TaskId::from(Uuid::from_u128(9))));
         assert!(!op_targets_task(
             &stack_op,
