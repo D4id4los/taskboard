@@ -1116,3 +1116,180 @@ mod predicate_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod engine_seam_tests {
+    use super::*;
+    use crate::test_support::standalone_boot_fixture;
+    use taskboard_domain::BoardId;
+
+    /// The board-directed triage (plan §3 #8): zero live boards keep
+    /// the typed empty ambiguity; the arm deletions each move a row.
+    #[tokio::test]
+    async fn add_without_stack_on_a_boardless_core_refuses_the_empty_ambiguity() {
+        let fixture = standalone_boot_fixture("pred-add0").await;
+        let err = add_on(&fixture.app, "t".to_owned(), None)
+            .await
+            .expect_err("boardless");
+        assert!(
+            matches!(err, CommandError::AmbiguousBoard { ref candidates } if candidates.is_empty())
+        );
+        let _ = fixture.app.shutdown().await;
+    }
+
+    /// One live board captures into its Backlog: the receipt is the
+    /// created task read back from the published state.
+    #[tokio::test]
+    async fn add_without_stack_captures_to_the_single_boards_backlog() {
+        let fixture = standalone_boot_fixture("pred-add1").await;
+        let outcome = fixture
+            .app
+            .engine
+            .execute(StateCommand::CreateBoard {
+                title: "solo".to_owned(),
+                color: taskboard_domain::Color::new("0082c9"),
+            })
+            .await
+            .expect("board mints");
+        let CommandOutcome::CreatedBoard(_) = outcome else {
+            panic!("CreateBoard always mints");
+        };
+        let receipt = add_on(&fixture.app, "t".to_owned(), None)
+            .await
+            .expect("captures");
+        assert_eq!(receipt.title, "t");
+        assert!(!receipt.done);
+        let _ = fixture.app.shutdown().await;
+    }
+
+    /// Two live boards without a stack are the typed ambiguity naming
+    /// every candidate uuid (the `candidates()` map arm).
+    #[tokio::test]
+    async fn add_without_stack_on_two_boards_names_the_candidates() {
+        let fixture = standalone_boot_fixture("pred-add2").await;
+        for title in ["one", "two"] {
+            let _ = fixture
+                .app
+                .engine
+                .execute(StateCommand::CreateBoard {
+                    title: title.to_owned(),
+                    color: taskboard_domain::Color::new("0082c9"),
+                })
+                .await
+                .expect("board mints");
+        }
+        let err = add_on(&fixture.app, "t".to_owned(), None)
+            .await
+            .expect_err("two boards");
+        let CommandError::AmbiguousBoard { candidates } = err else {
+            panic!("two boards are the typed ambiguity, got {err:?}");
+        };
+        assert_eq!(candidates.len(), 2);
+        let _ = fixture.app.shutdown().await;
+    }
+
+    /// The scoped move triage (plan §3 #9): colliding stack titles
+    /// resolve through `--board`; a uuid outside the named board is the
+    /// typed unknown; intra-board duplicate titles stay ambiguous; and
+    /// `--board` without `--stack` is the usage-shape refusal.
+    #[tokio::test]
+    async fn move_scopes_through_the_board_and_refuses_out_of_scope() {
+        let fixture = standalone_boot_fixture("pred-move").await;
+        let mint_board = |title: &str| {
+            let engine = &fixture.app.engine;
+            let title = title.to_owned();
+            async move {
+                let CommandOutcome::CreatedBoard(id) = engine
+                    .execute(StateCommand::CreateBoard {
+                        title,
+                        color: taskboard_domain::Color::new("0082c9"),
+                    })
+                    .await
+                    .expect("board mints")
+                else {
+                    panic!("CreateBoard always mints");
+                };
+                id
+            }
+        };
+        let a = mint_board("a").await;
+        let b = mint_board("b").await;
+        let mint_stack = |board: BoardId, title: &str| {
+            let engine = &fixture.app.engine;
+            let title = title.to_owned();
+            async move {
+                let CommandOutcome::CreatedStack(id) = engine
+                    .execute(StateCommand::CreateStack {
+                        board,
+                        title,
+                        order: 0,
+                    })
+                    .await
+                    .expect("stack mints")
+                else {
+                    panic!("CreateStack always mints");
+                };
+                id
+            }
+        };
+        let a_inbox = mint_stack(a, "Inbox").await;
+        let b_inbox = mint_stack(b, "Inbox").await;
+        // The task lands on a's Inbox by explicit uuid first.
+        let _ = add_on(
+            &fixture.app,
+            "mover".to_owned(),
+            Some(&a_inbox.as_uuid().to_string()),
+        )
+        .await
+        .expect("explicit-stack add");
+
+        // Scoped by board: "Inbox" resolves to b's stack (the collision
+        // is the whole point of the filter — an unscoped title would
+        // have been ambiguous across the two boards).
+        let moved = move_on(
+            &fixture.app,
+            "mover",
+            Some("Inbox"),
+            Some(&b.as_uuid().to_string()),
+            None,
+        )
+        .await
+        .expect("scoped resolve");
+        let state = fixture.app.engine.shared_state().load_full();
+        let task = state
+            .tasks
+            .values()
+            .find(|t| t.title == "mover")
+            .expect("the moved task exists");
+        assert_eq!(task.stack, b_inbox, "the scoped title resolved b's stack");
+        let _ = moved;
+
+        // A stack uuid outside the named board is the typed unknown.
+        let err = move_on(
+            &fixture.app,
+            "mover",
+            Some(&a_inbox.as_uuid().to_string()),
+            Some(&b.as_uuid().to_string()),
+            None,
+        )
+        .await
+        .expect_err("out of scope");
+        assert!(matches!(err, CommandError::UnknownStack(_)));
+
+        // `--board` without `--stack` is the usage-shape refusal.
+        let err = move_on(
+            &fixture.app,
+            "mover",
+            None,
+            Some(&b.as_uuid().to_string()),
+            None,
+        )
+        .await
+        .expect_err("board without stack");
+        assert!(
+            matches!(err, CommandError::AmbiguousStack { ref candidates } if candidates.is_empty())
+        );
+        let _ = StackId::from_uuid(a_inbox.as_uuid());
+        let _ = fixture.app.shutdown().await;
+    }
+}
