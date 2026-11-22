@@ -308,12 +308,13 @@ pub(crate) struct FocusOrigin {
 
 use crate::level_state::TrackFormState;
 
-/// The reorder pair's minted one-shot cells (chunk 8 D4): the up and
-/// down `(habit, slot order)` pair, `None` where the slot does not
-/// exist (the typed `NoTarget`'s input).
+/// The reorder pair's minted one-shot cells (chunk 8 D4, reworked by
+/// #1198 chunk A1 D1): the up and down `(habit, target gap index)`
+/// pair, `None` where the slot does not exist (the typed `NoTarget`'s
+/// input).
 type HabitMoveSlots = (
-    Option<(taskboard_domain::HabitId, i64)>,
-    Option<(taskboard_domain::HabitId, i64)>,
+    Option<(taskboard_domain::HabitId, usize)>,
+    Option<(taskboard_domain::HabitId, usize)>,
 );
 
 #[allow(
@@ -515,15 +516,18 @@ pub(crate) struct Adapter {
         taskboard_domain::WindowStart,
         u32,
     )>,
-    /// The reorder's resolved (habit, order) (DR-6/6): consumed by the
-    /// next `habit.move` dispatch, then cleared.
-    habit_move: Option<(taskboard_domain::HabitId, i64)>,
-    /// The habit menu's reorder pair (H2 D4): both slots' floor
-    /// midpoints minted at menu open from the same row source the
-    /// section renders; consumed by the next
-    /// `habit.move-up`/`habit.move-down` dispatch, then cleared.
-    habit_move_up: Option<(taskboard_domain::HabitId, i64)>,
-    habit_move_down: Option<(taskboard_domain::HabitId, i64)>,
+    /// The reorder's resolved (habit, target gap index) (#1198 chunk
+    /// A1 D1 — the one-shot's semantic is a gap index into the
+    /// section's live sequence; the engine resolves the orders):
+    /// consumed by the next `habit.move` dispatch, then cleared.
+    habit_move: Option<(taskboard_domain::HabitId, usize)>,
+    /// The habit menu's reorder pair (H2 D4): both slots' target
+    /// indices minted at menu open from the same row source the
+    /// section renders (`presentation::habit_move_slots`); consumed by
+    /// the next `habit.move-up`/`habit.move-down` dispatch, then
+    /// cleared.
+    habit_move_up: Option<(taskboard_domain::HabitId, usize)>,
+    habit_move_down: Option<(taskboard_domain::HabitId, usize)>,
     /// The Today compact-move pair's one-shot subject (US-14, #1031):
     /// minted at the R-8 kind resolution (the shared Shift+Up/Down
     /// stroke flipped to its task twins under a task walk landing),
@@ -7356,9 +7360,8 @@ impl Adapter {
         let state = self.state.load_full();
         let chain = [ContextId::Board, ContextId::Global].to_vec();
         // The reorder pair's slots (H2 D4): the shared mint (chunk 8
-        // D4 — one floor-midpoint arithmetic, `habit_drop_order` over
-        // the section's shared live order: menu open, keyboard walk,
-        // drag gap).
+        // D4 — one arithmetic, `habit_move_slots` over the section's
+        // shared live order: menu open, keyboard walk, drag gap).
         let (up, down) = Self::habit_move_slots(&state, habit);
         self.habit_move_up = up;
         self.habit_move_down = down;
@@ -7371,40 +7374,19 @@ impl Adapter {
         crate::menu::habit_context_page(&self.keymap, &chain, subject, &states)
     }
 
-    /// The reorder pair's shared mint (chunk 8 D4, #934 — H2 D4's
-    /// arithmetic factored to one home): the floor-midpoint one-shot
-    /// pair over the section's live board-scoped order — up slots at
-    /// the habit's own index, down at index + 1, through
-    /// `presentation::habit_drop_order` (the one floor-midpoint
-    /// arithmetic the drag gap also mints through). Two invocation
-    /// paths converge here: the menu open and the keyboard walk's
-    /// pre-mint. `None` for a stale or positionless habit (the
-    /// consumers take the typed `NoTarget`).
+    /// The reorder pair's shared mint (chunk 8 D4, #934 — the
+    /// arithmetic delegated to its one home,
+    /// `presentation::habit_move_slots`): target gap indices over the
+    /// section's live board-scoped row source (#1198 chunk A1 D1 —
+    /// the engine resolves the orders). Two invocation paths converge
+    /// here: the menu open and the keyboard walk's pre-mint. `None`
+    /// for a stale or positionless habit (the consumers take the
+    /// typed `NoTarget`).
     fn habit_move_slots(
         state: &taskboard_domain::AppState,
         habit: taskboard_domain::HabitId,
     ) -> HabitMoveSlots {
-        let Some(row) = state.habits.habits.get(&habit) else {
-            return (None, None); // stale: no board, no position
-        };
-        let orders: Vec<i64> = crate::presentation::live_habits_in_order(state, row.board)
-            .iter()
-            .map(|h| h.order)
-            .collect();
-        let position = orders.iter().position(|&order| order == row.order);
-        let slot_order = |slot: Option<usize>| -> Option<i64> {
-            let slot = slot?;
-            let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
-            let next = orders.get(slot).copied();
-            Some(crate::presentation::habit_drop_order(prev, next))
-        };
-        let up = position
-            .zip(slot_order(position))
-            .map(|(_, order)| (habit, order));
-        let down = position
-            .and_then(|p| slot_order(Some(p + 1)))
-            .map(|order| (habit, order));
-        (up, down)
+        crate::presentation::habit_move_slots(state, habit)
     }
 
     /// The habit verbs' effective subject (chunk 8 D4): the walk
@@ -11721,9 +11703,17 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
 
     // The habit row's focus fact (cross-surface friction plan D-2,
-    // #832): the row activation mints `focused_habit` from the id
-    // tables — the menu verbs' subject. Stale index absorbed (the
-    // notification-row guard shape); no dispatch, no pass.
+    // #832; reworked by #1200 chunk A1 D2): the row activation is the
+    // task pointer path's shape — the pointer conflict settles first
+    // (the `today_row_activated` discipline), the id resolves through
+    // the tables, the walk cursor seats via
+    // `ViewState::activate_habit_row` (the exclusivity law's landing
+    // write; the emphasis ring repaints through the outcomes), and
+    // the menu verbs' subject mints as before. Click ≡ key in both
+    // directions: the keyboard truth composes with the pointer truth
+    // (one selection cursor, never two). Stale index absorbed (the
+    // notification-row guard shape); no dispatch, no pass — selection
+    // only (habits have no click-to-open verb, H4 reserved).
     install_seam!(window: window.on_habits_row_activated, adapter: adapter;
     bind mut (a, window), args (index), {        let _ = &window; // the fact mutates no window bit
         if let Some(&habit) = a
@@ -11738,13 +11728,13 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     // The habit list's gap drop (chunk 8 D5, US-4/AC-1 — the #918
     // board pattern over the flat list): the delegate-resolved gap
-    // index mints the floor-midpoint order through the shared
-    // arithmetic (`presentation::habit_drop_order` over the section's
-    // shared live-order enumeration `presentation::live_habits_in_order`)
-    // and routes `HabitMove` — the same dispatch seam the menu rows
-    // speak. A stale index or gap is absorbed (the pointer seams'
-    // posture); kiosk absorbs silently (the editing verb's HAB-14
-    // gate — the slint side never arms, the adapter doubles the gate).
+    // index is the one-shot verbatim (#1198 chunk A1 D1 — the UI
+    // mints target indices only; the engine clamps and resolves the
+    // orders) and routes `HabitMove` — the same dispatch seam the
+    // menu rows speak. A stale index or gap is absorbed (the pointer
+    // seams' posture); kiosk absorbs silently (the editing verb's
+    // HAB-14 gate — the slint side never arms, the adapter doubles
+    // the gate).
     // slint: habits-drop-asked
     install_seam!(window: window.on_habits_drop_asked, adapter: adapter;
     bind mut (a, window), args (row, gap), {        let _ = &window;
@@ -11764,18 +11754,9 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         if !habit_row.is_live() {
             return;
         }
-        let orders: Vec<i64> = crate::presentation::live_habits_in_order(&state, habit_row.board)
-            .iter()
-            .map(|h| h.order)
-            .collect();
         drop(state);
-        // The clamp law (the board's `min(gap, len)`): a gap past the
-        // end is the append slot.
-        let slot = gap.min(orders.len());
-        let prev = slot.checked_sub(1).and_then(|i| orders.get(i).copied());
-        let next = orders.get(slot).copied();
-        let order = crate::presentation::habit_drop_order(prev, next);
-        a.habit_move = Some((habit, order));
+        // A gap past the end is the append slot — the engine clamps.
+        a.habit_move = Some((habit, gap));
         a.route(&window, ActionId::HabitMove);
     });
 

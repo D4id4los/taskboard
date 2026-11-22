@@ -1103,17 +1103,18 @@ pub struct DispatchCtx {
         taskboard_domain::WindowStart,
         u32,
     )>,
-    /// The reorder's resolved move (DR-6/6): set by the adapter when a
-    /// reorder affordance activates — the habit plus the drop slot's
-    /// floor-midpoint order computed from the row source; `habit.move`
-    /// routes from it (`NoTarget` without one).
-    pub habit_move: Option<(taskboard_domain::HabitId, i64)>,
-    /// The habit menu's reorder pair (H2 D4): both slots' floor
-    /// midpoints computed at menu open from the same row source the
+    /// The reorder's resolved move (DR-6/6; #1198 chunk A1 D1): set
+    /// by the adapter when a reorder affordance activates — the habit
+    /// plus a **target gap index** into the section's live sequence
+    /// (the engine resolves the orders); `habit.move` routes
+    /// `HabitReorder` from it (`NoTarget` without one).
+    pub habit_move: Option<(taskboard_domain::HabitId, usize)>,
+    /// The habit menu's reorder pair (H2 D4): both slots' target
+    /// indices computed at menu open from the same row source the
     /// section renders; `habit.move-up`/`habit.move-down` route
-    /// `MoveHabit` from theirs (`NoTarget` without one).
-    pub habit_move_up: Option<(taskboard_domain::HabitId, i64)>,
-    pub habit_move_down: Option<(taskboard_domain::HabitId, i64)>,
+    /// `HabitReorder` from theirs (`NoTarget` without one).
+    pub habit_move_up: Option<(taskboard_domain::HabitId, usize)>,
+    pub habit_move_down: Option<(taskboard_domain::HabitId, usize)>,
     /// The Today compact-move pair's one-shot subject (US-14, #1031):
     /// the focused task row, minted at the R-8 kind resolution (the
     /// shared Shift+Up/Down stroke flipped to its task twins).
@@ -1632,14 +1633,18 @@ impl ActionRouter {
                 }
                 _ => DispatchOutcome::NoTarget,
             },
+            // The habit reorder verbs (#1198 chunk A1 D1): the
+            // one-shot cells carry target gap indices — the engine
+            // resolves the orders (`HabitReorder`); the absolute-order
+            // `MoveHabit` stays the CLI's verb.
             ActionId::HabitMove => match ctx.habit_move {
-                Some((habit, order)) => {
-                    DispatchOutcome::Command(StateCommand::MoveHabit { habit, order })
+                Some((habit, target)) => {
+                    DispatchOutcome::Command(StateCommand::HabitReorder { habit, target })
                 }
                 None => DispatchOutcome::NoTarget,
             },
             // The habit menu's reorder pair (H2 D4): the direction
-            // rides the routing id, the slot's floor midpoint was
+            // rides the routing id, the slot's target index was
             // minted at menu open from the same row source the
             // section renders.
             ActionId::HabitMoveUp | ActionId::HabitMoveDown => {
@@ -1649,8 +1654,8 @@ impl ActionRouter {
                     ctx.habit_move_down
                 };
                 match cell {
-                    Some((habit, order)) => {
-                        DispatchOutcome::Command(StateCommand::MoveHabit { habit, order })
+                    Some((habit, target)) => {
+                        DispatchOutcome::Command(StateCommand::HabitReorder { habit, target })
                     }
                     None => DispatchOutcome::NoTarget,
                 }

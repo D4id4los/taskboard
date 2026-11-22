@@ -34,6 +34,12 @@ pub struct FakeEngine {
     /// undo line's other continuity face (`Undo` after an add deletes
     /// the added rule).
     added_rules: Vec<taskboard_domain::ReminderRuleId>,
+    /// The habit sections' pre-reorder orders, newest last — the
+    /// reorder undo line's continuity face (#1198 chunk A1 D1:
+    /// `Undo` after a reorder restores the section; fixture
+    /// continuity, not an oracle — the domain's inverse suite owns
+    /// undo semantics).
+    habit_sections: Vec<Vec<(taskboard_domain::HabitId, i64)>>,
 }
 
 impl FakeEngine {
@@ -81,6 +87,57 @@ fn apply_compact_move(state: &mut AppState, id: taskboard_domain::TaskId, up: bo
     }
 }
 
+/// The habit reorder's fake-side resolution (#1198 chunk A1 D1): the
+/// same canonical row source, clamped gap, in-place no-op and dense
+/// renumber the real engine plans — one step of fixture continuity.
+fn apply_habit_reorder(
+    state: &mut AppState,
+    habit: taskboard_domain::HabitId,
+    target: usize,
+    sections: &mut Vec<Vec<(taskboard_domain::HabitId, i64)>>,
+) {
+    let Some(subject) = state.habits.habits.get(&habit).cloned() else {
+        return;
+    };
+    let mut rows: Vec<taskboard_domain::habit::Habit> = state
+        .habits
+        .habits
+        .values()
+        .filter(|h| h.is_live() && h.board == subject.board)
+        .cloned()
+        .collect();
+    rows.sort_by_key(|h| (h.order, h.id));
+    let Some(position) = rows.iter().position(|h| h.id == habit) else {
+        return;
+    };
+    let target = target.min(rows.len());
+    if target == position || target == position + 1 {
+        return;
+    }
+    sections.push(rows.iter().map(|h| (h.id, h.order)).collect());
+    let moved = rows.remove(position);
+    let insert_at = if target <= position {
+        target
+    } else {
+        target - 1
+    };
+    rows.insert(insert_at, moved);
+    let renumbered: Vec<(taskboard_domain::HabitId, i64)> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut row)| {
+            row.order = i64::try_from(index).expect("section length fits i64");
+            (row.id, row.order)
+        })
+        .collect();
+    for (id, order) in &renumbered {
+        if let Some(row) = state.habits.habits.get_mut(id) {
+            row.order = *order;
+            row.clocks.order = chrono::Utc::now();
+        }
+    }
+}
+
 impl FakeEngine {
     /// Opens the boundary channel over `state` (the same `ArcSwap`
     /// [`taskboard_ui_slint::mount`] reads).
@@ -96,6 +153,7 @@ impl FakeEngine {
                 applied: 0,
                 removed_rules: Vec::new(),
                 added_rules: Vec::new(),
+                habit_sections: Vec::new(),
             },
         )
     }
@@ -349,6 +407,14 @@ impl FakeEngine {
                 StateCommand::TaskMoveDown { id } => {
                     apply_compact_move(&mut state, id, false);
                 }
+                // The habit reorder's continuity half (#1198 chunk
+                // A1 D1): the engine's resolution mirrored (the
+                // canonical row source, the clamped gap, the dense
+                // renumber) and the pre-move section kept for the
+                // `Undo` face.
+                StateCommand::HabitReorder { habit, target } => {
+                    apply_habit_reorder(&mut state, habit, target, &mut self.habit_sections);
+                }
                 StateCommand::MoveStack { id, order } => {
                     if let Some(stack) = state.stacks.get_mut(&id) {
                         stack.order = order;
@@ -423,6 +489,12 @@ impl FakeEngine {
                         state.reminders.rules.entry(row.id).or_insert(row);
                     } else if let Some(added) = self.added_rules.pop() {
                         state.reminders.rules.remove(&added);
+                    } else if let Some(section) = self.habit_sections.pop() {
+                        for (id, order) in section {
+                            if let Some(row) = state.habits.habits.get_mut(&id) {
+                                row.order = order;
+                            }
+                        }
                     }
                 }
                 // The tracking verbs' continuity (round 9 chunk 11,

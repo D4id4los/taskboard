@@ -521,6 +521,21 @@ pub enum StateCommand {
         /// Requested sort order.
         order: i64,
     },
+    /// Reorder a habit by **gap index** into its board's live
+    /// sequence (`0..=len`, clamped; #1198 chunk A1 D1): the UI mints
+    /// target indices only — the engine resolves the move over the
+    /// canonical `(order, id)` row source and renumbers the section
+    /// dense, so dense integer orders can never wedge the verb the
+    /// absolute-order [`StateCommand::MoveHabit`] mint could. The
+    /// mover's own gaps (its position or `position + 1`) are the
+    /// accepted no-op. `MoveHabit` stays the CLI's verb (and the
+    /// undo inverse's payload) untouched.
+    HabitReorder {
+        /// Habit to move.
+        habit: HabitId,
+        /// Gap index into the section's current live sequence.
+        target: usize,
+    },
     /// Log one occurrence of the habit: exactly one increment into the
     /// window the attribution picks ([`taskboard_domain::habit::log_window`]
     /// — the natural window, or the previous one under the surplus-

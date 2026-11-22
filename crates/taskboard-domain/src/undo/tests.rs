@@ -692,6 +692,52 @@ fn move_habit_round_trips_restoring_the_pre_image_order() {
 }
 
 #[test]
+fn habit_reorder_undo_restores_the_section() {
+    // The reorder inverse class (chunk A1 D1, #1198): the section's
+    // pre-move orders (every touched row) restore as one journaled
+    // inverse step — a single-row pre-image cannot express it.
+    let mut h = Harness::new();
+    let board = h.board();
+    let mut ids = Vec::new();
+    for k in 0..3 {
+        let created = h
+            .exec(&StateCommand::CreateHabit {
+                board,
+                title: format!("habit {k}"),
+                target: habit_target(),
+            })
+            .expect("created");
+        match created {
+            CommandOutcome::HabitCreated(id) => ids.push(id),
+            other => panic!("expected HabitCreated, got {other:?}"),
+        }
+    }
+    let seq = |h: &Harness| -> Vec<crate::ids::HabitId> {
+        let mut rows: Vec<(i64, crate::ids::HabitId)> = h
+            .disk
+            .habits
+            .habits
+            .values()
+            .filter(|habit| !habit.deleted)
+            .map(|habit| (habit.order, habit.id))
+            .collect();
+        rows.sort();
+        rows.into_iter().map(|(_, id)| id).collect()
+    };
+    let pre = seq(&h);
+    h.exec(&StateCommand::HabitReorder {
+        habit: ids[2],
+        target: 0,
+    })
+    .expect("moved");
+    assert_eq!(seq(&h), vec![ids[2], ids[0], ids[1]]);
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert_eq!(seq(&h), pre, "the section's pre-move sequence restored");
+    h.exec(&StateCommand::Redo).expect("redone");
+    assert_eq!(seq(&h), vec![ids[2], ids[0], ids[1]]);
+}
+
+#[test]
 fn adjust_habit_log_round_trips() {
     let mut h = Harness::new();
     let board = h.board();
