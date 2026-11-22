@@ -2848,11 +2848,14 @@ mod tests {
             ActionRouter::dispatch(ActionId::HabitUndoLog, &ctx(true)),
             DispatchOutcome::NoTarget
         );
+        // #1198 chunk A1 D1: the one-shot carries a target gap index
+        // and routes the engine-side reorder; the absolute-order
+        // `MoveHabit` stays the CLI's verb.
         let mut move_ctx = ctx(true);
         move_ctx.habit_move = Some((habit, 15));
         assert_eq!(
             ActionRouter::dispatch(ActionId::HabitMove, &move_ctx),
-            DispatchOutcome::Command(StateCommand::MoveHabit { habit, order: 15 })
+            DispatchOutcome::Command(StateCommand::HabitReorder { habit, target: 15 })
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::HabitMove, &ctx(true)),
