@@ -20,6 +20,9 @@ expression: rows
             - Ctrl+Shift+b
           action: reminder.mute
         - sequence:
+            - Ctrl+Shift+e
+          action: app.undo-branches
+        - sequence:
             - Ctrl+Shift+f
           action: palette.search
         - sequence:
@@ -682,6 +685,10 @@ expression: rows
             - Ctrl+x
             - "]"
           action: nav.next-view
+        - sequence:
+            - Ctrl+x
+            - b
+          action: app.undo-branches
         - sequence:
             - Ctrl+x
             - Ctrl+b
