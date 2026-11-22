@@ -130,13 +130,14 @@ yanked = "warn"
 # (recorded 2026-11-11 against the refreshed advisory DB). Revisit at
 # the next sqlx refresh — swap this ignore for the upgrade.
 #
-# RUSTSEC-2026-0206: `rustybuzz` is unmaintained (no vulnerability
-# known; upstream's own successor is `harfrust`) — the shaping engine
-# behind krilla's `simple-text` feature, arriving only in the
-# feature-gated `pdf-export` resolution (#624 stage B). krilla 0.8.x
-# offers no shaping-free or harfrust-backed alternative, so no safe
-# upgrade exists below the stack; revisit when krilla moves (its
-# 0.9 wave) or the ruling re-opens the stack choice.
+# RUSTSEC-2026-0206 (`rustybuzz` unmaintained): superseded 2026-11-22 —
+# the refreshed advisory DB no longer matches the graph (rustybuzz
+# 0.20.1 is still present via krilla 0.8.2 but is no longer flagged),
+# and cargo-deny errors on an unused ignore. If a later DB refresh
+# re-flags it, re-ignore with the original rationale (krilla 0.8.x
+# offers no shaping-free or harfrust-backed alternative; revisit when
+# krilla moves — its 0.9 wave — or the ruling re-opens the stack
+# choice).
 #
 # RUSTSEC-2026-0543: `chrono` is unmaintained (upstream development
 # paused; no vulnerability known). Unlike the ignores above this is a
@@ -153,7 +154,6 @@ ignore = [
     "RUSTSEC-2026-0372",
     "RUSTSEC-2026-0441",
     "RUSTSEC-2026-0459",
-    "RUSTSEC-2026-0206",
     "RUSTSEC-2026-0543",
 ]
 
