@@ -1736,10 +1736,10 @@ export component AppWindow inherits Window {
             body-preferred-width: 560px * Theme.base-scale;
             walk-stops: 1 + 2;
             viewport-floor: status.y;
-            dismissed => root.habit-history-close-requested();
+            dismissed => root.habit_history_close_requested();
             HabitHistoryView {
                 model: root.habit-history;
-                history-month-flipped(delta) => root.habit-history-month-flipped(delta);
+                history-month-flipped(delta) => root.habit_history_month_flipped(delta);
             }
         }
         // The pointer drag's ghost (r2 chunk-8, D-D): the dragged
@@ -2025,8 +2025,8 @@ export component AppWindow inherits Window {
     // The habit history dialog's seams (HF3 W-8): the pager flip
     // (US-7/S3) and the close (US-7/S4 — W1 read-role dismissal,
     // zero state change).
-    pure callback habit-history-month-flipped(int);
-    pure callback habit-history-close-requested();
+    pure callback habit_history_month_flipped(int);
+    pure callback habit_history_close_requested();
     // The capture overlay's seams (chunk 10 D8).
     pure callback capture-dismiss-requested();
     pure callback capture-text-edited(string);

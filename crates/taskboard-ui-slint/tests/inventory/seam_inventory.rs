@@ -247,10 +247,10 @@ const SEAM_INVENTORY: &[&str] = &[
     // "habit-history-clicked".
     "habit_editor_history_clicked",
     // The history dialog's pager flip (HF3 W-8): callback
-    // "habit-history-month-flipped".
+    // "habit_history_month_flipped".
     "habit_history_month_flipped",
     // The history dialog's read-role dismissal (HF3 W-8): callback
-    // "habit-history-close-requested".
+    // "habit_history_close_requested".
     "habit_history_close_requested",
     "notification_track_start_clicked",
     "plan_box_activated",
