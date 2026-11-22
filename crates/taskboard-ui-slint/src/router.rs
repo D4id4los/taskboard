@@ -3506,7 +3506,8 @@ fn one_shot_bits_are_total() {
         .convert_target()
         .recur_edit_target()
         .recur_draft_rule()
-        .habit_quota_draft();
+        .habit_quota_draft()
+        .task_move();
     let mut seen = OneShotSet::default();
     for entry in crate::actions::REGISTRY {
         let declared = route_consumes(entry.id);
@@ -3522,9 +3523,11 @@ fn one_shot_bits_are_total() {
     // blind to a duplicated bit, so the popcount of the ORed
     // vocabulary must equal the field count — one private bit per
     // one-shot, no two constants share a bit.
+    // 31 fields: bits 0..=30 (the US-14 TASK_MOVE addition took the
+    // first free bit past the HF quota draft's 29).
     assert_eq!(
         full.0.count_ones(),
-        30,
+        31,
         "every one-shot field owns a distinct bit"
     );
     // The conversion confirm is the fix's flagship pair: exactly its
