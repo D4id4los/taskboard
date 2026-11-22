@@ -626,3 +626,120 @@ fn us6_s3_badge_installs_no_command_callbacks() {
         );
     });
 }
+
+// -- US-8: the HabitRepair chord -----------------------------------------
+
+/// A daily quota-1 habit on the fixture board (the walk's habit-row
+/// seed; the habits journey's `state_habit` shape, quota reduced so a
+/// single log reaches the repair-closing quota).
+fn seed_repair_habit(state: &mut taskboard_domain::AppState) -> taskboard_domain::HabitId {
+    use taskboard_domain::habit::{Habit, HabitClocks, HabitTarget};
+    use taskboard_domain::ids::HabitId;
+    use taskboard_domain::NonZeroCount;
+    let board = *state.boards.keys().next().expect("fixture board");
+    let id = HabitId::from_uuid(uuid::Uuid::now_v7());
+    state.habits.habits.insert(
+        id,
+        Habit {
+            id,
+            board,
+            title: "repair-me".into(),
+            description: String::new(),
+            target: HabitTarget::PerDay(NonZeroCount::new(1).expect("quota 1")),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: HabitClocks::all(chrono::Utc::now()),
+            continued_from: None,
+            deleted: false,
+            by: None,
+            paused_until: None,
+        },
+    );
+    id
+}
+
+/// Focuses the fixture's habit row on Today (the walk domain is the
+/// overdue task then the habit: two vertical strokes).
+fn focus_habit_row(harness: &mut support::harness::Harness) {
+    harness.press(ActionId::NavFocusDown);
+    harness.press(ActionId::NavFocusDown);
+    harness.driver.advance_time(0);
+}
+
+/// US-8/AC-1 (`us8_s1_habit_repair_chord_resolves`): a focused habit
+/// with its make-up window open — Ctrl+Shift+d resolves
+/// `ActionId::HabitRepair` through the card strip's one-shot mint
+/// (the same `AdjustHabitLog` the repair button routes; click ≡ key).
+#[test]
+fn us8_s1_habit_repair_chord_resolves() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let habit = seed_repair_habit(&mut state);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        focus_habit_row(harness);
+        harness.stroke(
+            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+d")
+                .expect("the US-8 spelling parses"),
+        );
+        harness.driver.advance_time(0);
+        let drained = harness.engine.drain();
+        assert!(
+            matches!(
+                drained.as_slice(),
+                [StateCommand::AdjustHabitLog { habit: logged, count: 1, .. }]
+                    if *logged == habit
+            ),
+            "the repair chord routes the strip's make-up +1, got {drained:?}"
+        );
+    });
+}
+
+/// US-8/AC-2 (`us8_s2_repair_no_window_typed_refusal`): at quota the
+/// make-up window is closed — the chord resolves the typed refusal
+/// and dispatches nothing (the card's greyed repair is the pointer
+/// twin).
+#[test]
+fn us8_s2_repair_no_window_typed_refusal() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let habit = seed_repair_habit(&mut state);
+    // Close the make-up window at the source: the previous canonical
+    // window's count already meets the quota (the repair predicate's
+    // own oracle — quota + grace), derived through the harness
+    // calendar the pass clock reads (the anchored-relative-oracle
+    // rule; never a wall-clock literal).
+    {
+        let calendar = fixture::harness_calendar();
+        let today = calendar.today(chrono::Utc::now());
+        let prev = taskboard_domain::habit::period_before(
+            taskboard_domain::PeriodKind::Day,
+            today,
+        );
+        state.habits.log.insert(
+            taskboard_domain::HabitLogKey {
+                habit,
+                window: taskboard_domain::WindowStart::of_period(
+                    taskboard_domain::PeriodKind::Day,
+                    prev,
+                ),
+            },
+            taskboard_domain::habit::HabitLogEntry {
+                count: 1,
+                clock: chrono::Utc::now(),
+                by: None,
+                skip: false,
+            },
+        );
+    }
+    support::harness::run_journey_no_escape(state, move |harness| {
+        focus_habit_row(harness);
+        harness.assert_commands(&[]);
+        harness.stroke(
+            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+d")
+                .expect("the US-8 spelling parses"),
+        );
+        harness.driver.advance_time(0);
+        harness.assert_commands(&[]);
+    });
+}
