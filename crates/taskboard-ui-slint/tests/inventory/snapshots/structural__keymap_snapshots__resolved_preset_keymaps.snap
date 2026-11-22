@@ -381,14 +381,14 @@ expression: rows
             - Ctrl+Shift+l
           action: label.manage
         - sequence:
-            - Ctrl+Shift+p
-          action: series.pause
-        - sequence:
             - Ctrl+Shift+r
           action: series.edit
         - sequence:
             - Ctrl+Shift+u
           action: series.resume
+        - sequence:
+            - Ctrl+Shift+w
+          action: series.pause
         - sequence:
             - Up
           action: nav.focus-up
@@ -1117,9 +1117,6 @@ expression: rows
             - Ctrl+p
           action: nav.focus-up
         - sequence:
-            - Ctrl+Shift+p
-          action: series.pause
-        - sequence:
             - Ctrl+Shift+u
           action: series.resume
         - sequence:
@@ -1128,6 +1125,9 @@ expression: rows
         - sequence:
             - Ctrl+v
           action: view.scroll-down
+        - sequence:
+            - Ctrl+Shift+w
+          action: series.pause
         - sequence:
             - F3
           action: task.importance-edit
@@ -1520,6 +1520,9 @@ expression: rows
             - a
           action: reminder.rule-add
         - sequence:
+            - Ctrl+Shift+a
+          action: row.cursor-disarm
+        - sequence:
             - d
           action: task.due-edit
         - sequence:
@@ -1540,9 +1543,6 @@ expression: rows
             - Ctrl+Shift+l
           action: label.manage
         - sequence:
-            - Ctrl+Shift+p
-          action: series.pause
-        - sequence:
             - r
           action: series.edit
         - sequence:
@@ -1551,6 +1551,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+u
           action: series.resume
+        - sequence:
+            - Ctrl+Shift+w
+          action: series.pause
         - sequence:
             - y
           action: task.schedule-today

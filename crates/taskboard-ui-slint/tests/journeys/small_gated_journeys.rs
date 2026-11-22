@@ -747,7 +747,10 @@ fn us8_s2_repair_no_window_typed_refusal() {
 /// series' Ctrl+Shift+p opens the recur row's inline pause editor over
 /// the viewed subject — the chord twin of the pause affordance's view
 /// intent. The spelling is the R-7 move (the plan's Ctrl+Shift+r is
-/// `SeriesEdit`'s landed chord in the standard preset).
+/// `SeriesEdit`'s landed chord; the second move is the global-shadow
+/// law — Ctrl+Shift+p is `ViewPlanNextDay`'s global stroke and the
+/// shadow breaks the planner-reach contract, so the free `w` carries
+/// the pair in every preset).
 #[test]
 fn us11_s1_series_pause_chord_resolves() {
     let (fx, mut state) = fixture::golden_state();
@@ -755,7 +758,7 @@ fn us11_s1_series_pause_chord_resolves() {
     support::harness::run_journey(state, move |harness| {
         mount_task_detail(harness);
         harness.stroke(
-            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+p")
+            taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+w")
                 .expect("the US-11 pause spelling parses"),
         );
         harness.driver.advance_time(0);
@@ -1012,6 +1015,120 @@ fn us10_s2_disarm_unarmed_inert() {
         assert!(
             !rule_row_zero(harness).selected,
             "the unarmed chord changes nothing"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
+// -- US-9: the break-rules roster cursor ----------------------------------
+
+/// Seeds two break rules on the fixture board (the roster walk's
+/// domain) and hands back their ids in canonical order.
+fn seed_break_rules(
+    state: &mut taskboard_domain::AppState,
+) -> (
+    taskboard_domain::BoardId,
+    [taskboard_domain::BreakRuleId; 2],
+) {
+    let board = *state.boards.keys().next().expect("fixture board");
+    let r0 = fixture::add_break_rule(
+        state,
+        board,
+        "lunch",
+        chrono::TimeDelta::minutes(30),
+        taskboard_domain::Insistence::Normal,
+    );
+    let r1 = fixture::add_break_rule(
+        state,
+        board,
+        "stretch",
+        chrono::TimeDelta::minutes(5),
+        taskboard_domain::Insistence::Normal,
+    );
+    (board, [r0, r1])
+}
+
+fn roster_row(
+    harness: &support::harness::Harness,
+    index: usize,
+) -> taskboard_ui_slint::BreakRuleRowModel {
+    use slint::Model as _;
+    harness
+        .handle
+        .window()
+        .get_break_rules_model()
+        .row_data(index)
+        .expect("the roster row renders")
+}
+
+/// US-9/AC-1+AC-2 (`us9_s1_roster_cursor_arms` /
+/// `us9_s2_roster_cursor_walks_clamped`): the today walk's landing on
+/// the roster arms the K4 cursor at the first row; further verticals
+/// walk with clamp at the end (no wrap — the ends hold); the armed
+/// styling rides the row model's `selected` flag.
+#[test]
+fn us9_s1_roster_cursor_arms_and_us9_s2_roster_cursor_walks_clamped() {
+    let (_fixture, mut state) = fixture::journey_state();
+    seed_break_rules(&mut state);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        // The today walk: overdue task, then the roster's first row
+        // (no habit rows in the fixture — the roster follows).
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert!(
+            roster_row(harness, 0).selected,
+            "the landing stroke arms the cursor on roster row 0 (US-9/S1)"
+        );
+        // S2: the walk proceeds, clamps at the last row.
+        harness.press(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert!(
+            !roster_row(harness, 0).selected && roster_row(harness, 1).selected,
+            "the second stroke walks to row 1"
+        );
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert!(
+            roster_row(harness, 1).selected && !roster_row(harness, 0).selected,
+            "the cursor clamps at the last row (no wrap)"
+        );
+        harness.assert_commands(&[]);
+    });
+}
+
+/// US-9/AC-3 (`us9_s3_roster_row_verb_uses_own_seam`): with the
+/// cursor armed on a row, the remove verb routes the row's own seam —
+/// the armed-confirm staging engages on the cursor'd row (no command:
+/// the strip's Confirm is the only dispatching verb).
+#[test]
+fn us9_s3_roster_row_verb_uses_own_seam() {
+    let (_fixture, mut state) = fixture::journey_state();
+    seed_break_rules(&mut state);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert!(roster_row(harness, 0).selected);
+        // The row verb: the remove arm, through the row's own seam —
+        // the routed verb the re-rooted click seam rides.
+        harness.handle.dispatch_action(ActionId::BreakRuleRemove);
+        harness.driver.advance_time(0);
+        let row = roster_row(harness, 0);
+        assert!(row.armed, "the arm staging engages on the cursor'd row");
+        assert!(
+            row.selected,
+            "pointer/cursor coherence: the cursor sits on the armed row"
+        );
+        harness.assert_commands(&[]);
+        // The arm stroke's repeat is not the confirm — the toggle
+        // disarms (the seam's letter, preserved through the route).
+        harness.handle.dispatch_action(ActionId::BreakRuleRemove);
+        harness.driver.advance_time(0);
+        assert!(
+            !roster_row(harness, 0).armed,
+            "the repeat disarms; nothing dispatched"
         );
         harness.assert_commands(&[]);
     });

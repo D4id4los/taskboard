@@ -32,6 +32,11 @@ use crate::router::Mode;
 pub enum TodayRow {
     Task(TaskId),
     Habit(taskboard_domain::HabitId),
+    /// The break-rules roster's row (US-9, W-10, #1066's roster half):
+    /// the `TimersSection`'s roster adopts the K4 selected-row cursor —
+    /// the walk's landing arms it, the roster id table clamps/prunes
+    /// it. Today-only, desktop-only (the section's kiosk absence).
+    BreakRule(taskboard_domain::BreakRuleId),
 }
 
 /// The pass's time bundle (chunk 10 D4): the fresh `now` and the
@@ -727,6 +732,13 @@ pub struct ViewState {
     /// chunk-9 control ladder owns the stroke again (the dedicated
     /// escape hatch; the flow table's `armed --> disarmed` edge).
     rule_cursor_disarmed: bool,
+    /// The break-rules roster's selected-row cursor (US-9, W-10,
+    /// #1066's roster half): the K4 shape — id-keyed, armed by the
+    /// today walk's landing on a roster row, pruned against the
+    /// active board's roster every pass, cleared on view exit (the
+    /// reconcile face). Today-only presentation state; the remove
+    /// verb rides the row's own armed-confirm seams through it.
+    break_rule_cursor: Option<taskboard_domain::BreakRuleId>,
     /// The compact switcher's selected stack.
     selected_stack: Option<StackId>,
     /// The user-set stack column widths (round-1 D16), stored logical
@@ -950,6 +962,7 @@ impl ViewState {
             focused_habit: None,
             rule_cursor: None,
             rule_cursor_disarmed: false,
+            break_rule_cursor: None,
             selected_stack: None,
             stack_widths: BTreeMap::new(),
             retired: Vec::new(),
@@ -1533,6 +1546,28 @@ impl ViewState {
     pub(crate) fn clear_rule_cursor(&mut self) {
         self.rule_cursor = None;
         self.rule_cursor_disarmed = false;
+    }
+
+    /// The break-rules roster's cursor read (US-9, W-10): `Some` while
+    /// armed on the walked row.
+    #[must_use]
+    pub const fn break_rule_cursor(&self) -> Option<taskboard_domain::BreakRuleId> {
+        self.break_rule_cursor
+    }
+
+    /// The pointer seam's cursor write (the K4 coherence law): a
+    /// roster row's remove click moves the cursor there, so pointer
+    /// and cursor never disagree about the selected row. The walk's
+    /// exclusivity law: a roster landing clears the task/habit twins.
+    pub(crate) fn select_break_rule_cursor(&mut self, rule: taskboard_domain::BreakRuleId) {
+        self.break_rule_cursor = Some(rule);
+        self.focused_task = None;
+        self.focused_habit = None;
+    }
+
+    /// The cursor's typed clear (the K4 lifecycle sites).
+    pub(crate) fn clear_break_rule_cursor(&mut self) {
+        self.break_rule_cursor = None;
     }
 
     /// The disarm chord's write (US-10, W-11, #1091): clears the
@@ -2238,6 +2273,17 @@ impl ViewState {
                 _ => false,
             })
         });
+        // The roster cursor's position (US-9, W-10): the armed roster
+        // row is the walk's position whenever the task/habit subject
+        // is not (the exclusivity law makes them mutually exclusive).
+        let current = current.or_else(|| {
+            self.break_rule_cursor.and_then(|cursor| {
+                rows.iter().position(|row| match *row {
+                    TodayRow::BreakRule(rule) => rule == cursor,
+                    _ => false,
+                })
+            })
+        });
         let Some(current) = current else {
             // No focus yet: entering the walk lands on the first row.
             return match rows.first() {
@@ -2280,6 +2326,15 @@ impl ViewState {
             TodayRow::Habit(habit) => {
                 self.focused_habit = Some(habit);
                 self.focused_task = None;
+            }
+            // The roster row's landing arms the K4 cursor (US-9,
+            // W-10): the arming IS the landing (arm-on-first-vertical
+            // via the walk's entry rule); the twins clear (the
+            // exclusivity law).
+            TodayRow::BreakRule(rule) => {
+                self.break_rule_cursor = Some(rule);
+                self.focused_task = None;
+                self.focused_habit = None;
             }
         }
     }
@@ -2399,6 +2454,18 @@ impl ViewState {
                 crate::presentation::live_habits_in_order(state, board)
                     .into_iter()
                     .map(|habit| TodayRow::Habit(habit.id)),
+            );
+        }
+        // The break-rules roster's rows (US-9, W-10, #1066's roster
+        // half): after the habit section, in the same canonical order
+        // the section's model speaks (`break_rule_rows` — the walk's
+        // landing and the rendered rows agree by construction).
+        // Desktop-only (the section's kiosk absence).
+        if !kiosk {
+            rows.extend(
+                crate::presentation::break_rule_rows(state, self.board)
+                    .into_iter()
+                    .map(|row| TodayRow::BreakRule(row.rule)),
             );
         }
         rows
@@ -9291,7 +9358,9 @@ mod edit_recur_tests {
                     .into_iter()
                     .filter_map(|row| match row {
                         TodayRow::Habit(id) => Some(id),
-                        TodayRow::Task(_) => None,
+                        // The roster rows (US-9, W-10) are not part
+                        // of this property's domain.
+                        TodayRow::Task(_) | TodayRow::BreakRule(_) => None,
                     })
                     .collect();
                 let mut expected = habit_rows.clone();

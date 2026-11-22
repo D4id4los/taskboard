@@ -1706,6 +1706,11 @@ impl Adapter {
         // click seam does — click ≡ key; a subjectless dispatch stays
         // the typed NoTarget (the router arm's refusal). The guard
         // keeps a pre-minted seam target (the pointer twin) authoritative.
+        // US-9 (W-10): the roster remove's arm toggle reads the
+        // roster cursor inside the routed arm (below) — the pointer
+        // twin re-roots through the same route, one semantics one
+        // home; no route-side mint exists (the toggle owns the
+        // armed slot).
         if id == ActionId::SeriesResume
             && self.series_target.is_none()
             && let Some(task) = self.view_state.subject_task()
@@ -4635,6 +4640,31 @@ impl Adapter {
             // edge); disarmed — the typed inert (no state change).
             // The other clear sites stay the only other clearers (the
             // composition law: no second disarm site invented).
+            // The roster remove's arm step (US-9, W-10, #1066's
+            // roster half): the armed toggle over the roster cursor —
+            // the same toggle the pointer seam has always run (one
+            // armed subject, the repeat is not the confirm), now
+            // cursor-addressed so click ≡ key holds. Cursorless (and
+            // kiosk — the section's absence) is the typed refusal.
+            (_, UiEffect::BreakRuleRemoveArm) if self.kiosk => Vec::new(),
+            (_, UiEffect::BreakRuleRemoveArm) => {
+                let live = self
+                    .view_state
+                    .break_rule_cursor()
+                    .filter(|rule| self.tables.break_rules.contains(rule));
+                if let Some(rule) = live {
+                    self.break_rule_armed = if self.break_rule_armed == Some(rule) {
+                        None
+                    } else {
+                        Some(rule)
+                    };
+                    self.refresh_forced(window);
+                } else {
+                    self.arm_no_target_notice(ActionId::BreakRuleRemove);
+                    self.push_notice(window);
+                }
+                Vec::new()
+            }
             (_, UiEffect::RowCursorDisarm) => {
                 if self.view_state.rule_cursor().is_some() {
                     self.view_state.disarm_rule_cursor();
@@ -5041,6 +5071,10 @@ impl Adapter {
             // unambiguously a clear.
             (Flow::None, UiEffect::CancelMove) => {
                 self.view_state.clear_rule_cursor();
+                // The roster cursor joins (US-9, W-10): the global
+                // cancel stays unambiguously a clear (the rule
+                // cursor's D-2 site 5 twin).
+                self.view_state.clear_break_rule_cursor();
                 self.view_state.clear_selection()
             }
             (Flow::None, UiEffect::FocusNext) => {
@@ -6684,6 +6718,10 @@ impl Adapter {
             // interprets like every view intent — the typed inert
             // lives in the arm.
             | UiEffect::RowCursorDisarm
+            // The roster remove's arm step (US-9, W-10) interprets
+            // like every view intent — the cursorless refusal lives
+            // in the arm.
+            | UiEffect::BreakRuleRemoveArm
             | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitConvertCancel
@@ -15886,18 +15924,13 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         else {
             return; // a stale index against an older tables pass
         };
-        // Arming is a UI-state toggle (the settings armed-item
-        // letter): one armed subject surface-wide, arming a different
-        // row displaces the previous, the arm stroke's repeat is not
-        // the confirm (the strip's Confirm is the only verb that
-        // dispatches — the two-seam staging, not the second-click
-        // shape).
-        a.break_rule_armed = if a.break_rule_armed == Some(rule) {
-            None
-        } else {
-            Some(rule)
-        };
-        a.refresh_forced(&window);
+        // US-9 (W-10, #1066's roster half): the seam re-rooted onto
+        // the registry verb — the click moves the roster cursor (the
+        // K4 coherence law) and the arm toggle runs in the routed
+        // arm, one semantics one home (click ≡ key by construction;
+        // the repeat-is-not-the-confirm letter preserved).
+        a.view_state.select_break_rule_cursor(rule);
+        a.route(&window, ActionId::BreakRuleRemove);
 
     });
     install_seam!(window: window.on_timers_break_remove_confirmed, adapter: adapter;

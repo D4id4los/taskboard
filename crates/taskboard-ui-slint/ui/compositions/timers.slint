@@ -36,8 +36,10 @@ export struct TimerRowModel {
 // One break-rule roster row (T-14, #797): the label, the canonical
 // threshold phrase (the mint's text form), the insistence rung bit
 // (the `TimerRowModel.alarm-rung` convention), the roaming board's
-// name, and the armed-strip flag (the board columns'
-// `delete-armed` convention — this row is the one armed subject).
+// name, the armed-strip flag (the board columns'
+// `delete-armed` convention — this row is the one armed subject), and
+// the selected-row cursor's emphasis (US-9, W-10, #1066's roster
+// half — the rule-list's `selected` convention).
 // Derived per refresh — the remove target is Rust-side (the IdTables
 // index convention); the row carries only its index.
 export struct BreakRuleRowModel {
@@ -46,6 +48,7 @@ export struct BreakRuleRowModel {
     alarm-rung: bool,
     board: string,
     armed: bool,
+    selected: bool,
 }
 
 export component TimersSection inherits Rectangle {
@@ -268,7 +271,11 @@ export component TimersSection inherits Rectangle {
                 }
             }
 
-            for rule-row[rule-index] in root.break-rules: VerticalLayout {
+            for rule-row[rule-index] in root.break-rules: Rectangle {
+                // The selected-row cursor's emphasis (US-9, W-10): the
+                // focus-ring border, the rule-list row's convention.
+                border-width: rule-row.selected ? Theme.focus-ring-width : 0;
+                VerticalLayout {
                 spacing: Theme.space-1;
                 HorizontalLayout {
                     spacing: Theme.space-2;
@@ -322,6 +329,7 @@ export component TimersSection inherits Rectangle {
                     cancel-label: "Cancel remove rule";
                     confirmed => root.break-remove-confirmed(rule-index);
                     cancelled => root.break-remove-cancelled();
+                }
                 }
             }
 

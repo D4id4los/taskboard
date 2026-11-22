@@ -154,6 +154,12 @@ pub enum UiEffect {
     /// armed-flow grammar) or surfaces the typed inert while
     /// disarmed. Pure view-state — no command.
     RowCursorDisarm,
+    /// The break-rules roster's remove arm (US-9, W-10, #1066's
+    /// roster half): the adapter toggles the armed subject over the
+    /// roster cursor (the click ≡ key re-rooting of the pointer
+    /// seam); the dispatch itself waits for Confirm. Nothing
+    /// dispatches engine-side.
+    BreakRuleRemoveArm,
     /// Arm the habit row's conversion confirm strip (issue #506): the
     /// adapter records the armed row; the dispatch itself waits for
     /// Confirm.
@@ -539,6 +545,7 @@ impl UiEffect {
             | Self::SeriesPauseOpen
             | Self::RowMenuRequested
             | Self::RowCursorDisarm
+            | Self::BreakRuleRemoveArm
             | Self::HabitPauseOpen
             | Self::HabitConvertArm
             | Self::HabitConvertCancel
@@ -1558,7 +1565,6 @@ impl ActionRouter {
                 }),
                 None => DispatchOutcome::NoTarget,
             },
-            ActionId::BreakRuleRemove => DispatchOutcome::NoTarget,
             ActionId::BreakRuleRemoveConfirm => match ctx.break_rule_target {
                 Some(rule) => DispatchOutcome::Command(StateCommand::DeleteBreakRule { id: rule }),
                 None => DispatchOutcome::NoTarget,
@@ -1746,6 +1752,10 @@ impl ActionRouter {
             // US-10 (W-11, #1091): the disarm is a view-state verb —
             // the armed/disarmed fork is the adapter arm's.
             ActionId::RowCursorDisarm => DispatchOutcome::UiEffect(UiEffect::RowCursorDisarm),
+            // US-9 (W-10): the arm step is a view intent — the armed
+            // toggle over the roster cursor is the adapter arm's (the
+            // staged remove never dispatches engine-side here).
+            ActionId::BreakRuleRemove => DispatchOutcome::UiEffect(UiEffect::BreakRuleRemoveArm),
             ActionId::SeriesPauseCommit => match (ctx.series_target, ctx.pause_draft) {
                 (Some(head), Some(until)) => DispatchOutcome::Command(StateCommand::PauseSeries {
                     head,
@@ -2514,10 +2524,13 @@ mod tests {
             ActionRouter::dispatch(ActionId::BreakRuleCreate, &ctx),
             DispatchOutcome::NoTarget
         );
+        // US-9 (W-10, #1066's roster half): the arm step re-rooted
+        // onto its registry id as a view intent — the staging stays
+        // adapter-side, the router routes the effect.
         assert_eq!(
             ActionRouter::dispatch(ActionId::BreakRuleRemove, &ctx),
-            DispatchOutcome::NoTarget,
-            "the arm step is adapter-side staging — it dispatches nothing"
+            DispatchOutcome::UiEffect(UiEffect::BreakRuleRemoveArm),
+            "the arm step is adapter-side staging — it dispatches nothing engine-side"
         );
         assert_eq!(
             ActionRouter::dispatch(ActionId::BreakRuleRemoveConfirm, &ctx),

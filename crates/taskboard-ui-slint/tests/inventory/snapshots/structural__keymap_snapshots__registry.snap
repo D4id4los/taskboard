@@ -940,7 +940,7 @@ expression: rows
 - id: row.menu
   label: Open row menu
   contexts:
-    - global
+    - today
   category: menu
   enabled: true
   menu_rank: 940
@@ -949,7 +949,7 @@ expression: rows
 - id: row.cursor-disarm
   label: Disarm row cursor
   contexts:
-    - global
+    - task-detail
   category: task
   enabled: true
   menu_rank: 930
