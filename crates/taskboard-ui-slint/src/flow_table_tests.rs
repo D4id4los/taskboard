@@ -16,6 +16,7 @@
 
 use super::mount;
 use crate::router::{Mode, UiEffect};
+use crate::surfaces::FlowTag;
 use crate::test_platform::on_slint_thread;
 use crate::view_state::Flow;
 use crate::{UiHandle, UiSettings};
@@ -134,6 +135,44 @@ fn kind_of(flow: &Flow) -> FK {
         Flow::ReviewWalk { .. } => FK::ReviewWalk,
         Flow::EditRecur { .. } => FK::RecurEditor,
         Flow::Labels { .. } => FK::LabelOverlay,
+    }
+}
+
+/// The per-variant key → coarse kind mirror (#1037): the variant
+/// layer's rows resolve their class fallback through the same `FK`
+/// vocabulary as the pair layer. Compiler-total like `kind_of` — a
+/// new `FlowTag` variant without an arm fails at compile time; a new
+/// `Flow` variant without a `tag()` arm fails in `surfaces.rs`.
+fn kind_of_tag(tag: FlowTag) -> FK {
+    match tag {
+        FlowTag::None
+        | FlowTag::ConfirmDelete
+        | FlowTag::BoardColorPick
+        | FlowTag::BoardCeremony => FK::None,
+        FlowTag::EntryDatePicker | FlowTag::WalkFilePick | FlowTag::WalkDatePick => FK::Child,
+        // The embedded planner child (J4 D-2): its own kind — its
+        // kept arms now live at the variant layer (the pair layer's
+        // collision workaround retired).
+        FlowTag::ReviewPlanner => FK::PlanChild,
+        FlowTag::Create
+        | FlowTag::CreateStack
+        | FlowTag::CreateBoard
+        | FlowTag::EditTitle
+        | FlowTag::EditDescription
+        | FlowTag::RenameStack
+        | FlowTag::RenameBoard => FK::Text,
+        FlowTag::EditDate => FK::Due,
+        FlowTag::Move | FlowTag::MoveStack => FK::Move,
+        FlowTag::DragMove => FK::Drag,
+        FlowTag::Palette => FK::Palette,
+        FlowTag::Capture => FK::Capture,
+        FlowTag::FocusMode => FK::FocusOverlay,
+        FlowTag::TrackEntries => FK::TrackList,
+        FlowTag::TrackEntryForm => FK::TrackForm,
+        FlowTag::PlanPlace => FK::PlanForm,
+        FlowTag::ReviewWalk => FK::ReviewWalk,
+        FlowTag::EditRecur => FK::RecurEditor,
+        FlowTag::Labels => FK::LabelOverlay,
     }
 }
 
@@ -780,6 +819,73 @@ fn held_flow_keep(kind: FK) -> Post {
     }
 }
 
+/// The variant-layer kept arms (#1037): `(FlowTag, EK) → Exp` — one
+/// arm per `Flow` variant, consulted before the pair table. Two
+/// flows sharing a coarse `FK` kind may now carry different kept
+/// arms; each is declared once at the variant.
+///
+/// The rows here are the `Flow::ReviewPlanner` arms that existed
+/// only as the `FK::PlanChild`/`FK::Child` collision's workaround —
+/// moved (not re-valued) out of `pair_table`. `FK::PlanChild`
+/// survives as the class-layer kind and the `Post::Kind` vocabulary.
+/// The formerly-shadowed duplicates (the block's `K(KChild)` walk /
+/// `PlanBegin` / `PlanRemove` twins that `find`-first never reached)
+/// are dropped: dead rows, value-identical resolution.
+fn variant_table() -> Vec<(FlowTag, EK, Exp)> {
+    use EK as E;
+    let mut t = Vec::new();
+    let mut row = |tag: FlowTag, key: EK, e: Exp| t.push((tag, key, e));
+    // The walk intents under the embedded planner route to the walk
+    // level beneath; with no walk beneath — the fixture's depth 1 —
+    // they are the inert no-op and the child stays.
+    row(
+        FlowTag::ReviewPlanner,
+        E::WalkAdvance,
+        exp(Z, K(KPlanChild)),
+    );
+    row(FlowTag::ReviewPlanner, E::WalkExit, exp(Z, K(KPlanChild)));
+    row(FlowTag::ReviewPlanner, E::WalkVerb, exp(Z, K(KPlanChild)));
+    row(
+        FlowTag::ReviewPlanner,
+        E::WalkFileArm,
+        exp(Z, K(KPlanChild)),
+    );
+    // The embedded planner's form mounts as the planner's own child
+    // (J4 D-2); the unplace is the honest write under the child.
+    row(FlowTag::ReviewPlanner, E::PlanBegin, exp(Z, K(KPlanForm)));
+    row(
+        FlowTag::ReviewPlanner,
+        E::PlanRemove,
+        exp(NZ, K(KPlanChild)),
+    );
+    // The embedded planner child mirrors the child cells verbatim
+    // (the depth-1 XOR replaces it like any child; its kept arms —
+    // the walk verbs and the planner rows — are the earlier rows).
+    row(FlowTag::ReviewPlanner, E::BoardDefaultPreset, exp(Z, N));
+    row(FlowTag::ReviewPlanner, E::TrackEntryDismiss, exp(Z, N));
+    row(FlowTag::ReviewPlanner, E::LabelsDismiss, exp(Z, N));
+    row(FlowTag::ReviewPlanner, E::BeginCreate, exp(Z, K(KTxt)));
+    row(FlowTag::ReviewPlanner, E::BeginCreateStack, exp(Z, K(KTxt)));
+    row(FlowTag::ReviewPlanner, E::RequestMove, exp(Z, K(KMove)));
+    row(FlowTag::ReviewPlanner, E::StackDelete, exp(Z, K(KNone)));
+    row(FlowTag::ReviewPlanner, E::StackRename, exp(Z, K(KTxt)));
+    row(FlowTag::ReviewPlanner, E::StackMove, exp(Z, K(KMove)));
+    row(FlowTag::ReviewPlanner, E::BoardCreate, exp(Z, K(KTxt)));
+    row(FlowTag::ReviewPlanner, E::BoardColorEdit, exp(Z, K(KNone)));
+    row(FlowTag::ReviewPlanner, E::BoardDelete, exp(Z, K(KNone)));
+    row(FlowTag::ReviewPlanner, E::BoardCeremony, exp(Z, K(KNone)));
+    row(FlowTag::ReviewPlanner, E::BoardRename, exp(Z, K(KTxt)));
+    row(FlowTag::ReviewPlanner, E::BeginTitleEdit, exp(Z, K(KTxt)));
+    row(
+        FlowTag::ReviewPlanner,
+        E::TrackEntriesOpen,
+        exp(Z, K(KTrackList)),
+    );
+    row(FlowTag::ReviewPlanner, E::ReviewOpen, exp(Z, K(KWalk)));
+    row(FlowTag::ReviewPlanner, E::LabelsOpen, exp(Z, K(KLabel)));
+    t
+}
+
 fn pair_table() -> Vec<(FK, EK, Exp)> {
     use EK as E;
     let mut t = Vec::new();
@@ -880,13 +986,9 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // (the child dispatch arm); with no walk beneath — the fixture's
     // depth 1 — they are the inert no-op and the child stays.
     row(FK::Child, E::WalkAdvance, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::WalkAdvance, exp(Z, K(KPlanChild)));
     row(FK::Child, E::WalkExit, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::WalkExit, exp(Z, K(KPlanChild)));
     row(FK::Child, E::WalkVerb, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::WalkVerb, exp(Z, K(KPlanChild)));
     row(FK::Child, E::WalkFileArm, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::WalkFileArm, exp(Z, K(KPlanChild)));
     // -- LIFECYCLE under every foreign kind: the settle-then-run
     //    re-run's outcome is effect-shaped (a rename arms a fresh
     //    text flow, a delete dispatches with no flow) --
@@ -1327,9 +1429,6 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // The embedded planner's form is the planner's own child (J4
     // D-2): the mount keeps the child cell's flow shape at Kind(PlanForm).
     row(FK::Child, E::PlanBegin, exp(Z, K(KChild)));
-    // The embedded planner's form mounts as the planner's own child
-    // (J4 D-2).
-    row(FK::PlanChild, E::PlanBegin, exp(Z, K(KPlanForm)));
     row(FK::PlanForm, E::PlanBegin, exp(Z, K(KPlanForm)));
     row(FK::PlanForm, E::PlanCommit, exp(Z, K(KPlanForm)));
     row(FK::PlanForm, E::PlanBox, exp(Z, K(KPlanForm)));
@@ -1337,7 +1436,6 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
     // The embedded planner's unplace: the honest write lands under
     // the child (J4 D-2); the plain children keep the named inert.
     row(FK::Child, E::PlanRemove, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::PlanRemove, exp(NZ, K(KPlanChild)));
     // A held foreign flow keeps every planner intent inert (the
     // modal discipline verbatim: Escape out of the flow first).
     for kind in [
@@ -1368,40 +1466,20 @@ fn pair_table() -> Vec<(FK, EK, Exp)> {
         }
     }
 
-    // The embedded planner child mirrors the child cells verbatim
-    // (the depth-1 XOR replaces it like any child; its kept arms —
-    // the walk verbs and the planner rows — are the earlier rows).
-    row(FK::PlanChild, E::BoardDefaultPreset, exp(Z, N));
-    row(FK::PlanChild, E::TrackEntryDismiss, exp(Z, N));
-    row(FK::PlanChild, E::LabelsDismiss, exp(Z, N));
-    // The embedded planner child mirrors the child cells verbatim
-    // (the depth-1 XOR replaces it like any child; its kept arms —
-    // the walk verbs and the planner rows — are the earlier rows).
-    row(FK::PlanChild, E::BeginCreate, exp(Z, K(KTxt)));
-    row(FK::PlanChild, E::BeginCreateStack, exp(Z, K(KTxt)));
-    row(FK::PlanChild, E::RequestMove, exp(Z, K(KMove)));
-    row(FK::PlanChild, E::StackDelete, exp(Z, K(KNone)));
-    row(FK::PlanChild, E::StackRename, exp(Z, K(KTxt)));
-    row(FK::PlanChild, E::StackMove, exp(Z, K(KMove)));
-    row(FK::PlanChild, E::BoardCreate, exp(Z, K(KTxt)));
-    row(FK::PlanChild, E::BoardColorEdit, exp(Z, K(KNone)));
-    row(FK::PlanChild, E::BoardDelete, exp(Z, K(KNone)));
-    row(FK::PlanChild, E::BoardCeremony, exp(Z, K(KNone)));
-    row(FK::PlanChild, E::BoardRename, exp(Z, K(KTxt)));
-    row(FK::PlanChild, E::BeginTitleEdit, exp(Z, K(KTxt)));
-    row(FK::PlanChild, E::TrackEntriesOpen, exp(Z, K(KTrackList)));
-    row(FK::PlanChild, E::ReviewOpen, exp(Z, K(KWalk)));
-    row(FK::PlanChild, E::WalkAdvance, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::WalkExit, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::WalkVerb, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::WalkFileArm, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::LabelsOpen, exp(Z, K(KLabel)));
-    row(FK::PlanChild, E::PlanBegin, exp(Z, K(KChild)));
-    row(FK::PlanChild, E::PlanRemove, exp(Z, K(KChild)));
+    // The embedded planner child's kept arms moved to the variant
+    // layer (#1037) — see `variant_table`.
     t
 }
 
-fn lookup(kind: FK, key: EK, class: EC) -> Exp {
+fn lookup(tag: FlowTag, key: EK, class: EC) -> Exp {
+    // The variant rung (#1037): most specific first.
+    if let Some((_, _, e)) = variant_table()
+        .into_iter()
+        .find(|(t, k, _)| *t == tag && *k == key)
+    {
+        return e;
+    }
+    let kind = kind_of_tag(tag);
     let pair = pair_table()
         .into_iter()
         .find(|(k, e, _)| *k == kind && *e == key);
@@ -1831,7 +1909,7 @@ fn every_flow_effect_pair_resolves_to_its_matrix_row() {
         let mut failures = Vec::new();
         for flow in &flows {
             for effect in &effects {
-                let expected = lookup(kind_of(flow), key_of(effect), class_of(effect));
+                let expected = lookup(flow.tag(), key_of(effect), class_of(effect));
                 // Reset, seed focus/selection, arm the exact flow
                 // under test (last — reconcile's drops must not see
                 // it), and seed a non-empty text buffer for the TEXT
@@ -2012,6 +2090,19 @@ fn the_matrix_covers_every_class_cell() {
         16 * 16,
         "one row per (FlowKind, EffectClass) cell"
     );
+    // The variant layer's coverage (#1037): every `(FlowTag, EK)`
+    // row names a real tag (compiler-total via `kind_of_tag`) and
+    // carries each key once — a duplicate would silently shadow its
+    // twin under the find-first resolution.
+    let rows = variant_table();
+    let mut vseen: Vec<(FlowTag, EK)> = Vec::new();
+    for (tag, key, _) in &rows {
+        assert!(
+            !vseen.contains(&(*tag, *key)),
+            "duplicate variant row ({tag:?}, {key:?})"
+        );
+        vseen.push((*tag, *key));
+    }
 }
 
 // -- the R2 drop-miss journeys (F8) --------------------------------------
