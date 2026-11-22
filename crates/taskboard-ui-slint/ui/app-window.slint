@@ -904,7 +904,7 @@ export component AppWindow inherits Window {
                 files-sync-tone: root.files-sync-tone;
                 files-sync-flagged: root.files-sync-flagged;
                 snooze-clicked(i) => root.banner-snooze-clicked(i);
-                mute-clicked(i) => root.banner-mute-clicked(i);
+                mute-clicked(i) => root.banner_mute_clicked(i);
                 row-activated(i) => root.banner-row-activated(i);
                 row-open-requested(i) => root.banner-row-open-requested(i);
                 timers-chip-clicked() => root.timers-chip-clicked();
@@ -1613,12 +1613,12 @@ export component AppWindow inherits Window {
         // dismissal layer, the centering, and the walk arming — the
         // site wires only its existing intents. #976 (SB1, R-4
         // edit-kind flip, US-1): capture is an edit-kind dialog — an
-        // outside click routes the accept seam (`capture-accepted`);
+        // outside click routes the accept seam (`capture_accepted`);
         // the empty-buffer close is `commit_capture`'s own arm, so an
         // empty draft closes without committing. The W1 proof-mount's
         // discard-and-close outside click retires here (the W2
         // migration debt). Escape stays the explicit discard
-        // (`capture-dismiss-requested` via the action layer).
+        // (`capture_dismiss_requested` via the action layer).
         if (root.capture-open): ModalDialogHost {
             open: true;
             title: "Capture";
@@ -1626,7 +1626,7 @@ export component AppWindow inherits Window {
             body-preferred-width: 560px * Theme.base-scale;
             walk-stops: 1;
             viewport-floor: status.y;
-            dismissed => root.capture-dismiss-requested();
+            dismissed => root.capture_dismiss_requested();
             // US-1/AC-1: the outside click commits AND closes — the
             // accept seam (commit_capture) commits-and-continues by
             // Return's grammar, so the scrim's accept resolution
@@ -1635,13 +1635,13 @@ export component AppWindow inherits Window {
             // commit). No second accept seam is coined; Escape's
             // explicit discard is untouched.
             accepted => {
-                root.capture-accepted();
-                root.capture-dismiss-requested();
+                root.capture_accepted();
+                root.capture_dismiss_requested();
             }
             CaptureOverlay {
                 initial-text: root.capture-initial-text;
                 capture-edited(text) => root.capture-text-edited(text);
-                capture-accepted() => root.capture-accepted();
+                capture_accepted() => root.capture_accepted();
                 text-flow-focus-lost() => root.text-flow-focus-lost();
             }
         }
@@ -1661,7 +1661,7 @@ export component AppWindow inherits Window {
             body-preferred-width: 560px * Theme.base-scale;
             walk-stops: 1;
             viewport-floor: status.y;
-            accepted => root.recur-commit-clicked();
+            accepted => root.recur_commit_clicked();
             RecurEditor {
             model: root.recur-editor-model;
             pattern-kind-picked(i) => root.recur-pattern-picked(i);
@@ -1675,7 +1675,7 @@ export component AppWindow inherits Window {
             bound-kind-picked(i) => root.recur-bound-picked(i);
             until-edited(t) => root.recur-until-edited(t);
             count-edited(t) => root.recur-count-edited(t);
-            commit-clicked() => root.recur-commit-clicked();
+            commit-clicked() => root.recur_commit_clicked();
             cancel-clicked() => root.recur-editor-cancel-clicked();
             detach-arm-clicked() => root.recur-detach-arm-clicked();
             detach-confirm-clicked() => root.recur-detach-confirm-clicked();
@@ -2042,9 +2042,9 @@ export component AppWindow inherits Window {
     pure callback habit_history_month_flipped(int);
     pure callback habit_history_close_requested();
     // The capture overlay's seams (chunk 10 D8).
-    pure callback capture-dismiss-requested();
+    pure callback capture_dismiss_requested();
     pure callback capture-text-edited(string);
-    pure callback capture-accepted();
+    pure callback capture_accepted();
     // The concentration overlay's seams (#496): scrim close, note
     // commit (the capture commit funnel), the switcher's start, and
     // the session stop.
@@ -2311,7 +2311,7 @@ export component AppWindow inherits Window {
     // only — the editor and its flow stay armed.
     pure callback date-picker-dismiss-requested();
     pure callback banner-snooze-clicked(int);
-    pure callback banner-mute-clicked(int);
+    pure callback banner_mute_clicked(int);
     pure callback banner-row-activated(int);
     // D-6.1 (round 6): the rows' double-click open (banner + the
     // notification surface's task-anchored rows).
@@ -2398,7 +2398,7 @@ export component AppWindow inherits Window {
     pure callback recur-bound-picked(int);
     pure callback recur-until-edited(string);
     pure callback recur-count-edited(string);
-    pure callback recur-commit-clicked();
+    pure callback recur_commit_clicked();
     pure callback recur-editor-cancel-clicked();
     pure callback recur-detach-arm-clicked();
     pure callback recur-detach-confirm-clicked();

@@ -14,7 +14,7 @@ export component CaptureOverlay inherits Rectangle {
     // rule); commits route through `accepted`.
     in property <string> initial-text;
     callback capture-edited(string);
-    callback capture-accepted();
+    callback capture_accepted();
     // The focus-loss settle (round-3 L1).
     callback text-flow-focus-lost();
 
@@ -39,7 +39,7 @@ export component CaptureOverlay inherits Rectangle {
             label: "Capture";
             text: root.initial-text;
             edited(text) => root.capture-edited(text);
-            accepted() => root.capture-accepted();
+            accepted() => root.capture_accepted();
             focus-lost() => root.text-flow-focus-lost();
         }
 
