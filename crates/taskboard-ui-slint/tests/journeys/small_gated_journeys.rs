@@ -17,7 +17,7 @@ use support::fixture;
 use support::harness::Harness;
 
 use chrono::TimeZone as _;
-use slint::ComponentHandle as _;
+use slint::{ComponentHandle as _, Model as _};
 use taskboard_domain::{AppState, ConfigReloadOutcome, StateCommand, SystemEvent};
 use taskboard_ui_slint::actions::ActionId;
 use taskboard_ui_slint::keymap::stroke::parse;
@@ -823,5 +823,111 @@ fn us12_s1_kind_toggle_chord_resolves() {
             ),
             "the kind toggle flips the tracker flag at the boundary, got {drained:?}"
         );
+    });
+}
+
+// -- US-7: the row context-menu key ---------------------------------------
+
+/// The `KeyboardState` global (the menu-open fact's projection; the
+/// habits journey's helper shape).
+fn keyboard(harness: &support::harness::Harness) -> taskboard_ui_slint::KeyboardState<'_> {
+    use slint::ComponentHandle as _;
+    harness
+        .handle
+        .window()
+        .global::<taskboard_ui_slint::KeyboardState>()
+}
+
+/// US-7/AC-1 (`us7_s1_row_menu_key_opens_task_menu`): a focused task
+/// row's row-menu key opens the task context menu over the focused
+/// subject — the `menu_row_subject` path the pointer right-click
+/// uses (click ≡ key by construction; the quick bar's presence is
+/// the task-menu page's structural fact).
+#[test]
+fn us7_s1_row_menu_key_opens_task_menu() {
+    let (_fixture, state) = fixture::journey_state();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        // The walk lands on the overdue task (the today domain's first
+        // row).
+        harness.press(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert!(!keyboard(harness).get_menu_open());
+        harness.press(ActionId::RowMenu);
+        harness.driver.advance_time(0);
+        assert!(
+            keyboard(harness).get_menu_open(),
+            "the row-menu key opens the task context menu"
+        );
+        let bar = keyboard(harness).get_menu_quick_bar();
+        assert!(
+            bar.row_count() > 0,
+            "the task menu page carries the quick bar (the curated page)"
+        );
+    });
+}
+
+/// US-7/AC-2 (`us7_s2_row_menu_key_opens_habit_menu`): a focused
+/// habit row's key opens the habit context menu (the direct opener;
+/// the convert-arm chord's arm-and-reproject posture is untouched).
+#[test]
+fn us7_s2_row_menu_key_opens_habit_menu() {
+    use taskboard_domain::habit::{Habit, HabitClocks, HabitTarget};
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = taskboard_domain::ids::HabitId::from_uuid(uuid::Uuid::now_v7());
+    state.habits.habits.insert(
+        habit,
+        Habit {
+            id: habit,
+            board,
+            title: "menu-me".into(),
+            description: String::new(),
+            target: HabitTarget::PerDay(taskboard_domain::NonZeroCount::new(1).expect("quota 1")),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: HabitClocks::all(chrono::Utc::now()),
+            continued_from: None,
+            deleted: false,
+            by: None,
+            paused_until: None,
+        },
+    );
+    support::harness::run_journey_no_escape(state, move |harness| {
+        // The walk: overdue task, then the habit row.
+        harness.press(ActionId::NavFocusDown);
+        harness.press(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        harness.press(ActionId::RowMenu);
+        harness.driver.advance_time(0);
+        assert!(
+            keyboard(harness).get_menu_open(),
+            "the row-menu key opens the habit context menu"
+        );
+        let bar = keyboard(harness).get_menu_quick_bar();
+        assert_eq!(
+            bar.row_count(),
+            0,
+            "the habit menu page is the bare entries page (no quick bar)"
+        );
+    });
+}
+
+/// US-7/AC-3 (`us7_s3_row_menu_no_focus_typed_refusal`): a subjectless
+/// walk's key resolves the typed refusal — no menu, nothing
+/// dispatched.
+#[test]
+fn us7_s3_row_menu_no_focus_typed_refusal() {
+    let (_fixture, state) = fixture::journey_state();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.press(ActionId::RowMenu);
+        harness.driver.advance_time(0);
+        assert!(
+            !keyboard(harness).get_menu_open(),
+            "no focused row, no menu"
+        );
+        harness.assert_commands(&[]);
     });
 }
