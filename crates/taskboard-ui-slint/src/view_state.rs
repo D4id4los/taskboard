@@ -2552,6 +2552,17 @@ impl ViewState {
         outcomes
     }
 
+    /// The habit row's pointer landing (#1200, chunk A1 D2): the
+    /// walk landing write's twin at the click seam — the exclusivity
+    /// law in one place (`focus_today_row`'s Habit arm verbatim) and
+    /// the emphasis ring's refresh. The seam opens no editor (habits
+    /// have no click-to-open verb; H4's reserved verbs untouched).
+    pub fn activate_habit_row(&mut self, habit: taskboard_domain::HabitId) -> Vec<FlowOutcome> {
+        self.focused_habit = Some(habit);
+        self.focused_task = None;
+        vec![FlowOutcome::RefreshNow]
+    }
+
     /// `stack.next`/`stack.prev` (round 2, D17): the stack selection
     /// steps with wrap (the compact switcher's segmented-control
     /// convention) and focus lands on the new stack's first task —

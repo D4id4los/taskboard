@@ -1526,3 +1526,46 @@ fn a1_menu_move_moves_the_row() {
         );
     });
 }
+
+/// A1 (`a1_click_selects_the_row`, #1200): the pointer activation
+/// seats the walk cursor — the clicked row's emphasis ring paints,
+/// the task cursor clears, and a click after a keyboard landing
+/// leaves ONE selection truth (click ≡ key in both directions).
+#[test]
+fn a1_click_selects_the_row() {
+    let (_fx, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    dense_three_habits(&mut state, board);
+    support::harness::run_journey_no_escape(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        let emphasis = |harness: &Harness| -> Vec<bool> {
+            let model = harness.handle.window().get_habits_model();
+            (0..model.row_count())
+                .map(|i| model.row_data(i).expect("row").card.emphasis)
+                .collect()
+        };
+
+        // Pre-fix red pin: the click painted nothing.
+        window.invoke_habits_row_activated(1);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            emphasis(harness),
+            vec![false, true, false],
+            "the clicked row's ring paints"
+        );
+
+        // The keyboard truth composes: a landing on the last row,
+        // then a click on the first — one selection cursor.
+        harness.handle.dispatch_action(ActionId::NavLastItem);
+        harness.driver.advance_time(0);
+        assert_eq!(emphasis(harness), vec![false, false, true]);
+        window.invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            emphasis(harness),
+            vec![true, false, false],
+            "the click re-seated the cursor (one selection truth)"
+        );
+    });
+}

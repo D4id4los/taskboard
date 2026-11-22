@@ -11716,12 +11716,15 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // only (habits have no click-to-open verb, H4 reserved).
     install_seam!(window: window.on_habits_row_activated, adapter: adapter;
     bind mut (a, window), args (index), {        let _ = &window; // the fact mutates no window bit
+        settle_pointer_conflict(&mut a, &window);
         if let Some(&habit) = a
         .tables
         .habits
         .get(usize::try_from(index).unwrap_or(usize::MAX))
     {
         a.focused_habit = Some(habit);
+        let outcomes = a.view_state.activate_habit_row(habit);
+        a.apply_outcomes(&window, &outcomes);
     }
 
     });
