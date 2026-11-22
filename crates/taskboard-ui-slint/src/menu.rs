@@ -963,6 +963,12 @@ mod tests {
             ActionId::TaskReopen,
             ActionId::TaskMove,
             ActionId::TaskMoveCancel,
+            // The Today compact-move pair (US-14, #1031): the internal
+            // dispatch twins join the Task group at ranks 96/97 (the
+            // menu rows are inert without a focused walk landing —
+            // the shared stroke resolves by focused row kind).
+            ActionId::TaskMoveUp,
+            ActionId::TaskMoveDown,
             ActionId::TaskDelete,
             // UX-R8 chunk-5 D-3: the scheduled field's quick verbs
             // join at ranks 101/102/103.

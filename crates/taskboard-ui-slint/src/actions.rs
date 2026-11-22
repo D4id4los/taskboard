@@ -1798,9 +1798,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 230,
+        menu_rank: 96,
         description: "Moves the focused Today task one step up its stack order; the boundary refuses typed (no wrap).",
-        menu_group: None,
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::TaskMoveDown,
@@ -1808,9 +1808,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 240,
+        menu_rank: 97,
         description: "Moves the focused Today task one step down its stack order; the boundary refuses typed (no wrap).",
-        menu_group: None,
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::TaskDelete,
