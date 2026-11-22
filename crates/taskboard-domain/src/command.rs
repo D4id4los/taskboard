@@ -1382,18 +1382,32 @@ pub fn plan_command(
                 .collect();
             rows.sort_by_key(|t| (t.order, t.id));
             let position = rows.iter().position(|t| t.id == *id);
+            // The gap-1 tie is resolved explicitly on BOTH sides: the
+            // raw floor midpoint of a width-1 interval lands on the
+            // neighbour's own order when stepping up (`prev + 0/2`),
+            // which would collide with the neighbour instead of tying
+            // on the mover's own order — so both arms pin the width-1
+            // slot to `task.order` and the no-op branch below keeps
+            // the row where it is (the down arm happened to reach the
+            // tie through the midpoint; the up arm did not).
             let slot = position.and_then(|position| {
-                if up {
-                    let prev = position
+                let neighbour = if up {
+                    position
                         .checked_sub(1)
                         .and_then(|i| rows.get(i))
-                        .map(|t| t.order);
-                    prev.map(|prev| floor_midpoint_order(Some(prev), Some(task.order)))
-                } else {
-                    rows.get(position + 1)
                         .map(|t| t.order)
-                        .map(|next| floor_midpoint_order(Some(task.order), Some(next)))
-                }
+                } else {
+                    rows.get(position + 1).map(|t| t.order)
+                };
+                neighbour.map(|neighbour| {
+                    if task.order.abs_diff(neighbour) == 1 {
+                        task.order
+                    } else if up {
+                        floor_midpoint_order(Some(neighbour), Some(task.order))
+                    } else {
+                        floor_midpoint_order(Some(task.order), Some(neighbour))
+                    }
+                })
             });
             let Some(order) = slot else {
                 return Err(CommandError::TaskAtBoundary(*id));
@@ -4976,6 +4990,7 @@ mod tests {
             }
             let pick = pick % n;
             let subject = ids[pick];
+            let task_order = orders[pick];
             let command = if up {
                 StateCommand::TaskMoveUp { id: subject }
             } else {
@@ -4990,6 +5005,25 @@ mod tests {
                 Err(error) => panic!("unexpected refusal {error:?}"),
                 Ok(plan) => {
                     prop_assert!(!at_boundary, "a boundary stroke never plans");
+                    // The accepted gap-1 tie: the neighbour sits at
+                    // distance 1, the mover ties on its own order and
+                    // the stroke is a no-op (empty plan).
+                    let neighbour = if up {
+                        orders.get(pick.checked_sub(1).expect("non-boundary"))
+                    } else {
+                        orders.get(pick + 1)
+                    }
+                    .expect("non-boundary neighbour");
+                    let gap_one_tie = task_order.abs_diff(*neighbour) == 1;
+                    if gap_one_tie {
+                        prop_assert_eq!(
+                            plan.actions.len(),
+                            0,
+                            "a gap-1 tie plans nothing"
+                        );
+                        prop_assert_eq!(plan.outcome, CommandOutcome::NoOp);
+                        return Ok(());
+                    }
                     let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
                         panic!("first action must be the upsert");
                     };
@@ -5002,6 +5036,15 @@ mod tests {
                     prop_assert!(
                         bracket.contains(&updated.order),
                         "the new order stays inside the stepped bracket"
+                    );
+                    // The moved row never lands on a neighbour's
+                    // existing order (the midpoint's collision trap on
+                    // the up arm's width-1 interval).
+                    prop_assert!(
+                        app.tasks
+                            .values()
+                            .all(|t| t.id == subject || t.order != updated.order),
+                        "the new order collides with another row's order"
                     );
                     // Σ/order: only the subject's order moved; every
                     // other row is byte-identical, so the row set is a
