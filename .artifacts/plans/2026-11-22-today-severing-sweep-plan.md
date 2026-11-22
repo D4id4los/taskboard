@@ -70,6 +70,21 @@ sever is `max-width: Theme.layout-severing-max-width`
 | `app-window.slint` (`AppWindow`) | the `Window` itself | n/a — **by design**: the Window root is the thing being protected; the sever lives on the view roots beneath it | n/a | — |
 | `alarm-window.slint` (`AlarmWindow`) | its own `Window` | **no** — residual gap (see §4) | none | — |
 
+**Stage-2 re-verification (2026-11-22, on `fix/today-severing-sweep`
+rebased onto fresh `origin/main` @ `5b820f16`)**: census re-confirmed
+8/8 against the live tree — all eight sever lines present at the exact
+line numbers in the table above
+(`grep -n layout-severing-max-width ui/views/*.slint`), the sentinel
+`99999px` at `theme.slint:80`, and all eight probe twins wired as
+`#[path = "probes/…_window_max_probe_tests.rs"]` modules in
+`crates/taskboard-ui-slint/tests/probe_composition.rs`. Both exempt
+verdicts re-checked and unchanged: `alarm-window.slint` still pins a
+fixed width (`Theme.space-15 * 4`) with no sever — the residual is
+tracked in #1251; `review-walk-overlay.slint` is still imported into
+`AppWindow` as an overlay (`app-window.slint:25`), so the no-sever
+verdict stands. No staleness race materialized: nothing moved between
+`1276151a` and `5b820f16` that touches the census.
+
 **Census summary**: 8 of 8 window-facing view roots severed, each with
 a structural probe. 1 window root (`AlarmWindow`) unsevered but
 fixed-size; 1 overlay root exempt by verdict; the app Window exempt by
@@ -121,12 +136,11 @@ closure comment.
 ## 5. Backlog issues filed
 
 - `backlog:` AlarmWindow lacks the layout-severing max-width + a
-  window_max probe twin (same collapse class, fixed-width window).
+  window_max probe twin (same collapse class, fixed-width window). →
+  **#1251** (filed 2026-11-22).
 - `backlog:` CI structural guard asserting every `ui/views/*-view.slint`
-  root carries the severing max-width and a window_max probe twin.
-
-(Numbers to be appended after `gh issue create`; also listed in the
-stage report.)
+  root carries the severing max-width and a window_max probe twin. →
+  **#1252** (filed 2026-11-22).
 
 ## 6. Risks
 
