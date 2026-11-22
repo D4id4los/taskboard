@@ -2488,6 +2488,7 @@ async fn sync_line(
         no_wait,
         Duration::from_secs(timeout_secs),
         scope.as_ref(),
+        io.out,
     )
     .await
     {
