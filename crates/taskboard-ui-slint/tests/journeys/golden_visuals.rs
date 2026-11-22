@@ -26,10 +26,10 @@
 //!
 //! # Comparison
 //!
-//! Exact dimensions, then the box-averaged luma-cell grid of
-//! `support::golden_compare` (32×24 cells, per-cell budget 8/255 —
-//! the calibration and tolerance budget are recorded there). Drift
-//! within tolerance logs a warning; beyond it fails.
+//! Exact dimensions, then the scale-aware box-averaged cell grids of
+//! `support::golden_compare` (luma + chroma, cells of ~24 physical px,
+//! per-channel budget 8/255 — the calibration and budgets are recorded
+//! there). Drift within tolerance logs a warning; beyond it fails.
 //!
 //! # Regeneration — an explicit, reviewed step
 //!
