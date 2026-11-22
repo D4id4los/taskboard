@@ -725,12 +725,13 @@ fn bound_admits(app: &AppState, rule: &RecurRule, next_date: NaiveDate) -> bool 
 /// midpoint of the drop slot's free interval** — `prev`/`next` are the
 /// orders bracketing the slot (`None` at either end; the empty row
 /// source mints 0). The ONE order arithmetic: the completion spawn's
-/// `insertion_order_after` expresses the same convention, the UI's
-/// drag gap and habit reorder pair delegate here
-/// (`presentation::habit_drop_order` is this function), and the
+/// `insertion_order_after` expresses the same convention, and the
 /// `TaskMoveUp`/`TaskMoveDown` compact-move rule resolves its
 /// stack-adjacent slot through it — a second, divergent order
-/// arithmetic is the round's named finding.
+/// arithmetic is the round's named finding. (The UI's habit reorder
+/// no longer delegates here: #1198 chunk A1 D1 moved it onto
+/// engine-side gap-index reorders — a dense list has no free integer
+/// to floor-midpoint into.)
 #[must_use]
 pub fn floor_midpoint_order(prev: Option<i64>, next: Option<i64>) -> i64 {
     match (prev, next) {

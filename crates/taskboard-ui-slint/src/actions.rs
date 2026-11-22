@@ -2466,7 +2466,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         category: Category::Task,
         enabled: true,
         menu_rank: 226,
-        description: "Moves the habit one slot up its section (the floor-midpoint order law; the menu stopgap until drag/keyboard reorder).",
+        description: "Moves the habit one slot up its section (the gap-index reorder; the engine resolves the orders).",
         // Internal dispatch verb (see HabitLog): the menu row is its
         // only affordance until H3 replaces it.
         menu_group: None,
@@ -2478,7 +2478,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         category: Category::Task,
         enabled: true,
         menu_rank: 236,
-        description: "Moves the habit one slot down its section (the floor-midpoint order law; the menu stopgap until drag/keyboard reorder).",
+        description: "Moves the habit one slot down its section (the gap-index reorder; the engine resolves the orders).",
         menu_group: None,
     },
     ActionEntry {
