@@ -22,25 +22,6 @@ use taskboard_domain::{AppState, HabitLogEntry, HabitLogKey, StateCommand};
 use taskboard_ui_slint::KeyboardState;
 use taskboard_ui_slint::UiSettings;
 use taskboard_ui_slint::actions::ActionId;
-//! The habit family's journeys (HF1's skip + pause, #955/#958, the
-//! journey plan's §6 wiring rows W-1..W-4; HF2's global-undo leg of a
-//! logged completion, US-3/S2, and the inline quota popover,
-//! US-4/S1-S3, the 2026-11-21 habit-family UX plan's W-5/W-12
-//! evidence). Assertion discipline is the journeys suite's: terminal
-//! state + the typed commands that reached the fake-engine boundary;
-//! labels are addresses, never text oracles.
-
-use crate::support;
-
-use support::driver::JourneyDriver as _;
-use support::fixture;
-use support::harness::Harness;
-
-use slint::ComponentHandle as _;
-use slint::Model as _;
-use taskboard_domain::{AppState, StateCommand};
-use taskboard_ui_slint::KeyboardState;
-use taskboard_ui_slint::actions::ActionId;
 
 fn keyboard(harness: &Harness) -> KeyboardState<'_> {
     harness.handle.window().global::<KeyboardState>()
@@ -897,6 +878,9 @@ fn us9_s1_empty_history_renders_the_typed_empty_state() {
         order: 0,
         anchor_time: None,
         anchor_day: None,
+        paused_until: None,
+        scheduled_days: None,
+        reminder: None,
         clocks: taskboard_domain::habit::HabitClocks::all(fixture::PINNED_NOW),
         continued_from: None,
         deleted: false,

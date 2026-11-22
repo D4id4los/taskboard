@@ -1436,21 +1436,21 @@ pub struct HabitListView {
 }
 
 /// One history window's typed row (HF3, US-7 AC-1): the state is the
-/// typed projection (met / pending / missed — the transparent
-/// skipped / paused / pre-schedule classes join when HF1/HF4 land;
-/// see the TODOs in `taskboard_domain::habit::statistics_horizon`),
-/// never a text bit.
+/// typed grid vocabulary's CLI projection (the same classes the GUI
+/// colors by — one projection, two frontends, O-5), never a text bit.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct HabitWindowRow {
     /// The canonical period-start.
     pub window: chrono::NaiveDate,
     /// The stored count.
     pub count: u32,
-    /// The typed state (`met` | `pending` | `missed`).
+    /// The typed state (snake-cased variants below).
     pub state: HabitWindowStateView,
 }
 
-/// The typed per-window state (the grid vocabulary's CLI projection).
+/// The typed per-window state (the grid vocabulary's CLI projection):
+/// HF1's skipped/paused and HF4's pre-schedule classes ride the same
+/// producers the GUI classifier consults.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HabitWindowStateView {
@@ -1458,6 +1458,12 @@ pub enum HabitWindowStateView {
     Met,
     /// Under quota, grace open.
     Pending,
+    /// A typed planned skip (HF1).
+    Skipped,
+    /// Covered by a pause-through span (HF1).
+    Paused,
+    /// Before the window's first scheduled day (HF4, R-6).
+    PreSchedule,
     /// Under quota, grace closed.
     Missed,
 }

@@ -15,11 +15,10 @@ import { Badge } from "../widgets/badge.slint";
 import { TextButton } from "../widgets/text-button.slint";
 
 // slint: HabitCellState — the typed per-window state (US-7/S2); the
-// skipped / paused / pre-schedule variants are the HF1/HF4
-// named-but-unwired seams (plans 2026-11-21-habit-skip-pause /
-// 2026-11-21-habit-schedules) and join the walk when those chunks
-// land; inert is the D-H12 fold class (a former-kind row never
-// renders as a miss).
+// skipped / paused / pre-schedule variants read HF1's skip mark and
+// paused_until plus HF4's preschedule_window (the streak walk's
+// transparent arms); inert is the D-H12 fold class (a former-kind
+// row never renders as a miss).
 export enum HabitCellState {
     met,
     pending,

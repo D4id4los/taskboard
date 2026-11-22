@@ -1328,18 +1328,13 @@ impl AdherenceRatio {
 /// persistence), so pre-log windows are simply outside the horizon
 /// rather than assumed missed.
 ///
-/// TODO(HF4 — `.artifacts/plans/2026-11-21-habit-schedules-plan.md`):
-/// the scheduled-window denominator derives from the weekly/monthly
-/// day sets (journey plan R-6 / US-5 AC-5) once HF4's
-/// `scheduled_days` field lands; on today's semantics every elapsed
-/// window of the current kind is scheduled (there is no daily
-/// off-day class — R-6's own law), so the horizon enumeration below
-/// is the denominator. Same seam owns the skipped / paused /
-/// pre-schedule transparent classes (HF1's
-/// `.artifacts/plans/2026-11-21-habit-skip-pause-plan.md` skip mark
-/// and `paused_until`): today the only transparent class is the
-/// walk's own pending window (grace still open), which leaves both
-/// numerator and denominator exactly per US-9 AC-2's law.
+/// The horizon is the *enumeration* only — which windows join the
+/// denominator is [`window_joins_denominator`]'s law (the weekly/
+/// monthly day sets, R-6; a daily habit joins every window), and the
+/// skipped / paused transparent classes (HF1's skip mark and
+/// `paused_until`) leave both numerator and denominator exactly per
+/// US-9 AC-2's law. Consumers must consult those, never the bare
+/// enumeration.
 #[must_use]
 pub fn statistics_horizon(
     habit: &Habit,
@@ -1381,12 +1376,16 @@ pub fn statistics_horizon(
 /// The habit's adherence (US-9 AC-1): met elapsed windows over
 /// scheduled elapsed windows, both over [`statistics_horizon`].
 ///
-/// Window classification follows the streak walk verbatim: count ≥
-/// quota → met (numerator + denominator); grace still open → pending,
-/// transparent (leaves both — US-9 AC-2); grace closed and under
-/// quota → missed (denominator only). An empty history — no
-/// current-kind canonical rows at all — is the typed empty state
-/// (US-9 AC-3).
+/// Window classification follows the streak walk verbatim: pause
+/// coverage first (transparent — leaves both, the walk's composing
+/// first arm); count ≥ quota → met (numerator + denominator); HF1's
+/// typed skip mark is transparent — it leaves BOTH numerator and
+/// denominator (US-9 AC-2); [`window_joins_denominator`] gates the
+/// rest — grace still open → pending, transparent (leaves both),
+/// grace closed and under quota → missed (denominator only), and a
+/// pre-schedule weekly/monthly window (R-6) never joins at all. An
+/// empty history — no current-kind canonical rows at all — is the
+/// typed empty state (US-9 AC-3).
 ///
 /// # Panics
 ///
@@ -1402,6 +1401,7 @@ pub fn adherence(
     let kind = habit.target.kind();
     let quota = habit.target.quota().get();
     let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
+    let today = day.today(now);
     let horizon = statistics_horizon(habit, log, now, day);
     if horizon.is_empty() {
         return AdherenceRatio::empty();
@@ -1409,22 +1409,31 @@ pub fn adherence(
     let mut met = 0_u32;
     let mut scheduled = 0_u32;
     for window in horizon {
-        let count = log
-            .get(&HabitLogKey {
-                habit: habit.id,
-                window: WindowStart(window),
-            })
-            .map_or(0, |entry| entry.count);
-        if count >= quota {
+        let entry = log.get(&HabitLogKey {
+            habit: habit.id,
+            window: WindowStart(window),
+        });
+        let count = entry.map_or(0, |row| row.count);
+        if habit
+            .paused_until
+            .is_some_and(|until| pause_covers_window(kind, window, until))
+        {
+            // Pause-covered: transparent — leaves both (the walk's
+            // first arm: coverage composes over any row, met included).
+        } else if count >= quota {
             met += 1;
             scheduled += 1;
-        } else {
+        } else if entry.is_some_and(|row| row.skip) {
+            // Typed planned skip: transparent — leaves both (US-9
+            // AC-2); consulted only under quota, the walk's order.
+        } else if window_joins_denominator(habit, WindowStart(window), today) {
             let grace_end = period_end(kind, window, day) + grace;
             if now >= grace_end {
                 scheduled += 1; // missed: denominator only
             }
             // else pending: transparent — leaves both.
         }
+        // else pre-schedule (R-6): transparent — never joins.
     }
     AdherenceRatio { met, scheduled }
 }
@@ -1432,10 +1441,12 @@ pub fn adherence(
 /// The best historical streak (US-9 AC-1): the maximum run of
 /// consecutive counting windows anywhere in [`statistics_horizon`],
 /// with the walk's own classification — counting windows extend a
-/// run, pending (grace-open) windows are transparent (neither break
-/// nor extend, the walk's saturation posture), missed windows break
-/// it. Always at least [`streak`]'s value: the current run is one of
-/// the historical runs.
+/// run; HF1's skipped, pause-covered, and pending (grace-open)
+/// windows are transparent (neither break nor extend); pre-schedule
+/// windows ([`window_joins_denominator`]'s complement, R-6) are
+/// transparent the same way; missed windows break it. Always at
+/// least [`streak`]'s value: the current run is one of the
+/// historical runs.
 ///
 /// # Panics
 ///
@@ -1451,25 +1462,35 @@ pub fn best_streak(
     let kind = habit.target.kind();
     let quota = habit.target.quota().get();
     let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
+    let today = day.today(now);
     let mut best = 0_u32;
     let mut run = 0_u32;
     for window in statistics_horizon(habit, log, now, day) {
-        let count = log
-            .get(&HabitLogKey {
-                habit: habit.id,
-                window: WindowStart(window),
-            })
-            .map_or(0, |entry| entry.count);
-        if count >= quota {
+        let entry = log.get(&HabitLogKey {
+            habit: habit.id,
+            window: WindowStart(window),
+        });
+        let count = entry.map_or(0, |row| row.count);
+        if habit
+            .paused_until
+            .is_some_and(|until| pause_covers_window(kind, window, until))
+        {
+            // Pause-covered: transparent (the walk's first arm —
+            // coverage composes over any row, met included).
+        } else if count >= quota {
             run += 1;
             best = best.max(run);
-        } else {
+        } else if entry.is_some_and(|row| row.skip) {
+            // Typed planned skip: transparent — neither extends nor
+            // breaks (the walk's order: consulted only under quota).
+        } else if window_joins_denominator(habit, WindowStart(window), today) {
             let grace_end = period_end(kind, window, day) + grace;
             if now >= grace_end {
                 run = 0; // missed: the run breaks
             }
             // else pending: transparent — neither extends nor breaks.
         }
+        // else pre-schedule (R-6): transparent.
     }
     best
 }
@@ -3941,6 +3962,7 @@ mod statistics_tests {
             count,
             clock: stamp(10),
             by: None,
+            skip: false,
         }
     }
 
@@ -4010,12 +4032,10 @@ mod statistics_tests {
         assert_eq!(ratio.ratio(), Some(4.0 / 6.0));
     }
 
-    // US-9 AC-2: the transparent class leaves BOTH numerator and
-    // denominator. On today's landed semantics the transparent class
-    // is the walk's pending window (grace open). The skipped /
-    // paused / pre-schedule classes are HF1/HF4 seams (see the TODO
-    // at `statistics_horizon`); this test pins the law those classes
-    // must honor when they land.
+    // US-9 AC-2: every transparent class leaves BOTH numerator and
+    // denominator — the pending window (grace open), HF1's typed
+    // skip mark, HF1's pause coverage, and HF4's pre-schedule
+    // (R-6) window alike.
     #[test]
     fn transparent_windows_leave_numerator_and_denominator() {
         // Only today's window has a row (under quota, grace open) →
@@ -4033,6 +4053,106 @@ mod statistics_tests {
         let ratio = adherence(&habit, &log, now, day);
         assert_eq!(ratio.met(), 1);
         assert_eq!(ratio.scheduled(), 1);
+    }
+
+    // US-9 AC-2 (HF1 arm): a grace-closed skipped window is
+    // transparent — neither numerator nor denominator; and a *met*
+    // skipped window still counts (the walk's order: done is done).
+    #[test]
+    fn skipped_windows_leave_numerator_and_denominator() {
+        let (habit, mut log, now, day) = daily_habit(20, 1, &[]);
+        let yesterday = day.today(now) - chrono::Duration::days(1);
+        log.insert(
+            HabitLogKey {
+                habit: habit.id,
+                window: WindowStart::from_stored(yesterday),
+            },
+            HabitLogEntry {
+                count: 0,
+                clock: stamp(10),
+                by: None,
+                skip: true,
+            },
+        );
+        let ratio = adherence(&habit, &log, now, day);
+        assert!(ratio.is_empty(), "a lone skipped window is transparent");
+        // Met rows on skipped windows count: done is done.
+        log.insert(
+            HabitLogKey {
+                habit: habit.id,
+                window: WindowStart::from_stored(yesterday),
+            },
+            HabitLogEntry {
+                count: 1,
+                clock: stamp(11),
+                by: None,
+                skip: true,
+            },
+        );
+        let ratio = adherence(&habit, &log, now, day);
+        assert_eq!(ratio.met(), 1);
+        assert_eq!(ratio.scheduled(), 1);
+    }
+
+    // US-9 AC-2 (HF1 arm): pause-covered windows are transparent —
+    // a standing pause through the whole history leaves the typed
+    // empty state (planned gaps never dilute adherence), and the
+    // best streak neither extends nor breaks below the pause.
+    #[test]
+    fn paused_windows_leave_numerator_and_denominator() {
+        let (mut habit, mut log, now, day) = daily_habit(21, 1, &[]);
+        let today = day.today(now);
+        habit.paused_until = Some(today);
+        // Two grace-closed unmet windows under the pause.
+        for back in [1_i64, 2] {
+            put(&mut log, habit.id, today - chrono::Duration::days(back), 0);
+        }
+        let ratio = adherence(&habit, &log, now, day);
+        assert!(
+            ratio.is_empty(),
+            "pause-covered misses never join the ratio"
+        );
+        assert_eq!(best_streak(&habit, &log, now, day), 0);
+        // Coverage composes over rows: a met window under the pause
+        // stays transparent too (the walk's first arm).
+        put(&mut log, habit.id, today - chrono::Duration::days(3), 1);
+        let ratio = adherence(&habit, &log, now, day);
+        assert!(ratio.is_empty(), "a met row under the pause is transparent");
+    }
+
+    // US-9 AC-2 (HF4 arm, R-6): a weekly window before its first
+    // scheduled day is pre-schedule — transparent in adherence even
+    // though the horizon enumerates it.
+    #[test]
+    fn preschedule_windows_never_join_the_denominator() {
+        let mut weekly = habit(
+            22,
+            HabitTarget::PerWeek(NonZeroCount::new(1).expect("nonzero")),
+        );
+        weekly.scheduled_days = Some(WeekdaySet::new([chrono::Weekday::Fri]).expect("one day"));
+        let day = DayCalendar {
+            day_start_time: NaiveTime::MIN,
+            offset: FixedOffset::east_opt(0).expect("zero offset"),
+        };
+        // Now = Wed Nov 18 2026; the week's first scheduled day is
+        // Fri Nov 20 — the whole visible week is pre-schedule, and
+        // the log's row in it is transparent either way.
+        let now = Utc
+            .with_ymd_and_hms(2026, 11, 18, 12, 0, 0)
+            .single()
+            .expect("noon");
+        let mut log = BTreeMap::new();
+        put(
+            &mut log,
+            weekly.id,
+            NaiveDate::from_ymd_opt(2026, 11, 16).expect("Monday"),
+            0,
+        );
+        let ratio = adherence(&weekly, &log, now, day);
+        assert!(
+            ratio.is_empty(),
+            "a pre-schedule window never joins numerator or denominator"
+        );
     }
 
     // US-9 AC-1: best streak = the max historical run, not the

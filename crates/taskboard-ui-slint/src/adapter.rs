@@ -4877,6 +4877,7 @@ impl Adapter {
                     self.arm_no_target_notice(ActionId::HabitQuotaEdit);
                     self.push_notice(window);
                 }
+                Vec::new()
             }
             // The habit history dialog's opener (HF3 W-8, US-7/S1):
             // the read-role month-grid projection mounts over the

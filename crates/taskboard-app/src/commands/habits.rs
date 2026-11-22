@@ -1002,6 +1002,9 @@ pub const fn row_state_label(state: HabitWindowStateView) -> &'static str {
     match state {
         HabitWindowStateView::Met => "met",
         HabitWindowStateView::Pending => "pending",
+        HabitWindowStateView::Skipped => "skipped",
+        HabitWindowStateView::Paused => "paused",
+        HabitWindowStateView::PreSchedule => "pre_schedule",
         HabitWindowStateView::Missed => "missed",
     }
 }
@@ -1127,14 +1130,6 @@ pub async fn habits_line(
     crate::commands::emit_result(io, run_on(app, invocation).await, render_text)
 }
 
-||||||| parent of 1b68f3e2 (feat(app): habits history/stats CLI verbs (HF3, US-7/US-9, O-5 parity))
-/// The reply contract pins one outcome per habit command (plus
-/// `NoOp`); any other reply is an engine contract bug — surfaced as
-/// the generic engine kind, never misreported as a user error.
-fn outcome_mismatch() -> CommandError {
-    CommandError::Engine(Box::new(taskboard_state::ExecuteError::EngineGone))
-}
-
 // ---- History + stats (HF3, US-7/US-9) --------------------------------------
 
 /// The projection verbs' resolver: the same uuid/prefix/title ladder
@@ -1193,15 +1188,31 @@ pub fn resolve_habit_with_tombstones(
 /// One canonical window's typed state (the walk's classification,
 /// verbatim semantics — met / pending / missed).
 fn window_state_view(
-    kind: taskboard_domain::PeriodKind,
-    quota: u32,
-    count: u32,
+    habit: &taskboard_domain::habit::Habit,
+    row: Option<&taskboard_domain::HabitLogEntry>,
     window: chrono::NaiveDate,
     now: DateTime<Utc>,
     day: taskboard_domain::DayCalendar,
 ) -> HabitWindowStateView {
-    if count >= quota {
+    let kind = habit.target.kind();
+    let quota = habit.target.quota().get();
+    let count = row.map_or(0, |entry| entry.count);
+    if habit
+        .paused_until
+        .is_some_and(|until| taskboard_domain::habit::pause_covers_window(kind, window, until))
+    {
+        // Pause coverage first — the walk's composing arm.
+        HabitWindowStateView::Paused
+    } else if count >= quota {
         HabitWindowStateView::Met
+    } else if row.is_some_and(|entry| entry.skip) {
+        HabitWindowStateView::Skipped
+    } else if taskboard_domain::habit::preschedule_window(
+        habit,
+        taskboard_domain::habit::WindowStart::of_period(kind, window),
+        day.today(now),
+    ) {
+        HabitWindowStateView::PreSchedule
     } else {
         let grace = chrono::TimeDelta::try_hours(24).expect("24 h is representable");
         let grace_end = taskboard_domain::habit::period_end(kind, window, day) + grace;
@@ -1232,23 +1243,19 @@ pub fn history_on(app: &crate::App, selector: &str) -> Result<HabitHistoryView, 
     let day = app.config.resolved_day_calendar();
     let now = Utc::now();
     let kind = habit.target.kind();
-    let quota = habit.target.quota().get();
     let windows: Vec<HabitWindowRow> =
         taskboard_domain::habit::statistics_horizon(habit, &state.habits.log, now, day)
             .into_iter()
             .map(|window| {
-                let count = state
-                    .habits
-                    .log
-                    .get(&taskboard_domain::HabitLogKey {
-                        habit: id,
-                        window: taskboard_domain::habit::WindowStart::of_period(kind, window),
-                    })
-                    .map_or(0, |entry| entry.count);
+                let key = taskboard_domain::HabitLogKey {
+                    habit: id,
+                    window: taskboard_domain::habit::WindowStart::of_period(kind, window),
+                };
+                let entry = state.habits.log.get(&key);
                 HabitWindowRow {
                     window,
-                    count,
-                    state: window_state_view(kind, quota, count, window, now, day),
+                    count: entry.map_or(0, |row| row.count),
+                    state: window_state_view(habit, entry, window, now, day),
                 }
             })
             .collect();
@@ -1380,6 +1387,7 @@ mod tests {
                     count,
                     clock: ts(10),
                     by: None,
+                    skip: false,
                 },
             );
         }

@@ -8079,13 +8079,10 @@ pub fn translate_for_subject(
 
 /// One canonical window's typed state (US-7 AC-1): the month grid's
 /// cells color by THIS enum — never text bits (round law (a)). The
-/// full journey-plan vocabulary ships here; on today's landed
-/// semantics the grid's cells read met / pending / missed (and
-/// `Inert` for D-H12 folds), while `Skipped`, `Paused`, and
-/// `PreSchedule` are the HF1/HF4 named-but-unwired seams — see the
-/// TODOs at `taskboard_domain::habit::statistics_horizon` (plans
-/// `2026-11-21-habit-skip-pause` and `2026-11-21-habit-schedules`);
-/// the classes join the walk when those chunks land.
+/// classification reads the landed HF1/HF4 producers verbatim: the
+/// typed skip mark and `paused_until` (the streak walk's transparent
+/// arms), and `preschedule_window` (R-6's weekly/monthly pre-due
+/// posture) — the same arms the domain's adherence walk consults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HabitWindowState {
     /// The window's count reached the quota.
@@ -8093,14 +8090,14 @@ pub enum HabitWindowState {
     /// Under quota, grace still open (the walk's transparent
     /// pending window).
     Pending,
-    /// A typed planned skip (HF1 seam — currently unreachable).
+    /// A typed planned skip (HF1): the log row carries the skip
+    /// mark, under quota.
     Skipped,
-    /// Covered by a pause-through span (HF1 seam — currently
-    /// unreachable).
+    /// Covered by a pause-through span (HF1): transparent whatever
+    /// the row says (the walk's first arm).
     Paused,
-    /// Before the window's first scheduled day (HF4 seam — currently
-    /// unreachable; weekly/monthly day sets only, R-6: never a daily
-    /// class).
+    /// Before the window's first scheduled day (HF4, R-6:
+    /// weekly/monthly day sets only — never a daily class).
     PreSchedule,
     /// Under quota, grace closed — the only miss posture.
     Missed,
@@ -8236,9 +8233,23 @@ pub fn habit_history_month(
                 habit: habit.id,
                 window: taskboard_domain::WindowStart::of_period(kind, *window),
             };
-            let count = log.get(&key).map_or(0, |entry| entry.count);
-            let state = if count >= quota {
+            let entry = log.get(&key);
+            let count = entry.map_or(0, |row| row.count);
+            let state = if habit.paused_until.is_some_and(|until| {
+                taskboard_domain::habit::pause_covers_window(kind, *window, until)
+            }) {
+                // Pause coverage first — the walk's composing arm.
+                HabitWindowState::Paused
+            } else if count >= quota {
                 HabitWindowState::Met
+            } else if entry.is_some_and(|row| row.skip) {
+                HabitWindowState::Skipped
+            } else if taskboard_domain::habit::preschedule_window(
+                habit,
+                taskboard_domain::WindowStart::of_period(kind, *window),
+                day.today(now),
+            ) {
+                HabitWindowState::PreSchedule
             } else {
                 let grace_end = taskboard_domain::habit::period_end(kind, *window, day) + grace;
                 if now >= grace_end {
@@ -8350,6 +8361,9 @@ mod habit_history_tests {
             order: 0,
             anchor_time: None,
             anchor_day: None,
+            paused_until: None,
+            scheduled_days: None,
+            reminder: None,
             clocks: taskboard_domain::habit::HabitClocks::all(
                 chrono::Utc
                     .with_ymd_and_hms(2026, 10, 1, 0, 0, 0)
@@ -8391,6 +8405,7 @@ mod habit_history_tests {
                     .single()
                     .expect("stamp"),
                 by: None,
+                skip: false,
             },
         );
     }
