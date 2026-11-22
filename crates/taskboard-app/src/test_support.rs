@@ -179,10 +179,23 @@ impl PredicateEngineFixture {
     }
 
     /// Signals shutdown and joins the actor (the fixture's teardown).
+    /// The lane senders drop first: the drain ends when the reports
+    /// channel closes, so a parked sender here would deadlock the join
+    /// (the bootstrap's own shutdown law, `App::shutdown`).
     #[allow(dead_code)] // consumed by the predicate tests landing in this chunk
     pub(crate) async fn shutdown(self) {
-        let _ = self.system.send(SystemEvent::Shutdown);
-        let _ = self.join.await;
+        let PredicateEngineFixture {
+            engine,
+            system,
+            sync_out,
+            reports,
+            notifier,
+            join,
+        } = self;
+        drop((engine, sync_out, reports, notifier));
+        let _ = system.send(SystemEvent::Shutdown);
+        drop(system);
+        let _ = join.await;
     }
 }
 
