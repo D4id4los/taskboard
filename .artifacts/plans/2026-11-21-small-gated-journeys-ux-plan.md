@@ -551,10 +551,10 @@ unless named otherwise. -->
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | capture overlay composition | backdrop TouchArea | capture-backdrop-released | `install_seam!` on the overlay's outside-release → routes `view_state.commit_capture()` per R-1 | — | — | overlay singleton (pure reroute of the existing accept path; no command — see journey steps) | US-1/S1, US-1/S2 | journeys/small_gated_journeys.rs::us1_s1_outside_click_commits_capture; journeys/small_gated_journeys.rs::us1_s2_empty_draft_does_not_commit |
-| W-2 | capture overlay composition | overlay Escape handler | capture-escape-requested | existing discard seam (unchanged) | — | — | overlay singleton (existing discard path; no command — see journey steps) | US-1/S3 | journeys/small_gated_journeys.rs::us1_s3_escape_still_discards |
-| W-3 | recur editor composition | backdrop TouchArea | recur-backdrop-released | `install_seam!` → armed-confirm accept path per R-1 | — | — | editor singleton (routes the existing accept path; no command — see journey steps) | US-2/S1, US-2/S2 | journeys/small_gated_journeys.rs::us2_s1_outside_click_accepts_recur; journeys/small_gated_journeys.rs::us2_s2_invalid_draft_stays_open; journeys/small_gated_journeys.rs::us2_s3_escape_cancels_staged_draft |
-| W-4 | status bar / banner composition | mute direction control | banner-mute-toggled | `install_seam!` on the banner control | — | StateCommand::SetTaskRemindersMuted | banner singleton (subject task from engine truth) | US-3/S1, US-3/S2 | journeys/small_gated_journeys.rs::us3_s1_banner_unmute_dispatches_false; journeys/small_gated_journeys.rs::us3_s2_banner_mute_preserved |
+| W-1 | capture overlay composition | backdrop TouchArea | capture-accepted (+ capture-dismiss-requested chained close) | `install_seam!` on the overlay's outside-release → routes `view_state.commit_capture()` per R-1 | — | — | overlay singleton (pure reroute of the existing accept path; no command — see journey steps) | US-1/S1, US-1/S2 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us1_s1_outside_click_commits_capture; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us1_s2_empty_draft_does_not_commit |
+| W-2 | capture overlay composition | overlay Escape handler | capture-dismiss-requested | existing discard seam (unchanged) | — | — | overlay singleton (existing discard path; no command — see journey steps) | US-1/S3 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us1_s3_escape_still_discards |
+| W-3 | recur editor composition | backdrop TouchArea | recur-commit-clicked | `install_seam!` → armed-confirm accept path per R-1 | — | — | editor singleton (routes the existing accept path; no command — see journey steps) | US-2/S1, US-2/S2 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us2_s1_outside_click_accepts_recur; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us2_s2_invalid_draft_stays_open; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us2_s3_escape_cancels_staged_draft |
+| W-4 | status bar / banner composition | mute direction control | banner-mute-clicked | `install_seam!` on the banner control | — | StateCommand::SetTaskRemindersMuted | banner singleton (subject task from engine truth) | US-3/S1, US-3/S2 | crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us3_s1_banner_unmute_dispatches_false; crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::us3_s2_banner_mute_preserved |
 | W-5 | settings-view Files row | reload-outcome caption row | — | broadcast consumer fold (`SystemEvent::ConfigReload` → presentation enum) | — | — | settings row kind ConfigReloadLane (display only; R-3 read-only lane installs no commands — see journey steps) | US-4/S1, US-4/S2 | journeys/small_gated_journeys.rs::us4_s1_reload_outcome_folds_applied; journeys/small_gated_journeys.rs::us4_s2_refused_folds_kept |
 | W-6 | settings-view Files row | poll_secs spin field | files-poll-secs-committed | the Settings staged-edit seam → whole-snapshot write (R-4: single writer) | — | StateCommand::UpdateSettings | settings row kind FilesPollSecs | US-5/S1, US-5/S2 | journeys/small_gated_journeys.rs::us5_s1_poll_secs_rides_update_settings; journeys/small_gated_journeys.rs::us5_s2_cancel_keeps_snapshot |
 | W-7 | status-area composition | degraded-boot badge | — | broadcast consumer fold (`SystemEvent::JournalDegraded` → badge flag) | — | — | status-area singleton (display only; R-5 — see journey steps) | US-6/S1, US-6/S2 | journeys/small_gated_journeys.rs::us6_s1_degraded_badge_renders; journeys/small_gated_journeys.rs::us6_s2_healthy_boot_no_badge |
@@ -618,6 +618,32 @@ unless named otherwise. -->
 - **Manual**: the walkthrough protocol at stage 3 covers the
   recognition judgments (badge semantics, Unmute label clarity, the
   disarm chord's discoverability) — judged, never text-asserted.
+
+### 8.1 Gate-grammar erratum (SB1 stage-2 normalization, 2026-11-22)
+
+Mechanical amendments to SB1's rows only (the #1181 parser classes;
+behavior unchanged):
+
+- **Callback spellings unified with the landed source**: W-1's
+  `capture-backdrop-released` is spelled `capture-accepted` (the host's
+  edit-kind `accepted` resolution; the mount chains the existing
+  `capture-dismiss-requested` after it so the commit closes the
+  overlay, US-1/AC-1); W-2's `capture-escape-requested` is the existing
+  `capture-dismiss-requested` discard seam; W-3's
+  `recur-backdrop-released` is the existing `recur-commit-clicked`
+  (the host already routed it, kind `edit`); W-4's
+  `banner-mute-toggled` is the existing `banner-mute-clicked`. No new
+  callback was coined — the flip is the pure reroute §7 already
+  records.
+- **Test nominations made root-relative**: the §6 Test cells for
+  W-1..W-4 nominate
+  `crates/taskboard-ui-slint/tests/journeys/small_gated_journeys.rs::…`
+  in full (the short `journeys/…` spelling defeats the parser's
+  root-relative resolution). US-2/S3's evidence is
+  `us2_s3_escape_cancels_staged_draft` (landed with SB1).
+
+SB1 gate evidence: W-1..W-4 + US-1/S1–S3, US-2/S1–S3, US-3/S1–S2 all
+FOUND; the residual MISSING rows are SB2/PR1/PR2's (separate chunks).
 
 ## 9. Definition of done
 

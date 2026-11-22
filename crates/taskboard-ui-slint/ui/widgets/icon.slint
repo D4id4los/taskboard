@@ -17,6 +17,10 @@ export enum IconKind {
     snooze,
     // The mute affordance: a bell (no slash — the state rides tone).
     mute,
+    // The unmute affordance (#1011, SB1 US-3): the bell-off glyph —
+    // the banner mute control's direction-aware twin (renders when
+    // the task's reminders sit in `state.reminders.muted`).
+    unmute,
     // The warning glyph: the canonical triangle-! (recorded r4
     // deviation from the drawn bare-!, which had no Lucide
     // equivalent).
@@ -90,6 +94,7 @@ export component Icon inherits Image {
     source: kind == IconKind.menu               ? @image-url("../assets/icons/menu.svg")
         : kind == IconKind.snooze               ? @image-url("../assets/icons/clock.svg")
         : kind == IconKind.mute                 ? @image-url("../assets/icons/bell.svg")
+        : kind == IconKind.unmute               ? @image-url("../assets/icons/bell-off.svg")
         : kind == IconKind.warn                 ? @image-url("../assets/icons/triangle-alert.svg")
         : kind == IconKind.plus                 ? @image-url("../assets/icons/plus.svg")
         : kind == IconKind.chevron-left         ? @image-url("../assets/icons/chevron-left.svg")

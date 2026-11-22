@@ -216,10 +216,16 @@ export component StatusBar inherits Rectangle {
                         }
                     }
                     VerticalLayout {
+                        // #1011 (SB1 US-3): direction-aware — the
+                        // control renders Unmute when the row folds
+                        // `state.reminders.muted` (engine truth) and
+                        // dispatches through the same `mute-clicked`
+                        // seam either way (the seam folds the
+                        // direction; no second callback).
                         IconButton {
-                            icon: IconKind.mute;
-                            tone: Tone.overdue;
-                            label: "Mute reminders";
+                            icon: row.muted ? IconKind.unmute : IconKind.mute;
+                            tone: row.muted ? Tone.neutral : Tone.overdue;
+                            label: row.muted ? "Unmute reminders" : "Mute reminders";
                             clicked => root.mute-clicked(row-index);
                         }
                     }
