@@ -36,7 +36,7 @@ import { TrackPanelFacts, TrackPanelWalkFacts } from "track-panel-facts.slint";
 import { TimerSetterFacts } from "menu-facts.slint";
 import { TimeSlotRow } from "widgets/time-field.slint";
 import { ModalDialogHost, DialogKind, DialogButtonModel, DialogButtonRole } from "widgets/modal-dialog-host.slint";
-import { AnchoredOverlayHost, OverlayPlacement, OverlayMenuWidth } from "widgets/anchored-overlay.slint";
+import { AnchoredOverlayHost, AnchorMirror, OverlayPlacement, OverlayMenuWidth } from "widgets/anchored-overlay.slint";
 import { HabitCardModel, HabitQuotaEditor } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
@@ -943,7 +943,7 @@ export component AppWindow inherits Window {
             // funnel the field's focus loss rides.
             if (root.current-view == View.task-detail
                     && (root.task-model.due-open || root.task-model.scheduled-open)):
-            AnchoredOverlayHost {
+            editor-overlay := AnchoredOverlayHost {
                 open: true;
                 anchor-x: DatePickerFacts.anchor-x;
                 anchor-y: DatePickerFacts.anchor-y;
@@ -954,6 +954,25 @@ export component AppWindow inherits Window {
                 panel-preferred-width: 420px * Theme.base-scale;
                 walk-stops: 1;
                 dismissed => root.date-editor-focus-lost();
+                // The picker-anchor keep-alive (#1206, the #954 idiom
+                // on the host's `panel-*` out seams): while the editor
+                // overlay is mounted — exactly when the picker can
+                // open — its realized panel rect publishes as the M2
+                // mount's anchor, so the picker never covers the
+                // editor panel (G-2 does the guarantee). The window
+                // fills the host, so the panel rect is window-space.
+                AnchorMirror {
+                    source-x: editor-overlay.panel-x;
+                    source-y: editor-overlay.panel-y;
+                    source-width: editor-overlay.panel-width;
+                    source-height: editor-overlay.panel-height;
+                    published(x, y, w, h) => {
+                        DatePickerFacts.picker-anchor-x = x;
+                        DatePickerFacts.picker-anchor-y = y;
+                        DatePickerFacts.picker-anchor-width = w;
+                        DatePickerFacts.picker-anchor-height = h;
+                    }
+                }
                 DueEditor {
                     field-label: root.task-model.due-open ? "Due date entry" : "Start date entry";
                     field-help: root.task-model.due-open
@@ -987,10 +1006,13 @@ export component AppWindow inherits Window {
             if (root.current-view == View.task-detail
                     && root.task-model.date-picker-open): AnchoredOverlayHost {
                 open: true;
-                anchor-x: DatePickerFacts.anchor-x;
-                anchor-y: DatePickerFacts.anchor-y;
-                anchor-width: DatePickerFacts.anchor-width;
-                anchor-height: DatePickerFacts.anchor-height;
+                // The re-anchored picker (#1206): the editor panel's
+                // realized rect, not the closed cell — see the M1
+                // mirror above.
+                anchor-x: DatePickerFacts.picker-anchor-x;
+                anchor-y: DatePickerFacts.picker-anchor-y;
+                anchor-width: DatePickerFacts.picker-anchor-width;
+                anchor-height: DatePickerFacts.picker-anchor-height;
                 viewport-width: root.width;
                 viewport-floor: status.y;
                 panel-preferred-width: 280px * Theme.base-scale;

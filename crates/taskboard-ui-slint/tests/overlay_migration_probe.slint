@@ -13,7 +13,7 @@ import { TaskView, TaskDetailModel } from "../ui/views/task-view.slint";
 import { DueEditor } from "../ui/compositions/due-editor.slint";
 import { DatePicker, DueDayModel } from "../ui/compositions/date-picker.slint";
 import { DatePickerFacts } from "../ui/menu-facts.slint";
-import { AnchoredOverlayHost } from "../ui/widgets/anchored-overlay.slint";
+import { AnchoredOverlayHost, AnchorMirror } from "../ui/widgets/anchored-overlay.slint";
 
 export { DueDayModel, DatePickerFacts }
 
@@ -33,6 +33,10 @@ export component OverlayMigrationProbe inherits Window {
     in-out property <int> date-editor-settle-count: 0;
     in-out property <int> picker-dismissed-count: 0;
     in-out property <int> date-edited-count: 0;
+    // The staged-clear payload pin (#1206 P4): counts only the
+    // `edited("")` route (the clear affordance's seam), never the
+    // other `edited` traffic.
+    in-out property <int> date-edited-empty-count: 0;
 
     // ---- Observation mirrors ----------------------------------------
     out property <length> stack-x: tv.stack-rect-x;
@@ -52,6 +56,12 @@ export component OverlayMigrationProbe inherits Window {
     out property <length> facts-anchor-y: DatePickerFacts.anchor-y;
     out property <length> facts-anchor-width: DatePickerFacts.anchor-width;
     out property <length> facts-anchor-height: DatePickerFacts.anchor-height;
+    // The picker-anchor half (#1206): the editor panel's mirrored
+    // rect the M2 mount reads.
+    out property <length> facts-picker-anchor-x: DatePickerFacts.picker-anchor-x;
+    out property <length> facts-picker-anchor-y: DatePickerFacts.picker-anchor-y;
+    out property <length> facts-picker-anchor-width: DatePickerFacts.picker-anchor-width;
+    out property <length> facts-picker-anchor-height: DatePickerFacts.picker-anchor-height;
     // The placed picker panel's realized rect (the host's seams).
     out property <length> picker-panel-x: picker-host.panel-x;
     out property <length> picker-panel-y: picker-host.panel-y;
@@ -62,7 +72,10 @@ export component OverlayMigrationProbe inherits Window {
     // directly, so the exclusivity pin asserts the hosts themselves.
     out property <bool> editor-open: editor-host.open;
     out property <bool> picker-open: picker-host.open;
+    out property <length> editor-panel-x: editor-host.panel-x;
+    out property <length> editor-panel-y: editor-host.panel-y;
     out property <length> editor-panel-width: editor-host.panel-width;
+    out property <length> editor-panel-height: editor-host.panel-height;
 
     tv := TaskView {
         width: 100%;
@@ -93,15 +106,37 @@ export component OverlayMigrationProbe inherits Window {
         // The D-3 edit-kind law: outside click resolves to save —
         // the same settle seam the field's focus loss rides.
         dismissed => { root.date-editor-settle-count += 1; }
+        // The picker-anchor mirror (#1206): the app window's M1
+        // mount grammar verbatim — the realized panel rect publishes
+        // as the M2 anchor. The probe mounts the editor
+        // unconditionally, so the mirror is live for every fixture;
+        // production's conditional M1 mount gives the same liveness
+        // over the picker-open window.
+        AnchorMirror {
+            source-x: editor-host.panel-x;
+            source-y: editor-host.panel-y;
+            source-width: editor-host.panel-width;
+            source-height: editor-host.panel-height;
+            published(x, y, w, h) => {
+                DatePickerFacts.picker-anchor-x = x;
+                DatePickerFacts.picker-anchor-y = y;
+                DatePickerFacts.picker-anchor-width = w;
+                DatePickerFacts.picker-anchor-height = h;
+            }
+        }
         DueEditor {
             field-label: root.task.due-open ? "Due date entry" : "Start date entry";
             field-help: "The task's deadline. Type a date, a relative offset like +2d, or use the calendar button.";
             initial-text: root.task.due-open ? root.task.due-text : root.task.scheduled-text;
             echo: root.task.due-open ? root.task.due-echo : root.task.scheduled-echo;
+            field-focus-on-mount: root.task.date-field-focus;
             validity: root.task.date-validity;
             syntax-hint: root.task.date-syntax-hint;
             clear-affordance: true;
-            edited(text) => { root.date-edited-count += 1; }
+            edited(text) => {
+                root.date-edited-count += 1;
+                if (text == "") { root.date-edited-empty-count += 1; }
+            }
             accepted(text) => { root.date-accepted-count += 1; }
             focus-lost() => { root.date-editor-settle-count += 1; }
             picker-toggled() => { }
@@ -112,10 +147,12 @@ export component OverlayMigrationProbe inherits Window {
     // replacement; the dismissal keeps the picker-only drop).
     picker-host := AnchoredOverlayHost {
         open: root.task.date-picker-open;
-        anchor-x: DatePickerFacts.anchor-x;
-        anchor-y: DatePickerFacts.anchor-y;
-        anchor-width: DatePickerFacts.anchor-width;
-        anchor-height: DatePickerFacts.anchor-height;
+        // The re-anchored picker (#1206): the editor panel's mirrored
+        // rect, not the closed cell — the M2 mount grammar verbatim.
+        anchor-x: DatePickerFacts.picker-anchor-x;
+        anchor-y: DatePickerFacts.picker-anchor-y;
+        anchor-width: DatePickerFacts.picker-anchor-width;
+        anchor-height: DatePickerFacts.picker-anchor-height;
         viewport-width: root.width;
         viewport-floor: root.viewport-floor;
         panel-preferred-width: 280px * Theme.base-scale;
