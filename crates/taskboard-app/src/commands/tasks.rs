@@ -1162,6 +1162,54 @@ mod engine_seam_tests {
         let _ = fixture.app.shutdown().await;
     }
 
+    /// The live-boards filter's own conjuncts (the `&&` flip): a
+    /// tombstoned board and an archived board never count as capture
+    /// targets — with one live board among them the capture still
+    /// lands on it.
+    #[tokio::test]
+    async fn add_without_stack_counts_only_live_unarchived_boards() {
+        let fixture = standalone_boot_fixture("pred-add-live").await;
+        for (title, archived, deleted) in [
+            ("live", false, false),
+            ("archived", true, false),
+            ("gone", false, true),
+        ] {
+            let CommandOutcome::CreatedBoard(id) = fixture
+                .app
+                .engine
+                .execute(StateCommand::CreateBoard {
+                    title: title.to_owned(),
+                    color: taskboard_domain::Color::new("0082c9"),
+                })
+                .await
+                .expect("board mints")
+            else {
+                panic!("CreateBoard always mints");
+            };
+            let edits = [
+                StateCommand::SetBoardArchived {
+                    board: id,
+                    archived,
+                },
+                StateCommand::DeleteBoard { board: id },
+            ];
+            if archived {
+                let _ = fixture.app.engine.execute(edits[0].clone()).await;
+            }
+            if deleted {
+                let _ = fixture.app.engine.execute(edits[1].clone()).await;
+            }
+        }
+        // One live capture target: the boardless add captures onto it
+        // (the `&&` flip counts the archived/deleted rows, sees two,
+        // and answers the ambiguity instead — the observable flip).
+        let receipt = add_on(&fixture.app, "t".to_owned(), None)
+            .await
+            .expect("the live board is the only target");
+        assert_eq!(receipt.title, "t");
+        let _ = fixture.app.shutdown().await;
+    }
+
     /// Two live boards without a stack are the typed ambiguity naming
     /// every candidate uuid (the `candidates()` map arm).
     #[tokio::test]
