@@ -1389,6 +1389,10 @@ export component TaskView inherits FocusScope {
                         placeholder: "—";
                         label: "Description";
                         autofocus: false;
+                        // The armed ring's view feed (D-F5, #1204):
+                        // the closed display carries the arm path's
+                        // flag to the widget's border.
+                        armed: root.task.description-armed;
                         width: 100%;
                         height: 100%;
                     }

@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The armed-ring probe (round 5 A2, #1204; the r8 D-F5 census-rider
+// clause): the real `MultiLineEditor` with the host's arm path under
+// two fixtures — the armed-but-not-focused editor (the walk/restore
+// case) and the plain one. The assertion reads the widget's typed
+// `ring-visible` seam; no pixels, no clocks.
+
+import { Theme } from "../ui/theme.slint";
+import { MultiLineEditor } from "../ui/widgets/multi-line-editor.slint";
+
+export component ArmedRingProbe inherits Window {
+    width: Theme.space-15 * 8;
+    height: Theme.space-15 * 4;
+
+    // The host's arm path, driven from Rust (the flag's push half).
+    in-out property <bool> armed: false;
+
+    out property <bool> armed-ring-visible: probe-editor.ring-visible;
+
+    probe-editor := MultiLineEditor {
+        editing: false;
+        text: "probe body";
+        placeholder: "—";
+        label: "Armed ring probe";
+        autofocus: false;
+        armed: root.armed;
+        width: 100%;
+        height: Theme.space-15 * 2;
+    }
+}

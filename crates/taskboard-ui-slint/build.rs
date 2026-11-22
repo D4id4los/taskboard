@@ -30,6 +30,7 @@ fn main() {
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("build script runs via cargo"));
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set"));
     let probes = [
+        "armed_ring_probe",
         "virtualisation_probe",
         "focus_coverage_probe",
         "focus_seam_probe",
