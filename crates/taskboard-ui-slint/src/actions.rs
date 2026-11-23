@@ -2468,7 +2468,9 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 246,
+        // The trio never renders on a page (menu_group None); the
+        // rank band is the internal verbs' own (the 10-spacing law).
+        menu_rank: 540,
         description: "Arms the habit-restore confirm from the deleted-habits roster (the dispatch waits for Confirm; the log is never touched).",
         // Internal verb — the habit context menu's only affordance.
         menu_group: None,
@@ -2479,7 +2481,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 247,
+        menu_rank: 550,
         description: "Routes the confirmed restore: the habit flips live verbatim with a fresh tombstone clock.",
         menu_group: None,
     },
@@ -2489,7 +2491,7 @@ pub const REGISTRY: &[ActionEntry] = &[
         contexts: GLOBAL,
         category: Category::Task,
         enabled: true,
-        menu_rank: 248,
+        menu_rank: 560,
         description: "Disarms the armed habit-restore confirm; nothing was dispatched.",
         menu_group: None,
     },
