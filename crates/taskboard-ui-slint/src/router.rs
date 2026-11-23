@@ -696,6 +696,28 @@ pub struct HabitQuotaDraft {
 /// editor's lenient parser. The commit computes the sparse
 /// `HabitChanges` against the stored row (None = untouched, clocks
 /// preserved).
+/// The nudge-schedule preview's typed projection (#1035, W-13, US-9):
+/// the drafted shape's derived day, clock time, and snooze offer.
+/// `time: None` is the #1212 anchor-time-only posture — display-only
+/// data; the preview dispatches nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NudgePreview {
+    /// The derived nudge day in the habit's current period.
+    pub day: chrono::NaiveDate,
+    /// The occurrence's clock time (`None` = the anchor-time-only
+    /// posture; never an invented clock time).
+    pub time: Option<chrono::NaiveTime>,
+    /// The drafted snooze offer (absent without an override).
+    pub snooze: Option<taskboard_domain::habit::HabitSnooze>,
+}
+
+/// The habit editor's staged draft (H4 D5): the field mirrors the
+/// editor rows push, and the parses live at the trust boundary — the
+/// count mints through `NonZeroCount`, the month day through
+/// `MonthDay` (0 and >31 unrepresentable), the time through the due
+/// editor's lenient parser. The commit computes the sparse
+/// `HabitChanges` against the stored row (None = untouched, clocks
+/// preserved).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::struct_excessive_bools)] // the mirrors' validity/set/edited
 // flavours are the draft's whole contract (the create form's shape)
@@ -878,6 +900,64 @@ impl HabitEditDraft {
     #[must_use]
     pub fn reminder_valid(&self) -> bool {
         !self.reminder_edited || self.reminder_clear || self.minted_reminder_override().is_some()
+    }
+
+    /// The nudge-schedule preview's projection (#1035, W-13, US-9): a
+    /// pure display read of the drafted shape — the derived nudge day
+    /// in the habit's current period, the occurrence's clock time
+    /// (`None` = the #1212 anchor-time-only posture; the projection
+    /// never invents a clock time), and the drafted snooze offer.
+    /// `None` is the neutral state: a refused schedule/override
+    /// section (an invalid draft) hides the preview — nothing is
+    /// projected from a draft the save gate would refuse.
+    #[must_use]
+    pub fn nudge_preview(
+        &self,
+        stored: &taskboard_domain::habit::Habit,
+        today: chrono::NaiveDate,
+    ) -> Option<NudgePreview> {
+        // The schedule/override legs' typed validity (the same gates
+        // the save path applies — the preview never legitimizes a
+        // refused draft).
+        if !self.reminder_valid() || (self.schedule_edited && self.schedule_bits == 0) {
+            return None;
+        }
+        // The effective row: the stored clone with the draft's moved
+        // fields applied (the sparse changeset is the projection's one
+        // source — no second mint).
+        let changes = self.changes(stored);
+        let mut effective = stored.clone();
+        if let Some(title) = changes.title {
+            effective.title = title;
+        }
+        if let Some(description) = changes.description {
+            effective.description = description;
+        }
+        if let Some(target) = changes.target {
+            effective.target = target;
+        }
+        if let Some(anchor_time) = changes.anchor_time {
+            effective.anchor_time = anchor_time;
+        }
+        if let Some(anchor_day) = changes.anchor_day {
+            effective.anchor_day = anchor_day;
+        }
+        if let Some(scheduled_days) = changes.scheduled_days {
+            effective.scheduled_days = Some(scheduled_days);
+        }
+        if let Some(reminder) = changes.reminder {
+            effective.reminder = reminder;
+        }
+        let kind = effective.target.kind();
+        let window = taskboard_domain::habit::WindowStart::of_period(
+            kind,
+            taskboard_domain::habit::period_start(kind, today),
+        );
+        Some(NudgePreview {
+            day: taskboard_domain::habit::nudge_day(&effective, window),
+            time: taskboard_domain::habit::tracker_arm_time(&effective),
+            snooze: effective.reminder.map(|ovr| ovr.snooze),
+        })
     }
 
     /// The `SegmentedControl` index (0 day / 1 week / 2 month).

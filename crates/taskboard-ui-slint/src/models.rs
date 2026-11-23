@@ -3005,6 +3005,58 @@ fn push_task_detail(
             reminder_time: SharedString::from(draft.reminder_time.clone()),
             reminder_snooze: SharedString::from(draft.reminder_snooze.clone()),
             reminder_valid: draft.reminder_valid(),
+            // The nudge-schedule preview (#1035, W-13, US-9): the
+            // display-only projection of the drafted shape; hidden on
+            // a refused draft (the neutral state). The clock time
+            // composes through the day calendar; `nudge_time_set` is
+            // the typed anchor-time-only bit (#1212) — the rendered
+            // phrase is judged at the walkthrough, never asserted.
+            nudge_preview: {
+                let (visible, day_text, time_text, time_set, snooze_text) = stored
+                    .and_then(|row| {
+                        draft
+                            .nudge_preview(row, calendar.today(now))
+                            .map(|preview| {
+                                let time_text = preview.time.map_or_else(
+                                    || crate::presentation::habit_nudge_anchor_phrase(preview.day),
+                                    |t| {
+                                        format!(
+                                            "{} {}",
+                                            crate::due_edit::format_time_hm(t),
+                                            crate::presentation::habit_nudge_anchor_phrase(
+                                                preview.day
+                                            )
+                                        )
+                                    },
+                                );
+                                (
+                                    true,
+                                    preview.day.to_string(),
+                                    time_text,
+                                    preview.time.is_some(),
+                                    preview.snooze.map_or_else(
+                                        || "—".to_owned(),
+                                        |snooze| match snooze {
+                                            taskboard_domain::habit::HabitSnooze::Hours(h) => {
+                                                format!("{h}h")
+                                            }
+                                            taskboard_domain::habit::HabitSnooze::Days(d) => {
+                                                format!("{d}d")
+                                            }
+                                        },
+                                    ),
+                                )
+                            })
+                    })
+                    .unwrap_or((false, String::new(), String::new(), false, String::new()));
+                crate::NudgePreviewModel {
+                    visible,
+                    day: SharedString::from(day_text),
+                    time: SharedString::from(time_text),
+                    time_set,
+                    snooze: SharedString::from(snooze_text),
+                }
+            },
             can_save,
         });
     }
