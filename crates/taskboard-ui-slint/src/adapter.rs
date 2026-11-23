@@ -11878,8 +11878,7 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // `HabitEdit` opener routes over the minted subject. The kiosk
     // gate is the landed dispatch-time refusal (the UiEffect arm),
     // never a second seam-side copy. Stale index absorbed.
-    // slint: habits-edit-asked
-    install_seam!(window: window.on_habits_edit_asked, adapter: adapter;
+    install_seam!(window: window.on_habits_edit_asked, adapter: adapter; // slint: habits-edit-asked
     bind mut (a, window), args (index), {        let Some(&habit) = a
         .tables
         .habits
