@@ -1295,9 +1295,21 @@ fn parse_reminder_override(
                     .parse()
                     .map_err(|_| format!("snooze `{value}` is not a count"))?;
                 snooze = if value.ends_with('h') || value.ends_with('H') {
-                    HabitSnooze::Hours(n)
+                    HabitSnooze::hours(n).ok_or_else(|| {
+                        format!(
+                            "snooze `{value}` is degenerate — a zero-duration \
+                                 snooze moves the occurrence by zero; use a count \
+                                 of at least 1"
+                        )
+                    })?
                 } else if value.ends_with('d') || value.ends_with('D') {
-                    HabitSnooze::Days(n)
+                    HabitSnooze::days(n).ok_or_else(|| {
+                        format!(
+                            "snooze `{value}` is degenerate — a zero-duration \
+                                 snooze moves the occurrence by zero; use a count \
+                                 of at least 1"
+                        )
+                    })?
                 } else {
                     return Err(format!("snooze `{value}` needs an `h` or `d` unit"));
                 };
@@ -1362,6 +1374,30 @@ fn parse_days_flag_mints_lists_and_all_and_refuses_empty() {
     }
     let only_unknown = parse_days_flag(",");
     assert!(only_unknown.is_err(), "no weekday named");
+}
+
+#[test]
+fn parse_reminder_override_refuses_zero_snooze_at_the_mint() {
+    use taskboard_domain::habit::HabitSnooze;
+    // The typed refusal (#1211): `snooze=0h`/`snooze=0d` is a
+    // degenerate snooze — the parse refuses, it never mints a zero
+    // duration. Structural outcome only (no message text).
+    for bad in ["snooze=0h", "snooze=0d", "snooze=0H", "snooze=0D"] {
+        assert!(
+            parse_reminder_override(bad).is_err(),
+            "{bad} must be rejected by the mint"
+        );
+    }
+    // The mint's own law backs the refusal (the boundary consumes it).
+    assert_eq!(HabitSnooze::hours(0), None);
+    assert_eq!(HabitSnooze::days(0), None);
+    // Positive counts keep minting through the same seam.
+    assert_eq!(
+        parse_reminder_override("snooze=1h")
+            .expect("one hour")
+            .snooze,
+        HabitSnooze::Hours(1)
+    );
 }
 
 #[test]

@@ -257,6 +257,27 @@ pub enum HabitSnooze {
 }
 
 impl HabitSnooze {
+    /// The fallible mint for a whole-hours snooze (#1211): `None` for
+    /// `n == 0` — a zero-duration snooze is degenerate (the snooze
+    /// chain walk moves the occurrence by zero) and is unmintable.
+    ///
+    /// Deliberate leniency, at the type: deserialization
+    /// (persisted-state / journal decode) keeps the raw variant
+    /// construction — decode is not a rule decision boundary, and
+    /// journals minted before this law may legitimately carry a zero
+    /// snooze; decode must not refuse to load history.
+    #[must_use]
+    pub fn hours(n: u8) -> Option<Self> {
+        (n > 0).then_some(Self::Hours(n))
+    }
+
+    /// The fallible mint for a whole-days snooze (#1211); the same
+    /// law and the same documented leniency as [`HabitSnooze::hours`].
+    #[must_use]
+    pub fn days(n: u8) -> Option<Self> {
+        (n > 0).then_some(Self::Days(n))
+    }
+
     /// The snooze duration.
     ///
     /// # Panics
@@ -4270,5 +4291,19 @@ mod statistics_tests {
                 prop_assert_eq!(window.as_date(), period_start(kind, window.as_date()));
             }
         }
+    }
+
+    // #1211: the fallible mints' law — a zero-duration snooze is
+    // degenerate (the snooze chain walk moves the occurrence by zero)
+    // and is unmintable at the trust boundaries; the variants stay
+    // raw so decode stays lenient (see the mints' doc).
+    #[test]
+    fn snooze_mints_refuse_zero_and_mint_positive_counts() {
+        for n in 1..=u8::MAX {
+            assert_eq!(HabitSnooze::hours(n), Some(HabitSnooze::Hours(n)));
+            assert_eq!(HabitSnooze::days(n), Some(HabitSnooze::Days(n)));
+        }
+        assert_eq!(HabitSnooze::hours(0), None, "zero hours unmintable");
+        assert_eq!(HabitSnooze::days(0), None, "zero days unmintable");
     }
 }
