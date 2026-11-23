@@ -277,6 +277,30 @@ export component AppWindow inherits Window {
         StatusPanelFacts.failure = true;
         StatusPanelFacts.busy = false;
     }
+    // -- The status panel's remediation lane (the D2 command plan
+    //    W-1..W-4/W-6): the rows' arm seams, the armed strip's pair,
+    //    and the outcome fold. Underscore names (the seam census's
+    //    manifest spelling); the adapter installs each. --
+    // slint: status_holder_kill — the Kill holder row's arm moment.
+    pure callback status_holder_kill();
+    // slint: status_lock_force_unlock — the Force unlock row's arm
+    // moment.
+    pure callback status_lock_force_unlock();
+    // slint: status_daemon_restart — the Restart daemon row's arm
+    // moment.
+    pure callback status_daemon_restart();
+    // slint: status_remediation_armed — the armed strip's decision
+    // pair: `decision` 0 = Confirm (the armed verb's exact dispatch),
+    // 1 = Cancel (nothing dispatched).
+    pure callback status_remediation_armed(int);
+    // slint: status_remediation_outcome_shown — the W-6 display fold:
+    // the reply drain invokes it when the typed outcome settles; the
+    // handler folds the stashed outcome into the panel's facts (the
+    // export-outcome-shown twin).
+    callback status_remediation_outcome_shown();
+    status_remediation_outcome_shown() => {
+        StatusPanelFacts.remediation-busy = false;
+    }
     callback settings-back-clicked();
     callback settings-field-edited(int, string);
     callback settings-save-clicked(string, string, string);
@@ -432,6 +456,22 @@ export component AppWindow inherits Window {
     pure callback export-open-after-toggled();
     // slint: export-run — the W-4 Run dispatch seam.
     pure callback export-run();
+    // -- The preview/clipboard lane (the D2 preview plan W-1..W-4):
+    //    underscore names (the seam census's manifest spelling). --
+    // slint: export_preview — the Preview dispatch (D-4: never
+    // ExportRun; the per-affordance busy flag is its own).
+    pure callback export_preview();
+    // slint: export_clipboard_copy — the Copy dispatch (D-3: the
+    // payload regenerates app-side).
+    pure callback export_clipboard_copy();
+    // slint: export_preview_shown — the settled preview/copy reply's
+    // display fold: the drain invokes it outside the adapter borrow
+    // (the re-entrancy law).
+    pure callback export_preview_shown();
+    // slint: export_preview_gated — the D-5 family-gating fold: the
+    // pane and its outcome clear when the family pick leaves the
+    // csv/json leg (the gating is a fold flag, never hidden lanes).
+    pure callback export_preview_gated();
     pure callback export-dialog-close();
     // slint: export-outcome-shown — the W-5 display fold: the reply
     // drain invokes it when the typed outcome settles; the handler
@@ -441,10 +481,18 @@ export component AppWindow inherits Window {
     // action routes.
     pure callback export-settings-open();
     // The dialog's outcome notification: the model's outcome fold
-    // crossing into the rendered fact re-arms the observation seam.
+    // crossing into the rendered fact re-arms the observation seam;
+    // the preview pane's gating fold (the D-5 family swap) re-arms
+    // its own seam the same way.
     changed export-model => {
         if (root.export-model.outcome-kind != 0) {
             root.export-outcome-shown();
+        }
+        if (!root.export-model.preview-enabled) {
+            root.export_preview_gated();
+        }
+        if (root.export-model.preview-settled) {
+            root.export_preview_shown();
         }
     }
     in-out property <string> capture-initial-text;
@@ -762,10 +810,16 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.status): StatusPanel {
                 // The panel's moments forward to the window-root
-                // seams (OP3 W-1..W-3); the panel dispatches no
-                // command (OP3 R-3).
+                // seams (OP3 W-1..W-3; the D2 command plan
+                // W-1..W-4/W-6); the panel dispatches no command
+                // (OP3 R-3 — the remediation lane rides the request
+                // lane, not the command lane).
                 status-panel-open-requested() => root.status-panel-open();
                 status-panel-refresh-requested() => root.status-panel-refresh();
+                status-holder-kill-requested() => root.status_holder_kill();
+                status-lock-force-unlock-requested() => root.status_lock_force_unlock();
+                status-daemon-restart-requested() => root.status_daemon_restart();
+                status-remediation-armed(d) => root.status_remediation_armed(d);
             }
             if (root.current-view == View.review): ReviewView {
                 review: root.review-model;

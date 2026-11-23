@@ -30,6 +30,16 @@ const SEAM_INVENTORY: &[&str] = &[
     // directions are invokes (Rust → slint), not installs.
     "status_panel_open",
     "status_panel_refresh",
+    // The status panel's remediation lane (the D2 command plan
+    // W-1..W-4/W-6): the rows' arm moments, the armed strip's
+    // decision pair, and the outcome fold (the W-6 fold installs
+    // like the export twin — the drain invokes it outside the
+    // borrow).
+    "status_holder_kill",
+    "status_lock_force_unlock",
+    "status_daemon_restart",
+    "status_remediation_armed",
+    "status_remediation_outcome_shown",
     "task_importance_edit_asked",
     "task_urgency_edit_asked",
     "priority_slot_clicked",
@@ -377,6 +387,13 @@ const SEAM_INVENTORY: &[&str] = &[
     "export_open_after_toggled",
     "export_run",
     "export_outcome_shown",
+    // The export dialog's preview/clipboard lane (the D2 preview
+    // plan W-1..W-4): the dispatch seams, the settled-reply display
+    // fold, and the D-5 family-gating fold.
+    "export_preview",
+    "export_clipboard_copy",
+    "export_preview_shown",
+    "export_preview_gated",
     "recur_bound_picked",
     "recur_commit_clicked",
     "recur_count_edited",

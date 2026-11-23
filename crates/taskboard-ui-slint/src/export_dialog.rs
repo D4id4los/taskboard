@@ -80,6 +80,50 @@ pub(crate) struct ExportVm {
     /// The settled typed outcome (US-2/S3, US-3/S3): `None` before
     /// the first run.
     pub(crate) outcome: Option<ExportRunOutcome>,
+    // -- the preview/clipboard lane (the D2 preview plan W-1..W-4) --
+    /// The per-affordance busy flags (D-4): the preview button, the
+    /// copy button and the Run button each hold their own.
+    pub(crate) preview_busy: bool,
+    pub(crate) copy_busy: bool,
+    /// The pane's settled facts (W-3): the engine payload verbatim
+    /// (one generator, two sinks) plus the typed cap fact (D-2).
+    pub(crate) preview_shown: bool,
+    pub(crate) preview_text: String,
+    pub(crate) preview_truncated: bool,
+    /// The settled preview refusal kind (US-1/S4): `None` = none.
+    pub(crate) preview_settled_refusal: Option<ExportRefusal>,
+    /// The clipboard fold's settled facts (W-3's twin): the
+    /// copied-byte fact or the refusal kind.
+    pub(crate) copy_settled: bool,
+    pub(crate) copy_bytes: i32,
+    pub(crate) copy_refusal: Option<ExportRefusal>,
+}
+
+impl Default for ExportVm {
+    fn default() -> Self {
+        Self {
+            family: ExportFamily::Tracking,
+            format: ExportFileFormat::Csv,
+            layout: PdfLayoutChoice::Fold,
+            since: String::new(),
+            until: String::new(),
+            task: String::new(),
+            board: String::new(),
+            destination: String::new(),
+            open_after: false,
+            busy: false,
+            outcome: None,
+            preview_busy: false,
+            copy_busy: false,
+            preview_shown: false,
+            preview_text: String::new(),
+            preview_truncated: false,
+            preview_settled_refusal: None,
+            copy_settled: false,
+            copy_bytes: 0,
+            copy_refusal: None,
+        }
+    }
 }
 
 impl ExportVm {
@@ -99,6 +143,15 @@ impl ExportVm {
             open_after: defaults.open_after,
             busy: false,
             outcome: None,
+            preview_busy: false,
+            copy_busy: false,
+            preview_shown: false,
+            preview_text: String::new(),
+            preview_truncated: false,
+            preview_settled_refusal: None,
+            copy_settled: false,
+            copy_bytes: 0,
+            copy_refusal: None,
         }
     }
 

@@ -12,7 +12,7 @@
 // Refresh button is keyboard-reachable (the TextButton grammar's
 // Return/Space activation).
 
-import { Theme, Typography, RoleText } from "../theme.slint";
+import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
 import { TextButton } from "../widgets/text-button.slint";
 import { LabeledValueRow, RowMode } from "../widgets/labeled-value-row.slint";
 
@@ -64,6 +64,24 @@ export global StatusPanelFacts {
     };
     in-out property <bool> busy: false;
     in-out property <bool> failure: false;
+    // -- the remediation lane (W-1..W-4/W-6) --
+    // The adapter-minted permission fold (the trap-a law): `false`
+    // on kiosk — the rows render disabled, the seams refuse
+    // adapter-side (the structural inventory's no-dispatch arm).
+    in-out property <bool> remediation-permitted: true;
+    // The armed-confirm strip's state (W-4): -1 = disarmed,
+    // 0 = kill holder, 1 = force unlock, 2 = restart daemon. Arm is
+    // pure presentation — nothing dispatches until Confirm.
+    in-out property <int> remediation-armed: -1;
+    // The in-flight posture between Confirm and the typed reply.
+    in-out property <bool> remediation-busy: false;
+    // The outcome fold (W-6): kind 0 = nothing yet, 1 = holder
+    // signalled, 2 = lock released, 3 = daemon restarted, 4 = the
+    // typed refusal (the refusal index carries the canonical kind:
+    // 0 holder-not-alive, 1 holder-alive, 2 self-pid, 3
+    // spawn-failed, 4 ipc-unavailable).
+    in-out property <int> remediation-outcome-kind: 0;
+    in-out property <int> remediation-refusal: -1;
 }
 
 // The panel's four seams live on the AppWindow root (the census's
@@ -83,6 +101,18 @@ export component StatusPanel inherits Rectangle {
     // (US-1/S4): keyboard-reachable (the TextButton grammar), never a
     // timer; forwarded to the window root seam.
     callback status-panel-refresh-requested();
+    // The remediation rows' arm moments (W-1/W-2/W-3): arm-only —
+    // nothing dispatches until the strip's Confirm.
+    // slint: status-holder-kill
+    callback status-holder-kill-requested();
+    // slint: status-lock-force-unlock
+    callback status-lock-force-unlock-requested();
+    // slint: status-daemon-restart
+    callback status-daemon-restart-requested();
+    // The armed strip's pair (W-4): `decision` 0 = Confirm (the armed
+    // verb's exact dispatch), 1 = Cancel (nothing dispatched).
+    // slint: status-remediation-armed
+    callback status-remediation-armed(int);
 
     pure function headline() -> string {
         if (StatusPanelFacts.failure) {
@@ -153,6 +183,67 @@ export component StatusPanel inherits Rectangle {
                     + StatusPanelFacts.data.engine-rejections + " rejected / "
                     + StatusPanelFacts.data.engine-signals + " signals"
                 : "";
+        }
+
+        // -- The remediation rows (W-1/W-2/W-3): the wedged posture's
+        //    escape hatch. Every row's enabled gate is a fold flag
+        //    (permission ∧ posture), never a caption oracle; arming
+        //    mounts the strip, Confirm dispatches (W-4/W-6). --
+        TextButton {
+            label: "Kill holder";
+            enabled: StatusPanelFacts.remediation-permitted
+                && StatusPanelFacts.data.holder-pid >= 0
+                && !StatusPanelFacts.remediation-busy;
+            clicked => {
+                root.status-holder-kill-requested();
+            }
+        }
+        TextButton {
+            label: "Force unlock";
+            enabled: StatusPanelFacts.remediation-permitted
+                && StatusPanelFacts.data.posture == StatusPanelPosture.draining
+                && !StatusPanelFacts.remediation-busy;
+            clicked => {
+                root.status-lock-force-unlock-requested();
+            }
+        }
+        TextButton {
+            label: "Restart daemon";
+            enabled: StatusPanelFacts.remediation-permitted
+                && !StatusPanelFacts.remediation-busy;
+            clicked => {
+                root.status-daemon-restart-requested();
+            }
+        }
+        // The armed-confirm strip (W-4): the task-delete grammar —
+        // nothing dispatches until Confirm; Cancel always available.
+        if (StatusPanelFacts.remediation-armed >= 0): HorizontalLayout {
+            spacing: Theme.space-3;
+            TextButton {
+                label: "Confirm";
+                enabled: !StatusPanelFacts.remediation-busy;
+                clicked => {
+                    root.status-remediation-armed(0);
+                }
+            }
+            TextButton {
+                label: "Cancel";
+                clicked => {
+                    root.status-remediation-armed(1);
+                }
+            }
+        }
+        // The outcome fold (W-6): display only — the typed kind's
+        // canonical index, never message text. The panel stays
+        // mounted with state intact on any refusal (D-7).
+        if (StatusPanelFacts.remediation-outcome-kind > 0): RoleText {
+            role: Typography.caption;
+            text-color: StatusPanelFacts.remediation-outcome-kind == 4
+                ? Semantic.danger : Semantic.success;
+            text: StatusPanelFacts.remediation-outcome-kind == 4
+                ? "The remediation refused (kind " + StatusPanelFacts.remediation-refusal + ")."
+                : "The remediation executed.";
+            wrap: word-wrap;
         }
 
         // The explicit Refresh affordance (US-1/S4): the only dispatch

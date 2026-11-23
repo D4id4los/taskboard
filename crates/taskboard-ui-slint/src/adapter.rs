@@ -819,6 +819,25 @@ pub(crate) struct Adapter {
     /// The settled outcome's stash between the reply poll and the
     /// `export-outcome-shown` fold (the re-entrancy law above).
     export_settled: Option<crate::requests::ExportRunOutcome>,
+    /// The in-flight preview's reply half (the D2 preview plan W-1):
+    /// `Some` between the Preview dispatch and the settled reply; the
+    /// close seam drops it (the D-7 escape law, the export-reply
+    /// twin).
+    export_preview_reply:
+        Option<oneshot::Receiver<crate::requests::ExportPreviewOutcome>>,
+    /// The settled preview's stash between the poll and the
+    /// `export_preview_shown` fold (the re-entrancy law).
+    export_preview_settled: Option<crate::requests::ExportPreviewOutcome>,
+    /// The in-flight clipboard copy's reply half (the preview plan
+    /// W-2): the copy twin of the preview lane.
+    export_copy_reply:
+        Option<oneshot::Receiver<crate::requests::ExportClipboardOutcome>>,
+    /// The settled copy's stash between the poll and the fold.
+    export_copy_settled: Option<crate::requests::ExportClipboardOutcome>,
+    /// The settled remediation outcome's stash between the reply poll
+    /// and the `status_remediation_outcome_shown` fold (the same
+    /// re-entrancy law).
+    remediation_settled: Option<crate::requests::StatusRemediationOutcome>,
     rotation: Option<crate::view_state::KioskRotation>,
     /// The rotation flip's single-shot dwell timer (K13). Armed by
     /// `install` only when `rotation` is present, re-armed by the
@@ -8100,6 +8119,15 @@ fn auto_list_suppressed(
 #[derive(Default)]
 struct StatusPanelVm {
     pending: Option<oneshot::Receiver<crate::requests::StatusSnapshot>>,
+    /// The armed remediation verb (the D2 command plan W-4): pure
+    /// presentation state — nothing dispatches until the strip's
+    /// Confirm; Cancel disarms. One armed subject (the shared
+    /// grammar: arming a different verb re-arms).
+    armed: Option<crate::requests::StatusRemediationAction>,
+    /// The in-flight remediation's reply half (W-6): `Some` between
+    /// the Confirm dispatch and the settled reply.
+    remediation_pending:
+        Option<oneshot::Receiver<crate::requests::StatusRemediationOutcome>>,
 }
 
 #[derive(Debug, Default)]
@@ -8697,6 +8725,14 @@ impl Adapter {
             return Vec::new();
         }
         self.export_reply = None;
+        // The preview/copy lanes' escape law (the D2 preview plan
+        // D-7): the app-side generation completes or refuses
+        // independently — the drain consumes the reply, the stash
+        // clears with the dialog.
+        self.export_preview_reply = None;
+        self.export_preview_settled = None;
+        self.export_copy_reply = None;
+        self.export_copy_settled = None;
         if self.shell.mode == Mode::Insert {
             vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
         } else {
@@ -8722,6 +8758,17 @@ impl Adapter {
                     _ => return,
                 };
                 vm.outcome = None;
+                // The D-5 family-gating fold: leaving the csv/json leg
+                // invalidates the pane and the copy fold (the stale
+                // family's facts never render).
+                if vm.family != crate::requests::ExportFamily::Tracking {
+                    vm.preview_shown = false;
+                    vm.preview_text.clear();
+                    vm.preview_truncated = false;
+                    vm.preview_settled_refusal = None;
+                    vm.copy_settled = false;
+                    vm.copy_refusal = None;
+                }
             }
             FORMAT_PICKED => {
                 vm.format = match index {
@@ -8906,6 +8953,26 @@ impl Adapter {
             outcome_kind,
             outcome_path: SharedString::from(outcome_path),
             refusal,
+            // The preview/clipboard lane's folds (the D2 preview plan
+            // W-3/W-4): the pane's facts verbatim, the per-affordance
+            // busy flags, and the D-5 family-gating flag.
+            preview_enabled: vm.family == crate::requests::ExportFamily::Tracking,
+            preview_busy: vm.preview_busy,
+            copy_busy: vm.copy_busy,
+            preview_settled: vm.preview_shown || vm.preview_settled_refusal.is_some(),
+            preview_shown: vm.preview_shown,
+            preview_text: SharedString::from(vm.preview_text.clone()),
+            preview_truncated: vm.preview_truncated,
+            preview_refusal: vm
+                .preview_settled_refusal
+                .map(crate::requests::refusal_index)
+                .unwrap_or(-1),
+            copy_settled: vm.copy_settled,
+            copy_bytes: vm.copy_bytes,
+            copy_refusal: vm
+                .copy_refusal
+                .map(crate::requests::refusal_index)
+                .unwrap_or(-1),
         }
     }
 
@@ -9005,6 +9072,300 @@ impl Adapter {
                 self.status_panel.pending = None;
                 window.invoke_status_failure_shown();
             }
+        }
+    }
+
+    // -- the status panel's remediation lane (the D2 command plan
+    //    W-1..W-4/W-6) ---------------------------------------------
+
+    /// The remediation rows' arm moments (W-1/W-2/W-3): arm-only —
+    /// nothing dispatches; the armed strip mounts. The permission
+    /// fold (`kiosk`) is the adapter-side typed-permission gate (the
+    /// trap-a law: a forbidden posture absorbs the arm — the rows are
+    /// disabled there anyway; the gate never trusts the widget).
+    pub(crate) fn status_remediation_arm(&mut self, window: &AppWindow, action: crate::requests::StatusRemediationAction) {
+        if self.kiosk {
+            tracing::info!(?action, "the remediation arm refused: kiosk posture");
+            return;
+        }
+        {
+            let facts = window.global::<crate::StatusPanelFacts>();
+            facts.set_remediation_armed(match action {
+                crate::requests::StatusRemediationAction::KillHolder => 0,
+                crate::requests::StatusRemediationAction::ForceUnlock => 1,
+                crate::requests::StatusRemediationAction::RestartDaemon => 2,
+            });
+        }
+        self.status_panel.armed = Some(action);
+    }
+
+    /// The armed strip's decision pair (W-4): `0` = Confirm (the
+    /// armed verb's exact dispatch — one `StatusRemediate` with the
+    /// oneshot reply; busy posture on the strip), `1` = Cancel
+    /// (nothing dispatched, the strip unmounts). A stale strip
+    /// (disarmed under a foreign settle) absorbs the confirm.
+    pub(crate) fn status_remediation_decision(&mut self, window: &AppWindow, decision: i32) {
+        if decision != 0 {
+            // Cancel: disarm, nothing dispatched.
+            self.status_panel.armed = None;
+            window
+                .global::<crate::StatusPanelFacts>()
+                .set_remediation_armed(-1);
+            return;
+        }
+        let Some(action) = self.status_panel.armed else {
+            return;
+        };
+        let (reply, reply_rx) = oneshot::channel();
+        if self
+            .requests
+            .try_send(crate::requests::UiRequest::StatusRemediate { action, reply })
+            .is_err()
+        {
+            // The lane died or is full: the typed infrastructure
+            // refusal folds (the busy posture must not strand).
+            self.remediation_settled = Some(crate::requests::StatusRemediationOutcome::Refused(
+                crate::requests::StatusRemediationRefusal::IpcUnavailable,
+            ));
+            window.invoke_status_remediation_outcome_shown();
+            return;
+        }
+        self.status_panel.remediation_pending = Some(reply_rx);
+        window
+            .global::<crate::StatusPanelFacts>()
+            .set_remediation_busy(true);
+    }
+
+    /// The remediation reply poll (W-6): the same non-blocking poll
+    /// the other drains run. A settled reply stashes for the fold and
+    /// returns true (the callback fires OUTSIDE the adapter borrow);
+    /// a closed lane counts as settled (the typed infrastructure
+    /// refusal).
+    pub(crate) fn poll_status_remediation(&mut self) -> bool {
+        let Some(rx) = self.status_panel.remediation_pending.as_mut() else {
+            return false;
+        };
+        let settled = match rx.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(oneshot::error::TryRecvError::Empty) => return false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                tracing::warn!("the remediation reply lane died; the slot clears");
+                Some(crate::requests::StatusRemediationOutcome::Refused(
+                    crate::requests::StatusRemediationRefusal::IpcUnavailable,
+                ))
+            }
+        };
+        self.status_panel.remediation_pending = None;
+        self.status_panel.armed = None;
+        self.remediation_settled = settled;
+        true
+    }
+
+    /// The W-6 display fold (the `status_remediation_outcome_shown`
+    /// handler): the stashed outcome lands in the panel's facts, the
+    /// busy posture clears (the callback body), and the post-fact
+    /// refresh re-queries (D-3: the outcome posture is never stale —
+    /// one `StatusQuery` per executed remediation or refusal). No
+    /// stash = absorbed (a stray dispatch).
+    pub(crate) fn status_remediation_outcome_fold(&mut self, window: &AppWindow) {
+        let Some(outcome) = self.remediation_settled.take() else {
+            return;
+        };
+        {
+            let facts = window.global::<crate::StatusPanelFacts>();
+            let (kind, refusal) = match &outcome {
+                crate::requests::StatusRemediationOutcome::HolderSignalled => (1, -1),
+                crate::requests::StatusRemediationOutcome::LockReleased => (2, -1),
+                crate::requests::StatusRemediationOutcome::DaemonRestarted { .. } => (3, -1),
+                crate::requests::StatusRemediationOutcome::Refused(kind) => {
+                    // The canonical refusal index (the facts' doc
+                    // table — one order, no drift).
+                    let index = match kind {
+                        crate::requests::StatusRemediationRefusal::HolderNotAlive => 0,
+                        crate::requests::StatusRemediationRefusal::HolderAlive => 1,
+                        crate::requests::StatusRemediationRefusal::SelfPid => 2,
+                        crate::requests::StatusRemediationRefusal::SpawnFailed => 3,
+                        crate::requests::StatusRemediationRefusal::IpcUnavailable => 4,
+                    };
+                    (4, index)
+                }
+            };
+            facts.set_remediation_outcome_kind(kind);
+            facts.set_remediation_refusal(refusal);
+        }
+        // The post-fact refresh (D-3): one re-query rides the settle.
+        self.dispatch_status_query(window);
+    }
+
+    // -- the export dialog's preview/clipboard lane (the D2 preview
+    //    plan W-1..W-4) -------------------------------------------
+
+    /// The Preview dispatch (W-1, D-4): the trust boundary re-checks
+    /// the gate (never trusts the widget), mints the spec verbatim
+    /// from the buffer, and sends `ExportPreview` — never `ExportRun`
+    /// (no file is written; the written-path fact stays Run's
+    /// exclusively). Per-affordance busy on the send; a full/closed
+    /// lane folds the typed `LaneDropped` refusal.
+    pub(crate) fn export_preview_clicked(&mut self, window: &AppWindow) {
+        let Some(vm) = self.export_vm.as_mut() else {
+            return;
+        };
+        if vm.busy || !vm.run_enabled(&self.export_defaults) {
+            return;
+        }
+        let spec = vm.mint_spec();
+        let (reply, reply_rx) = oneshot::channel();
+        let request = crate::requests::UiRequest::ExportPreview { spec, reply };
+        if self.requests.try_send(request).is_err() {
+            vm.preview_settled_refusal = Some(crate::requests::ExportRefusal::LaneDropped);
+            self.finish_mutation(window);
+            return;
+        }
+        vm.preview_busy = true;
+        vm.preview_shown = false;
+        vm.preview_settled_refusal = None;
+        self.export_preview_reply = Some(reply_rx);
+        self.finish_mutation(window);
+    }
+
+    /// The Copy dispatch (W-2, D-3): the same boundary law as the
+    /// preview — the payload REGENERATES app-side; the pane's text is
+    /// never read.
+    pub(crate) fn export_copy_clicked(&mut self, window: &AppWindow) {
+        let Some(vm) = self.export_vm.as_mut() else {
+            return;
+        };
+        if vm.busy || !vm.run_enabled(&self.export_defaults) {
+            return;
+        }
+        let spec = vm.mint_spec();
+        let (reply, reply_rx) = oneshot::channel();
+        let request = crate::requests::UiRequest::ExportClipboardCopy { spec, reply };
+        if self.requests.try_send(request).is_err() {
+            vm.copy_settled = true;
+            vm.copy_refusal = Some(crate::requests::ExportRefusal::LaneDropped);
+            self.finish_mutation(window);
+            return;
+        }
+        vm.copy_busy = true;
+        vm.copy_settled = false;
+        vm.copy_refusal = None;
+        self.export_copy_reply = Some(reply_rx);
+        self.finish_mutation(window);
+    }
+
+    /// The preview reply poll (W-3): the non-blocking poll; settled
+    /// replies stash for the `export_preview_shown` fold. A closed
+    /// lane counts as settled (the typed `LaneDropped`).
+    pub(crate) fn poll_export_preview(&mut self) -> bool {
+        let Some(rx) = self.export_preview_reply.as_mut() else {
+            return false;
+        };
+        let settled = match rx.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(oneshot::error::TryRecvError::Empty) => return false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                Some(crate::requests::ExportPreviewOutcome::Refused(
+                    crate::requests::ExportRefusal::LaneDropped,
+                ))
+            }
+        };
+        self.export_preview_reply = None;
+        if let Some(vm) = self.export_vm.as_mut() {
+            vm.preview_busy = false;
+        }
+        self.export_preview_settled = settled;
+        true
+    }
+
+    /// The copy reply poll (the D-3 twin).
+    pub(crate) fn poll_export_copy(&mut self) -> bool {
+        let Some(rx) = self.export_copy_reply.as_mut() else {
+            return false;
+        };
+        let settled = match rx.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(oneshot::error::TryRecvError::Empty) => return false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                Some(crate::requests::ExportClipboardOutcome::Refused(
+                    crate::requests::ExportRefusal::LaneDropped,
+                ))
+            }
+        };
+        self.export_copy_reply = None;
+        if let Some(vm) = self.export_vm.as_mut() {
+            vm.copy_busy = false;
+        }
+        self.export_copy_settled = settled;
+        true
+    }
+
+    /// The W-3 preview fold (the `export_preview_shown` handler): the
+    /// stashed outcome lands in the dialog's VM (payload + the typed
+    /// cap fact, or the refusal kind). The dialog stays mounted with
+    /// its filter state intact on any refusal.
+    pub(crate) fn export_preview_fold(&mut self, window: &AppWindow) {
+        let Some(outcome) = self.export_preview_settled.take() else {
+            return;
+        };
+        if let Some(vm) = self.export_vm.as_mut() {
+            vm.preview_busy = false;
+            match outcome {
+                crate::requests::ExportPreviewOutcome::Payload { text, truncated, .. } => {
+                    vm.preview_settled_refusal = None;
+                    vm.preview_shown = true;
+                    vm.preview_text = text;
+                    vm.preview_truncated = truncated;
+                }
+                crate::requests::ExportPreviewOutcome::Refused(kind) => {
+                    vm.preview_settled_refusal = Some(kind);
+                    vm.preview_shown = false;
+                }
+            }
+        }
+        self.finish_mutation(window);
+    }
+
+    /// The W-3's copy twin fold: the copied-byte fact or the refusal
+    /// kind lands in the VM.
+    pub(crate) fn export_copy_fold(&mut self, window: &AppWindow) {
+        let Some(outcome) = self.export_copy_settled.take() else {
+            return;
+        };
+        if let Some(vm) = self.export_vm.as_mut() {
+            vm.copy_busy = false;
+            vm.copy_settled = true;
+            match outcome {
+                crate::requests::ExportClipboardOutcome::Copied { bytes } => {
+                    vm.copy_refusal = None;
+                    vm.copy_bytes = i32::try_from(bytes).unwrap_or(i32::MAX);
+                }
+                crate::requests::ExportClipboardOutcome::Refused(kind) => {
+                    vm.copy_refusal = Some(kind);
+                }
+            }
+        }
+        self.finish_mutation(window);
+    }
+
+    /// The D-5 family-gating fold (the `export_preview_gated`
+    /// handler): the family pick leaving the csv/json leg invalidates
+    /// the preview pane and the copy fold (the gating is a fold flag,
+    /// never hidden lanes; the pane never shows a stale family's
+    /// payload). Same family = absorbed.
+    pub(crate) fn export_preview_gated_fold(&mut self, window: &AppWindow) {
+        let Some(vm) = self.export_vm.as_mut() else {
+            return;
+        };
+        if vm.family != crate::requests::ExportFamily::Tracking {
+            vm.preview_shown = false;
+            vm.preview_text.clear();
+            vm.preview_truncated = false;
+            vm.preview_settled_refusal = None;
+            vm.preview_settled_refusal = None;
+            vm.copy_settled = false;
+            vm.copy_refusal = None;
+            self.finish_mutation(window);
         }
     }
 
@@ -11810,6 +12171,11 @@ pub(crate) fn install(
         export_vm: None,
         export_reply: None,
         export_settled: None,
+        export_preview_reply: None,
+        export_preview_settled: None,
+        export_copy_reply: None,
+        export_copy_settled: None,
+        remediation_settled: None,
     }));
     // The status auto-clear's fire closure (r2 D28): weak handles
     // only — no Rc cycle. Armed by `set_settings_outcome` from the
@@ -12310,6 +12676,26 @@ fn install_export_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // the VM.
     install_seam!(window: window.on_export_outcome_shown, adapter: adapter; // slint: export-outcome-shown
     bind mut (a, window), args (), {        a.export_outcome_fold(&window);
+
+    });
+    // The preview/clipboard lane (the D2 preview plan W-1..W-4): the
+    // dispatch seams, the display folds, and the D-5 family-gating
+    // fold.
+    install_seam!(window: window.on_export_preview, adapter: adapter; // slint: export_preview
+    bind mut (a, window), args (), {        a.export_preview_clicked(&window);
+
+    });
+    install_seam!(window: window.on_export_clipboard_copy, adapter: adapter; // slint: export_clipboard_copy
+    bind mut (a, window), args (), {        a.export_copy_clicked(&window);
+
+    });
+    install_seam!(window: window.on_export_preview_shown, adapter: adapter; // slint: export_preview_shown
+    bind mut (a, window), args (), {        a.export_preview_fold(&window);
+        a.export_copy_fold(&window);
+
+    });
+    install_seam!(window: window.on_export_preview_gated, adapter: adapter; // slint: export_preview_gated
+    bind mut (a, window), args (), {        a.export_preview_gated_fold(&window);
 
     });
 }
@@ -13177,6 +13563,46 @@ fn install_status_panel_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>)
     // slint: status-panel-refresh — the explicit re-query (US-1/S4).
     install_seam!(window: window.on_status_panel_refresh, adapter: adapter;
     bind mut (a, window), args (), {        a.dispatch_status_query(&window);
+
+    });
+    // The remediation lane (the D2 command plan W-1..W-4/W-6): the
+    // rows' arm moments (arm-only — nothing dispatches), the armed
+    // strip's decision pair, and the outcome fold. The kiosk
+    // permission gate lives in the arm (the trap-a law — the
+    // structural inventory's no-dispatch assertion holds by
+    // construction). The permission fold is minted here at install:
+    // a kiosk lifecycle renders the rows disabled (D-9).
+    {
+        let kiosk = adapter.borrow().kiosk;
+        window
+            .global::<crate::StatusPanelFacts>()
+            .set_remediation_permitted(!kiosk);
+    }
+    install_seam!(window: window.on_status_holder_kill, adapter: adapter;
+    bind mut (a, window), args (), {        a.status_remediation_arm(&window, crate::requests::StatusRemediationAction::KillHolder);
+
+    });
+    install_seam!(window: window.on_status_lock_force_unlock, adapter: adapter;
+    bind mut (a, window), args (), {        a.status_remediation_arm(&window, crate::requests::StatusRemediationAction::ForceUnlock);
+
+    });
+    install_seam!(window: window.on_status_daemon_restart, adapter: adapter;
+    bind mut (a, window), args (), {        a.status_remediation_arm(&window, crate::requests::StatusRemediationAction::RestartDaemon);
+
+    });
+    // The armed strip's decision pair (W-4): Confirm routes the
+    // armed verb's exact request; Cancel disarms with nothing
+    // dispatched.
+    install_seam!(window: window.on_status_remediation_armed, adapter: adapter;
+    bind mut (a, window), args (decision), {        a.status_remediation_decision(&window, decision);
+
+    });
+    // The W-6 display fold: the reply drain invokes the callback
+    // outside the adapter borrow (the re-entrancy law); the handler
+    // folds the stashed outcome and re-queries (D-3's post-fact
+    // refresh).
+    install_seam!(window: window.on_status_remediation_outcome_shown, adapter: adapter;
+    bind mut (a, window), args (), {        a.status_remediation_outcome_fold(&window);
 
     });
 }
