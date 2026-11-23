@@ -190,13 +190,20 @@ impl Scenario {
             taskboard_domain::UndoView::derive(&persisted.journal),
             "memory ≡ disk: undo projection"
         );
-        assert_yaml_snapshot!(format!("{scenario}_persisted_state"), &persisted);
         let tail = PublishedTail {
             sync: &app.sync,
             undo: &app.undo,
             last_updated: app.last_updated,
         };
-        assert_yaml_snapshot!(format!("{scenario}_published_tail"), &tail);
+        // The snapshot filename is a function of the declared snapshot
+        // name alone (#1163): the module-path prefix is disabled, so
+        // renaming or merging this test binary never moves the corpus.
+        let mut settings = insta::Settings::clone_current();
+        settings.set_prepend_module_to_snapshot(false);
+        settings.bind(|| {
+            assert_yaml_snapshot!(format!("{scenario}_persisted_state"), &persisted);
+            assert_yaml_snapshot!(format!("{scenario}_published_tail"), &tail);
+        });
     }
 }
 
