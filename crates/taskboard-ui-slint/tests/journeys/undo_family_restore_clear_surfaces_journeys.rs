@@ -188,7 +188,7 @@ fn us1_s2_restore_arm_mounts_the_strip() {
         let window = harness.handle.window();
         window.invoke_labels_manage_asked();
         harness.driver.advance_time(0);
-        window.invoke_labels_overlay_restore_clicked(0);
+        window.invoke_label_restore_requested(0);
         harness.driver.advance_time(0);
         assert_eq!(
             window.get_label_overlay_restore_armed_index(),
@@ -215,9 +215,9 @@ fn us1_s3_restore_label_dispatches_and_receipts() {
         let window = harness.handle.window();
         window.invoke_labels_manage_asked();
         harness.driver.advance_time(0);
-        window.invoke_labels_overlay_restore_clicked(0);
+        window.invoke_label_restore_requested(0);
         harness.driver.advance_time(0);
-        window.invoke_labels_overlay_restore_clicked(0);
+        window.invoke_label_restore_requested(0);
         harness.driver.advance_time(0);
         let armed_ok = window.get_label_overlay_restore_armed_index();
         let _ = armed_ok;
@@ -272,7 +272,7 @@ fn us1_s4_escape_disarms_without_dispatch() {
         let window = harness.handle.window();
         window.invoke_labels_manage_asked();
         harness.driver.advance_time(0);
-        window.invoke_labels_overlay_restore_clicked(0);
+        window.invoke_label_restore_requested(0);
         harness.driver.advance_time(0);
         assert_eq!(window.get_label_overlay_restore_armed_index(), 0);
         window.invoke_labels_overlay_dismiss_requested();
@@ -425,7 +425,7 @@ fn us3_s1_clear_row_disabled_at_zero_rules() {
             "the disabled verdict at zero rules"
         );
         // The disabled row's inert: the ask dispatches nothing.
-        harness.handle.window().invoke_task_rule_clear_asked();
+        harness.handle.window().invoke_rules_clear_asked();
         harness.driver.advance_time(0);
         assert!(harness.engine.drain().is_empty(), "no ceremony for a no-op");
     });
@@ -441,7 +441,7 @@ fn us3_s2_clear_arm_mounts_the_strip() {
         detail_with_rules(harness, 1);
         let window = harness.handle.window();
         assert!(window.get_rules_clearable(), "n ≥ 1 enables the row");
-        window.invoke_task_rule_clear_asked();
+        window.invoke_rules_clear_asked();
         harness.driver.advance_time(0);
         assert!(window.get_rule_clear_armed(), "the strip mounted");
         assert!(harness.engine.drain().is_empty(), "arming stages");
@@ -459,9 +459,9 @@ fn us3_s3_clear_all_dispatches_once() {
     support::harness::run_journey(state, move |harness| {
         detail_with_rules(harness, 2);
         let window = harness.handle.window();
-        window.invoke_task_rule_clear_asked();
+        window.invoke_rules_clear_asked();
         harness.driver.advance_time(0);
-        window.invoke_task_rule_clear_asked();
+        window.invoke_rules_clear_asked();
         harness.driver.advance_time(0);
         harness.assert_commands(&[StateCommand::ClearReminderRules { task: fx.task0 }]);
         harness.engine.settle(&harness.handle);
@@ -470,6 +470,41 @@ fn us3_s3_clear_all_dispatches_once() {
             harness.handle.window().get_task_model().rules.row_count(),
             0,
             "the list rendered empty"
+        );
+    });
+}
+
+/// US-3/S5 (W-7, AC-2): the clear journaled, one global-undo step
+/// restores all n rules (UF1's `PreImage::ReminderRule` synthesis —
+/// the fake's batch continuity mirrors the domain fold's oracle).
+#[test]
+fn us3_s5_clear_undo_restores_all_rules() {
+    let (fx, mut state) = fixture::golden_state();
+    let _ = fixture::add_armed_rule(&mut state, fx.task0, 0xB21);
+    let _ = fixture::add_armed_rule(&mut state, fx.task0, 0xB22);
+    support::harness::run_journey(state, move |harness| {
+        detail_with_rules(harness, 2);
+        let window = harness.handle.window();
+        window.invoke_rules_clear_asked();
+        harness.driver.advance_time(0);
+        window.invoke_rules_clear_asked();
+        harness.driver.advance_time(0);
+        harness.engine.settle(&harness.handle);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_task_model().rules.row_count(),
+            0,
+            "the clear cleared"
+        );
+        // The one undo step.
+        harness.press(ActionId::AppUndo);
+        harness.driver.advance_time(0);
+        harness.engine.settle(&harness.handle);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            harness.handle.window().get_task_model().rules.row_count(),
+            2,
+            "one undo step restored all n rules"
         );
     });
 }
@@ -483,9 +518,9 @@ fn us3_s4_escape_disarms_without_dispatch() {
     support::harness::run_journey(state, move |harness| {
         detail_with_rules(harness, 1);
         let window = harness.handle.window();
-        window.invoke_task_rule_clear_asked();
+        window.invoke_rules_clear_asked();
         harness.driver.advance_time(0);
-        window.invoke_task_rule_clear_cancelled();
+        window.invoke_rules_clear_cancelled();
         harness.driver.advance_time(0);
         assert!(!window.get_rule_clear_armed(), "the cancel disarmed");
         assert!(
@@ -509,8 +544,8 @@ fn us4_s1_gui_restore_undo_redeletes() {
         let window = harness.handle.window();
         window.invoke_labels_manage_asked();
         harness.driver.advance_time(0);
-        window.invoke_labels_overlay_restore_clicked(0);
-        window.invoke_labels_overlay_restore_clicked(0);
+        window.invoke_label_restore_requested(0);
+        window.invoke_label_restore_requested(0);
         harness.driver.advance_time(0);
         harness.engine.settle(&harness.handle);
         harness.driver.advance_time(0);
@@ -567,7 +602,7 @@ fn us5_s2_restore_arm_mounts_the_strip() {
         harness.handle.dispatch_action(ActionId::TaskTrackEntries);
         harness.driver.advance_time(0);
         let window = harness.handle.window();
-        window.invoke_track_entry_restore_clicked(0);
+        window.invoke_entry_restore_requested(0);
         harness.driver.advance_time(0);
         assert_eq!(
             window.get_track_restore_armed_index(),
@@ -592,9 +627,9 @@ fn us5_s3_restore_from_journal_dispatches_id_only() {
         harness.handle.dispatch_action(ActionId::TaskTrackEntries);
         harness.driver.advance_time(0);
         let window = harness.handle.window();
-        window.invoke_track_entry_restore_clicked(0);
+        window.invoke_entry_restore_requested(0);
         harness.driver.advance_time(0);
-        window.invoke_track_entry_restore_clicked(0);
+        window.invoke_entry_restore_requested(0);
         harness.driver.advance_time(0);
         // The pin: the drained boundary carries the wrapper, its
         // payload the journal id and nothing else.
@@ -613,9 +648,9 @@ fn us5_s4_escape_disarms_without_dispatch() {
         harness.handle.dispatch_action(ActionId::TaskTrackEntries);
         harness.driver.advance_time(0);
         let window = harness.handle.window();
-        window.invoke_track_entry_restore_clicked(0);
+        window.invoke_entry_restore_requested(0);
         harness.driver.advance_time(0);
-        window.invoke_track_entry_restore_cancelled();
+        window.invoke_entry_restore_cancelled();
         harness.driver.advance_time(0);
         assert_eq!(window.get_track_restore_armed_index(), -1, "disarmed");
         assert!(

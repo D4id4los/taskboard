@@ -72,6 +72,8 @@ export component RuleList inherits VerticalLayout {
     in property <bool> rules-clearable: false;
     in property <int> rules-clear-count: 0;
     in property <bool> clear-armed: false;
+    // slint: rules-clear-asked / rules-clear-cancelled
+    // (adapter: rules_clear_asked / rules_clear_cancelled)
     callback rules-clear-asked();
     callback rules-clear-cancelled();
     in property <FieldValidity> offset-validity: FieldValidity.neutral;

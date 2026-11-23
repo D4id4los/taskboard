@@ -114,11 +114,12 @@ export component TrackEntriesPanel inherits Rectangle {
     // carries the journal id only, the engine reads the pre-image.
     // Kiosk renders the section absent (D-4: the adapter pushes empty
     // rows there; the CLI carries the kiosk restore path).
-    // slint: entry-restore-clicked / entry-restore-cancelled
+    // slint: entry-restore-requested / entry-restore-cancelled
+    // (adapter: entry_restore_requested / entry_restore_cancelled)
     in property <[string]> deleted-entry-rows;
     in property <bool> has-deleted-entries: false;
     in property <int> restore-armed-index: -1;
-    callback entry-restore-clicked(int);
+    callback entry-restore-requested(int);
     callback entry-restore-cancelled();
 
     background: Theme.surface-raised;
@@ -549,7 +550,7 @@ export component TrackEntriesPanel inherits Rectangle {
                                 description: "Restores the armed entry from the journal.";
                                 clicked => {
                                     TooltipState.unhover();
-                                    root.entry-restore-clicked(root.restore-armed-index);
+                                    root.entry-restore-requested(root.restore-armed-index);
                                 }
                             }
                             IconButton {
@@ -586,7 +587,7 @@ export component TrackEntriesPanel inherits Rectangle {
                                 description: "Arms the restore: the entry comes back verbatim from the journal.";
                                 clicked => {
                                     TooltipState.unhover();
-                                    root.entry-restore-clicked(index);
+                                    root.entry-restore-requested(index);
                                 }
                             }
                         }
