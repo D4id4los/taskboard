@@ -2512,3 +2512,365 @@ async fn the_port_applies_live_to_a_real_engine() {
     let text = std::fs::read_to_string(workspace.config_write_path.as_path()).expect("file");
     assert!(text.contains("tick_secs = 45"), "the file wrote: {text}");
 }
+
+// -- the #1157 re-homing: the seven ui_requests legs that composed the
+// process env, moved out of the lib's gated `tests` module behind
+// `taskboard_env_lock()` — runnable under any ambient, the
+// hostile-env oracle by construction. Assertions are verbatim from
+// the inline legs; only the fixture spell adapts (the integration
+// binary cannot reach the lib's `pub(crate)` test support, so the
+// boots use the suite's `FakeCredentialStore` — none of these legs
+// touches the credential store).
+
+/// The #982-ownership boot (mirrors the lib tests' `WorkspaceFixture`):
+/// the db and the device identity share one tempdir, held by the
+/// returned struct. **Field order is the contract** — `workspace` and
+/// `app` drop before `dir`, so the app's actor teardown (the engine
+/// join in `App`'s drop) always precedes the directory deletion.
+struct OwnedBootFixture {
+    workspace: ConnectionWorkspace,
+    app: App,
+    /// The db + device-identity home; held for its `Drop` side
+    /// effect as much as for its path.
+    dir: tempfile::TempDir,
+}
+
+/// [`owned_boot_at`] over a fresh tempdir: the config write path is a
+/// plain unused name (the leg drives the handler, not the file lane).
+async fn owned_boot(config_write_path: PathBuf) -> OwnedBootFixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    owned_boot_at(config_write_path, dir).await
+}
+
+/// The standalone boot over a caller-owned tempdir: the seeded config,
+/// the db, and the device identity share the one directory (#982).
+async fn owned_boot_at(config_write_path: PathBuf, dir: tempfile::TempDir) -> OwnedBootFixture {
+    let mut config = AppConfig::default();
+    config.storage.db_path = Some(dir.path().join("taskboard.db"));
+    config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
+    config.validate().expect("config valid");
+    let app = bootstrap::bootstrap_in(
+        config,
+        Arc::new(FakeCredentialStore::default()),
+        Arc::new(LogSink),
+        bootstrap::BootIdentity::At(dir.path().to_owned()),
+    )
+    .await
+    .expect("standalone boot");
+    let workspace = ConnectionWorkspace {
+        config_write_path,
+        store: Arc::new(FakeCredentialStore::default()),
+        control: app.connector_control(),
+        engine: app.engine.clone(),
+        // The suite's own identity home: the ceremony's create arm
+        // mints there, never the platform default (#751).
+        device_json: Some(dir.path().join("device.json")),
+        connector_owners: app.connector_owners.clone(),
+        export: taskboard_app::ui_requests::ExportWorkspace::default(),
+        // The suite never drives the status panel; the source is the
+        // in-session projection over the fixture's handles.
+        status: Box::new({
+            let engine = app.engine.clone();
+            let config = app.config.clone();
+            let control = app.connector_control();
+            let files = app.files_sync_status.clone();
+            move || {
+                taskboard_app::commands::status::StatusView::in_session_parts(
+                    &engine,
+                    &config,
+                    control.connector_attached(),
+                    files.as_ref(),
+                )
+            }
+        }),
+    };
+    OwnedBootFixture {
+        workspace,
+        app,
+        dir,
+    }
+}
+
+/// The port boot: a seeded config file sharing the db + identity
+/// tempdir (the shared live-write port's fixture).
+async fn port_boot(seed_text: &str) -> OwnedBootFixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("taskboard.toml");
+    std::fs::write(&path, seed_text).expect("seed config");
+    owned_boot_at(path, dir).await
+}
+
+/// The #982 lifetime pin: the directory survives as long as the
+/// fixture, and its deletion happens only after the app's
+/// teardown — guaranteed by the field order (workspace, app, then
+/// `dir` last); a struct reorder must re-run this test.
+#[tokio::test]
+async fn workspace_fixture_deletes_the_dir_only_after_the_app_teardown() {
+    let _env = crate::common::taskboard_env_lock();
+    let fixture = owned_boot(PathBuf::from("unused-write-path.toml")).await;
+    let dir = fixture.dir.path().to_owned();
+    assert!(dir.exists(), "the fixture owns the directory");
+    assert!(dir.join("taskboard.db").exists(), "the db lives there");
+    // Destructure (the fixture's drop-by-field semantics are what
+    // the pin observes): the app's teardown must complete while the
+    // directory still exists, and the deletion must follow it.
+    let OwnedBootFixture {
+        workspace: _,
+        app,
+        dir: dir_guard,
+    } = fixture;
+    let outcome = app.shutdown().await;
+    assert!(!outcome.actor_aborted, "clean teardown");
+    assert!(dir.exists(), "the dir outlives the app's teardown");
+    drop(dir_guard);
+    assert!(!dir.exists(), "the drop deletes the dir");
+}
+
+/// The snapshot's board half carries the binding's channel,
+/// detected STRUCTURALLY from the id type (D-BF4) — never from the
+/// binding's connector name: a files binding whose connector name
+/// is a Deck-shaped card name still reads `Files`.
+#[tokio::test]
+async fn current_connections_fills_bound_channel_structurally() {
+    let _env = crate::common::taskboard_env_lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+    let fixture = owned_boot(config).await;
+    let app = &fixture.app;
+    let workspace = &fixture.workspace;
+
+    let deck_bound = create_board(app, "deck board").await;
+    let files_bound = create_board(app, "files board").await;
+    let _loose = create_board(app, "loose").await;
+    for (board, remote) in [
+        (deck_bound, RemoteBoardId::deck(7)),
+        (
+            files_bound,
+            taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
+        ),
+    ] {
+        app.engine
+            .execute(StateCommand::BindBoard {
+                board,
+                remote,
+                // Deliberately a Deck-card-shaped name for BOTH
+                // bindings: the channel must not key on it (D-BF4).
+                connector: taskboard_domain::ConnectorId::from("work"),
+            })
+            .await
+            .expect("bind lands");
+    }
+
+    let snapshot = taskboard_app::ui_requests::current_connections(workspace);
+    let by_name = |name: &str| {
+        snapshot
+            .boards
+            .iter()
+            .find(|board| board.name == name)
+            .expect("the live board is in the snapshot")
+    };
+    assert_eq!(
+        by_name("deck board").bound_channel,
+        Some(taskboard_ui_slint::requests::BoardChannel::Deck),
+    );
+    assert_eq!(
+        by_name("files board").bound_channel,
+        Some(taskboard_ui_slint::requests::BoardChannel::Files),
+    );
+    assert_eq!(by_name("loose").bound_channel, None);
+    assert_eq!(
+        by_name("files board").bound_connector.as_deref(),
+        Some("work"),
+        "the name field is untouched — the channel is the id type's"
+    );
+}
+
+/// US-2/S2 — the Stop arm's guards refuse typed: a gone board is
+/// `Gone`; a deck-bound and an unbound board are `BindRefused`
+/// (the row grammar can't normally offer those — the arm still
+/// refuses typed).
+#[tokio::test]
+async fn us2_s2_stop_sync_guards_refuse_typed() {
+    let _env = crate::common::taskboard_env_lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+    let fixture = owned_boot(config).await;
+    let app = &fixture.app;
+    let workspace = &fixture.workspace;
+
+    let deck_bound = create_board(app, "deck board").await;
+    let unbound = create_board(app, "loose").await;
+    app.engine
+        .execute(StateCommand::BindBoard {
+            board: deck_bound,
+            remote: RemoteBoardId::deck(7),
+            connector: taskboard_domain::ConnectorId::from("work"),
+        })
+        .await
+        .expect("deck bind lands");
+
+    let gone = taskboard_app::ui_requests::stop_board_files_sync(
+        workspace,
+        taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
+    )
+    .await
+    .expect_err("a gone board refuses");
+    assert_eq!(gone, SettingsError::Gone);
+    let deck = taskboard_app::ui_requests::stop_board_files_sync(workspace, deck_bound)
+        .await
+        .expect_err("a deck-bound board refuses");
+    assert_eq!(deck, SettingsError::BindRefused);
+    let loose = taskboard_app::ui_requests::stop_board_files_sync(workspace, unbound)
+        .await
+        .expect_err("an unbound board refuses");
+    assert_eq!(loose, SettingsError::BindRefused);
+}
+
+/// The Stop arm's exact effect (US-2/S3): the engine receives the
+/// unbind — the files binding is gone, the board itself survives
+/// (unbind is not a delete) — and the reply is the fresh
+/// snapshot whose board half no longer carries the binding.
+#[tokio::test]
+async fn stop_board_files_sync_sends_exact_unbind_command() {
+    let _env = crate::common::taskboard_env_lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = dir.path().join("taskboard.toml");
+    std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
+    let fixture = owned_boot(config).await;
+    let app = &fixture.app;
+    let workspace = &fixture.workspace;
+    let board = create_board(app, "files board").await;
+    app.engine
+        .execute(StateCommand::BindBoard {
+            board,
+            remote: taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
+            connector: taskboard_domain::ConnectorId::from("files-sync"),
+        })
+        .await
+        .expect("files bind lands");
+
+    let snapshot = taskboard_app::ui_requests::stop_board_files_sync(workspace, board)
+        .await
+        .expect("a files-bound board stops");
+    let state = workspace.engine.shared_state().load();
+    let row = state.boards.get(&board).expect("the board survives");
+    assert!(row.remote.is_none(), "the binding is unbound");
+    assert!(!row.deleted, "unbind is not a delete");
+    let replied = snapshot
+        .boards
+        .iter()
+        .find(|info| info.id == board.as_uuid())
+        .expect("the board is in the fresh snapshot");
+    assert_eq!(replied.bound_channel, None);
+    assert_eq!(replied.bound_connector, None);
+}
+
+/// A stopped engine (`EngineGone`) is NOT an error at the port:
+/// the file is written, the next start applies it (D7's typed
+/// next-start outcome — the fronts decide how to render it).
+#[tokio::test]
+async fn the_port_engine_gone_reports_the_next_start_lane() {
+    let _env = crate::common::taskboard_env_lock();
+    let mut fixture = port_boot("[reminders]\ntick_secs = 30\n").await;
+    let OwnedBootFixture {
+        ref workspace,
+        ref mut app,
+        ..
+    } = fixture;
+    // Drain the engine (the D-5.3 journey's pattern): every later
+    // `execute` answers `EngineGone`.
+    app.system
+        .send(taskboard_domain::SystemEvent::Shutdown)
+        .expect("the engine subscribes");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let probe = workspace.engine.execute(StateCommand::RequestSync).await;
+            if matches!(probe, Err(taskboard_state::ExecuteError::EngineGone)) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the engine drained");
+    let locked = std::collections::BTreeSet::new();
+    let outcome = taskboard_app::ui_requests::run_settings_write(
+        workspace.config_write_path.as_path(),
+        &locked,
+        &["reminders.tick_secs"],
+        |path| taskboard_app::settings_overlay::set_reminder_tick(path, 45),
+        Some(&workspace.engine),
+    )
+    .await
+    .expect("the write still lands");
+    assert_eq!(
+        outcome.apply,
+        taskboard_app::ui_requests::LiveApply::EngineGone,
+        "the next-start lane"
+    );
+    let text = std::fs::read_to_string(workspace.config_write_path.as_path()).expect("file");
+    assert!(text.contains("tick_secs = 45"), "the file wrote: {text}");
+}
+
+/// The no-engine lane (the one-shot CLI front): the write lands,
+/// the port reports `NoEngine` — the typed `applied_live: false`.
+#[tokio::test]
+async fn the_port_no_engine_lane_reports_next_start() {
+    let _env = crate::common::taskboard_env_lock();
+    let fixture = port_boot("[reminders]\ntick_secs = 30\n").await;
+    let workspace = &fixture.workspace;
+    let locked = std::collections::BTreeSet::new();
+    let outcome = taskboard_app::ui_requests::run_settings_write(
+        workspace.config_write_path.as_path(),
+        &locked,
+        &["reminders.tick_secs"],
+        |path| taskboard_app::settings_overlay::set_reminder_tick(path, 45),
+        None,
+    )
+    .await
+    .expect("the write lands");
+    assert_eq!(
+        outcome.apply,
+        taskboard_app::ui_requests::LiveApply::NoEngine
+    );
+    assert_eq!(outcome.effective.reminders.tick_secs, 45);
+}
+
+/// A garbage minute write reaching the handler from a non-UI lane
+/// client is refused typed with own-blame attribution — the gate's
+/// defence in depth, never a silent clamp at any layer.
+#[tokio::test]
+async fn focus_gate_refusal_attributes_own_blame() {
+    let _env = crate::common::taskboard_env_lock();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("taskboard.toml");
+    std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
+    let fixture = owned_boot(path.clone()).await;
+    let workspace = &fixture.workspace;
+
+    let (reply, reply_rx) = tokio::sync::oneshot::channel();
+    taskboard_app::ui_requests::handle_settings(
+        UiRequest::SetFocusWorkMins { mins: 0, reply },
+        workspace,
+    )
+    .await;
+    let outcome = reply_rx.await.expect("the reply lane is alive");
+    assert!(
+        matches!(
+            outcome,
+            Err(SettingsError::Invalid {
+                field: taskboard_ui_slint::requests::Field::FocusWorkMins,
+                kind: taskboard_ui_slint::requests::InvalidKind::OutOfRange
+            })
+        ),
+        "the own-blame refusal is typed: {outcome:?}"
+    );
+    assert!(
+        !std::fs::read_to_string(&path)
+            .expect("read")
+            .contains("work_mins"),
+        "the refused write left the file untouched"
+    );
+}
