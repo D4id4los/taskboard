@@ -464,6 +464,11 @@ mod tests {
                 // US-8 (W-9, #1057): the repair chord rides the same
                 // Today-context parity law.
                 ActionId::HabitRepair,
+                // D3a (W-5/W-16, #1202): the log chord and the Return
+                // activation row — the keyboard-first law's explicit
+                // rows, in every preset (the no-second-class gate).
+                ActionId::HabitLog,
+                ActionId::HabitEdit,
             ] {
                 assert!(
                     keymap.first_binding_display(verb, &chain).is_some(),

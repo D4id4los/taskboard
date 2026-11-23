@@ -364,6 +364,33 @@ fn state_two_habits(state: &mut AppState, board: taskboard_domain::BoardId) {
     state_habit_at(state, board, 10, "stretch", 2);
 }
 
+/// US-3/AC-2 (W-16): Return over a focused habit row opens the habit
+/// editor (the shared activation row — the `TaskEdit` parity twin); the
+/// fall-through keeps the task landing's editor on the same stroke.
+#[test]
+fn us3_s2_enter_activates_habit_editor() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_two_habits(&mut state, board);
+    run(state, false, move |harness| {
+        let window = harness.handle.window();
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavLastItem);
+        harness.driver.advance_time(0);
+        harness.driver.press_stroke(parse("Return"));
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_current_view(),
+            View::TaskDetail,
+            "Return over the habit landing opens the habit editor"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "opening the editor dispatches nothing"
+        );
+    });
+}
+
 /// US-3/AC-3 (W-5): the new `Ctrl+Shift+l` preset chord routes the
 /// exact `LogHabit` for the focused row's current window — the R-5
 /// supersession, the `HabitQuotaEdit` key's focused-row precedent.

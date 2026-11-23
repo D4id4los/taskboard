@@ -7317,10 +7317,21 @@ impl Adapter {
     }
 
     fn habit_edit_subject(&self) -> Option<taskboard_domain::HabitId> {
-        let habit = self.focused_habit.or(match self.menu_row_subject {
-            Some(crate::presentation::RowSubject::Habit(habit)) => Some(habit),
-            _ => None,
-        });
+        // D3a (W-16, #1202): the walk cursor joins the subject chain —
+        // the Return row's habit landing IS the subject (the
+        // chord verbs' `effective_habit` resolution; the walk cursor
+        // is the fallback, the row seams' mints stay first so the
+        // menu path cannot drift).
+        let habit = self
+            .focused_habit
+            .or(match self.menu_row_subject {
+                Some(crate::presentation::RowSubject::Habit(habit)) => Some(habit),
+                _ => None,
+            })
+            .or_else(|| match self.view_state.walk_subject() {
+                Some(crate::presentation::RowSubject::Habit(habit)) => Some(habit),
+                _ => None,
+            });
         habit.filter(|habit| {
             self.state
                 .load()
