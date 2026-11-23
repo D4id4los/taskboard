@@ -823,6 +823,11 @@ export component AppWindow inherits Window {
                 habit-history-clicked() => root.habit-editor-history-clicked();
                 rule-remove-clicked(i) => root.task-rule-remove-clicked(i);
                 rule-row-clicked(i) => root.task-rule-row-clicked(i);
+                rules-clearable: root.rules-clearable;
+                rules-clear-count: root.rules-clear-count;
+                rule-clear-armed: root.rule-clear-armed;
+                rule-clear-asked() => root.task-rule-clear-asked();
+                rule-clear-cancelled() => root.task-rule-clear-cancelled();
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
                 due-edit-opened() => root.task-due-edit-opened();
@@ -1220,6 +1225,11 @@ export component AppWindow inherits Window {
         row-activated(index) => root.track-entry-row-activated(index);
         delete-clicked(index) => root.track-entry-delete-clicked(index);
         armed-index: root.track-armed-index;
+        has-deleted-entries: root.track-has-deleted;
+        deleted-entry-rows: root.track-deleted-rows;
+        restore-armed-index: root.track-restore-armed-index;
+        entry-restore-clicked(index) => root.track-entry-restore-clicked(index);
+        entry-restore-cancelled() => root.track-entry-restore-cancelled();
         add-requested() => root.track-form-add-requested();
         date-edited(t) => root.track-form-date-edited(t);
         date-grid-toggled() => root.track-form-grid-toggled();
@@ -1326,6 +1336,11 @@ export component AppWindow inherits Window {
                 form-cancelled() => root.labels-overlay-form-cancelled();
                 delete-clicked(index) => root.labels-overlay-delete-clicked(index);
                 delete-cancelled() => root.labels-overlay-delete-cancelled();
+                has-deleted: root.label-overlay-has-deleted;
+                deleted-rows: root.label-overlay-deleted-rows;
+                restore-armed-index: root.label-overlay-restore-armed-index;
+                restore-clicked(index) => root.labels-overlay-restore-clicked(index);
+                restore-cancelled() => root.labels-overlay-restore-cancelled();
                 }
             }
             // The roster-only board mount (tag-color plan D-4, US-2):
@@ -1372,6 +1387,11 @@ export component AppWindow inherits Window {
                 form-cancelled() => root.labels-overlay-form-cancelled();
                 delete-clicked(index) => root.labels-overlay-delete-clicked(index);
                 delete-cancelled() => root.labels-overlay-delete-cancelled();
+                has-deleted: root.label-overlay-has-deleted;
+                deleted-rows: root.label-overlay-deleted-rows;
+                restore-armed-index: root.label-overlay-restore-armed-index;
+                restore-clicked(index) => root.labels-overlay-restore-clicked(index);
+                restore-cancelled() => root.labels-overlay-restore-cancelled();
                 }
             }
 
@@ -2617,6 +2637,26 @@ export component AppWindow inherits Window {
     in property <int> label-overlay-armed-index;
     pure callback labels-overlay-delete-clicked(int);
     pure callback labels-overlay-delete-cancelled();
+    // The restore sections' pushed halves + seams (the undo-family
+    // journey plan W-2/W-4/W-9): the deleted rosters' rows and armed
+    // mirrors; the clear-all's push trio. Kiosk receives empty
+    // sections (D-4 — the affordances render absent; the CLI carries
+    // the kiosk restore path).
+    in property <bool> label-overlay-has-deleted;
+    in property <[string]> label-overlay-deleted-rows;
+    in property <int> label-overlay-restore-armed-index;
+    pure callback labels-overlay-restore-clicked(int);
+    pure callback labels-overlay-restore-cancelled();
+    in property <bool> track-has-deleted;
+    in property <[string]> track-deleted-rows;
+    in property <int> track-restore-armed-index;
+    pure callback track-entry-restore-clicked(int);
+    pure callback track-entry-restore-cancelled();
+    in property <bool> rules-clearable;
+    in property <int> rules-clear-count;
+    in property <bool> rule-clear-armed;
+    pure callback task-rule-clear-asked();
+    pure callback task-rule-clear-cancelled();
     pure callback labels-overlay-row-toggled(int);
     pure callback labels-overlay-dismiss-requested();
     pure callback labels-overlay-add-requested();

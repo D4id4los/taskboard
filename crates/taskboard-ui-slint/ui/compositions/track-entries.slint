@@ -107,6 +107,19 @@ export component TrackEntriesPanel inherits Rectangle {
     // resolves it — a refresh that drops the row renders unarmed).
     callback delete-clicked(int);
     in property <int> armed-index: -1;
+    // The deleted-entries restore section (the undo-family journey
+    // plan W-9, D-5 — zero-input): the journal's restorable deletes,
+    // each row arming the shared armed-confirm grammar; Confirm
+    // dispatches `RestoreTimeEntryFromJournal { from }` — the payload
+    // carries the journal id only, the engine reads the pre-image.
+    // Kiosk renders the section absent (D-4: the adapter pushes empty
+    // rows there; the CLI carries the kiosk restore path).
+    // slint: entry-restore-clicked / entry-restore-cancelled
+    in property <[string]> deleted-entry-rows;
+    in property <bool> has-deleted-entries: false;
+    in property <int> restore-armed-index: -1;
+    callback entry-restore-clicked(int);
+    callback entry-restore-cancelled();
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
@@ -497,6 +510,87 @@ export component TrackEntriesPanel inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
+                    }
+                }
+                // The deleted-entries restore section (W-9): mounted
+                // only when the roster's entry section is non-empty
+                // (no dead chrome); the armed strip names the
+                // zero-input consequence (nothing is re-typed, D-5).
+                if (root.has-deleted-entries): VerticalLayout {
+                    spacing: Theme.space-1;
+                    padding-left: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Deleted entries";
+                    }
+                    if (root.restore-armed-index >= 0): Rectangle {
+                        height: Theme.space-5 + Theme.space-2;
+                        border-radius: Theme.radius-small;
+                        background: Theme.surface-hover;
+                        border-width: Theme.focus-ring-width;
+                        border-color: Semantic.focus-ring;
+                        HorizontalLayout {
+                            padding-left: Theme.space-2;
+                            padding-right: Theme.space-1;
+                            spacing: Theme.space-2;
+                            RoleText {
+                                role: Typography.caption;
+                                text-color: Theme.text-secondary;
+                                text: "Restores the entry from the journal — verbatim, nothing re-typed.";
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                wrap: word-wrap;
+                            }
+                            IconButton {
+                                icon: IconKind.check;
+                                tone: Tone.success;
+                                label: "Confirm restore";
+                                description: "Restores the armed entry from the journal.";
+                                clicked => {
+                                    TooltipState.unhover();
+                                    root.entry-restore-clicked(root.restore-armed-index);
+                                }
+                            }
+                            IconButton {
+                                icon: IconKind.remove;
+                                tone: Tone.neutral;
+                                label: "Cancel restore";
+                                description: "Disarms the restore without dispatching.";
+                                clicked => {
+                                    TooltipState.unhover();
+                                    root.entry-restore-cancelled();
+                                }
+                            }
+                        }
+                    }
+                    for row[index] in root.deleted-entry-rows: Rectangle {
+                        height: Theme.space-5;
+                        border-radius: Theme.radius-small;
+                        background: deleted-touch.has-hover ? Theme.surface-hover : Theme.surface;
+                        HorizontalLayout {
+                            padding-left: Theme.space-2;
+                            padding-right: Theme.space-1;
+                            spacing: Theme.space-2;
+                            RoleText {
+                                role: Typography.caption;
+                                text: row;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            if (root.restore-armed-index != index): IconButton {
+                                icon: IconKind.history;
+                                tone: Tone.neutral;
+                                label: "Restore entry";
+                                description: "Arms the restore: the entry comes back verbatim from the journal.";
+                                clicked => {
+                                    TooltipState.unhover();
+                                    root.entry-restore-clicked(index);
+                                }
+                            }
+                        }
+                        deleted-touch := TouchArea {}
                     }
                 }
             }

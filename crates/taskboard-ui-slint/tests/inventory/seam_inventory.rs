@@ -50,6 +50,15 @@ const SEAM_INVENTORY: &[&str] = &[
     "labels_overlay_form_cancelled",
     "labels_overlay_delete_clicked",
     "labels_overlay_delete_cancelled",
+    // The restore sections' seams (the undo-family journey plan
+    // W-2/W-4/W-9): the armed-confirm pairs over the published
+    // rosters and the rule list's clear-all.
+    "labels_overlay_restore_clicked",
+    "labels_overlay_restore_cancelled",
+    "track_entry_restore_clicked",
+    "track_entry_restore_cancelled",
+    "task_rule_clear_asked",
+    "task_rule_clear_cancelled",
     // The date-grid overlay's light-dismiss (the overlay migration,
     // M4).
     "track_form_grid_dismiss_requested",

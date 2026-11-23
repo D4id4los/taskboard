@@ -79,6 +79,17 @@ export component LabelsPanel inherits Rectangle {
     // grammar on the roster rows.
     callback delete-clicked(int);
     callback delete-cancelled();
+    // The deleted-labels restore section (the undo-family journey
+    // plan W-2, D-2): the tombstoned roster's rows, each arming the
+    // same armed-confirm grammar (restore is state-changing; the
+    // strip names what comes back). Ids stay adapter-side — the index
+    // resolves against the published roster's row order.
+    // slint: label-restore-clicked / label-restore-cancelled
+    in property <[string]> deleted-rows;
+    in property <bool> has-deleted: false;
+    in property <int> restore-armed-index: -1;
+    callback restore-clicked(int);
+    callback restore-cancelled();
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
@@ -342,6 +353,87 @@ export component LabelsPanel inherits Rectangle {
                             root.delete-cancelled();
                         }
                     }
+                }
+            }
+            // The deleted-labels restore section (W-2): mounted only
+            // when the roster is non-empty (no dead chrome); the armed
+            // strip's consequence names the restoration (the D-2
+            // grammar; the desktop-qualified rows render absent on
+            // kiosk — the adapter pushes empty rows there, D-4).
+            if (!root.form-open && root.has-deleted): VerticalLayout {
+                spacing: Theme.space-1;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Deleted labels";
+                }
+                if (root.restore-armed-index >= 0): Rectangle {
+                    height: Theme.space-5 + Theme.space-2;
+                    border-radius: Theme.radius-small;
+                    background: Theme.surface-hover;
+                    border-width: Theme.focus-ring-width;
+                    border-color: Semantic.focus-ring;
+                    HorizontalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-1;
+                        spacing: Theme.space-2;
+                        RoleText {
+                            role: Typography.caption;
+                            text-color: Theme.text-secondary;
+                            text: "Restores the label from the roster — it comes back verbatim and can be assigned again.";
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                        }
+                        IconButton {
+                            icon: IconKind.check;
+                            tone: Tone.success;
+                            label: "Confirm restore";
+                            description: "Restores the armed label.";
+                            clicked => {
+                                TooltipState.unhover();
+                                root.restore-clicked(root.restore-armed-index);
+                            }
+                        }
+                        IconButton {
+                            icon: IconKind.remove;
+                            tone: Tone.neutral;
+                            label: "Cancel restore";
+                            description: "Disarms the restore without dispatching.";
+                            clicked => {
+                                TooltipState.unhover();
+                                root.restore-cancelled();
+                            }
+                        }
+                    }
+                }
+                for row[index] in root.deleted-rows: Rectangle {
+                    height: Theme.space-5;
+                    border-radius: Theme.radius-small;
+                    background: deleted-touch.has-hover ? Theme.surface-hover : Theme.surface;
+                    HorizontalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-1;
+                        spacing: Theme.space-2;
+                        RoleText {
+                            role: Typography.caption;
+                            text: row;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        if (root.restore-armed-index != index): IconButton {
+                            icon: IconKind.history;
+                            tone: Tone.neutral;
+                            label: "Restore label " + row;
+                            description: "Arms the restore: the label comes back verbatim.";
+                            clicked => {
+                                TooltipState.unhover();
+                                root.restore-clicked(index);
+                            }
+                        }
+                    }
+                    deleted-touch := TouchArea {}
                 }
             }
             if (!root.form-open): list := VerticalLayout {

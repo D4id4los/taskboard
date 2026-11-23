@@ -625,6 +625,21 @@ pub(crate) struct Adapter {
     /// task-delete/`BreakRuleRemove` grammar verbatim — the arm
     /// stages adapter-side, the confirm routes `DeleteHabit`.
     habit_remove_armed: Option<taskboard_domain::HabitId>,
+    /// The undo-family restore's armed subject (W-3): the roster
+    /// habit the open menu's confirm would resurrect; `take()`n by
+    /// the confirm's one-shot collection.
+    habit_restore_armed: Option<taskboard_domain::HabitId>,
+    /// The labels overlay's armed restore subject (W-2): the roster
+    /// row the strip's Confirm would resurrect.
+    label_restore_armed: Option<taskboard_domain::LabelId>,
+    /// The track panel's armed restore target (W-9): the journal id
+    /// the strip's Confirm dispatches `RestoreTimeEntryFromJournal`
+    /// over (the zero-input payload carries the id only).
+    entry_restore_armed: Option<taskboard_domain::JournalId>,
+    /// The rule list's armed clear (W-4): subject-scoped (the armed
+    /// flag survives only while the same task stays the editor's
+    /// subject and keeps ≥1 rule).
+    rules_clear_armed: bool,
     /// The habit editor's staged draft (H4 D5): the field mirrors the
     /// editor rows push; dies with its subject (the editor's
     /// escape/cancel discipline — no draft persistence).
@@ -1862,6 +1877,14 @@ impl Adapter {
             // is the disarmed `NoTarget`).
             ctx.habit_remove_target = self.habit_remove_armed.take();
         }
+        if wants.wants(crate::router::OneShotSet::HABIT_RESTORE_TARGET) {
+            // The staged restore's armed subject (W-3): the arm
+            // recorded it; the confirm consumes the one-shot (the
+            // armed state clears with the dispatch — the #1187 law's
+            // re-delete then leaves the habit tombstoned again, the
+            // roster re-derives).
+            ctx.habit_restore_target = self.habit_restore_armed.take();
+        }
         if wants.wants(crate::router::OneShotSet::HABIT_PAUSE_TARGET) {
             ctx.habit_pause_target = self.habit_pause_target.take();
         }
@@ -3013,6 +3036,17 @@ impl Adapter {
         }) {
             self.habit_remove_armed = None;
         }
+        // The armed restore absorbs when its habit leaves the roster's
+        // restorable set (the stale law inverted: a restored or
+        // re-created habit has nothing left to resurrect).
+        if !state
+            .roster
+            .tombstoned_habits
+            .iter()
+            .any(|row| Some(row.id) == self.habit_restore_armed)
+        {
+            self.habit_restore_armed = None;
+        }
         // The pause editor's one-shot subject absorbs when its habit
         // dies (the same stale-index law; HF1) — the open editor
         // unmounts with it.
@@ -3090,6 +3124,40 @@ impl Adapter {
         {
             self.label_delete_armed = None;
         }
+        // The armed label restore absorbs when its label leaves the
+        // roster's tombstoned set (the stale law — a restored or
+        // re-created label has nothing left to resurrect).
+        if let Some(armed) = self.label_restore_armed
+            && state
+                .roster
+                .tombstoned_labels
+                .iter()
+                .all(|row| row.id != armed)
+        {
+            self.label_restore_armed = None;
+        }
+        // The armed entry restore absorbs when the journal id left the
+        // roster (restored, re-created, or evicted — the bounded
+        // honesty of the retention law).
+        if let Some(armed) = self.entry_restore_armed
+            && state
+                .roster
+                .deleted_entries
+                .iter()
+                .all(|row| row.journal_id != armed)
+        {
+            self.entry_restore_armed = None;
+        }
+        // The armed rule clear absorbs when its subject has no rules
+        // left (D-2: never ceremony a no-op).
+        if self.rules_clear_armed
+            && self
+                .view_state
+                .subject_task()
+                .is_none_or(|task| state.reminders.rules.values().all(|rule| rule.task != task))
+        {
+            self.rules_clear_armed = false;
+        }
         // The overlay roster's board (tag-color plan D-8): the board
         // mount names its subject directly; the detail mount derives
         // the subject task's board.
@@ -3127,6 +3195,96 @@ impl Adapter {
             .and_then(|p| i32::try_from(p).ok())
             .unwrap_or(-1);
         self.models.walk_abort_armed = self.walk_abort_armed;
+        // The restore rosters' pushed halves (W-2/W-9, D-4): the
+        // deleted sections' rows and armed mirrors. Kiosk pushes empty
+        // sections — the affordances render absent, the CLI carries
+        // the kiosk restore path.
+        let (label_deleted_rows, label_restore_armed_index): (Vec<slint::SharedString>, i32) =
+            if self.kiosk {
+                (Vec::new(), -1)
+            } else {
+                let overlay_board = match self.view_state.labels_subject() {
+                    Some(crate::view_state::LabelOverlaySubject::Board(board)) => Some(board),
+                    _ => self
+                        .view_state
+                        .subject_task()
+                        .and_then(|t| state.tasks.get(&t))
+                        .and_then(|t| state.stacks.get(&t.stack))
+                        .map(|stack| stack.board),
+                };
+                let rows: Vec<&taskboard_domain::RestoreRow<taskboard_domain::LabelId>> = state
+                    .roster
+                    .tombstoned_labels
+                    .iter()
+                    .filter(|row| {
+                        state.labels.get(&row.id).is_some_and(|label| {
+                            label.deleted && Some(label.board) == overlay_board
+                        })
+                    })
+                    .collect();
+                let armed = self
+                    .label_restore_armed
+                    .and_then(|id| rows.iter().position(|row| row.id == id))
+                    .and_then(|p| i32::try_from(p).ok())
+                    .unwrap_or(-1);
+                (
+                    rows.into_iter()
+                        .map(|row| slint::SharedString::from(row.name.as_str()))
+                        .collect(),
+                    armed,
+                )
+            };
+        window.set_label_overlay_has_deleted(!label_deleted_rows.is_empty());
+        window.set_label_overlay_deleted_rows(ModelRc::new(slint::VecModel::from(
+            label_deleted_rows,
+        )));
+        window.set_label_overlay_restore_armed_index(label_restore_armed_index);
+        let (entry_deleted_rows, entry_restore_armed_index): (Vec<slint::SharedString>, i32) =
+            if self.kiosk {
+                (Vec::new(), -1)
+            } else {
+                let armed = self
+                    .entry_restore_armed
+                    .and_then(|id| {
+                        state
+                            .roster
+                            .deleted_entries
+                            .iter()
+                            .position(|row| row.journal_id == id)
+                    })
+                    .and_then(|p| i32::try_from(p).ok())
+                    .unwrap_or(-1);
+                (
+                    state
+                        .roster
+                        .deleted_entries
+                        .iter()
+                        .map(|row| slint::SharedString::from(row.label.as_str()))
+                        .collect(),
+                    armed,
+                )
+            };
+        window.set_track_has_deleted(!entry_deleted_rows.is_empty());
+        window.set_track_deleted_rows(ModelRc::new(slint::VecModel::from(entry_deleted_rows)));
+        window.set_track_restore_armed_index(entry_restore_armed_index);
+        // The clear-all row's pushed halves (W-4): the subject's rule
+        // count (the row's consequence names it), the clearable
+        // verdict (D-2: zero rules is the disabled row, never a
+        // ceremony), and the armed mirror.
+        let clear_count = self.view_state.subject_task().map_or(0, |task| {
+            state
+                .reminders
+                .rules
+                .values()
+                .filter(|rule| rule.task == task)
+                .count()
+        });
+        if self.rules_clear_armed && clear_count == 0 {
+            self.rules_clear_armed = false;
+        }
+        window.set_rules_clearable(clear_count > 0);
+        window.set_rules_clear_count(i32::try_from(clear_count).unwrap_or(i32::MAX));
+        window.set_rule_clear_armed(self.rules_clear_armed);
         self.tables = crate::models::push(
             window,
             &state,
@@ -4900,6 +5058,37 @@ impl Adapter {
                 self.refresh_forced(window);
                 Vec::new()
             }
+            // The undo-family restore's arm (W-3): the roster's newest
+            // tombstone is the armed subject (D-4: kiosk is
+            // structurally inert — the CLI carries its restore path).
+            // Staging touches no engine state; the open menu's page
+            // re-projects (the confirm flips enabled). An empty roster
+            // is the no-op arm (D-2: the row never rendered).
+            (_, UiEffect::HabitRestoreArm) => {
+                let armed = if self.kiosk {
+                    None
+                } else {
+                    let state = self.state.load_full();
+                    state.roster.tombstoned_habits.first().map(|row| row.id)
+                };
+                self.habit_restore_armed = armed;
+                if armed.is_none() {
+                    self.arm_no_target_notice(ActionId::HabitRestore);
+                }
+                self.push_notice(window);
+                self.reproject_habit_menu(window);
+                self.refresh_forced(window);
+                Vec::new()
+            }
+            // The armed restore's cancel step: disarms INSIDE the open
+            // menu — the re-projected confirm greys again; nothing was
+            // dispatched (the remove cancel's twin).
+            (_, UiEffect::HabitRestoreCancel) => {
+                self.habit_restore_armed = None;
+                self.reproject_habit_menu(window);
+                self.refresh_forced(window);
+                Vec::new()
+            }
             (_, UiEffect::SeriesConvertArm) => {
                 let armed = match self.view_state.subject_task() {
                     Some(task) => self.arm_series_convert(task),
@@ -5012,7 +5201,9 @@ impl Adapter {
                 vec![FlowOutcome::SetMode(Mode::Normal)]
             }
             (_, UiEffect::LabelsDismiss)
-                if self.label_form.take().is_some() || self.label_delete_armed.take().is_some() =>
+                if self.label_form.take().is_some()
+                    || self.label_delete_armed.take().is_some()
+                    || self.label_restore_armed.take().is_some() =>
             {
                 self.refresh_forced(window);
                 Vec::new()
@@ -7018,6 +7209,8 @@ impl Adapter {
             | UiEffect::HabitConvertCancel
             | UiEffect::HabitRemoveArm
             | UiEffect::HabitRemoveCancel
+            | UiEffect::HabitRestoreArm
+            | UiEffect::HabitRestoreCancel
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
             // The H4 editor opener interprets like every view intent
@@ -7448,6 +7641,12 @@ impl Adapter {
         states.insert(ActionId::HabitRemove, !remove_armed);
         states.insert(ActionId::HabitRemoveConfirm, remove_armed);
         states.insert(ActionId::HabitRemoveCancel, remove_armed);
+        // The undo-family restore's verdicts (W-3): the remove trio's
+        // exact grammar over the roster-addressed subject.
+        let restore_armed = self.habit_restore_armed.is_some();
+        states.insert(ActionId::HabitRestore, !restore_armed);
+        states.insert(ActionId::HabitRestoreConfirm, restore_armed);
+        states.insert(ActionId::HabitRestoreCancel, restore_armed);
         let repair = state
             .habits
             .habits
@@ -7512,8 +7711,21 @@ impl Adapter {
             &state,
             Some(crate::presentation::RowSubject::Habit(habit)),
         );
+        // The restore row source (W-3, D-4): the roster's newest
+        // tombstone gates the row; kiosk passes none (the affordance
+        // renders absent — the CLI carries the kiosk restore path).
+        let restore = if self.kiosk {
+            None
+        } else {
+            state
+                .roster
+                .tombstoned_habits
+                .first()
+                .map(|row| row.name.as_str())
+        };
+        let page = crate::menu::habit_context_page(&self.keymap, &chain, subject, &states, restore);
         drop(state);
-        crate::menu::habit_context_page(&self.keymap, &chain, subject, &states)
+        page
     }
 
     /// The reorder pair's shared mint (chunk 8 D4, #934 — the
@@ -11529,6 +11741,10 @@ pub(crate) fn install(
         walk_abort_armed: false,
         habit_convert_armed: None,
         habit_remove_armed: None,
+        habit_restore_armed: None,
+        label_restore_armed: None,
+        entry_restore_armed: None,
+        rules_clear_armed: false,
         habit_edit_draft: None,
         habit_create_open: false,
         habit_create_draft: None,
@@ -14977,6 +15193,148 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     install_seam!(window: window.on_labels_overlay_delete_cancelled, adapter: adapter;
     bind mut (a, window), args (), {        if a.label_delete_armed.take().is_some() {
+            a.refresh_forced(&window);
+        }
+
+    });
+    // The restore sections' seams (the undo-family journey plan
+    // W-2/W-9): the armed-confirm grammar over the published roster's
+    // row order — the index resolves against the same filtered row
+    // list the push derived (the publish lockstep bounds the race,
+    // I-2); a stale index is the typed inert (nothing dispatches).
+    // The first activation arms (the strip mounts), the Confirm
+    // dispatches the exact restore command, Cancel disarms (the
+    // D-2 grammar).
+    install_seam!(window: window.on_labels_overlay_restore_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(index_us) = usize::try_from(index).ok() else {
+            return;
+        };
+        // The same board-scoped row source the push derived.
+        let overlay_subject = a.view_state.labels_subject();
+        let subject_board = match overlay_subject {
+            Some(crate::view_state::LabelOverlaySubject::Board(board)) => Some(board),
+            _ => a
+                .view_state
+                .subject_task()
+                .and_then(|t| a.state.load_full().tasks.get(&t).cloned())
+                .and_then(|t| a.state.load_full().stacks.get(&t.stack).cloned())
+                .map(|stack| stack.board),
+        };
+        let state = a.state.load_full();
+        let row_id = state
+            .roster
+            .tombstoned_labels
+            .iter()
+            .filter(|row| {
+                state
+                    .labels
+                    .get(&row.id)
+                    .is_some_and(|label| Some(label.board) == subject_board)
+            })
+            .nth(index_us)
+            .map(|row| row.id);
+        drop(state);
+        let Some(label) = row_id else {
+            return; // a stale index against an older roster pass
+        };
+        if a.label_restore_armed == Some(label) {
+            // The second activation IS the confirm: the exact
+            // `RestoreLabel` (the receipt rides the unchanged
+            // outcome-notice lane, W-6).
+            a.label_restore_armed = None;
+            if a
+                .commands
+                .try_send(StateCommand::RestoreLabel { id: label })
+                .is_err()
+            {
+                tracing::warn!("label restore dropped: command channel full or closed");
+            }
+        } else {
+            a.label_restore_armed = Some(label);
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_labels_overlay_restore_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.label_restore_armed.take().is_some() {
+            a.refresh_forced(&window);
+        }
+
+    });
+    install_seam!(window: window.on_track_entry_restore_clicked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(index_us) = usize::try_from(index).ok() else {
+            return;
+        };
+        let state = a.state.load_full();
+        let journal_id = state
+            .roster
+            .deleted_entries
+            .get(index_us)
+            .map(|row| row.journal_id);
+        drop(state);
+        let Some(from) = journal_id else {
+            return; // a stale index against an older roster pass
+        };
+        if a.entry_restore_armed == Some(from) {
+            // The second activation IS the confirm: the zero-input
+            // payload carries the journal id only (D-5) — the engine
+            // reads the pre-image and applies the pinned
+            // `RestoreTimeEntry` internally (the `EntryRestored`
+            // receipt rides the unchanged lane, W-12).
+            a.entry_restore_armed = None;
+            if a
+                .commands
+                .try_send(StateCommand::RestoreTimeEntryFromJournal { from })
+                .is_err()
+            {
+                tracing::warn!("entry restore dropped: command channel full or closed");
+            }
+        } else {
+            a.entry_restore_armed = Some(from);
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_track_entry_restore_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.entry_restore_armed.take().is_some() {
+            a.refresh_forced(&window);
+        }
+
+    });
+    // The clear-all seam (W-4): the row affordance and the armed
+    // strip's Confirm converge here — unarmed it arms (subject-scoped,
+    // zero rules is the disabled row), armed it dispatches the exact
+    // `ClearReminderRules { task }` once (UF1's pre-images make the
+    // clear one undo step, W-7).
+    install_seam!(window: window.on_task_rule_clear_asked, adapter: adapter;
+    bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
+            return;
+        };
+        let has_rules = {
+            let state = a.state.load();
+            state.reminders.rules.values().any(|rule| rule.task == task)
+        };
+        if !has_rules {
+            return; // the disabled row's inert (D-2)
+        }
+        if a.rules_clear_armed {
+            a.rules_clear_armed = false;
+            if a
+                .commands
+                .try_send(StateCommand::ClearReminderRules { task })
+                .is_err()
+            {
+                tracing::warn!("rules clear dropped: command channel full or closed");
+            }
+        } else {
+            a.rules_clear_armed = true;
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_task_rule_clear_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.rules_clear_armed {
+            a.rules_clear_armed = false;
             a.refresh_forced(&window);
         }
 
