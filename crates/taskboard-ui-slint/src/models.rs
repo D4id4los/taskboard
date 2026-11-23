@@ -581,6 +581,17 @@ pub fn push_palette(
             text: SharedString::from(palette_title(state, *target)),
             meta: SharedString::from(palette_meta(state, *target)),
             emphasis: false,
+            // The habit row's typed bits (W-10, #1218): the History
+            // affordance renders off the bit; the tombstone state is
+            // the snapshot read (no live-row state forged — the row
+            // carries no mutable verbs).
+            history: matches!(target, SearchTarget::Habit(_)),
+            tombstone: match target {
+                SearchTarget::Habit(id) => {
+                    state.habits.habits.get(id).is_some_and(|row| row.deleted)
+                }
+                _ => false,
+            },
         })
         .collect();
     // The row diff's mutation count is not tracked here: the palette's
@@ -617,6 +628,11 @@ fn palette_title(state: &AppState, target: SearchTarget) -> String {
             .boards
             .get(&id)
             .map_or(String::new(), |b| b.title.clone()),
+        SearchTarget::Habit(id) => state
+            .habits
+            .habits
+            .get(&id)
+            .map_or(String::new(), |row| row.title.clone()),
     }
 }
 
@@ -644,6 +660,17 @@ fn palette_meta(state: &AppState, target: SearchTarget) -> String {
             },
         ),
         SearchTarget::Board(_) => "board".to_owned(),
+        // The habit row's kind + tombstone posture (W-10, #1218): a
+        // tombstoned row names its state — the log outlives, the
+        // History affordance is the only verb.
+        SearchTarget::Habit(id) => {
+            let tombstoned = state.habits.habits.get(&id).is_some_and(|row| row.deleted);
+            if tombstoned {
+                "habit · tombstoned · history".to_owned()
+            } else {
+                "habit · history".to_owned()
+            }
+        }
     }
 }
 

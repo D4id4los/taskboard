@@ -3986,7 +3986,12 @@ impl ViewState {
     /// hit kind against the live snapshot, then end the flow. A stale
     /// target (the entity died between push and invoke) is inert —
     /// close only, no retarget.
-    pub fn palette_jump(&mut self, state: &AppState, target: SearchTarget) -> Vec<FlowOutcome> {
+    pub fn palette_jump(
+        &mut self,
+        state: &AppState,
+        target: SearchTarget,
+        today: chrono::NaiveDate,
+    ) -> Vec<FlowOutcome> {
         let mut outcomes = match target {
             SearchTarget::Task(task_id) => {
                 // The stale check keeps the close-only rule; the live
@@ -4020,6 +4025,13 @@ impl ViewState {
                 }
                 self.select_board(state, board_id)
             }
+            // W-10 (#1218): the search row's History affordance — the
+            // resolution is id-exact (ids need no title leg), so the
+            // tombstone matches by construction (the CLI twin's
+            // tombstone-tolerant resolver shape). The dialog is the
+            // landed read-role mount; the tombstoned subject projects
+            // the retained log.
+            SearchTarget::Habit(habit_id) => self.open_habit_history(habit_id, today),
         };
         // The flow always ends (close_palette's ending; select_board
         // already asked for the repaint).
@@ -6695,6 +6707,10 @@ mod tests {
     /// board 1 is the seed): board one carries the classic two-stack
     /// shape (stack a: tasks a, b; stack b: task c), board two one
     /// stack (c: task d).
+    pub(super) fn test_today() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("fixed date")
+    }
+
     pub(super) fn two_board_fixture() -> (AppState, BoardId, BoardId, [StackId; 3], [TaskId; 4]) {
         let b1 = BoardId::from_uuid(uuid::Uuid::from_u128(0x1001));
         let b2 = BoardId::from_uuid(uuid::Uuid::from_u128(0x1002));
@@ -8019,7 +8035,7 @@ mod tests {
         let mut vs = ViewState::new();
         vs.select_board(&state, b0);
         vs.open_palette();
-        let outcomes = vs.palette_jump(&state, SearchTarget::Task(needle));
+        let outcomes = vs.palette_jump(&state, SearchTarget::Task(needle), test_today());
         assert!(outcomes.contains(&FlowOutcome::SetMode(Mode::Normal)));
         assert_eq!(vs.flow(), &Flow::None);
         assert_eq!(vs.board(), Some(b1));
@@ -8030,7 +8046,7 @@ mod tests {
         let mut vs = ViewState::new();
         vs.select_board(&state, b0);
         vs.open_palette();
-        vs.palette_jump(&state, SearchTarget::Stack(s1));
+        vs.palette_jump(&state, SearchTarget::Stack(s1), test_today());
         assert_eq!(vs.view(), ViewId::StackDetail);
         assert_eq!(vs.board(), Some(b1));
         assert_eq!(vs.focused_task(), Some(needle));
@@ -8039,7 +8055,7 @@ mod tests {
         let mut vs = ViewState::new();
         vs.select_board(&state, b1);
         vs.open_palette();
-        vs.palette_jump(&state, SearchTarget::Board(b0));
+        vs.palette_jump(&state, SearchTarget::Board(b0), test_today());
         assert_eq!(vs.view(), ViewId::Board);
         assert_eq!(vs.board(), Some(b0));
         assert_eq!(vs.flow(), &Flow::None);
@@ -8058,7 +8074,7 @@ mod tests {
         // board selection and focus never retarget.
         let dead = SearchTarget::Task(needle);
         state.tasks.remove(&needle);
-        let outcomes = vs.palette_jump(&state, dead);
+        let outcomes = vs.palette_jump(&state, dead, test_today());
         assert_eq!(
             outcomes,
             vec![FlowOutcome::SetMode(Mode::Normal), FlowOutcome::RefreshNow]
@@ -8496,7 +8512,11 @@ mod settings_surface_tests {
         jumped.reconcile(&state);
         jumped.select_board(&state, b1);
         jumped.open_palette();
-        let jumped_outcomes = jumped.palette_jump(&state, SearchTarget::Task(tc));
+        let jumped_outcomes = jumped.palette_jump(
+            &state,
+            SearchTarget::Task(tc),
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("fixed date"),
+        );
 
         let mut shown = ViewState::new();
         shown.reconcile(&state);

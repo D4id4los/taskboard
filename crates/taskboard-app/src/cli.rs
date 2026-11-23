@@ -254,6 +254,9 @@ pub enum FindType {
     Stack,
     /// Boards.
     Board,
+    /// Habits — live and tombstoned alike (#1218: a tombstoned
+    /// habit's retained log stays reachable).
+    Habit,
 }
 
 /// `daemon` subcommands.

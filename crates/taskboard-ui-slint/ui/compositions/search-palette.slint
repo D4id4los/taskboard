@@ -6,7 +6,7 @@
 // highlight is `index == selected-index`, and every interaction rides
 // a callback the adapter resolves.
 
-import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { Theme, Typography, RoleText, Semantic, Tone } from "../theme.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { ListRow } from "../widgets/list-row.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
@@ -18,6 +18,12 @@ export struct PaletteRowModel {
     meta: string,
     // The selection ring (`index == selected-index`).
     emphasis: bool,
+    // The habit row's History affordance bit (W-10, #1218): the row
+    // activates into the history dialog (the read-role mount).
+    history: bool,
+    // The tombstoned-habit bit (#1218): the row names the retained-log
+    // posture; no live-row state is forged.
+    tombstone: bool,
 }
 
 export component SearchPalette inherits Rectangle {
@@ -72,6 +78,11 @@ export component SearchPalette inherits Rectangle {
             text: row.text;
             meta: row.meta;
             emphasis: index == root.selected-index;
+            // The habit rows read as the secondary posture (the
+            // History affordance rides the meta line's typed bits; a
+            // tombstoned row reads offline-secondary — display only,
+            // judged at the walkthrough, never text-asserted).
+            tone: row.tombstone ? Tone.offline : (row.history ? Tone.info : Tone.neutral);
             row-touch := TouchArea {
                 clicked => root.row-activated(index);
             }

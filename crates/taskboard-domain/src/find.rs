@@ -18,17 +18,20 @@
 //! kinds the [`SearchTarget`] variant tag discriminates.
 //!
 //! Scope (design D1/D-V8): live boards and stacks (`!deleted &&
-//! !archived`) and `is_live()` tasks (`!deleted`; done and archived
-//! tasks are hits). The function is convention-blind: no anchor-title
-//! filtering, no view logic — hiding is presentation-side.
+//! !archived`), `is_live()` tasks (`!deleted`; done and archived
+//! tasks are hits), and habits — live and tombstoned alike (#1218:
+//! a tombstoned habit's retained log stays reachable; #1146's
+//! restore surfaces stay out of scope here). The function is
+//! convention-blind: no anchor-title filtering, no view logic —
+//! hiding is presentation-side.
 
-use crate::ids::{BoardId, StackId, TaskId};
+use crate::ids::{BoardId, HabitId, StackId, TaskId};
 use crate::state::AppState;
 
 /// The kind of entity a hit points at. The declaration order is the
-/// cross-kind tiebreak rank (`Task` < `Stack` < `Board`) and part of the
-/// ranking contract: the mixed-kind sort key ends in the target itself,
-/// which makes the order total.
+/// cross-kind tiebreak rank (`Task` < `Stack` < `Board` < `Habit`) and
+/// part of the ranking contract: the mixed-kind sort key ends in the
+/// target itself, which makes the order total.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SearchTarget {
     /// A task card.
@@ -37,6 +40,11 @@ pub enum SearchTarget {
     Stack(StackId),
     /// A board.
     Board(BoardId),
+    /// A habit — live or tombstoned (#1218: a tombstoned habit's
+    /// history stays reachable, the "log outlives" edge). The tombstone
+    /// state is the *consumer's* read off the snapshot; the hit itself
+    /// is kind-blind.
+    Habit(HabitId),
 }
 
 /// How well a title matches the query. Declaration order is rank order:
@@ -106,6 +114,19 @@ pub fn find(state: &AppState, query: &str) -> Vec<SearchHit> {
             &task.title,
             SearchTarget::Task(*id),
             task.is_live(),
+            &folded_query,
+        );
+    }
+    // Habits (#1218): live AND tombstoned rows are in scope — a
+    // tombstoned habit's retained log stays reachable from the search
+    // surface (the "log outlives" edge). The tombstone read is the
+    // consumer's; the ranking never branches on it.
+    for (id, habit_row) in &state.habits.habits {
+        consider(
+            &mut ranked,
+            &habit_row.title,
+            SearchTarget::Habit(*id),
+            true,
             &folded_query,
         );
     }
@@ -400,6 +421,52 @@ mod tests {
         );
     }
 
+    fn habit_row(id: HabitId, title: &str, deleted: bool) -> crate::habit::Habit {
+        crate::habit::Habit {
+            id,
+            board: b(1),
+            title: title.to_owned(),
+            description: String::new(),
+            target: crate::HabitTarget::PerDay(crate::NonZeroCount::new(1).unwrap()),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: crate::habit::HabitClocks::all(epoch()),
+            continued_from: None,
+            deleted,
+            paused_until: None,
+            by: None,
+        }
+    }
+
+    fn h(n: u64) -> HabitId {
+        HabitId::from(uuid::Uuid::from_u64_pair(3, n))
+    }
+
+    /// #1218: a tombstoned habit stays in the search scope — the
+    /// "log outlives" edge is reachable from the GUI's search surface.
+    #[test]
+    fn tombstoned_and_live_habits_are_hits() {
+        let mut state = state_from(vec![board(b(1), "b")], vec![], vec![]);
+        state
+            .habits
+            .habits
+            .insert(h(1), habit_row(h(1), "water", false));
+        state
+            .habits
+            .habits
+            .insert(h(2), habit_row(h(2), "water", true));
+        let hits = find(&state, "water");
+        assert_eq!(
+            hit_targets(&hits),
+            vec![SearchTarget::Habit(h(1)), SearchTarget::Habit(h(2))],
+            "the live habit outranks the tombstoned one (lower id); both hit"
+        );
+        assert_eq!(hit_qualities(&hits), vec![MatchQuality::Exact; 2]);
+    }
+
     #[test]
     fn ranking_key_order_class_then_title_length_then_target() {
         // One worked example of the tuple order: class outranks length,
@@ -442,6 +509,7 @@ mod tests {
             SearchTarget::Task(id) => state.tasks[&id].title.chars().count(),
             SearchTarget::Stack(id) => state.stacks[&id].title.chars().count(),
             SearchTarget::Board(id) => state.boards[&id].title.chars().count(),
+            SearchTarget::Habit(id) => state.habits.habits[&id].title.chars().count(),
         }
     }
 

@@ -2675,6 +2675,17 @@ impl Adapter {
     /// The pass's time bundle (chunk 10 D4): a fresh `now` and the
     /// window derived from the held pair — recomputed on every pass,
     /// so the rollover rides the existing minute-boundary repaint.
+    /// The pinned day anchor the history dialog's month mounts at
+    /// (the subject opener's computation, shared by the palette's
+    /// search-row arm — one mechanism, W-10).
+    pub(crate) fn today_date(&self) -> chrono::NaiveDate {
+        taskboard_domain::DayCalendar {
+            day_start_time: self.day_start.0,
+            offset: self.day_start.1,
+        }
+        .today(self.day_ctx().now)
+    }
+
     pub(crate) fn day_ctx(&self) -> crate::view_state::DayCtx {
         let now = self.frozen_now.unwrap_or_else(chrono::Utc::now);
         let window = taskboard_domain::days::day_window(now, self.day_start.0, self.day_start.1);
@@ -5794,7 +5805,9 @@ impl Adapter {
                     _ => 0,
                 };
                 match self.tables.palette.get(selected).copied() {
-                    Some(target) => self.view_state.palette_jump(&state, target),
+                    Some(target) => self
+                        .view_state
+                        .palette_jump(&state, target, self.today_date()),
                     None => self.view_state.close_palette(),
                 }
             }
@@ -7337,7 +7350,9 @@ impl Adapter {
         let target = self.tables.palette.get(selected).copied();
         let state = self.state.load();
         let outcomes = match target {
-            Some(target) => self.view_state.palette_jump(&state, target),
+            Some(target) => self
+                .view_state
+                .palette_jump(&state, target, self.today_date()),
             // A row count that shrank past the cursor: close only.
             None => self.view_state.close_palette(),
         };
@@ -15224,8 +15239,9 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         .get(usize::try_from(index).unwrap_or(usize::MAX))
         .copied();
     let state = a.state.load();
+    let today = a.today_date();
     let outcomes = match target {
-        Some(target) => a.view_state.palette_jump(&state, target),
+        Some(target) => a.view_state.palette_jump(&state, target, today),
         None => a.view_state.close_palette(),
     };
     a.apply_outcomes(&window, &outcomes);
