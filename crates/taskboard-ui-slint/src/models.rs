@@ -977,6 +977,12 @@ fn push_habits(
                     // card — the focus fact is the walk cursor's, read
                     // through the same accessor the board cards use.
                     emphasis: vs.focused_habit() == Some(row.habit),
+                    // The typed target-met bit (D3a W-2, #1199): the
+                    // met window fills the card's done slot visual
+                    // until the window resets — the same `met` fold
+                    // the progress chip reads (surplus logs stay
+                    // first-class: the slot never disables).
+                    done: row.met,
                     decorations: ModelRc::from(slot.handle_or_insert_with()),
                     ..habit_card(row)
                 },
