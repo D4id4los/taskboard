@@ -264,6 +264,12 @@ proptest! {
 
         let app = AppState {
             undo: taskboard_domain::UndoView::derive(&persisted.journal),
+            roster: taskboard_domain::RestoreRoster::derive_parts(
+                &persisted.labels,
+                &persisted.habits,
+                &persisted.tracking,
+                &persisted.journal,
+            ),
             boards: persisted.boards.clone(),
             stacks: persisted.stacks.clone(),
             tasks: persisted.tasks.clone(),
@@ -700,6 +706,12 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
             );
             let disk_projection = AppState {
                 undo: taskboard_domain::UndoView::derive(&disk_derived.journal),
+                roster: taskboard_domain::RestoreRoster::derive_parts(
+                    &disk_derived.labels,
+                    &disk_derived.habits,
+                    &disk_derived.tracking,
+                    &disk_derived.journal,
+                ),
                 boards: disk_derived.boards,
                 stacks: disk_derived.stacks,
                 tasks: disk_derived.tasks,

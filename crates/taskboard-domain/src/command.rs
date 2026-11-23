@@ -283,6 +283,19 @@ pub enum CommandError {
     /// fact — refuse typed, never clobber (D-4c).
     #[error("the time entry is already present")]
     TimeEntryAlreadyPresent(crate::ids::TimeEntryId),
+    /// The journal-addressed zero-input restore named a journal entry
+    /// the line no longer carries (evicted beyond the retention ring,
+    /// or never existed) — the honest bound, typed (D-5/N5).
+    #[error("unknown journal entry")]
+    UnknownJournalEntry(crate::ids::JournalId),
+    /// The named journal entry is not a `DeleteTimeEntry` — only a
+    /// delete's captured pre-image carries a restorable row (D-5).
+    #[error("journal entry is not a time-entry delete")]
+    JournalEntryNotTimeEntryDelete(crate::ids::JournalId),
+    /// The named delete's capture has no row (`before: None`, the
+    /// pre-#901 decode ghost's shape) — nothing to re-materialize (D-5).
+    #[error("journal entry carries no time-entry pre-image")]
+    JournalEntryPreImageMissing(crate::ids::JournalId),
 }
 
 /// Typed receipt of an accepted command.
@@ -3534,10 +3547,16 @@ pub fn plan_command(
             plan_entry_restore(app, entry.as_ref(), ids, now)
         }
         StateCommand::RestoreHabit { id } => plan_habit_restore(app, *id, ids, now),
-        // Engine-routed commands: the journal wrapper plans these before
-        // the catalogue sees them; a direct dispatch is a typed
+        // The zero-input journal-addressed restore (the undo-family
+        // amendment D-5): it reads the journal's pre-image, so it plans
+        // in `plan_journaled_command` before the catalogue sees it —
+        // the `EngineRouted` class (the totality arm, ADR 0019).
+        // Engine/journal-routed commands: the wrapper plans in
+        // `plan_journaled_command` before the catalogue sees it, the
+        // undo family the engine routes; a direct dispatch is the typed
         // rejection (the totality arm, ADR 0019).
-        StateCommand::Undo
+        StateCommand::RestoreTimeEntryFromJournal { .. }
+        | StateCommand::Undo
         | StateCommand::Redo
         | StateCommand::UndoOnBoard { .. }
         | StateCommand::RedoOnBoard { .. }
@@ -4120,6 +4139,7 @@ mod tests {
         let stack_id = StackId::from(uuid::Uuid::from_u128(u128::from(STACK)));
         let app = AppState {
             undo: crate::journal::UndoView::default(),
+            roster: crate::roster::RestoreRoster::default(),
             settings: crate::settings::SettingsSnapshot::default(),
             boards: [(
                 board_id,
@@ -6169,6 +6189,7 @@ mod tests {
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
         let mut app = AppState {
             undo: crate::journal::UndoView::default(),
+            roster: crate::roster::RestoreRoster::default(),
             settings: crate::settings::SettingsSnapshot::default(),
             boards: [(
                 board_id,
@@ -7695,6 +7716,7 @@ mod tests {
         let board_id = BoardId::from(uuid::Uuid::from_u128(u128::from(BOARD)));
         let app = AppState {
             undo: crate::journal::UndoView::default(),
+            roster: crate::roster::RestoreRoster::default(),
             settings: crate::settings::SettingsSnapshot::default(),
             boards: [(
                 board_id,
@@ -13037,6 +13059,7 @@ mod proptests {
         ) {
             let app: AppState = AppState {
                 undo: crate::journal::UndoView::default(),
+            roster: crate::roster::RestoreRoster::default(),
                 boards: persisted.boards.clone(),
                 stacks: persisted.stacks.clone(),
                 tasks: persisted.tasks.clone(),
@@ -13156,6 +13179,7 @@ mod proptests {
         ) {
             let app: AppState = AppState {
                 undo: crate::journal::UndoView::default(),
+            roster: crate::roster::RestoreRoster::default(),
                 boards: persisted.boards.clone(),
                 stacks: persisted.stacks.clone(),
                 tasks: persisted.tasks.clone(),

@@ -148,6 +148,12 @@ impl EngineCore {
             roaming: self.state.roaming.clone(),
             sync,
             undo: taskboard_domain::UndoView::derive(&self.state.journal),
+            roster: taskboard_domain::RestoreRoster::derive_parts(
+                &self.state.labels,
+                &self.state.habits,
+                &self.state.tracking,
+                &self.state.journal,
+            ),
             last_updated: self.last_updated,
             settings: self.settings.clone(),
         }

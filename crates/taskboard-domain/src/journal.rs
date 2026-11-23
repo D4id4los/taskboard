@@ -506,7 +506,8 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::RestoreTask { .. } => "Restore task".into(),
         StateCommand::RestoreStack { .. } => "Restore stack".into(),
         StateCommand::RestoreLabel { .. } => "Restore label".into(),
-        StateCommand::RestoreTimeEntry { .. } => "Restore time entry".into(),
+        StateCommand::RestoreTimeEntry { .. }
+        | StateCommand::RestoreTimeEntryFromJournal { .. } => "Restore time entry".into(),
         StateCommand::RestoreHabit { .. } => "Restore habit".into(),
         StateCommand::PauseSeries { .. } => "Pause series".into(),
         StateCommand::ConvertSeriesToHabit { .. } => "Convert series to habit".into(),

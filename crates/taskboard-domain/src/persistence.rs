@@ -289,6 +289,14 @@ pub struct PersistedState {
 
 impl From<PersistedState> for AppState {
     fn from(persisted: PersistedState) -> Self {
+        // Derived before the move-out (the roster reads the entity maps
+        // and the journal — the same derive the engine's publish runs).
+        let roster = crate::roster::RestoreRoster::derive_parts(
+            &persisted.labels,
+            &persisted.habits,
+            &persisted.tracking,
+            &persisted.journal,
+        );
         Self {
             boards: persisted.boards,
             stacks: persisted.stacks,
@@ -301,6 +309,7 @@ impl From<PersistedState> for AppState {
             roaming: persisted.roaming,
             sync: persisted.sync,
             undo: crate::journal::UndoView::derive(&persisted.journal),
+            roster,
             last_updated: None,
             // Memory-only: the engine's spawn seeds the real snapshot;
             // this conversion (test fakes, doc examples) carries the

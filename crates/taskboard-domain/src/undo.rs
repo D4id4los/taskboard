@@ -158,6 +158,46 @@ pub fn plan_journaled_command(
         StateCommand::RedoTo { target } => plan_redo_to(
             app, outbox, journal, *target, ids, defaults, day, now, author,
         ),
+        // The zero-input journal-addressed time-entry restore (the
+        // undo-family amendment D-5 of 2026-11-23): the wrapper's whole
+        // job is reading the journal, so it plans here — before the
+        // journal-blind catalogue. The typed refusals (unknown id /
+        // not-a-delete / `before: None`) fire before anything plans;
+        // the resolved row rides the serde-pinned `RestoreTimeEntry`
+        // internally (the single write path, I-4), and the journaled
+        // entry records the *wrapper* intent with the restore's own
+        // `PreImages` — undoing it re-deletes (the #1187 law). An
+        // already-restored equal row is the accepted no-op (the
+        // empty-batch rule journals nothing, the terminal-repeat
+        // discipline).
+        StateCommand::RestoreTimeEntryFromJournal { from } => {
+            let row = journaled_time_entry_pre_image(journal, *from)?;
+            let wrapper = StateCommand::RestoreTimeEntryFromJournal { from: *from };
+            let plan = plan_command(
+                app,
+                outbox,
+                &StateCommand::RestoreTimeEntry {
+                    entry: Box::new(row.clone()),
+                },
+                ids,
+                defaults,
+                day,
+                now,
+                author,
+            )?;
+            if plan.actions.is_empty() {
+                // Accepted no-op: the row is already present verbatim.
+                return Ok(plan);
+            }
+            let entry = record_entry(app, &wrapper, &plan.actions, journal, ids, now);
+            let mut actions = plan.actions;
+            // Appended last (D16), the shared shape.
+            actions.push(PersistenceAction::RecordJournal(entry));
+            Ok(CommandPlan {
+                actions,
+                outcome: plan.outcome,
+            })
+        }
         command => {
             let plan = plan_command(app, outbox, command, ids, defaults, day, now, author)?;
             if plan.actions.is_empty() {
@@ -186,6 +226,40 @@ fn journaled_pre_images(app: &AppState, actions: &[PersistenceAction]) -> UndoFa
         images: pre_images(app, actions),
         watermark: watermark_of(actions),
     }
+}
+
+/// The zero-input restore's pre-image resolution (D-5): the journal
+/// entry at `from` must be a `DeleteTimeEntry` whose captured facts
+/// carry `PreImage::TimeEntry { before: Some(row) }` — the row is the
+/// verbatim restore payload. Typed refusals, in resolution order:
+/// unknown id (evicted beyond the retention ring or never existed),
+/// not-a-delete entry, `before: None`.
+fn journaled_time_entry_pre_image(
+    journal: &JournalState,
+    from: crate::ids::JournalId,
+) -> Result<crate::tracking::TimeEntry, CommandError> {
+    let entry = journal
+        .entry(from)
+        .ok_or(CommandError::UnknownJournalEntry(from))?;
+    let StateCommand::DeleteTimeEntry { id } = &entry.command else {
+        return Err(CommandError::JournalEntryNotTimeEntryDelete(from));
+    };
+    let UndoFacts::PreImages { images, .. } = &entry.facts else {
+        // Unreachable for a #901-era delete (it journals `PreImages`),
+        // but the pre-#901 `NotUndoable` decode ghost keeps the arm
+        // honest — the refusal names the entry either way.
+        return Err(CommandError::JournalEntryNotTimeEntryDelete(from));
+    };
+    images
+        .iter()
+        .find_map(|image| match image {
+            PreImage::TimeEntry {
+                id: pre_id,
+                before: Some(row),
+            } if pre_id == id => Some((**row).clone()),
+            _ => None,
+        })
+        .ok_or(CommandError::JournalEntryPreImageMissing(from))
 }
 
 /// The recorded post-write row for one habit-log window, or `None`
@@ -256,6 +330,10 @@ fn record_entry(
         | StateCommand::RestoreLabel { .. }
         | StateCommand::RestoreTimeEntry { .. }
         | StateCommand::RestoreHabit { .. }
+        // The zero-input wrapper journals the restore's own `PreImages`
+        // exactly like its payload-carrying sibling (D-5): undoing it
+        // re-deletes (the #1187 law).
+        | StateCommand::RestoreTimeEntryFromJournal { .. }
         // The pause is a one-field task edit under the recur clock
         // (issue #506): the recur pre-image inverts it exactly (the
         // UpdateTask class restores the whole rule verbatim).
@@ -445,7 +523,7 @@ fn record_entry(
         // Flipped only by `MarkJournalPushed` (the R-U9 post-pass) —
         // never by planning.
         pushed: false,
-        board: touched_board(app, command),
+        board: touched_board(app, journal, command),
         created_at: now,
     }
 }
@@ -454,7 +532,11 @@ fn record_entry(
 /// v2): task → stack → board; stack/label → their board; `None` when
 /// not board-scoped or the lookup chain is gone (ambiguity is honest).
 #[allow(clippy::match_same_arms)] // the tag table reads per §3 row; merging hides it
-fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::BoardId> {
+fn touched_board(
+    app: &AppState,
+    journal: &JournalState,
+    command: &StateCommand,
+) -> Option<crate::ids::BoardId> {
     use crate::ids::BoardId;
     let task_board = |task: crate::ids::TaskId| -> Option<BoardId> {
         app.tasks
@@ -506,6 +588,13 @@ fn touched_board(app: &AppState, command: &StateCommand) -> Option<crate::ids::B
         // the point); entry → task → stack → board, best-effort `None`
         // when the chain is gone (the C9 D-3 honesty).
         StateCommand::RestoreTimeEntry { entry } => task_board(entry.task),
+        // The wrapper's board rides the pre-image payload's own chain
+        // (the resolved row is in hand before this runs; the honest
+        // `None` when the chain is gone — the sibling arm's C9 D-3).
+        StateCommand::RestoreTimeEntryFromJournal { from } => journal
+            .entry(*from)
+            .and_then(|entry| journaled_time_entry_pre_image(journal, entry.id).ok())
+            .and_then(|row| task_board(row.task)),
         StateCommand::CreateHabit { board, .. } => Some(*board),
         StateCommand::ConvertSeriesToHabit { head, .. } => task_board(*head),
         StateCommand::ConvertHabitToSeries { habit, .. } => {
@@ -939,7 +1028,9 @@ pub fn plan_redo(
         .filter(|entry| scope_covers(scope, entry.board))
         .max_by_key(|entry| (entry.created_at, entry.id))
         .ok_or_else(|| nothing_to_redo(scope))?;
-    plan_redo_of_entry(app, outbox, target, ids, defaults, day, now, author)
+    plan_redo_of_entry(
+        app, outbox, journal, target, ids, defaults, day, now, author,
+    )
 }
 
 /// The redo of one *chosen* child (D5's freedom made explicit): replan
@@ -951,6 +1042,7 @@ pub fn plan_redo(
 fn plan_redo_of_entry(
     app: &AppState,
     outbox: &[PendingOp],
+    journal: &JournalState,
     target: &JournalEntry,
     ids: &dyn IdGenerator,
     defaults: &ReminderDefaults,
@@ -961,16 +1053,28 @@ fn plan_redo_of_entry(
     if let UndoFacts::NotUndoable(reason) = target.facts {
         return Err(CommandError::TargetNotUndoable(reason));
     }
-    let plan = plan_command(
-        app,
-        outbox,
-        &target.command,
-        ids,
-        defaults,
-        day,
-        now,
-        author,
-    )?;
+    // The wrapper is journal-addressed: redo re-plans the same journal
+    // read (the pre-image resolution is pure and deterministic), then
+    // rides the payload verb — no fresh journal entry (the target node
+    // *is* the entry; the head move below re-arms it).
+    let plan = match &target.command {
+        StateCommand::RestoreTimeEntryFromJournal { from } => {
+            let row = journaled_time_entry_pre_image(journal, *from)?;
+            plan_command(
+                app,
+                outbox,
+                &StateCommand::RestoreTimeEntry {
+                    entry: Box::new(row),
+                },
+                ids,
+                defaults,
+                day,
+                now,
+                author,
+            )?
+        }
+        command => plan_command(app, outbox, command, ids, defaults, day, now, author)?,
+    };
     let mut actions = plan.actions;
     // A redo that enqueues is a push-boundary crossing (D-U2: redo is a
     // new edit, *always* — its fresh ops ride the outbox to the server).
@@ -1165,6 +1269,13 @@ impl JournalEntry {
             StateCommand::DeleteHabit { .. } => Ok(InverseClass::DeletedHabit),
             StateCommand::RestoreLabel { .. } => Ok(InverseClass::RestoredLabel),
             StateCommand::RestoreTimeEntry { .. } => Ok(InverseClass::RestoredTimeEntry),
+            // The zero-input wrapper shares the sibling's class verbatim
+            // (D-5): its journaled `PreImages` shape is identical (the
+            // row upserted from absence), so the re-delete inverse and
+            // its watermark checks are one behavior, not two.
+            StateCommand::RestoreTimeEntryFromJournal { .. } => {
+                Ok(InverseClass::RestoredTimeEntry)
+            }
             StateCommand::RestoreHabit { .. } => Ok(InverseClass::RestoredHabit),
             // The #354 rule-verb rows (UF1): the add's inverse is the
             // ordinary remove; a remove/clear's inverse is the #900
@@ -2679,6 +2790,7 @@ pub fn plan_redo_to(
         let plan = plan_redo_of_entry(
             &mirror.app(),
             &mirror.outbox(),
+            mirror.journal(),
             entry,
             ids,
             defaults,
