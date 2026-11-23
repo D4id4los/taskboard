@@ -2745,6 +2745,15 @@ async fn execute_batch(
         // The LWW guard lives in the SQL: a strictly-older batch row
         // never overwrites; equal/older keeps local (belt to the fold's
         // braces).
+        //
+        // Invariant (2026-11-23, #1095): clocks in `habit_log` are
+        // whole-second RFC 3339 UTC (`SecondsFormat::Secs`); the
+        // guard's lexicographic string comparison is chronological
+        // under that grammar. Sub-second precision would break the
+        // guard (`…:00.5Z` sorts *before* `…:00Z`) and is refused
+        // precision at this write boundary; if a future rule ever
+        // wants sub-second clocks (#986 rejected it), this guard must
+        // move to an epoch-integer comparison first.
         sqlx::query!(
             r#"INSERT INTO habit_log (habit_id, window_start, count, clock, au_by, skip)
                    VALUES (?, ?, ?, ?, ?, ?)
@@ -2757,7 +2766,13 @@ async fn execute_batch(
             codec::uuid_to_text(key.habit.as_uuid()),
             key.window.as_date().to_string(),
             i64::from(entry.count),
-            entry.clock.to_rfc3339(),
+            // The whole-second grammar (see the invariant above):
+            // sub-second input is normalized away here, so the SQL
+            // guard's string comparison stays chronological by
+            // construction.
+            entry
+                .clock
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             entry.by.map(|a| a.to_string()),
             entry.skip,
         )
