@@ -39,6 +39,8 @@ mod focus_law_journeys;
 mod golden_visuals;
 #[path = "journeys/habit_family_journeys.rs"]
 mod habit_family_journeys;
+#[path = "journeys/habit_surface_journeys.rs"]
+mod habit_surface_journeys;
 #[path = "journeys/habits_journey.rs"]
 mod habits_journey;
 #[path = "journeys/keymap_case_seam.rs"]
