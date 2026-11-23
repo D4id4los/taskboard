@@ -1711,6 +1711,30 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    /// US-10 (W-14, #1048) adapter predicate: is a shared edit flow
+    /// armed over the habit subject (title when `description` is
+    /// false, description when true)? Inert without a subject.
+    #[must_use]
+    pub fn habit_edit_flow_armed(
+        &self,
+        habit: Option<taskboard_domain::HabitId>,
+        description: bool,
+    ) -> bool {
+        let Some(habit) = habit else {
+            return false;
+        };
+        let want = if description {
+            Flow::EditDescription {
+                subject: EditSubject::Habit(habit),
+            }
+        } else {
+            Flow::EditTitle {
+                subject: EditSubject::Habit(habit),
+            }
+        };
+        *self.flow() == want
+    }
+
     /// The push-side kiosk belt (W-15, #1049): the dead-subject pass's
     /// twin — on kiosk a mounted habit subject (a posture that slipped
     /// past the dispatch-time gates: a restored or pushed snapshot)

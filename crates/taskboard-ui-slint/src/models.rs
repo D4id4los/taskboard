@@ -2978,9 +2978,25 @@ fn push_task_detail(
     if let Some(draft) = habit {
         let stored = state.habits.habits.get(&draft.habit);
         let can_save = stored.is_some_and(|row| draft.can_save(row));
+        // US-10 (W-14, #1048): the title/description rows read the
+        // shared flow's buffer while armed (the display-mirror rule),
+        // the stored row otherwise — the draft's private mirrors are
+        // gone.
+        let habit_title_armed = vs.habit_edit_flow_armed(Some(draft.habit), false);
+        let habit_description_armed = vs.habit_edit_flow_armed(Some(draft.habit), true);
+        let habit_row_title = stored.map(|row| row.title.clone());
+        let habit_row_description = stored.map(|row| row.description.clone());
         window.set_habit_model(crate::HabitDetailModel {
-            title: SharedString::from(draft.title.clone()),
-            description: SharedString::from(draft.description.clone()),
+            title: SharedString::from(if habit_title_armed {
+                vs.buffer().to_owned()
+            } else {
+                habit_row_title.unwrap_or_default()
+            }),
+            description: SharedString::from(if habit_description_armed {
+                vs.buffer().to_owned()
+            } else {
+                habit_row_description.unwrap_or_default()
+            }),
             quota_kind: i32::try_from(draft.quota_kind_index()).unwrap_or(0),
             quota_count: SharedString::from(draft.quota_count.clone()),
             quota_valid: draft.quota_valid,
@@ -6915,25 +6931,52 @@ fn push_habit_history(
     let shown =
         crate::presentation::habit_history_month(habit, &state.habits.log, month, now, calendar);
     let numbers = crate::presentation::habit_statistics(habit, &state.habits.log, now, calendar);
-    let cells: Vec<crate::HabitCellModel> = shown
-        .cells
-        .iter()
-        .map(|cell| crate::HabitCellModel {
-            label: SharedString::from(cell.window.day().to_string()),
-            count: i32::try_from(cell.count).unwrap_or(i32::MAX),
-            state: match cell.state {
-                crate::presentation::HabitWindowState::Met => crate::HabitCellState::Met,
-                crate::presentation::HabitWindowState::Pending => crate::HabitCellState::Pending,
-                crate::presentation::HabitWindowState::Skipped => crate::HabitCellState::Skipped,
-                crate::presentation::HabitWindowState::Paused => crate::HabitCellState::Paused,
-                crate::presentation::HabitWindowState::PreSchedule => {
-                    crate::HabitCellState::PreSchedule
-                }
-                crate::presentation::HabitWindowState::Missed => crate::HabitCellState::Missed,
-                crate::presentation::HabitWindowState::Inert => crate::HabitCellState::Inert,
-            },
-        })
-        .collect();
+    // US-8 (#1144, W-11): a Week/Month habit's month grid renders one
+    // cell per calendar DAY from the per-day overlay facts (the D-H12
+    // amendment; the stats section stays window-canonical — R-2). A
+    // Day-kind habit renders as landed (its windows ARE days). A day
+    // with no overlay fact renders empty (`count: 0` → no badge, the
+    // dimmest neutral state — no invention).
+    let day_cells = (habit.target.kind() != taskboard_domain::PeriodKind::Day)
+        .then(|| crate::presentation::habit_history_day_cells(habit, &state.habits.day_log, month));
+    let cells: Vec<crate::HabitCellModel> = if let Some(day_cells) = &day_cells {
+        day_cells
+            .iter()
+            .map(|cell| crate::HabitCellModel {
+                label: SharedString::from(cell.day.day().to_string()),
+                count: i32::try_from(cell.count).unwrap_or(i32::MAX),
+                state: if cell.count > 0 {
+                    crate::HabitCellState::Met
+                } else {
+                    crate::HabitCellState::Inert
+                },
+            })
+            .collect()
+    } else {
+        shown
+            .cells
+            .iter()
+            .map(|cell| crate::HabitCellModel {
+                label: SharedString::from(cell.window.day().to_string()),
+                count: i32::try_from(cell.count).unwrap_or(i32::MAX),
+                state: match cell.state {
+                    crate::presentation::HabitWindowState::Met => crate::HabitCellState::Met,
+                    crate::presentation::HabitWindowState::Pending => {
+                        crate::HabitCellState::Pending
+                    }
+                    crate::presentation::HabitWindowState::Skipped => {
+                        crate::HabitCellState::Skipped
+                    }
+                    crate::presentation::HabitWindowState::Paused => crate::HabitCellState::Paused,
+                    crate::presentation::HabitWindowState::PreSchedule => {
+                        crate::HabitCellState::PreSchedule
+                    }
+                    crate::presentation::HabitWindowState::Missed => crate::HabitCellState::Missed,
+                    crate::presentation::HabitWindowState::Inert => crate::HabitCellState::Inert,
+                },
+            })
+            .collect()
+    };
     let model = crate::HabitHistoryModel {
         month_label: SharedString::from(crate::presentation::habit_month_label(shown.month)),
         cells: ModelRc::new(VecModel::from(cells)),

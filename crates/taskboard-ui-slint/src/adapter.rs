@@ -14404,18 +14404,37 @@ fn install_task_back_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// lenient parser).
 #[allow(clippy::too_many_lines)] // ten seams, one grammar
 fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
+    // US-10 (W-14, #1048): the variant's title/description ride the
+    // SHARED edit flows (Flow::EditTitle/EditDescription over
+    // EditSubject::Habit) — the draft's private mirror fields are
+    // gone. First keystroke arms the flow over the stored row (the
+    // display-mirror rule); later keystrokes land in the buffer; the
+    // settle rules (commit non-empty / discard empty) fire at the
+    // editor's save (the staged-Save grammar's commit funnel).
     install_seam!(window: window.on_habit_title_edited, adapter: adapter;
     bind mut (a, window), args (t), {
-        let _ = &window;
-        if let Some(draft) = a.habit_edit_draft.as_mut() {
-            draft.title = t.to_string();
+        let subject = a.habit_edit_draft.as_ref().map(|draft| draft.habit);
+        let armed = a.view_state.habit_edit_flow_armed(subject, false);
+        if let Some(habit) = subject {
+            if !armed {
+                let state = a.state.load();
+                let outcomes = a.view_state.begin_habit_title_edit(&state, habit);
+                a.apply_outcomes(&window, &outcomes);
+            }
+            a.view_state.set_buffer(t.to_string());
         }
     });
     install_seam!(window: window.on_habit_description_edited, adapter: adapter;
     bind mut (a, window), args (t), {
-        let _ = &window;
-        if let Some(draft) = a.habit_edit_draft.as_mut() {
-            draft.description = t.to_string();
+        let subject = a.habit_edit_draft.as_ref().map(|draft| draft.habit);
+        let armed = a.view_state.habit_edit_flow_armed(subject, true);
+        if let Some(habit) = subject {
+            if !armed {
+                let state = a.state.load();
+                let outcomes = a.view_state.begin_habit_description_edit(&state, habit);
+                a.apply_outcomes(&window, &outcomes);
+            }
+            a.view_state.set_buffer(t.to_string());
         }
     });
     // The quota row: the kind re-seats the target (a now-mismatched
@@ -14621,15 +14640,40 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         if let Some(draft) = draft
             && let Some(stored) =
                 a.state.load().habits.habits.get(&draft.habit).cloned()
-            && draft.can_save(&stored)
         {
-            a.send(taskboard_domain::StateCommand::UpdateHabit {
-                habit: draft.habit,
-                changes: draft.changes(&stored),
+            // US-10 (W-14, #1048): the armed shared flow settles
+            // first by the landed taxonomy (commit non-empty, discard
+            // empty; the staging law) — the title/description ride
+            // the flow's own sparse `UpdateHabit`, then the draft's
+            // remaining fields commit sparse as landed. The save
+            // gate's changeset leg reads the flow too: a text-only
+            // edit keeps the save affordance armed (the D5
+            // empty-dispatch law is satisfied by the flow's own
+            // command — an empty draft changeset dispatches nothing).
+            let text_edit = [
+                (a.view_state.habit_edit_flow_armed(Some(draft.habit), false), stored.title.clone()),
+                (a.view_state.habit_edit_flow_armed(Some(draft.habit), true), stored.description.clone()),
+            ]
+            .into_iter()
+            .any(|(armed, current)| {
+                armed && a.view_state.buffer().trim() != current.trim()
             });
-            a.habit_edit_draft = None;
-            a.route(&window, ActionId::NavFocusBoard);
-            a.finish_mutation(&window);
+            if draft.can_save(&stored) || text_edit {
+                let state = a.state.load();
+                for outcome in a.view_state.settle_flow(&state) {
+                    a.apply_outcomes(&window, std::slice::from_ref(&outcome));
+                }
+                let changes = draft.changes(&stored);
+                if changes != taskboard_domain::HabitChanges::default() {
+                    a.send(taskboard_domain::StateCommand::UpdateHabit {
+                        habit: draft.habit,
+                        changes,
+                    });
+                }
+                a.habit_edit_draft = None;
+                a.route(&window, ActionId::NavFocusBoard);
+                a.finish_mutation(&window);
+            }
         }
     });
     // The cancel (the back button's twin): discard-and-close —
@@ -14637,6 +14681,9 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     install_seam!(window: window.on_habit_editor_cancelled, adapter: adapter;
     bind mut (a, window), args (), {
         a.habit_edit_draft = None;
+        // US-10: an armed shared flow stages nothing on cancel (the
+        // landed staging law) — the buffer dies with the flow.
+        a.view_state.discard_edit();
         a.route(&window, ActionId::NavFocusBoard);
         a.finish_mutation(&window);
     });
