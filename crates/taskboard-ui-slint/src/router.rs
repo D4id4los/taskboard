@@ -723,8 +723,6 @@ pub struct NudgePreview {
 // flavours are the draft's whole contract (the create form's shape)
 pub struct HabitEditDraft {
     pub habit: taskboard_domain::HabitId,
-    pub title: String,
-    pub description: String,
     pub target: taskboard_domain::HabitTarget,
     pub quota_count: String,
     pub quota_valid: bool,
@@ -765,8 +763,6 @@ impl HabitEditDraft {
     pub fn from_habit(habit: &taskboard_domain::habit::Habit) -> Self {
         Self {
             habit: habit.id,
-            title: habit.title.clone(),
-            description: habit.description.clone(),
             target: habit.target,
             quota_count: habit.target.quota().get().to_string(),
             quota_valid: true,
@@ -840,8 +836,8 @@ impl HabitEditDraft {
         taskboard_domain::habit::Habit {
             id: self.habit,
             board: taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7()),
-            title: self.title,
-            description: self.description,
+            title: "twin".into(),
+            description: String::new(),
             target: self.target,
             order: 0,
             anchor_time: self.anchor_time,
@@ -1016,12 +1012,10 @@ impl HabitEditDraft {
             continued_from: None,
             ..taskboard_domain::HabitChanges::default()
         };
-        if self.title != stored.title {
-            changes.title = Some(self.title.clone());
-        }
-        if self.description != stored.description {
-            changes.description = Some(self.description.clone());
-        }
+        // Title/description are NOT draft legs (US-10, #1048): they
+        // ride the shared edit flows (Flow::EditTitle/EditDescription
+        // over EditSubject::Habit), which commit their own sparse
+        // `UpdateHabit` through the flows' settle rules.
         if let Some(target) = self.drafted_target()
             && target != stored.target
         {
@@ -1071,7 +1065,6 @@ impl HabitEditDraft {
     fn changes_is_empty(&self, stored: &taskboard_domain::habit::Habit) -> bool {
         let changes = self.changes(stored);
         changes.title.is_none()
-            && changes.description.is_none()
             && changes.target.is_none()
             && changes.anchor_time.is_none()
             && changes.anchor_day.is_none()

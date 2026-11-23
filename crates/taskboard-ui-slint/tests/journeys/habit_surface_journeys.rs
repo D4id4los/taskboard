@@ -1078,6 +1078,216 @@ fn us9_s3_blank_time_preview_phrases_anchor() {
     });
 }
 
+// -- US-8: the per-day heatmap cells (#1144, W-11/W-12) --------------
+
+/// Seeds a Week-kind habit plus per-day overlay facts (the pinned
+/// month is 2026-11: 30 days; `PINNED_NOW` is 2026-11-06).
+fn us8_state(board: taskboard_domain::BoardId) -> (AppState, HabitId) {
+    let (_fixture, mut state) = fixture::journey_state();
+    let habit = taskboard_domain::habit::Habit {
+        id: HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "garden".to_owned(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerWeek(NonZeroCount::new(3).unwrap()),
+        order: 2,
+        anchor_time: None,
+        anchor_day: None,
+        scheduled_days: None,
+        reminder: None,
+        clocks: HabitClocks::all(fixture::PINNED_NOW),
+        continued_from: None,
+        deleted: false,
+        paused_until: None,
+        by: None,
+    };
+    let id = habit.id;
+    state.habits.habits.insert(id, habit);
+    // Two overlay facts: the 3rd and the 5th carry activity; the rest
+    // of the month carries none.
+    for (day, count) in [(3u32, 2u32), (5, 1)] {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 11, day).expect("calendar date");
+        state.habits.day_log.insert(
+            taskboard_domain::HabitDayKey {
+                habit: id,
+                day: date,
+            },
+            taskboard_domain::HabitDayLogEntry {
+                count,
+                clock: fixture::PINNED_NOW,
+            },
+        );
+    }
+    (state, id)
+}
+
+/// US-8/AC-1 (W-12): the week-kind habit's month grid renders one
+/// cell per calendar DAY from the overlay — the 3rd shows 2, the 5th
+/// shows 1, and a day without a fact renders empty (no invention).
+#[test]
+fn us8_s1_day_cells_render_overlay_facts() {
+    let board = *fixture::journey_state()
+        .1
+        .boards
+        .keys()
+        .next()
+        .expect("fixture board");
+    let (state, _habit) = us8_state(board);
+    run(state, false, move |harness| {
+        us7_open_palette(harness, "garden");
+        let window = harness.handle.window();
+        let index = us7_habit_row_index(harness, "garden");
+        window.invoke_palette_row_activated(i32::try_from(index).expect("row index"));
+        harness.driver.advance_time(0);
+        assert!(window.get_habit_history_open(), "the dialog mounts");
+        let cells = window.get_habit_history().cells;
+        assert_eq!(cells.row_count(), 30, "November renders one cell per DAY");
+        let cell = |day: usize| cells.row_data(day - 1).expect("cell");
+        assert_eq!(cell(3).count, 2, "the 3rd shows its overlay count");
+        assert_eq!(cell(5).count, 1, "the 5th shows its overlay count");
+        let empty = cell(10);
+        assert_eq!(empty.count, 0, "a day with no fact renders empty");
+    });
+}
+
+/// US-8/AC-3 (W-12, R-2): the stats oracle stays window-canonical —
+/// overlay facts alone never credit adherence.
+#[test]
+fn us8_s2_window_adherence_oracle_unregressed() {
+    let board = *fixture::journey_state()
+        .1
+        .boards
+        .keys()
+        .next()
+        .expect("fixture board");
+    let (state, _habit) = us8_state(board);
+    run(state, false, move |harness| {
+        us7_open_palette(harness, "garden");
+        let window = harness.handle.window();
+        let index = us7_habit_row_index(harness, "garden");
+        window.invoke_palette_row_activated(i32::try_from(index).expect("row index"));
+        harness.driver.advance_time(0);
+        let numbers = window.get_habit_history().stats;
+        assert_eq!(
+            numbers.adherence_met, 0,
+            "day overlay facts never feed the window-canonical oracle"
+        );
+    });
+}
+
+// -- US-10: the editor mirrors onto the shared flows (#1048, W-14) ----
+
+/// US-10/AC-1 (W-14): the habit variant's title edits route through
+/// the shared `Flow::EditTitle` over the habit subject — the flow's
+/// own sparse `UpdateHabit` carries the commit (the draft's private
+/// mirror field is gone).
+#[test]
+fn us10_s1_habit_variant_mounts_shared_editors() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_title_edited("oceanside".into());
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                assert_eq!(
+                    changes.title.as_deref(),
+                    Some("oceanside"),
+                    "the shared flow's commit carries the title"
+                );
+            }
+            other => panic!("the title flow routes the update, got {other:?}"),
+        }
+    });
+}
+
+/// US-10/AC-2 (W-14): the description edits route through the shared
+/// `Flow::EditDescription` over the habit subject, same grammar.
+#[test]
+fn us10_s2_habit_description_flow_mounts_shared_surface() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_description_edited("deep water only".into());
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                assert_eq!(
+                    changes.description.as_deref(),
+                    Some("deep water only"),
+                    "the shared flow's commit carries the description"
+                );
+            }
+            other => panic!("the description flow routes the update, got {other:?}"),
+        }
+    });
+}
+
+/// US-10/AC-3 (W-14, the regression oracle): the task variant's title
+/// flow rides the same widened grammar and still routes the task's
+/// own `UpdateTask` — one flow grammar, two subjects.
+#[test]
+fn us10_s3_task_flows_unregressed() {
+    // The pinned-clock seeding: the Today table reads the frozen
+    // render clock, so the fixture's overdue row must be derived from
+    // the same instant (the clock law's fixture-anchor tool).
+    let (_fixture, state) = fixture::journey_state_at(fixture::PINNED_NOW);
+    run(state, false, move |harness| {
+        let window = harness.handle.window();
+        // Focus a today row (click ≡ key's focus half; section 0 row 0
+        // is the fixture's overdue task), then open the detail.
+        window.invoke_today_row_activated(0, 0);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_current_view(),
+            View::TaskDetail,
+            "the task detail mounts"
+        );
+        harness.handle.dispatch_action(ActionId::TaskTitleEdit);
+        harness.driver.advance_time(0);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_current_view(),
+            View::TaskDetail,
+            "the task detail mounts"
+        );
+        window.invoke_task_title_committed("rewritten".into());
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::UpdateTask { changes, .. }] => {
+                assert_eq!(
+                    changes.title.as_deref(),
+                    Some("rewritten"),
+                    "the task variant's flow is unregressed"
+                );
+            }
+            other => panic!("the task title flow routes the update, got {other:?}"),
+        }
+    });
+}
+
 // -- the kiosk posture (the plan's platform scope) ------------------
 
 /// The plan's kiosk scope (US-1/S2 platform note): the affordances

@@ -8385,6 +8385,57 @@ pub fn habit_history_month(
     }
 }
 
+/// One per-day grid cell (US-8, #1144): the calendar day and its
+/// overlay count (`0` = no overlay fact — the cell renders empty, no
+/// invention).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HabitDayCell {
+    /// The calendar day.
+    pub day: chrono::NaiveDate,
+    /// The day's overlay count (`0` = no fact).
+    pub count: u32,
+}
+
+/// The week/month habit's per-day grid projection (US-8, #1144, W-11):
+/// one cell per calendar day of the visible month, fed by the per-day
+/// overlay facts — pure display data over `HabitState.day_log` (R-2:
+/// the window log stays the stats oracle; this projection never feeds
+/// a stats read). Missing facts project `count: 0` — the empty cell,
+/// no invention.
+///
+/// # Panics
+///
+/// Panics only if chrono cannot step a day inside the visible month —
+/// a programming error, not an input condition.
+#[must_use]
+pub fn habit_history_day_cells(
+    habit: &taskboard_domain::habit::Habit,
+    day_log: &std::collections::BTreeMap<
+        taskboard_domain::HabitDayKey,
+        taskboard_domain::HabitDayLogEntry,
+    >,
+    month: chrono::NaiveDate,
+) -> Vec<HabitDayCell> {
+    let month_floor =
+        taskboard_domain::habit::period_start(taskboard_domain::PeriodKind::Month, month);
+    let month_ceil =
+        taskboard_domain::habit::period_after(taskboard_domain::PeriodKind::Month, month_floor);
+    let mut cells = Vec::new();
+    let mut cursor = month_floor;
+    while cursor < month_ceil {
+        let key = taskboard_domain::HabitDayKey {
+            habit: habit.id,
+            day: cursor,
+        };
+        let count = day_log.get(&key).map_or(0, |entry| entry.count);
+        cells.push(HabitDayCell { day: cursor, count });
+        cursor = cursor
+            .checked_add_days(chrono::Days::new(1))
+            .expect("in-month day step");
+    }
+    cells
+}
+
 /// The month header ("November 2026"): the grid's address label.
 /// The caller freezes the clock feeding `month` (committed-artifact
 /// law) — this is a pure month-date formatter, never a wall-clock
