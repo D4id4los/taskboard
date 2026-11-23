@@ -84,6 +84,51 @@ expression: rows
   menu_rank: 75
   description: "Opens or closes the status panel: who serves the database, the sync posture, and the daemon/lock diagnostics. Read-only."
   menu_group: help
+- id: status.holder-kill
+  label: Kill lock holder
+  contexts:
+    - status-panel
+  category: application
+  enabled: true
+  menu_rank: 1000
+  description: Arms the confirm strip for signalling the displayed lock holder to terminate; nothing dispatches until confirmed.
+  menu_group: ~
+- id: status.lock-force-unlock
+  label: Force unlock
+  contexts:
+    - status-panel
+  category: application
+  enabled: true
+  menu_rank: 1010
+  description: Arms the confirm strip for removing the stale lock sidecar; the app-side executor re-checks holder liveness before anything is removed.
+  menu_group: ~
+- id: status.daemon-restart
+  label: Restart daemon
+  contexts:
+    - status-panel
+  category: application
+  enabled: true
+  menu_rank: 1020
+  description: Arms the confirm strip for a graceful daemon stop plus a detached daemon spawn; nothing dispatches until confirmed.
+  menu_group: ~
+- id: export.preview
+  label: Preview export payload
+  contexts:
+    - export-dialog
+  category: application
+  enabled: true
+  menu_rank: 1030
+  description: Generates the csv/json payload the export would write and renders it in the read-only pane; no file is written.
+  menu_group: ~
+- id: export.clipboard-copy
+  label: Copy export payload
+  contexts:
+    - export-dialog
+  category: application
+  enabled: true
+  menu_rank: 1040
+  description: Regenerates the csv/json payload app-side and copies it to the clipboard; no file is written.
+  menu_group: ~
 - id: app.help
   label: Open help
   contexts:
