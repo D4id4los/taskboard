@@ -3566,11 +3566,11 @@ fn one_shot_bits_are_total() {
     // blind to a duplicated bit, so the popcount of the ORed
     // vocabulary must equal the field count — one private bit per
     // one-shot, no two constants share a bit.
-    // 31 fields: bits 0..=30 (the US-14 TASK_MOVE addition took the
-    // first free bit past the HF quota draft's 29).
+    // 32 fields: bits 0..=31 (the D1i HABIT_RESTORE_TARGET took bit
+    // 31 — the first free bit past the US-14 TASK_MOVE's 30).
     assert_eq!(
         full.0.count_ones(),
-        31,
+        32,
         "every one-shot field owns a distinct bit"
     );
     // The conversion confirm is the fix's flagship pair: exactly its
