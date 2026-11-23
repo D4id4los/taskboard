@@ -237,20 +237,45 @@ impl KeymapShell {
                 }
             }
             UiEffect::MenuNext => {
-                if self.menu.len > 0 {
+                // The picker cursor (#1227, I-1): while the picker is
+                // mounted the SAME cursor machinery moves over the
+                // picker's selectable-row count (`menu.len` holds it
+                // at mount) — no parallel cursor struct.
+                if self.undo_picker {
+                    if self.menu.len > 0 {
+                        self.menu.selected = (self.menu.selected + 1) % self.menu.len;
+                    }
+                } else if self.menu.len > 0 {
                     self.menu.selected = (self.menu.selected + 1) % self.menu.len;
                 }
             }
             UiEffect::MenuPrevious => {
-                if self.menu.len > 0 {
+                if self.undo_picker {
+                    if self.menu.len > 0 {
+                        self.menu.selected =
+                            (self.menu.selected + self.menu.len - 1) % self.menu.len;
+                    }
+                } else if self.menu.len > 0 {
                     self.menu.selected = (self.menu.selected + self.menu.len - 1) % self.menu.len;
                 }
             }
             UiEffect::UndoBranchesOpen => {
                 // The picker mount (UF2 W-1): pure navigation — no
                 // command dispatch on open. Mounting closes the menu
-                // (sibling modals).
-                self.menu = MenuState::default();
+                // (sibling modals). `menu_len` is the picker's
+                // selectable-row count here (the adapter computes it
+                // off the published projection); the cursor machinery
+                // (`menu.selected`/`menu.len`) is keyed by the
+                // mount flag (I-1) — `menu.open` stays false, the
+                // action menu is closed.
+                self.menu = MenuState {
+                    open: false,
+                    selected: 0,
+                    len: menu_len,
+                    active_group: None,
+                    task_group: None,
+                    root_selected: 0,
+                };
                 self.undo_picker = true;
             }
             UiEffect::InvokeSelected => {
@@ -411,6 +436,18 @@ impl KeymapShell {
             .then_some(self.menu.selected)
             .filter(|_| self.menu.len > 0)
     }
+
+    /// The picker's selected row index, if any (the adapter's
+    /// `InvokeSelected` routing source while the picker is mounted,
+    /// #1227): the same cursor machinery, keyed by the mount flag —
+    /// `menu.open` is false for the picker, so the two selectors
+    /// never collide.
+    #[must_use]
+    pub fn picker_selected(&self) -> Option<usize> {
+        self.undo_picker
+            .then_some(self.menu.selected)
+            .filter(|_| self.menu.len > 0)
+    }
 }
 
 #[cfg(test)]
@@ -504,6 +541,47 @@ mod tests {
         shell.menu.active_group = Some(MenuGroup::Mode);
         shell.apply(&UiEffect::CloseMenu, 0);
         assert_eq!(shell.menu, MenuState::default());
+    }
+
+    /// #1227 (I-1, US-1/S2): the picker's MenuNext/MenuPrevious
+    /// ladder moves the SAME cursor machinery over the picker's row
+    /// count (stored at mount), wrapping at both ends; `MenuBack`
+    /// closes the picker and the close resets the cursor. The
+    /// action-menu selector never fires while the picker is mounted
+    /// (`menu.open` is false).
+    #[test]
+    fn picker_cursor_rides_the_menu_machinery() {
+        let mut shell = KeymapShell::default();
+        shell.apply(&UiEffect::UndoBranchesOpen, 4);
+        assert_eq!(
+            shell.picker_selected(),
+            Some(0),
+            "mount arms the cursor at 0"
+        );
+        assert_eq!(shell.selected_entry(), None, "the action menu stays closed");
+        shell.apply(&UiEffect::MenuNext, 0);
+        shell.apply(&UiEffect::MenuNext, 0);
+        assert_eq!(shell.picker_selected(), Some(2));
+        shell.apply(&UiEffect::MenuPrevious, 0);
+        assert_eq!(shell.picker_selected(), Some(1), "previous unwinds");
+        shell.apply(&UiEffect::UndoBranchesOpen, 4);
+        assert_eq!(
+            shell.picker_selected(),
+            Some(0),
+            "remount resets the cursor"
+        );
+        shell.apply(&UiEffect::MenuPrevious, 0);
+        assert_eq!(
+            shell.picker_selected(),
+            Some(3),
+            "previous wraps to the last row"
+        );
+        assert!(shell.apply(&UiEffect::MenuBack, 0));
+        assert_eq!(
+            shell.picker_selected(),
+            None,
+            "the escape closes and resets"
+        );
     }
 
     /// Design §3.8 — the board effects are view intents: the shell

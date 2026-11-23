@@ -152,6 +152,9 @@ export global KeyboardState {
     in-out property <bool> undo-picker-open: false;
     in-out property <[UndoPickerRowModel]> undo-picker-branch-rows: [];
     in-out property <[UndoPickerRowModel]> undo-picker-target-rows: [];
+    // The keyboard cursor (#1227): the picker-scoped selection index
+    // (the shell's cursor machinery, keyed by the mount flag).
+    in-out property <int> undo-picker-cursor: 0;
 }
 
 // The Q15 startup-warning state (rendered by the status bar).
@@ -1790,6 +1793,7 @@ export component AppWindow inherits Window {
                        status.y - self.height - Theme.space-1));
             branch-rows: KeyboardState.undo-picker-branch-rows;
             target-rows: KeyboardState.undo-picker-target-rows;
+            cursor: KeyboardState.undo-picker-cursor;
             // slint: undo_branches_open (the Rust seam on_undo_branches_open)
             undo_branches_open() => root.undo_branches_open();
             undo_line_undo() => root.undo_line_undo();
