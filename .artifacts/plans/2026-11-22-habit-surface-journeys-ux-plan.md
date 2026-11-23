@@ -28,9 +28,15 @@ inline-code spans) per the #1181 residue class.
   posture, the 09:00 mint is retired, the additive domain change is
   pre-authorized — **the ruled semantics is normative and restated as
   US-6 below**.
-- **Status**: DRAFT — GATE-PAUSED on operator acceptance (the
-  dispatcher owns the acceptance sitting; dispatch may chunk from it
-  only after ACCEPTED).
+- **Status**: ACCEPTED — operator acceptance 2026-11-23 (J3 sitting;
+  R-5's supersession of R-11 explicitly confirmed). The acceptance
+  added a binding condition: the **keyboard-first law** (now
+  docs/ux_planning.org §2.7, dated 2026-11-23 — every verb
+  keyboard-reachable via focus navigation; common verbs carry
+  dedicated chords; a chordless common verb is a defect; the
+  R-11-style "no keymap" ruling class retired). The habit-surface
+  chord sweep below (§1a, W-16) was added under that law in the same
+  acceptance; D3a may chunk from this plan as accepted.
 - **Surfaces touched**: ui/compositions/habits.slint,
   ui/widgets/task-card.slint, ui/views/task-view.slint (habit
   variant), ui/views/habit-history-view.slint,
@@ -102,6 +108,35 @@ Non-goals, each with a home:
   scope report §F.
 - Deep-history browsing beyond the bounded windows — J1's #1156, not
   this plan.
+
+### 1a. Habit-surface chord sweep (keyboard-first law, 2026-11-23)
+
+The acceptance's binding addition: audit the habit surface's verbs
+against the chord table; wire chords for the common ones (D3a scope),
+record the exceptions. Verdict per verb (Today context unless said):
+
+| Verb (ActionId) | Binding | Verdict |
+|---|---|---|
+| habit.log (HabitLog) | Ctrl+Shift+l (W-5, this plan) | common — chord wired (the R-5 supersession) |
+| habit.edit (HabitEdit) | Return at Today (W-16, NEW — the TaskEdit parity twin) | common — chord wired as an explicit preset row |
+| habit.undo_log (HabitUndoLog) | Ctrl+Shift+u (landed) | common — chorded |
+| habit.repair (HabitRepair) | Ctrl+Shift+d (landed, #1057) | common — chorded |
+| habit.skip (HabitSkip) | Ctrl+Shift+o (landed) | common — chorded |
+| habit.pause (HabitPause) | Ctrl+Shift+y (landed) | common — chorded |
+| habit.resume (HabitResume) | Ctrl+Shift+w (landed) | common — chorded |
+| habit.quota_edit (HabitQuotaEdit) | Ctrl+Shift+q (landed) | common — chorded |
+| habit.history (HabitHistory) | Ctrl+Shift+i (landed) | common — chorded |
+| habit.convert_arm (HabitConvertArm) | Ctrl+Shift+c (landed) | common — chorded |
+| habit.create (HabitCreate) | Ctrl+Shift+h (landed) | common — chorded |
+| habit.move (HabitMoveUp/Down) | Shift+Up/Down (landed) | common — chorded |
+| habit.pause_commit / pause_cancel (HabitPauseCommit / the cancel seam) | Return confirms, Escape dismisses (US-4 wires Escape) | scope-internal confirm/cancel — served by the modal grammar per §2.7, not the exception clause |
+| habit.quota_commit / habit.create_commit / habit.convert_to_series (HabitQuotaCommit / HabitCreateCommit / HabitConvertToSeries) | Return/Escape in their popover/editor scopes (landed grammar) | scope-internal — served by the modal grammar |
+| habit.schedule_edit / habit.reminder_edit (HabitScheduleEdit / HabitReminderEdit) | no chord; ride the editor's focus walk (Enter activates the section rows) | rare subsection-jumps inside an already-open editor — exception recorded per §2.7 (a future command window may chord them) |
+
+Net new keymap rows for D3a: W-5 (HabitLog Ctrl+Shift+l) and W-16
+(HabitEdit Return). No other chordless common verb exists on the
+habit surface; the app-wide audit is the standing backlog issue filed
+under the law.
 
 ## 2. Capability × surface matrix
 
@@ -554,6 +589,7 @@ A row with — in Commands says why in Journey steps. -->
 | W-12 | crates/taskboard-domain (log) + storage | the per-day log overlay fact — an additive second key family keyed (habit, day) written alongside the window log (the US-8 decision; D-H12 amendment recorded in §1/§2 R-2) | — | StateEngine write path (the overlay write rides the landed LogHabit/AdjustHabitLog commands — no new command) | — | — | additive fact, no command delta — reason per journey steps US-8/S1 | US-8/S1, US-8/S2 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us8_s2_window_adherence_oracle_unregressed |
 | W-13 | ui/views/task-view.slint (habit variant) | nudge-schedule preview row (display projection of the draft) | — | presentation.rs (the draft projection over nudge_day / tracker_anchor_occurrence) | — | — | display-only projection — reason per journey steps US-9/S1 | US-9/S1, US-9/S2, US-9/S3 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us9_s1_preview_projects_derived_schedule, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us9_s2_invalid_draft_hides_preview, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us9_s3_blank_time_preview_phrases_anchor |
 | W-14 | src/requests.rs (Flow) + adapter.rs + ui/views/task-view.slint | Flow::EditTitle / Flow::EditDescription widened to RowSubject::Task | — | adapter.rs (the title/description push arms read the variant's draft) | — | — | flow-enum widening; the landed flows' dispatches unchanged — reason per journey steps US-10/S1 | US-10/S1, US-10/S2, US-10/S3 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us10_s1_habit_variant_mounts_shared_editors, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us10_s2_habit_description_flow_mounts_shared_surface, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us10_s3_task_flows_unregressed |
+| W-16 | src/keymap/presets.rs | HabitEdit preset row — Return at Today (all three preset tables; the TaskEdit parity twin; makes US-3/S2's activation an explicit chorded row per the keyboard-first law) | — | src/router.rs (ActionId::HabitEdit already routes; the chord is keymap-only) | ActionId::HabitEdit | — | keymap-only row; no callback — reason per journey steps US-3/S2 | US-3/S2 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us3_s2_enter_activates_habit_editor |
 | W-15 | src/adapter.rs | push-side kiosk belt (reconcile: kiosk and a mounted habit subject steps the view back) | — | adapter.rs (the push pass; the dead-subject twin) | — | — | system guarantee; no user affordance — reason per journey steps US-11/S1 | US-11/S1, US-11/S2 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us11_s1_kiosk_push_steps_view_back, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us11_s2_desktop_push_unregressed |
 
 **Callback existence notes** (the gate greps as bare snake tokens):
@@ -579,7 +615,7 @@ and US-8's additive per-day overlay fact. -->
 | Domain fact (new, additive) | per-day habit log overlay | keyed (habit id, day) count recorded alongside the window log by the landed LogHabit / AdjustHabitLog write path; read only by the heatmap projection (R-2: the stats oracle stays window-canonical) — the recorded US-8 decision amending D-H12, subject to this plan's acceptance | US-8/S1 |
 | UiRequest (changed) | Flow::EditTitle / Flow::EditDescription | the task payload widens to RowSubject::Task — Habit: the habit variant mounts the shared surfaces and drops its mirrors | US-10/S1, US-10/S2 |
 | StateCommand | (none new) | LogHabit, AdjustHabitLog, UpdateHabit, PauseHabit all exist; the journeys dispatch only landed commands — the editor/history opens are view intents (UiEffect::HabitEdit / HabitHistoryOpen), not engine commands | US-1..US-11 |
-| ActionId | (none new) | HabitLog gains a preset row (W-5); HabitEdit/HabitHistory gain dispatch arms (W-4/W-10); all ids exist | US-2, US-3, US-7 |
+| ActionId | (none new) | HabitLog gains Ctrl+Shift+l (W-5) and HabitEdit gains Return at Today (W-16) — both ids exist; HabitHistory gains a dispatch arm (W-10) | US-2, US-3, US-7 |
 
 ## 8. Verification plan
 
@@ -624,8 +660,9 @@ and US-8's additive per-day overlay fact. -->
 - **Seam tests**: the quota seed computation (US-5/S1–S2); the
   override mint (US-6/S1–S2, US-6/S4 fold); the stats projection's
   window-canonical oracle (US-8/S2); the keymap contract suite
-  regeneration for the W-5 preset row (US-3/S5 — no silent drops,
-  the C-5 resolution rule).
+  regeneration for the W-5 and W-16 preset rows (US-3/S2, US-3/S5 —
+  no silent drops, the C-5 resolution rule; a collision moves the
+  spelling, never drops the row).
 - **Fold/presentation tests**: the target-met bit (US-1/S4); the
   tombstone row bit (US-7/S1); the nudge preview projection (US-9/S1–
   S3); all typed enums/bits, never label text.
@@ -638,6 +675,8 @@ and US-8's additive per-day overlay fact. -->
 
 ## 9. Definition of done
 
+- [x] Operator acceptance 2026-11-23 (with the keyboard-first law
+      binding addition; the chord sweep §1a + W-16 added)
 - [ ] scripts/ux-coverage.sh .artifacts/plans/2026-11-22-habit-surface-journeys-ux-plan.md --gate exits 0
 - [ ] Every P1 story's journey completes end-to-end including escapes
 - [ ] Walkthrough protocol executed at stage 3 (both chunks); findings

@@ -3,7 +3,8 @@
 - **Date**: 2026-11-22
 - **Origin**: UX journey plan
   `.artifacts/plans/2026-11-22-habit-surface-journeys-ux-plan.md`
-  (US-1..US-5; W-1..W-8; R-3, R-4, R-5). Round-5 dispatch plan chunk
+  — ACCEPTED 2026-11-23 with the keyboard-first law binding addition
+  (US-1..US-5; W-1..W-8, W-16; R-3, R-4, R-5; the §1a chord sweep). Round-5 dispatch plan chunk
   D3a. Authorities: the round-5 scope report §D; A1's fixed
   selection/DnD grammar (chunk `fix/today-habit-interaction` — this
   chunk sequences after A1 or rebases onto it); the K4 cursor law and
@@ -34,9 +35,16 @@
    the Today item walk (the K4 cursor state; no second mechanism);
    Enter activates (US-3/S2, the W-4 seam); W-5: ActionId::HabitLog
    gains the Ctrl+Shift+l Today preset chord in all three preset
-   tables — the R-5 supersession (dated, in the journey plan §2);
+   tables — the R-5 supersession (accepted 2026-11-23); W-16:
+   ActionId::HabitEdit gains an explicit Return preset row at Today
+   (all three tables; the TaskEdit parity twin — the keyboard-first
+   law, docs/ux_planning.org §2.7); the journey plan's §1a sweep
+   found no other chordless common habit verb (editor/popover
+   commit-cancel verbs are served by the modal grammar; the
+   section-jump ids ride the editor focus walk, exception recorded);
    US-3/S5 re-checks the landed RowMenu path; the keymap contract
-   suite regenerates (no silent drops, the C-5 rule).
+   suite regenerates over W-5 and W-16 (no silent drops, the C-5
+   rule).
 4. **#1208 pause editor escape (US-4)** — W-7: the section-level
    pause editor gains Escape (routed through the global escape/cancel
    preset) and outside-click dismissal, both resolving into the
@@ -63,8 +71,8 @@
   `us2_s2_kiosk_double_click_typed_refusal`,
   `us2_s3_single_click_selects_only`,
   `us3_s2_enter_activates_habit_editor`.
-- W-5/W-6 (US-3): walk + log chord. Tests:
-  `us3_s1_walk_crosses_habit_rows`,
+- W-5/W-16/W-6 (US-3): walk + log chord + HabitEdit Return row.
+  Tests: `us3_s1_walk_crosses_habit_rows`,
   `us3_s3_log_chord_resolves_over_focused_row`,
   `us3_s4_no_focus_typed_refusal`,
   `us3_s5_row_menu_opens_habit_menu`; keymap contract suite
@@ -112,7 +120,7 @@ All in `crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs`.
 
 - [ ] Journey plan's US-1..US-5 wiring rows implemented and green
 - [ ] Gate exits 0 on the journey plan
-- [ ] Keymap contract suite green with the W-5 row; no drops
+- [ ] Keymap contract suite green with the W-5 and W-16 rows; no drops
 - [ ] A1's selection/DnD journeys unregressed
 - [ ] #1199, #1201, #1202, #1208, #1196 close (closures are the
       dispatcher's at merge)
