@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -25,9 +24,12 @@ undo:
   recent:
     - id: 00000000-0000-0000-0000-000000000004
       label: Delete reflection
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000003
       label: Edit reflection
+      payload: "shipped it, and fixed the flake"
     - id: 00000000-0000-0000-0000-000000000002
       label: Record reflection
+      payload: ~
   branch_children: []
 last_updated: "1970-01-01T10:03:00Z"
