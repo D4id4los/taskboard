@@ -110,8 +110,9 @@ pub fn collapse(cmd: TasksCmd) -> Option<RepeatInvocation> {
         | TasksCmd::Delete { .. }
         | TasksCmd::Label { .. }
         | TasksCmd::Unlabel { .. }
-        | TasksCmd::Undo
-        | TasksCmd::Redo
+        | TasksCmd::Undo { mode: _ }
+        | TasksCmd::Redo { mode: _ }
+        | TasksCmd::History { .. }
         | TasksCmd::Remind { .. } => return None,
     };
     let RepeatArgs {

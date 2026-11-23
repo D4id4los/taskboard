@@ -313,6 +313,22 @@ pub enum CommandError {
         /// The matched entries' full uuids.
         candidates: Vec<String>,
     },
+    /// No journal row matches the `undo to`/`redo to` selector over the
+    /// bounded `tasks history` windows (D1ii D-4, I-3: the window bound
+    /// is the product decision — the raw journal never widens it).
+    #[error("no journal history row matches {selector:?} — see `tasks history`")]
+    UnknownJournalTarget {
+        /// The rejected selector, verbatim.
+        selector: String,
+    },
+    /// The journal selector matches several history rows; carries
+    /// their full uuids (deterministic id order). Refused typed
+    /// before any dispatch.
+    #[error("journal selector matches several history rows — pass one of {}", candidates.join(" | "))]
+    AmbiguousJournalTarget {
+        /// The matched rows' full uuids.
+        candidates: Vec<String>,
+    },
     /// `--what journal` received a tracking-only filter (`--task`/
     /// `--board`): the ruling names `--since`/`--until` the journal
     /// leg's only filters, and silently ignoring a passed filter is
@@ -563,6 +579,8 @@ impl CommandError {
     /// Exhaustive: the compiler forces every new variant to pick a kind.
     #[must_use]
     #[allow(clippy::too_many_lines)] // one kind table, kept flat for review
+    // The catalogue's totality match is one arm per refusal kind; the
+    // arm count is the surface's size, not incidental length.
     pub fn error_kind(&self) -> &'static str {
         match self {
             Self::Config(err) => err.kind(),
@@ -627,6 +645,8 @@ impl CommandError {
             Self::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
             Self::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
             Self::AmbiguousReflectionEntry { .. } => "ambiguous-reflection-entry",
+            Self::UnknownJournalTarget { .. } => "unknown-journal-target",
+            Self::AmbiguousJournalTarget { .. } => "ambiguous-journal-target",
             Self::ExportFiltersNotApplicable => "filters-not-applicable",
             #[cfg(feature = "pdf-export")]
             Self::ExportOptionsNotApplicable => "options-not-applicable",
@@ -1534,7 +1554,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             None => unreachable!("the outer match selected the Repeat arm"),
         },
         Command::Tasks {
-            cmd: TasksCmd::Undo,
+            cmd: TasksCmd::Undo { mode: None },
         } => run_core(
             &mut ctx.io,
             ctx.config_path.clone(),
@@ -1543,7 +1563,19 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         )
         .await,
         Command::Tasks {
-            cmd: TasksCmd::Redo,
+            cmd:
+                TasksCmd::Undo {
+                    mode: Some(crate::cli::JournalJump::To { id }),
+                },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            tasks::render_text_undo,
+            move |config, store| async move { tasks::undo_to(config, store, &id).await },
+        )
+        .await,
+        Command::Tasks {
+            cmd: TasksCmd::Redo { mode: None },
         } => run_core(
             &mut ctx.io,
             ctx.config_path.clone(),
@@ -1551,6 +1583,33 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             move |config, store| async move { tasks::redo(config, store).await },
         )
         .await,
+        Command::Tasks {
+            cmd:
+                TasksCmd::Redo {
+                    mode: Some(crate::cli::JournalJump::To { id }),
+                },
+        } => run_core(
+            &mut ctx.io,
+            ctx.config_path.clone(),
+            tasks::render_text_undo,
+            move |config, store| async move { tasks::redo_to(config, store, &id).await },
+        )
+        .await,
+        Command::Tasks {
+            cmd: TasksCmd::History { json },
+        } => {
+            // The history read (I-4): the session `--json` and the
+            // subcommand's own `--json` compose (either alone is the
+            // machine lane).
+            ctx.io.json |= json;
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                tasks::render_text_history,
+                |config, store| async move { tasks::history(config, store).await },
+            )
+            .await
+        }
         Command::Find {
             query,
             kind,
@@ -2457,8 +2516,30 @@ async fn tasks_line(
             Some(invocation) => repeat::repeat_line(app, io, invocation).await,
             None => unreachable!("the outer match selected the Repeat arm"),
         },
-        TasksCmd::Undo => emit_result(io, tasks::undo_on(app).await, tasks::render_text_undo),
-        TasksCmd::Redo => emit_result(io, tasks::redo_on(app).await, tasks::render_text_undo),
+        TasksCmd::Undo { mode: None } => {
+            emit_result(io, tasks::undo_on(app).await, tasks::render_text_undo)
+        }
+        TasksCmd::Undo {
+            mode: Some(crate::cli::JournalJump::To { id }),
+        } => emit_result(
+            io,
+            tasks::undo_to_on(app, &id).await,
+            tasks::render_text_undo,
+        ),
+        TasksCmd::Redo { mode: None } => {
+            emit_result(io, tasks::redo_on(app).await, tasks::render_text_undo)
+        }
+        TasksCmd::Redo {
+            mode: Some(crate::cli::JournalJump::To { id }),
+        } => emit_result(
+            io,
+            tasks::redo_to_on(app, &id).await,
+            tasks::render_text_undo,
+        ),
+        TasksCmd::History { json } => {
+            io.json |= json;
+            emit_result(io, Ok(tasks::history_on(app)), tasks::render_text_history)
+        }
         TasksCmd::Label { task, label } => emit_result(
             io,
             tasks::label_on(app, &task, &label, |t, l| StateCommand::AssignLabel {
@@ -2920,10 +3001,10 @@ mod ipc_routing_tests {
             // the inheritance guarded — a future split of the wildcard
             // arm cannot silently drop them off the mutation lane.
             Command::Tasks {
-                cmd: TasksCmd::Undo,
+                cmd: TasksCmd::Undo { mode: None },
             },
             Command::Tasks {
-                cmd: TasksCmd::Redo,
+                cmd: TasksCmd::Redo { mode: None },
             },
             Command::Tasks {
                 cmd: TasksCmd::Repeat(crate::cli::RepeatArgs {

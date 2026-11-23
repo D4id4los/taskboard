@@ -347,6 +347,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
             CommandError::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
             CommandError::AmbiguousReflectionEntry { .. } => "ambiguous-reflection-entry",
+            CommandError::UnknownJournalTarget { .. } => "unknown-journal-target",
+            CommandError::AmbiguousJournalTarget { .. } => "ambiguous-journal-target",
             CommandError::ExportFiltersNotApplicable => "filters-not-applicable",
             #[cfg(feature = "pdf-export")]
             CommandError::ExportOptionsNotApplicable => "options-not-applicable",

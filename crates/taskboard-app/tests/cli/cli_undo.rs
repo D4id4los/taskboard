@@ -71,8 +71,14 @@ async fn live_titles(config: &AppConfig) -> Vec<String> {
 /// clap surface.
 #[test]
 fn u01_the_undo_verbs_parse_as_bare_unit_variants() {
-    assert!(matches!(parse_tasks(&["tasks", "undo"]), TasksCmd::Undo));
-    assert!(matches!(parse_tasks(&["tasks", "redo"]), TasksCmd::Redo));
+    assert!(matches!(
+        parse_tasks(&["tasks", "undo"]),
+        TasksCmd::Undo { mode: None }
+    ));
+    assert!(matches!(
+        parse_tasks(&["tasks", "redo"]),
+        TasksCmd::Redo { mode: None }
+    ));
 }
 
 /// U-2: undo on an empty journal refuses typed.
@@ -217,13 +223,13 @@ fn u07_the_undo_verbs_route_over_the_daemon_lane() {
     use taskboard_app::commands::{IpcRoute, route_for_ipc};
     assert_eq!(
         route_for_ipc(&Command::Tasks {
-            cmd: TasksCmd::Undo,
+            cmd: TasksCmd::Undo { mode: None },
         }),
         IpcRoute::IpcOrLocal
     );
     assert_eq!(
         route_for_ipc(&Command::Tasks {
-            cmd: TasksCmd::Redo,
+            cmd: TasksCmd::Redo { mode: None },
         }),
         IpcRoute::IpcOrLocal
     );
@@ -252,10 +258,10 @@ async fn u08_the_session_lane_serves_the_undo_verbs() {
     };
 
     let undo_cmd = || Command::Tasks {
-        cmd: TasksCmd::Undo,
+        cmd: TasksCmd::Undo { mode: None },
     };
     let redo_cmd = || Command::Tasks {
-        cmd: TasksCmd::Redo,
+        cmd: TasksCmd::Redo { mode: None },
     };
 
     let mut out = Vec::new();

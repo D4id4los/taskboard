@@ -7,6 +7,7 @@
 //! guarantee is "pushed by the next `sync`/daemon run".
 
 use std::fmt::Write as _;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -770,6 +771,50 @@ pub async fn redo(
     with_core(config, store, async |app| redo_on(app).await).await
 }
 
+/// Jumps the undo line back to a `tasks history` row (D1ii W-6): the
+/// bounded resolution over the published windows, then the exact
+/// `UndoTo` dispatch.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn undo_to(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    selector: &str,
+) -> Result<JournalReceipt, CommandError> {
+    let selector = selector.to_owned();
+    with_core(config, store, async |app| undo_to_on(app, &selector).await).await
+}
+
+/// Redoes down a chosen abandoned branch (D1ii W-6): the bounded
+/// resolution, then the exact `RedoTo` dispatch.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn redo_to(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    selector: &str,
+) -> Result<JournalReceipt, CommandError> {
+    let selector = selector.to_owned();
+    with_core(config, store, async |app| redo_to_on(app, &selector).await).await
+}
+
+/// Browses the journal history at the recorded bounded resolution
+/// (D1ii W-5, I-4): a read over the published snapshot.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn history(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+) -> Result<taskboard_domain::UndoView, CommandError> {
+    with_core(config, store, async |app| history_on_ok(app).await).await
+}
+
 /// The receipt for a journal verb: the outcome's entry id plus the
 /// best-effort label from the published `UndoView.recent` window (the
 /// just-touched entry is the most recently appended one, so it is
@@ -821,6 +866,165 @@ pub(crate) async fn redo_on(app: &crate::App) -> Result<JournalReceipt, CommandE
             Ok(journal_receipt(&state, JournalVerb::Redo, entry))
         }
         _ => unreachable!("Redo plans into Redone and typed refusals only"),
+    }
+}
+
+/// The `tasks history` projection over the published snapshot (D1ii
+/// W-5, I-4): the windows as the engine derived them — typed ids,
+/// labels, payloads; no engine command crosses the boundary (a browse
+/// is a read, not an intent). The returned [`taskboard_domain::UndoView`]
+/// is the same typed shape the picker mounts from (D-2's one
+/// projection) and the serde payload `--json` decodes.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) fn history_on(app: &crate::App) -> taskboard_domain::UndoView {
+    let state = app.engine.shared_state().load_full();
+    state.undo.clone()
+}
+
+/// The `Result`-shaped session seam (the dispatch lane's emit shape).
+///
+/// # Errors
+///
+/// Never fails today — the shape keeps the lane uniform.
+pub(crate) fn history_on_ok(
+    app: &crate::App,
+) -> impl Future<Output = Result<taskboard_domain::UndoView, CommandError>> {
+    std::future::ready(Ok(history_on(app)))
+}
+
+/// The human-readable history render: the head fact plus the two
+/// bounded windows, newest first (text is UX, never asserted).
+#[must_use]
+pub fn render_text_history(view: &taskboard_domain::UndoView) -> String {
+    let row = |label: &taskboard_domain::UndoLabel| match &label.payload {
+        Some(payload) => format!("{}  {} — {payload}", label.id.as_uuid(), label.label),
+        None => format!("{}  {}", label.id.as_uuid(), label.label),
+    };
+    let mut text = String::new();
+    match &view.head_label {
+        Some(head) => {
+            let _ = writeln!(text, "head: {head}");
+        }
+        None => {
+            let _ = writeln!(text, "head: (empty line)");
+        }
+    }
+    let _ = writeln!(text, "undo steps (newest first):");
+    for label in &view.recent {
+        let _ = writeln!(text, "  {}", row(label));
+    }
+    let _ = writeln!(text, "branches:");
+    for label in &view.branch_children {
+        let _ = writeln!(text, "  {}", row(label));
+    }
+    text
+}
+
+/// The bounded journal-target resolution (D1ii W-6, D-4/I-3): a full
+/// uuid or a unique ≥8-char prefix matched against the *published
+/// projection's* windows only — what `tasks history` printed. The raw
+/// journal never widens the bound; an ambiguous prefix refuses typed
+/// before any dispatch.
+///
+/// # Errors
+///
+/// [`CommandError::UnknownJournalTarget`] for a miss (including any
+/// prefix shorter than 8 chars — the honest bound is the grammar),
+/// [`CommandError::AmbiguousJournalTarget`] for a multi-match.
+pub(crate) fn resolve_journal_target(
+    state: &taskboard_domain::AppState,
+    selector: &str,
+) -> Result<taskboard_domain::JournalId, CommandError> {
+    // The two windows overlap (a walked entry rides both); the id
+    // universe is the DEDUPED union — one row, one resolution hit.
+    let mut universe: Vec<taskboard_domain::JournalId> = state
+        .undo
+        .recent
+        .iter()
+        .chain(state.undo.branch_children.iter())
+        .map(|row| row.id)
+        .collect();
+    universe.sort();
+    universe.dedup();
+    if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
+        let id = taskboard_domain::JournalId::from_uuid(uuid);
+        return if universe.contains(&id) {
+            Ok(id)
+        } else {
+            Err(CommandError::UnknownJournalTarget {
+                selector: selector.to_owned(),
+            })
+        };
+    }
+    let matches: Vec<taskboard_domain::JournalId> = if selector.len() >= 8 {
+        universe
+            .iter()
+            .filter(|id| id.as_uuid().to_string().starts_with(selector))
+            .copied()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    match matches.as_slice() {
+        [one] => Ok(*one),
+        _ => Err(if matches.is_empty() {
+            CommandError::UnknownJournalTarget {
+                selector: selector.to_owned(),
+            }
+        } else {
+            CommandError::AmbiguousJournalTarget {
+                candidates: matches.iter().map(|id| id.as_uuid().to_string()).collect(),
+            }
+        }),
+    }
+}
+
+/// The `tasks undo to <id/prefix>` step on a booted core (the
+/// REPL/session seam): the bounded resolution, then the exact
+/// `UndoTo` dispatch (the picker's ancestor verb — the GUI parity
+/// law, D-5). The engine's `TargetNotInLine` (a stale row) surfaces
+/// untouched via `domain_error_kind`.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) async fn undo_to_on(
+    app: &crate::App,
+    selector: &str,
+) -> Result<JournalReceipt, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let target = resolve_journal_target(&state, selector)?;
+    match app.engine.execute(StateCommand::UndoTo { target }).await? {
+        taskboard_domain::CommandOutcome::Undone { entry } => {
+            let state = app.engine.shared_state().load_full();
+            Ok(journal_receipt(&state, JournalVerb::Undo, entry))
+        }
+        _ => unreachable!("UndoTo plans into Undone and typed refusals only"),
+    }
+}
+
+/// The `tasks redo to <id/prefix>` step on a booted core: the bounded
+/// resolution, then the exact `RedoTo` dispatch (the picker's sibling
+/// verb — the walk lands on the branch tip; the GUI parity law).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) async fn redo_to_on(
+    app: &crate::App,
+    selector: &str,
+) -> Result<JournalReceipt, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let target = resolve_journal_target(&state, selector)?;
+    match app.engine.execute(StateCommand::RedoTo { target }).await? {
+        taskboard_domain::CommandOutcome::Redone { entry } => {
+            let state = app.engine.shared_state().load_full();
+            Ok(journal_receipt(&state, JournalVerb::Redo, entry))
+        }
+        _ => unreachable!("RedoTo plans into Redone and typed refusals only"),
     }
 }
 
@@ -1090,6 +1294,48 @@ mod predicate_tests {
             resolve_task_exact_any(&state, "buried"),
             Err(CommandError::UnknownTask(_))
         ));
+    }
+
+    /// US-3/S4 (D1ii D-4): two rows sharing an ≥8-char prefix refuse
+    /// typed (`AmbiguousJournalTarget`) BEFORE any dispatch — the
+    /// candidates carry their full uuids in deterministic order.
+    #[test]
+    fn us3_s4_ambiguous_prefix_refuses_before_dispatch() {
+        let base = uuid::Uuid::parse_str("0f0e0d0c-0000-0000-0000-000000000000").unwrap();
+        let mut state = AppState::default();
+        state.undo.recent = vec![
+            taskboard_domain::UndoLabel {
+                id: taskboard_domain::JournalId::from_uuid(base),
+                label: "created".to_owned(),
+                payload: None,
+            },
+            taskboard_domain::UndoLabel {
+                id: taskboard_domain::JournalId::from_uuid(
+                    uuid::Uuid::parse_str("0f0e0d0c-1111-1111-1111-111111111111").unwrap(),
+                ),
+                label: "created".to_owned(),
+                payload: None,
+            },
+        ];
+        // The shared 8-char prefix: both rows match, refusal first.
+        let err =
+            resolve_journal_target(&state, "0f0e0d0c").expect_err("an ambiguous prefix refuses");
+        let CommandError::AmbiguousJournalTarget { candidates } = &err else {
+            panic!("the typed ambiguity refusal: {err:?}");
+        };
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            candidates[0] <= candidates[1],
+            "the candidates are in deterministic id order"
+        );
+        // A unique extension resolves.
+        let unique = "0f0e0d0c-0";
+        assert_eq!(
+            resolve_journal_target(&state, unique)
+                .expect("the extension disambiguates")
+                .as_uuid(),
+            base
+        );
     }
 
     // ---- journal_receipt (plan §3 #11, the D1 `&AppState` seam) ------------
