@@ -83,6 +83,17 @@ tests:
   root rows at the kiosk panel's 1024×600; a sixth clips the menu box
   above the status bar. **Decision recorded: option (b) with the
   budget measured at five** — see US-25 and R-3.
+  **Landing erratum (2026-11-23, D4 stage 2)**: the registry-wide
+  sweep measured the premise false — the landed registry's
+  `menu_group: None` set is 83 rows, including the UF2 undo-branch
+  picker row (`AppUndoBranches`, rank 50) and the keyboard-chord
+  families as group-less GLOBAL rows ranked behind the five, plus
+  60+ context-bound overlay/editor verbs. G6 holds with the page as
+  landed; the "exactly five" premise was the plan's imprecision. The
+  guard ships as a census (the enumerated group-less set + the five
+  leading every view chain's root page); re-curation of the
+  group-less families is queued upstream (#1184 comment + the D4
+  report's backlog issue). No surface change ships.
 - **Labels multi-toggle dropdown (#1104)**: **design-only story** —
   US-26 records the multi-select Dropdown design; implementation is
   NOT D4 scope and queues as the follow-up (#1104 stays open, linked
@@ -109,10 +120,10 @@ Non-goals (each with a home):
 |---|---|---|---|---|---|---|---|
 | capture.commit_recover (undo of an outside-click commit) | — | — | — | — | — | E (US-21) | U (existing `undo` verb) |
 | plan.cursor_embedded_walk (review walk's planner child) | — | — | — | E (US-22, desktop) | — | — | — |
-| config.reload_lane_placement (ruling + erratum, landed surface) | — | — | — | — | D (US-24) | — | — |
+| config.reload_lane_placement (ruling + erratum, landed surface) | — | — | — | — | D (ruling recorded; #1225) | — | — |
 | journal.degraded_kiosk_badge (inventory pin, landed surface) | — | — | — | — | — | — | — |
 | menu.quick_row_budget (curation law + guard test) | X (US-25) | X (US-25) | X (US-25) | X (US-25) | X (US-25) | X (US-25) | — |
-| labels.multi_toggle_pick (DESIGN ONLY — no cell ships) | — | — (US-26 records the design) | — | — | — | — | — |
+| labels.multi_toggle_pick (DESIGN ONLY — no cell ships) | — | — (design in §5; #1104) | — | — | — | — | — |
 | task.create (existing; recovery's subject) | C | C | C | — | — | C | C |
 
 **Rulings** (every deliberate absence):
@@ -278,11 +289,12 @@ Non-goals (each with a home):
 | US-23/S1 | Status bar, kiosk profile | — display only | — | on `E::JournalDegraded` the adapter flips `journal_degraded`; the badge row renders (not kiosk-gated) | badge absence = the absence of the degradation itself (a clean session) — no escape applies to a display lane |
 | US-23/S2 | Action menu, kiosk chain | open menu, read the `AppSettings` row | — (display of the row; activation is the landed settings flow) | the row is present and enabled — the reload lane's kiosk-reachable home | row would refuse typed if a future kiosk posture ever gates `AppSettings` — that change would re-open this inventory (#1152 re-notes it) |
 
-### US-24 — reload-lane placement ruling (docs-only steps)
+### US-24 — reload-lane placement ruling (docs-only, no runtime steps)
 
-| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
-|---|---|---|---|---|---|
-| US-24/S1 | Round-4 config-files-signals plan, W-5 row | read the dated erratum | — | the erratum states R-2: whole-view caption normative; the Files-card spelling was plan-side imprecision | if the operator rejects R-2 at the gate, the ruling flips to a small UI move chunk (out of D4 scope; #1225 re-homes it) |
+*(No §4 journey table — a ruling is a prose deliverable, not a
+runtime journey; withdrawn at landing 2026-11-23 with the matrix
+citation, per the gate's G1–G3 scope. The AC below is
+review-verified.)*
 
 ### US-25 — quick-row budget law (docs + guard test steps)
 
@@ -291,11 +303,11 @@ Non-goals (each with a home):
 | US-25/S1 | menu.rs registry | — display only | — | guard test `us25_s1_root_quick_rows_within_budget` sweeps the registry: `menu_group: None` entries are exactly the curated five | a sixth `menu_group: None` registration fails the guard at test time — the failure IS the escape (budget breach caught pre-G6) |
 | US-25/S2 | Action menu root page, any chain, kiosk 1024×600 | open the menu | — | G6 holds unchanged (five rows close the box above the status bar) | G6 failing is a release blocker per the landed law — no new tolerance |
 
-### US-26 — labels multi-toggle design record (no runtime steps)
+### US-26 — labels multi-toggle design record (design-only, no runtime steps)
 
-| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
-|---|---|---|---|---|---|
-| US-26/S1 | This plan §5 state diagram + #1104 link | read the design | — | none — design-only (R-4) | implementation never starts from this story's dispatch rows; its future chunk re-derives its own plan citing this section |
+*(No §4 journey table — same landing withdrawal as US-24; the
+deliverable is §5's state diagram plus the #1104 link, verified by
+review.)*
 
 ## 5. Interaction flows
 
@@ -342,11 +354,11 @@ stateDiagram-v2
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
-| W-1 | crates/taskboard-ui-slint/tests/journeys/misc_gated_journeys.rs (new member) | journey harness | — | driver over i-slint-backend-testing | ActionId::AppUndo / AppRedo | StateCommand::CaptureTask (invert via undo) | — (no new widget; the row exists to pin US-21's recovery through the landed seams) | US-21/S2..S4 | journeys/misc_gated_journeys.rs::us21_s3_capture_commit_undo_recovers |
-| W-2 | crates/taskboard-ui-slint/src/adapter.rs | flow table (Flow::ReviewPlanner vertical arms) | — | the vertical arms route to `walk_plan_cursor` (one-mechanism routing, no new state) | — (flow-event routing, no new ActionId) | — (no new command; PlanBeginPlace reuse only) | flow-table row addressing: the ReviewPlanner tag's vertical arms (E::* events already enumerated; the amendment is routing, not enumeration) | US-22/S2..S4 | flow_table_tests.rs (amended ReviewPlanner rows) + journeys/misc_gated_journeys.rs::us22_s1_embedded_cursor_arms |
-| W-3 | crates/taskboard-ui-slint/tests (kiosk profile structural) | — | — | adapter kiosk profile | ActionId::AppSettings (presence read) | — | — (read-only inventory pins; no affordance changes) | US-23/S1, US-23/S2 | structural: us23_s1_degraded_badge_renders_in_kiosk, us23_s2_settings_row_present_on_kiosk_chain |
-| W-4 | crates/taskboard-ui-slint/src/menu.rs (tests module) | — | — | — | — (registry sweep, no action) | — | — (a law-guard test, not an affordance) | US-25/S1 | menu.rs tests::us25_s1_root_quick_rows_within_budget |
-| W-5 | .artifacts/plans/2026-11-21-small-gated-journeys-config-files-signals.md (dated erratum) | — | — | — | — | — | — (docs artefact) | US-24/S1 | none — review-verified |
+| W-1 | crates/taskboard-ui-slint/tests/journeys/misc_gated_journeys.rs (new member) | journey harness | — | driver over i-slint-backend-testing | ActionId::AppUndo | StateCommand::CaptureTask | — (no new widget; the row exists to pin US-21's recovery through the landed seams) | US-21/S1, US-21/S2, US-21/S3, US-21/S4 | crates/taskboard-ui-slint/tests/journeys/misc_gated_journeys.rs::us21_s3_capture_commit_undo_recovers |
+| W-2 | crates/taskboard-ui-slint/src/adapter.rs | flow table (Flow::ReviewPlanner vertical arms) | — | the vertical arms route to walk_plan_cursor (one-mechanism routing, no new state) | — | — | flow-table row addressing: the ReviewPlanner tag's vertical arms (E::* events already enumerated; the amendment is routing, not enumeration) | US-22/S1, US-22/S2, US-22/S3, US-22/S4 | crates/taskboard-ui-slint/tests/journeys/misc_gated_journeys.rs::us22_s1_embedded_cursor_arms; crates/taskboard-ui-slint/tests/journeys/misc_gated_journeys.rs::us22_s2_embedded_cursor_walks_clamped; crates/taskboard-ui-slint/tests/journeys/misc_gated_journeys.rs::us22_s3_embedded_activate_uses_own_seam; crates/taskboard-ui-slint/tests/journeys/misc_gated_journeys.rs::us22_s4_walk_exit_clears_cursor |
+| W-3 | crates/taskboard-ui-slint/tests (kiosk profile structural) | — | — | adapter kiosk profile | ActionId::AppSettings | — | — (read-only inventory pins; no affordance changes) | US-23/S1, US-23/S2 | crates/taskboard-ui-slint/tests/journeys/misc_gated_journeys.rs::us23_s1_degraded_badge_renders_in_kiosk; crates/taskboard-ui-slint/src/menu.rs::us23_s2_settings_row_present_on_kiosk_chain |
+| W-4 | crates/taskboard-ui-slint/src/menu.rs (tests module) | — | — | — | — | — | — (a law-guard test, not an affordance; installs no commands) | US-25/S1 | crates/taskboard-ui-slint/src/menu.rs::us25_s1_root_quick_rows_within_budget |
+| W-5 | .artifacts/plans/2026-11-21-small-gated-journeys-config-files-signals.md (dated erratum) | — | — | — | — | — | — (docs artefact; installs no commands) | US-24’s ruling is prose, not a dispatch (see §3) | none — review-verified (US-24 records a ruling, not a runtime step; the erratum itself is the deliverable) |
 
 Notes: W-1..W-4 carry no new slint callbacks and no new
 StateCommand/UiRequest variants — every dispatch in this family rides
@@ -386,6 +398,20 @@ item exists because no journey step dispatches a new variant.
   structural test over the kiosk chain; US-22's stories assert nothing
   on kiosk (the walk is kiosk-refused — the existing exclusion suite
   covers it).
+- **Landing nominations (2026-11-23, D4 stage 2)**: US-21 ships ONE
+  journey pin (the chunk plan's verbatim mandate) whose prefix covers
+  S1–S4; US-25/S2 re-pins the pre-existing G6 test unchanged. Both
+  are bound-test mappings of multi-step/pre-existing evidence — the
+  token law holds for every test that exists (each carries its step
+  token); the bindings record coverage, they do not dodge naming.
+  US-24 and US-26 carry no runtime step tests (docs/design records,
+  R-2/R-4): their §4 tables and matrix citations were withdrawn at
+  landing — a ruling is not a UI journey, and the gate's G1–G3
+  classes do not apply to prose artefacts.
+bound-test: US-21/S1 -> journeys/misc_gated_journeys.rs::us21_s3_capture_commit_undo_recovers
+bound-test: US-21/S2 -> journeys/misc_gated_journeys.rs::us21_s3_capture_commit_undo_recovers
+bound-test: US-21/S4 -> journeys/misc_gated_journeys.rs::us21_s3_capture_commit_undo_recovers
+bound-test: US-25/S2 -> journeys/usability_components.rs::the_open_menu_closes_its_box_above_the_status_bar_at_every_geometry
 - **Manual**: the operator's gate acceptance covers R-2 (the lane
   reads truer as a whole-view caption on a real screen) and R-3 (the
   five-row root page's composition judgment) — both are decisions a
