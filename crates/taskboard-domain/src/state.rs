@@ -58,6 +58,12 @@ pub struct AppState {
     /// `last_updated`: derived from the persisted [`crate::journal::
     /// JournalState`] at every publish, never persisted itself.
     pub undo: crate::journal::UndoView,
+    /// The derived restore roster (the undo-family journey plan W-1/W-8,
+    /// D-1) — memory-only like `undo`: derived from the entity maps and
+    /// the persisted journal at every publish, never persisted itself.
+    /// The GUI restore affordances' typed row source; the UI renders,
+    /// never synthesizes.
+    pub roster: crate::roster::RestoreRoster,
     /// Time of the last engine mutation from ANY source (local command or
     /// sync ingestion), stamped via the injected `Clock`.
     pub last_updated: Option<DateTime<Utc>>,

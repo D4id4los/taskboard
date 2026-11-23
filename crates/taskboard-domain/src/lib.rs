@@ -63,6 +63,7 @@ pub mod reflection;
 pub mod reflection_stats;
 pub mod reminders;
 pub mod remote;
+pub mod roster;
 pub mod settings;
 pub mod state;
 pub mod tracking;
@@ -176,6 +177,7 @@ pub use remote::{
     RemoteBoardSnapshot, RemoteEcho, RemoteIndex, RemoteLabel, RemoteStack, RemoteTask,
     resolve_label,
 };
+pub use roster::{DeletedEntryRow, RestoreRoster, RestoreRow};
 pub use settings::{
     DueSoonDays, InvalidDueSoonDays, InvalidTickSecs, ROAMING_SETTING_NAMES, ReminderSinkChoice,
     RoamingSettingRow, RoamingSettingValue, RoamingSettings, SettingsSnapshot, TickSecs,

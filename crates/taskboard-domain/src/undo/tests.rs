@@ -5240,3 +5240,186 @@ fn us1_s2_redo_to_takes_the_chosen_sibling_branch() {
     assert!(alpha_live, "the chosen branch's content is live");
     assert!(!beta_live, "the abandoned sibling stays parked");
 }
+
+// ---- the zero-input journal-addressed restore (D-5, W-10) ---------------
+
+/// US-5/AC-3 (W-10): a `DeleteTimeEntry` head whose capture carries no
+/// row (`before: None`, the pre-#901 decode ghost's shape) refuses
+/// typed — the bounded honesty of the retention law's edge. A
+/// non-delete entry refuses with its own kind, and an unknown journal
+/// id refuses before anything plans.
+#[test]
+fn us5_ac3_none_preimage_refuses_typed() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let _task = h.task(stack, "t");
+    let non_delete_head = h.journal.head.expect("the line has entries");
+    let ghost_id = crate::ids::JournalId::from_uuid(uuid::Uuid::now_v7());
+    let entry_id = crate::ids::TimeEntryId::from_uuid(uuid::Uuid::now_v7());
+    let ghost_stamp = h.tick();
+    h.journal.entries.push(crate::journal::JournalEntry {
+        id: ghost_id,
+        parent: Some(non_delete_head),
+        command: StateCommand::DeleteTimeEntry { id: entry_id },
+        facts: UndoFacts::PreImages {
+            images: vec![PreImage::TimeEntry {
+                id: entry_id,
+                before: None,
+            }],
+            watermark: UndoWatermark::default(),
+        },
+        ops: Vec::new(),
+        pushed: false,
+        board: None,
+        created_at: ghost_stamp,
+    });
+    // Not-a-delete: an edit entry's id names no restorable row.
+    match h.exec(&StateCommand::RestoreTimeEntryFromJournal {
+        from: non_delete_head,
+    }) {
+        Err(CommandError::JournalEntryNotTimeEntryDelete(_)) => {}
+        other => panic!("typed not-a-delete refusal, got {other:?}"),
+    }
+    // The `None` pre-image ghost.
+    match h.exec(&StateCommand::RestoreTimeEntryFromJournal { from: ghost_id }) {
+        Err(CommandError::JournalEntryPreImageMissing(_)) => {}
+        other => panic!("typed none-preimage refusal, got {other:?}"),
+    }
+    // Unknown id (evicted or never existed).
+    let unknown = crate::ids::JournalId::from_uuid(uuid::Uuid::now_v7());
+    match h.exec(&StateCommand::RestoreTimeEntryFromJournal { from: unknown }) {
+        Err(CommandError::UnknownJournalEntry(id)) => assert_eq!(id, unknown),
+        other => panic!("typed unknown-id refusal, got {other:?}"),
+    }
+}
+
+/// US-5/S3 (W-10): the wrapper reads the delete's pre-image and
+/// re-materializes the row verbatim through the pinned payload verb;
+/// the journaled head is the *wrapper* with `PreImages` of its own
+/// writes, so the global undo re-deletes (the #1187 law) and redo
+/// re-restores.
+#[test]
+fn us5_s3_from_journal_restores_verbatim_and_journals() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry row");
+    let row_before = h.disk.tracking.entries[&entry_id].clone();
+    h.exec(&StateCommand::DeleteTimeEntry { id: entry_id })
+        .expect("deleted");
+    let delete_journal_id = h.journal.head.expect("the delete journaled");
+    // A newer edit on top: plain undo would walk it back too — the
+    // out-of-line restore must not.
+    h.exec(&StateCommand::UpdateTask {
+        id: task,
+        changes: crate::messages::TaskChanges {
+            title: Some("renamed on top".into()),
+            ..Default::default()
+        },
+    })
+    .expect("edited");
+    let outcome = h
+        .exec(&StateCommand::RestoreTimeEntryFromJournal {
+            from: delete_journal_id,
+        })
+        .expect("restored from the journal");
+    assert!(matches!(outcome, CommandOutcome::EntryRestored { id } if id == entry_id));
+    assert_eq!(
+        h.disk.tracking.entries.get(&entry_id),
+        Some(&row_before),
+        "the row came back verbatim from the pre-image"
+    );
+    // The journaled head is the wrapper itself.
+    let head = h
+        .journal
+        .entry(h.journal.head.expect("the restore journaled"))
+        .expect("head entry");
+    assert_eq!(
+        head.command,
+        StateCommand::RestoreTimeEntryFromJournal {
+            from: delete_journal_id
+        },
+        "the wrapper intent is what the line records"
+    );
+    assert!(matches!(head.facts, UndoFacts::PreImages { .. }));
+    // Undo re-deletes (the #1187 law, the wrapper's own undo).
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert!(!h.disk.tracking.entries.contains_key(&entry_id));
+    h.exec(&StateCommand::Redo).expect("redone");
+    assert_eq!(h.disk.tracking.entries.get(&entry_id), Some(&row_before));
+}
+
+/// US-6/S1 (W-10/W-11): the CLI-resolved journal id and the GUI
+/// roster's journal id plan the *same* engine arm — the roster row's
+/// `journal_id` is the wrapper's target, an already-restored equal row
+/// is the accepted no-op (nothing journaled), and a direct
+/// `plan_command` route is the typed `EngineRouted` rejection (the
+/// wrapper is journal-addressed; the catalogue never sees it).
+#[test]
+fn us6_s1_cli_verb_and_gui_verb_share_the_engine_arm() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let task = h.task(stack, "t");
+    h.exec(&StateCommand::LogTime {
+        task,
+        start: ts(400),
+        end: ts(500),
+        kind: crate::tracking::TimeEntryKind::Work,
+    })
+    .expect("logged");
+    let entry_id = *h.disk.tracking.entries.keys().next().expect("entry row");
+    h.exec(&StateCommand::DeleteTimeEntry { id: entry_id })
+        .expect("deleted");
+    // The roster's deleted-entry row carries the journal id both
+    // surfaces resolve to.
+    let roster = crate::roster::RestoreRoster::derive_parts(
+        &h.disk.labels,
+        &h.disk.habits,
+        &h.disk.tracking,
+        &h.journal,
+    );
+    let from = {
+        let [row] = roster.deleted_entries.as_slice() else {
+            panic!("one restorable row");
+        };
+        row.journal_id
+    };
+    let outcome = h
+        .exec(&StateCommand::RestoreTimeEntryFromJournal { from })
+        .expect("restored");
+    assert!(matches!(outcome, CommandOutcome::EntryRestored { .. }));
+    // The exact repeat: the accepted no-op, nothing journaled.
+    let head_before = h.journal.head;
+    let actions_before = h.journal.entries.len();
+    let outcome = h
+        .exec(&StateCommand::RestoreTimeEntryFromJournal { from })
+        .expect("repeat planned");
+    assert!(matches!(outcome, CommandOutcome::NoOp));
+    assert_eq!(h.journal.head, head_before, "the no-op journals nothing");
+    assert_eq!(h.journal.entries.len(), actions_before);
+    // The catalogue route is typed-closed.
+    let now = h.tick();
+    match plan_command(
+        &h.app(),
+        &h.outbox,
+        &StateCommand::RestoreTimeEntryFromJournal { from },
+        &h.ids,
+        &crate::reminders::ReminderDefaults::default(),
+        Harness::day(),
+        now,
+        None,
+    ) {
+        Err(CommandError::EngineRouted) => {}
+        other => panic!("the wrapper is journal-routed, got {other:?}"),
+    }
+}

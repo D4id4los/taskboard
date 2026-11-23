@@ -397,6 +397,7 @@ fn raw_app_state_strategy() -> impl Strategy<Value = AppState> {
 
             AppState {
                 undo: crate::journal::UndoView::default(),
+                roster: crate::roster::RestoreRoster::default(),
                 settings: crate::settings::SettingsSnapshot::default(),
                 boards,
                 stacks,

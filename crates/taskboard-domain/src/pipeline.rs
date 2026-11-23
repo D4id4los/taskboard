@@ -1665,6 +1665,7 @@ fn assemble_state(
         reflection: current.reflection.clone(),
         roaming: current.roaming.clone(),
         undo: current.undo.clone(),
+        roster: current.roster.clone(),
         sync,
         settings: current.settings.clone(),
         // Sync ingestion is an engine mutation from a foreign source:
@@ -2114,6 +2115,7 @@ pub fn apply_push_report(
         // publish (core.rs); the pipeline's working copy carries the
         // current one through untouched.
         undo: current.undo.clone(),
+        roster: current.roster.clone(),
         sync,
         settings: current.settings.clone(),
         last_updated: Some(now),

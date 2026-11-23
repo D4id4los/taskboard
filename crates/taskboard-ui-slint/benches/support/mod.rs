@@ -167,6 +167,7 @@ pub fn build_state(n: usize) -> AppState {
     let tasks: Vec<Task> = (0..n).map(|i| fixture_task(i, &stacks)).collect();
     AppState {
         undo: taskboard_domain::UndoView::default(),
+        roster: taskboard_domain::RestoreRoster::default(),
         boards: BTreeMap::from([(board.id, board)]),
         stacks: stacks.into_iter().map(|s| (s.id, s)).collect(),
         tasks: tasks.into_iter().map(|t| (t.id, t)).collect(),

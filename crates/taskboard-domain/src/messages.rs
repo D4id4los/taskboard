@@ -812,6 +812,27 @@ pub enum StateCommand {
         /// The tombstoned habit to resurrect.
         id: HabitId,
     },
+    /// Re-materialize one hard-deleted time entry **from the journal's
+    /// own pre-image** (the zero-input restore, the undo-family
+    /// amendment D-5 of 2026-11-23): `from` names the journaled
+    /// `DeleteTimeEntry` entry whose captured
+    /// `PreImage::TimeEntry { before: Some(row) }` is the verbatim
+    /// payload. The wrapper is journal-addressed — it plans only
+    /// through [`crate::undo::plan_journaled_command`] (the engine's
+    /// one journaled entry point); a direct `plan_command` route is the
+    /// typed [`crate::command::CommandError::RestoreFromJournalOutsideLine`].
+    /// The resolved row rides the existing payload-carrying
+    /// `RestoreTimeEntry { entry }` internally — the single write path,
+    /// serde-pinned (#993) and unchanged; **no payload crosses any
+    /// surface** (surfaces pick a journal id and confirm, nothing
+    /// more). Typed refusals: unknown journal id (evicted beyond the
+    /// retention ring — the honest bound), not-a-delete entry,
+    /// `before: None`. Undoing it re-deletes (the #1187 law — the
+    /// journaled `PreImages` of the restore's own writes).
+    RestoreTimeEntryFromJournal {
+        /// The journaled `DeleteTimeEntry` entry to restore from.
+        from: crate::ids::JournalId,
+    },
 }
 
 /// Sparse task edit: `None` = untouched, `Some(_)` = set. Stamp the
