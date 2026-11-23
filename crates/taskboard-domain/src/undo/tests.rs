@@ -5423,3 +5423,31 @@ fn us6_s1_cli_verb_and_gui_verb_share_the_engine_arm() {
         other => panic!("the wrapper is journal-routed, got {other:?}"),
     }
 }
+
+/// US-3/S5 (W-7, the journey plan's nominated fold name): the
+/// clear-all journaled, one undo step restores all n rules verbatim —
+/// the same behavior the UF1 corpus pins under
+/// `us3_s4_cleared_set_resurrects_id_ascending`; this named twin is
+/// the plan §8's exact-name nomination (the fence row's address).
+#[test]
+fn us3_s5_clear_reminder_rules_undo_restores_all_rules() {
+    let mut h = Harness::new();
+    let board = h.board();
+    let (_stack, tasks) = seeded_stack(&mut h, board, 1);
+    let task = tasks[0];
+    let mut rules = Vec::new();
+    for seq in 1..=3 {
+        rules.push(added_rule(&mut h, task, i64::from(seq)));
+    }
+    h.exec(&StateCommand::ClearReminderRules { task })
+        .expect("cleared");
+    assert!(h.disk.reminders.rules.is_empty());
+    h.exec(&StateCommand::Undo).expect("undone");
+    for rule in &rules {
+        assert_eq!(
+            h.disk.reminders.rules.get(&rule.id),
+            Some(rule),
+            "one undo step restored the rule verbatim"
+        );
+    }
+}

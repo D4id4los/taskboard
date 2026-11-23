@@ -84,12 +84,13 @@ export component LabelsPanel inherits Rectangle {
     // same armed-confirm grammar (restore is state-changing; the
     // strip names what comes back). Ids stay adapter-side — the index
     // resolves against the published roster's row order.
-    // slint: label-restore-clicked / label-restore-cancelled
+    // slint: label-restore-requested / label-restore-cancelled
+    // (adapter: label_restore_requested / label_restore_cancelled)
     in property <[string]> deleted-rows;
     in property <bool> has-deleted: false;
     in property <int> restore-armed-index: -1;
-    callback restore-clicked(int);
-    callback restore-cancelled();
+    callback label-restore-requested(int);
+    callback label-restore-cancelled();
 
     background: Theme.surface-raised;
     border-radius: Theme.radius-small;
@@ -392,7 +393,7 @@ export component LabelsPanel inherits Rectangle {
                             description: "Restores the armed label.";
                             clicked => {
                                 TooltipState.unhover();
-                                root.restore-clicked(root.restore-armed-index);
+                                root.label-restore-requested(root.restore-armed-index);
                             }
                         }
                         IconButton {
@@ -402,7 +403,7 @@ export component LabelsPanel inherits Rectangle {
                             description: "Disarms the restore without dispatching.";
                             clicked => {
                                 TooltipState.unhover();
-                                root.restore-cancelled();
+                                root.label-restore-cancelled();
                             }
                         }
                     }
@@ -429,7 +430,7 @@ export component LabelsPanel inherits Rectangle {
                             description: "Arms the restore: the label comes back verbatim.";
                             clicked => {
                                 TooltipState.unhover();
-                                root.restore-clicked(index);
+                                root.label-restore-requested(index);
                             }
                         }
                     }

@@ -352,8 +352,8 @@ export component TaskView inherits FocusScope {
     in property <bool> rules-clearable: false;
     in property <int> rules-clear-count: 0;
     in property <bool> rule-clear-armed: false;
-    callback rule-clear-asked();
-    callback rule-clear-cancelled();
+    callback rules-clear-asked();
+    callback rules-clear-cancelled();
     // The rule cursor's pointer coherence (J3 US-6 D-4, round 9
     // chunk 12): a row-body click moves the selected-rule cursor.
     callback rule-row-clicked(int);
@@ -1220,8 +1220,8 @@ export component TaskView inherits FocusScope {
                 rules-clearable: root.rules-clearable;
                 rules-clear-count: root.rules-clear-count;
                 clear-armed: root.rule-clear-armed;
-                rules-clear-asked() => root.rule-clear-asked();
-                rules-clear-cancelled() => root.rule-clear-cancelled();
+                rules-clear-asked() => root.rules-clear-asked();
+                rules-clear-cancelled() => root.rules-clear-cancelled();
                 remove-clicked(i) => root.rule-remove-clicked(i);
                 row-clicked(i) => root.rule-row-clicked(i);
                 add-preset-clicked(i) => root.rule-add-preset-clicked(i);

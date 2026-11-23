@@ -15205,7 +15205,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // The first activation arms (the strip mounts), the Confirm
     // dispatches the exact restore command, Cancel disarms (the
     // D-2 grammar).
-    install_seam!(window: window.on_labels_overlay_restore_clicked, adapter: adapter;
+    install_seam!(window: window.on_label_restore_requested, adapter: adapter;
     bind mut (a, window), args (index), {        let Some(index_us) = usize::try_from(index).ok() else {
             return;
         };
@@ -15255,13 +15255,13 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.refresh_forced(&window);
 
     });
-    install_seam!(window: window.on_labels_overlay_restore_cancelled, adapter: adapter;
+    install_seam!(window: window.on_label_restore_cancelled, adapter: adapter;
     bind mut (a, window), args (), {        if a.label_restore_armed.take().is_some() {
             a.refresh_forced(&window);
         }
 
     });
-    install_seam!(window: window.on_track_entry_restore_clicked, adapter: adapter;
+    install_seam!(window: window.on_entry_restore_requested, adapter: adapter;
     bind mut (a, window), args (index), {        let Some(index_us) = usize::try_from(index).ok() else {
             return;
         };
@@ -15295,7 +15295,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.refresh_forced(&window);
 
     });
-    install_seam!(window: window.on_track_entry_restore_cancelled, adapter: adapter;
+    install_seam!(window: window.on_entry_restore_cancelled, adapter: adapter;
     bind mut (a, window), args (), {        if a.entry_restore_armed.take().is_some() {
             a.refresh_forced(&window);
         }
@@ -15306,7 +15306,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // zero rules is the disabled row), armed it dispatches the exact
     // `ClearReminderRules { task }` once (UF1's pre-images make the
     // clear one undo step, W-7).
-    install_seam!(window: window.on_task_rule_clear_asked, adapter: adapter;
+    install_seam!(window: window.on_rules_clear_asked, adapter: adapter;
     bind mut (a, window), args (), {        let Some(task) = a.view_state.subject_task() else {
             return;
         };
@@ -15332,7 +15332,7 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         a.refresh_forced(&window);
 
     });
-    install_seam!(window: window.on_task_rule_clear_cancelled, adapter: adapter;
+    install_seam!(window: window.on_rules_clear_cancelled, adapter: adapter;
     bind mut (a, window), args (), {        if a.rules_clear_armed {
             a.rules_clear_armed = false;
             a.refresh_forced(&window);

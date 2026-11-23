@@ -39,6 +39,11 @@ pub struct FakeEngine {
     /// restore re-tombstones; fixture continuity, not an oracle — the
     /// domain fold suite owns the undo semantics).
     restored_entities: Vec<RestoredEntity>,
+    /// The cleared-rule batches, newest last — the clear-all's undo
+    /// face (W-7: one undo step restores all n).
+    cleared_batches: Vec<Vec<taskboard_domain::ReminderRule>>,
+    /// The cleared-rule batches, newest last — the clear-all's undo
+    /// face (W-7: one undo step restores all n).
     /// The habit sections' pre-reorder orders, newest last — the
     /// reorder undo line's continuity face (#1198 chunk A1 D1:
     /// `Undo` after a reorder restores the section; fixture
@@ -166,6 +171,7 @@ impl FakeEngine {
                 added_rules: Vec::new(),
                 habit_sections: Vec::new(),
                 restored_entities: Vec::new(),
+                cleared_batches: Vec::new(),
             },
         )
     }
@@ -497,7 +503,14 @@ impl FakeEngine {
                 // add deletes the minted rule; neither touches the
                 // delivery records.
                 StateCommand::Undo => {
-                    // The restore journeys' undo face first (W-2/W-3):
+                    // The clear-all's undo face (W-7): one undo step
+                    // restores the whole cleared batch verbatim.
+                    if let Some(batch) = self.cleared_batches.pop() {
+                        for rule in batch {
+                            state.reminders.rules.insert(rule.id, rule);
+                        }
+                    }
+                    // The restore journeys' undo face (W-2/W-3):
                     // a restored row re-tombstones (the #1187 law).
                     match self.restored_entities.pop() {
                         Some(RestoredEntity::Label(id)) => {
@@ -579,11 +592,12 @@ impl FakeEngine {
                         .rules
                         .values()
                         .filter(|rule| rule.task == task)
-                        .map(|rule| rule.id)
+                        .cloned()
                         .collect();
-                    for id in cleared {
-                        state.reminders.rules.remove(&id);
+                    for rule in &cleared {
+                        state.reminders.rules.remove(&rule.id);
                     }
+                    self.cleared_batches.push(cleared);
                 }
                 StateCommand::RestoreLabel { id } => {
                     if let Some(label) = state.labels.get_mut(&id) {

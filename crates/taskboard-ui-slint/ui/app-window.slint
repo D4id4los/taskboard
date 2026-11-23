@@ -826,8 +826,8 @@ export component AppWindow inherits Window {
                 rules-clearable: root.rules-clearable;
                 rules-clear-count: root.rules-clear-count;
                 rule-clear-armed: root.rule-clear-armed;
-                rule-clear-asked() => root.task-rule-clear-asked();
-                rule-clear-cancelled() => root.task-rule-clear-cancelled();
+                rules-clear-asked() => root.rules-clear-asked();
+                rules-clear-cancelled() => root.rules-clear-cancelled();
                 rule-add-preset-clicked(i) => root.rule-add-preset-clicked(i);
                 rule-add-custom-accepted(t) => root.rule-add-custom-accepted(t);
                 due-edit-opened() => root.task-due-edit-opened();
@@ -1228,8 +1228,8 @@ export component AppWindow inherits Window {
         has-deleted-entries: root.track-has-deleted;
         deleted-entry-rows: root.track-deleted-rows;
         restore-armed-index: root.track-restore-armed-index;
-        entry-restore-clicked(index) => root.track-entry-restore-clicked(index);
-        entry-restore-cancelled() => root.track-entry-restore-cancelled();
+        entry-restore-requested(index) => root.entry-restore-requested(index);
+        entry-restore-cancelled() => root.entry-restore-cancelled();
         add-requested() => root.track-form-add-requested();
         date-edited(t) => root.track-form-date-edited(t);
         date-grid-toggled() => root.track-form-grid-toggled();
@@ -1339,8 +1339,8 @@ export component AppWindow inherits Window {
                 has-deleted: root.label-overlay-has-deleted;
                 deleted-rows: root.label-overlay-deleted-rows;
                 restore-armed-index: root.label-overlay-restore-armed-index;
-                restore-clicked(index) => root.labels-overlay-restore-clicked(index);
-                restore-cancelled() => root.labels-overlay-restore-cancelled();
+                label-restore-requested(index) => root.label-restore-requested(index);
+                label-restore-cancelled() => root.label-restore-cancelled();
                 }
             }
             // The roster-only board mount (tag-color plan D-4, US-2):
@@ -1390,8 +1390,8 @@ export component AppWindow inherits Window {
                 has-deleted: root.label-overlay-has-deleted;
                 deleted-rows: root.label-overlay-deleted-rows;
                 restore-armed-index: root.label-overlay-restore-armed-index;
-                restore-clicked(index) => root.labels-overlay-restore-clicked(index);
-                restore-cancelled() => root.labels-overlay-restore-cancelled();
+                label-restore-requested(index) => root.label-restore-requested(index);
+                label-restore-cancelled() => root.label-restore-cancelled();
                 }
             }
 
@@ -2645,18 +2645,18 @@ export component AppWindow inherits Window {
     in property <bool> label-overlay-has-deleted;
     in property <[string]> label-overlay-deleted-rows;
     in property <int> label-overlay-restore-armed-index;
-    pure callback labels-overlay-restore-clicked(int);
-    pure callback labels-overlay-restore-cancelled();
+    pure callback label-restore-requested(int);
+    pure callback label-restore-cancelled();
     in property <bool> track-has-deleted;
     in property <[string]> track-deleted-rows;
     in property <int> track-restore-armed-index;
-    pure callback track-entry-restore-clicked(int);
-    pure callback track-entry-restore-cancelled();
+    pure callback entry-restore-requested(int);
+    pure callback entry-restore-cancelled();
     in property <bool> rules-clearable;
     in property <int> rules-clear-count;
     in property <bool> rule-clear-armed;
-    pure callback task-rule-clear-asked();
-    pure callback task-rule-clear-cancelled();
+    pure callback rules-clear-asked();
+    pure callback rules-clear-cancelled();
     pure callback labels-overlay-row-toggled(int);
     pure callback labels-overlay-dismiss-requested();
     pure callback labels-overlay-add-requested();
