@@ -98,29 +98,34 @@ async fn booted_workspace(
         ),
         connector_owners: app.connector_owners.clone(),
         export: taskboard_app::ui_requests::ExportWorkspace::default(),
-        // The suite never drives the status panel; the source is a
-        // plain value requirement — the in-session projection of the
-        // booted app.
-        status: Box::new({
-            let engine = app.engine.clone();
-            let config = app.config.clone();
-            let control = app.connector_control();
-            let files = app.files_sync_status.clone();
-            move || {
-                taskboard_app::commands::status::StatusView::in_session_parts(
-                    &engine,
-                    &config,
-                    control.connector_attached(),
-                    files.as_ref(),
-                )
-            }
-        }),
+        status: crate::ui_settings::in_session_status_source(&app),
     };
     (app, workspace)
 }
 
 /// A detached-receiver variant of `send`: the request goes out and the
 /// reply half is dropped before the handler answers (A7).
+/// The shared in-session status source for this binary's workspace
+/// fixtures: the plain value requirement over the booted app's
+/// handles (the suite never drives the status panel). One
+/// projection, two fronts — same rule as production's spawn sites.
+pub(super) fn in_session_status_source(
+    app: &App,
+) -> Box<dyn Fn() -> taskboard_app::commands::status::StatusView + Send + Sync> {
+    let engine = app.engine.clone();
+    let config = app.config.clone();
+    let control = app.connector_control();
+    let files = app.files_sync_status.clone();
+    Box::new(move || {
+        taskboard_app::commands::status::StatusView::in_session_parts(
+            &engine,
+            &config,
+            control.connector_attached(),
+            files.as_ref(),
+        )
+    })
+}
+
 fn send_detached_reply(
     tx: &tokio::sync::mpsc::Sender<UiRequest>,
     request: impl FnOnce(
@@ -2567,22 +2572,7 @@ async fn owned_boot_at(config_write_path: PathBuf, dir: tempfile::TempDir) -> Ow
         device_json: Some(dir.path().join("device.json")),
         connector_owners: app.connector_owners.clone(),
         export: taskboard_app::ui_requests::ExportWorkspace::default(),
-        // The suite never drives the status panel; the source is the
-        // in-session projection over the fixture's handles.
-        status: Box::new({
-            let engine = app.engine.clone();
-            let config = app.config.clone();
-            let control = app.connector_control();
-            let files = app.files_sync_status.clone();
-            move || {
-                taskboard_app::commands::status::StatusView::in_session_parts(
-                    &engine,
-                    &config,
-                    control.connector_attached(),
-                    files.as_ref(),
-                )
-            }
-        }),
+        status: crate::ui_settings::in_session_status_source(&app),
     };
     OwnedBootFixture {
         workspace,
