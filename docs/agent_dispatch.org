@@ -41,6 +41,27 @@ earned by a recovered incident. The full narrative:
   silence — even backgrounded, an agent that runs out of other duties
   goes quiet and is killed at PR-green's worst moment. The dispatcher
   watches checks, performs teardown, and does at-merge issue closures.
+- *The concurrency cap counts every live chunk-affiliated agent
+  session* (#1288-adjacent incident, 2026-11-23 20:00 — the
+  systemd-oomd kill): "≤3 concurrent chunks" means ≤3 LIVE agent
+  sessions affiliated with chunks — stage-2 implementations, stage-3
+  reviews, and mid-chunk continuations (quota/resume/dedup) alike.
+  The dispatcher's failure mode was counting stage-2 implementations
+  against the cap while letting reviews and a post-ship dedup
+  continuation stack on top: five live sessions, each emitting cargo
+  invocations, drove the whole ZCode cgroup to 19.8G with 36% Avg10
+  memory pressure, and =systemd-oomd= killed the entire =app.scope=
+  unit — every agent died at once. oomd reacts to PRESSURE (task
+  stalls / swap thrash), not to the MemAvailable floor the memory
+  gate samples at entry; five gate entries that each passed the floor
+  check at time T still aggregate past the box's budget at T+minutes.
+- *Every cargo invocation routes through =scripts/memory-gate.sh=* —
+  not only the >1-minute ones. Single-target =cargo test -p= /
+  =cargo build= calls were the un-gated class in the same incident:
+  each looks cheap alone, five agents emit them concurrently, and the
+  gate's exclusive flock never sees them. The gate is usually
+  uncontended, so routing everything costs little and makes the
+  box's heavy-command concurrency exactly 1.
 - *Any subagent command expected over ~5 minutes runs backgrounded*,
   with short interleaved polls and useful work between polls — and the
   agent commits all landed work BEFORE beginning any wait.
