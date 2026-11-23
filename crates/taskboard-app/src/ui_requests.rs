@@ -2260,23 +2260,7 @@ pub fn run_preview(
     if spec.what != ExportFamily::Tracking {
         return ExportPreviewOutcome::Refused(ExportRefusal::OptionsNotApplicable);
     }
-    let query = crate::commands::track::ExportQuery {
-        what: crate::cli::ExportWhat::Tracking,
-        format: Some(match spec.format {
-            ExportFileFormat::Csv => crate::cli::ExportFormat::Csv,
-            ExportFileFormat::Json => crate::cli::ExportFormat::Json,
-        }),
-        since: spec.since,
-        until: spec.until,
-        task: spec.task.clone(),
-        board: spec.board.clone(),
-        #[cfg(feature = "pdf-export")]
-        layout: None,
-        #[cfg(feature = "pdf-export")]
-        out: None,
-        #[cfg(feature = "pdf-export")]
-        no_open: false,
-    };
+    let query = tracking_query(spec);
     match crate::commands::track::export_tracking_state(state, &query) {
         Err(err) => ExportPreviewOutcome::Refused(refusal_kind(&err)),
         Ok(payload) => {
@@ -2315,23 +2299,7 @@ pub fn run_clipboard_copy(
     if spec.what != ExportFamily::Tracking {
         return ExportClipboardOutcome::Refused(ExportRefusal::OptionsNotApplicable);
     }
-    let query = crate::commands::track::ExportQuery {
-        what: crate::cli::ExportWhat::Tracking,
-        format: Some(match spec.format {
-            ExportFileFormat::Csv => crate::cli::ExportFormat::Csv,
-            ExportFileFormat::Json => crate::cli::ExportFormat::Json,
-        }),
-        since: spec.since,
-        until: spec.until,
-        task: spec.task.clone(),
-        board: spec.board.clone(),
-        #[cfg(feature = "pdf-export")]
-        layout: None,
-        #[cfg(feature = "pdf-export")]
-        out: None,
-        #[cfg(feature = "pdf-export")]
-        no_open: false,
-    };
+    let query = tracking_query(spec);
     match crate::commands::track::export_tracking_state(state, &query) {
         Err(err) => ExportClipboardOutcome::Refused(refusal_kind(&err)),
         Ok(payload) => {
@@ -2366,15 +2334,11 @@ pub fn run_export(
     }
 }
 
-/// The tracking leg (US-2): the engine renders the payload (the D-T15
-/// body), the drain writes it to the destination — the spec's explicit
-/// file, else the export dir's dated default (D-3).
-fn run_tracking_export(
-    state: &taskboard_domain::AppState,
-    workspace: &ExportWorkspace,
-    spec: &ExportSpec,
-) -> ExportRunOutcome {
-    let query = crate::commands::track::ExportQuery {
+/// The tracking leg's query over a GUI spec — the ONE construction
+/// every tracking sink (run, preview, clipboard copy) drives; the
+/// byte-for-byte identity contract rests on this single build site.
+fn tracking_query(spec: &ExportSpec) -> crate::commands::track::ExportQuery {
+    crate::commands::track::ExportQuery {
         what: crate::cli::ExportWhat::Tracking,
         format: Some(match spec.format {
             ExportFileFormat::Csv => crate::cli::ExportFormat::Csv,
@@ -2390,7 +2354,18 @@ fn run_tracking_export(
         out: None,
         #[cfg(feature = "pdf-export")]
         no_open: false,
-    };
+    }
+}
+
+/// The tracking leg (US-2): the engine renders the payload (the D-T15
+/// body), the drain writes it to the destination — the spec's explicit
+/// file, else the export dir's dated default (D-3).
+fn run_tracking_export(
+    state: &taskboard_domain::AppState,
+    workspace: &ExportWorkspace,
+    spec: &ExportSpec,
+) -> ExportRunOutcome {
+    let query = tracking_query(spec);
     match crate::commands::track::export_tracking_state(state, &query) {
         Err(err) => refusal_of(&err),
         Ok(payload) => {

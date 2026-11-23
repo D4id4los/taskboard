@@ -10,85 +10,18 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use std::path::PathBuf;
+#[path = "common/export_fixture.rs"]
+mod export_fixture;
+
 use std::sync::Arc;
 
 use common::FakeCredentialStore;
-use taskboard_app::bootstrap::{self, App};
 use taskboard_app::config::AppConfig;
-use taskboard_app::notifications::LogSink;
 use taskboard_app::secrets::CredentialStore;
-use taskboard_app::ui_requests::{
-    ConnectionWorkspace, ExportWorkspace, spawn_ui_request_forwarder, ui_request_channel,
-};
+use taskboard_app::ui_requests::{spawn_ui_request_forwarder, ui_request_channel};
 use taskboard_ui_slint::requests::{
     ExportFamily, ExportFileFormat, ExportRefusal, ExportRunOutcome, ExportSpec, UiRequest,
 };
-
-/// A booted standalone core plus the request lane's halves over it,
-/// with the export workspace pointed at the given export home (the
-/// viewer open permitted — the desktop lifecycle's posture; the pdf
-/// tests pass destinations under a tempdir, and an open attempt
-/// degrades to the best-effort no-op it already is).
-async fn booted(config: AppConfig, store: Arc<dyn CredentialStore>) -> (App, PathBuf) {
-    let mut config = config;
-    let dir = tempfile::tempdir().expect("tempdir");
-    config.storage.db_path = Some(dir.path().join("taskboard.db"));
-    if config.sync.backend.is_none() {
-        config.sync.backend = Some(taskboard_app::config::SyncBackend::Standalone);
-    }
-    config.validate().expect("config valid");
-    let app = bootstrap::bootstrap_in(
-        config,
-        store,
-        Arc::new(LogSink),
-        taskboard_app::bootstrap::BootIdentity::At(dir.path().to_owned()),
-    )
-    .await
-    .expect("standalone boot");
-    let write_path = dir.path().join("taskboard.toml");
-    let _ = std::fs::write(&write_path, "");
-    (app, write_path)
-}
-
-fn workspace(
-    app: &App,
-    config_write_path: PathBuf,
-    store: Arc<dyn CredentialStore>,
-) -> ConnectionWorkspace {
-    ConnectionWorkspace {
-        config_write_path,
-        store,
-        control: app.connector_control(),
-        engine: app.engine.clone(),
-        device_json: None,
-        connector_owners: app.connector_owners.clone(),
-        export: ExportWorkspace::with_real_clipboard(Arc::new(app.config.clone()), false),
-        // The suite never drives the status panel; the source is the
-        // in-session projection over the fixture's handles.
-        status: Box::new({
-            let engine = app.engine.clone();
-            let config = app.config.clone();
-            let control = app.connector_control();
-            let files = app.files_sync_status.clone();
-            move || {
-                taskboard_app::commands::status::StatusView::in_session_parts(
-                    &engine,
-                    &config,
-                    control.connector_attached(),
-                    files.as_ref(),
-                )
-            }
-        }),
-        // The suite never drives the remediation lane; the workspace
-        // is inert-but-typed (the executor's effects are seams).
-        remediation: taskboard_app::status_remediation::RemediationWorkspace {
-            db_path: None,
-            may_control_processes: false,
-            effects: taskboard_app::status_remediation::RemediationEffects::real(None),
-        },
-    }
-}
 
 /// W-6 (US-2/AC-2): a tracking csv run with the D-3 default
 /// destination — the reply carries the Written fact and the file
@@ -99,8 +32,9 @@ async fn export_run_reply_carries_typed_outcome() {
     let mut config = AppConfig::default();
     config.export.pdf_dir = Some(home.path().to_path_buf());
     let store = Arc::new(FakeCredentialStore::default());
-    let (app, write_path) = booted(config, Arc::clone(&store) as Arc<dyn CredentialStore>).await;
-    let ws = workspace(&app, write_path, store);
+    let (app, write_path) =
+        export_fixture::booted(config, Arc::clone(&store) as Arc<dyn CredentialStore>).await;
+    let ws = export_fixture::workspace(&app, write_path, store);
     let (tx, rx) = ui_request_channel();
     let _forwarder = spawn_ui_request_forwarder(rx, app.engine.shared_state(), ws);
 
@@ -154,8 +88,9 @@ async fn export_run_refuses_typed_on_a_bad_selector() {
     let mut config = AppConfig::default();
     config.export.pdf_dir = Some(home.path().to_path_buf());
     let store = Arc::new(FakeCredentialStore::default());
-    let (app, write_path) = booted(config, Arc::clone(&store) as Arc<dyn CredentialStore>).await;
-    let ws = workspace(&app, write_path, store);
+    let (app, write_path) =
+        export_fixture::booted(config, Arc::clone(&store) as Arc<dyn CredentialStore>).await;
+    let ws = export_fixture::workspace(&app, write_path, store);
     let (tx, rx) = ui_request_channel();
     let _forwarder = spawn_ui_request_forwarder(rx, app.engine.shared_state(), ws);
 
@@ -192,8 +127,9 @@ async fn export_run_writes_the_pdf_override() {
     let mut config = AppConfig::default();
     config.export.pdf_dir = Some(home.path().to_path_buf());
     let store = Arc::new(FakeCredentialStore::default());
-    let (app, write_path) = booted(config, Arc::clone(&store) as Arc<dyn CredentialStore>).await;
-    let ws = workspace(&app, write_path, store);
+    let (app, write_path) =
+        export_fixture::booted(config, Arc::clone(&store) as Arc<dyn CredentialStore>).await;
+    let ws = export_fixture::workspace(&app, write_path, store);
     let (tx, rx) = ui_request_channel();
     let _forwarder = spawn_ui_request_forwarder(rx, app.engine.shared_state(), ws);
 

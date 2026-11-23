@@ -12,13 +12,11 @@
 //! is a presentation fact asserted via its flag).
 
 use crate::support;
-use support::driver::{DriverOptions, JourneyDriver as _, SlintDriver};
-use support::fake_engine::FakeEngine;
-use support::fixture;
-use support::health::detached_health;
 
-use arc_swap::ArcSwap;
-use std::sync::Arc;
+use support::driver::JourneyDriver as _;
+use support::focus_journey::JourneyHarness;
+
+use crate::status_export_journeys_support as prelude;
 use taskboard_domain::AppState;
 use taskboard_ui_slint::actions::ActionId;
 use taskboard_ui_slint::keymap::{Keymap, Preset};
@@ -27,22 +25,12 @@ use taskboard_ui_slint::requests::{
 };
 use taskboard_ui_slint::{ExportDialogModel, UiSettings};
 
-fn dummy_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
-
-fn dummy_system_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
-
 /// The journey harness with the request lane *held* (the export
 /// journeys' shape): the test plays the app half.
 fn mount_holding_requests(
     state: AppState,
 ) -> (
-    support::focus_journey::JourneyHarness,
+    JourneyHarness,
     tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>,
 ) {
     let settings = UiSettings {
@@ -56,40 +44,11 @@ fn mount_holding_requests(
         },
         ..UiSettings::default()
     };
-    let state = Arc::new(ArcSwap::from_pointee(state));
-    let (commands, engine) = FakeEngine::channel(Arc::clone(&state));
-    let (requests_tx, requests_rx) = tokio::sync::mpsc::channel(16);
-    let handle = taskboard_ui_slint::mount(
-        state,
-        dummy_receiver(),
-        dummy_system_receiver(),
-        commands,
-        requests_tx,
-        settings,
-        detached_health(),
-        None,
-    )
-    .expect("mount succeeds on the testing backend");
-    let mut harness = support::focus_journey::JourneyHarness {
-        driver: SlintDriver::default(),
-        handle,
-        engine,
-    };
-    harness.driver.bind(&harness.handle);
-    harness.handle.dispatch_action(ActionId::NavFocusBoard);
-    (harness, requests_rx)
+    prelude::mount_holding_settings(state, settings)
 }
 
 fn run(body: impl FnOnce(AppState) + Send + 'static) {
-    let (_fixture, state) = fixture::golden_state();
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            body(state);
-        },
-    );
+    prelude::run(body);
 }
 
 /// Mounts the dialog on the tracking (csv/json) family and applies a

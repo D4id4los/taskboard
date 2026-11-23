@@ -484,40 +484,53 @@ const SEAM_INVENTORY: &[&str] = &[
     "window_width_changed",
 ];
 
+/// Word-bounded occurrence count of `needle` in `source`: a longer
+/// identifier extending the needle must not count.
+fn word_bounded_matches(source: &str, needle: &str) -> usize {
+    source
+        .match_indices(needle)
+        .filter(|(at, _)| {
+            source[at + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !matches!(next, 'a'..='z' | '0'..='9' | '_'))
+        })
+        .count()
+}
+
+/// The manifest's exactly-once side: every listed name must appear
+/// exactly once, else the deviations name the drift.
+fn assert_exactly_once(counts: Vec<(String, usize)>, what: &str) {
+    let deviations: Vec<String> = counts
+        .into_iter()
+        .filter_map(|(name, count)| (count != 1).then(|| format!("{name}: {count} {what}")))
+        .collect();
+    assert!(
+        deviations.is_empty(),
+        "{what} deviate from exactly-once:\n{}",
+        deviations.join("\n")
+    );
+}
+
 fn install_counts() -> Vec<(String, usize)> {
     SEAM_INVENTORY
         .iter()
         .map(|name| {
             // A seam is spelled `window.on_<name>(` when wired
             // explicitly and `window.on_<name>,` at an
-            // `install_seam!` invocation; a longer name extending
-            // this one must not count.
+            // `install_seam!` invocation.
             let needle = format!("window.on_{name}");
-            let count = ADAPTER_SOURCE
-                .match_indices(&needle)
-                .filter(|(at, _)| {
-                    ADAPTER_SOURCE[at + needle.len()..]
-                        .chars()
-                        .next()
-                        .is_none_or(|next| !matches!(next, 'a'..='z' | '0'..='9' | '_'))
-                })
-                .count();
-            ((*name).to_owned(), count)
+            (
+                (*name).to_owned(),
+                word_bounded_matches(ADAPTER_SOURCE, &needle),
+            )
         })
         .collect()
 }
 
 #[test]
 fn every_listed_seam_is_installed_exactly_once() {
-    let deviations: Vec<String> = install_counts()
-        .into_iter()
-        .filter_map(|(name, count)| (count != 1).then(|| format!("{name}: {count} installs")))
-        .collect();
-    assert!(
-        deviations.is_empty(),
-        "seam installs deviate from exactly-once:\n{}",
-        deviations.join("\n")
-    );
+    assert_exactly_once(install_counts(), "installs");
 }
 
 #[test]
@@ -583,31 +596,17 @@ fn invoke_counts() -> Vec<(String, usize)> {
         .iter()
         .map(|name| {
             let needle = format!("invoke_{name}");
-            let count = ADAPTER_SOURCE
-                .match_indices(&needle)
-                .filter(|(at, _)| {
-                    ADAPTER_SOURCE[at + needle.len()..]
-                        .chars()
-                        .next()
-                        .is_none_or(|next| !matches!(next, 'a'..='z' | '0'..='9' | '_'))
-                })
-                .count();
-            ((*name).to_owned(), count)
+            (
+                (*name).to_owned(),
+                word_bounded_matches(ADAPTER_SOURCE, &needle),
+            )
         })
         .collect()
 }
 
 #[test]
 fn every_listed_push_function_is_invoked_exactly_once() {
-    let deviations: Vec<String> = invoke_counts()
-        .into_iter()
-        .filter_map(|(name, count)| (count != 1).then(|| format!("{name}: {count} invokes")))
-        .collect();
-    assert!(
-        deviations.is_empty(),
-        "push-function invocations deviate from exactly-once:\n{}",
-        deviations.join("\n")
-    );
+    assert_exactly_once(invoke_counts(), "push-function invocations");
 }
 
 #[test]
