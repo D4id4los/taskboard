@@ -304,3 +304,32 @@ mapping pin, not a text pin).
 ## 4. Coverage picture
 
 (filled at the end)
+
+## 5. C2 addendum — the CLI-tier kill pins (2026-11-22 chunk, round 5)
+
+Stage 2 of `test/cli-tier-mutation-kills` landed the pin per inventory
+row of the chunk plan
+(`.artifacts/plans/2026-11-22-cli-tier-mutation-kills-plan.md`); the
+mapping below is the acceptance §7 record. Commits: `ae18f2c0`
+(exit-code table + `logout_command` pub), `61ff25b6` (prose-family
+pins + `OpenFailure` pin), `62911ae6` (the `report_resurrections`
+writer seam + the exactly-N pin), `0665df67` (the cfg pdf dispatch
+pin).
+
+| Family (S3 census) | Pin location(s) | Window evidence |
+|---|---|---|
+| exit codes `*_command -> 1` / `-> 0` (repeat, track, habits, breaks, timers, reminders) | `tests/cli/cli_exit_codes.rs` (success + failure legs, both lanes) | window W1 below |
+| `habits_line -> 0` | `cli_exit_codes.rs::session_lane_unknown_habit_edit_exits_one` | (as above) |
+| `logout_command -> 1` (#1175) | `cli_exit_codes.rs::logout_with_degraded_nudge_still_exits_zero` (both D4 legs) | (as above; `mod.rs` not in W1's shard) |
+| `report_resurrections` `println!` shell (#1229 C1 split) | `commands/sync.rs::resurrect_surface_pins` (writer seam, exactly-N-lines fold order) | unit window N/A (mutant = body replacement; the pin asserts on the injected writer) |
+| prose replacements + in-renderer flips (~50, #1229) | per-verb CLI files + `commands/config.rs`/`status.rs` unit pins (see the #1229 landed-state comment for the full list) | window W1 covers the breaks/timers/reminders slice; the rest: expected-caught per D9 |
+| `OpenFailure::from -> Default::default()` (`output.rs:64`) | `commands/output.rs::open_failure_pins` (cfg pdf-export) | expected-caught per D9 |
+| pdf dispatch `== -> !=` (#1176) | `cli_export_pdf.rs::the_session_lane_routes_the_pdf_leg_to_the_pdf_renderer` | pinned-but-not-verified until the lane runs a feature window (#1268, D8) |
+| `age_phrase` boundary flips (9, M5) | **not ours** — #1267 (D7) | — |
+
+### W1 — the exit-code-family window
+
+`cargo mutants --file repeat.rs --file breaks.rs --file timers.rs
+--file reminders.rs` (113 mutants, memory-gated, `--jobs 2`),
+launched 2026-11-22; result recorded below when the window closes
+(or its partial, per the C1 capping template).
