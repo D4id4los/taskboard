@@ -71,3 +71,17 @@ export global HabitQuotaFacts {
     in-out property <length> anchor-width;
     in-out property <length> anchor-height;
 }
+
+// The habit pause editor's facts (D3a W-7, #1208): the
+// HabitQuotaFacts twin — the section-level inline editor lives in
+// the habits section's conditional the window cannot name, so the
+// editor mirrors its realized window-space rect here through the
+// AnchorMirror (the #954 idiom); values are stale while the editor
+// is closed, and the light-dismiss strips' mount condition is the
+// window's own `habits-pause-open`.
+export global HabitPauseFacts {
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+}

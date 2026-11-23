@@ -301,6 +301,16 @@ pub fn habit_create_dismisses(open: bool, stroke: crate::keymap::Stroke) -> bool
     open && is_bare(stroke) && stroke.named_name() == Some("Escape")
 }
 
+/// The habit pause editor's dismissal arm (D3a W-7, #1208): the
+/// create form's twin — bare Escape ahead of the resolver while the
+/// section-level editor is mounted. The editor's date field holds
+/// the insert phase (the D20 pull), so the dismissal must live in
+/// the funnel: the resolver never sees the stroke from this surface.
+#[must_use]
+pub fn habit_pause_dismisses(open: bool, stroke: crate::keymap::Stroke) -> bool {
+    open && is_bare(stroke) && stroke.named_name() == Some("Escape")
+}
+
 /// The due editor's Down arm (special case B, r2 D25 / round-3 D10):
 /// while the `EditDate` flow holds, bare Down opens the picker
 /// grid-focused — or, with the picker already open, performs the

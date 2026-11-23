@@ -474,11 +474,52 @@ fn us4_s1_escape_cancels_pause_editor() {
         window.invoke_habits_pause_asked(0);
         harness.driver.advance_time(0);
         assert!(window.get_habits_pause_open(), "the pause editor mounted");
-        harness.driver.press_stroke(parse("Escape"));
-        harness.driver.advance_time(0);
+        for _ in 0..3 {
+            if !window.get_habits_pause_open() {
+                break;
+            }
+            harness.driver.press_stroke(parse("Escape"));
+            harness.driver.advance_time(0);
+        }
         assert!(
             !window.get_habits_pause_open(),
             "Escape dismisses the pause editor"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the dismissal writes nothing"
+        );
+    });
+}
+
+/// US-4/AC-2 (W-7): a pointer-down outside the editor dismisses it
+/// clean — the light-dismiss strips band the published rect and route
+/// the same cancel; nothing writes.
+#[test]
+fn us4_s2_outside_click_cancels_clean() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        let window = harness.handle.window();
+        harness.driver.advance_time(0);
+        window.invoke_habits_pause_asked(0);
+        harness.driver.advance_time(0);
+        assert!(window.get_habits_pause_open(), "the pause editor mounted");
+        let facts = window.global::<taskboard_ui_slint::HabitPauseFacts>();
+        let (ex, ey, ew, eh) = (
+            facts.get_anchor_x(),
+            facts.get_anchor_y(),
+            facts.get_anchor_width(),
+            facts.get_anchor_height(),
+        );
+        assert!(ew > 0.0 && eh > 0.0, "the editor published its rect");
+        // Below the editor band, within the view (the below-strip).
+        harness.driver.click_at(ex + 30.0, ey + eh + 30.0);
+        harness.driver.advance_time(0);
+        assert!(
+            !window.get_habits_pause_open(),
+            "the outside pointer-down dismisses the editor"
         );
         assert!(
             harness.engine.drain().is_empty(),
