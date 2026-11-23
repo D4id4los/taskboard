@@ -1005,6 +1005,79 @@ fn us11_s2_desktop_push_unregressed() {
     });
 }
 
+// -- US-9: the nudge-schedule preview (#1035, W-13) -----------------
+
+/// US-9/AC-1 (W-13, #1035): a valid draft projects the derived
+/// schedule — the preview mounts display-only (no dispatch) with the
+/// drafted clock time named (the typed time-set bit).
+#[test]
+fn us9_s1_preview_projects_derived_schedule() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_reminder_offset_edited("1".into());
+        window.invoke_habit_reminder_time_edited("07:30".into());
+        window.invoke_habit_reminder_snooze_edited("2h".into());
+        harness.handle.refresh();
+        harness.driver.advance_time(0);
+        let preview = window.get_habit_model().nudge_preview;
+        assert!(preview.visible, "a valid draft shows the preview");
+        assert!(preview.time_set, "the named time is the drafted clock time");
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the preview is a pure read: no dispatch"
+        );
+    });
+}
+
+/// US-9/AC-2 (W-13): a refused draft hides the preview — the neutral
+/// state, nothing projected.
+#[test]
+fn us9_s2_invalid_draft_hides_preview() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_reminder_snooze_edited("0h".into());
+        harness.handle.refresh();
+        harness.driver.advance_time(0);
+        let preview = window.get_habit_model().nudge_preview;
+        assert!(
+            !preview.visible,
+            "the refused mint hides the preview (the neutral state)"
+        );
+    });
+}
+
+/// US-9/AC-3 (W-13 + #1212): the blank-time draft projects the
+/// anchor-time-only posture — the preview mounts with the typed
+/// time-unset bit, never an invented clock time.
+#[test]
+fn us9_s3_blank_time_preview_phrases_anchor() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_reminder_offset_edited("1".into());
+        window.invoke_habit_reminder_snooze_edited("2h".into());
+        harness.handle.refresh();
+        harness.driver.advance_time(0);
+        let preview = window.get_habit_model().nudge_preview;
+        assert!(preview.visible, "the blank-time draft is valid");
+        assert!(
+            !preview.time_set,
+            "blank time is the anchor-time-only posture: no clock time"
+        );
+    });
+}
+
 // -- the kiosk posture (the plan's platform scope) ------------------
 
 /// The plan's kiosk scope (US-1/S2 platform note): the affordances

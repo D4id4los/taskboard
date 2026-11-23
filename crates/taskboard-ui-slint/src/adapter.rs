@@ -14560,6 +14560,10 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
             draft.reminder_base = usize::try_from(index).unwrap_or(0).min(1);
             draft.reminder_edited = true;
         }
+        // The live preview (#1035, W-13): the draft moved outside the
+        // state Arc — the mirror pass re-derives so the preview row
+        // and the validity gates read the current draft.
+        a.refresh_forced(&window);
     });
     install_seam!(window: window.on_habit_reminder_offset_edited, adapter: adapter;
     bind mut (a, window), args (t), {
@@ -14568,6 +14572,10 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
             draft.reminder_offset = t.to_string();
             draft.reminder_edited = true;
         }
+        // The live preview (#1035, W-13): the draft moved outside the
+        // state Arc — the mirror pass re-derives so the preview row
+        // and the validity gates read the current draft.
+        a.refresh_forced(&window);
     });
     install_seam!(window: window.on_habit_reminder_time_edited, adapter: adapter;
     bind mut (a, window), args (t), {
@@ -14576,6 +14584,10 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
             draft.reminder_time = t.to_string();
             draft.reminder_edited = true;
         }
+        // The live preview (#1035, W-13): the draft moved outside the
+        // state Arc — the mirror pass re-derives so the preview row
+        // and the validity gates read the current draft.
+        a.refresh_forced(&window);
     });
     install_seam!(window: window.on_habit_reminder_snooze_edited, adapter: adapter;
     bind mut (a, window), args (t), {
@@ -14584,6 +14596,10 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
             draft.reminder_snooze = t.to_string();
             draft.reminder_edited = true;
         }
+        // The live preview (#1035, W-13): the draft moved outside the
+        // state Arc — the mirror pass re-derives so the preview row
+        // and the validity gates read the current draft.
+        a.refresh_forced(&window);
     });
     // The clear leg (US-6/S3): the explicit `Some(None)` reverts the
     // habit to the plain O-1 default nudge.

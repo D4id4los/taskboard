@@ -8409,6 +8409,14 @@ pub fn habit_month_label(month: chrono::NaiveDate) -> String {
     format!("{name} {}", month.year())
 }
 
+/// The nudge preview's day phrase (#1035, W-13, US-9): names the
+/// derived day. The blank-time posture (#1212) renders the day alone —
+/// the projection never invents a clock time.
+#[must_use]
+pub fn habit_nudge_anchor_phrase(day: chrono::NaiveDate) -> String {
+    format!("on {}", day.format("%a %Y-%m-%d"))
+}
+
 /// The pager's month flip: `delta` −1/+1 steps of calendar months,
 /// clamped to chrono's representable range (the ends hold).
 ///

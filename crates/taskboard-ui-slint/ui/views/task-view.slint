@@ -187,6 +187,14 @@ export struct TaskDetailModel {
 // the variant rows read. Title/description ride the draft's mirrors
 // (the task flows are task-typed — the recorded deviation); the
 // validity flavours and the save gate are the adapter's parses.
+export struct NudgePreviewModel {
+    visible: bool,
+    day: string,
+    time: string,
+    time-set: bool,
+    snooze: string,
+}
+
 export struct HabitDetailModel {
     title: string,
     description: string,
@@ -227,6 +235,12 @@ export struct HabitDetailModel {
     // The empty-dispatch law (D5): the save affordance greys while
     // the changeset is empty (no actual edit) or any parse is off.
     can-save: bool,
+    // The nudge-schedule preview (#1035, W-13, US-9): the drafted
+    // shape's derived day + clock time + snooze, display-only. Hidden
+    // on a refused draft; `time-set` false is the #1212
+    // anchor-time-only posture (the day phrase alone — no invented
+    // clock time).
+    nudge-preview: NudgePreviewModel,
 }
 
 export component TaskView inherits FocusScope {
@@ -666,6 +680,18 @@ export component TaskView inherits FocusScope {
                         label: "Clear override";
                         clicked => { root.habit_reminder_clear_clicked(); }
                     }
+                }
+                // The nudge-schedule preview (#1035, W-13, US-9): a
+                // pure display projection of the drafted shape — no
+                // dispatch, no second derivation. Hidden while the
+                // draft refuses (the neutral state).
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: "Nudges " + root.habit.nudge-preview.day + " "
+                          + root.habit.nudge-preview.time + " · snooze "
+                          + root.habit.nudge-preview.snooze;
+                    visible: root.habit.nudge-preview.visible;
                 }
                 HorizontalLayout {
                     spacing: Theme.space-2;
