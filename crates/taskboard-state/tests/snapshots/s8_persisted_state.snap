@@ -62,6 +62,7 @@ tracking:
 habits:
   habits: {}
   log: {}
+  day_log: {}
 reflection:
   entries: {}
 roaming: {}

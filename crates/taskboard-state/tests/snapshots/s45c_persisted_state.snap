@@ -86,6 +86,7 @@ habits:
       continued_from: ~
       deleted: false
   log: {}
+  day_log: {}
 reflection:
   entries: {}
 roaming: {}
