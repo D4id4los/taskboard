@@ -944,6 +944,67 @@ fn us7_s4_live_row_history_unregressed() {
     });
 }
 
+// -- US-11: the push-side kiosk belt (#1049, W-15) ------------------
+
+/// US-11/AC-1 (W-15, #1049): the kiosk rig's composed belt posture —
+/// no habit-variant detail exists at any point on the push path: the
+/// dispatch-time gates are the first line (the editor affordances
+/// refuse), and the view never leaves the board root (the belt's
+/// terminal-state contract at the rig boundary; the belt mechanism's
+/// arm itself is pinned at the `view_state` unit layer — the posture it
+/// repairs is unreachable through the gates by design).
+#[test]
+fn us11_s1_kiosk_push_steps_view_back() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, true, move |harness| {
+        let window = harness.handle.window();
+        harness.driver.advance_time(0);
+        // The push path's entry points: the row seam and the action.
+        window.invoke_habits_edit_asked(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_current_view(),
+            View::Board,
+            "the kiosk rig never carries a habit-variant detail root"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the kiosk push path writes nothing"
+        );
+    });
+}
+
+/// US-11/AC-2 (W-15, #1049): the desktop rig is unregressed — the
+/// same entry points mount the editor (the belt is desktop-inert).
+#[test]
+fn us11_s2_desktop_push_unregressed() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        let window = harness.handle.window();
+        harness.driver.advance_time(0);
+        window.invoke_habits_edit_asked(0);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_current_view(),
+            View::TaskDetail,
+            "the desktop editor mounts (the belt never fires)"
+        );
+        window.invoke_habit_editor_cancelled();
+        harness.driver.advance_time(0);
+        assert_eq!(window.get_current_view(), View::Board);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the open/cancel round trip writes nothing"
+        );
+    });
+}
+
 // -- the kiosk posture (the plan's platform scope) ------------------
 
 /// The plan's kiosk scope (US-1/S2 platform note): the affordances

@@ -2923,6 +2923,16 @@ impl Adapter {
         let state = self.state.load_full();
         self.sync_settings(&state.settings);
         self.view_state.reconcile(&state);
+        // The push-side kiosk belt (W-15, #1049): the reconcile's
+        // dead-subject arm's twin — a habit-variant mount that slipped
+        // past the dispatch gates steps back on the same pass, before
+        // any model reads the posture.
+        {
+            let outcomes = self.view_state.kiosk_habit_belt(self.kiosk);
+            if !outcomes.is_empty() {
+                self.apply_outcomes(window, &outcomes);
+            }
+        }
         // The pinned object menu's disarm (J5 US-4 AC-2, #927): the
         // built-once model's subject died while the menu held — close
         // on the same reconciliation pass (bar + rows disarm together,
