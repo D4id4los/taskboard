@@ -87,6 +87,13 @@ jobs:
         # release workflow) against regressions in its golden cases.
         run: python3 scripts/changelog.py self-test
 
+      - name: Worktree Doctor Fixture Test
+        # The #1185 grace window's decision rows (fresh → KEEP, aged →
+        # REMOVE, unique-commit branch → KEEP) exercised against a
+        # throwaway fixture repo — the script's removal predicates are
+        # shell, invisible to the cargo gates.
+        run: bash tests/scripts/worktree-doctor-test.sh
+
   msrv:
     name: MSRV Check
     runs-on: ubuntu-latest

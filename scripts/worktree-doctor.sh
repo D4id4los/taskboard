@@ -45,19 +45,25 @@
 # commits — is pruned by hand (`git worktree remove --force`, then
 # `git branch -D`), not by the doctor; the doctor is not its tool.
 #
-# Known limitation: a worktree that is never pushed, has zero commits,
-# a clean tree, and sits strictly below the *fetched* origin/main tip
-# is indistinguishable from a landed-PR leftover whose remote ref was
-# pruned, and is removed. Mitigations: the tip guard covers the
-# same-tip window; uncommitted or untracked files make removal refused
-# (KEEP); commit as the first action after creating a worktree. A
-# scratch worktree in that state is pruned by hand (see the
-# never-pushed stance above).
+# Known limitation (#1185): a worktree that is never pushed, has zero
+# commits, a clean tree, and sits strictly below the *fetched*
+# origin/main tip is indistinguishable from a landed-PR leftover whose
+# remote ref was pruned. Mitigations: the tip guard covers the
+# same-tip window; a GRACE WINDOW (WORKTREE_DOCTOR_GRACE_HOURS, default
+# 2) keeps a contained, zero-unique-commit worktree whose branch was
+# born recently — the stale-local-main fresh-worktree shape; uncommitted
+# or untracked files make removal refused (KEEP); branch off
+# `origin/main` (not the local main ref) when creating a worktree. A
+# scratch worktree older than the grace window in that state is pruned
+# by hand (see the never-pushed stance above).
 #
 # Env overrides:
 #   WORKTREE_DOCTOR_ROOT       anchor checkout (default: this repo root)
 #   WORKTREE_DOCTOR_MIN_FREE_G free-space floor in GiB (default: 25)
 #   WORKTREE_DOCTOR_MIN_AVAIL_MIB MemAvailable floor in MiB (default: 8192)
+#   WORKTREE_DOCTOR_GRACE_HOURS grace window in hours for a contained,
+#                               zero-unique-commit worktree whose branch
+#                               was born recently (default: 2; 0 disables)
 set -euo pipefail
 
 MIN_FREE_G="${WORKTREE_DOCTOR_MIN_FREE_G:-25}"
@@ -130,6 +136,24 @@ for wt in "${WORKTREES[@]}"; do
       echo "KEEP   (never pushed — local-only branch): $wt"
     fi
     continue
+  fi
+  # Grace window (#1185): containment already proved zero unique
+  # commits, which is exactly the fresh-worktree-off-a-stale-local-main
+  # shape AND the landed-leftover-whose-remote-was-pruned shape. If the
+  # branch was born recently, keep it — an in-flight fresh worktree
+  # must not die because local main lagged the fetched tip. An
+  # unreadable reflog birth counts as not-fresh (fall through; KEEP is
+  # the doctor's posture but the contained+clean case is the removal
+  # case, so only readable evidence can trigger the grace).
+  grace_hours="${WORKTREE_DOCTOR_GRACE_HOURS:-2}"
+  if [ "$grace_hours" -gt 0 ] \
+     && birth="$(git -C "$ROOT" log -g --format=%at "refs/heads/$branch" 2>/dev/null | tail -n 1)" \
+     && [ -n "$birth" ]; then
+    now="$(date +%s)"
+    if [ "$now" -ge "$birth" ] && [ $(( (now - birth) / 3600 )) -lt "$grace_hours" ]; then
+      echo "KEEP   (fresh — grace window): $wt"
+      continue
+    fi
   fi
   # Re-check liveness immediately before removal: status was sampled
   # above, so anything written since would be destroyed by --force.
