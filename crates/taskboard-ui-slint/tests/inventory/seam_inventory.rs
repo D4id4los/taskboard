@@ -545,6 +545,11 @@ const INVOKE_INVENTORY: &[&str] = &[
     // The status panel's settled-reply fold (OP3 W-2): one invoke
     // (the drain's settled arm).
     "status_fields_folded",
+    // The status panel's remediation outcome fold (the D2 command
+    // plan W-6): one invoke in this file — the lane-full/closed arm
+    // of the confirm dispatch (the normal settle path rides the
+    // lib.rs cadence poll, outside this manifest's source).
+    "status_remediation_outcome_shown",
     // The pre-existing timers push (the timers surface's create seam —
     // the manifest's retrospective rider, caught by the totality side).
     "timers_create_accepted",
