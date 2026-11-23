@@ -439,7 +439,7 @@ fn answer_status_query(
 // a one-line delegation into the shared choreography — the arm count
 // tracks the closed enum, not the function's complexity.
 #[allow(clippy::too_many_lines)]
-async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
+pub async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace) {
     match request {
         UiRequest::StackWidthsChanged { .. } | UiRequest::WindowGeometryChanged { .. } => {
             unreachable!("width and geometry snapshots take the debounce path")
@@ -1719,7 +1719,8 @@ fn current_connectors(workspace: &ConnectionWorkspace) -> Vec<ConnectorInfo> {
 /// (r2 D32): boards from the engine state (the live filter, the
 /// binding's connector name), connectors from [`current_connectors`].
 /// Both surfaces of one reply re-render from this single snapshot.
-fn current_connections(workspace: &ConnectionWorkspace) -> ConnectionsSnapshot {
+#[must_use]
+pub fn current_connections(workspace: &ConnectionWorkspace) -> ConnectionsSnapshot {
     let state = workspace.engine.shared_state().load();
     let boards = state
         .boards
@@ -1979,7 +1980,12 @@ pub async fn undo_board_move(
 /// sweep. The remote `boards/<uuid>/` subtree lingers until the
 /// DELETE-verb GC exists (#755 — recorded in the request doc and
 /// R-4, not hidden). Reply: the fresh snapshot.
-async fn stop_board_files_sync(
+///
+/// # Errors
+///
+/// Typed [`SettingsError`] refusals: a gone board (`Gone`), a board
+/// bound to the Deck channel or unbound (`BindRefused`).
+pub async fn stop_board_files_sync(
     workspace: &ConnectionWorkspace,
     board: BoardId,
 ) -> Result<ConnectionsSnapshot, SettingsError> {
@@ -2360,16 +2366,11 @@ mod tests {
     /// re-run the ordering pin below.
     struct FixtureRest {
         app: crate::bootstrap::App,
-        /// The db + device-identity home; held for its `Drop` side
-        /// effect as much as for its path.
+        /// The db + device-identity home; held purely for its `Drop`
+        /// side effect (#982) — its reader (the lifetime pin) re-homed
+        /// onto `tests/services/ui_settings.rs` (#1157).
+        #[allow(dead_code)]
         dir: tempfile::TempDir,
-    }
-
-    impl WorkspaceFixture {
-        /// The directory backing the db and the device identity.
-        fn dir(&self) -> &std::path::Path {
-            self.rest.dir.path()
-        }
     }
 
     /// A workspace over a real (standalone, module-less) booted core:
@@ -2440,45 +2441,20 @@ mod tests {
         }
     }
 
-    /// The #982 lifetime pin: the directory survives as long as the
-    /// fixture, and its deletion happens only after the app's
-    /// teardown — guaranteed by the field order (workspace, app, then
-    /// `_dir` last); a struct reorder must re-run this test.
-    #[tokio::test]
-    async fn workspace_fixture_deletes_the_dir_only_after_the_app_teardown() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let fixture = workspace_fixture(PathBuf::from("unused-write-path.toml")).await;
-        let dir = fixture.dir().to_owned();
-        assert!(dir.exists(), "the fixture owns the directory");
-        assert!(dir.join("taskboard.db").exists(), "the db lives there");
-        // Destructure (the fixture's drop-by-field semantics are what
-        // the pin observes): the app's teardown must complete while the
-        // directory still exists, and the deletion must follow it.
-        let WorkspaceFixture { workspace: _, rest } = fixture;
-        let FixtureRest {
-            app,
-            dir: dir_guard,
-        } = rest;
-        let outcome = app.shutdown().await;
-        assert!(!outcome.actor_aborted, "clean teardown");
-        assert!(dir.exists(), "the dir outlives the app's teardown");
-        drop(dir_guard);
-        assert!(!dir.exists(), "the drop deletes the dir");
-    }
-
-    /// The #984 dated-pin gate (the #865 re-homing debt; the residual
-    /// class is the `backlog:` issue #1157): true when no `TASKBOARD_*`
-    /// ambient is present. The settings-editor/port guard and persist
-    /// reads compose the process env in production, and this lib crate
+    /// The #984 dated-pin gate: true when no `TASKBOARD_*` ambient is
+    /// present. The settings-editor/port guard and persist reads
+    /// compose the process env in production, and this lib crate
     /// forbids the env mutation that `taskboard_env_lock` needs — so
     /// under a hostile ambient the composed read refuses before the
-    /// fact under test. The three env-composing legs that composed the
-    /// read directly (#1113) were re-homed into
-    /// `tests/services/ui_settings.rs`; the remaining gated legs here
-    /// still need the gate until they re-home too (#1157).
+    /// fact under test. This gate is *deliberate* #984 coverage, not
+    /// re-homing debt: the issue #1157 class (the seven env-composing
+    /// `ui_requests` legs) re-homed onto `tests/services/ui_settings.rs`
+    /// behind `taskboard_env_lock` (2026-11-23), and the three #1113
+    /// legs moved before that. The remaining gated legs across this
+    /// module, `config_watcher.rs`, and `commands/config.rs` stay
+    /// inline by decision — they are skipped (not falsified) under a
+    /// hostile ambient, and the hostile-env CI pass covers the moved
+    /// legs.
     fn clean_ambient() -> bool {
         !std::env::vars_os().any(|(key, _)| key.as_encoded_bytes().starts_with(b"TASKBOARD_"))
     }
@@ -2507,154 +2483,10 @@ mod tests {
         board
     }
 
-    /// The snapshot's board half carries the binding's channel,
-    /// detected STRUCTURALLY from the id type (D-BF4) — never from the
-    /// binding's connector name: a files binding whose connector name
-    /// is a Deck-shaped card name still reads `Files`.
-    #[tokio::test]
-    async fn current_connections_fills_bound_channel_structurally() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("taskboard.toml");
-        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let fixture = workspace_fixture(config).await;
-        let workspace = &fixture.workspace;
-
-        let deck_bound = create_board(workspace, "deck board").await;
-        let files_bound = create_board(workspace, "files board").await;
-        let _loose = create_board(workspace, "loose").await;
-        for (board, remote) in [
-            (deck_bound, taskboard_domain::RemoteBoardId::deck(7)),
-            (
-                files_bound,
-                taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
-            ),
-        ] {
-            workspace
-                .engine
-                .execute(StateCommand::BindBoard {
-                    board,
-                    remote,
-                    // Deliberately a Deck-card-shaped name for BOTH
-                    // bindings: the channel must not key on it (D-BF4).
-                    connector: taskboard_domain::ConnectorId::from("work"),
-                })
-                .await
-                .expect("bind lands");
-        }
-
-        let snapshot = current_connections(workspace);
-        let by_name = |name: &str| {
-            snapshot
-                .boards
-                .iter()
-                .find(|board| board.name == name)
-                .expect("the live board is in the snapshot")
-        };
-        assert_eq!(
-            by_name("deck board").bound_channel,
-            Some(taskboard_ui_slint::requests::BoardChannel::Deck),
-        );
-        assert_eq!(
-            by_name("files board").bound_channel,
-            Some(taskboard_ui_slint::requests::BoardChannel::Files),
-        );
-        assert_eq!(by_name("loose").bound_channel, None);
-        assert_eq!(
-            by_name("files board").bound_connector.as_deref(),
-            Some("work"),
-            "the name field is untouched — the channel is the id type's"
-        );
-    }
-
     // -- the Stop arm (round-7 D-7.3, W-4) ------------------------------
-
-    /// US-2/S2 — the Stop arm's guards refuse typed: a gone board is
-    /// `Gone`; a deck-bound and an unbound board are `BindRefused`
-    /// (the row grammar can't normally offer those — the arm still
-    /// refuses typed).
-    #[tokio::test]
-    async fn us2_s2_stop_sync_guards_refuse_typed() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("taskboard.toml");
-        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let fixture = workspace_fixture(config).await;
-        let workspace = &fixture.workspace;
-
-        let deck_bound = create_board(workspace, "deck board").await;
-        let unbound = create_board(workspace, "loose").await;
-        workspace
-            .engine
-            .execute(StateCommand::BindBoard {
-                board: deck_bound,
-                remote: taskboard_domain::RemoteBoardId::deck(7),
-                connector: taskboard_domain::ConnectorId::from("work"),
-            })
-            .await
-            .expect("deck bind lands");
-
-        let gone = stop_board_files_sync(workspace, BoardId::from_uuid(uuid::Uuid::now_v7()))
-            .await
-            .expect_err("a gone board refuses");
-        assert_eq!(gone, SettingsError::Gone);
-        let deck = stop_board_files_sync(workspace, deck_bound)
-            .await
-            .expect_err("a deck-bound board refuses");
-        assert_eq!(deck, SettingsError::BindRefused);
-        let loose = stop_board_files_sync(workspace, unbound)
-            .await
-            .expect_err("an unbound board refuses");
-        assert_eq!(loose, SettingsError::BindRefused);
-    }
-
-    /// The Stop arm's exact effect (US-2/S3): the engine receives the
-    /// unbind — the files binding is gone, the board itself survives
-    /// (unbind is not a delete) — and the reply is the fresh
-    /// snapshot whose board half no longer carries the binding.
-    #[tokio::test]
-    async fn stop_board_files_sync_sends_exact_unbind_command() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("taskboard.toml");
-        std::fs::write(&config, "[ui]\nscale = 1.0\n").expect("seed");
-        let fixture = workspace_fixture(config).await;
-        let workspace = &fixture.workspace;
-        let board = create_board(workspace, "files board").await;
-        workspace
-            .engine
-            .execute(StateCommand::BindBoard {
-                board,
-                remote: taskboard_domain::RemoteBoardId::files(uuid::Uuid::now_v7()),
-                connector: taskboard_domain::ConnectorId::from("files-sync"),
-            })
-            .await
-            .expect("files bind lands");
-
-        let snapshot = stop_board_files_sync(workspace, board)
-            .await
-            .expect("a files-bound board stops");
-        let state = workspace.engine.shared_state().load();
-        let row = state.boards.get(&board).expect("the board survives");
-        assert!(row.remote.is_none(), "the binding is unbound");
-        assert!(!row.deleted, "unbind is not a delete");
-        let replied = snapshot
-            .boards
-            .iter()
-            .find(|info| info.id == board.as_uuid())
-            .expect("the board is in the fresh snapshot");
-        assert_eq!(replied.bound_channel, None);
-        assert_eq!(replied.bound_connector, None);
-    }
+    // (US-2/S2, US-2/S3 and the D-BF4 snapshot fill re-homed onto
+    // `tests/services/ui_settings.rs` behind `taskboard_env_lock`,
+    // #1157.)
 
     // -- the Deck-to-Deck rebind arm (the files-sync-status plan
     // US-10, D-11) ---------------------------------------------------
@@ -4307,107 +4139,10 @@ mod tests {
         );
     }
 
-    /// A stopped engine (`EngineGone`) is NOT an error at the port:
-    /// the file is written, the next start applies it (D7's typed
-    /// next-start outcome — the fronts decide how to render it).
-    #[tokio::test]
-    async fn the_port_engine_gone_reports_the_next_start_lane() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let mut fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
-        let (workspace, app) = (&fixture.workspace, &mut fixture.rest.app);
-        // Drain the engine (the D-5.3 journey's pattern): every later
-        // `execute` answers `EngineGone`.
-        app.system
-            .send(taskboard_domain::SystemEvent::Shutdown)
-            .expect("the engine subscribes");
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                let probe = workspace.engine.execute(StateCommand::RequestSync).await;
-                if matches!(probe, Err(taskboard_state::ExecuteError::EngineGone)) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the engine drained");
-        let locked = std::collections::BTreeSet::new();
-        let outcome = run_settings_write(
-            workspace.config_write_path.as_path(),
-            &locked,
-            &["reminders.tick_secs"],
-            |path| crate::settings_overlay::set_reminder_tick(path, 45),
-            Some(&workspace.engine),
-        )
-        .await
-        .expect("the write still lands");
-        assert_eq!(outcome.apply, LiveApply::EngineGone, "the next-start lane");
-        let text = std::fs::read_to_string(workspace.config_write_path.as_path()).expect("file");
-        assert!(text.contains("tick_secs = 45"), "the file wrote: {text}");
-    }
-
-    /// The no-engine lane (the one-shot CLI front): the write lands,
-    /// the port reports `NoEngine` — the typed `applied_live: false`.
-    #[tokio::test]
-    async fn the_port_no_engine_lane_reports_next_start() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let fixture = port_workspace("[reminders]\ntick_secs = 30\n").await;
-        let workspace = &fixture.workspace;
-        let locked = std::collections::BTreeSet::new();
-        let outcome = run_settings_write(
-            workspace.config_write_path.as_path(),
-            &locked,
-            &["reminders.tick_secs"],
-            |path| crate::settings_overlay::set_reminder_tick(path, 45),
-            None,
-        )
-        .await
-        .expect("the write lands");
-        assert_eq!(outcome.apply, LiveApply::NoEngine);
-        assert_eq!(outcome.effective.reminders.tick_secs, 45);
-    }
-
-    /// A garbage minute write reaching the handler from a non-UI lane
-    /// client is refused typed with own-blame attribution — the gate's
-    /// defence in depth, never a silent clamp at any layer.
-    #[tokio::test]
-    async fn focus_gate_refusal_attributes_own_blame() {
-        // Dated pin: the ambient gate, `clean_ambient`'s doc (#1113).
-        if !clean_ambient() {
-            return;
-        }
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("taskboard.toml");
-        std::fs::write(&path, "[ui]\nscale = 1.0\n").expect("seed");
-        let fixture = workspace_fixture(path.clone()).await;
-        let workspace = &fixture.workspace;
-
-        let (reply, reply_rx) = tokio::sync::oneshot::channel();
-        handle_settings(UiRequest::SetFocusWorkMins { mins: 0, reply }, workspace).await;
-        let outcome = reply_rx.await.expect("the reply lane is alive");
-        assert!(
-            matches!(
-                outcome,
-                Err(SettingsError::Invalid {
-                    field: Field::FocusWorkMins,
-                    kind: InvalidKind::OutOfRange
-                })
-            ),
-            "the own-blame refusal is typed: {outcome:?}"
-        );
-        assert!(
-            !std::fs::read_to_string(&path)
-                .expect("read")
-                .contains("work_mins"),
-            "the refused write left the file untouched"
-        );
-    }
+    // (The port's `EngineGone`/`NoEngine` next-start lanes and the
+    // focus gate's own-blame refusal re-homed onto
+    // `tests/services/ui_settings.rs` behind `taskboard_env_lock`,
+    // #1157.)
 
     /// T5's app-side twin (the redaction proof lives in the UI crate;
     /// this pins the request `Debug` structurally through a full

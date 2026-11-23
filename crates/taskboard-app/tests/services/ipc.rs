@@ -444,6 +444,12 @@ async fn ip11_connector_daemon_serves_even_when_sync_fails() {
         common::seed_board_binding(&db, 1, common::BOARD, "ip11-run").await;
         let mut config = common::valid_config(&server.uri());
         config.storage.db_path = Some(db.clone());
+        // The boot composes the process env (`EnvCredentialStore`), so
+        // it must hold `taskboard_env_lock` across the override + boot:
+        // a concurrent env-composing leg's lock window would otherwise
+        // strip the credential var mid-boot (typed `Credential(NotFound)`
+        // under full-suite parallel load).
+        let _env = common::taskboard_env_lock();
         let password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", "pw");
         let (handle, db) = serve_with_config(dir.path(), "ip11.db", config).await;
 
@@ -1207,6 +1213,11 @@ async fn j1_daemon_stop_answers_while_a_verb_is_in_flight() {
         // The select mints its local board on a board-less install.
         let mut config = common::valid_config(&remote.uri());
         config.storage.db_path = Some(db.clone());
+        // The boot composes the process env (`EnvCredentialStore`), so
+        // it must hold `taskboard_env_lock` across the override + boot
+        // (same shape as ip11: a concurrent env-composing leg's lock
+        // window would otherwise strip the credential var mid-boot).
+        let _env = common::taskboard_env_lock();
         let password = common::EnvOverride::set("TASKBOARD_APP_PASSWORD", "pw");
         let (handle, db) = serve_with_config(dir.path(), "j1.db", config).await;
         let sidecar = taskboard_app::ipc::socket_sidecar(&db);
