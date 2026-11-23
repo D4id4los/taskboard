@@ -148,6 +148,8 @@ export component TodayView inherits FocusScope {
     callback habits-repair-clicked(int);
     // The row's focus fact (cross-surface friction plan D-2, #832).
     callback habits-row-activated(int);
+    // The row's double-click editor opener (D3a W-4, #1201).
+    callback habits-edit-asked(int);
     // The right-click context request (H2 D4): the habit menu's
     // opener (index, window x, window y).
     callback habits-context-requested(int, float, float);
@@ -246,6 +248,7 @@ export component TodayView inherits FocusScope {
                     habits: root.habits;
                     editing-enabled: root.habits-editing-enabled;
                     row-activated(r) => root.habits-row-activated(r);
+                    edit-asked(r) => root.habits-edit-asked(r);
                     log-clicked(r) => root.habits-log-clicked(r);
                     undo-log-clicked(r) => root.habits-undo-log-clicked(r);
                     quota-edit-asked(r) => root.habits-quota-edit-asked(r);
