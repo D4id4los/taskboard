@@ -17,9 +17,9 @@ use slint::ComponentHandle as _;
 use slint::Model as _;
 use taskboard_domain::habit::{HabitClocks, HabitLogEntry, HabitLogKey, WindowStart};
 use taskboard_domain::{AppState, HabitId, NonZeroCount, PeriodKind, StateCommand};
-use taskboard_ui_slint::UiSettings;
 use taskboard_ui_slint::actions::ActionId;
 use taskboard_ui_slint::keymap::stroke::{self, Stroke};
+use taskboard_ui_slint::{UiSettings, View};
 
 /// The journeys' habit fixture (the lib fixture's twin): one live
 /// daily habit (quota 2) on the fixture board, at the pinned instant.
@@ -244,6 +244,84 @@ fn us1_s5_keyboard_paths_survive_the_move() {
             [StateCommand::AdjustHabitLog { .. }] => {}
             other => panic!("the undo chord routes over the focused row, got {other:?}"),
         }
+    });
+}
+
+// -- US-2: the double-click opens the editor (W-4) ------------------
+
+/// US-2/AC-1 (W-4): the card's double-click shell routes
+/// `habit_edit_asked` → `ActionId::HabitEdit` → `UiEffect::HabitEdit`:
+/// the shared detail surface mounts the habit variant; nothing
+/// dispatches (the opener is a view intent).
+#[test]
+fn us2_s1_double_click_opens_habit_editor() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        let window = harness.handle.window();
+        harness.driver.advance_time(0);
+        window.invoke_habits_edit_asked(0);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_current_view(),
+            View::TaskDetail,
+            "the editor mounts the habit variant"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "opening the editor dispatches nothing"
+        );
+    });
+}
+
+/// US-2/AC-2 (W-4, the kiosk gate): the double-click dispatch on
+/// kiosk is the landed typed refusal — no editor mounts, nothing
+/// reaches the boundary.
+#[test]
+fn us2_s2_kiosk_double_click_typed_refusal() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, true, move |harness| {
+        let window = harness.handle.window();
+        harness.driver.advance_time(0);
+        window.invoke_habits_edit_asked(0);
+        harness.driver.advance_time(0);
+        assert_ne!(
+            window.get_current_view(),
+            View::TaskDetail,
+            "the editor never mounts on kiosk"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the kiosk dispatch sends nothing"
+        );
+    });
+}
+
+/// US-2/AC-3 (W-4, the A1 tripwire): a single click selects only —
+/// the emphasis ring paints, no editor mounts (the gesture conflicts
+/// A1 fixed must not reintroduce).
+#[test]
+fn us2_s3_single_click_selects_only() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        let window = harness.handle.window();
+        harness.driver.advance_time(0);
+        window.invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        assert!(
+            habit_card_field(harness, 0, |card| card.emphasis),
+            "the click seats the walk cursor (A1)"
+        );
+        assert_ne!(
+            window.get_current_view(),
+            View::TaskDetail,
+            "the single click never mounts the editor"
+        );
     });
 }
 

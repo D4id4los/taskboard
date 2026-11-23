@@ -74,6 +74,13 @@ export component HabitsSection inherits Rectangle {
     // menu verbs' subject (click ≡ key composes both directions).
     // slint: habit-row-activated
     callback row-activated(int);
+    // The row's double-click editor opener (D3a W-4, #1201): the
+    // task-card parity — double-click mounts the habit variant of the
+    // shared editor (the adapter resolves the one-shot subject; the
+    // kiosk gate is the landed dispatch-time refusal). Single click
+    // keeps selecting only (A1's fixed grammar — one selection truth).
+    // slint: habits-edit-asked
+    callback edit-asked(int);
     // The done slot's log dispatch (US-1/S2): the card's done control
     // routes `habit.log` — clicking complete logs the habit.
     // slint: habits-log-clicked
@@ -322,7 +329,7 @@ export component HabitsSection inherits Rectangle {
                     model: row.card;
                     hint-keys: [];
                     activated => {
-                        root.row-activated(row-index);
+                        root.edit-asked(row-index);
                     }
                     clicked => {
                         root.row-activated(row-index);

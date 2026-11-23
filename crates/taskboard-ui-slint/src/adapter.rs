@@ -5092,6 +5092,16 @@ impl Adapter {
                     let outcomes = self.view_state.open_habit_editor(habit);
                     self.apply_outcomes(window, &outcomes);
                     self.finish_mutation(window);
+                } else if !self.kiosk && self.view_state.focused_task().is_some() {
+                    // The walk cursor's fall-through (D3a W-16, #1202):
+                    // the Return row at Today is the habit editor's —
+                    // over a TASK walk landing the same stroke belongs
+                    // to the focused row's OWN verb (the rule-cursor
+                    // activation's parity law: the cursor is a pointer,
+                    // not a new verb family). The task editor opens
+                    // through the landed Activate shape, unchanged.
+                    let outcomes = self.interpret_begin(UiEffect::Activate, &state);
+                    self.apply_outcomes(window, &outcomes);
                 } else {
                     self.arm_no_target_notice(ActionId::HabitEdit);
                     self.push_notice(window);
@@ -11828,6 +11838,30 @@ fn install_recur_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         let outcomes = a.view_state.activate_habit_row(habit);
         a.apply_outcomes(&window, &outcomes);
     }
+
+    });
+
+    // The habit row's double-click editor opener (D3a W-4, #1201):
+    // the task pointer path's activation shape — the conflict settles,
+    // the walk cursor seats (single-click's selection truth is the
+    // prefix of the double-click's, US-2/S3 composes), then the
+    // `HabitEdit` opener routes over the minted subject. The kiosk
+    // gate is the landed dispatch-time refusal (the UiEffect arm),
+    // never a second seam-side copy. Stale index absorbed.
+    // slint: habits-edit-asked
+    install_seam!(window: window.on_habits_edit_asked, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(&habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+    else {
+        return;
+    };
+    settle_pointer_conflict(&mut a, &window);
+    a.focused_habit = Some(habit);
+    let outcomes = a.view_state.activate_habit_row(habit);
+    a.apply_outcomes(&window, &outcomes);
+    a.route(&window, ActionId::HabitEdit);
 
     });
 

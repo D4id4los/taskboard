@@ -167,6 +167,7 @@ const SEAM_INVENTORY: &[&str] = &[
     "focus_switcher_invoked",
     // The habit row's focus fact (cross-surface friction plan D-2,
     // #832): the activation mints the menu verbs' subject.
+    "habits_edit_asked",
     "habits_row_activated",
     // H2 (round 9 chunk 6): the row's right-click context seam joins;
     // the convert trio and the reorder pair retire (the menu owns

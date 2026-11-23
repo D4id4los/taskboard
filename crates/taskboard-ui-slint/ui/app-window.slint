@@ -673,6 +673,7 @@ export component AppWindow inherits Window {
                 habits: root.habits-model;
                 habits-editing-enabled: root.habits-editing-enabled;
                 habits-row-activated(r) => root.habits-row-activated(r);
+                habits-edit-asked(r) => root.habits-edit-asked(r);
                 habits-log-clicked(r) => root.habits-log-clicked(r);
                 habits-undo-log-clicked(r) => root.habits-undo-log-clicked(r);
                 habits-quota-edit-asked(r) => root.habits-quota-edit-asked(r);
@@ -2440,6 +2441,8 @@ export component AppWindow inherits Window {
     // row source resolved.
     pure callback habits-repair-clicked(int);
     pure callback habits-row-activated(int);
+    // The habit row's double-click editor opener (D3a W-4, #1201).
+    pure callback habits-edit-asked(int);
     // The habit list's gap drop (chunk 8 D5): the delegate-resolved
     // (row, gap) pair from the section's DropAreas.
     pure callback habits-drop-asked(int, int);
