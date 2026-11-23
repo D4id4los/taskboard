@@ -36,6 +36,13 @@
 - W-5: the ConfigReload fold + Settings row. Tests:
   `us4_s1_reload_outcome_folds_applied`, `us4_s2_refused_folds_kept`,
   structural: the lane installs no command callbacks.
+  **Erratum (2026-11-23, R-2 of
+  `2026-11-22-misc-gated-journeys-ux-plan.md` §US-24):** this row's
+  surface spelling read as if the reload lane belonged inside the
+  Files card — plan-side imprecision, not an implementation gap. The
+  whole-view caption at the top of the Settings view is normative: a
+  `taskboard.toml` reload applies to the whole configuration, not the
+  files-sync subtree. No UI move ships (#1225 closes on this note).
 - W-6: the poll_secs field + staged-edit commit/cancel. Tests:
   `us5_s1_poll_secs_rides_update_settings`,
   `us5_s2_poll_secs_typed_refusal_nonpositive`; lattice/registry

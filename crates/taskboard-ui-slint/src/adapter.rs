@@ -4033,6 +4033,9 @@ impl Adapter {
                 // `Completed(None)` (D-2's exit contract): the parent's
                 // consumption advances the walk to Prompts.
                 if self.view_state.walk_stage() == Some(WalkStage::Planner) {
+                    // The planner child's exit clears the K4 cursor
+                    // pane-scoped (US-22/S4 — the landed clear law).
+                    self.view_state.clear_plan_cursor();
                     let state_guard = self.state.load();
                     return self.view_state.end_top_flow_with(
                         &state_guard,
@@ -4050,6 +4053,9 @@ impl Adapter {
                 // (D-6's rung, J4 US-3/S1): the exit contract returns
                 // the walk to Carry, the walk stays open.
                 if self.view_state.walk_stage() == Some(WalkStage::Planner) {
+                    // The Cancelled exit clears the K4 cursor too
+                    // (US-22/S4 — the landed clear law).
+                    self.view_state.clear_plan_cursor();
                     let state_guard = self.state.load();
                     let outcomes = self
                         .view_state
@@ -4094,6 +4100,11 @@ impl Adapter {
                 // to Carry, D-2); without a child the abort law
                 // applies (J4 R-2): Entry closes silently, any other
                 // stage arms the confirm.
+                // The planner child's Cancelled rung clears the K4
+                // cursor pane-scoped (US-22/S4 — the landed clear law).
+                if self.view_state.walk_stage() == Some(WalkStage::Planner) {
+                    self.view_state.clear_plan_cursor();
+                }
                 let outcomes = match self.view_state.cancel_top_child(state) {
                     Some(outcomes) => outcomes,
                     None => self.abort_arm(),
@@ -5747,6 +5758,33 @@ impl Adapter {
                 },
                 UiEffect::ReviewWalk(intent),
             ) => self.interpret_walk(window, *cadence, *reference, intent, &state),
+            // The embedded planner's cursor arms (US-22, #1234): the
+            // walk's planner child shares the standalone planner's K4
+            // cursor — the verticals route to the SAME
+            // `walk_plan_cursor` seam (R-9's one-mechanism law; the
+            // class matrix's Nav settle would kill the child, which is
+            // exactly the gap this kept arm closes), and an armed
+            // cursor's Activate dispatches the cursor'd row's OWN
+            // `PlanBeginPlace` seam (the `Flow::None` twin above; the
+            // child keeps the form's mount via `open_plan_place_child`).
+            // A horizontal is untouched — the walk's own grammar keeps
+            // the class matrix's cell.
+            (
+                Flow::ReviewPlanner,
+                effect @ UiEffect::FocusDirectional(Direction::Up | Direction::Down),
+            ) => {
+                let UiEffect::FocusDirectional(direction) = effect else {
+                    unreachable!("arm matched")
+                };
+                let step = i32::from(direction == Direction::Down) * 2 - 1;
+                self.walk_plan_cursor(step)
+            }
+            (Flow::ReviewPlanner, UiEffect::Activate)
+                if self.view_state.plan_cursor().is_some() =>
+            {
+                self.activate_plan_cursor(window);
+                Vec::new()
+            }
             // Toggle semantics (the settings opener's twin); the
             // planner-context Escape row rides the same route.
             (Flow::None, UiEffect::OpenPlanNextDay) => {

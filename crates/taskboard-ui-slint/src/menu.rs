@@ -985,6 +985,101 @@ mod tests {
         }
     }
 
+    /// US-23/S2 (`us23_s2_settings_row_present_on_kiosk_chain`,
+    /// #1152): the reload lane's kiosk entry point — the `AppSettings`
+    /// row is present AND enabled on the kiosk mount's chain (the
+    /// structural pin: a registry row's presence and its enabled bit,
+    /// never badge/caption text). `AppSettings` is absent from the
+    /// adapter's `!self.kiosk` enabled-arms, so the kiosk chain
+    /// inherits the same root-page row the desktop reads.
+    #[test]
+    fn us23_s2_settings_row_present_on_kiosk_chain() {
+        let keymap = standard_keymap();
+        let rows = root_page(&keymap, &board_chain(), &std::collections::BTreeMap::new());
+        let settings = rows
+            .iter()
+            .find(|entry| entry.action == Some(ActionId::AppSettings))
+            .expect("the AppSettings row renders on the kiosk chain");
+        assert!(
+            settings.enabled,
+            "the reload lane's kiosk entry point is enabled"
+        );
+    }
+
+    /// US-25/S1 (`us25_s1_root_quick_rows_within_budget`, #1184, R-3):
+    /// the budget law's teeth, registry-wide — over EVERY context
+    /// chain, the `menu_group: None` quick set (Quit excluded) is
+    /// exactly the curated five in `menu_rank` order. A sixth
+    /// group-less registration on any context fails here, before G6
+    /// ever measures a clipped border. Broader than T-1's board-chain
+    /// pin: a per-chain pin would let a future group-less
+    /// registration slip through on another context. (The measured
+    /// budget is five at 1024×600 — #1184's "≤ 4 + move Export…"
+    /// sketch is superseded; Export… is one of the landed five.)
+    #[test]
+    fn us25_s1_root_quick_rows_within_budget() {
+        const BUDGET_FIVE: &[ActionId] = &[
+            ActionId::AppSettings,
+            ActionId::CaptureQuick,
+            ActionId::ExportDialogOpen,
+            ActionId::AppUndo,
+            ActionId::AppRedo,
+        ];
+        // Every context, alone and under the vi-normal composite —
+        // the chain shapes the projections actually run over.
+        let mut chains = Vec::new();
+        for context in [
+            ContextId::Global,
+            ContextId::Today,
+            ContextId::Board,
+            ContextId::StackDetail,
+            ContextId::TaskDetail,
+            ContextId::Review,
+            ContextId::Settings,
+            ContextId::StatusPanel,
+            ContextId::PlanNextDay,
+            ContextId::Menu,
+            ContextId::Palette,
+            ContextId::FocusMode,
+            ContextId::ViNormal,
+            ContextId::ViInsert,
+            ContextId::DatePicker,
+            ContextId::TrackEntries,
+            ContextId::RecurEditor,
+            ContextId::ExportDialog,
+            ContextId::Labels,
+            ContextId::ReviewWalk,
+            ContextId::AlarmWindow,
+            ContextId::NotificationSurface,
+        ] {
+            chains.push(vec![context, ContextId::Global]);
+            chains.push(vec![context, ContextId::ViNormal, ContextId::Global]);
+        }
+        for chain in &chains {
+            let quick: Vec<ActionId> = crate::actions::REGISTRY
+                .iter()
+                .filter(|entry| {
+                    entry.menu_group.is_none()
+                        && entry.id != ActionId::AppExit
+                        && (entry.contexts.contains(&ContextId::Global)
+                            || entry.contexts.iter().any(|c| chain.contains(c)))
+                })
+                .map(|entry| entry.id)
+                .collect();
+            let mut sorted = quick.clone();
+            sorted.sort();
+            assert_eq!(
+                quick, sorted,
+                "the five quick rows are rank-ordered over {chain:?}"
+            );
+            assert_eq!(
+                quick.as_slice(),
+                BUDGET_FIVE,
+                "the registry-wide quick-row budget holds over {chain:?}"
+            );
+        }
+    }
+
     /// T-3 — the Task group page carries exactly the Task-group rows,
     /// enabled bits preserved, hints resolved.
     #[test]
