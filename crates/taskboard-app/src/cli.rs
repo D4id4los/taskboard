@@ -2281,13 +2281,52 @@ pub enum TasksCmd {
     /// (`--off`). Exactly one mode per line; the anchor is the task's
     /// scheduled/duedate local date, else today.
     Repeat(RepeatArgs),
-    /// Undo the last change (the journal line head, ADR 0019). Refuses
-    /// typed when the line is empty, the head is not undoable, or a
-    /// later write diverged. Zero flags: the line has no selectors.
-    Undo,
-    /// Redo the last undone change (the head's newest child, ADR 0019).
+    /// Browse the journal history at the recorded bounded resolution
+    /// (D1ii, #1155/#1156): the head plus the `recent` and
+    /// `branch-children` windows — the exact typed rows the undo
+    /// picker presents, the exact ids the `to` jump forms resolve. A
+    /// read over the published snapshot; it dispatches nothing (a
+    /// browse is not an intent).
+    History {
+        /// Machine-readable JSON against the widened `UndoLabel`
+        /// projection.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Undo the last change (the journal line head, ADR 0019), or with
+    /// `to <id/prefix>` jump the undo line back to a `tasks history`
+    /// row. Refuses typed when the line is empty, the head is not
+    /// undoable, or a later write diverged. Zero flags: the line has
+    /// no selectors.
+    Undo {
+        /// Bare (absent) = the plain reflex; `to <id/prefix>` = the
+        /// bounded jump form (the picker's ancestor verb).
+        #[command(subcommand)]
+        mode: Option<JournalJump>,
+    },
+    /// Redo the last undone change (the head's newest child, ADR 0019),
+    /// or with `to <id/prefix>` redo down a chosen abandoned branch.
     /// Zero flags: the line has no selectors.
-    Redo,
+    Redo {
+        /// Bare (absent) = the plain reflex; `to <id/prefix>` = the
+        /// bounded branch form (the picker's sibling verb).
+        #[command(subcommand)]
+        mode: Option<JournalJump>,
+    },
+}
+
+/// The journal jump's shared `to <id/prefix>` grammar (D1ii W-6): a
+/// full uuid or a unique ≥8-char prefix over the bounded windows only
+/// — exactly what `tasks history` printed (D-4's honest bound; a
+/// prefix beyond the windows refuses typed, never widens).
+#[derive(Debug, clap::Subcommand)]
+pub enum JournalJump {
+    /// The bounded jump form.
+    To {
+        /// The target row: full uuid | unique ≥8-char prefix over the
+        /// `tasks history` windows.
+        id: String,
+    },
 }
 
 #[cfg(test)]
