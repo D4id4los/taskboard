@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -25,13 +24,18 @@ undo:
   recent:
     - id: 00000000-0000-0000-0000-00000000000b
       label: Delete habit
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000009
       label: Log habit
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000007
       label: Adjust habit log
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000005
       label: Log habit
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000003
       label: Create habit
+      payload: meditate
   branch_children: []
 last_updated: "1970-01-01T10:05:00Z"

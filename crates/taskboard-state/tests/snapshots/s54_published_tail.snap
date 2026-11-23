@@ -24,13 +24,18 @@ undo:
   recent:
     - id: 00000000-0000-0000-0000-00000000000e
       label: Remove reminder rule
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000009
       label: Add reminder rule
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000006
       label: Create task
+      payload: reminded
     - id: 00000000-0000-0000-0000-000000000003
       label: Create stack
+      payload: stack
   branch_children:
     - id: 00000000-0000-0000-0000-00000000000e
       label: Remove reminder rule
+      payload: ~
 last_updated: "1970-01-01T10:07:00Z"

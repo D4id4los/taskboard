@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -25,9 +24,12 @@ undo:
   recent:
     - id: 00000000-0000-0000-0000-000000000007
       label: Mute reminders
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000006
       label: Create task
+      payload: t
     - id: 00000000-0000-0000-0000-000000000003
       label: Create stack
+      payload: stack
   branch_children: []
 last_updated: "1970-01-01T10:03:00Z"

@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -27,11 +26,15 @@ undo:
   recent:
     - id: 00000000-0000-0000-0000-000000000009
       label: Create task
+      payload: offline card
     - id: 00000000-0000-0000-0000-000000000006
       label: Create stack
+      payload: column
     - id: 00000000-0000-0000-0000-000000000003
       label: Bind board
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000002
       label: Create board
+      payload: files board
   branch_children: []
 last_updated: "1970-01-01T10:04:00Z"
