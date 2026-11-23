@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -25,11 +24,15 @@ undo:
   recent:
     - id: 00000000-0000-0000-0000-000000000008
       label: Edit task
+      payload: renamed
     - id: 00000000-0000-0000-0000-000000000006
       label: Create task
+      payload: undo me
     - id: 00000000-0000-0000-0000-000000000003
       label: Create stack
+      payload: stack
   branch_children:
     - id: 00000000-0000-0000-0000-000000000008
       label: Edit task
+      payload: renamed
 last_updated: "1970-01-01T10:04:00Z"

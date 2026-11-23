@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -39,13 +38,18 @@ undo:
   recent:
     - id: 00000000-0000-0000-0000-00000000000b
       label: Bind board
+      payload: ~
     - id: 00000000-0000-0000-0000-00000000000a
       label: Create task
+      payload: first task
     - id: 00000000-0000-0000-0000-000000000007
       label: Create stack
+      payload: todo
     - id: 00000000-0000-0000-0000-000000000004
       label: Create board
+      payload: second
     - id: 00000000-0000-0000-0000-000000000002
       label: Create board
+      payload: personal
   branch_children: []
 last_updated: "1970-01-01T10:05:00Z"

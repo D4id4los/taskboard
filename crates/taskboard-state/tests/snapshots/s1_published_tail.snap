@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 199
 expression: "&tail"
 ---
 sync:
@@ -25,21 +24,30 @@ undo:
   recent:
     - id: 00000000-0000-0000-0000-000000000015
       label: Delete task
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000014
       label: Move task
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000012
       label: Create stack
+      payload: doing
     - id: 00000000-0000-0000-0000-00000000000f
       label: Assign label
+      payload: ~
     - id: 00000000-0000-0000-0000-00000000000d
       label: Create label
+      payload: urgent
     - id: 00000000-0000-0000-0000-00000000000a
       label: Mark done
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000008
       label: Edit task
+      payload: ~
     - id: 00000000-0000-0000-0000-000000000006
       label: Create task
+      payload: write report
     - id: 00000000-0000-0000-0000-000000000003
       label: Create stack
+      payload: todo
   branch_children: []
 last_updated: "1970-01-01T10:09:00Z"
