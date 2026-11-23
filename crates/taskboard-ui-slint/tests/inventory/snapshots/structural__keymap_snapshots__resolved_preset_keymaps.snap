@@ -76,7 +76,7 @@ expression: rows
           action: nav.prev-control
         - sequence:
             - Return
-          action: task.edit
+          action: habit.edit
         - sequence:
             - Space
           action: task.complete
@@ -101,6 +101,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+i
           action: habit.history
+        - sequence:
+            - Ctrl+Shift+l
+          action: habit.log
         - sequence:
             - Ctrl+Shift+o
           action: habit.skip
@@ -732,7 +735,7 @@ expression: rows
       bindings:
         - sequence:
             - Return
-          action: task.edit
+          action: habit.edit
         - sequence:
             - Ctrl+Space
           action: task.reopen
@@ -799,6 +802,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+i
           action: habit.history
+        - sequence:
+            - Ctrl+Shift+l
+          action: habit.log
         - sequence:
             - Ctrl+n
           action: nav.focus-down
@@ -1379,6 +1385,9 @@ expression: rows
             - Shift+Tab
           action: nav.prev-control
         - sequence:
+            - Return
+          action: habit.edit
+        - sequence:
             - I
           action: task.track-start
         - sequence:
@@ -1402,6 +1411,9 @@ expression: rows
         - sequence:
             - Ctrl+Shift+i
           action: habit.history
+        - sequence:
+            - Ctrl+Shift+l
+          action: habit.log
         - sequence:
             - Ctrl+Shift+o
           action: habit.skip

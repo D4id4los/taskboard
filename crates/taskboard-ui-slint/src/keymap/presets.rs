@@ -168,6 +168,25 @@ const HABIT_TODAY_ROWS: &[(ActionId, ContextId, &[&str])] = &[
     // (click ≡ key through the shared one-shot mint). The Today
     // chain's `d` was free in every preset; the case-law spelling.
     (ActionId::HabitRepair, ContextId::Today, &["Ctrl+Shift+d"]),
+    // D3a (W-5, #1202 — the accepted R-5 supersession): the focused
+    // row's log chord — the HabitQuotaEdit key's precedent (a
+    // section-scoped id routing over the walk cursor via
+    // ctx.habit_target; no per-row dispatch bypass). The Today
+    // chain's `l` was free in every preset; the case-law spelling.
+    (ActionId::HabitLog, ContextId::Today, &["Ctrl+Shift+l"]),
+    // D3a (W-16, #1202 — the keyboard-first law, docs/ux_planning.org
+    // §2.7): the row activation is the TaskEdit twin. The single
+    // Return row at Today serves the widened walk's BOTH row kinds —
+    // over a habit landing it routes `HabitEdit`; over a task landing
+    // the adapter's cursor-aware fall-through opens the task editor
+    // through the landed Activate shape (the rule-cursor activation's
+    // parity law: the cursor is a pointer, not a new verb family).
+    // The superseded per-kind rows (standard/emacs `(TaskEdit, Today,
+    // Return)`) retired with the semantics preserved — no verb lost,
+    // the C-5 rule (a collision moves the spelling, never drops the
+    // row; here the collision was the twins', and one shared row +
+    // subject-aware dispatch keeps every verb bound).
+    (ActionId::HabitEdit, ContextId::Today, &["Return"]),
 ];
 
 /// The focused row's context-menu opener (US-7, W-8, #1032): the row
@@ -436,7 +455,10 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::NavLastItem, ContextId::Today, &["Ctrl+End"]),
     (ActionId::TaskComplete, ContextId::Today, &["Space"]),
     (ActionId::TaskReopen, ContextId::Today, &["Ctrl+Space"]),
-    (ActionId::TaskEdit, ContextId::Today, &["Return"]),
+    // D3a (W-16): TaskEdit's Today Return row retired — the shared
+    // HabitEdit row in HABIT_TODAY_ROWS owns the stroke now (the
+    // widened walk's subject-aware dispatch opens the task editor
+    // over a task landing; see the row's comment there).
     (ActionId::TaskMove, ContextId::Today, &["M"]),
     (ActionId::TaskDelete, ContextId::Today, &["Delete"]),
     // The today re-commit (UX R-4 D-8, #796): the bare mnemonic — the
@@ -915,7 +937,9 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
         ContextId::Today,
         &["Ctrl+c", "Ctrl+t"],
     ),
-    (ActionId::TaskEdit, ContextId::Today, &["Return"]),
+    // D3a (W-16): TaskEdit's Today Return row retired — the shared
+    // HabitEdit row in HABIT_TODAY_ROWS owns the stroke now (see the
+    // row's comment there).
     (ActionId::TaskMove, ContextId::Today, &["Ctrl+c", "Ctrl+w"]),
     (ActionId::TaskDelete, ContextId::Today, &["Ctrl+d"]),
     // The today re-commit (UX R-4 D-8, #796): the C-c family's free
