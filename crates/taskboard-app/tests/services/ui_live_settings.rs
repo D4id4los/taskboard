@@ -48,6 +48,7 @@ async fn forwarder(
         connector_owners: app.connector_owners.clone(),
         export: taskboard_app::ui_requests::ExportWorkspace::default(),
         status: crate::ui_settings::in_session_status_source(&app),
+        remediation: taskboard_app::status_remediation::RemediationWorkspace::default(),
     };
     let (tx, rx) = tokio::sync::mpsc::channel(8);
     let _join = spawn_ui_request_forwarder(rx, app.engine.shared_state(), workspace);

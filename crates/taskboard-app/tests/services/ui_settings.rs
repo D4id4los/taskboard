@@ -99,6 +99,7 @@ async fn booted_workspace(
         connector_owners: app.connector_owners.clone(),
         export: taskboard_app::ui_requests::ExportWorkspace::default(),
         status: crate::ui_settings::in_session_status_source(&app),
+        remediation: taskboard_app::status_remediation::RemediationWorkspace::default(),
     };
     (app, workspace)
 }
@@ -2573,6 +2574,7 @@ async fn owned_boot_at(config_write_path: PathBuf, dir: tempfile::TempDir) -> Ow
         connector_owners: app.connector_owners.clone(),
         export: taskboard_app::ui_requests::ExportWorkspace::default(),
         status: crate::ui_settings::in_session_status_source(&app),
+        remediation: taskboard_app::status_remediation::RemediationWorkspace::default(),
     };
     OwnedBootFixture {
         workspace,

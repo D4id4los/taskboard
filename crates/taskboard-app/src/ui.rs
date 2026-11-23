@@ -885,15 +885,26 @@ pub async fn run_desktop(
             // boots authorless there, plan D-2).
             device_json: crate::board_move_ceremony::default_device_json().ok(),
             connector_owners: app.connector_owners.clone(),
-            export: crate::ui_requests::ExportWorkspace {
-                config: std::sync::Arc::new(app.config.clone()),
+            export: crate::ui_requests::ExportWorkspace::with_real_clipboard(
+                std::sync::Arc::new(app.config.clone()),
                 // The desktop lifecycle's typed permission (the
                 // trap-c law): the viewer open is allowed here and
                 // nowhere else — the kiosk workspace never shells
                 // out.
-                may_open_viewer: true,
-            },
+                true,
+            ),
             status: Box::new(status_source),
+            // The remediation lane (the D2 command plan W-7): the
+            // desktop lifecycle's typed permission (the trap-a law)
+            // — process control lives here and nowhere else.
+            remediation: {
+                let db_path = app.config.storage.db_path.clone();
+                crate::status_remediation::RemediationWorkspace {
+                    db_path: db_path.clone(),
+                    may_control_processes: true,
+                    effects: crate::status_remediation::RemediationEffects::real(db_path),
+                }
+            },
         },
     );
 

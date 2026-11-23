@@ -76,14 +76,68 @@ pub fn ui_request_channel() -> (mpsc::Sender<UiRequest>, mpsc::Receiver<UiReques
 /// the boot-resolved config (the pdf leg's destination/layout
 /// postures and the day calendar the engine reads) plus the
 /// typed-permission flag for the open-after-export viewer open.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct ExportWorkspace {
     /// The resolved, validated configuration.
     pub config: std::sync::Arc<crate::config::AppConfig>,
     /// Whether the drain may open the system viewer after a pdf run
     /// (the desktop lifecycle's permission; kiosk `false`).
     pub may_open_viewer: bool,
+    /// The clipboard handoff's effect seam (the D2 preview plan D-3,
+    /// the chunk R-2/R-4 law): writes the payload text to the system
+    /// clipboard, `Err(())` when unavailable (headless session,
+    /// failed open/write — the typed `ClipboardUnavailable`). The
+    /// default is the real arboard write; tests inject.
+    #[allow(clippy::type_complexity)]
+    pub clipboard_write:
+        std::sync::Arc<dyn Fn(&str) -> Result<(), ()> + Send + Sync>,
 }
+
+impl Default for ExportWorkspace {
+    fn default() -> Self {
+        Self::with_real_clipboard(std::sync::Arc::new(crate::config::AppConfig::default()), false)
+    }
+}
+
+impl std::fmt::Debug for ExportWorkspace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExportWorkspace")
+            .field("config", &self.config)
+            .field("may_open_viewer", &self.may_open_viewer)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExportWorkspace {
+    /// The production clipboard effect (the real system clipboard).
+    #[must_use]
+    pub fn with_real_clipboard(
+        config: std::sync::Arc<crate::config::AppConfig>,
+        may_open_viewer: bool,
+    ) -> Self {
+        Self {
+            config,
+            may_open_viewer,
+            clipboard_write: std::sync::Arc::new(clipboard_write_real),
+        }
+    }
+}
+
+/// The production clipboard write (the arboard default): any open or
+/// copy failure is the typed `Err(())` — the environment refusal,
+/// never a panic.
+fn clipboard_write_real(text: &str) -> Result<(), ()> {
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.set_text(text.to_owned()))
+        .map_err(|_| ())
+}
+
+/// The preview pane's presentation cap (the preview plan D-2): a
+/// pane-rendering budget, never a payload or engine limit — the file
+/// and clipboard payloads are never truncated. Over-cap payloads
+/// render the capped head plus the typed `truncated` fact; the fold
+/// asserts the flag, never sizes.
+pub const PREVIEW_CAP_BYTES: usize = 65_536;
 
 /// Folds one CLI-built [`StatusView`] into the panel's 1:1 mirror
 /// (OP3 W-4, D-2): the scalar surface of the same typed view the CLI
@@ -153,6 +207,11 @@ pub struct ConnectionWorkspace {
     /// projection, two fronts). Captured per lifecycle at the spawn
     /// site (`ui.rs` desktop, `main.rs` kiosk).
     pub status: Box<dyn Fn() -> crate::commands::status::StatusView + Send + Sync>,
+    /// The status panel's remediation lane (the D2 command plan
+    /// W-7): the database home, the lifecycle's typed
+    /// process-control permission (kiosk `false` — the trap-a law),
+    /// and the process-effect seams.
+    pub remediation: crate::status_remediation::RemediationWorkspace,
 }
 
 /// Spawns the UI request forwarder: width snapshots merge into the
@@ -551,6 +610,38 @@ pub async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace
             let state = workspace.engine.shared_state().load_full();
             let outcome = run_export(&state, &workspace.export, &spec);
             tracing::info!(?outcome, "the export run settled");
+            let _ = reply.send(outcome);
+        }
+        UiRequest::StatusRemediate { action, reply } => {
+            // The W-7 arm (the D2 command plan D-1): the executor's
+            // typed decision logic owns the liveness re-checks (the
+            // enable flags are presentation, not authorization); the
+            // reply is fire-and-forget-honest as everywhere on the
+            // lane.
+            let outcome = crate::status_remediation::run_remediation(
+                &workspace.remediation,
+                action,
+            )
+            .await;
+            tracing::info!(?outcome, ?action, "the status remediation settled");
+            let _ = reply.send(outcome);
+        }
+        UiRequest::ExportPreview { spec, reply } => {
+            // The W-5 arm (the D2 preview plan D-1): the SAME export
+            // engine the Run button drives, NO file written — the
+            // preview renders the payload the export would write.
+            let state = workspace.engine.shared_state().load_full();
+            let outcome = run_preview(&state, &workspace.export, &spec);
+            tracing::info!(?outcome, "the export preview settled");
+            let _ = reply.send(outcome);
+        }
+        UiRequest::ExportClipboardCopy { spec, reply } => {
+            // The D-3 arm: the payload REGENERATES app-side over the
+            // same spec (never the pane's possibly-truncated text)
+            // and rides the clipboard seam.
+            let state = workspace.engine.shared_state().load_full();
+            let outcome = run_clipboard_copy(&state, &workspace.export, &spec);
+            tracing::info!(?outcome, "the export clipboard copy settled");
             let _ = reply.send(outcome);
         }
         UiRequest::SetKeymapPreset { preset, reply } => {
@@ -2149,6 +2240,113 @@ fn map_io_error(err: &std::io::Error) -> SettingsError {
     }
 }
 
+// -- the export preview/clipboard drain executors (the D2 preview
+//    plan W-5) ------------------------------------------------------
+
+/// The preview executor (the preview plan D-1/D-2): the SAME export
+/// engine the Run button drives over the same spec — one generator,
+/// two sinks; NO file is written (the written-path fact stays Run's
+/// exclusively). The pdf family is a typed refusal here (the verbs
+/// are defined for text payloads only — D-5's family gating keeps the
+/// controls off that leg; the arm is the trust boundary's
+/// defense-in-depth). Over-cap payloads ride the typed `truncated`
+/// fact (the cap is [`PREVIEW_CAP_BYTES`], a presentation budget).
+#[must_use]
+pub fn run_preview(
+    state: &taskboard_domain::AppState,
+    _workspace: &ExportWorkspace,
+    spec: &ExportSpec,
+) -> taskboard_ui_slint::requests::ExportPreviewOutcome {
+    use taskboard_ui_slint::requests::{ExportPreviewOutcome, ExportRefusal};
+    if spec.what != ExportFamily::Tracking {
+        return ExportPreviewOutcome::Refused(ExportRefusal::OptionsNotApplicable);
+    }
+    let query = crate::commands::track::ExportQuery {
+        what: crate::cli::ExportWhat::Tracking,
+        format: Some(match spec.format {
+            ExportFileFormat::Csv => crate::cli::ExportFormat::Csv,
+            ExportFileFormat::Json => crate::cli::ExportFormat::Json,
+        }),
+        since: spec.since,
+        until: spec.until,
+        task: spec.task.clone(),
+        board: spec.board.clone(),
+        #[cfg(feature = "pdf-export")]
+        layout: None,
+        #[cfg(feature = "pdf-export")]
+        out: None,
+        #[cfg(feature = "pdf-export")]
+        no_open: false,
+    };
+    match crate::commands::track::export_tracking_state(state, &query) {
+        Err(err) => ExportPreviewOutcome::Refused(refusal_kind(&err)),
+        Ok(payload) => {
+            let bytes = crate::commands::track::render_payload(&payload);
+            let truncated = bytes.len() > PREVIEW_CAP_BYTES;
+            let text = if truncated {
+                let mut end = PREVIEW_CAP_BYTES;
+                while !bytes.is_char_boundary(end) {
+                    end -= 1;
+                }
+                bytes[..end].to_owned()
+            } else {
+                bytes
+            };
+            ExportPreviewOutcome::Payload {
+                text,
+                format: spec.format,
+                truncated,
+            }
+        }
+    }
+}
+
+/// The clipboard executor (the preview plan D-3): the payload
+/// REGENERATES app-side over the same spec (never the pane's
+/// possibly-truncated text) and rides the workspace's clipboard
+/// seam; the typed outcome carries the copied-byte fact or the
+/// refusal (generation kinds, or `ClipboardUnavailable`).
+#[must_use]
+pub fn run_clipboard_copy(
+    state: &taskboard_domain::AppState,
+    workspace: &ExportWorkspace,
+    spec: &ExportSpec,
+) -> taskboard_ui_slint::requests::ExportClipboardOutcome {
+    use taskboard_ui_slint::requests::{ExportClipboardOutcome, ExportRefusal};
+    if spec.what != ExportFamily::Tracking {
+        return ExportClipboardOutcome::Refused(ExportRefusal::OptionsNotApplicable);
+    }
+    let query = crate::commands::track::ExportQuery {
+        what: crate::cli::ExportWhat::Tracking,
+        format: Some(match spec.format {
+            ExportFileFormat::Csv => crate::cli::ExportFormat::Csv,
+            ExportFileFormat::Json => crate::cli::ExportFormat::Json,
+        }),
+        since: spec.since,
+        until: spec.until,
+        task: spec.task.clone(),
+        board: spec.board.clone(),
+        #[cfg(feature = "pdf-export")]
+        layout: None,
+        #[cfg(feature = "pdf-export")]
+        out: None,
+        #[cfg(feature = "pdf-export")]
+        no_open: false,
+    };
+    match crate::commands::track::export_tracking_state(state, &query) {
+        Err(err) => ExportClipboardOutcome::Refused(refusal_kind(&err)),
+        Ok(payload) => {
+            let bytes = crate::commands::track::render_payload(&payload);
+            match (workspace.clipboard_write)(&bytes) {
+                Ok(()) => ExportClipboardOutcome::Copied {
+                    bytes: bytes.len() as u64,
+                },
+                Err(()) => ExportClipboardOutcome::Refused(ExportRefusal::ClipboardUnavailable),
+            }
+        }
+    }
+}
+
 // -- the export run's drain executor (the J2 export plan W-6) ------
 
 /// The W-6 executor: the SAME export engine the CLI `export` verb
@@ -2307,6 +2505,14 @@ fn resolve_destination(path: &std::path::Path) -> std::path::PathBuf {
 /// the dialog's closed kind set — the dialog renders the kind, never
 /// the engine's message text.
 fn refusal_of(err: &crate::commands::CommandError) -> ExportRunOutcome {
+    ExportRunOutcome::Refused(refusal_kind(err))
+}
+
+/// The typed refusal map (D-5): the engine's typed errors fold onto
+/// the dialog's closed kind set — the dialog renders the kind, never
+/// the engine's message text. Shared by the run, preview, and
+/// clipboard executors (one map, three sinks).
+fn refusal_kind(err: &crate::commands::CommandError) -> ExportRefusal {
     // The pdf-family arms are feature-gated (the variants do not
     // compile in a default build — where the pdf leg can never run
     // and the kinds are unreachable).
@@ -2322,7 +2528,7 @@ fn refusal_of(err: &crate::commands::CommandError) -> ExportRunOutcome {
     };
     #[cfg(not(feature = "pdf-export"))]
     let kind = refusal_of_data(err);
-    ExportRunOutcome::Refused(kind)
+    kind
 }
 
 /// The data families' refusal arms (the feature-blind subset).

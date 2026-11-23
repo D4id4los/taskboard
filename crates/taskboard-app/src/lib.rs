@@ -53,6 +53,7 @@ pub mod repl;
 mod repl_history;
 pub mod secrets;
 pub mod settings_overlay;
+pub mod status_remediation;
 pub mod signals;
 #[cfg(test)]
 mod test_support;

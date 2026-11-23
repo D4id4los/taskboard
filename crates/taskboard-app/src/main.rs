@@ -925,11 +925,23 @@ async fn run_kiosk(
                     // The kiosk workspace's typed permission (the
                     // trap-c law): the viewer open is NEVER allowed
                     // here — no shell-out on kiosk (R-2).
-                    export: taskboard_app::ui_requests::ExportWorkspace {
-                        config: std::sync::Arc::new(app.config.clone()),
-                        may_open_viewer: false,
-                    },
+                    export: taskboard_app::ui_requests::ExportWorkspace::with_real_clipboard(
+                        std::sync::Arc::new(app.config.clone()),
+                        false,
+                    ),
                     status: Box::new(status_source),
+                    // The remediation lane's kiosk permission (the
+                    // D2 command plan D-9, the trap-a law): `false` —
+                    // the lane refuses typed before any effect runs;
+                    // a headless kiosk's restart belongs to its
+                    // supervisor.
+                    remediation: taskboard_app::status_remediation::RemediationWorkspace {
+                        db_path: app.config.storage.db_path.clone(),
+                        may_control_processes: false,
+                        effects: taskboard_app::status_remediation::RemediationEffects::real(
+                            app.config.storage.db_path.clone(),
+                        ),
+                    },
                 },
             );
 
