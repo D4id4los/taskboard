@@ -54,6 +54,7 @@ tracking:
 habits:
   habits: {}
   log: {}
+  day_log: {}
 reflection:
   entries:
     00000000-0000-0000-0000-000000000001:
