@@ -289,6 +289,14 @@ pub struct PushModels {
     /// D-9): the `card_decorations` handle-identity rule verbatim — a
     /// fresh model per card per pass would dirty every card.
     card_label_chips: BTreeMap<TaskId, MirroredRows<crate::TaskLabelChipModel>>,
+    /// Per-habit decoration models keyed by the habit (#1017): the
+    /// `card_decorations` handle-identity rule extended to the habits
+    /// section — `habit_card`'s fresh `ModelRc` per row per pass made
+    /// every habit row compare unequal every refresh and re-pushed the
+    /// whole surface. The label-chips twin stays unwritten: habit rows
+    /// carry no chips (the static empty model), so there is nothing to
+    /// stabilize.
+    habit_decorations: BTreeMap<taskboard_domain::HabitId, MirroredRows<TaskDecoration>>,
     detail_tasks: MirroredRows<TaskCardModel>,
     task_rules: MirroredRows<RuleRowModel>,
     task_rule_presets: MirroredRows<SharedString>,
@@ -356,6 +364,11 @@ pub struct PushModels {
     /// `card_decorations`, so the map never grows past the live task
     /// set.
     pass_tasks: BTreeSet<TaskId>,
+    /// The habits whose decoration models the current pass touched
+    /// (cleared at pass start) — the prune set for `habit_decorations`
+    /// (#1017), the same never-grows-past-the-live-rows rule as
+    /// `card_decorations`.
+    pass_habits: BTreeSet<taskboard_domain::HabitId>,
 }
 
 /// The six `[string]` keymap-projection hint slots (r2 D9): they
@@ -835,15 +848,15 @@ fn push_timers(
         )
 }
 
-/// The habit card's `TaskCard` substrate model (H2 D2): the habit fills
-/// the title and done slots (the done slot IS the +1 log control —
-/// `done: false` always, surplus logs are first-class), the
-/// scheduled slot carries the time/day chips, the progress and
-/// streak ride the typed decoration row (`DecorationKind::Habit` —
-/// no `DueKind` semantics theft), and every task-only slot is empty.
-/// Pure — the fold/property tests read it without a window.
+/// The habit card's decoration row, derived (H2 D2, #1017): the
+/// progress and streak ride the typed decoration row
+/// (`DecorationKind::Habit` — no `DueKind` semantics theft), plus the
+/// skip chip and the paused badge. Pure — the fold/property tests
+/// read it without a window, and the apply path diffs it onto the
+/// persistent per-habit handle instead of minting a fresh `ModelRc`
+/// per pass (the `card_decorations` handle-identity rule).
 #[must_use]
-pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
+pub fn habit_card_decorations(row: &presentation::HabitRow) -> Vec<TaskDecoration> {
     let mut decorations = std::vec::Vec::with_capacity(2);
     decorations.push(TaskDecoration {
         kind: DecorationKind::Habit,
@@ -856,7 +869,7 @@ pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
     });
     // The streak rides the Badge base widget now (HF3 W-9, US-8/S1):
     // the decoration carries the typed streak value (the test oracle
-    // — `HabitRow.streak`); the old 🔥 emoji slot is gone (the
+    // — `HabitRow.streak`); the old fire emoji slot is gone (the
     // badge's label text is judged at the stage-3 walkthrough, never
     // asserted).
     if row.streak > 0 {
@@ -887,6 +900,21 @@ pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
             tone: Tone::Info,
         });
     }
+    decorations
+}
+
+/// The habit card's `TaskCard` substrate model (H2 D2): the habit fills
+/// the title and done slots (the done slot IS the +1 log control —
+/// `done: false` always, surplus logs are first-class), the
+/// scheduled slot carries the time/day chips, the progress and
+/// streak ride [`habit_card_decorations`], and every task-only slot is
+/// empty. Pure — the derive half only: the apply path
+/// (`push_habits`) replaces the fresh decoration `ModelRc` with the
+/// persistent per-habit handle before install (#1017). The
+/// fold/property tests read it without a window.
+#[must_use]
+pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
+    let decorations = habit_card_decorations(row);
     TaskCardModel {
         title: SharedString::from(row.title.clone()),
         due_phrase: SharedString::from(String::new()),
@@ -933,25 +961,36 @@ fn push_habits(
     tables.habits = rows.iter().map(|row| row.habit).collect();
     let shown: Vec<HabitCardModel> = rows
         .iter()
-        .map(|row| HabitCardModel {
-            card: TaskCardModel {
-                // The walk's landing fact (chunk 8 D2): the focused
-                // habit row paints the card emphasis ring like a task
-                // card — the focus fact is the walk cursor's, read
-                // through the same accessor the board cards use.
-                emphasis: vs.focused_habit() == Some(row.habit),
-                ..habit_card(row)
-            },
-            repair: row.repair,
-            repair_undoable: row.repair_undoable,
-            met: row.met,
-            skip: row.skip,
-            paused: row.paused,
-            paused_until: SharedString::from(
-                row.paused_until
-                    .map_or_else(String::new, |until| until.to_string()),
-            ),
-            progress_phrase: SharedString::from(presentation::habit_progress_phrase(row)),
+        .map(|row| {
+            // #1017: the decoration handle-identity rule at the habits
+            // surface — diff the desired row onto the persistent
+            // per-habit handle and install that handle, so unchanged
+            // rows notify nothing and the card compares fully equal
+            // across refresh passes (the board cards' rule verbatim).
+            let slot = models.habit_decorations.entry(row.habit).or_default();
+            models.pass_habits.insert(row.habit);
+            slot.diff(&habit_card_decorations(row));
+            HabitCardModel {
+                card: TaskCardModel {
+                    // The walk's landing fact (chunk 8 D2): the focused
+                    // habit row paints the card emphasis ring like a task
+                    // card — the focus fact is the walk cursor's, read
+                    // through the same accessor the board cards use.
+                    emphasis: vs.focused_habit() == Some(row.habit),
+                    decorations: ModelRc::from(slot.handle_or_insert_with()),
+                    ..habit_card(row)
+                },
+                repair: row.repair,
+                repair_undoable: row.repair_undoable,
+                met: row.met,
+                skip: row.skip,
+                paused: row.paused,
+                paused_until: SharedString::from(
+                    row.paused_until
+                        .map_or_else(String::new, |until| until.to_string()),
+                ),
+                progress_phrase: SharedString::from(presentation::habit_progress_phrase(row)),
+            }
         })
         .collect();
     window.set_habits_editing_enabled(presentation::habit_editing_enabled(kiosk));
@@ -1313,6 +1352,10 @@ pub fn push(
     models
         .card_label_chips
         .retain(|task, _| pass.contains(task));
+    let pass_habits = std::mem::take(&mut models.pass_habits);
+    models
+        .habit_decorations
+        .retain(|habit, _| pass_habits.contains(habit));
     tracing::trace!(rows = mutations, "model push diff: row mutations this pass");
     tables
 }
@@ -5596,6 +5639,140 @@ mod tests {
                 push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
                 assert!(!models.card_decorations.contains_key(&two));
                 assert!(models.card_decorations.contains_key(&one));
+            });
+        }
+
+        /// #1017 — the habits-surface identity law: a second identical
+        /// refresh pass must not replace the row's decoration handle
+        /// (`TaskCardModel`'s decorations `PartialEq` IS handle
+        /// identity), i.e. the habits surface stops re-pushing whole
+        /// rows every pass. The `card_decorations` rule pinned at the
+        /// habits surface, models level.
+        #[test]
+        fn a_second_identical_habits_pass_keeps_the_decoration_handle() {
+            on_slint_thread(|| {
+                let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+                let mut state = AppState::default();
+                state.boards.insert(board_id, board(board_id, "alpha"));
+                let habit = taskboard_domain::Habit {
+                    id: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+                    board: board_id,
+                    title: "water".into(),
+                    description: String::new(),
+                    target: taskboard_domain::HabitTarget::PerDay(
+                        taskboard_domain::NonZeroCount::new(3).expect("nonzero"),
+                    ),
+                    order: 0,
+                    anchor_time: None,
+                    anchor_day: None,
+                    scheduled_days: None,
+                    reminder: None,
+                    clocks: taskboard_domain::HabitClocks::all(
+                        chrono::DateTime::from_timestamp(100, 0).expect("stamp"),
+                    ),
+                    continued_from: None,
+                    deleted: false,
+                    by: None,
+                    paused_until: None,
+                };
+                state.habits.habits.insert(habit.id, habit);
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                let _ = vs.select_board(&state, board_id);
+                let mut models = PushModels::default();
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                let handle = window
+                    .get_habits_model()
+                    .row_data(0)
+                    .expect("habit row")
+                    .card
+                    .decorations
+                    .clone();
+
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                let row = window.get_habits_model().row_data(0).expect("habit row");
+                // `ModelRc`'s `PartialEq` is handle identity — this is
+                // the same comparison the row diff performs.
+                assert_eq!(
+                    handle, row.card.decorations,
+                    "a second identical pass must reuse the decoration handle"
+                );
+                assert_eq!(models.habit_decorations.len(), 1, "one live slot");
+            });
+        }
+
+        /// #1017 — the diff half of the law: a real decoration content
+        /// change flows through the persistent handle (identity kept,
+        /// content updated), not a fresh mint — the mirror diff is the
+        /// thing the stable-handle pin above presupposes.
+        #[test]
+        fn a_habit_content_change_diffs_through_the_persistent_handle() {
+            on_slint_thread(|| {
+                let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+                let mut state = AppState::default();
+                state.boards.insert(board_id, board(board_id, "alpha"));
+                let habit_id = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+                let habit = taskboard_domain::Habit {
+                    id: habit_id,
+                    board: board_id,
+                    title: "water".into(),
+                    description: String::new(),
+                    target: taskboard_domain::HabitTarget::PerDay(
+                        taskboard_domain::NonZeroCount::new(3).expect("nonzero"),
+                    ),
+                    order: 0,
+                    anchor_time: None,
+                    anchor_day: None,
+                    scheduled_days: None,
+                    reminder: None,
+                    clocks: taskboard_domain::HabitClocks::all(
+                        chrono::DateTime::from_timestamp(100, 0).expect("stamp"),
+                    ),
+                    continued_from: None,
+                    deleted: false,
+                    by: None,
+                    paused_until: None,
+                };
+                state.habits.habits.insert(habit_id, habit);
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                let _ = vs.select_board(&state, board_id);
+                let mut models = PushModels::default();
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                let before = window
+                    .get_habits_model()
+                    .row_data(0)
+                    .expect("habit row")
+                    .card
+                    .decorations
+                    .clone();
+
+                // Real content change: the quota moves 3 → 5, so the
+                // progress decoration's phrase must move "0/3" → "0/5"
+                // through the SAME handle the diff mirrors onto.
+                state
+                    .habits
+                    .habits
+                    .get_mut(&habit_id)
+                    .expect("live habit")
+                    .target = taskboard_domain::HabitTarget::PerDay(
+                    taskboard_domain::NonZeroCount::new(5).expect("nonzero"),
+                );
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                let row = window.get_habits_model().row_data(0).expect("habit row");
+                assert_eq!(
+                    before, row.card.decorations,
+                    "a content change must not replace the decoration handle"
+                );
+                let progress = row
+                    .card
+                    .decorations
+                    .row_data(0)
+                    .expect("progress decoration");
+                assert_eq!(progress.label.to_string(), "0/5", "the diff landed");
+                assert_eq!(models.habit_decorations.len(), 1, "one live slot");
             });
         }
     }
