@@ -775,9 +775,10 @@ impl HabitEditDraft {
             reminder_offset: habit
                 .reminder
                 .map_or(String::new(), |ovr| ovr.offset_days.to_string()),
-            reminder_time: habit.reminder.map_or(String::new(), |ovr| {
-                crate::due_edit::format_time_hm(ovr.time)
-            }),
+            reminder_time: habit
+                .reminder
+                .and_then(|ovr| ovr.time)
+                .map_or(String::new(), crate::due_edit::format_time_hm),
             reminder_snooze: habit
                 .reminder
                 .map_or(String::new(), |ovr| match ovr.snooze {
@@ -834,7 +835,11 @@ impl HabitEditDraft {
     }
 
     /// The override editor's parse at the trust boundary: the minted
-    /// `HabitReminderOverride` while every field holds.
+    /// `HabitReminderOverride` while every field holds. A blank time
+    /// field mints `time: None` — the anchor-time-only posture (#1212,
+    /// operator ruling comment 7079171625); the retired 09:00 fallback
+    /// is never minted here, and a non-blank unparseable field refuses
+    /// the mint (the save gate greys).
     #[must_use]
     fn minted_reminder_override(&self) -> Option<taskboard_domain::habit::HabitReminderOverride> {
         let base = match self.reminder_base {
@@ -842,12 +847,12 @@ impl HabitEditDraft {
             _ => taskboard_domain::habit::NudgeBase::PeriodStart,
         };
         let offset_days = self.reminder_offset.trim().parse::<i32>().ok()?;
-        let time = self
-            .reminder_time
-            .trim()
-            .is_empty()
-            .then_some(chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("whole hour"))
-            .or_else(|| crate::due_edit::parse_time_lenient(self.reminder_time.trim()))?;
+        let time_text = self.reminder_time.trim();
+        let time = if time_text.is_empty() {
+            None
+        } else {
+            Some(crate::due_edit::parse_time_lenient(time_text)?)
+        };
         let snooze_text = self.reminder_snooze.trim();
         let digits = snooze_text.trim_end_matches(['h', 'H', 'd', 'D']);
         let n = digits.parse::<u8>().ok()?;

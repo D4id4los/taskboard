@@ -1346,7 +1346,7 @@ fn us6_s2_override_save_routes_the_exact_command_and_s3_clears() {
         let ovr = taskboard_domain::habit::HabitReminderOverride {
             base: taskboard_domain::habit::NudgeBase::PeriodStart,
             offset_days: 1,
-            time: chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap(),
+            time: Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
             snooze: taskboard_domain::habit::HabitSnooze::Hours(2),
         };
         match harness.engine.drain().as_slice() {

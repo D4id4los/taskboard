@@ -598,6 +598,171 @@ fn us5_s2_quota_commit_routes_update_habit() {
     });
 }
 
+// -- US-6: the ruled blank-time semantics (#1212, W-9) --------------
+
+/// The editor-mount preamble for the US-6 tests: the fixture habit on
+/// the Today card, the habit editor variant mounted.
+fn us6_open_editor(harness: &mut support::harness::Harness) {
+    let window = harness.handle.window();
+    window.invoke_habits_row_activated(0);
+    harness.driver.advance_time(0);
+    harness.handle.dispatch_action(ActionId::HabitEdit);
+    harness.driver.advance_time(0);
+}
+
+/// US-6/S1 (W-9, #1212's ruled semantics — operator ruling comment
+/// 7079171625): a blank time field with valid base/offset/snooze mints
+/// an override carrying NO time — the anchor-time-only posture. The
+/// retired 09:00 fallback never reappears at the boundary.
+#[test]
+fn us6_s1_blank_mints_time_none() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_reminder_base_picked(1);
+        window.invoke_habit_reminder_offset_edited("1".into());
+        window.invoke_habit_reminder_snooze_edited("2h".into());
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        let ovr = taskboard_domain::habit::HabitReminderOverride {
+            base: taskboard_domain::habit::NudgeBase::PeriodStart,
+            offset_days: 1,
+            time: None,
+            snooze: taskboard_domain::habit::HabitSnooze::Hours(2),
+        };
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                assert_eq!(
+                    changes.reminder,
+                    Some(Some(ovr)),
+                    "blank time mints the anchor-time-only override"
+                );
+            }
+            other => panic!("the blank-time save routes the update, got {other:?}"),
+        }
+    });
+}
+
+/// US-6/S2 (W-9): a named time still mints `Some` — the optional
+/// shape never lost the concrete leg.
+#[test]
+fn us6_s2_named_time_mints_some() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_reminder_base_picked(1);
+        window.invoke_habit_reminder_offset_edited("1".into());
+        window.invoke_habit_reminder_time_edited("07:30".into());
+        window.invoke_habit_reminder_snooze_edited("2h".into());
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                match changes.reminder {
+                    Some(Some(ovr)) => {
+                        assert_eq!(
+                            ovr.time,
+                            Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
+                            "a named time mints Some"
+                        );
+                    }
+                    other => panic!("the named time mints the override, got {other:?}"),
+                }
+            }
+            other => panic!("the named-time save routes the update, got {other:?}"),
+        }
+    });
+}
+
+/// US-6/S3 (W-9, the regression oracle): the clear leg still routes
+/// the `Some(None)` set — retiring the mint never touched it.
+#[test]
+fn us6_s3_clear_leg_unregressed() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit(&mut state, board);
+    let reminder = taskboard_domain::habit::HabitReminderOverride {
+        base: taskboard_domain::habit::NudgeBase::PeriodStart,
+        offset_days: 1,
+        time: Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
+        snooze: taskboard_domain::habit::HabitSnooze::Hours(2),
+    };
+    state
+        .habits
+        .habits
+        .get_mut(&habit)
+        .expect("fixture habit")
+        .reminder = Some(reminder);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_reminder_clear_clicked();
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                assert_eq!(
+                    changes.reminder,
+                    Some(None),
+                    "the clear leg routes the Some(None) set"
+                );
+            }
+            other => panic!("the clear save routes the update, got {other:?}"),
+        }
+    });
+}
+
+/// US-6/S4 (W-9, the typed save gate): a non-blank unparseable time
+/// refuses the mint — the gate greys, no `UpdateHabit` reaches the
+/// boundary.
+#[test]
+fn us6_s4_save_gate_refuses_invalid_drafts() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        window.invoke_habit_reminder_offset_edited("1".into());
+        window.invoke_habit_reminder_time_edited("not-a-time".into());
+        window.invoke_habit_reminder_snooze_edited("2h".into());
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the unparseable time is a typed invalid draft: no dispatch"
+        );
+    });
+}
+
 // -- the kiosk posture (the plan's platform scope) ------------------
 
 /// The plan's kiosk scope (US-1/S2 platform note): the affordances

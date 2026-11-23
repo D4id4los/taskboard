@@ -3417,7 +3417,7 @@ async fn pre_0027_habit_rows_decode_with_additive_defaults() {
         reminder: Some(taskboard_domain::habit::HabitReminderOverride {
             base: taskboard_domain::habit::NudgeBase::PeriodStart,
             offset_days: -1,
-            time: chrono::NaiveTime::from_hms_opt(21, 0, 0).unwrap(),
+            time: Some(chrono::NaiveTime::from_hms_opt(21, 0, 0).unwrap()),
             snooze: taskboard_domain::habit::HabitSnooze::Days(2),
         }),
         clocks: taskboard_domain::HabitClocks::all(
