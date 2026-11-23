@@ -86,6 +86,7 @@ fn kind_filter(target: SearchTarget, kind: Option<FindType>) -> bool {
         SearchTarget::Task(_) => FindType::Task,
         SearchTarget::Stack(_) => FindType::Stack,
         SearchTarget::Board(_) => FindType::Board,
+        SearchTarget::Habit(_) => FindType::Habit,
     };
     kind.is_none_or(|kind| kind == target_kind)
 }
@@ -144,6 +145,31 @@ fn row_for(state: &AppState, target: SearchTarget) -> FindRow {
                 id: id_str,
                 title,
                 context: None,
+            }
+        }
+        // #1218: the habit row (live or tombstoned — the tombstone
+        // posture names itself in the context line; ids are the
+        // resolve family's only leg, tombstones match).
+        SearchTarget::Habit(id) => {
+            let row = state.habits.habits.get(&id);
+            let (title, tombstoned) = row.map_or_else(
+                || (String::new(), false),
+                |habit| (habit.title.clone(), habit.deleted),
+            );
+            let context = row
+                .and_then(|habit| state.boards.get(&habit.board))
+                .map(|board| {
+                    if tombstoned {
+                        format!("tombstoned · {}", board.title)
+                    } else {
+                        board.title.clone()
+                    }
+                });
+            FindRow {
+                kind: "habit".to_owned(),
+                id: id.as_uuid().to_string(),
+                title,
+                context,
             }
         }
     }

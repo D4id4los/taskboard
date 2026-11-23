@@ -763,6 +763,187 @@ fn us6_s4_save_gate_refuses_invalid_drafts() {
     });
 }
 
+// -- US-7: the tombstoned habit's history entry (#1218, W-10) --------
+
+/// The palette preamble: opens the jump-to palette and sets the query
+/// (the rows arrive through the landed push pass).
+fn us7_open_palette(harness: &mut support::harness::Harness, query: &str) {
+    let window = harness.handle.window();
+    harness.handle.dispatch_action(ActionId::PaletteSearch);
+    harness.driver.advance_time(0);
+    window.invoke_palette_query_edited(query.into());
+    harness.driver.advance_time(0);
+}
+
+/// The palette row index whose row IS the named title's habit row
+/// (matched by address; never by rendered text oracle).
+fn us7_habit_row_index(harness: &support::harness::Harness, title: &str) -> usize {
+    let model = harness.handle.window().get_palette_model();
+    (0..model.row_count())
+        .find(|i| {
+            model
+                .row_data(*i)
+                .is_some_and(|row| row.history && row.text.as_str() == title)
+        })
+        .unwrap_or_else(|| panic!("the habit row for {title} mounts in the palette"))
+}
+
+/// US-7/AC-1 (W-10, #1218): the search surface lists the tombstoned
+/// habit as a result row carrying the typed tombstone bit (no
+/// live-row state forged — the row's only verb is History).
+#[test]
+fn us7_s1_search_mounts_tombstone_history_row() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let mut ghost = taskboard_domain::habit::Habit {
+        id: HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "ghost".to_owned(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+        order: 1,
+        anchor_time: None,
+        anchor_day: None,
+        scheduled_days: None,
+        reminder: None,
+        clocks: HabitClocks::all(fixture::PINNED_NOW),
+        continued_from: None,
+        deleted: true,
+        paused_until: None,
+        by: None,
+    };
+    ghost.clocks = HabitClocks::all(fixture::PINNED_NOW);
+    state.habits.habits.insert(ghost.id, ghost);
+    run(state, false, move |harness| {
+        us7_open_palette(harness, "ghost");
+        let model = harness.handle.window().get_palette_model();
+        let index = us7_habit_row_index(harness, "ghost");
+        let row = model.row_data(index).expect("the tombstone row");
+        assert!(row.tombstone, "the tombstone bit rides the row, typed");
+        assert!(row.history, "the row carries the History affordance bit");
+    });
+}
+
+/// US-7/AC-2 (W-10): activating the tombstoned row's History
+/// affordance mounts the history dialog through the id-exact
+/// (tombstone-matching) resolution and projects the retained log.
+#[test]
+fn us7_s2_dialog_projects_tombstoned_log() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let ghost = HabitId::from_uuid(uuid::Uuid::now_v7());
+    state.habits.habits.insert(
+        ghost,
+        taskboard_domain::habit::Habit {
+            id: ghost,
+            board,
+            title: "ghost".to_owned(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            order: 1,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: HabitClocks::all(fixture::PINNED_NOW),
+            continued_from: None,
+            deleted: true,
+            paused_until: None,
+            by: None,
+        },
+    );
+    // The retained log (the "log outlives" fact): one window row the
+    // tombstone outlived.
+    log_today(&mut state, ghost, 2);
+    run(state, false, move |harness| {
+        us7_open_palette(harness, "ghost");
+        let window = harness.handle.window();
+        let index = us7_habit_row_index(harness, "ghost");
+        window.invoke_palette_row_activated(i32::try_from(index).expect("row index"));
+        harness.driver.advance_time(0);
+        assert!(
+            window.get_habit_history_open(),
+            "the dialog mounts over the tombstoned subject"
+        );
+        assert!(
+            window.get_habit_history().stats.adherence_met > 0,
+            "the retained log projects into the dialog's windows"
+        );
+    });
+}
+
+/// US-7/AC-3 (W-10): cancelling the dialog on a tombstoned subject
+/// writes nothing (the read-role surface).
+#[test]
+fn us7_s3_dialog_cancel_writes_nothing() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let ghost = HabitId::from_uuid(uuid::Uuid::now_v7());
+    state.habits.habits.insert(
+        ghost,
+        taskboard_domain::habit::Habit {
+            id: ghost,
+            board,
+            title: "ghost".to_owned(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(NonZeroCount::new(1).unwrap()),
+            order: 1,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: HabitClocks::all(fixture::PINNED_NOW),
+            continued_from: None,
+            deleted: true,
+            paused_until: None,
+            by: None,
+        },
+    );
+    run(state, false, move |harness| {
+        us7_open_palette(harness, "ghost");
+        let window = harness.handle.window();
+        let index = us7_habit_row_index(harness, "ghost");
+        window.invoke_palette_row_activated(i32::try_from(index).expect("row index"));
+        harness.driver.advance_time(0);
+        window.invoke_habit_history_close_requested();
+        harness.driver.advance_time(0);
+        assert!(
+            !window.get_habit_history_open(),
+            "the cancel unmounts the dialog"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the dialog's cancel is zero engine state change"
+        );
+    });
+}
+
+/// US-7/AC-4 (W-10, the regression oracle): a live habit's history
+/// opens from search identically to the landed live-row mounts.
+#[test]
+fn us7_s4_live_row_history_unregressed() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit_at(&mut state, board, 0, "water", 2);
+    run(state, false, move |harness| {
+        us7_open_palette(harness, "water");
+        let window = harness.handle.window();
+        let index = us7_habit_row_index(harness, "water");
+        window.invoke_palette_row_activated(i32::try_from(index).expect("row index"));
+        harness.driver.advance_time(0);
+        assert!(
+            window.get_habit_history_open(),
+            "the live row's History affordance mounts the same dialog"
+        );
+        window.invoke_habit_history_close_requested();
+        harness.driver.advance_time(0);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the read-role round trip writes nothing"
+        );
+    });
+}
+
 // -- the kiosk posture (the plan's platform scope) ------------------
 
 /// The plan's kiosk scope (US-1/S2 platform note): the affordances
