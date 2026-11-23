@@ -52,6 +52,12 @@ pub(crate) const OUTCOME_WRITTEN: i32 = 1;
 pub(crate) const OUTCOME_REFUSED: i32 = 2;
 
 /// The adapter-owned dialog buffer (the settings VM's sibling).
+#[allow(clippy::struct_excessive_bools)]
+// A dialog draft, not a state machine: the per-affordance busy flags
+// (D-4's law — Run, Preview and Copy each hold their own) plus the
+// pane's cap/settled facts mirror the dialog's independent controls;
+// grouping them into an enum would invent couplings the draft does
+// not have (the SettingsSnapshot precedent).
 pub(crate) struct ExportVm {
     /// The picked data family (the tracking leg by default).
     pub(crate) family: ExportFamily,

@@ -602,8 +602,8 @@ pub enum StatusRemediationAction {
 /// the panel renders the kind, never message text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StatusRemediationRefusal {
-    /// A kill of a stale (not-alive) pid — ForceUnlock is the right
-    /// tool.
+    /// A kill of a stale (not-alive) pid — `ForceUnlock` is the
+    /// right tool.
     HolderNotAlive,
     /// An unlock under a live holder (the executor's authorization
     /// re-check refused; the sidecar is untouched).
@@ -1175,7 +1175,10 @@ mod tests {
             let encoded = serde_json::to_string(&decoded).expect("encodes");
             let redecoded: ExportPreviewOutcome =
                 serde_json::from_str(&encoded).expect("re-decodes");
-            assert_eq!(redecoded, decoded, "the preview outcome round-trips: {json}");
+            assert_eq!(
+                redecoded, decoded,
+                "the preview outcome round-trips: {json}"
+            );
         }
         let clips = [
             r#"{"Copied":{"bytes":7}}"#,
@@ -1187,7 +1190,10 @@ mod tests {
             let encoded = serde_json::to_string(&decoded).expect("encodes");
             let redecoded: ExportClipboardOutcome =
                 serde_json::from_str(&encoded).expect("re-decodes");
-            assert_eq!(redecoded, decoded, "the clipboard outcome round-trips: {json}");
+            assert_eq!(
+                redecoded, decoded,
+                "the clipboard outcome round-trips: {json}"
+            );
         }
     }
 }

@@ -44,8 +44,11 @@ pub struct RemediationEffects {
     /// skipped — the D-5 fact, not a refusal); `Unavailable` = the
     /// IPC lane refused (the typed `IpcUnavailable`).
     #[allow(clippy::type_complexity)]
-    pub stop_daemon:
-        Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = StopLeg> + Send>> + Send + Sync>,
+    pub stop_daemon: Arc<
+        dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = StopLeg> + Send>>
+            + Send
+            + Sync,
+    >,
     /// The restart's spawn leg: a detached `taskboard daemon run`,
     /// answering the new daemon's pid.
     #[allow(clippy::type_complexity)]
@@ -55,16 +58,6 @@ pub struct RemediationEffects {
 impl Default for RemediationEffects {
     fn default() -> Self {
         Self::real(None)
-    }
-}
-
-impl Default for RemediationWorkspace {
-    fn default() -> Self {
-        Self {
-            db_path: None,
-            may_control_processes: false,
-            effects: RemediationEffects::default(),
-        }
     }
 }
 
@@ -79,7 +72,10 @@ pub enum StopLeg {
 /// The remediation lane's workspace: the database home (the lock
 /// sidecar's address), the typed process-control permission, and the
 /// effect seams. Built once per UI lifecycle beside the
-/// [`crate::ui_requests::ConnectionWorkspace`] it rides.
+/// [`crate::ui_requests::ConnectionWorkspace`] it rides; the
+/// `Default` is the forbidden/inert posture (no database home, no
+/// process control — the kiosk posture).
+#[derive(Default)]
 pub struct RemediationWorkspace {
     /// The resolved database path (`None` — a platform with no data
     /// dir — degrades to the typed `IpcUnavailable` refusal).
@@ -130,16 +126,18 @@ impl RemediationEffects {
 fn pid_alive_real(pid: u32) -> bool {
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
-    match kill(Pid::from_raw(i32::try_from(pid).unwrap_or(-1)), None) {
-        Ok(()) => true,
-        Err(nix::errno::Errno::ESRCH) => false,
-        Err(_) => true,
-    }
+    // `ESRCH` is the dead fact; every other outcome (delivered,
+    // unprivileged) probes alive — the kill's typed refusal carries
+    // the verdict either way.
+    !matches!(
+        kill(Pid::from_raw(i32::try_from(pid).unwrap_or(-1)), None),
+        Err(nix::errno::Errno::ESRCH)
+    )
 }
 
 /// The production SIGTERM (the D-3 verb's effect).
 fn signal_term_real(pid: u32) -> std::io::Result<()> {
-    use nix::sys::signal::{kill, Signal};
+    use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
     kill(
         Pid::from_raw(i32::try_from(pid).unwrap_or(-1)),
@@ -196,7 +194,7 @@ fn holder_pid(workspace: &RemediationWorkspace) -> Option<u32> {
 }
 
 /// The D-3 verb: SIGTERM to the displayed pid. Refuses typed when the
-/// pid is stale (`HolderNotAlive` — ForceUnlock is the right tool) or
+/// pid is stale (`HolderNotAlive` — `ForceUnlock` is the right tool) or
 /// is this process (`SelfPid`).
 fn kill_holder(workspace: &RemediationWorkspace) -> StatusRemediationOutcome {
     let Some(pid) = holder_pid(workspace) else {
@@ -219,15 +217,15 @@ fn kill_holder(workspace: &RemediationWorkspace) -> StatusRemediationOutcome {
 /// live holder refuses typed (`HolderAlive`; the process's own pid
 /// is the more specific `SelfPid`) and the sidecar is untouched.
 fn force_unlock(workspace: &RemediationWorkspace) -> StatusRemediationOutcome {
-    if let Some(pid) = holder_pid(workspace) {
-        if (workspace.effects.pid_alive)(pid) {
-            let kind = if pid == std::process::id() {
-                Refusal::SelfPid
-            } else {
-                Refusal::HolderAlive
-            };
-            return StatusRemediationOutcome::Refused(kind);
-        }
+    if let Some(pid) = holder_pid(workspace)
+        && (workspace.effects.pid_alive)(pid)
+    {
+        let kind = if pid == std::process::id() {
+            Refusal::SelfPid
+        } else {
+            Refusal::HolderAlive
+        };
+        return StatusRemediationOutcome::Refused(kind);
     }
     let Some(db_path) = workspace.db_path.as_deref() else {
         return StatusRemediationOutcome::Refused(Refusal::IpcUnavailable);
