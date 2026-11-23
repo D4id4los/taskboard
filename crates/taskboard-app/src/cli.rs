@@ -1535,6 +1535,15 @@ pub enum TrackCmd {
     /// recovery path — undoable via the journal pre-images (the #1187
     /// ruling): the undo line's inverse re-deletes the restored row.
     Restore {
+        /// The zero-input journal-addressed restore (the undo-family
+        /// amendment D-5): the journaled `DeleteTimeEntry` whose
+        /// captured pre-image is the verbatim payload (full uuid |
+        /// unique ≥8-char uuid prefix over the restorable deletes).
+        /// When present, the payload flags are not read and must be
+        /// omitted — the flag grammar stays the out-of-band recovery
+        /// path, never the undo path.
+        #[arg(long, conflicts_with_all = ["task", "start", "end", "kind", "id", "entry"])]
+        from: Option<String>,
         /// The restored entry's id slot: a full uuid names the payload
         /// id verbatim; a prefix is refused typed (a hard-deleted row
         /// cannot prefix-resolve — ids are the restore family's
@@ -1542,13 +1551,19 @@ pub enum TrackCmd {
         /// names one.
         entry: Option<String>,
         /// The owner task (uuid | unique ≥8-char uuid prefix | exact
-        /// live title); a gone owner is the typed rejection.
-        #[arg(long)]
-        task: String,
+        /// live title); a gone owner is the typed rejection. Not read
+        /// (nor required) beside `--from`.
+        #[arg(long, required_unless_present = "from")]
+        task: Option<String>,
         /// Span start (RFC-3339 with an explicit offset, or
-        /// YYYY-MM-DD = midnight UTC).
-        #[arg(long, value_parser = parse_span_stamp)]
-        start: chrono::DateTime<chrono::Utc>,
+        /// YYYY-MM-DD = midnight UTC). Not read (nor required) beside
+        /// `--from`.
+        #[arg(
+            long,
+            value_parser = parse_span_stamp,
+            required_unless_present = "from"
+        )]
+        start: Option<chrono::DateTime<chrono::Utc>>,
         /// Span end; omitted = the entry re-materializes open.
         #[arg(long, value_parser = parse_span_stamp)]
         end: Option<chrono::DateTime<chrono::Utc>>,
