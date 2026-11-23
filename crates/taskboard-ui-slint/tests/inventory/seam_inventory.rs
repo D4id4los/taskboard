@@ -296,6 +296,8 @@ const SEAM_INVENTORY: &[&str] = &[
     "plan_pool_activated",
     "palette_dismiss_requested",
     "palette_query_edited",
+    // The search row's History affordance (D3b W-10, #1218); the plan
+    // cell spells it kebab: "palette-row-activated".
     "palette_row_activated",
     "reflection_editor_cancelled",
     "reflection_editor_committed",
