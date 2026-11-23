@@ -1698,6 +1698,24 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
+    /// The push-side kiosk belt (W-15, #1049): the dead-subject pass's
+    /// twin — on kiosk a mounted habit subject (a posture that slipped
+    /// past the dispatch-time gates: a restored or pushed snapshot)
+    /// steps the view back through the SAME mechanism (`replace_root`,
+    /// the subject clear, the board root). Desktop-inert: `kiosk` is
+    /// the adapter's held run mode; the dispatch gates stay the first
+    /// line, this pass is the second.
+    pub fn kiosk_habit_belt(&mut self, kiosk: bool) -> Vec<FlowOutcome> {
+        if !kiosk || self.subject_habit.is_none() {
+            return Vec::new();
+        }
+        self.subject_habit = None;
+        if self.view() == ViewId::TaskDetail {
+            self.replace_root(ViewId::Board);
+        }
+        vec![FlowOutcome::RefreshNow]
+    }
+
     /// Direct view/focus injection (the chunk-2 test seam; real
     /// sessions go through the view cycle and the card clicks).
     pub fn set_view(&mut self, view: ViewId) {
@@ -6709,6 +6727,41 @@ mod tests {
     /// stack (c: task d).
     pub(super) fn test_today() -> chrono::NaiveDate {
         chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("fixed date")
+    }
+
+    /// W-15/#1049 mechanism: the kiosk belt steps a slipped-past
+    /// habit-variant mount back to the board (the dead-subject arm's
+    /// twin, one mechanism).
+    #[test]
+    fn the_kiosk_belt_steps_a_mounted_habit_subject_back() {
+        let (state, _b1, _, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let habit = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+        let _ = vs.open_habit_editor(habit);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        assert_eq!(vs.subject_habit(), Some(habit));
+        // The gate slipped: the belt (kiosk) fires on the same pass.
+        let outcomes = vs.kiosk_habit_belt(true);
+        assert!(matches!(outcomes[..], [FlowOutcome::RefreshNow]));
+        assert_eq!(vs.view(), ViewId::Board, "the view stepped back");
+        assert_eq!(vs.subject_habit(), None, "the mount is cleared");
+        // Idempotent: a second pass is inert.
+        assert_eq!(vs.kiosk_habit_belt(true), Vec::new());
+    }
+
+    /// W-15/#1049 desktop leg: the belt is desktop-inert — a mounted
+    /// habit subject survives the pass untouched.
+    #[test]
+    fn the_kiosk_belt_is_desktop_inert() {
+        let (state, _b1, _, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let habit = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+        let _ = vs.open_habit_editor(habit);
+        assert_eq!(vs.kiosk_habit_belt(false), Vec::new());
+        assert_eq!(vs.view(), ViewId::TaskDetail, "desktop keeps the mount");
+        assert_eq!(vs.subject_habit(), Some(habit));
     }
 
     pub(super) fn two_board_fixture() -> (AppState, BoardId, BoardId, [StackId; 3], [TaskId; 4]) {
