@@ -841,12 +841,15 @@ impl HabitEditDraft {
             .or_else(|| crate::due_edit::parse_time_lenient(self.reminder_time.trim()))?;
         let snooze_text = self.reminder_snooze.trim();
         let digits = snooze_text.trim_end_matches(['h', 'H', 'd', 'D']);
-        let n = digits.parse::<u8>().ok().filter(|n| *n > 0)?;
+        let n = digits.parse::<u8>().ok()?;
+        // The mint is the zero gate (#1211): the save gate greys
+        // because the domain mint refused, not because of a locally
+        // duplicated predicate. Identical behavior for n >= 1.
         let snooze = match snooze_text.chars().next_back() {
-            Some('h' | 'H') => taskboard_domain::habit::HabitSnooze::Hours(n),
-            Some('d' | 'D') => taskboard_domain::habit::HabitSnooze::Days(n),
+            Some('h' | 'H') => taskboard_domain::habit::HabitSnooze::hours(n),
+            Some('d' | 'D') => taskboard_domain::habit::HabitSnooze::days(n),
             _ => return None,
-        };
+        }?;
         Some(taskboard_domain::habit::HabitReminderOverride {
             base,
             offset_days,
