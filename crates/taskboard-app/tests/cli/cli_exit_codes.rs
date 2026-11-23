@@ -207,6 +207,39 @@ async fn exit_code_table_unknown_selectors_exit_one() {
         .await;
         cases.push(("remind clear unknown".into(), code));
     }
+    {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut io = vec_io(&mut out, &mut err);
+        // UnknownTask — `--off` on a task that does not exist (the
+        // `repeat_command -> 0` replacement's kill leg).
+        let code = repeat::repeat_command(
+            &mut io,
+            Some(config_path.clone()),
+            RepeatInvocation::Off {
+                task: "no such task".into(),
+            },
+        )
+        .await;
+        cases.push(("repeat off unknown".into(), code));
+    }
+    {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut io = vec_io(&mut out, &mut err);
+        // UnknownTask — `start` on a task that does not exist (the
+        // `track_command -> 0` replacement's kill leg).
+        let code = track::track_command(
+            &mut io,
+            Some(config_path.clone()),
+            TrackInvocation::Start {
+                task: "no such task".into(),
+                kind: taskboard_domain::tracking::TimeEntryKind::Work,
+            },
+        )
+        .await;
+        cases.push(("track start unknown".into(), code));
+    }
 
     for (verb, code) in &cases {
         assert_eq!(*code, 1, "{verb} must exit 1 on the typed refusal");
