@@ -2465,7 +2465,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::HabitRestore,
         label: "Restore habit",
-        contexts: GLOBAL,
+        contexts: &[ContextId::Menu],
         category: Category::Task,
         enabled: true,
         // The trio never renders on a page (menu_group None); the
@@ -2478,7 +2478,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::HabitRestoreConfirm,
         label: "Confirm habit restore",
-        contexts: GLOBAL,
+        contexts: &[ContextId::Menu],
         category: Category::Task,
         enabled: true,
         menu_rank: 550,
@@ -2488,7 +2488,7 @@ pub const REGISTRY: &[ActionEntry] = &[
     ActionEntry {
         id: ActionId::HabitRestoreCancel,
         label: "Cancel restore",
-        contexts: GLOBAL,
+        contexts: &[ContextId::Menu],
         category: Category::Task,
         enabled: true,
         menu_rank: 560,
