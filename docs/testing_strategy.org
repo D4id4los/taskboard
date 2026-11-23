@@ -76,6 +76,16 @@ The UI layer is a "dumb client" that strictly reads from
   the =AppState= structure, =insta= fails with a clean diff.
 - *Do not* test the UI framework's internal state; snapshot the
   =StateEngine= instead.
+- *Filename convention (#1163, 2026-11-23):* an insta snapshot file's
+  name is a function of the declared snapshot name alone — never of
+  the test binary's module path. Insta's default prefixing embeds the
+  module name (=snapshots__<name>.snap=), which silently renames the
+  whole corpus whenever the test binary is renamed or merged into
+  another. Capture under =insta::Settings= with
+  =prepend_module_to_snapshot(false)= (the state suite's
+  =Scenario::snap= is the reference), so the corpus files are plain
+  =<declared-name>.snap=; new insta-bearing suites follow the same
+  rule from their first snapshot.
 
 * 6. Deterministic "Tokio Time"
 
