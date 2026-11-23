@@ -358,9 +358,10 @@ export component LabelsPanel inherits Rectangle {
             }
             // The deleted-labels restore section (W-2): mounted only
             // when the roster is non-empty (no dead chrome); the armed
-            // strip's consequence names the restoration (the D-2
-            // grammar; the desktop-qualified rows render absent on
-            // kiosk — the adapter pushes empty rows there, D-4).
+            // strip names the subject (the roster row in hand — US-1/S2)
+            // and the consequence (the D-2 grammar; the
+            // desktop-qualified rows render absent on kiosk — the
+            // adapter pushes empty rows there, D-4).
             if (!root.form-open && root.has-deleted): VerticalLayout {
                 spacing: Theme.space-1;
                 RoleText {
@@ -381,7 +382,7 @@ export component LabelsPanel inherits Rectangle {
                         RoleText {
                             role: Typography.caption;
                             text-color: Theme.text-secondary;
-                            text: "Restores the label from the roster — it comes back verbatim and can be assigned again.";
+                            text: "Restores “" + root.deleted-rows[root.restore-armed-index] + "” — it comes back verbatim and can be assigned again.";
                             vertical-alignment: center;
                             horizontal-stretch: 1;
                             wrap: word-wrap;
