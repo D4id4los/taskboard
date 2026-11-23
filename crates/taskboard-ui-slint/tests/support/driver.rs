@@ -82,6 +82,15 @@ pub trait JourneyDriver {
     fn advance_time(&mut self, ms: u64);
     /// Injects one stroke through the real key path. Returns the
     /// count of physical presses contributed (always 1).
+    ///
+    /// Headless caveat (#1216, rule in `docs/testing_strategy.org`
+    /// §"journey key routing"): the delivery channel is the real
+    /// window's, but Slint's focus-root key routing needs a focus
+    /// owner — a raw stroke fired right after a modal mount whose
+    /// panel-scope focus grab does not survive the headless pass
+    /// lands nowhere. Route the binding's typed action
+    /// (`handle.dispatch_action(ActionId::…)`) instead, and assert
+    /// the typed outcome.
     fn press_stroke(&mut self, stroke: Stroke) -> u32;
     /// Delivers a real pointer click (press + release) at the logical
     /// window position — the dismissal layer's and the context menu's

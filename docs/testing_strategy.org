@@ -208,6 +208,16 @@ suite proves *this application's* presentation layer.
   plus a cold-start view-graph walk; the keypress-count guard
   (=support/guard.rs=) encodes the design's per-verb ceilings as
   design contracts (any improvement passes).
+- *Journey key routing (#1216, 2026-11-23):* a raw =press_stroke=
+  that closes nothing right after a modal mount is not a bug in the
+  journey — the headless pass does not always carry the modal's
+  panel-scope focus grab, and Slint's focus-root key routing drops a
+  stroke with no focus owner (=text_focus_count = 0= is the
+  fingerprint). Route the binding's *typed action* instead:
+  =handle.dispatch_action(ActionId::…)= — the same action the keymap
+  resolves the stroke to — and assert the typed outcome. Never
+  simulate the resulting state by hand; the action is the same seam
+  the real key path lands on.
 - *Tier 3 — Golden visuals.* The board view at scale extremes × each
   breakpoint: software renderer, headless, bundled fonts (rendering
   is deterministic by construction); perceptual-hash tolerance with
