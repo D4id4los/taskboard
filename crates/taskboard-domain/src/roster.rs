@@ -160,6 +160,29 @@ impl RestoreRoster {
     pub fn derive(app: &AppState, journal: &JournalState) -> Self {
         Self::derive_parts(&app.labels, &app.habits, &app.tracking, journal)
     }
+
+    /// The tombstone sections' partial derivation for the sync/push
+    /// pipelines: the journal is out of their reach (`AppState` in,
+    /// `AppState` out), so the deleted-entry section carries through
+    /// the caller (the journal does not change across a cycle's
+    /// entity folds — the deletes it captures came from the command
+    /// lane, which derives fresh at publish).
+    #[must_use]
+    pub fn derive_tombstones(
+        labels: &std::collections::BTreeMap<LabelId, Label>,
+        habits: &crate::habit::HabitState,
+    ) -> Self {
+        let whole = Self::derive_parts(
+            labels,
+            habits,
+            &crate::tracking::TrackingState::default(),
+            &JournalState::default(),
+        );
+        Self {
+            deleted_entries: Vec::new(),
+            ..whole
+        }
+    }
 }
 
 #[cfg(test)]

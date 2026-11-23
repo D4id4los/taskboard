@@ -36,10 +36,20 @@ const JOURNAL_ALLOWED: [&str; 8] = [
 /// `test_support/`, and the degraded-boot broadcast in `messages.rs`
 /// (`SystemEvent::JournalDegraded`, #1039 — the operator-accepted plan
 /// names the variant, and the event is undo-line vocabulary by
-/// definition) — same frozen-at-base rationale, kept separate so the
+/// definition), and the restore-roster projection in `roster.rs`
+/// (2026-11-23, D1i — the W-1/W-8 projection reads the journal's
+/// delete pre-images; the state.rs/persistence.rs consumer class) —
+/// same frozen-at-base rationale, kept separate so the
 /// list above stays the substrate's shape at a glance. The scan itself
 /// is unchanged: every other file — future ones included — is checked.
-const JOURNAL_ALLOWED_MORE: [&str; 4] = ["command.rs", "test_support", "state.rs", "messages.rs"];
+const JOURNAL_ALLOWED_MORE: [&str; 6] = [
+    "command.rs",
+    "test_support",
+    "state.rs",
+    "messages.rs",
+    "roster.rs",
+    "roster",
+];
 
 /// The `Journal`-prefixed identifier scan (identifier-boundary regex,
 /// not a substring: prose like "journaling" or "journal line" in doc

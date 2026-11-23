@@ -1643,6 +1643,18 @@ fn assemble_state(
     now: DateTime<Utc>,
     why: &'static str,
 ) -> AppState {
+    // The tombstone sections re-derive from the folded entity maps (a
+    // pushed/pulled remote delete moves them); the journal is out of
+    // the pipeline's reach, so the deleted-entry section carries
+    // through (it does not change across the cycle).
+    let habits = folded
+        .habits
+        .clone()
+        .unwrap_or_else(|| current.habits.clone());
+    let mut roster = crate::roster::RestoreRoster::derive_tombstones(&labels, &habits);
+    roster
+        .deleted_entries
+        .clone_from(&current.roster.deleted_entries);
     let mut state = AppState {
         boards,
         stacks,
@@ -1661,11 +1673,15 @@ fn assemble_state(
             ..current.reminders.clone()
         },
         tracking: folded.tracking.unwrap_or_else(|| current.tracking.clone()),
-        habits: folded.habits.unwrap_or_else(|| current.habits.clone()),
+        habits,
         reflection: current.reflection.clone(),
         roaming: current.roaming.clone(),
         undo: current.undo.clone(),
-        roster: current.roster.clone(),
+        // The tombstone sections re-derive from the folded entity maps
+        // (a pushed/pulled remote delete moves them); the journal is
+        // out of the pipeline's reach, so the deleted-entry section
+        // carries through (it does not change across the cycle).
+        roster,
         sync,
         settings: current.settings.clone(),
         // Sync ingestion is an engine mutation from a foreign source:
@@ -2094,6 +2110,13 @@ pub fn apply_push_report(
             row.features = features;
         }
     }
+    // The tombstone sections re-derive from the folded entity maps
+    // (the journal is out of the pipeline's reach — the deleted-entry
+    // section carries through, it does not change across the cycle).
+    let mut roster = crate::roster::RestoreRoster::derive_tombstones(&labels, &current.habits);
+    roster
+        .deleted_entries
+        .clone_from(&current.roster.deleted_entries);
     let mut state = AppState {
         boards,
         stacks,
@@ -2115,7 +2138,11 @@ pub fn apply_push_report(
         // publish (core.rs); the pipeline's working copy carries the
         // current one through untouched.
         undo: current.undo.clone(),
-        roster: current.roster.clone(),
+        // The tombstone sections re-derive from the folded entity maps
+        // (a pushed/pulled remote delete moves them); the journal is
+        // out of the pipeline's reach, so the deleted-entry section
+        // carries through (it does not change across the cycle).
+        roster,
         sync,
         settings: current.settings.clone(),
         last_updated: Some(now),
