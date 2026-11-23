@@ -350,6 +350,42 @@ against any of them is a review finding, not a style difference:
 - *SC-W-N2* (settings-connections plan §10 W-N2): "the pickers' seam
   names are consistent (=*-picked=, =settings-view.slint:672-696=)".
 
+** 2.7 The keyboard-first law (2026-11-23)
+
+Recorded 2026-11-23 by operator acceptance of the habit-surface
+journeys plan (=.artifacts/plans/2026-11-22-habit-surface-journeys-ux-plan.md=;
+the acceptance added this ruling as a binding condition). Operator
+words, verbatim:
+
+#+begin_quote
+All functionality should be accessible through the keyboard in the
+end, and all common functionality across the entire app should have
+specific key bindings — exceptions only for very rarely used ones,
+which are served through keyboard focus navigation now, and perhaps a
+command window in the future.
+#+end_quote
+
+Standing consequences, binding for every new surface and every review
+round:
+
+- Every user-visible verb is keyboard-reachable at minimum via focus
+  navigation (the K4 cursor/walk family).
+- Common verbs carry *dedicated chords* in the keymap presets (the
+  O-8 parity law is the spelling/collision machinery).
+- A chordless common verb is a *defect*, not a posture — it is filed
+  and fixed like any review finding; the R-11-style "row affordance
+  is the only invocation, no keymap" ruling class is retired as a
+  legal outcome (the habit-surface plan's R-5 supersession is the
+  first recorded instance).
+- Rare verbs may ride focus navigation, with that justification
+  recorded per this exception clause; scope-internal confirm/cancel
+  verbs (editor/popover commit = Return, dismiss = Escape) satisfy
+  the law through the modal grammar, not the exception clause.
+
+Coverage is audited, not assumed: the app-wide keybinding-coverage
+audit (every ActionId and presented verb vs the chord table) is the
+standing backlog item filed under this law.
+
 * 3. Activation state machine
 
 The rule's strength ramps through six phases. *Current state:
