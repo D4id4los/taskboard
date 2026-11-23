@@ -1780,6 +1780,46 @@ async fn habit_rows_survive_a_close_reopen_including_the_tombstone() {
 }
 
 /// The log LWW guard is exercised at the SQL layer: a batch whose
+/// The per-day overlay (US-8, #1144) round-trips: an apply persists
+/// the `(habit, day)` row, the load restores it, and the same
+/// strictly-older-clock LWW guard keeps the newer overlay row.
+#[tokio::test]
+async fn the_habit_day_overlay_round_trips_with_the_lww_guard() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let key = taskboard_domain::HabitDayKey {
+        habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(62)),
+        day: chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(),
+    };
+    repo.apply(vec![PersistenceAction::RecordHabitDayLog(
+        key,
+        taskboard_domain::HabitDayLogEntry {
+            count: 3,
+            clock: ts(700),
+        },
+    )])
+    .await
+    .expect("apply newer");
+    // A strictly older batch row: the SQL guard keeps local.
+    repo.apply(vec![PersistenceAction::RecordHabitDayLog(
+        key,
+        taskboard_domain::HabitDayLogEntry {
+            count: 1,
+            clock: ts(600),
+        },
+    )])
+    .await
+    .expect("apply older");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(
+        loaded.habits.day_log.get(&key).map(|e| (e.count, e.clock)),
+        Some((3, ts(700))),
+        "the older overlay row never overwrites"
+    );
+    repo.close().await;
+}
+
 /// `RecordHabitLog` carries a strictly older clock leaves the newer row.
 #[tokio::test]
 async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {

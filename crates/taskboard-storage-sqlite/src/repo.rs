@@ -1413,6 +1413,18 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
+        // The per-day overlay (US-8, #1144): unchecked queries — a
+        // fresh table need not re-seed the sqlx offline metadata (the
+        // `roaming_settings` precedent).
+        type HabitDayLogRow = (String, String, i64, String);
+        let habit_day_log_rows: Vec<HabitDayLogRow> = sqlx::query_as(
+            r"SELECT habit_id, day, count, clock FROM habit_day_log
+               ORDER BY habit_id, day",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
         let reflection_rows = sqlx::query_as!(
             ReflectionEntryRow,
             r#"SELECT entry_id, day, cadence, window_start, window_end, text,
@@ -1806,6 +1818,37 @@ impl SqliteTaskRepository {
                     .map_err(|e| e.attached(PersistedTable::HabitLog, row_key))?;
                     habits.log.insert(decoded.0, decoded.1);
                 }
+                for (habit_id, day, count, clock) in &habit_day_log_rows {
+                    let row_key = Uuid::parse_str(habit_id).ok();
+                    let decoded = (|| {
+                        Result::<
+                            (
+                                taskboard_domain::HabitDayKey,
+                                taskboard_domain::HabitDayLogEntry,
+                            ),
+                            RepositoryError,
+                        >::Ok({
+                            let habit = taskboard_domain::ids::HabitId::from(
+                                codec::uuid_from_text(habit_id).map_err(|_| {
+                                    corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid)
+                                })?,
+                            );
+                            let date = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").map_err(
+                                |_| corrupt(DecodeStage::RowBuild, DecodeReason::MalformedDate),
+                            )?;
+                            let count = u32::try_from(*count).map_err(|_| {
+                                corrupt(DecodeStage::RowBuild, DecodeReason::OutOfRange)
+                            })?;
+                            let clock: DateTime<Utc> = decode::clock(clock)?;
+                            (
+                                taskboard_domain::HabitDayKey { habit, day: date },
+                                taskboard_domain::HabitDayLogEntry { count, clock },
+                            )
+                        })
+                    })()
+                    .map_err(|e| e.attached(PersistedTable::HabitDayLog, row_key))?;
+                    habits.day_log.insert(decoded.0, decoded.1);
+                }
                 habits
             },
             reflection: {
@@ -2122,6 +2165,7 @@ async fn execute_batch(
     // other lane.
     let mut habit_upserts = Vec::new();
     let mut habit_log_rows = Vec::new();
+    let mut habit_day_log_rows = Vec::new();
     // DR-7 chunk 2 (R-11 exception, the tracking DR-5/1 precedent):
     // the reflection upserts, written by the compile-checked macro
     // against migration 0022's table.
@@ -2178,6 +2222,9 @@ async fn execute_batch(
             PersistenceAction::UpsertHabit(habit) => habit_upserts.push(habit),
             PersistenceAction::RecordHabitLog(key, entry) => {
                 habit_log_rows.push((key, entry));
+            }
+            PersistenceAction::RecordHabitDayLog(key, entry) => {
+                habit_day_log_rows.push((key, entry));
             }
             PersistenceAction::UpsertReflectionEntry(entry) => {
                 reflection_upserts.push(entry);
@@ -2780,6 +2827,33 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(habit = ?key.habit, window = %key.window.as_date(), "habit log recorded");
+    }
+    for (key, entry) in habit_day_log_rows {
+        // The same whole-second LWW guard as `habit_log` (#1095's
+        // invariant): the overlay's clock grammar is identical, so the
+        // string comparison stays chronological. The twin rides the
+        // same transaction as its window row (one repo.apply batch —
+        // the transactional-twin law).
+        sqlx::query(
+            r"INSERT INTO habit_day_log (habit_id, day, count, clock)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(habit_id, day) DO UPDATE SET
+                       count = excluded.count,
+                       clock = excluded.clock
+                   WHERE excluded.clock > habit_day_log.clock",
+        )
+        .bind(codec::uuid_to_text(key.habit.as_uuid()))
+        .bind(key.day.to_string())
+        .bind(i64::from(entry.count))
+        .bind(
+            entry
+                .clock
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(habit = ?key.habit, day = %key.day, "habit day overlay recorded");
     }
 
     // Op removals before appends so a batch that completes and re-enqueues

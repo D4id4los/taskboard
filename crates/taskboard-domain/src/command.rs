@@ -3024,6 +3024,30 @@ pub fn plan_command(
                 now,
                 app.habits.log.get(&key).map(|entry| entry.clock),
             );
+            // The per-day overlay twin (US-8, #1144): the completion
+            // attributes to today's calendar day, written in the SAME
+            // command batch as the window row (the transactional-twin
+            // law — partial writes are the pinned bug class). The
+            // undo inverse reuses `AdjustHabitLog`, which writes the
+            // day-kind overlay from the audited correction, so a
+            // day-kind log's undo restores the overlay too; a
+            // week/month window's undo keeps the day attribution
+            // (documented leniency — the overlay is display data, the
+            // window log stays the oracle, R-2).
+            let day_key = crate::habit::HabitDayKey {
+                habit: *id,
+                day: day.today(now),
+            };
+            let day_count = app
+                .habits
+                .day_log
+                .get(&day_key)
+                .map_or(0, |entry| entry.count)
+                + 1;
+            let day_clock = crate::habit::mint_log_clock(
+                now,
+                app.habits.day_log.get(&day_key).map(|entry| entry.clock),
+            );
             Ok(CommandPlan {
                 actions: vec![
                     PersistenceAction::RecordHabitLog(
@@ -3034,6 +3058,13 @@ pub fn plan_command(
                             by: author,
 
                             skip: false,
+                        },
+                    ),
+                    PersistenceAction::RecordHabitDayLog(
+                        day_key,
+                        crate::habit::HabitDayLogEntry {
+                            count: day_count,
+                            clock: day_clock,
                         },
                     ),
                     board_flush(habit.board, ids, now),
@@ -3079,20 +3110,46 @@ pub fn plan_command(
                 now,
                 app.habits.log.get(&key).map(|entry| entry.clock),
             );
-            Ok(CommandPlan {
-                actions: vec![
-                    PersistenceAction::RecordHabitLog(
-                        key,
-                        HabitLogEntry {
-                            count: *count,
-                            clock,
-                            by: author,
+            // The per-day overlay twin (US-8, #1144): for a Day-kind
+            // habit the corrected window IS the day, so the audited
+            // correction replaces the day's overlay row exactly (the
+            // undo inverse rides this arm — a day-kind log's undo
+            // restores the overlay). A Week/Month window's absolute
+            // correction cannot attribute days — no overlay write, no
+            // invention; the documented divergence lives on the
+            // LogHabit arm's comment (R-2: the window log is the
+            // oracle; the overlay is display data).
+            let day_twin = (habit.target.kind() == crate::habit::PeriodKind::Day).then(|| {
+                let day_key = crate::habit::HabitDayKey {
+                    habit: *id,
+                    day: window.as_date(),
+                };
+                let day_clock = crate::habit::mint_log_clock(
+                    now,
+                    app.habits.day_log.get(&day_key).map(|entry| entry.clock),
+                );
+                PersistenceAction::RecordHabitDayLog(
+                    day_key,
+                    crate::habit::HabitDayLogEntry {
+                        count: *count,
+                        clock: day_clock,
+                    },
+                )
+            });
+            let mut actions = vec![PersistenceAction::RecordHabitLog(
+                key,
+                HabitLogEntry {
+                    count: *count,
+                    clock,
+                    by: author,
 
-                            skip: false,
-                        },
-                    ),
-                    board_flush(habit.board, ids, now),
-                ],
+                    skip: false,
+                },
+            )];
+            actions.extend(day_twin);
+            actions.push(board_flush(habit.board, ids, now));
+            Ok(CommandPlan {
+                actions,
                 outcome: CommandOutcome::HabitLogAdjusted {
                     habit: *id,
                     window: *window,
@@ -11307,6 +11364,147 @@ mod tests {
     }
 
     #[test]
+    fn log_habit_writes_the_day_overlay_twin_in_the_same_batch() {
+        // US-8 (#1144): every LogHabit carries its per-day attribution
+        // twin in the SAME batch (the transactional-twin law) — here a
+        // Week-kind habit, so the twin is the only overlay write.
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerWeek(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
+        let twins: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::RecordHabitDayLog(key, entry) => Some((*key, *entry)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(twins.len(), 1, "exactly one overlay twin per log");
+        let (key, entry) = twins[0];
+        assert_eq!(key.habit, habit_id());
+        assert_eq!(key.day, ymd(1970, 1, 1), "the attribution day is today");
+        assert_eq!(entry.count, 1);
+        assert_eq!(entry.clock, now());
+        // The window row rides the same batch (twin ordering: the log
+        // row first, the overlay beside it, before the flush).
+        let log_idx = plan
+            .actions
+            .iter()
+            .position(|action| matches!(action, PersistenceAction::RecordHabitLog(_, _)))
+            .expect("the window row is in the batch");
+        let twin_idx = plan
+            .actions
+            .iter()
+            .position(|action| matches!(action, PersistenceAction::RecordHabitDayLog(_, _)))
+            .expect("the twin is in the batch");
+        assert!(log_idx < twin_idx);
+    }
+
+    #[test]
+    fn log_habit_overlay_twin_increments_the_days_stored_row() {
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let day_key = crate::habit::HabitDayKey {
+            habit: habit_id(),
+            day: ymd(1970, 1, 1),
+        };
+        app.habits.day_log.insert(
+            day_key,
+            crate::habit::HabitDayLogEntry {
+                count: 2,
+                clock: ts(T0 - 3_600),
+            },
+        );
+        let plan = run(&app, &outbox, &StateCommand::LogHabit { habit: habit_id() }).unwrap();
+        let twin = plan
+            .actions
+            .iter()
+            .find_map(|action| match action {
+                PersistenceAction::RecordHabitDayLog(key, entry) if key.day == day_key.day => {
+                    Some(*entry)
+                }
+                _ => None,
+            })
+            .expect("the twin is in the batch");
+        assert_eq!(twin.count, 3, "the day attribution increments too");
+        // The #986 monotone mint keeps the twin strictly past the
+        // stored same-key row.
+        assert!(twin.clock > ts(T0 - 3_600));
+    }
+
+    #[test]
+    fn adjust_day_kind_replaces_the_days_overlay_row() {
+        // The Day-kind window IS the day: the audited correction
+        // replaces the overlay row exactly (the undo inverse rides
+        // this arm).
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let day_key = crate::habit::HabitDayKey {
+            habit: habit_id(),
+            day: ymd(1970, 1, 1),
+        };
+        app.habits.day_log.insert(
+            day_key,
+            crate::habit::HabitDayLogEntry {
+                count: 4,
+                clock: ts(T0 - 3_600),
+            },
+        );
+        let window =
+            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Day, ymd(1970, 1, 1));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AdjustHabitLog {
+                habit: habit_id(),
+                window,
+                count: 1,
+            },
+        )
+        .unwrap();
+        let twin = plan
+            .actions
+            .iter()
+            .find_map(|action| match action {
+                PersistenceAction::RecordHabitDayLog(_, entry) => Some(*entry),
+                _ => None,
+            })
+            .expect("the day-kind adjust twins the overlay");
+        assert_eq!(twin.count, 1, "the correction replaces, not increments");
+    }
+
+    #[test]
+    fn adjust_week_kind_writes_no_overlay() {
+        // A Week/Month window's absolute correction cannot attribute
+        // days — no overlay write, no invention (R-2: the window log
+        // is the oracle; the overlay is display data).
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerWeek(
+            crate::habit::NonZeroCount::new(3).unwrap(),
+        ));
+        let window =
+            crate::habit::WindowStart::of_period(crate::habit::PeriodKind::Week, ymd(1970, 1, 1));
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::AdjustHabitLog {
+                habit: habit_id(),
+                window,
+                count: 1,
+            },
+        )
+        .unwrap();
+        assert!(
+            plan.actions
+                .iter()
+                .all(|action| !matches!(action, PersistenceAction::RecordHabitDayLog(_, _))),
+            "a week-kind adjust never writes the overlay"
+        );
+    }
+
+    #[test]
     fn log_habit_night_owl_targets_yesterdays_window() {
         let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
             crate::habit::NonZeroCount::new(3).unwrap(),
@@ -11566,9 +11764,19 @@ mod tests {
             matches!(&plan.actions[0], PersistenceAction::RecordHabitLog(_, entry) if entry.count == 0),
             "an emptied window keeps its row"
         );
+        // US-8 (#1144): the Day-kind correction twins the day overlay
+        // row beside the window row (the transactional-twin law); the
+        // flush still roams the batch.
         assert!(
             matches!(
                 &plan.actions[1],
+                PersistenceAction::RecordHabitDayLog(_, entry) if entry.count == 0
+            ),
+            "the emptied day overlays to zero beside its window row"
+        );
+        assert!(
+            matches!(
+                &plan.actions[2],
                 PersistenceAction::EnqueueOp(crate::outbox::PendingOp {
                     op: LocalOp::FlushBoardAppData(_),
                     ..

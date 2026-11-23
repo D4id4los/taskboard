@@ -70,6 +70,7 @@ pub enum PersistedTable {
     Tracking,
     Habits,
     HabitLog,
+    HabitDayLog,
     BreakRules,
     Reflection,
     Roaming,
@@ -508,6 +509,17 @@ pub enum PersistenceAction {
     /// clock); an equal clock keeps the stored row (deterministic tie —
     /// sqlite-upsert parity note as `EnqueueOp`).
     RecordHabitLog(crate::habit::HabitLogKey, crate::habit::HabitLogEntry),
+    /// Record a habit day's overlay count (US-8, #1144; the plan's
+    /// recorded D-H12 amendment). Keyed set-union on the `(habit, day)`
+    /// key with the same strictly-newer-clock LWW discipline as
+    /// [`PersistenceAction::RecordHabitLog`]. Always emitted in the
+    /// same command batch as the window row it attributes (the
+    /// transactional-twin law — a window row and its overlay
+    /// disagreeing by partial write is the pinned bug class). Display
+    /// data: the window log stays the stats oracle (R-2). Device-local
+    /// persistence; the overlay never enters a sync lane (the
+    /// `UpsertReflectionEntry` precedent).
+    RecordHabitDayLog(crate::habit::HabitDayKey, crate::habit::HabitDayLogEntry),
     /// Clear the local content of one board: stacks, tasks, labels,
     /// outbox entries, sync validators, and reminder facts (rules,
     /// deliveries, snooze links, mutes) of its tasks. The board row
@@ -660,6 +672,20 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::UpsertReflectionEntry(entry) => {
                 state.reflection.entries.insert(entry.id, entry.clone());
+            }
+            PersistenceAction::RecordHabitDayLog(key, entry) => {
+                match state.habits.day_log.get(key) {
+                    // Keyed set-union, strictly-newer-clock LWW; the
+                    // equal-clock tie keeps the stored row — the
+                    // `RecordHabitLog` arm's discipline at day grain
+                    // (the mint-side monotone bump guarantees freshly
+                    // minted overlay rows stamp strictly past the
+                    // stored same-key row, #986).
+                    Some(stored) if stored.clock >= entry.clock => {}
+                    _ => {
+                        state.habits.day_log.insert(*key, *entry);
+                    }
+                }
             }
             PersistenceAction::RecordHabitLog(key, entry) => {
                 match state.habits.log.get(key) {

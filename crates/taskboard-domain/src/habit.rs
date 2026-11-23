@@ -668,6 +668,68 @@ impl<'de> Deserialize<'de> for HabitLogKey {
     }
 }
 
+/// The per-day overlay key (US-8, #1144; the 2026-11-22 habit-surface
+/// journeys plan's recorded D-H12 amendment): one habit's activity
+/// attribution on one calendar day. `BTreeMap` key — the derived order
+/// keeps serialization deterministic. Same string wire form as
+/// [`HabitLogKey`] (`"<habit uuid>|<day naive date>"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HabitDayKey {
+    /// The attributed habit.
+    pub habit: HabitId,
+    /// The attributed calendar day (a plain date — never a window
+    /// start; the overlay's grain is the day, the log's is the
+    /// window).
+    pub day: NaiveDate,
+}
+
+impl HabitDayKey {
+    /// The string wire form (`"<habit uuid>|<day naive date>"`).
+    #[must_use]
+    pub fn wire_form(&self) -> String {
+        format!("{}|{}", self.habit.as_uuid(), self.day.format("%Y-%m-%d"))
+    }
+
+    /// The strict inverse of [`wire_form`]; `None` on any malformed
+    /// input (an undecodable key is corruption, not data).
+    #[must_use]
+    pub fn parse_wire_form(raw: &str) -> Option<Self> {
+        let (habit, day) = raw.split_once('|')?;
+        let habit = HabitId::from(uuid::Uuid::parse_str(habit).ok()?);
+        Some(Self {
+            habit,
+            day: chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?,
+        })
+    }
+}
+
+impl Serialize for HabitDayKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.wire_form())
+    }
+}
+
+impl<'de> Deserialize<'de> for HabitDayKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse_wire_form(&raw).ok_or_else(|| serde::de::Error::custom("invalid habit day key"))
+    }
+}
+
+/// One day's overlay row (US-8, #1144): the attributed count plus a
+/// single LWW clock — the [`HabitLogEntry`] discipline at day grain.
+/// **Display data only** (R-2): the window log stays the adherence
+/// and stats oracle; the overlay never feeds a stats projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HabitDayLogEntry {
+    /// The day's attributed count (attribution at log time, D-H5's
+    /// spirit at day grain).
+    pub count: u32,
+    /// The row's LWW clock — the same `mint_log_clock` discipline as
+    /// the window rows (whole-second grammar downstream, #1095).
+    pub clock: DateTime<Utc>,
+}
+
 /// One window's count row: the payload is the count plus a single LWW
 /// clock (the normative shape — no per-completion instants, which is
 /// exactly why attribution happens at log time, D-H5).
@@ -764,6 +826,14 @@ pub struct HabitState {
     pub habits: BTreeMap<HabitId, Habit>,
     /// The count log, keyed `(habit, window)`; ≤ 1 row per key.
     pub log: BTreeMap<HabitLogKey, HabitLogEntry>,
+    /// The per-day activity overlay (US-8, #1144; the plan's recorded
+    /// D-H12 amendment), keyed `(habit, day)`; ≤ 1 row per key.
+    /// Display data only (R-2) — the window `log` stays the stats
+    /// oracle. `serde(default)`: states persisted before the overlay
+    /// decode with an empty map — the additive default-absent law,
+    /// never a decode failure.
+    #[serde(default)]
+    pub day_log: BTreeMap<HabitDayKey, HabitDayLogEntry>,
 }
 
 /// The period-start local date of `date`'s period: the day itself;
