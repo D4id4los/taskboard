@@ -48,7 +48,9 @@ fn mount_holding_requests(
     state: AppState,
     kiosk: bool,
 ) -> (
-    JourneyHarness,
+    SlintDriver,
+    taskboard_ui_slint::UiHandle,
+    FakeEngine,
     tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>,
 ) {
     let settings = UiSettings {
@@ -78,7 +80,8 @@ fn mount_holding_requests(
     };
     harness.driver.bind(&harness.handle);
     harness.handle.dispatch_action(ActionId::NavFocusBoard);
-    (harness, requests_rx)
+    let support::focus_journey::JourneyHarness { driver, handle, engine } = harness;
+    (driver, handle, engine, requests_rx)
 }
 
 fn run(body: impl FnOnce(AppState) + Send + 'static) {
@@ -96,8 +99,22 @@ fn run(body: impl FnOnce(AppState) + Send + 'static) {
 /// Folds the wedged (draining) posture into the mounted panel: the
 /// sidecar shape — a holder pid beside a held lock, no serving
 /// daemon.
-fn fold_wedged(harness: &mut JourneyHarness, holder_pid: i32) {
-    let window = harness.handle.window();
+/// Drains every queued mount/open `StatusQuery` (the open dispatches
+/// through both fronts — the route arm and the window seam, the OP3
+/// convergence), answering each so the lane stays clean; the folded
+/// facts afterwards are the test's to mint.
+fn drain_open_queries(
+    requests: &mut tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>,
+) {
+    while let Ok(request) = requests.try_recv() {
+        let taskboard_ui_slint::requests::UiRequest::StatusQuery { reply } = request else {
+            panic!("only StatusQueries ride the lane at this point");
+        };
+        let _ = reply.send(StatusSnapshot::default());
+    }
+}
+
+fn fold_wedged(window: &taskboard_ui_slint::AppWindow, holder_pid: i32) {
     let facts = window.global::<StatusPanelFacts>();
     let mut data = facts.get_data();
     data.posture = StatusPanelPosture::Draining;
@@ -112,12 +129,13 @@ fn fold_wedged(harness: &mut JourneyHarness, holder_pid: i32) {
 #[test]
 fn us1_s1_the_wedged_posture_renders_the_remediation_row_set() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
+        drain_open_queries(&mut requests);
         // Fold the wedged posture (the reply's typed shape).
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         let facts = window.global::<StatusPanelFacts>();
         assert_eq!(
             facts.get_data().posture,
@@ -130,7 +148,7 @@ fn us1_s1_the_wedged_posture_renders_the_remediation_row_set() {
             "the row set is display only — nothing dispatches"
         );
         assert_eq!(
-            harness.engine.drain(),
+            engine.drain(),
             Vec::<StateCommand>::new(),
             "the lane never touches domain state (R-3)"
         );
@@ -142,14 +160,15 @@ fn us1_s1_the_wedged_posture_renders_the_remediation_row_set() {
 #[test]
 fn us1_s2_kill_row_arms_confirm_strip() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
+        drain_open_queries(&mut requests);
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         let facts = window.global::<StatusPanelFacts>();
         window.invoke_status_holder_kill();
-        harness.advance();
+        driver.advance_time(0);
         assert_eq!(
             facts.get_remediation_armed(), 0,
             "the armed strip mounts with the kill verb armed"
@@ -168,17 +187,17 @@ fn us1_s2_kill_row_arms_confirm_strip() {
 #[test]
 fn us1_s3_confirm_dispatches_kill_holder_remediation() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
         requests.try_recv().expect("the open query");
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         let facts = window.global::<StatusPanelFacts>();
         window.invoke_status_holder_kill();
-        harness.advance();
+        driver.advance_time(0);
         window.invoke_status_remediation_armed(0);
-        harness.advance();
+        driver.advance_time(0);
         // Exactly one remediation request, typed action equality.
         let request = requests
             .try_recv()
@@ -199,8 +218,8 @@ fn us1_s3_confirm_dispatches_kill_holder_remediation() {
         reply
             .send(Outcome::HolderSignalled)
             .expect("reply accepted");
-        harness.handle.drain_status_remediation();
-        harness.advance();
+        handle.drain_status_remediation();
+        driver.advance_time(0);
         assert!(!facts.get_remediation_busy(), "the fold clears the busy posture");
         assert_eq!(
             facts.get_remediation_outcome_kind(), 1,
@@ -218,7 +237,7 @@ fn us1_s3_confirm_dispatches_kill_holder_remediation() {
             "the post-fact refresh is a StatusQuery"
         );
         assert_eq!(
-            harness.engine.drain(),
+            engine.drain(),
             Vec::<StateCommand>::new(),
             "no StateCommand anywhere in the journey (R-3)"
         );
@@ -230,16 +249,17 @@ fn us1_s3_confirm_dispatches_kill_holder_remediation() {
 #[test]
 fn us1_s4_cancel_unmounts_the_strip_with_nothing_dispatched() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
+        drain_open_queries(&mut requests);
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         let facts = window.global::<StatusPanelFacts>();
         window.invoke_status_holder_kill();
-        harness.advance();
+        driver.advance_time(0);
         window.invoke_status_remediation_armed(1);
-        harness.advance();
+        driver.advance_time(0);
         assert_eq!(facts.get_remediation_armed(), -1, "the strip unmounts");
         assert!(
             requests.try_recv().is_err(),
@@ -247,7 +267,7 @@ fn us1_s4_cancel_unmounts_the_strip_with_nothing_dispatched() {
         );
         // The row re-arms (the retry affordance).
         window.invoke_status_holder_kill();
-        harness.advance();
+        driver.advance_time(0);
         assert_eq!(facts.get_remediation_armed(), 0, "the row re-arms");
     });
 }
@@ -259,28 +279,27 @@ fn us1_s4_cancel_unmounts_the_strip_with_nothing_dispatched() {
 #[test]
 fn us2_s1_force_unlock_arms_only_in_stale_posture() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
+        drain_open_queries(&mut requests);
         // The live holder's serving posture: the row's fold is off
         // (D-4's fold flag — the flag is the oracle, never a caption).
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         // Arm in the draining (stale-holder) posture.
         window.invoke_status_lock_force_unlock();
-        harness.advance();
+        driver.advance_time(0);
         let facts = window.global::<StatusPanelFacts>();
         assert_eq!(facts.get_remediation_armed(), 1, "the stale posture arms");
         assert!(requests.try_recv().is_err(), "arming dispatches nothing");
 
-        // The serving posture's fold: the adapter's permission arm
-        // absorbs nothing here (the flag is presentation), but the
-        // arm is refused when the posture is serving? No — the
-        // posture gate is the row's enabled flag (the D-4 fold); the
-        // executor's liveness re-check is the authorization. Re-arm
-        // the kill verb to prove one armed subject (re-arm swaps).
+        // The posture gate is the row's enabled flag (the D-4 fold);
+        // the executor's liveness re-check is the authorization.
+        // Re-arm the kill verb to prove one armed subject (re-arm
+        // swaps).
         window.invoke_status_holder_kill();
-        harness.advance();
+        driver.advance_time(0);
         assert_eq!(
             facts.get_remediation_armed(), 0,
             "arming a different verb re-arms (the shared grammar)"
@@ -294,16 +313,16 @@ fn us2_s1_force_unlock_arms_only_in_stale_posture() {
 #[test]
 fn us2_s2_confirm_dispatches_force_unlock_remediation() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
         requests.try_recv().expect("the open query");
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         window.invoke_status_lock_force_unlock();
-        harness.advance();
+        driver.advance_time(0);
         window.invoke_status_remediation_armed(0);
-        harness.advance();
+        driver.advance_time(0);
         let request = requests
             .try_recv()
             .expect("the confirm dispatches one StatusRemediate");
@@ -319,8 +338,8 @@ fn us2_s2_confirm_dispatches_force_unlock_remediation() {
         reply
             .send(Outcome::LockReleased)
             .expect("reply accepted");
-        harness.handle.drain_status_remediation();
-        harness.advance();
+        handle.drain_status_remediation();
+        driver.advance_time(0);
         let facts = window.global::<StatusPanelFacts>();
         assert_eq!(facts.get_remediation_outcome_kind(), 2, "LockReleased folds");
         let request = requests.try_recv().expect("the fold re-queries (D-3)");
@@ -339,16 +358,16 @@ fn us2_s2_confirm_dispatches_force_unlock_remediation() {
 #[test]
 fn us2_s3_live_holder_refusal_folds_and_the_sidecar_is_untouched() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
         requests.try_recv().expect("the open query");
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         window.invoke_status_lock_force_unlock();
-        harness.advance();
+        driver.advance_time(0);
         window.invoke_status_remediation_armed(0);
-        harness.advance();
+        driver.advance_time(0);
         let taskboard_ui_slint::requests::UiRequest::StatusRemediate { reply, .. } =
             requests.try_recv().expect("the dispatch")
         else {
@@ -357,8 +376,8 @@ fn us2_s3_live_holder_refusal_folds_and_the_sidecar_is_untouched() {
         reply
             .send(Outcome::Refused(Refusal::HolderAlive))
             .expect("reply accepted");
-        harness.handle.drain_status_remediation();
-        harness.advance();
+        handle.drain_status_remediation();
+        driver.advance_time(0);
         let facts = window.global::<StatusPanelFacts>();
         assert_eq!(
             facts.get_remediation_outcome_kind(), 4,
@@ -375,7 +394,7 @@ fn us2_s3_live_holder_refusal_folds_and_the_sidecar_is_untouched() {
         assert!(!facts.get_remediation_busy(), "the busy posture cleared");
         // The retry affordance: the same row re-arms.
         window.invoke_status_lock_force_unlock();
-        harness.advance();
+        driver.advance_time(0);
         assert_eq!(facts.get_remediation_armed(), 1, "the row re-arms");
     });
 }
@@ -385,13 +404,14 @@ fn us2_s3_live_holder_refusal_folds_and_the_sidecar_is_untouched() {
 #[test]
 fn us3_s1_restart_arms_confirm_strip() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
+        drain_open_queries(&mut requests);
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         window.invoke_status_daemon_restart();
-        harness.advance();
+        driver.advance_time(0);
         let facts = window.global::<StatusPanelFacts>();
         assert_eq!(facts.get_remediation_armed(), 2, "the restart verb arms");
         assert!(requests.try_recv().is_err(), "arming dispatches nothing");
@@ -404,16 +424,16 @@ fn us3_s1_restart_arms_confirm_strip() {
 #[test]
 fn us3_s2_confirm_dispatches_restart_remediation() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
         requests.try_recv().expect("the open query");
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         window.invoke_status_daemon_restart();
-        harness.advance();
+        driver.advance_time(0);
         window.invoke_status_remediation_armed(0);
-        harness.advance();
+        driver.advance_time(0);
         let taskboard_ui_slint::requests::UiRequest::StatusRemediate { action, reply } =
             requests.try_recv().expect("the dispatch")
         else {
@@ -426,8 +446,8 @@ fn us3_s2_confirm_dispatches_restart_remediation() {
         reply
             .send(Outcome::DaemonRestarted { pid: 909 })
             .expect("reply accepted");
-        harness.handle.drain_status_remediation();
-        harness.advance();
+        handle.drain_status_remediation();
+        driver.advance_time(0);
         let facts = window.global::<StatusPanelFacts>();
         assert_eq!(
             facts.get_remediation_outcome_kind(), 3,
@@ -442,16 +462,16 @@ fn us3_s2_confirm_dispatches_restart_remediation() {
 #[test]
 fn us3_s3_spawn_failure_folds_the_typed_refusal() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, false);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, false);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
         requests.try_recv().expect("the open query");
-        fold_wedged(&mut harness, 4242);
-        let window = harness.handle.window();
+        fold_wedged(&handle.window(), 4242);
+        let window = handle.window();
         window.invoke_status_daemon_restart();
-        harness.advance();
+        driver.advance_time(0);
         window.invoke_status_remediation_armed(0);
-        harness.advance();
+        driver.advance_time(0);
         let taskboard_ui_slint::requests::UiRequest::StatusRemediate { reply, .. } =
             requests.try_recv().expect("the dispatch")
         else {
@@ -460,8 +480,8 @@ fn us3_s3_spawn_failure_folds_the_typed_refusal() {
         reply
             .send(Outcome::Refused(Refusal::SpawnFailed))
             .expect("reply accepted");
-        harness.handle.drain_status_remediation();
-        harness.advance();
+        handle.drain_status_remediation();
+        driver.advance_time(0);
         let facts = window.global::<StatusPanelFacts>();
         assert_eq!(facts.get_remediation_outcome_kind(), 4);
         assert_eq!(
@@ -483,9 +503,9 @@ fn us3_s3_spawn_failure_folds_the_typed_refusal() {
 #[test]
 fn d9_kiosk_remediation_rows_render_disabled_and_dispatch_nothing() {
     run(|state| {
-        let (mut harness, mut requests) = mount_holding_requests(state, true);
-        harness.handle.dispatch_action(ActionId::StatusPanelOpen);
-        harness.advance();
+        let (mut driver, handle, mut engine, mut requests) = mount_holding_requests(state, true);
+        handle.dispatch_action(ActionId::StatusPanelOpen);
+        driver.advance_time(0);
         let request = requests.try_recv().expect("the kiosk panel queries");
         let taskboard_ui_slint::requests::UiRequest::StatusQuery { reply } = request else {
             panic!("StatusQuery");
@@ -498,8 +518,8 @@ fn d9_kiosk_remediation_rows_render_disabled_and_dispatch_nothing() {
                 ..StatusSnapshot::default()
             })
             .expect("reply accepted");
-        harness.handle.drain_status_reply();
-        let window = harness.handle.window();
+        handle.drain_status_reply();
+        let window = handle.window();
         let facts = window.global::<StatusPanelFacts>();
         assert!(
             !facts.get_remediation_permitted(),
@@ -508,19 +528,19 @@ fn d9_kiosk_remediation_rows_render_disabled_and_dispatch_nothing() {
         // No remediation dispatch is reachable: the arm absorbs (the
         // adapter's typed-permission gate) and the strip never arms.
         window.invoke_status_holder_kill();
-        harness.advance();
+        driver.advance_time(0);
         assert_eq!(
             facts.get_remediation_armed(), -1,
             "the kiosk arm never arms the strip"
         );
         window.invoke_status_remediation_armed(0);
-        harness.advance();
+        driver.advance_time(0);
         assert!(
             requests.try_recv().is_err(),
             "no StatusRemediate is reachable on the kiosk composition (D-9)"
         );
         assert_eq!(
-            harness.engine.drain(),
+            engine.drain(),
             Vec::<StateCommand>::new(),
             "and no command either"
         );
