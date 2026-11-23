@@ -758,6 +758,30 @@ pub enum ActionId {
     /// diagnostics panel's entry point. Toggle semantics like the
     /// settings opener; the panel dispatches no `StateCommand` (R-3).
     StatusPanelOpen,
+    /// The status panel's Kill-holder row (the D2 command plan W-1,
+    /// §7's delta): no payload — arms the armed-confirm strip (the
+    /// task-delete grammar); Confirm dispatches
+    /// `UiRequest::StatusRemediate { KillHolder }`. The dispatch
+    /// seam is the panel's own (the export-Run precedent: the verb
+    /// address exists for the census/parity; never a rendered menu
+    /// row).
+    StatusHolderKill,
+    /// The status panel's Force-unlock row (the D2 command plan W-2):
+    /// arms the strip; Confirm dispatches
+    /// `UiRequest::StatusRemediate { ForceUnlock }`.
+    StatusLockForceUnlock,
+    /// The status panel's Restart-daemon row (the D2 command plan
+    /// W-3): arms the strip; Confirm dispatches
+    /// `UiRequest::StatusRemediate { RestartDaemon }`.
+    StatusDaemonRestart,
+    /// The export dialog's Preview dispatch (the D2 preview plan
+    /// W-1): one `UiRequest::ExportPreview` over the dialog's spec —
+    /// never `ExportRun` (D-4: no file is written).
+    ExportPreview,
+    /// The export dialog's Copy dispatch (the D2 preview plan W-2):
+    /// one `UiRequest::ExportClipboardCopy` over the dialog's spec
+    /// (D-3: the payload regenerates app-side).
+    ExportClipboardCopy,
 }
 
 impl ActionId {
@@ -773,6 +797,11 @@ impl ActionId {
             Self::AppUndoBranches => "app.undo-branches",
             Self::AppSettings => "app.settings",
             Self::StatusPanelOpen => "app.status-panel-open",
+            Self::StatusHolderKill => "status.holder-kill",
+            Self::StatusLockForceUnlock => "status.lock-force-unlock",
+            Self::StatusDaemonRestart => "status.daemon-restart",
+            Self::ExportPreview => "export.preview",
+            Self::ExportClipboardCopy => "export.clipboard-copy",
             Self::AppHelp => "app.help",
             Self::ExportDialogOpen => "app.export-dialog",
             Self::ExportDialogClose => "app.export-dialog-close",
@@ -1160,6 +1189,63 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_rank: 75,
         description: "Opens or closes the status panel: who serves the database, the sync posture, and the daemon/lock diagnostics. Read-only.",
         menu_group: Some(MenuGroup::Help),
+    },
+    // The status panel's remediation verbs (the D2 command plan
+    // §7): scoped to the panel context, never rendered rows (the
+    // menu budget law, R-3 of the chunk plan) — the dispatch seams
+    // are the panel's own; the addresses exist for the census and
+    // the keymap's context resolution.
+    ActionEntry {
+        id: ActionId::StatusHolderKill,
+        label: "Kill lock holder",
+        contexts: &[ContextId::StatusPanel],
+        category: Category::Application,
+        enabled: true,
+        menu_rank: 1000,
+        description: "Arms the confirm strip for signalling the displayed lock holder to terminate; nothing dispatches until confirmed.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::StatusLockForceUnlock,
+        label: "Force unlock",
+        contexts: &[ContextId::StatusPanel],
+        category: Category::Application,
+        enabled: true,
+        menu_rank: 1010,
+        description: "Arms the confirm strip for removing the stale lock sidecar; the app-side executor re-checks holder liveness before anything is removed.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::StatusDaemonRestart,
+        label: "Restart daemon",
+        contexts: &[ContextId::StatusPanel],
+        category: Category::Application,
+        enabled: true,
+        menu_rank: 1020,
+        description: "Arms the confirm strip for a graceful daemon stop plus a detached daemon spawn; nothing dispatches until confirmed.",
+        menu_group: None,
+    },
+    // The export dialog's preview/clipboard verbs (the D2 preview
+    // plan §7): scoped to the dialog context, never rendered rows.
+    ActionEntry {
+        id: ActionId::ExportPreview,
+        label: "Preview export payload",
+        contexts: &[ContextId::ExportDialog],
+        category: Category::Application,
+        enabled: true,
+        menu_rank: 1030,
+        description: "Generates the csv/json payload the export would write and renders it in the read-only pane; no file is written.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::ExportClipboardCopy,
+        label: "Copy export payload",
+        contexts: &[ContextId::ExportDialog],
+        category: Category::Application,
+        enabled: true,
+        menu_rank: 1040,
+        description: "Regenerates the csv/json payload app-side and copies it to the clipboard; no file is written.",
+        menu_group: None,
     },
     ActionEntry {
         id: ActionId::AppHelp,
@@ -3136,6 +3222,9 @@ mod tests {
             ActionId::AppUndoBranches,
             ActionId::AppSettings,
             ActionId::StatusPanelOpen,
+            ActionId::StatusHolderKill,
+            ActionId::StatusLockForceUnlock,
+            ActionId::StatusDaemonRestart,
             ActionId::AppHelp,
             ActionId::CaptureQuick,
             ActionId::ViewToday,
@@ -3320,6 +3409,8 @@ mod tests {
             // context's Escape rung.
             ActionId::ExportDialogOpen,
             ActionId::ExportDialogClose,
+            ActionId::ExportPreview,
+            ActionId::ExportClipboardCopy,
             // The inline quota edit (HF2, W-5 #961) + its internal
             // commit verb.
             ActionId::HabitQuotaEdit,

@@ -2217,6 +2217,17 @@ impl ActionRouter {
             // the Settings row drives.
             ActionId::ExportDialogOpen => DispatchOutcome::UiEffect(UiEffect::ExportDialogOpen),
             ActionId::ExportDialogClose => DispatchOutcome::UiEffect(UiEffect::ExportDialogClose),
+            // The status lane's remediation verbs and the export
+            // lane's preview/clipboard verbs (the D2 chunk): the
+            // dispatch seams are the panel's/dialog's own (the
+            // export-Run precedent) — the router arms absorb, never
+            // dispatch (the verb addresses exist for the census and
+            // the context resolution).
+            ActionId::StatusHolderKill
+            | ActionId::StatusLockForceUnlock
+            | ActionId::StatusDaemonRestart
+            | ActionId::ExportPreview
+            | ActionId::ExportClipboardCopy => DispatchOutcome::NoTarget,
             // The plan-next-day surface (#622, D-4/D-6): the opener is
             // the routed reachability seam; the row verbs resolve
             // their one-shot target (`NoTarget` without one).

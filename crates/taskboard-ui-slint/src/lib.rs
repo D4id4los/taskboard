@@ -665,6 +665,23 @@ fn start_repaint_driver(
             if adapter.borrow_mut().poll_export_run() {
                 window.invoke_export_outcome_shown();
             }
+            // The preview/copy reply drains (the D2 preview plan
+            // W-3): the same non-blocking polls — a settled reply
+            // folds through the `export_preview_shown` seam (the
+            // callback fires OUTSIDE the adapter borrow — the
+            // re-entrancy law).
+            if adapter.borrow_mut().poll_export_preview()
+                || adapter.borrow_mut().poll_export_copy()
+            {
+                window.invoke_export_preview_shown();
+            }
+            // The remediation reply drain (the D2 command plan W-6):
+            // the same non-blocking poll — a settled typed outcome
+            // folds through the `status_remediation_outcome_shown`
+            // seam (outside the borrow; the fold re-queries, D-3).
+            if adapter.borrow_mut().poll_status_remediation() {
+                window.invoke_status_remediation_outcome_shown();
+            }
             // The status reply drain (OP3 W-2): the same cadence — a
             // settled reply folds the panel's typed facts.
             adapter.borrow_mut().drain_status_reply(&window);
@@ -993,6 +1010,42 @@ impl UiHandle {
             let settled = self.adapter.borrow_mut().poll_export_run();
             if settled {
                 window.invoke_export_outcome_shown();
+            }
+        }
+    }
+
+    /// The preview/copy reply drains (the D2 preview plan W-3): the
+    /// same non-blocking polls the cadence tick runs. Public for the
+    /// component journeys (the established [`UiHandle`]-seam
+    /// pattern): the test plays the app half by answering the drained
+    /// request's oneshot, then drives the drain.
+    pub fn drain_export_preview(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            let settled = self.adapter.borrow_mut().poll_export_preview();
+            if settled {
+                window.invoke_export_preview_shown();
+            }
+        }
+    }
+
+    /// The copy twin of [`Self::drain_export_preview`].
+    pub fn drain_export_copy(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            let settled = self.adapter.borrow_mut().poll_export_copy();
+            if settled {
+                window.invoke_export_preview_shown();
+            }
+        }
+    }
+
+    /// The remediation reply drain (the D2 command plan W-6): the
+    /// same non-blocking poll; the fold re-queries (D-3's post-fact
+    /// refresh).
+    pub fn drain_status_remediation(&self) {
+        if let Some(window) = self.window.as_weak().upgrade() {
+            let settled = self.adapter.borrow_mut().poll_status_remediation();
+            if settled {
+                window.invoke_status_remediation_outcome_shown();
             }
         }
     }

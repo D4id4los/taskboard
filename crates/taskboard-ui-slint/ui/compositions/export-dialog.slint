@@ -18,6 +18,7 @@
 // rationale).
 
 import { Theme, Typography, RoleText, Semantic } from "../theme.slint";
+import { TextButton } from "../widgets/text-button.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
@@ -48,6 +49,30 @@ export struct ExportDialogModel {
     outcome-kind: int,
     outcome-path: string,
     refusal: int,
+    // -- the preview/clipboard lane (the D2 preview plan W-1..W-4) --
+    // The D-5 family-gating fold: the preview/copy controls and the
+    // pane render on the csv/json family pick only (a fold flag,
+    // never hidden lanes; the verbs are undefined for pdf, so the
+    // gated posture is absence, not disabled).
+    preview-enabled: bool,
+    // The per-affordance busy flags (D-4: the preview button, the
+    // copy button and the Run button each hold their own).
+    preview-busy: bool,
+    copy-busy: bool,
+    // The pane's settled facts (W-3): shown = a payload landed;
+    // truncated = the typed presentation-cap fact (D-2); refusal -1 =
+    // none, else the canonical ExportRefusal index.
+    preview-settled: bool,
+    preview-shown: bool,
+    preview-text: string,
+    preview-truncated: bool,
+    preview-refusal: int,
+    // The clipboard outcome's fold (W-3's twin): settled = a Copied
+    // fact or refusal landed; it folds its own caption pair below the
+    // run outcome area, never the run outcome's kind/path fields.
+    copy-settled: bool,
+    copy-bytes: int,
+    copy-refusal: int,
 }
 
 export component ExportDialog inherits Rectangle {
@@ -63,6 +88,10 @@ export component ExportDialog inherits Rectangle {
     callback open-after-toggled();
     // slint: export-run-clicked
     callback run-clicked();
+    // slint: export-preview-clicked — the W-1 Preview dispatch.
+    callback export-preview-requested();
+    // slint: export-copy-clicked — the W-2 Copy dispatch.
+    callback export-copy-requested();
     // slint: export-dialog-close
     callback close-clicked();
 
@@ -131,6 +160,42 @@ export component ExportDialog inherits Rectangle {
                 selected-on-focus: true;
                 edited(text) => root.field-edited(4, text);
                 accepted(text) => root.field-edited(4, text);
+            }
+            // -- The preview/clipboard controls (W-1/W-2): D-5's
+            //    family gating renders them on the csv/json leg only;
+            //    the busy flags are per-affordance (D-4). --
+            HorizontalLayout {
+                spacing: Theme.space-3;
+                TextButton {
+                    label: "Preview";
+                    enabled: !root.model.preview-busy && !root.model.busy;
+                    clicked => root.export-preview-requested();
+                }
+                TextButton {
+                    label: "Copy";
+                    enabled: !root.model.copy-busy && !root.model.busy;
+                    clicked => root.export-copy-requested();
+                }
+            }
+            // The read-only pane (W-3): the engine's payload verbatim
+            // (the one-generator-two-sinks law); over-cap payloads
+            // carry the typed `truncated` fact (D-2).
+            if (root.model.preview-shown): VerticalLayout {
+                spacing: Theme.space-1;
+                RoleText {
+                    role: Typography.caption;
+                    text-color: Theme.text-secondary;
+                    text: root.model.preview-truncated
+                        ? "The preview is capped; the file and the clipboard carry the full payload."
+                        : "The full payload.";
+                    wrap: word-wrap;
+                }
+                RoleText {
+                    role: Typography.caption;
+                    text: root.model.preview-text;
+                    wrap: word-wrap;
+                    overflow: elide;
+                }
             }
         }
 
@@ -202,6 +267,29 @@ export component ExportDialog inherits Rectangle {
             role: Typography.caption;
             text-color: Semantic.danger;
             text: "The export refused (kind " + root.model.refusal + "); the filters are intact — correct the failing field and run again.";
+            overflow: elide;
+        }
+        // The clipboard outcome's fold (the preview plan W-3's twin):
+        // the copied-byte fact or the typed refusal; the dialog stays
+        // mounted with its filter state intact on any refusal (D-3).
+        if (root.model.copy-settled && root.model.copy-refusal < 0): RoleText {
+            role: Typography.caption;
+            text-color: Semantic.success;
+            text: "Copied to the clipboard.";
+            overflow: elide;
+        }
+        if (root.model.copy-settled && root.model.copy-refusal >= 0): RoleText {
+            role: Typography.caption;
+            text-color: Semantic.danger;
+            text: "The copy refused (kind " + root.model.copy-refusal + "); the filters are intact.";
+            overflow: elide;
+        }
+        // The preview's typed refusal fold (US-1/S4): filter state
+        // intact; re-Preview after correcting the failing field.
+        if (root.model.preview-refusal >= 0): RoleText {
+            role: Typography.caption;
+            text-color: Semantic.danger;
+            text: "The preview refused (kind " + root.model.preview-refusal + "); the filters are intact.";
             overflow: elide;
         }
     }
