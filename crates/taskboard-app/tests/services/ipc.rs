@@ -620,7 +620,7 @@ async fn ip13_detach_drops_the_connector_and_the_daemon_still_serves() {
         assert_eq!(view.connector_attached, Some(false));
 
         // The relayed sync verb refuses typed (code 1, envelope kind).
-        let outcome = exec_once(&db, &argv("--json sync")).await;
+        let outcome = exec_once(&db, &argv("--json sync --timeout-secs 2")).await;
         assert_eq!(outcome.code, 1);
         let envelope = &json_lines(outcome.err.as_bytes())[0];
         assert_eq!(envelope["error"]["kind"], "sync-unavailable");
@@ -863,7 +863,7 @@ async fn ip16_attach_from_persisted_state_attaches_and_serves() {
         // outcome is fine (boardless skip, its own failure, or a
         // timeout under loaded runners); the refusal classes are the
         // pinned absence.
-        let outcome = exec_once(&db, &argv("--json sync")).await;
+        let outcome = exec_once(&db, &argv("--json sync --timeout-secs 2")).await;
         if outcome.code != 0 {
             let envelope = &json_lines(outcome.err.as_bytes())[0];
             let kind = envelope["error"]["kind"].as_str().expect("error kind");
