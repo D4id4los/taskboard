@@ -582,6 +582,17 @@ pub enum ActionId {
     /// The armed remove's cancel step: disarms INSIDE the open menu;
     /// nothing was dispatched.
     HabitRemoveCancel,
+    /// The undo-family restore row (journey plan W-3, D-26/D-2): the
+    /// armed-confirm ceremony INSIDE the open habit menu naming the
+    /// roster's restorable habit — the dispatch waits for Confirm and
+    /// routes `StateCommand::RestoreHabit` (the log is never touched).
+    HabitRestore,
+    /// The staged restore's confirm dispatch: routes
+    /// `StateCommand::RestoreHabit` (pre-tombstone values verbatim).
+    HabitRestoreConfirm,
+    /// The armed restore's cancel step: disarms INSIDE the open menu;
+    /// nothing was dispatched.
+    HabitRestoreCancel,
     /// The row's typed planned skip (HF1, #955; plan
     /// 2026-11-21-habit-skip-pause W-1): marks the habit's current
     /// canonical window skipped — the streak survives an intentional
@@ -878,6 +889,9 @@ impl ActionId {
             Self::HabitHistory => "habit.history",
             Self::HabitRemove => "habit.remove",
             Self::HabitRemoveConfirm => "habit.remove-confirm",
+            Self::HabitRestore => "habit.restore",
+            Self::HabitRestoreConfirm => "habit.restore-confirm",
+            Self::HabitRestoreCancel => "habit.restore-cancel",
             Self::HabitRemoveCancel => "habit.remove-cancel",
             Self::HabitSkip => "habit.skip",
             Self::HabitPause => "habit.pause",
@@ -2449,6 +2463,37 @@ pub const REGISTRY: &[ActionEntry] = &[
         menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
+        id: ActionId::HabitRestore,
+        label: "Restore habit",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 246,
+        description: "Arms the habit-restore confirm from the deleted-habits roster (the dispatch waits for Confirm; the log is never touched).",
+        // Internal verb — the habit context menu's only affordance.
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitRestoreConfirm,
+        label: "Confirm habit restore",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 247,
+        description: "Routes the confirmed restore: the habit flips live verbatim with a fresh tombstone clock.",
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitRestoreCancel,
+        label: "Cancel restore",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 248,
+        description: "Disarms the armed habit-restore confirm; nothing was dispatched.",
+        menu_group: None,
+    },
+    ActionEntry {
         id: ActionId::HabitRemoveCancel,
         label: "Cancel removal",
         contexts: GLOBAL,
@@ -3265,6 +3310,9 @@ mod tests {
             ActionId::HabitRemove,
             ActionId::HabitRemoveConfirm,
             ActionId::HabitRemoveCancel,
+            ActionId::HabitRestore,
+            ActionId::HabitRestoreConfirm,
+            ActionId::HabitRestoreCancel,
             // The export dialog's pair (the J2 export plan D-1/W-1):
             // the opener routes the mount, the close is the dialog
             // context's Escape rung.

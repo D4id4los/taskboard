@@ -183,6 +183,13 @@ pub enum UiEffect {
     /// The armed remove's cancel step: the adapter disarms and
     /// re-projects the open menu; nothing dispatched.
     HabitRemoveCancel,
+    /// Arm the undo-family habit restore (W-3): staging touches no
+    /// engine state — the roster's restorable habit rides the adapter
+    /// flag; the dispatch waits for Confirm.
+    HabitRestoreArm,
+    /// The armed restore's cancel step: the adapter disarms and
+    /// re-projects the open menu; nothing dispatched.
+    HabitRestoreCancel,
     /// The create form's open/toggle (round-7 D-7.2): the adapter
     /// flips the armed flag — open when closed, discard-and-close
     /// when armed — only with an active board; kiosk stays inert
@@ -551,6 +558,8 @@ impl UiEffect {
             | Self::HabitConvertCancel
             | Self::HabitRemoveArm
             | Self::HabitRemoveCancel
+            | Self::HabitRestoreArm
+            | Self::HabitRestoreCancel
             // The H4 editor opener joins the view-intent bucket (the
             // settle-then-open cell: a foreign flow settles first,
             // then the surface opens over the resolved subject).
@@ -1141,6 +1150,8 @@ pub struct DispatchCtx {
     /// The staged remove's armed subject (H4 D4): the confirm routes
     /// `DeleteHabit` from it (`None` = unarmed/stale — `NoTarget`).
     pub habit_remove_target: Option<taskboard_domain::HabitId>,
+    /// The undo-family restore's one-shot armed subject (W-3).
+    pub habit_restore_target: Option<taskboard_domain::HabitId>,
     /// The pause editor's one-shot subject (HF1, W-3): the commit and
     /// resume routes read it (`None` = stale — `NoTarget`).
     pub habit_pause_target: Option<taskboard_domain::HabitId>,
@@ -1249,6 +1260,10 @@ impl OneShotSet {
     // cross-consume the create form's draft — the OR-based pin can't
     // see it).
     pub(crate) const HABIT_REMOVE_TARGET: u32 = 1 << 27;
+    // The undo-family restore's armed subject (W-3): the first free
+    // bit past the quota addition (the same sharing hazard — the
+    // OR-based pin can't see a shared draft).
+    pub(crate) const HABIT_RESTORE_TARGET: u32 = 1 << 31;
     pub(crate) const HABIT_PAUSE_TARGET: u32 = 1 << 28;
     // The quota popover's one-shot draft (W-5, #961): the first free
     // bit past the HF1 pause addition (bit 28 landed with HF1; sharing
@@ -1339,6 +1354,9 @@ impl OneShotSet {
     pub(crate) const fn habit_remove_target(self) -> Self {
         self.set(Self::HABIT_REMOVE_TARGET)
     }
+    pub(crate) const fn habit_restore_target(self) -> Self {
+        self.set(Self::HABIT_RESTORE_TARGET)
+    }
     pub(crate) const fn habit_pause_target(self) -> Self {
         self.set(Self::HABIT_PAUSE_TARGET)
     }
@@ -1398,6 +1416,7 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::HabitRepair => OneShotSet::default().habit_repair(),
         A::HabitConvertToSeries => OneShotSet::default().habit_convert_target().pattern_draft(),
         A::HabitRemoveConfirm => OneShotSet::default().habit_remove_target(),
+        A::HabitRestoreConfirm => OneShotSet::default().habit_restore_target(),
         A::HabitPauseCommit => OneShotSet::default().habit_pause_target().pause_draft(),
         A::HabitResume => OneShotSet::default().habit_pause_target(),
         A::HabitCreateCommit => OneShotSet::default().habit_create_draft(),
@@ -1756,6 +1775,17 @@ impl ActionRouter {
             },
             ActionId::HabitRemoveConfirm => match ctx.habit_remove_target {
                 Some(habit) => DispatchOutcome::Command(StateCommand::DeleteHabit { habit }),
+                None => DispatchOutcome::NoTarget,
+            },
+            // The undo-family restore trio (W-3): the arm routes the
+            // adapter's staging effect over the roster's restorable
+            // habit; the confirm routes `RestoreHabit` from the armed
+            // subject (`NoTarget` unarmed/stale — the disarmed form
+            // commits nothing; the log is never touched, D26).
+            ActionId::HabitRestore => DispatchOutcome::UiEffect(UiEffect::HabitRestoreArm),
+            ActionId::HabitRestoreCancel => DispatchOutcome::UiEffect(UiEffect::HabitRestoreCancel),
+            ActionId::HabitRestoreConfirm => match ctx.habit_restore_target {
+                Some(habit) => DispatchOutcome::Command(StateCommand::RestoreHabit { id: habit }),
                 None => DispatchOutcome::NoTarget,
             },
             ActionId::HabitConvertToSeries => {
@@ -2403,6 +2433,7 @@ mod tests {
             habit_repair: None,
             habit_convert_target: None,
             habit_remove_target: None,
+            habit_restore_target: None,
             habit_create_draft: None,
             habit_quota_draft: None,
             pattern_draft: None,
@@ -3507,6 +3538,7 @@ fn one_shot_bits_are_total() {
         .habit_repair()
         .habit_convert_target()
         .habit_remove_target()
+        .habit_restore_target()
         .habit_pause_target()
         .habit_create_draft()
         .habit_move_up()

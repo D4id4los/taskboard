@@ -34,12 +34,23 @@ pub struct FakeEngine {
     /// undo line's other continuity face (`Undo` after an add deletes
     /// the added rule).
     added_rules: Vec<taskboard_domain::ReminderRuleId>,
+    /// The tombstoned rows the settle restored, newest last — the
+    /// restore journeys' undo-line continuity face (`Undo` after a
+    /// restore re-tombstones; fixture continuity, not an oracle — the
+    /// domain fold suite owns the undo semantics).
+    restored_entities: Vec<RestoredEntity>,
     /// The habit sections' pre-reorder orders, newest last — the
     /// reorder undo line's continuity face (#1198 chunk A1 D1:
     /// `Undo` after a reorder restores the section; fixture
     /// continuity, not an oracle — the domain's inverse suite owns
     /// undo semantics).
     habit_sections: Vec<Vec<(taskboard_domain::HabitId, i64)>>,
+}
+
+/// One restored entity's continuity fact (the fake's undo face).
+enum RestoredEntity {
+    Label(taskboard_domain::LabelId),
+    Habit(taskboard_domain::HabitId),
 }
 
 impl FakeEngine {
@@ -154,6 +165,7 @@ impl FakeEngine {
                 removed_rules: Vec::new(),
                 added_rules: Vec::new(),
                 habit_sections: Vec::new(),
+                restored_entities: Vec::new(),
             },
         )
     }
@@ -485,6 +497,21 @@ impl FakeEngine {
                 // add deletes the minted rule; neither touches the
                 // delivery records.
                 StateCommand::Undo => {
+                    // The restore journeys' undo face first (W-2/W-3):
+                    // a restored row re-tombstones (the #1187 law).
+                    match self.restored_entities.pop() {
+                        Some(RestoredEntity::Label(id)) => {
+                            if let Some(label) = state.labels.get_mut(&id) {
+                                label.deleted = true;
+                            }
+                        }
+                        Some(RestoredEntity::Habit(id)) => {
+                            if let Some(habit) = state.habits.habits.get_mut(&id) {
+                                habit.deleted = true;
+                            }
+                        }
+                        None => {}
+                    }
                     if let Some(row) = self.removed_rules.pop() {
                         state.reminders.rules.entry(row.id).or_insert(row);
                     } else if let Some(added) = self.added_rules.pop() {
@@ -536,6 +563,38 @@ impl FakeEngine {
                     if let Some(entry) = state.tracking.entries.get_mut(&newest) {
                         entry.end = Some(now);
                         entry.updated_at = now;
+                    }
+                }
+                // The restore verbs' continuity (the undo-family
+                // journeys, W-2/W-3): the tombstone flips live — the
+                // roster's re-derivation rides the next refresh; the
+                // row is kept so the `Undo` face can re-tombstone.
+                // The clear-all's continuity (the undo-family
+                // journeys, W-4): the settle clears the subject's
+                // rules — the presented roster's next read sees the
+                // empty list (fixture continuity, not an oracle).
+                StateCommand::ClearReminderRules { task } => {
+                    let cleared: Vec<_> = state
+                        .reminders
+                        .rules
+                        .values()
+                        .filter(|rule| rule.task == task)
+                        .map(|rule| rule.id)
+                        .collect();
+                    for id in cleared {
+                        state.reminders.rules.remove(&id);
+                    }
+                }
+                StateCommand::RestoreLabel { id } => {
+                    if let Some(label) = state.labels.get_mut(&id) {
+                        label.deleted = false;
+                        self.restored_entities.push(RestoredEntity::Label(id));
+                    }
+                }
+                StateCommand::RestoreHabit { id } => {
+                    if let Some(habit) = state.habits.habits.get_mut(&id) {
+                        habit.deleted = false;
+                        self.restored_entities.push(RestoredEntity::Habit(id));
                     }
                 }
                 // The journey session exercises only the task verbs

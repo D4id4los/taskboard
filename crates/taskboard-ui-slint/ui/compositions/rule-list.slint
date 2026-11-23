@@ -12,6 +12,7 @@ import { FieldValidity } from "../widgets/text-field.slint";
 import { TippedField } from "../widgets/tipped-field.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { ActionChip } from "../widgets/action-chip.slint";
+import { ConfirmStrip } from "../widgets/confirm-strip.slint";
 
 // One rule row: the offset text form and the created stamp — display
 // strings only (D12: ids stay in the adapter's tables).
@@ -62,6 +63,17 @@ export component RuleList inherits VerticalLayout {
     // row body moves the selected-rule cursor onto that row (pointer
     // and cursor can never disagree; no hover-follow).
     callback row-clicked(int);
+    // The clear-all row (the undo-family journey plan W-4, BF-W-N2
+    // destructive-last): one armed-confirm grammar over the task's
+    // whole rule set — the row arms (the strip mounts naming the
+    // n-rules consequence), Confirm dispatches once, Cancel/Escape
+    // disarms. Disabled at zero rules (D-2: never ceremony a no-op).
+    // slint: rules-clear-asked / rules-clear-cancelled
+    in property <bool> rules-clearable: false;
+    in property <int> rules-clear-count: 0;
+    in property <bool> clear-armed: false;
+    callback rules-clear-asked();
+    callback rules-clear-cancelled();
     in property <FieldValidity> offset-validity: FieldValidity.neutral;
     in property <string> offset-error-hint;
     // The custom-offset field's help sentence (r3-3.1): the
@@ -206,5 +218,39 @@ export component RuleList inherits VerticalLayout {
         role: Typography.caption;
         text-color: Semantic.danger;
         text: root.offset-error-hint;
+    }
+
+    // The clear-all row (W-4, destructive-last — the presets row is
+    // never after it): the affordance greys at zero rules (the typed
+    // structural fact, D-2); the armed strip names the consequence
+    // (UF1's pre-images make the clear one undo step, the strip says
+    // so — recognition over recall).
+    if (!root.clear-armed): HorizontalLayout {
+        spacing: Theme.space-2;
+        RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: root.rules-clearable
+                ? "Clear all " + root.rules-clear-count + " reminder rules"
+                : "No reminder rules to clear";
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        IconButton {
+            icon: IconKind.remove;
+            tone: Tone.danger;
+            enabled: root.rules-clearable;
+            label: "Clear all reminder rules";
+            description: "Arms the clear: every rule on this task goes in one undoable step.";
+            clicked => { root.rules-clear-asked(); }
+        }
+    }
+    if (root.clear-armed): ConfirmStrip {
+        destructive: true;
+        message: "Clears every reminder rule on this task — one undo step brings them all back.";
+        confirm-label: "Confirm clear";
+        cancel-label: "Cancel clear";
+        confirmed => { root.rules-clear-asked(); }
+        cancelled => { root.rules-clear-cancelled(); }
     }
 }

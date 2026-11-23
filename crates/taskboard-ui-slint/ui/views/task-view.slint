@@ -347,6 +347,13 @@ export component TaskView inherits FocusScope {
     // The rule-list composition's seams (chunk 6, D12): forwarded to
     // the window, resolved against the id tables there.
     callback rule-remove-clicked(int);
+    // The clear-all row's pushed halves + seams (the undo-family
+    // journey plan W-4): forwarded to the window, subject-scoped there.
+    in property <bool> rules-clearable: false;
+    in property <int> rules-clear-count: 0;
+    in property <bool> rule-clear-armed: false;
+    callback rule-clear-asked();
+    callback rule-clear-cancelled();
     // The rule cursor's pointer coherence (J3 US-6 D-4, round 9
     // chunk 12): a row-body click moves the selected-rule cursor.
     callback rule-row-clicked(int);
@@ -1210,6 +1217,11 @@ export component TaskView inherits FocusScope {
                 hint: root.task.rules-hint;
                 muted: root.task.rules-muted;
                 offset-help: "Adds a reminder the given time before the due date.";
+                rules-clearable: root.rules-clearable;
+                rules-clear-count: root.rules-clear-count;
+                clear-armed: root.rule-clear-armed;
+                rules-clear-asked() => root.rule-clear-asked();
+                rules-clear-cancelled() => root.rule-clear-cancelled();
                 remove-clicked(i) => root.rule-remove-clicked(i);
                 row-clicked(i) => root.rule-row-clicked(i);
                 add-preset-clicked(i) => root.rule-add-preset-clicked(i);

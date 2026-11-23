@@ -397,6 +397,8 @@ fn key_of(effect: &UiEffect) -> EK {
         | UiEffect::HabitConvertCancel
         | UiEffect::HabitRemoveArm
         | UiEffect::HabitRemoveCancel
+        | UiEffect::HabitRestoreArm
+        | UiEffect::HabitRestoreCancel
         | UiEffect::HabitCreateToggle
         // The quota popover's opener (W-5, #961): the RecurIntent
         // class — a view intent over the row subject, no modal
@@ -1772,6 +1774,8 @@ fn all_effects(fx: &Fixture) -> Vec<UiEffect> {
         UiEffect::HabitConvertArm,
         UiEffect::HabitRemoveArm,
         UiEffect::HabitRemoveCancel,
+        UiEffect::HabitRestoreArm,
+        UiEffect::HabitRestoreCancel,
         UiEffect::HabitEdit,
         // The HF3 history opener: the same view-intent class as the
         // editor opener (the read-role dialog's flag flip).
@@ -3116,6 +3120,8 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
             | UiEffect::HabitPauseOpen
             | UiEffect::HabitConvertArm
             | UiEffect::HabitRemoveArm
+            | UiEffect::HabitRestoreArm
+            | UiEffect::HabitRestoreCancel
             // The H4 editor opener: the settle-then-open view intent
             // (the Nav family's class) — no modal takeover beyond the
             // settle.
