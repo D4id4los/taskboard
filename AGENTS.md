@@ -379,14 +379,19 @@ who holds the lock. A holder that dies (OOM kill included) releases the
 lock automatically — there are no stale locks. CI never needs the
 wrapper (one suite per runner).
 
-For expected-heavy single builds (anything over ~a minute — clippy,
-a release build, a mutants shard), route through
-`scripts/memory-gate.sh <command>` instead of running the command
-bare: the gate checks `MemAvailable` against the box's floor, holds a
-shared lock while memory is tight, and redirects TMPDIR off tmpfs.
-The pre-commit hooks already wrap clippy this way; apply the same
-routing to any agent-launched build of that class (the #906/#931
-incident law: concurrent unguarded heavy builds swap-thrash the box).
+Every agent-launched `cargo` invocation (a targeted `cargo test -p`,
+a `cargo build`, clippy, a release build, a mutants shard — anything)
+routes through `scripts/memory-gate.sh <command>` instead of running
+the command bare: the gate checks `MemAvailable` against the box's
+floor, holds an exclusive lock so the box's heavy-command concurrency
+is exactly 1, and redirects TMPDIR off tmpfs. The pre-commit hooks
+already wrap clippy this way. Routing *everything* is the 2026-11-23
+systemd-oomd incident law: oomd kills on memory PRESSURE (swap
+thrash), not on the floor the gate samples at entry, and five agents'
+"cheap" un-gated targeted builds aggregate past the box's budget even
+when each entry check passed — so the gate must never see an un-gated
+cargo command. (The #906/#931 incident law predates this; this
+closes its escape hatch.)
 
 The coverage gate is the CI-identical three-command sequence (not the
 monolithic `cargo llvm-cov --workspace`): the quarantine step drops torn
