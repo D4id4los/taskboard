@@ -51,6 +51,8 @@ mod small_gated_journeys;
 mod status_export_journeys_command_journeys;
 #[path = "journeys/status_export_journeys_preview_journeys.rs"]
 mod status_export_journeys_preview_journeys;
+#[path = "journeys/status_export_journeys_support.rs"]
+mod status_export_journeys_support;
 #[path = "journeys/status_surface_journeys.rs"]
 mod status_surface_journeys;
 #[path = "journeys/tracker_journeys.rs"]
