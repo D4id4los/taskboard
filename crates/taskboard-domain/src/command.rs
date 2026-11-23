@@ -3547,14 +3547,11 @@ pub fn plan_command(
             plan_entry_restore(app, entry.as_ref(), ids, now)
         }
         StateCommand::RestoreHabit { id } => plan_habit_restore(app, *id, ids, now),
-        // The zero-input journal-addressed restore (the undo-family
-        // amendment D-5): it reads the journal's pre-image, so it plans
-        // in `plan_journaled_command` before the catalogue sees it —
-        // the `EngineRouted` class (the totality arm, ADR 0019).
-        // Engine/journal-routed commands: the wrapper plans in
-        // `plan_journaled_command` before the catalogue sees it, the
-        // undo family the engine routes; a direct dispatch is the typed
-        // rejection (the totality arm, ADR 0019).
+        // Journal-routed commands (the totality arm, ADR 0019): they
+        // plan in `plan_journaled_command` before the catalogue sees
+        // them — the zero-input wrapper (the undo-family amendment
+        // D-5) reads the journal's pre-image there; a direct dispatch
+        // is the typed rejection.
         StateCommand::RestoreTimeEntryFromJournal { .. }
         | StateCommand::Undo
         | StateCommand::Redo

@@ -515,7 +515,8 @@ export component TrackEntriesPanel inherits Rectangle {
                 }
                 // The deleted-entries restore section (W-9): mounted
                 // only when the roster's entry section is non-empty
-                // (no dead chrome); the armed strip names the
+                // (no dead chrome); the armed strip names the subject
+                // (the row's engine-derived label — US-5/S2) and the
                 // zero-input consequence (nothing is re-typed, D-5).
                 if (root.has-deleted-entries): VerticalLayout {
                     spacing: Theme.space-1;
@@ -538,7 +539,7 @@ export component TrackEntriesPanel inherits Rectangle {
                             RoleText {
                                 role: Typography.caption;
                                 text-color: Theme.text-secondary;
-                                text: "Restores the entry from the journal — verbatim, nothing re-typed.";
+                                text: "Restores “" + root.deleted-entry-rows[root.restore-armed-index] + "” — verbatim from the journal, nothing re-typed.";
                                 vertical-alignment: center;
                                 horizontal-stretch: 1;
                                 wrap: word-wrap;

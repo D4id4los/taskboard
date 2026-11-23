@@ -69,11 +69,10 @@ export component RuleList inherits VerticalLayout {
     // n-rules consequence), Confirm dispatches once, Cancel/Escape
     // disarms. Disabled at zero rules (D-2: never ceremony a no-op).
     // slint: rules-clear-asked / rules-clear-cancelled
+    // (adapter: rules_clear_asked / rules_clear_cancelled)
     in property <bool> rules-clearable: false;
     in property <int> rules-clear-count: 0;
     in property <bool> clear-armed: false;
-    // slint: rules-clear-asked / rules-clear-cancelled
-    // (adapter: rules_clear_asked / rules_clear_cancelled)
     callback rules-clear-asked();
     callback rules-clear-cancelled();
     in property <FieldValidity> offset-validity: FieldValidity.neutral;
@@ -224,9 +223,9 @@ export component RuleList inherits VerticalLayout {
 
     // The clear-all row (W-4, destructive-last — the presets row is
     // never after it): the affordance greys at zero rules (the typed
-    // structural fact, D-2); the armed strip names the consequence
-    // (UF1's pre-images make the clear one undo step, the strip says
-    // so — recognition over recall).
+    // structural fact, D-2); the armed strip names the n-rules
+    // consequence (US-3/S2; UF1's pre-images make the clear one undo
+    // step, the strip says so — recognition over recall).
     if (!root.clear-armed): HorizontalLayout {
         spacing: Theme.space-2;
         RoleText {
@@ -249,7 +248,7 @@ export component RuleList inherits VerticalLayout {
     }
     if (root.clear-armed): ConfirmStrip {
         destructive: true;
-        message: "Clears every reminder rule on this task — one undo step brings them all back.";
+        message: "Clears all " + root.rules-clear-count + " reminder rules on this task — one undo step brings them all back.";
         confirm-label: "Confirm clear";
         cancel-label: "Cancel clear";
         confirmed => { root.rules-clear-asked(); }
