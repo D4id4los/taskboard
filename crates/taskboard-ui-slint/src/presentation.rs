@@ -5865,6 +5865,19 @@ mod tests {
         }
     }
 
+    // -- the quota popover's typed seed (D3a W-8, #1196) -----------
+
+    /// US-5/S1: the seed is the quota itself in the draft domain; a
+    /// quota above it seeds the documented clamp — never the silent
+    /// floor of 1 (the opener invents no data).
+    #[test]
+    fn the_quota_seed_is_typed_clamped_never_floored() {
+        assert_eq!(quota_seed(3), 3);
+        assert_eq!(quota_seed(u32::MAX), i32::MAX);
+        assert_eq!(quota_seed(i32::MAX as u32), i32::MAX);
+        assert_ne!(quota_seed(u32::MAX), 1, "no silent fallback exists");
+    }
+
     // -- the review walk's phrase vocabulary (DR-7 chunk 3, D-W7) --
     // The phrase fns OWN their strings: these are the only tests in
     // the tree allowed to assert walk/card text.
@@ -8064,6 +8077,17 @@ pub fn convert_pattern_default(
 #[must_use]
 pub fn habit_progress_phrase(row: &HabitRow) -> String {
     format!("{}/{}", row.count, row.quota)
+}
+
+/// The quota popover's typed seed (D3a W-8, #1196): the stored quota
+/// travels to the popover draft intact. The draft property's `i32`
+/// domain is the only narrower type on the path — a quota above it
+/// clamps at the domain max, and THAT is the documented clamp: the
+/// seed never falls back to a floor of 1 (the opener invents no
+/// data). The commit side re-mints through `NonZeroCount` unchanged.
+#[must_use]
+pub fn quota_seed(quota: u32) -> i32 {
+    i32::try_from(quota).unwrap_or(i32::MAX)
 }
 
 /// The kiosk gate (D-P13, remediated 2026-11-15 per UX R-1 D-2 — the

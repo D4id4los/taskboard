@@ -5134,7 +5134,12 @@ impl Adapter {
                     let state = self.state.load();
                     let seed = state.habits.habits.get(&habit).map(|row| {
                         (
-                            i32::try_from(row.target.quota().get()).unwrap_or(1),
+                            // The typed seed (D3a W-8, #1196): the
+                            // stored quota, clamped at the draft
+                            // domain's max when above it — never the
+                            // silent floor of 1
+                            // (presentation::quota_seed's law).
+                            crate::presentation::quota_seed(row.target.quota().get()),
                             crate::presentation::habit_target_phrase(row.target),
                         )
                     });
