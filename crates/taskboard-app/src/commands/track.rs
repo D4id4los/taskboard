@@ -500,6 +500,122 @@ pub(crate) async fn restore_on(
     }
 }
 
+/// The zero-input `restore --from` steps on a booted core (the
+/// amendment D-5's CLI face): resolve the journal-id selector against
+/// the published roster's restorable deletes (the roster row is the
+/// contract — ids are the restore family's address, D-2), dispatch
+/// `RestoreTimeEntryFromJournal`, and return the engine's pinned
+/// receipt (`EntryRestored`, or `NoOp` for the exact already-restored
+/// fact). The typed refusals fire before any dispatch: an
+/// unknown/ambiguous selector, a non-delete target, a `None`-pre-image
+/// ghost, an evicted id.
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub(crate) async fn restore_from_journal_on(
+    app: &crate::App,
+    selector: &str,
+) -> Result<CommandOutcome, CommandError> {
+    let state = app.engine.shared_state().load_full();
+    let from = resolve_journal_entry(&state, selector)?;
+    drop(state);
+    match app
+        .engine
+        .execute(taskboard_domain::StateCommand::RestoreTimeEntryFromJournal { from })
+        .await?
+    {
+        outcome @ (CommandOutcome::EntryRestored { .. } | CommandOutcome::NoOp) => Ok(outcome),
+        _ => Err(outcome_mismatch()),
+    }
+}
+
+/// Resolves a `--from` selector against the published roster's
+/// deleted-entry rows (`resolve_time_entry`'s grammar over a different
+/// row source): exact uuid → unique ≥8-char lowercased uuid prefix →
+/// typed miss/ambiguity. The roster is the honest row source — an
+/// evicted pre-image is a miss, never a dispatch.
+///
+/// # Errors
+///
+/// [`CommandError::UnknownJournalEntry`] /
+/// [`CommandError::AmbiguousJournalEntry`] — typed, never text-matched.
+fn resolve_journal_entry(
+    state: &AppState,
+    selector: &str,
+) -> Result<taskboard_domain::JournalId, CommandError> {
+    use taskboard_domain::JournalId;
+    let rows = &state.roster.deleted_entries;
+    if let Ok(uuid) = uuid::Uuid::parse_str(selector) {
+        let id = JournalId::from_uuid(uuid);
+        if rows.iter().any(|row| row.journal_id == id) {
+            return Ok(id);
+        }
+    }
+    if selector.len() >= 8 {
+        let needle = selector.to_lowercase();
+        // Pass 1: the journal id (the engine arm's own address).
+        let hits: Vec<JournalId> = rows
+            .iter()
+            .map(|row| row.journal_id)
+            .filter(|id| id.as_uuid().to_string().starts_with(&needle))
+            .collect();
+        match hits.as_slice() {
+            [id] => return Ok(*id),
+            [] => {}
+            [_, ..] => {
+                return Err(CommandError::AmbiguousJournalEntry {
+                    candidates: hits.iter().map(|id| id.as_uuid().to_string()).collect(),
+                });
+            }
+        }
+        // Pass 2: the deleted entry's own id — the stable public
+        // identity the `track delete` receipt names — resolves to its
+        // newest delete's journal id (the roster row is the contract).
+        let hits: Vec<taskboard_domain::TimeEntryId> = rows
+            .iter()
+            .map(|row| row.entry_id)
+            .filter(|id| id.as_uuid().to_string().starts_with(&needle))
+            .collect();
+        match hits.as_slice() {
+            [entry_id] => {
+                return Ok(rows
+                    .iter()
+                    .find(|row| row.entry_id == *entry_id)
+                    .map(|row| row.journal_id)
+                    .expect("the pass matched a roster row"));
+            }
+            [] => {}
+            [_, ..] => {
+                return Err(CommandError::AmbiguousJournalEntry {
+                    candidates: hits.iter().map(|id| id.as_uuid().to_string()).collect(),
+                });
+            }
+        }
+    }
+    Err(CommandError::UnknownJournalEntry {
+        selector: selector.to_owned(),
+    })
+}
+
+/// Boots the core and runs the zero-input `--from` restore (the
+/// one-shot lane).
+///
+/// # Errors
+///
+/// [`CommandError`] — typed, see the variant docs.
+pub async fn restore_from_journal(
+    config: AppConfig,
+    store: Arc<dyn CredentialStore>,
+    selector: &str,
+) -> Result<CommandOutcome, CommandError> {
+    let selector = selector.to_owned();
+    super::tasks::with_core(config, store, async |app| {
+        restore_from_journal_on(app, &selector).await
+    })
+    .await
+}
+
 /// The human render of the restore receipt (D-3: the typed fact).
 #[must_use]
 pub fn render_text_restore(outcome: &CommandOutcome) -> String {
@@ -808,6 +924,14 @@ pub enum TrackInvocation {
         /// The `--id` override.
         id: Option<uuid::Uuid>,
     },
+    /// `restore --from <journal-id/prefix>` — the zero-input
+    /// journal-addressed restore (the undo-family amendment D-5): the
+    /// payload never crosses the CLI; the journaled delete's pre-image
+    /// is the contract.
+    RestoreFromJournal {
+        /// The journal-id selector (full uuid | unique ≥8-char prefix).
+        from: String,
+    },
 }
 
 /// The collapsed `log` span mode: a length ending at the command
@@ -827,6 +951,12 @@ pub enum LogMode {
 /// definition site for both dispatch lanes (D-TC2). `None` is returned
 /// only for the clap-unreachable vacuous log group — total for direct
 /// calls (the [`super::timers::collapse`] comment).
+///
+/// # Panics
+///
+/// Only via `expect` on the restore slots clap itself requires
+/// (`required_unless_present = "from"`) — unreachable through the
+/// clap surface.
 #[must_use]
 pub fn collapse(cmd: TrackCmd) -> Option<TrackInvocation> {
     match cmd {
@@ -870,6 +1000,10 @@ pub fn collapse(cmd: TrackCmd) -> Option<TrackInvocation> {
         }),
         TrackCmd::Delete { entry } => Some(TrackInvocation::Delete { entry }),
         TrackCmd::Restore {
+            from: Some(from), ..
+        } => Some(TrackInvocation::RestoreFromJournal { from }),
+        TrackCmd::Restore {
+            from: None,
             entry,
             task,
             start,
@@ -878,8 +1012,10 @@ pub fn collapse(cmd: TrackCmd) -> Option<TrackInvocation> {
             id,
         } => Some(TrackInvocation::Restore {
             entry,
-            task,
-            start,
+            // clap's `required_unless_present = "from"` guarantees both
+            // slots once `--from` is absent.
+            task: task.expect("the clap-required task slot"),
+            start: start.expect("the clap-required start slot"),
             end,
             kind: kind.unwrap_or_default(),
             id,
@@ -1440,6 +1576,13 @@ pub async fn track_command(
             )
             .await
         }
+        TrackInvocation::RestoreFromJournal { from } => super::run_core(
+            io,
+            config_path,
+            render_text_restore,
+            move |config, store| async move { restore_from_journal(config, store, &from).await },
+        )
+        .await,
         TrackInvocation::Restore {
             entry,
             task,
@@ -1502,6 +1645,11 @@ pub async fn track_line(
         TrackInvocation::Delete { entry } => {
             crate::commands::emit_result(io, delete_on(app, &entry).await, render_text_delete)
         }
+        TrackInvocation::RestoreFromJournal { from } => crate::commands::emit_result(
+            io,
+            restore_from_journal_on(app, &from).await,
+            render_text_restore,
+        ),
         TrackInvocation::Restore {
             entry,
             task,

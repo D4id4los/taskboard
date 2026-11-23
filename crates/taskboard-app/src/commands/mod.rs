@@ -265,6 +265,27 @@ pub enum CommandError {
     /// `CommandError::UnknownTimeEntry(TimeEntryId)` keeps its own kind
     /// via `domain_error_kind`; this variant only serves resolution
     /// before a command is built).
+    /// No journal entry matches the `--from` selector (a miss, an
+    /// evicted pre-image, or a non-delete/`None`-pre-image target — the
+    /// roster is the honest row source, D-5/N5; this variant only
+    /// serves resolution before a command is built).
+    #[error("no restorable journal entry matches {selector:?}")]
+    UnknownJournalEntry {
+        /// The refused selector, verbatim.
+        selector: String,
+    },
+    /// The `--from` prefix matches several restorable deletes; carries
+    /// their full uuids.
+    #[error("journal selector matches several deletes — pass one of {}", candidates.join(" | "))]
+    AmbiguousJournalEntry {
+        /// The matched journal ids' full uuids.
+        candidates: Vec<String>,
+    },
+    /// No time entry matches the selector (the app-side selector
+    /// resolution miss — the *domain*
+    /// `CommandError::UnknownTimeEntry(TimeEntryId)` keeps its own kind
+    /// via `domain_error_kind`; this variant only serves resolution
+    /// before a command is built).
     #[error("no time entry matches {selector:?}")]
     UnknownTimeEntry {
         /// The rejected selector, verbatim.
@@ -541,6 +562,7 @@ impl CommandError {
     /// The stable kebab-case discriminator for the `--json` error shape.
     /// Exhaustive: the compiler forces every new variant to pick a kind.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one kind table, kept flat for review
     pub fn error_kind(&self) -> &'static str {
         match self {
             Self::Config(err) => err.kind(),
@@ -599,6 +621,8 @@ impl CommandError {
             Self::UnknownAdhocAlarm(_) => "unknown-adhoc-alarm",
             Self::UnknownBreakRule(_) => "unknown-break-rule",
             Self::AmbiguousAdhocAlarm { .. } => "ambiguous-adhoc-alarm",
+            Self::UnknownJournalEntry { .. } => "unknown-journal-entry",
+            Self::AmbiguousJournalEntry { .. } => "ambiguous-journal-entry",
             Self::UnknownTimeEntry { .. } => "unknown-time-entry",
             Self::AmbiguousTimeEntry { .. } => "ambiguous-time-entry",
             Self::UnknownReflectionEntry { .. } => "unknown-reflection-entry",
@@ -723,12 +747,14 @@ impl CommandError {
             | Self::UnknownReminderRule(sel)
             | Self::UnknownAdhocAlarm(sel)
             | Self::UnknownBreakRule(sel)
+            | Self::UnknownJournalEntry { selector: sel }
             | Self::UnknownTimeEntry { selector: sel }
             | Self::UnknownReflectionEntry { selector: sel } => Some(sel.clone()),
             Self::AmbiguousTask { candidates }
             | Self::AmbiguousStack { candidates }
             | Self::AmbiguousReminderRule { candidates }
             | Self::AmbiguousAdhocAlarm { candidates }
+            | Self::AmbiguousJournalEntry { candidates }
             | Self::AmbiguousTimeEntry { candidates }
             | Self::AmbiguousReflectionEntry { candidates }
             | Self::AmbiguousBoard { candidates } => Some(candidates.join(", ")),

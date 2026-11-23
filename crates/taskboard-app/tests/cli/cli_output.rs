@@ -325,6 +325,8 @@ fn o3_error_kinds_cover_every_variant() {
             CommandError::TaskDone { .. } => "task-done",
             CommandError::InvalidCredentials => "invalid-credentials",
             CommandError::Unreachable => "unreachable",
+            CommandError::UnknownJournalEntry { .. } => "unknown-journal-entry",
+            CommandError::AmbiguousJournalEntry { .. } => "ambiguous-journal-entry",
             CommandError::UnknownBoard(_) | CommandError::UnknownBoardSelector { .. } => {
                 "unknown-board"
             }

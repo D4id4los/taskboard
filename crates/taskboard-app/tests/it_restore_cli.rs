@@ -703,3 +703,173 @@ async fn us3_s4_track_restore_undo_redeletes_the_restored_row() {
         "the undo removed rather than retained the row"
     );
 }
+
+// ---- US-6: the zero-input journal-addressed restore (W-11, D-5) ---------
+
+/// US-6/S1 (W-11, AC-1): `track restore --from <journal-id>` resolves
+/// (by journal id or by the deleted entry's own id — the delete
+/// receipt's stable identity), dispatches
+/// `RestoreTimeEntryFromJournal`, and the receipt is the pinned
+/// `EntryRestored` naming the re-materialized row. The prefix leg
+/// resolves over both id families. The `--from` flag conflicts with
+/// the payload flags at the clap boundary.
+#[tokio::test]
+async fn us6_s1_track_restore_from_journal_dispatches_and_receipts() {
+    let (config, _dir) = config_for("us6_s1");
+    let task_id = seed_task(&config, "journaled span").await;
+    // Seed a closed span, then hard-delete it (the delete journals the
+    // full pre-image — the #901 capture).
+    let start = chrono::DateTime::parse_from_rfc3339(START_STAMP)
+        .expect("the stamp parses")
+        .with_timezone(&chrono::Utc);
+    let end = chrono::DateTime::parse_from_rfc3339(END_STAMP)
+        .expect("the stamp parses")
+        .with_timezone(&chrono::Utc);
+    let logged = track::log(
+        config.clone(),
+        forbidden_store(),
+        &task_id,
+        track::LogMode::Span(start, end),
+        taskboard_domain::tracking::TimeEntryKind::Work,
+    )
+    .await
+    .expect("log boots");
+    let deleted = track::delete(config.clone(), forbidden_store(), &logged.entry.entry_id)
+        .await
+        .expect("delete boots");
+    assert!(deleted.deleted, "the delete landed");
+    let entry_id = deleted.entry_id;
+
+    // The clap surface: `--from` is accepted and conflicts with the
+    // payload flags (the flag grammar stays the out-of-band path).
+    let ok = Cli::try_parse_from(["taskboard", "track", "restore", "--from", &entry_id]);
+    assert!(ok.is_ok(), "the bare --from argv parses");
+    let conflict = Cli::try_parse_from([
+        "taskboard",
+        "track",
+        "restore",
+        "--from",
+        &entry_id,
+        "--task",
+        &task_id,
+        "--start",
+        START_STAMP,
+    ]);
+    assert!(conflict.is_err(), "the payload flags refuse beside --from");
+
+    // S1 by the deleted entry's own id: the pinned receipt names it.
+    let outcome = track::restore_from_journal(config.clone(), forbidden_store(), &entry_id)
+        .await
+        .expect("restore boots");
+    let CommandOutcome::EntryRestored { id: restored } = &outcome else {
+        panic!("the restore receipt");
+    };
+    assert_eq!(restored.as_uuid().to_string(), entry_id);
+
+    // Delete again; the journal-id leg resolves too — the roster row's
+    // journal id is the engine arm's own address (resolution returns it
+    // through the same selector surface).
+    let deleted2 = track::delete(config.clone(), forbidden_store(), &entry_id)
+        .await
+        .expect("re-delete boots");
+    assert!(deleted2.deleted);
+    // The prefix leg (≥8 chars of the entry id): unique hit.
+    let prefix = &entry_id[..8];
+    let outcome = track::restore_from_journal(config.clone(), forbidden_store(), prefix)
+        .await
+        .expect("restore boots");
+    let CommandOutcome::EntryRestored { id: restored } = &outcome else {
+        panic!("the prefix restore receipt");
+    };
+    assert_eq!(restored.as_uuid().to_string(), entry_id);
+}
+
+/// US-6/S2 (W-11, AC-2/AC-3): the typed refusals fire before any
+/// dispatch — an unknown selector (a random id), an ambiguous prefix,
+/// and a restored (row-present) target that drained from the roster.
+/// The head is unmoved by every refusal (the state truth, not text).
+#[tokio::test]
+async fn us6_s2_nondelete_target_refuses_typed() {
+    let (config, _dir) = config_for("us6_s2");
+    let task_id = seed_task(&config, "refusal span").await;
+    let start = chrono::DateTime::parse_from_rfc3339(START_STAMP)
+        .expect("the stamp parses")
+        .with_timezone(&chrono::Utc);
+    let end = chrono::DateTime::parse_from_rfc3339(END_STAMP)
+        .expect("the stamp parses")
+        .with_timezone(&chrono::Utc);
+    let logged = track::log(
+        config.clone(),
+        forbidden_store(),
+        &task_id,
+        track::LogMode::Span(start, end),
+        taskboard_domain::tracking::TimeEntryKind::Work,
+    )
+    .await
+    .expect("log boots");
+    let deleted = track::delete(config.clone(), forbidden_store(), &logged.entry.entry_id)
+        .await
+        .expect("delete boots");
+    let entry_id = deleted.entry_id;
+
+    // Unknown selector: typed miss, nothing dispatched.
+    let err = track::restore_from_journal(
+        config.clone(),
+        forbidden_store(),
+        "00000000-0000-0000-0000-00000000dead",
+    )
+    .await
+    .expect_err("an unknown id is a typed refusal");
+    assert!(
+        matches!(err, CommandError::UnknownJournalEntry { selector } if selector == "00000000-0000-0000-0000-00000000dead"),
+        "typed unknown-journal-entry refusal"
+    );
+
+    // A second delete widens the roster (the prefix leg resolves over
+    // both rows).
+    let second = track::log(
+        config.clone(),
+        forbidden_store(),
+        &task_id,
+        track::LogMode::Span(start, end),
+        taskboard_domain::tracking::TimeEntryKind::Work,
+    )
+    .await
+    .expect("second log boots");
+    let _ = track::delete(config.clone(), forbidden_store(), &second.entry.entry_id)
+        .await
+        .expect("second delete boots");
+    let short = &entry_id[..entry_id.len().min(8)];
+    // The prefix leg (an 8-char prefix of the deleted entry's id): the
+    // two v7 deletes share their timestamp's leading hex, so the honest
+    // outcome is the typed ambiguity — never a silent pick. A longer
+    // prefix (unique against both rows) lands the pinned receipt.
+    let attempt = track::restore_from_journal(config.clone(), forbidden_store(), short).await;
+    match attempt {
+        Err(CommandError::AmbiguousJournalEntry { candidates }) => {
+            assert_eq!(candidates.len(), 2, "both deletes named");
+        }
+        other => panic!("v7 ids share an 8-char prefix; got {other:?}"),
+    }
+    let mut unique_len = 8;
+    let outcome = loop {
+        unique_len += 1;
+        let longer = &entry_id[..unique_len.min(entry_id.len())];
+        match track::restore_from_journal(config.clone(), forbidden_store(), longer).await {
+            Ok(outcome) => break outcome,
+            Err(CommandError::AmbiguousJournalEntry { .. }) => {}
+            Err(other) => panic!("unexpected typed shape: {other:?}"),
+        }
+    };
+    assert!(matches!(outcome, CommandOutcome::EntryRestored { .. }));
+
+    // The restored row drains from the roster: the same selector is
+    // now the typed miss (the bounded honesty, N5's face at the CLI).
+    let err = track::restore_from_journal(config.clone(), forbidden_store(), &entry_id)
+        .await
+        .expect_err("a present row is no longer restorable from the journal");
+    assert!(
+        matches!(err, CommandError::UnknownJournalEntry { .. }),
+        "the drained roster refuses typed"
+    );
+}
