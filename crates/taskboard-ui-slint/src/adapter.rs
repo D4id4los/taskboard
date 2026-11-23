@@ -1445,6 +1445,20 @@ impl Adapter {
             self.disarm_habit_create(window);
             return Some(true);
         }
+        // The pause editor's dismissal arm (D3a W-7, #1208): the
+        // create form's exact twin — bare Escape ahead of the
+        // resolver. The editor's date field holds the keyboard's
+        // insert phase while mounted (the D20 pull), so the global
+        // escape/cancel preset is physically unreachable from this
+        // surface — the funnel is the action layer's existing shape
+        // for exactly this (no second Escape *binding*: the keymap
+        // is untouched, the C-5 collision rule holds). The dismissal
+        // resolves into the landed habits-pause-cancelled funnel —
+        // cancel writes nothing (the destructive-role dismissal law).
+        if crate::keyscope::habit_pause_dismisses(window.get_habits_pause_open(), stroke) {
+            self.disarm_habit_pause(window);
+            return Some(true);
+        }
         // The due editor's Down arm (special case B, r2 D25, round-3
         // D10): consumed ahead of the resolver so the insert-mode
         // chain never has to bind it. With the picker already open

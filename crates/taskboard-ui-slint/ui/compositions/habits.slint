@@ -27,7 +27,7 @@ import { StatusNotice } from "../widgets/status-notice.slint";
 import { SectionHeader } from "../widgets/section-header.slint";
 import { TextButton, TextButtonEmphasis } from "../widgets/text-button.slint";
 import { AnchorMirror } from "../widgets/anchored-overlay.slint";
-import { HabitQuotaFacts } from "../menu-facts.slint";
+import { HabitPauseFacts, HabitQuotaFacts } from "../menu-facts.slint";
 
 // One tracker row on the card substrate (H2 D2): the card slots are
 // the model derivation's (models::habit_card); the strip facts ride
@@ -278,7 +278,23 @@ export component HabitsSection inherits Rectangle {
         // structurally inert at the arm).
         if (root.editing-enabled && root.pause-open): VerticalLayout {
             spacing: Theme.space-1;
-            HorizontalLayout {
+            // The rect publish (D3a W-7, #1208): the window-level
+            // light-dismiss strips read this editor's realized
+            // geometry from HabitPauseFacts — outside pointers
+            // dismiss, the editor's own fields keep their clicks.
+            AnchorMirror {
+                source-x: pause-editor.absolute-position.x;
+                source-y: pause-editor.absolute-position.y;
+                source-width: pause-editor.width;
+                source-height: pause-editor.height;
+                published(x, y, w, h) => {
+                    HabitPauseFacts.anchor-x = x;
+                    HabitPauseFacts.anchor-y = y;
+                    HabitPauseFacts.anchor-width = w;
+                    HabitPauseFacts.anchor-height = h;
+                }
+            }
+            pause-editor := HorizontalLayout {
                 spacing: Theme.space-2;
                 pause-field := TippedField {
                     horizontal-stretch: 1;

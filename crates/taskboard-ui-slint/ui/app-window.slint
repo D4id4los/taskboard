@@ -76,7 +76,7 @@ import { TodayAnchorFacts } from "today-anchor.slint";
 import { ScrollPageHint } from "scroll-page.slint";
 import { TextField, FieldValidity } from "widgets/text-field.slint";
 export { FieldValidity }
-import { MenuPanelFacts, DatePickerFacts, HabitQuotaFacts } from "menu-facts.slint";
+import { MenuPanelFacts, DatePickerFacts, HabitPauseFacts, HabitQuotaFacts } from "menu-facts.slint";
 import { SettingsScrollFacts, SettingsBoardFacts } from "settings-facts.slint";
 import { DropdownConsumer, DropdownFacts, DropdownLadder } from "widgets/dropdown.slint";
 import { DropdownFlyout } from "widgets/dropdown-flyout.slint";
@@ -90,7 +90,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, StatusPanelData, StatusPanelPosture, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, StatusPanelData, StatusPanelPosture, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts, HabitPauseFacts, HabitQuotaFacts }
 export { ReviewWalkModel, DialogButtonModel, DialogButtonRole }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
@@ -1053,6 +1053,66 @@ export component AppWindow inherits Window {
         // adapter's trust-boundary seam. Kiosk never mounts: the
         // affordance renders disabled there (R-3) and the opener effect
         // is structurally inert.
+        // The habit pause editor's outside-click dismissal (D3a W-7,
+        // #1208): the menu-backdrop pattern over a live rect — four
+        // light-dismiss strips band the published editor geometry
+        // (HabitPauseFacts), so the strips receive exactly the pointer
+        // downs the editor's own fields do not absorb. The mount
+        // condition is the window's `habits-pause-open` (the layer can
+        // never linger); each strip routes the existing
+        // habits-pause-cancelled seam — cancel writes nothing (the
+        // destructive-role dismissal law).
+        if (root.habits-pause-open): TouchArea {
+            // above the editor band
+            x: 0; y: 0;
+            width: root.width;
+            height: max(0, HabitPauseFacts.anchor-y);
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.left) {
+                    root.habits-pause-cancelled();
+                }
+            }
+        }
+        if (root.habits-pause-open): TouchArea {
+            // below the editor band
+            x: 0;
+            y: HabitPauseFacts.anchor-y + HabitPauseFacts.anchor-height;
+            width: root.width;
+            height: max(0, root.height - self.y);
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.left) {
+                    root.habits-pause-cancelled();
+                }
+            }
+        }
+        if (root.habits-pause-open): TouchArea {
+            // left of the editor, within its band
+            x: 0;
+            y: HabitPauseFacts.anchor-y;
+            width: max(0, HabitPauseFacts.anchor-x);
+            height: HabitPauseFacts.anchor-height;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.left) {
+                    root.habits-pause-cancelled();
+                }
+            }
+        }
+        if (root.habits-pause-open): TouchArea {
+            // right of the editor, within its band
+            x: HabitPauseFacts.anchor-x + HabitPauseFacts.anchor-width;
+            y: HabitPauseFacts.anchor-y;
+            width: max(0, root.width - self.x);
+            height: HabitPauseFacts.anchor-height;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.left) {
+                    root.habits-pause-cancelled();
+                }
+            }
+        }
         if (root.habits-quota-open): AnchoredOverlayHost {
             open: true;
             anchor-x: HabitQuotaFacts.anchor-x;
