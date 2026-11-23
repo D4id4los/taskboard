@@ -12,6 +12,18 @@
   picker seams, `ActionId::AppUndoBranches`).
 - **Status**: DRAFT — the journey plan is GATE-PAUSED pending operator
   acceptance; dispatch may not start until the operator accepts it.
+  **Erratum (2026-11-23, operator zero-input ruling)**: the operator's
+  ruling ("any undo that requires input beyond the command is
+  unacceptable"; journal pre-images are the recovery contract) lands
+  in the sibling chunk D1i — see the restore-clear-surfaces journey
+  plan's D-5/D-6. It does not change D1ii's scope: this chunk's
+  surfaces were never payload forms (the picker is pick-only; the CLI
+  jump verbs take an id, not a payload), and D-4's bounded-window id
+  resolution stands. The one interaction: D1i's `RestoreRoster`
+  widening now also carries `deleted_entries`, and the
+  `RestoreTimeEntryFromJournal` verb exists by the time D1ii's CLI
+  arms land if D1i went first — no delta to D1ii's own grammar; the
+  §4 rebase note covers the sequencing.
 - **Branch**: `feat/undo-browse-parity` (one PR; worktree
   `../taskboard-WT-feat-undo-browse-parity`, created with
   `git worktree add -b` per AGENTS §8 after `scripts/worktree-doctor.sh`).
