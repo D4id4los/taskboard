@@ -320,6 +320,10 @@ export struct UndoPickerRowModel {
     id: string,
     // The engine-derived command label (`command_label`).
     label: string,
+    // The engine-derived payload context (#1226, D-3): the command's
+    // own subject (a title, a name). Empty string ↔ `None` across the
+    // seam — the row renders label-only then, never a blank dash.
+    payload: string,
 }
 
 export component UndoBranchPicker inherits Rectangle {
@@ -327,6 +331,11 @@ export component UndoBranchPicker inherits Rectangle {
     // first) and the undo-step rows (the `recent` ancestors).
     in property <[UndoPickerRowModel]> branch-rows;
     in property <[UndoPickerRowModel]> target-rows;
+    // The keyboard cursor (#1227, D-1): an index into the selectable
+    // rows only — 0 Undo, 1 Redo, 2+i the i-th undo-step row, then
+    // the branch rows — never the section headers (the family law:
+    // rows never hold focus; the cursor is paint + invoke routing).
+    in property <int> cursor: 0;
     // slint: undo_branches_open — the mount ack (W-1); the adapter
     // syncs the models, nothing dispatches on open.
     callback undo_branches_open();
@@ -342,6 +351,13 @@ export component UndoBranchPicker inherits Rectangle {
     // slint: undo_picker_dismissed — the outside click (AC-4: closes
     // with nothing dispatched).
     callback undo_picker_dismissed();
+
+    // The D-3 presentation fold (one projection, the adapter mints
+    // the models): a payload-carrying row renders `label — payload`,
+    // a subjectless row stays label-only — never a blank dash.
+    pure function row-text(row: UndoPickerRowModel) -> string {
+        return row.payload == "" ? row.label : row.label + " — " + row.payload;
+    }
 
     background: transparent;
     init => { root.undo_branches_open(); }
@@ -359,6 +375,7 @@ export component UndoBranchPicker inherits Rectangle {
                 label: "Undo";
                 description: "Undoes the last change — the unchanged v1 reflex (US-3).";
                 hint-keys: [];
+                highlighted: self.hover-now || root.cursor == 0;
                 accessible-role: AccessibleRole.button;
                 accessible-label: "Undo";
                 invoked => { root.undo_line_undo(); }
@@ -367,6 +384,7 @@ export component UndoBranchPicker inherits Rectangle {
                 label: "Redo";
                 description: "Re-applies the last undone change — the unchanged v1 reflex (US-3).";
                 hint-keys: [];
+                highlighted: self.hover-now || root.cursor == 1;
                 accessible-role: AccessibleRole.button;
                 accessible-label: "Redo";
                 invoked => { root.undo_line_redo(); }
@@ -378,12 +396,13 @@ export component UndoBranchPicker inherits Rectangle {
                 text-color: Theme.text-secondary;
                 text: "Undo steps";
             }
-            for row in root.target-rows: MenuRow {
-                label: row.label;
+            for row[tidx] in root.target-rows: MenuRow {
+                label: root.row-text(row);
                 description: "Jumps the undo line back to this point (US-2/S1).";
                 hint-keys: [];
+                highlighted: self.hover-now || root.cursor == 2 + tidx;
                 accessible-role: AccessibleRole.button;
-                accessible-label: row.label;
+                accessible-label: root.row-text(row);
                 invoked => { root.undo_target_picked(row.id); }
             }
 
@@ -394,12 +413,13 @@ export component UndoBranchPicker inherits Rectangle {
                 text-color: Theme.text-secondary;
                 text: "Branches";
             }
-            for row in root.branch-rows: MenuRow {
-                label: row.label;
+            for row[bidx] in root.branch-rows: MenuRow {
+                label: root.row-text(row);
                 description: "Redoes down this abandoned branch (US-1/S2).";
                 hint-keys: [];
+                highlighted: self.hover-now || root.cursor == 2 + root.target-rows.length + bidx;
                 accessible-role: AccessibleRole.button;
-                accessible-label: row.label;
+                accessible-label: root.row-text(row);
                 invoked => { root.undo_branch_picked(row.id); }
             }
 

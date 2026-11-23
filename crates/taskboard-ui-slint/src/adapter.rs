@@ -1044,6 +1044,9 @@ impl Adapter {
         if !self.shell.undo_picker {
             return;
         }
+        // The cursor mirror (#1227): the shell's picker-scoped
+        // selection (0 while closed — the mount resets it).
+        keyboard.set_undo_picker_cursor(i32::try_from(self.shell.menu.selected).unwrap_or(0));
         let undo = &self.state.load().undo;
         let rows = |labels: &[taskboard_domain::UndoLabel]| -> Vec<crate::UndoPickerRowModel> {
             labels
@@ -1051,6 +1054,9 @@ impl Adapter {
                 .map(|row| crate::UndoPickerRowModel {
                     id: row.id.as_uuid().to_string().into(),
                     label: row.label.as_str().into(),
+                    // D-3: empty string ↔ `None` across the seam —
+                    // the row renders label-only, never a blank dash.
+                    payload: row.payload.as_deref().unwrap_or("").into(),
                 })
                 .collect()
         };
@@ -7001,7 +7007,15 @@ impl Adapter {
                 self.settle_foreign_flow_for_modal(window);
                 Self::dismiss_tooltip(window);
                 Self::reset_editing_facts(window);
-                self.shell.apply(&effect, self.menu_entries.len());
+                // The picker's selectable-row count (#1227, I-1): the
+                // two reflex rows plus the projection's rows — the
+                // cursor machinery's wrapping bound (the shell stores
+                // it at mount).
+                let picker_len = {
+                    let undo = &self.state.load_full().undo;
+                    2 + undo.recent.len() + undo.branch_children.len()
+                };
+                self.shell.apply(&effect, picker_len);
                 self.sync_menu_models(window);
                 self.sync_undo_picker_models(window);
             }
@@ -7040,6 +7054,14 @@ impl Adapter {
                 // Activate is jump-to.
                 if self.shell.palette {
                     self.apply_palette_invoke(window);
+                } else if let Some(index) = self.shell.picker_selected() {
+                    // The picker's invoke (#1227): the cursor's row
+                    // routes through the exact seams the click path
+                    // uses (US-4/AC-2: invoke ≡ click, byte-identical
+                    // dispatch) — the close-then-dispatch shape via
+                    // `undo_picker_commit`.
+                    self.shell.apply(&UiEffect::InvokeSelected, 0);
+                    self.invoke_picker_row(window, index);
                 } else if let Some(index) = self.shell.selected_entry() {
                     // Close first, then one re-dispatch — bounded
                     // (D16); the close itself lives in `invoke_entry`
@@ -7139,6 +7161,13 @@ impl Adapter {
                         .focus_mode_cursor(i32::from(direction) * 2 - 1, visible);
                     self.apply_outcomes(window, &outcomes);
                     self.finish_mutation(window);
+                } else if self.shell.undo_picker {
+                    // The picker cursor (#1227, I-1): the shell's
+                    // menu-cursor machinery moves over the picker's
+                    // row count (stored at mount); the sync mirrors
+                    // the cursor onto the window global.
+                    self.shell.apply(&effect, self.shell.menu.len);
+                    self.sync_undo_picker_models(window);
                 } else {
                     self.shell.apply(&effect, self.menu_entries.len());
                 }
@@ -13752,6 +13781,50 @@ impl Adapter {
         uuid::Uuid::parse_str(id)
             .ok()
             .map(taskboard_domain::JournalId::from_uuid)
+    }
+
+    /// The picker-invoke routing (#1227, US-1/S3): the cursor's row
+    /// index resolves against the same published projection the rows
+    /// were minted from — 0/1 are the plain reflex rows (the exact
+    /// `AppUndo`/`AppRedo` routes the keyboard uses), 2+i an undo-step
+    /// row, then the branch rows. Every arm lands in the same seam
+    /// bodies the click path runs (`undo_picker_commit` — US-4/AC-2's
+    /// byte-identical dispatch).
+    fn invoke_picker_row(&mut self, window: &AppWindow, index: usize) {
+        let resolved = {
+            let undo = &self.state.load_full().undo;
+            let targets = undo.recent.len();
+            if index == 0 || index == 1 {
+                None
+            } else if index < 2 + targets {
+                undo.recent.get(index - 2).map(|row| (row.id, false))
+            } else {
+                undo.branch_children
+                    .get(index - 2 - targets)
+                    .map(|row| (row.id, true))
+            }
+        };
+        match resolved {
+            None if index == 0 => self.undo_picker_commit(window, |a, window| {
+                a.route(window, ActionId::AppUndo);
+            }),
+            None if index == 1 => self.undo_picker_commit(window, |a, window| {
+                a.route(window, ActionId::AppRedo);
+            }),
+            Some((target, false)) => self.undo_picker_commit(window, move |a, _window| {
+                a.send(taskboard_domain::StateCommand::UndoTo { target });
+            }),
+            Some((target, true)) => self.undo_picker_commit(window, move |a, _window| {
+                a.send(taskboard_domain::StateCommand::RedoTo { target });
+            }),
+            // A cursor past the projection's rows (a refresh shrank
+            // the windows between the stroke and the invoke): the
+            // close with nothing dispatched — the AC-4 shape.
+            _ => {
+                self.shell.undo_picker = false;
+                self.sync_undo_picker_models(window);
+            }
+        }
     }
 
     /// The row-commit prelude: the picker closes first (the
