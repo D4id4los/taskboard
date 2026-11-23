@@ -479,7 +479,7 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
                 reminder: Some(Some(taskboard_domain::habit::HabitReminderOverride {
                     base: taskboard_domain::habit::NudgeBase::PeriodStart,
                     offset_days: 1,
-                    time: chrono::NaiveTime::from_hms_opt(21, 0, 0).unwrap(),
+                    time: Some(chrono::NaiveTime::from_hms_opt(21, 0, 0).unwrap()),
                     snooze: taskboard_domain::habit::HabitSnooze::Hours(3),
                 })),
                 continued_from: None,
@@ -880,7 +880,7 @@ async fn us6_s2_override_save_routes_the_exact_command_and_the_clear_leg_reverts
     let ovr = taskboard_domain::habit::HabitReminderOverride {
         base: taskboard_domain::habit::NudgeBase::PeriodStart,
         offset_days: 2,
-        time: chrono::NaiveTime::from_hms_opt(7, 45, 0).unwrap(),
+        time: Some(chrono::NaiveTime::from_hms_opt(7, 45, 0).unwrap()),
         snooze: taskboard_domain::habit::HabitSnooze::Days(1),
     };
     clock.advance(60);

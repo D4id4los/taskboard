@@ -129,7 +129,7 @@ pub fn reminder_override_strategy() -> impl Strategy<Value = HabitReminderOverri
         .prop_map(|(base, offset_days, time, snooze)| HabitReminderOverride {
             base,
             offset_days,
-            time,
+            time: Some(time),
             snooze,
         })
 }

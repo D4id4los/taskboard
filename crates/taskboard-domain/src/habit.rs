@@ -301,7 +301,12 @@ impl HabitSnooze {
 /// may be negative to pull *before* the base), at what local
 /// time-of-day it arms, and which snooze unit the snooze affordance
 /// offers. `time` is the *fallback* time-of-day: the occurrence arms at
-/// the habit's `anchor_time` when that is set, else at this field.
+/// the habit's `anchor_time` when that is set, else at this field —
+/// `None` is the **anchor-time-only posture** (#1212, operator ruling
+/// comment 7079171625): the override arms the nudge on the day gate
+/// alone and contributes no clock time of its own; the pre-#1212
+/// 09:00 fallback mint is retired, so a blank time field never
+/// invents one.
 ///
 /// Deliberate leniency: an override on any target kind is accepted
 /// (the nudge law is defined for every kind); only `scheduled_days`
@@ -320,8 +325,14 @@ pub struct HabitReminderOverride {
     /// runs its own gate (`override_armed_today`).
     pub offset_days: i32,
     /// The fallback local time-of-day (used when the habit carries no
-    /// `anchor_time`).
-    pub time: chrono::NaiveTime,
+    /// `anchor_time`). `None` is the anchor-time-only posture (#1212):
+    /// the override names *when the day gate arms* but no clock time —
+    /// `tracker_arm_time` then falls through to `None` unless the
+    /// habit carries an `anchor_time`. Serde: absent decodes to `None`
+    /// (new payloads), a concrete time decodes to `Some` (old
+    /// payloads round-trip); no default-to-09:00 anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<chrono::NaiveTime>,
     /// The snooze unit the habit's nudge offers.
     pub snooze: HabitSnooze,
 }
@@ -1165,12 +1176,14 @@ pub fn override_armed_today(
 /// The occurrence's local time-of-day (US-6 AC-4): the habit's
 /// `anchor_time` when set, else the override's own `time`; `None` when
 /// neither exists — the habit drives no reminder at all. An override
-/// never *requires* an anchor time.
+/// never *requires* an anchor time, and an override with `time: None`
+/// (#1212's anchor-time-only posture) contributes no clock time
+/// either.
 #[must_use]
 pub fn tracker_arm_time(habit: &Habit) -> Option<chrono::NaiveTime> {
     habit
         .anchor_time
-        .or_else(|| habit.reminder.map(|ovr| ovr.time))
+        .or_else(|| habit.reminder.and_then(|ovr| ovr.time))
 }
 
 /// The tracker nudge's full arm decision for `today` inside `habit`'s
@@ -3813,7 +3826,7 @@ mod hf4_schedule_tests {
         let ovr = HabitReminderOverride {
             base: NudgeBase::NudgeDay,
             offset_days: 2,
-            time: NaiveTime::from_hms_opt(7, 30, 0).unwrap(),
+            time: Some(NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
             snooze: HabitSnooze::Hours(2),
         };
         // Default law arms from Wednesday the 18th; shifted by 2 arms
@@ -3913,7 +3926,7 @@ mod hf4_schedule_tests {
         let ovr = HabitReminderOverride {
             base: NudgeBase::PeriodStart,
             offset_days: 0,
-            time: NaiveTime::from_hms_opt(21, 45, 0).unwrap(),
+            time: Some(NaiveTime::from_hms_opt(21, 45, 0).unwrap()),
             snooze: HabitSnooze::Days(1),
         };
         weekly.reminder = Some(ovr);
@@ -3925,6 +3938,80 @@ mod hf4_schedule_tests {
         );
         weekly.reminder = None;
         assert_eq!(tracker_arm(&weekly, window, date(2026, 11, 16)), None);
+    }
+
+    /// #1212 (operator ruling comment 7079171625): an override with
+    /// `time: None` is the anchor-time-only posture — the day gate
+    /// still decides the WHEN, but the occurrence carries no clock
+    /// time unless the habit has an `anchor_time`.
+    #[test]
+    fn anchor_time_only_override_arms_the_day_gate_without_a_clock_time() {
+        let mut weekly = habit(
+            1,
+            HabitTarget::PerWeek(crate::habit::NonZeroCount::new(1).unwrap()),
+        );
+        weekly.reminder = Some(HabitReminderOverride {
+            base: NudgeBase::PeriodStart,
+            offset_days: 0,
+            time: None,
+            snooze: HabitSnooze::Days(1),
+        });
+        let window = WindowStart(date(2026, 11, 16));
+        assert_eq!(
+            tracker_arm_time(&weekly),
+            None,
+            "no anchor chip + blank override time = no clock time"
+        );
+        assert!(
+            tracker_arm(&weekly, window, date(2026, 11, 16)).is_none(),
+            "the arm names a time or none — a blank override mints none"
+        );
+        // The anchor chip supplies the clock time; the override's day
+        // gate keeps deciding the WHEN (the R-8 gate, unchanged).
+        weekly.anchor_time = Some(NaiveTime::from_hms_opt(6, 30, 0).unwrap());
+        assert_eq!(
+            tracker_arm(&weekly, window, date(2026, 11, 16)),
+            Some(NaiveTime::from_hms_opt(6, 30, 0).unwrap()),
+            "anchor chip is the clock time even under the blank override"
+        );
+    }
+
+    /// #1212's serde compatibility: a pre-#1212 payload (concrete
+    /// `time`) decodes to `Some`; a #1212 payload (absent `time`)
+    /// decodes to `None` — no default-to-09:00 anywhere.
+    #[test]
+    fn override_time_serde_decodes_old_and_new_shapes() {
+        let legacy = serde_json::json!({
+            "base": "NudgeDay",
+            "offset_days": 2,
+            "time": "07:30:00",
+            "snooze": {"Hours": 2},
+        });
+        let old: HabitReminderOverride =
+            serde_json::from_value(legacy).expect("legacy shape decodes");
+        assert_eq!(
+            old.time,
+            Some(NaiveTime::from_hms_opt(7, 30, 0).unwrap()),
+            "a concrete legacy time decodes to Some"
+        );
+        let current = serde_json::json!({
+            "base": "NudgeDay",
+            "offset_days": 2,
+            "snooze": {"Hours": 2},
+        });
+        let blank: HabitReminderOverride =
+            serde_json::from_value(current).expect("absent time decodes");
+        assert_eq!(
+            blank.time, None,
+            "an absent time is the anchor-time-only posture, never 09:00"
+        );
+        // Round-trip: the blank posture re-encodes without a `time`
+        // key and decodes back to `None`.
+        let re = serde_json::to_value(blank).expect("encodes");
+        assert!(
+            re.get("time").is_none(),
+            "None encodes as an absent key, keeping new payloads lean"
+        );
     }
 
     // The WHEN-only pin (the `anchor_time` invariance family's HF4
@@ -3945,7 +4032,7 @@ mod hf4_schedule_tests {
         let ovr = HabitReminderOverride {
             base: NudgeBase::NudgeDay,
             offset_days: 3,
-            time: NaiveTime::from_hms_opt(23, 0, 0).unwrap(),
+            time: Some(NaiveTime::from_hms_opt(23, 0, 0).unwrap()),
             snooze: HabitSnooze::Hours(5),
         };
         let mut perturbed = fixture.clone();

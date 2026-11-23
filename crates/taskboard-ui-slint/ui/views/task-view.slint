@@ -641,12 +641,14 @@ export component TaskView inherits FocusScope {
                     }
                     TextField {
                         horizontal-stretch: 1;
-                        // The blank field's actual fallback is the
-                        // mint's 09:00 default (the adapter's
-                        // override mint) — the placeholder names the
-                        // real default, never a different example.
-                        placeholder: "09:00";
-                        label: "Time (no chip: used)";
+                        // A blank field mints no time (#1212): the
+                        // override takes the anchor-time-only posture —
+                        // the occurrence arms at the habit's anchor
+                        // chip when it has one, with no fallback clock
+                        // time. The placeholder names the blank
+                        // meaning, never a different example.
+                        placeholder: "blank = anchor time";
+                        label: "Time (blank: anchor only)";
                         text: root.habit.reminder-time;
                         edited(text) => { root.habit_reminder_time_edited(text); }
                     }

@@ -1246,15 +1246,17 @@ fn parse_days_flag(raw: &str) -> Result<taskboard_domain::habit::WeekdaySet, Str
 
 /// The `habits update --reminder` value (HF4): comma-separated
 /// `key=value` segments; omitted keys take the defaults (`base`
-/// nudge-day, `offset` 0, `time` 09:00, `snooze` 1 hour). Unknown keys,
-/// a duplicated key, or an unparseable value is a typed refusal.
+/// nudge-day, `offset` 0, no `time` — the #1212 anchor-time-only
+/// posture; a named `time=` mints `Some` — never the retired 09:00
+/// fallback, `snooze` 1 hour). Unknown keys, a duplicated key, or an
+/// unparseable value is a typed refusal.
 fn parse_reminder_override(
     raw: &str,
 ) -> Result<taskboard_domain::habit::HabitReminderOverride, String> {
     use taskboard_domain::habit::{HabitReminderOverride, HabitSnooze, NudgeBase};
     let mut base = NudgeBase::NudgeDay;
     let mut offset = 0_i32;
-    let mut time = chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("whole hour");
+    let mut time = None;
     let mut snooze = HabitSnooze::Hours(1);
     let mut seen = std::collections::BTreeSet::<String>::new();
     let insert =
@@ -1286,7 +1288,7 @@ fn parse_reminder_override(
             }
             "time" => {
                 insert("time", &mut seen)?;
-                time = parse_time_of_day_flag(value)?;
+                time = Some(parse_time_of_day_flag(value)?);
             }
             "snooze" => {
                 insert("snooze", &mut seen)?;
@@ -1409,7 +1411,7 @@ fn parse_reminder_override_defaults_fill_and_refusals_are_typed() {
     assert_eq!(ovr.offset_days, -1);
     assert_eq!(
         ovr.time,
-        chrono::NaiveTime::from_hms_opt(7, 30, 0).expect("valid time")
+        Some(chrono::NaiveTime::from_hms_opt(7, 30, 0).expect("valid time"))
     );
     assert_eq!(ovr.snooze, HabitSnooze::Days(1));
     // Defaults: a bare `snooze=45m`? No — hours/days only (O-1); the
@@ -1418,6 +1420,10 @@ fn parse_reminder_override_defaults_fill_and_refusals_are_typed() {
     assert_eq!(minimal.base, NudgeBase::NudgeDay, "R-8 default base");
     assert_eq!(minimal.offset_days, 0);
     assert_eq!(minimal.snooze, HabitSnooze::Hours(2));
+    // #1212 (operator ruling comment 7079171625): an omitted `time=`
+    // mints `None` — the anchor-time-only posture; the retired 09:00
+    // fallback is never filled in. A named time mints `Some`.
+    assert_eq!(minimal.time, None, "blank = anchor-time-only");
     for bad in [
         "snooze=45m",
         "base=tuesday",
