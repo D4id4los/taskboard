@@ -18,7 +18,7 @@ use super::mount;
 use crate::router::{Mode, UiEffect};
 use crate::surfaces::FlowTag;
 use crate::test_platform::on_slint_thread;
-use crate::view_state::Flow;
+use crate::view_state::{EditSubject, Flow};
 use crate::{UiHandle, UiSettings};
 use slint::{ComponentHandle as _, Model as _};
 use std::cell::RefCell;
@@ -1614,7 +1614,9 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
         Flow::None,
         Flow::Create { stack: s1 },
         Flow::CreateStack,
-        Flow::EditTitle { task: a },
+        Flow::EditTitle {
+            subject: EditSubject::Task(a),
+        },
         Flow::EditDate {
             task: a,
             field: crate::view_state::DateField::Due,
@@ -1623,7 +1625,9 @@ fn all_flows(fx: &Fixture) -> Vec<Flow> {
             task: a,
             field: crate::view_state::DateField::Scheduled,
         },
-        Flow::EditDescription { task: a },
+        Flow::EditDescription {
+            subject: EditSubject::Task(a),
+        },
         Flow::Move {
             task: a,
             target: s1,

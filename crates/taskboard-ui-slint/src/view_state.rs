@@ -315,6 +315,17 @@ pub enum WalkTallyNote {
 /// The active flow (D9): at most one — edit (create row or title) XOR
 /// move. `refresh` never touches text properties while a flow holds
 /// the buffers (D9 rule 4).
+/// The edit flows' widened subject vocabulary (O-2, W-14, #1048):
+/// the shared title/description editors mount over a task OR a habit —
+/// one flow grammar, two subjects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditSubject {
+    /// The task subject (the landed grammar).
+    Task(TaskId),
+    /// The habit subject (the editor variant's shared flows).
+    Habit(taskboard_domain::HabitId),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Flow {
     #[default]
@@ -324,8 +335,10 @@ pub enum Flow {
     /// The inline create row for a new stack on the live board
     /// (#304): needs no target stack, so it works on an empty board.
     CreateStack,
-    /// The task-detail title editor.
-    EditTitle { task: TaskId },
+    /// The detail title editor (W-14, #1048: the O-2 widened
+    /// subject — the shared editor mounts over a task OR a habit;
+    /// task behavior is the regression oracle).
+    EditTitle { subject: EditSubject },
     /// The task-detail date editor (r2 D25, round-3 D8): typed entry
     /// plus the calendar picker over one of the task's two date
     /// fields — due or scheduled start — through the *one* commit
@@ -347,7 +360,7 @@ pub enum Flow {
     /// commit funnel is [`Self::commit_description`]; the settle rule
     /// is the text flows' (commit non-empty / discard empty — no
     /// accidental clears on focus loss).
-    EditDescription { task: TaskId },
+    EditDescription { subject: EditSubject },
     /// The move flow: moving `task` toward `target` at insertion slot
     /// `slot` (UX-R8 D-1, #823): the gap index into
     /// `tasks_in_stack(target)` — `0..=len` (gap `i` = before task
@@ -2851,7 +2864,9 @@ impl ViewState {
         let Some(task) = state.tasks.get(&task) else {
             return Vec::new();
         };
-        self.write_flow(Flow::EditDescription { task: task.id });
+        self.write_flow(Flow::EditDescription {
+            subject: EditSubject::Task(task.id),
+        });
         self.set_buffer(task.description.clone());
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
@@ -2864,19 +2879,33 @@ impl ViewState {
     /// paths use [`Self::settle_flow`], which never reaches here
     /// empty.
     pub fn commit_description(&mut self) -> Vec<FlowOutcome> {
-        let Flow::EditDescription { task } = self.flow().clone() else {
+        let Flow::EditDescription { subject } = self.flow().clone() else {
             return Vec::new();
         };
         let description = self.buffer().to_owned();
         self.write_flow(Flow::None);
-        vec![
-            FlowOutcome::Command(StateCommand::UpdateTask {
+        // The habit subject rides the same settle rules, its own
+        // command (W-14, #1048: the sparse `UpdateHabit` — the
+        // description's whitespace is content, the empty buffer is
+        // the clear, exactly the task mask's shape).
+        let command = match subject {
+            EditSubject::Task(task) => StateCommand::UpdateTask {
                 id: task,
                 changes: taskboard_domain::TaskChanges {
                     description: Some(description),
                     ..taskboard_domain::TaskChanges::default()
                 },
-            }),
+            },
+            EditSubject::Habit(habit) => StateCommand::UpdateHabit {
+                habit,
+                changes: taskboard_domain::HabitChanges {
+                    description: Some(description),
+                    ..taskboard_domain::HabitChanges::default()
+                },
+            },
+        };
+        vec![
+            FlowOutcome::Command(command),
             FlowOutcome::SetMode(Mode::Normal),
             FlowOutcome::RefreshNow,
         ]
@@ -2892,8 +2921,46 @@ impl ViewState {
         let Some(task) = state.tasks.get(&task) else {
             return Vec::new();
         };
-        self.write_flow(Flow::EditTitle { task: task.id });
+        self.write_flow(Flow::EditTitle {
+            subject: EditSubject::Task(task.id),
+        });
         self.set_buffer(task.title.clone());
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// The habit variant's title edit (W-14, #1048): the shared flow
+    /// arms over the habit subject, the buffer seeded from the stored
+    /// row (the same display-mirror rule; the commit funnel routes the
+    /// sparse `UpdateHabit`). Inert without a live habit row.
+    pub fn begin_habit_title_edit(
+        &mut self,
+        state: &AppState,
+        habit: taskboard_domain::HabitId,
+    ) -> Vec<FlowOutcome> {
+        let Some(row) = state.habits.habits.get(&habit) else {
+            return Vec::new();
+        };
+        self.write_flow(Flow::EditTitle {
+            subject: EditSubject::Habit(habit),
+        });
+        self.set_buffer(row.title.clone());
+        vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
+    }
+
+    /// The habit variant's description edit (W-14, #1048): the
+    /// `begin_edit_description` twin over the habit subject.
+    pub fn begin_habit_description_edit(
+        &mut self,
+        state: &AppState,
+        habit: taskboard_domain::HabitId,
+    ) -> Vec<FlowOutcome> {
+        let Some(row) = state.habits.habits.get(&habit) else {
+            return Vec::new();
+        };
+        self.write_flow(Flow::EditDescription {
+            subject: EditSubject::Habit(habit),
+        });
+        self.set_buffer(row.description.clone());
         vec![FlowOutcome::SetMode(Mode::Insert), FlowOutcome::RefreshNow]
     }
 
@@ -3133,17 +3200,28 @@ impl ViewState {
                     );
                 }
             }
-            Flow::EditTitle { task } if !title.is_empty() => {
-                outcomes.insert(
-                    0,
-                    FlowOutcome::Command(StateCommand::UpdateTask {
+            Flow::EditTitle { subject } if !title.is_empty() => {
+                // W-14 (#1048): the habit subject commits the same
+                // sparse shape onto `UpdateHabit` (one flow grammar,
+                // two subjects; the settle rule — commit non-empty,
+                // discard empty — is subject-blind).
+                let command = match subject {
+                    EditSubject::Task(task) => StateCommand::UpdateTask {
                         id: task,
                         changes: TaskChanges {
                             title: Some(title),
                             ..TaskChanges::default()
                         },
-                    }),
-                );
+                    },
+                    EditSubject::Habit(habit) => StateCommand::UpdateHabit {
+                        habit,
+                        changes: taskboard_domain::HabitChanges {
+                            title: Some(title),
+                            ..taskboard_domain::HabitChanges::default()
+                        },
+                    },
+                };
+                outcomes.insert(0, FlowOutcome::Command(command));
             }
             // Round 2 (D18/D21): the board/stack lifecycle commits.
             Flow::CreateBoard if !title.is_empty() => {
@@ -5032,6 +5110,19 @@ impl ViewState {
             if self.view() == ViewId::TaskDetail {
                 self.replace_root(ViewId::Board);
             }
+            // W-14 (#1048): the widened edit flows die with the habit
+            // subject exactly like the task flows die with theirs.
+            if matches!(
+                *self.flow(),
+                Flow::EditTitle {
+                    subject: EditSubject::Habit(h)
+                }
+                | Flow::EditDescription {
+                    subject: EditSubject::Habit(h)
+                } if h == habit
+            ) {
+                self.write_flow(Flow::None);
+            }
         }
         if let Some(task) = self.subject_task
             && !is_live(task)
@@ -5042,8 +5133,12 @@ impl ViewState {
             }
             if matches!(
                 *self.flow(),
-                Flow::EditTitle { task: t }
-                    | Flow::EditDescription { task: t }
+                Flow::EditTitle {
+                    subject: EditSubject::Task(t),
+                }
+                | Flow::EditDescription {
+                    subject: EditSubject::Task(t),
+                }
                     | Flow::EditDate {
                         task: t, field: _,
                     }
@@ -7094,7 +7189,12 @@ mod tests {
         assert_eq!(vs.subject_task(), Some(a));
         assert_eq!(*vs.flow(), Flow::None, "entry never arms (plan §6)");
         let outcomes = vs.begin_edit_title(&state, a);
-        assert_eq!(*vs.flow(), Flow::EditTitle { task: a });
+        assert_eq!(
+            *vs.flow(),
+            Flow::EditTitle {
+                subject: EditSubject::Task(a)
+            }
+        );
         assert_eq!(
             vs.buffer(),
             "task-0",
@@ -7130,7 +7230,12 @@ mod tests {
         assert_eq!(*vs.flow(), Flow::None);
         // Still in TaskDetail (display mode): `i` edits the subject.
         let outcomes = vs.edit_subject(&state);
-        assert_eq!(*vs.flow(), Flow::EditTitle { task: a });
+        assert_eq!(
+            *vs.flow(),
+            Flow::EditTitle {
+                subject: EditSubject::Task(a)
+            }
+        );
         assert_eq!(vs.buffer(), "task-0");
         assert!(matches!(
             outcomes.first(),
@@ -8217,12 +8322,16 @@ mod tests {
             Flow::None,
             Flow::Create { stack: s0 },
             Flow::CreateStack,
-            Flow::EditTitle { task: a },
+            Flow::EditTitle {
+                subject: EditSubject::Task(a),
+            },
             Flow::EditDate {
                 task: a,
                 field: crate::view_state::DateField::Due,
             },
-            Flow::EditDescription { task: a },
+            Flow::EditDescription {
+                subject: EditSubject::Task(a),
+            },
             Flow::Move {
                 task: a,
                 target: s0,

@@ -512,7 +512,7 @@ impl FlowTag {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view_state::{DateField, WalkStage};
+    use crate::view_state::{DateField, EditSubject, WalkStage};
     use chrono::NaiveDate;
     use proptest::prelude::*;
     use taskboard_domain::{BoardId, ReviewCadence, StackId, TaskId};
@@ -532,13 +532,17 @@ mod tests {
             FlowTag::None => Flow::None,
             FlowTag::Create => Flow::Create { stack: STACK },
             FlowTag::CreateStack => Flow::CreateStack,
-            FlowTag::EditTitle => Flow::EditTitle { task: TASK },
+            FlowTag::EditTitle => Flow::EditTitle {
+                subject: EditSubject::Task(TASK),
+            },
             FlowTag::EditDate => Flow::EditDate {
                 task: TASK,
                 field: DateField::Due,
             },
             FlowTag::EditRecur => Flow::EditRecur { task: TASK },
-            FlowTag::EditDescription => Flow::EditDescription { task: TASK },
+            FlowTag::EditDescription => Flow::EditDescription {
+                subject: EditSubject::Task(TASK),
+            },
             FlowTag::Move => Flow::Move {
                 task: TASK,
                 target: STACK,

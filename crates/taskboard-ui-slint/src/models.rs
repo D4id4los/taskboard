@@ -2529,8 +2529,31 @@ fn push_task_detail(
     // The detail button's verb (DR-5/4, D-TU6): exactly one while a
     // subject exists, both false without.
     let track_verb = presentation::detail_tracking_verb(state, vs.subject_task());
-    let editing = matches!(vs.flow(), Flow::EditTitle { task } if vs.subject_task().is_some_and(|s| *task == s));
-    let description_editing = matches!(vs.flow(), Flow::EditDescription { task } if vs.subject_task().is_some_and(|s| *task == s));
+    // W-14 (#1048): the widened subject — the flags read the flow's
+    // subject against THIS surface's subject (task or habit; the
+    // habit variant mounts the shared editors on its subject).
+    let editing = matches!(
+        vs.flow(),
+        Flow::EditTitle {
+            subject: crate::view_state::EditSubject::Task(t),
+        } if vs.subject_task().is_some_and(|s| *t == s)
+    ) | matches!(
+        vs.flow(),
+        Flow::EditTitle {
+            subject: crate::view_state::EditSubject::Habit(h),
+        } if vs.subject_habit().is_some_and(|s| *h == s)
+    );
+    let description_editing = matches!(
+        vs.flow(),
+        Flow::EditDescription {
+            subject: crate::view_state::EditSubject::Task(t),
+        } if vs.subject_task().is_some_and(|s| *t == s)
+    ) | matches!(
+        vs.flow(),
+        Flow::EditDescription {
+            subject: crate::view_state::EditSubject::Habit(h),
+        } if vs.subject_habit().is_some_and(|s| *h == s)
+    );
     // The subject task's rules in id order (the table and the row
     // model agree by construction — D12).
     let task_rules: Vec<taskboard_domain::ReminderRuleId> = vs
@@ -2744,8 +2767,18 @@ fn push_task_detail(
         // The arm-path focus flags (US-5/W-5, D-F5): the editor flow's
         // arm names the field on the viewed subject (the walk's own
         // stop fact rides the slint side).
-        title_armed: matches!(vs.flow(), Flow::EditTitle { task } if Some(*task) == vs.subject_task()),
-        description_armed: matches!(vs.flow(), Flow::EditDescription { task } if Some(*task) == vs.subject_task()),
+        title_armed: matches!(
+            vs.flow(),
+            Flow::EditTitle {
+                subject: crate::view_state::EditSubject::Task(t),
+            } if Some(*t) == vs.subject_task()
+        ),
+        description_armed: matches!(
+            vs.flow(),
+            Flow::EditDescription {
+                subject: crate::view_state::EditSubject::Task(t),
+            } if Some(*t) == vs.subject_task()
+        ),
         initial_text: SharedString::from(if editing {
             vs.buffer().to_owned()
         } else {
@@ -2885,17 +2918,25 @@ fn push_task_detail(
         // every pass — each marks ITS field's current value (the
         // widget's selected rows and the open-time anchor read them).
         importance_rows: ModelRc::new(slint::VecModel::from(dropdown_vocabulary_rows(
-            subject.and_then(|t| t.importance).map(|level| level as usize + 1),
+            subject
+                .and_then(|t| t.importance)
+                .map(|level| level as usize + 1),
         ))),
         urgency_rows: ModelRc::new(slint::VecModel::from(dropdown_vocabulary_rows(
-            subject.and_then(|t| t.urgency).map(|level| level as usize + 1),
+            subject
+                .and_then(|t| t.urgency)
+                .map(|level| level as usize + 1),
         ))),
         importance_selected_index: i32::try_from(
-            subject.and_then(|t| t.importance).map_or(0, |level| level as usize + 1),
+            subject
+                .and_then(|t| t.importance)
+                .map_or(0, |level| level as usize + 1),
         )
         .unwrap_or(0),
         urgency_selected_index: i32::try_from(
-            subject.and_then(|t| t.urgency).map_or(0, |level| level as usize + 1),
+            subject
+                .and_then(|t| t.urgency)
+                .map_or(0, |level| level as usize + 1),
         )
         .unwrap_or(0),
         // The labels section's halves (UX R-3 D-2, #789): the
