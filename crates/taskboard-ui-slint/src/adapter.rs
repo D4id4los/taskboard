@@ -5074,6 +5074,26 @@ impl Adapter {
                 self.habit_restore_armed = armed;
                 if armed.is_none() {
                     self.arm_no_target_notice(ActionId::HabitRestore);
+                } else {
+                    // The arm names its subject (the stage-3
+                    // walkthrough's Manual item): the menu's arm row is
+                    // registry-static, so the roster row's name rides
+                    // the notice lane — the confirm's consequence is
+                    // visible, not remembered.
+                    let name = self
+                        .state
+                        .load()
+                        .roster
+                        .tombstoned_habits
+                        .iter()
+                        .find(|row| Some(row.id) == armed)
+                        .map(|row| row.name.clone());
+                    if let Some(name) = name {
+                        self.notice = Some(Notice {
+                            text: crate::presentation::habit_restore_arm_notice_phrase(&name),
+                            until: chrono::Utc::now() + crate::presentation::MENU_NOTICE_HORIZON,
+                        });
+                    }
                 }
                 self.push_notice(window);
                 self.reproject_habit_menu(window);
