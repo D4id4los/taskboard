@@ -327,9 +327,34 @@ pin).
 | pdf dispatch `== -> !=` (#1176) | `cli_export_pdf.rs::the_session_lane_routes_the_pdf_leg_to_the_pdf_renderer` | pinned-but-not-verified until the lane runs a feature window (#1268, D8) |
 | `age_phrase` boundary flips (9, M5) | **not ours** — #1267 (D7) | — |
 
-### W1 — the exit-code-family window
+### W1 — the exit-code-family window (closed 2026-11-23)
 
 `cargo mutants --file repeat.rs --file breaks.rs --file timers.rs
---file reminders.rs` (113 mutants, memory-gated, `--jobs 2`),
-launched 2026-11-22; result recorded below when the window closes
-(or its partial, per the C1 capping template).
+--file reminders.rs --timeout 600 --jobs 2 -- --test cli_sync
+--test cli_tasks --lib` (113 mutants, memory-gated): **49 min —
+65 caught, 11 missed, 37 unviable** (`/tmp` window log; snapshot
+`/tmp/mutants-c2-exitcodes`).
+
+The 11 missed, dispositioned:
+
+- 7 in-renderer `== -> !=` branch flips (breaks render_text_list/
+  render_text_add, reminders render_text_list/render_text_add/
+  render_text_clear's `== 1`, timers render_text_list/render_text_add):
+  **symmetry-preserving** — the D5 injectivity pins survive the flip
+  because both arms still render distinct strings. Un-killable without
+  a text oracle; dispositioned to the S7 golden wave (D5's clause),
+  recorded on #1229.
+- `repeat_command -> u8 with 0`: the W1 tree carried success legs only
+  for repeat — the failure leg landed in-round (`66d5687d`) and W2
+  verified the kill below.
+- `reminders.rs resolve_rule == -> !=`, `reminders.rs collapse
+  || -> &&`, `timers.rs timer_rows > -> >=`: the census's "not ours"
+  rows (C1's decision predicates / one-behavior-one-test owners) —
+  untouched, per the chunk plan §1.
+
+### W2 — the repeat.rs verification window (closed 2026-11-23)
+
+`cargo mutants --file repeat.rs --timeout 600 --jobs 2 --
+--test cli_tasks --lib` against the tree carrying the failure legs:
+**13 min — 10 caught, 0 missed, 5 unviable**. Every viable repeat.rs
+mutant is caught, including the `-> 0` replacement W1 exposed.
