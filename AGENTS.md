@@ -278,8 +278,10 @@ implementation specs into the root directory or source folders.
     disposable. Resume work on `<branch>-v2` instead, or re-branch off
     the fetched `origin/main`.
   - Create worktrees with `git worktree add -b <branch>
-    ../<project-root>-WT-<branch-name>` (fails loudly if the branch
-    already exists); never `git worktree add <path> main` — a worktree
+    ../<project-root>-WT-<branch-name> origin/main` (explicit fetched
+    start point, #1185 — the bare spelling branches off the stale
+    local `main` ref; fails loudly if the branch already exists);
+    never `git worktree add <path> main` — a worktree
     sitting on a primary branch looks exactly like an abandoned one to
     the doctor.
   - Spell the worktree path suffix flat: replace `/` in the branch

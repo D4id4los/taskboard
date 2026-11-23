@@ -189,6 +189,15 @@ landed-state summary, not a from-scratch prompt.
 
 * 6. Worktree & environment hygiene
 
+- *Start point law (#1185, 2026-11-23)*: a standard-layout worktree is
+  created with an explicit fetched start point —
+  =git worktree add -b <branch> <path> origin/main= — never the bare
+  =-b <branch> <path>= spelling, which branches off the *local* =main=
+  ref; mid-round, local =main= lags the fetched tip and the fresh,
+  zero-commit worktree then sits strictly below =origin/main=, exactly
+  the shape the worktree-doctor's containment removal targets (the
+  grace window in =scripts/worktree-doctor.sh= is the backstop, not
+  the rule).
 - The house AGENTS §8 worktree rules all apply; additionally, from the
   rollout's one environment incident: after ANY unexpected worktree
   anomaly (a foreign stash surfacing, a checkout of an unexpected
