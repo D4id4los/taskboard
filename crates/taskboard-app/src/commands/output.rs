@@ -1813,7 +1813,8 @@ mod tests {
 
 #[cfg(all(test, feature = "pdf-export"))]
 mod open_failure_pins {
-    use super::{OpenError, OpenFailure};
+    use super::OpenFailure;
+    use crate::pdf::deliver::OpenError;
 
     /// The typed mapping pin (#1229, output.rs): every viewer-open
     /// failure maps to its distinct typed variant — never
@@ -1825,7 +1826,7 @@ mod open_failure_pins {
             OpenFailure::NotFound
         );
         assert_eq!(
-            OpenFailure::from(&OpenError::Spawn(std::io::Error::other("x"))),
+            OpenFailure::from(&OpenError::Spawn(std::io::ErrorKind::Other)),
             OpenFailure::Spawn
         );
         assert_eq!(
