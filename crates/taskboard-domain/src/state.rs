@@ -411,6 +411,19 @@ pub fn aggregate_rows<'a>(rows: impl Iterator<Item = &'a SyncStatus>) -> SyncSta
 /// `pending_ops` is never stored — the outbox is the single source of
 /// truth. A display derivation, like the global depth it replaces: the
 /// materialized rows are never written to storage.
+///
+/// # The unbound-board invariant (#1158, record-why)
+///
+/// The map keys on *every* board, not only bound boards: a phantom
+/// default row (`Idle`, no `last_success`) exists for unbound and
+/// tombstoned boards solely to carry an attributed pending-op count —
+/// the dead-board drain and `read_scope` read it, and the aggregate
+/// sums the rows. Phase/`last_success` are only ever set on bound
+/// boards (post-#1080), and the rows are never persisted. Splitting
+/// the derived pending-ops counter from the per-bound-board contact
+/// row is ruled out until a consumer actually distinguishes them —
+/// nothing does today, so the reshape would be API churn for zero
+/// observable gain.
 pub fn derive_sync_states(
     boards: &BTreeMap<BoardId, Board>,
     stacks: &BTreeMap<StackId, Stack>,
@@ -1093,6 +1106,49 @@ mod sync_states_tests {
         let orphan = sync.get(board_id(99)).expect("orphan row kept");
         assert_eq!(orphan.phase, SyncPhase::Syncing);
         assert_eq!(orphan.pending_ops, 0);
+    }
+
+    // #1158's recorded invariant, pinned: an unbound board still
+    // materializes exactly the default phantom row (Idle, no last
+    // success), and a pending op attributed to it counts on that row.
+    #[test]
+    fn unbound_board_carries_a_phantom_row_that_still_counts_pending_ops() {
+        let clocks = BoardClocks {
+            title: ts(100),
+            color: ts(100),
+            archived: ts(100),
+            deleted: ts(100),
+        };
+        let unbound = Board {
+            id: board_id(7),
+            remote: None,
+            title: "loose".into(),
+            color: Color::new("0000ff"),
+            archived: false,
+            deleted: false,
+            clocks,
+            authors: crate::entities::BoardAuthors::default(),
+            remote_seen: None,
+        };
+        let boards = BTreeMap::from([(board_id(7), unbound)]);
+        let outbox = vec![op(1, LocalOp::UpdateBoard(board_id(7)))];
+        let mut sync = SyncStates::new();
+        derive_sync_states(
+            &boards,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &outbox,
+            &mut sync,
+        );
+        let row = sync.get(board_id(7)).expect("the phantom row exists");
+        assert_eq!(row.phase, SyncPhase::Idle);
+        assert_eq!(row.last_success, None);
+        assert_eq!(
+            row.pending_ops, 1,
+            "the attributed op counts on the phantom row"
+        );
+        assert_eq!(sync.aggregate().pending_ops, 1);
     }
 
     proptest! {
