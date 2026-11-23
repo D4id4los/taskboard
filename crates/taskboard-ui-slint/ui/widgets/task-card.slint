@@ -391,5 +391,16 @@ export component TaskCard inherits Rectangle {
                 }
             }
         }
+
+        // The trailing action slot (D3a W-1, #1199 — the base-widget
+        // ask: optional actions on BOTH sides, not a habit-specific
+        // hack): the composition mounts its own elements here and
+        // they ride the card's row line, right-aligned after the
+        // text column. The slot is pure geometry — the widgets, their
+        // labels and their enablement are the instantiation's (the
+        // slot carries no semantics). Later siblings hit-test first,
+        // so slot elements receive their own clicks while the card's
+        // touch shell keeps the rest.
+        @children
     }
 }

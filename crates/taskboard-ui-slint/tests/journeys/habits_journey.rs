@@ -74,11 +74,12 @@ fn state_habit_at(state: &mut AppState, board: taskboard_domain::BoardId, order:
 }
 
 /// US-1/S1 (AC-1): the habit rows render on the task-card substrate
-/// with the horizontal action strip — the section model carries real
-/// `TaskCardModel`s (the same substrate the task rows speak), the
-/// card's accessible label is the title (the D16 address), and the
-/// strip's log affordance renders at a task row's entry height (no
-/// fixed px: the card's own min-height governs).
+/// with the trailing action slot (D3a W-3 superseded the detached
+/// strip, #1199 — the affordances ride the card line now) — the
+/// section model carries real `TaskCardModel`s (the same substrate
+/// the task rows speak), the card's accessible label is the title
+/// (the D16 address), and the slot's affordances render at a task
+/// row's entry height (the entry-height pin holds).
 #[test]
 fn us1_s1_habit_rows_render_on_the_task_card_substrate() {
     let (_fixture, mut state) = fixture::journey_state();
@@ -100,15 +101,15 @@ fn us1_s1_habit_rows_render_on_the_task_card_substrate() {
             "the card's accessible address is the habit title"
         );
         assert!(
-            harness.driver.find_by_label("Log habit").is_some(),
-            "the horizontal strip renders the +1 affordance"
+            harness.driver.find_by_label("Log habit").is_none(),
+            "the detached strip's +1 affordance is gone (the done slot is the +1)"
         );
         assert!(
             harness
                 .driver
                 .find_by_label("Take one habit log back")
                 .is_some(),
-            "the strip renders the −1 affordance"
+            "the trailing slot renders the −1 affordance"
         );
     });
 }

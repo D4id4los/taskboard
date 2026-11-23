@@ -43,6 +43,10 @@ export struct HabitCardModel {
     // exactly); false when the make-up CREATES the window's row. The
     // caption splits on it.
     repair-undoable: bool,
+    // The typed target-met bit (W-2, #1199): the current window's
+    // quota is met — the card's done slot renders the filled visual
+    // until the window resets (window-aware by construction: the bit
+    // folds the same period vocabulary the count does).
     met: bool,
     // The typed planned-skip bit (HF1, W-2): the current window is
     // marked skipped — the chip renders the skip state (display only).
@@ -291,10 +295,11 @@ export component HabitsSection inherits Rectangle {
             }
         }
 
-        // One habit = one card + its horizontal action strip (H2 D3):
-        // the strip keeps the row's entry height (a task row's — no
-        // fixed px, the card's own min-height governs) and the +1
-        // stays an explicit affordance beside the done slot.
+        // One habit = one self-contained card (D3a W-3, #1199): the
+        // detached action strip is gone — the row's actions ride the
+        // card's trailing slot (the mount block above) and the
+        // keyboard verbs keep their chords (US-3). The row keeps the
+        // task row's entry height (the card's own min-height governs).
         for row[row-index] in root.habits: VerticalLayout {
             spacing: Theme.space-1;
 
@@ -323,13 +328,75 @@ export component HabitsSection inherits Rectangle {
                         root.row-activated(row-index);
                     }
                     // The done slot IS the +1 log control (H2 D2): the
-                    // card's done toggle routes the habit log — surplus
-                    // logs are first-class, so `done` never flips.
+                    // card's done control routes the habit log — surplus
+                    // logs are first-class, so the met bit fills the
+                    // slot's visual without ever disabling it (W-2).
                     done-toggled => {
                         root.log-clicked(row-index);
                     }
                     context-requested(x, y) => {
                         root.context-requested(row-index, x, y);
+                    }
+                    // The trailing action slot (D3a W-1/W-3, #1199):
+                    // the row's actions ride the card line — the
+                    // detached strip is gone, the redundant Log habit
+                    // button with it (the done slot is the +1). The
+                    // quota-edit affordance keeps its phrase anchor
+                    // (the popover's AnchorMirror publishes from here),
+                    // the −1 and the make-up valve are the typed
+                    // undo side's mounts. Enablement is the editing
+                    // verb's gate (kiosk greys, never hides — D-P13).
+                    // The fixed slot line (the entry-height pin,
+                    // #1018): the controls ride one Theme-token line
+                    // so the card resolves to the task row's ladder
+                    // step — the slot never grows the card.
+                    slot := HorizontalLayout {
+                        spacing: Theme.space-1;
+                        height: Theme.space-6;
+                        phrase-button := TextButton {
+                            label: row.progress-phrase;
+                            enabled: root.editing-enabled;
+                            clicked => {
+                                root.quota-edit-asked(row-index);
+                            }
+                            AnchorMirror {
+                                source-x: phrase-button.absolute-position.x;
+                                source-y: phrase-button.absolute-position.y;
+                                source-width: phrase-button.width;
+                                source-height: phrase-button.height;
+                                published(x, y, w, h) => {
+                                    HabitQuotaFacts.anchor-x = x;
+                                    HabitQuotaFacts.anchor-y = y;
+                                    HabitQuotaFacts.anchor-width = w;
+                                    HabitQuotaFacts.anchor-height = h;
+                                }
+                            }
+                        }
+                        IconButton {
+                            icon: IconKind.remove;
+                            tone: Tone.neutral;
+                            label: "Take one habit log back";
+                            enabled: root.editing-enabled;
+                            clicked => root.undo-log-clicked(row-index);
+                        }
+                        if (row.repair): IconButton {
+                        icon: IconKind.plus;
+                        tone: Tone.success;
+                        // The make-up valve (issue #506, plan D-7): the
+                        // click dispatches the exact (window, count) the
+                        // row source resolved — the previous window's
+                        // increment, no re-derivation. The caption splits
+                        // on the typed undo side (T-23, #806): the
+                        // undoable side reads as the adjustment it is;
+                        // the creating side names the consequence BEFORE
+                        // the stroke (the recognized-positive bar — the
+                        // feedback is never only after the fact).
+                        label: row.repair-undoable
+                            ? "Add make-up +1 to yesterday (adjusts the window's count; undoable)"
+                            : "Add make-up +1 to yesterday (creates the window's first log row; cannot be undone)";
+                            enabled: root.editing-enabled;
+                            clicked => root.repair-clicked(row-index);
+                        }
                     }
                 }
                 // The insertion indicator (the board delegate's
@@ -360,107 +427,10 @@ export component HabitsSection inherits Rectangle {
                     }
                 }
             }
-            HorizontalLayout {
-                spacing: Theme.space-2;
-                IconButton {
-                    icon: IconKind.plus;
-                    tone: Tone.success;
-                    label: "Log habit";
-                    enabled: root.editing-enabled;
-                    // Surplus logs are first-class: the button never
-                    // disables at/after quota (D-P14); `met` restyled
-                    // the card's progress chip instead.
-                    clicked => root.log-clicked(row-index);
-                }
-                // The row's progress phrase, clickable (W-5, #961):
-                // the quota popover's anchor IS the phrase — clicking
-                // it asks the inline edit (kiosk: rendered disabled,
-                // the R-3 posture). The AnchorMirror publishes the
-                // realized window-space rect to HabitQuotaFacts (the
-                // #954 idiom; stale while unclicked — harmless, the
-                // popover's own mount condition gates the read).
-                phrase-button := TextButton {
-                    label: row.progress-phrase;
-                    enabled: root.editing-enabled;
-                    clicked => {
-                        root.quota-edit-asked(row-index);
-                    }
-                    AnchorMirror {
-                        source-x: phrase-button.absolute-position.x;
-                        source-y: phrase-button.absolute-position.y;
-                        source-width: phrase-button.width;
-                        source-height: phrase-button.height;
-                        published(x, y, w, h) => {
-                            HabitQuotaFacts.anchor-x = x;
-                            HabitQuotaFacts.anchor-y = y;
-                            HabitQuotaFacts.anchor-width = w;
-                            HabitQuotaFacts.anchor-height = h;
-                        }
-                    }
-                }
-                // The −1 recovery (UX R-2 D-3): symmetric with the
-                // +1's risk profile — one click, no armed strip (the
-                // frequency argument); itself reversible by +.
-                IconButton {
-                    icon: IconKind.remove;
-                    tone: Tone.neutral;
-                    label: "Take one habit log back";
-                    enabled: root.editing-enabled;
-                    clicked => root.undo-log-clicked(row-index);
-                }
-                if (row.repair): IconButton {
-                    icon: IconKind.plus;
-                    tone: Tone.success;
-                    // The make-up valve (issue #506, plan D-7): the
-                    // click dispatches the exact (window, count) the
-                    // row source resolved — the previous window's
-                    // increment, no re-derivation. The caption splits
-                    // on the typed undo side (T-23, #806): the
-                    // undoable side reads as the adjustment it is;
-                    // the creating side names the consequence BEFORE
-                    // the stroke (the recognized-positive bar — the
-                    // feedback is never only after the fact).
-                    label: row.repair-undoable
-                        ? "Add make-up +1 to yesterday (adjusts the window's count; undoable)"
-                        : "Add make-up +1 to yesterday (creates the window's first log row; cannot be undone)";
-                    enabled: root.editing-enabled;
-                    clicked => root.repair-clicked(row-index);
-                }
-                // The typed planned skip (HF1, W-1's row affordance
-                // beside the menu row): one click, one typed mark, the
-                // streak survives (R-4: the current window only).
-                IconButton {
-                    icon: IconKind.minus;
-                    tone: Tone.neutral;
-                    label: "Skip today: the typed planned gap — the streak survives";
-                    enabled: root.editing-enabled && !row.paused;
-                    clicked => root.skip-asked(row-index);
-                }
-                // The pause editor's opener (HF1, W-3): opens the
-                // section's inline editor over this row.
-                IconButton {
-                    icon: IconKind.timer;
-                    tone: Tone.neutral;
-                    label: "Pause habit through a date: covered windows are neither counted nor missed";
-                    enabled: root.editing-enabled && !row.paused;
-                    clicked => root.pause-asked(row-index);
-                }
-                // The resume affordance (HF1, W-3): mounts only on a
-                // paused row (the badge's other half); the clear is
-                // badge hygiene, not-paused is the accepted no-op.
-                if (row.paused): IconButton {
-                    icon: IconKind.play;
-                    tone: Tone.neutral;
-                    label: "Resume habit: clears the pause";
-                    enabled: root.editing-enabled;
-                    clicked => root.resume-asked(row-index);
-                }
-            }
         }
-
         // The after-last insertion marker (the board's append twin):
         // the last card's drop zone aims gap `length` — the hairline
-        // paints below the final strip, slint-local like the rest.
+        // paints below the final card, slint-local like the rest.
         if (root.aim-gap >= 0 && root.aim-gap >= root.habits.length): Rectangle {
             width: 100%;
             height: 2px * Theme.base-scale;
