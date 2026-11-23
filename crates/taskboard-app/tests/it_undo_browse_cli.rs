@@ -66,6 +66,35 @@ async fn live_titles(config: &AppConfig) -> Vec<String> {
     titles
 }
 
+/// The shortest ≥8-char prefix that uniquely names `id` within the
+/// published windows (the grammar's uniqueness law; v7 ids minted in
+/// one session share long leading runs, so the floor alone is not a
+/// uniqueness guarantee — the typed ambiguity refusal guards the
+/// rest).
+async fn unique_prefix(config: &AppConfig, id: JournalId) -> String {
+    let view = tasks::history(config.clone(), forbidden_store())
+        .await
+        .expect("history boots");
+    let universe: Vec<String> = view
+        .recent
+        .iter()
+        .chain(view.branch_children.iter())
+        .map(|row| row.id.as_uuid().to_string())
+        .collect();
+    let full = id.as_uuid().to_string();
+    for len in 8..=full.len() {
+        let prefix = &full[..len];
+        let hits = universe
+            .iter()
+            .filter(|other| other.starts_with(prefix))
+            .count();
+        if hits == 1 {
+            return prefix.to_owned();
+        }
+    }
+    full
+}
+
 /// The history row whose payload names `subject` (the typed lookup —
 /// the window is newest first).
 async fn history_row_for(config: &AppConfig, subject: &str) -> JournalId {
@@ -176,11 +205,7 @@ async fn us3_s1_undo_to_dispatches_and_receipts() {
     // newest create, beta); the beta row IS the head — a jump to it
     // is the typed no-op walk.
     let target = history_row_for(&config, "alpha").await;
-    // A unique prefix: v7 ids minted in one session share their
-    // leading characters, so the selector takes enough of the uuid to
-    // be unique (the grammar's uniqueness law — the typed ambiguity
-    // refusal guards the rest).
-    let prefix = target.as_uuid().to_string()[..12].to_owned();
+    let prefix = unique_prefix(&config, target).await;
 
     let receipt = tasks::undo_to(config.clone(), forbidden_store(), &prefix)
         .await
@@ -244,7 +269,7 @@ async fn us3_s2_redo_to_lands_the_branch_tip() {
         "the abandoned sibling stays in window"
     );
 
-    let prefix = beta.as_uuid().to_string()[..12].to_owned();
+    let prefix = unique_prefix(&config, beta).await;
     let receipt = tasks::redo_to(config.clone(), forbidden_store(), &prefix)
         .await
         .expect("the branch jump lands");
