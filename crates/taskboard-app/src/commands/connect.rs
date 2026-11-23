@@ -1073,6 +1073,190 @@ mod tests {
         let json = serde_json::to_value(base(Some(true))).expect("serialize");
         assert_eq!(json["attached"], true);
     }
+
+    // ---- the stdin seam driven end-to-end (#1232) -----------------------
+
+    /// A scripted prompt reader (fakes over mocks): canned answers per
+    /// kind from queues, every asked label recorded — the recorded
+    /// prompt sequence is the typed proof that an answer reached the
+    /// decision it was asked for (#1232; the previously-untested
+    /// `run`-path prompt legs).
+    struct ScriptedPrompts {
+        lines: std::collections::VecDeque<String>,
+        confirms: std::collections::VecDeque<bool>,
+        asked_lines: Vec<String>,
+        asked_secrets: Vec<String>,
+        asked_confirms: Vec<String>,
+    }
+
+    impl ScriptedPrompts {
+        fn new(lines: &[&str], confirms: &[bool]) -> Self {
+            Self {
+                lines: lines.iter().map(|s| (*s).to_owned()).collect(),
+                confirms: confirms.iter().copied().collect(),
+                asked_lines: Vec::new(),
+                asked_secrets: Vec::new(),
+                asked_confirms: Vec::new(),
+            }
+        }
+    }
+
+    impl PromptReader for ScriptedPrompts {
+        fn read_line(
+            &mut self,
+            prompt: &str,
+        ) -> impl std::future::Future<Output = std::io::Result<String>> + Send {
+            let prompted = prompt.to_owned();
+            self.asked_lines.push(prompted);
+            std::future::ready(self.lines.pop_front().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "script dry")
+            }))
+        }
+        fn read_secret(
+            &mut self,
+            prompt: &str,
+        ) -> impl std::future::Future<Output = std::io::Result<String>> + Send {
+            let prompted = prompt.to_owned();
+            self.asked_secrets.push(prompted);
+            std::future::ready(self.lines.pop_front().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "script dry")
+            }))
+        }
+        fn read_confirm(
+            &mut self,
+            prompt: &str,
+        ) -> impl std::future::Future<Output = std::io::Result<bool>> + Send {
+            let prompted = prompt.to_owned();
+            self.asked_confirms.push(prompted);
+            std::future::ready(self.confirms.pop_front().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "script dry")
+            }))
+        }
+    }
+
+    fn standalone_raw() -> AppConfig {
+        let mut raw = AppConfig::default();
+        raw.sync.backend = Some(SyncBackend::Standalone);
+        raw
+    }
+
+    /// #1232: `gather_identity` routes each scripted answer verbatim
+    /// into the identity it returns, asking exactly the three legs in
+    /// ceremony order — no answer is dropped, reordered, or trimmed by
+    /// the seam (the fake's answer IS the expected value).
+    #[tokio::test]
+    async fn gather_identity_routes_scripted_answers_verbatim_in_order() {
+        let mut prompts = ScriptedPrompts::new(
+            &[
+                "https://cloud.example.com/",
+                " alice ",
+                "app secret with  spaces ",
+            ],
+            &[],
+        );
+        let identity = super::gather_identity(&ConnectArgs::default(), &mut prompts)
+            .await
+            .expect("the scripted answers gather");
+        assert_eq!(identity.server, "https://cloud.example.com/");
+        assert_eq!(identity.user, " alice ");
+        assert_eq!(identity.password, "app secret with  spaces ");
+        assert_eq!(prompts.asked_lines.len(), 2, "server, then user");
+        assert_eq!(prompts.asked_secrets.len(), 1, "the secret leg");
+        assert!(prompts.asked_confirms.is_empty(), "no confirm leg expected");
+    }
+
+    /// #1232: an empty scripted secret reaches the identity verbatim —
+    /// the seam transmits; the empty-password refusal lives at
+    /// verification (`verify_credentials` → the typed
+    /// `CommandError`), not at the prompt leg.
+    #[tokio::test]
+    async fn an_empty_secret_answer_reaches_the_identity_unmangled() {
+        let mut prompts = ScriptedPrompts::new(&["https://c.example.com", "alice", ""], &[]);
+        let identity = super::gather_identity(&ConnectArgs::default(), &mut prompts)
+            .await
+            .expect("the seam transmits");
+        assert_eq!(identity.password, "");
+    }
+
+    /// #1232: the D2 guard's confirm leg under the scripted seam — a
+    /// scripted decline is the typed
+    /// [`CommandError::BackendExplicitStandalone`] refusal; a scripted
+    /// consent flips; and the non-confirmable path refuses without
+    /// prompting at all (the L9 pin, asserted by the recorded prompt
+    /// count).
+    #[tokio::test]
+    async fn the_backend_switch_guard_uses_the_scripted_confirm() {
+        let args = ConnectArgs {
+            confirmable: true,
+            ..ConnectArgs::default()
+        };
+        let mut decline = ScriptedPrompts::new(&[], &[false]);
+        let err = super::decide_backend_switch(&standalone_raw(), &args, &mut decline)
+            .await
+            .expect_err("a declined flip is the typed refusal");
+        assert!(matches!(
+            err,
+            super::CommandError::BackendExplicitStandalone
+        ));
+        assert_eq!(decline.asked_confirms.len(), 1);
+
+        let mut consent = ScriptedPrompts::new(&[], &[true]);
+        let switched = super::decide_backend_switch(&standalone_raw(), &args, &mut consent)
+            .await
+            .expect("a consented flip");
+        assert!(switched);
+
+        // Non-confirmable: the typed refusal BEFORE any prompt (L9 —
+        // a declined flip must not cost the user a typed password).
+        let mut silent = ScriptedPrompts::new(&[], &[]);
+        let args = ConnectArgs::default();
+        let err = super::decide_backend_switch(&standalone_raw(), &args, &mut silent)
+            .await
+            .expect_err("the unconfirmable guard refuses");
+        assert!(matches!(
+            err,
+            super::CommandError::BackendExplicitStandalone
+        ));
+        assert!(
+            silent.asked_confirms.is_empty(),
+            "the guard must refuse before prompting"
+        );
+    }
+
+    /// #1232: the D3 guard's confirm leg under the scripted seam —
+    /// consent re-points to entry 0's (scalar world: the configured
+    /// pair's) identity; decline is the typed
+    /// [`CommandError::ConnectionExists`] refusal.
+    #[tokio::test]
+    async fn the_repoint_guard_uses_the_scripted_confirm() {
+        let mut raw = AppConfig::default();
+        raw.nextcloud.server_url = Some("https://old.example".into());
+        raw.nextcloud.username = Some("old-user".into());
+        let identity = super::Identity {
+            server: "https://new.example".into(),
+            user: "new-user".into(),
+            password: "pw".into(),
+        };
+        let args = ConnectArgs {
+            confirmable: true,
+            ..ConnectArgs::default()
+        };
+        let mut consent = ScriptedPrompts::new(&[], &[true]);
+        let repointed = super::decide_repoint(&raw, &identity, &args, &mut consent)
+            .await
+            .expect("a consented re-point");
+        assert_eq!(
+            repointed,
+            Some(("https://old.example".into(), "old-user".into()))
+        );
+        assert_eq!(consent.asked_confirms.len(), 1);
+
+        let mut decline = ScriptedPrompts::new(&[], &[false]);
+        let err = super::decide_repoint(&raw, &identity, &args, &mut decline)
+            .await
+            .expect_err("a declined re-point is the typed refusal");
+        assert!(matches!(err, super::CommandError::ConnectionExists));
+    }
 }
 
 #[cfg(test)]
