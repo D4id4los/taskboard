@@ -9192,6 +9192,7 @@ impl Adapter {
             };
             facts.set_remediation_outcome_kind(kind);
             facts.set_remediation_refusal(refusal);
+            facts.set_remediation_busy(false);
         }
         // The post-fact refresh (D-3): one re-query rides the settle.
         self.dispatch_status_query(window);

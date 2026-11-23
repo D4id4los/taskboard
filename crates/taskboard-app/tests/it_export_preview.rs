@@ -183,8 +183,11 @@ async fn us1_s3_over_cap_payload_folds_the_truncated_fact() {
     else {
         panic!("wrong receipt");
     };
-    let seed_title = "the quick brown fox jumps over the lazy dog padding ";
-    for i in 0..2_000 {
+    // Fewer, fatter rows: a long seed title keeps the crossing
+    // deterministic while the engine-execute count (each a sqlite
+    // transaction) stays modest.
+    let seed_title = "the quick brown fox jumps over the lazy dog padding ".repeat(4);
+    for i in 0..600 {
         let CommandOutcome::CreatedTask(task) = app
             .engine
             .execute(StateCommand::CreateTask {
