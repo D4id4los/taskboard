@@ -852,6 +852,11 @@ fn variant_table() -> Vec<(FlowTag, EK, Exp)> {
         E::WalkFileArm,
         exp(Z, K(KPlanChild)),
     );
+    // The embedded planner's cursor arm (US-22, #1234): the vertical
+    // routes to the shared `walk_plan_cursor` seam (R-9's
+    // one-mechanism law). The fixture's empty plan tables are the
+    // typed no-op — inert, no commands, the child kept.
+    row(FlowTag::ReviewPlanner, E::DirectionV, exp(Z, K(KPlanChild)));
     // The embedded planner's form mounts as the planner's own child
     // (J4 D-2); the unplace is the honest write under the child.
     row(FlowTag::ReviewPlanner, E::PlanBegin, exp(Z, K(KPlanForm)));
