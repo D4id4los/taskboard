@@ -1917,6 +1917,8 @@ export component AppWindow inherits Window {
                 field-edited(field, text) => root.export-field-edited(field, text);
                 open-after-toggled() => root.export-open-after-toggled();
                 run-clicked() => root.export-run();
+                export-preview-requested() => root.export_preview();
+                export-copy-requested() => root.export_clipboard_copy();
                 close-clicked() => root.export-dialog-close();
             }
         }
