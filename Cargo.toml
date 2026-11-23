@@ -107,6 +107,10 @@ signal-hook = "0.3"
 nix = { version = "0.32.0", default-features = false, features = ["term"] }
 # Advisory per-database instance lock (`<db>.lock` sidecar, taskboard-app)
 fd-lock = "4"
+# The export dialog's clipboard handoff (the D2 preview plan D-3,
+# taskboard-app): already in the graph via the slint backend — a direct
+# pin costs nothing new compiled.
+arboard = "3.7"
 # Comment-preserving config read-modify-write (`login`, taskboard-app)
 toml_edit = "0.25"
 # Cross-platform local sockets for the daemon IPC frontend (taskboard-app):
