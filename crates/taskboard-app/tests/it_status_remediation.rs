@@ -35,7 +35,10 @@ fn sidecar_with(holder_pid: Option<u32>) -> (tempfile::TempDir, std::path::PathB
 fn fake_workspace(
     db: std::path::PathBuf,
     alive: Vec<u32>,
-) -> (RemediationWorkspace, Arc<std::sync::Mutex<Vec<&'static str>>>) {
+) -> (
+    RemediationWorkspace,
+    Arc<std::sync::Mutex<Vec<&'static str>>>,
+) {
     let log: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::default();
     let alive = Arc::new(std::sync::Mutex::new(alive));
     let effects = RemediationEffects {
@@ -77,7 +80,7 @@ fn fake_workspace(
 /// W-7 (the plan's typed-outcome pin): each verb answers its typed
 /// fact or refusal — a live holder kill signals, a stale holder kill
 /// refuses `HolderNotAlive`, the self pid refuses `SelfPid`, and a
-/// restart over the NoDaemon stop leg carries the spawn's pid.
+/// restart over the `NoDaemon` stop leg carries the spawn's pid.
 #[tokio::test]
 async fn remediation_outcomes_are_typed_per_action() {
     // The live-holder kill: one signal effect, the typed fact.

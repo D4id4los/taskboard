@@ -18,7 +18,6 @@ use support::fixture;
 use support::health::detached_health;
 
 use arc_swap::ArcSwap;
-use slint::ComponentHandle as _;
 use std::sync::Arc;
 use taskboard_domain::AppState;
 use taskboard_ui_slint::actions::ActionId;
@@ -140,11 +139,13 @@ fn us1_s2_preview_dispatches_the_dialog_spec() {
         let request = requests
             .try_recv()
             .expect("the preview dispatches one ExportPreview");
-        let taskboard_ui_slint::requests::UiRequest::ExportPreview { spec, reply } = request
-        else {
+        let taskboard_ui_slint::requests::UiRequest::ExportPreview { spec, reply } = request else {
             panic!("the preview dispatches ExportPreview");
         };
-        assert_eq!(spec.what, taskboard_ui_slint::requests::ExportFamily::Tracking);
+        assert_eq!(
+            spec.what,
+            taskboard_ui_slint::requests::ExportFamily::Tracking
+        );
         assert_eq!(
             spec.task.as_deref(),
             Some("alpha"),
@@ -251,7 +252,11 @@ fn us1_s4_preview_refusal_folds_and_the_dialog_state_stays() {
         let taskboard_ui_slint::requests::UiRequest::ExportPreview { spec, .. } = request else {
             panic!("ExportPreview");
         };
-        assert_eq!(spec.task.as_deref(), Some("beta"), "the corrected spec rides");
+        assert_eq!(
+            spec.task.as_deref(),
+            Some("beta"),
+            "the corrected spec rides"
+        );
     });
 }
 
@@ -284,8 +289,7 @@ fn us2_s2_copy_dispatches_the_dialog_spec() {
         let request = requests
             .try_recv()
             .expect("the copy dispatches one ExportClipboardCopy");
-        let taskboard_ui_slint::requests::UiRequest::ExportClipboardCopy { spec, reply } =
-            request
+        let taskboard_ui_slint::requests::UiRequest::ExportClipboardCopy { spec, reply } = request
         else {
             panic!("ExportClipboardCopy");
         };

@@ -28,7 +28,7 @@ use taskboard_ui_slint::requests::{
 };
 
 /// A booted standalone core plus the request lane's halves over it
-/// (the it_exports twin, slimmed: the pdf leg is not this suite's).
+/// (the `it_exports` twin, slimmed: the pdf leg is not this suite's).
 async fn booted(config: AppConfig, store: Arc<dyn CredentialStore>) -> (App, PathBuf) {
     let mut config = config;
     let dir = tempfile::tempdir().expect("tempdir");
@@ -50,7 +50,11 @@ async fn booted(config: AppConfig, store: Arc<dyn CredentialStore>) -> (App, Pat
     (app, write_path)
 }
 
-fn workspace(app: &App, config_write_path: PathBuf, store: Arc<dyn CredentialStore>) -> ConnectionWorkspace {
+fn workspace(
+    app: &App,
+    config_write_path: PathBuf,
+    store: Arc<dyn CredentialStore>,
+) -> ConnectionWorkspace {
     ConnectionWorkspace {
         config_write_path,
         store,
@@ -99,11 +103,17 @@ async fn preview_payload_equals_the_engine_export_payload() {
 
     // The preview sink.
     let (reply, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(UiRequest::ExportPreview { spec: spec.clone(), reply })
-        .await
-        .expect("the lane accepts the preview");
-    let ExportPreviewOutcome::Payload { text, format, truncated } =
-        reply_rx.await.expect("the drain answers")
+    tx.send(UiRequest::ExportPreview {
+        spec: spec.clone(),
+        reply,
+    })
+    .await
+    .expect("the lane accepts the preview");
+    let ExportPreviewOutcome::Payload {
+        text,
+        format,
+        truncated,
+    } = reply_rx.await.expect("the drain answers")
     else {
         panic!("the preview generates, got a refusal");
     };
@@ -133,10 +143,7 @@ async fn preview_payload_equals_the_engine_export_payload() {
         "the preview payload equals the engine export payload byte-for-byte (D-1)"
     );
     assert!(
-        !home
-            .path()
-            .join("tracking")
-            .exists(),
+        !home.path().join("tracking").exists(),
         "the preview wrote no file of its own (D-4)"
     );
 }
@@ -148,6 +155,9 @@ async fn preview_payload_equals_the_engine_export_payload() {
 /// preview verb drives.
 #[tokio::test]
 async fn us1_s3_over_cap_payload_folds_the_truncated_fact() {
+    use taskboard_domain::StateCommand;
+    use taskboard_domain::command::CommandOutcome;
+
     let home = tempfile::tempdir().expect("export home");
     let mut config = AppConfig::default();
     config.export.pdf_dir = Some(home.path().to_path_buf());
@@ -158,8 +168,6 @@ async fn us1_s3_over_cap_payload_folds_the_truncated_fact() {
     // Seed a tracking log over the presentation cap: per entry the
     // csv/json row carries the task title, so a long-enough seed
     // title plus enough entries crosses the cap.
-    use taskboard_domain::command::CommandOutcome;
-    use taskboard_domain::StateCommand;
     let taskboard_domain::command::CommandOutcome::CreatedBoard(board) = app
         .engine
         .execute(StateCommand::CreateBoard {
@@ -222,7 +230,10 @@ async fn us1_s3_over_cap_payload_folds_the_truncated_fact() {
         ..ExportSpec::default()
     };
     let outcome = taskboard_app::ui_requests::run_preview(&state, &ws.export, &spec);
-    let ExportPreviewOutcome::Payload { truncated, text, .. } = outcome else {
+    let ExportPreviewOutcome::Payload {
+        truncated, text, ..
+    } = outcome
+    else {
         panic!("the preview generates");
     };
     assert!(truncated, "the over-cap payload carries the typed fact");

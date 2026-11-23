@@ -670,8 +670,7 @@ fn start_repaint_driver(
             // folds through the `export_preview_shown` seam (the
             // callback fires OUTSIDE the adapter borrow — the
             // re-entrancy law).
-            if adapter.borrow_mut().poll_export_preview()
-                || adapter.borrow_mut().poll_export_copy()
+            if adapter.borrow_mut().poll_export_preview() || adapter.borrow_mut().poll_export_copy()
             {
                 window.invoke_export_preview_shown();
             }

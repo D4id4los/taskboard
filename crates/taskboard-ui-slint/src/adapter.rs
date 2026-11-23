@@ -823,15 +823,13 @@ pub(crate) struct Adapter {
     /// `Some` between the Preview dispatch and the settled reply; the
     /// close seam drops it (the D-7 escape law, the export-reply
     /// twin).
-    export_preview_reply:
-        Option<oneshot::Receiver<crate::requests::ExportPreviewOutcome>>,
+    export_preview_reply: Option<oneshot::Receiver<crate::requests::ExportPreviewOutcome>>,
     /// The settled preview's stash between the poll and the
     /// `export_preview_shown` fold (the re-entrancy law).
     export_preview_settled: Option<crate::requests::ExportPreviewOutcome>,
     /// The in-flight clipboard copy's reply half (the preview plan
     /// W-2): the copy twin of the preview lane.
-    export_copy_reply:
-        Option<oneshot::Receiver<crate::requests::ExportClipboardOutcome>>,
+    export_copy_reply: Option<oneshot::Receiver<crate::requests::ExportClipboardOutcome>>,
     /// The settled copy's stash between the poll and the fold.
     export_copy_settled: Option<crate::requests::ExportClipboardOutcome>,
     /// The settled remediation outcome's stash between the reply poll
@@ -8126,8 +8124,7 @@ struct StatusPanelVm {
     armed: Option<crate::requests::StatusRemediationAction>,
     /// The in-flight remediation's reply half (W-6): `Some` between
     /// the Confirm dispatch and the settled reply.
-    remediation_pending:
-        Option<oneshot::Receiver<crate::requests::StatusRemediationOutcome>>,
+    remediation_pending: Option<oneshot::Receiver<crate::requests::StatusRemediationOutcome>>,
 }
 
 #[derive(Debug, Default)]
@@ -8965,14 +8962,10 @@ impl Adapter {
             preview_truncated: vm.preview_truncated,
             preview_refusal: vm
                 .preview_settled_refusal
-                .map(crate::requests::refusal_index)
-                .unwrap_or(-1),
+                .map_or(-1, crate::requests::refusal_index),
             copy_settled: vm.copy_settled,
             copy_bytes: vm.copy_bytes,
-            copy_refusal: vm
-                .copy_refusal
-                .map(crate::requests::refusal_index)
-                .unwrap_or(-1),
+            copy_refusal: vm.copy_refusal.map_or(-1, crate::requests::refusal_index),
         }
     }
 
@@ -9083,7 +9076,11 @@ impl Adapter {
     /// fold (`kiosk`) is the adapter-side typed-permission gate (the
     /// trap-a law: a forbidden posture absorbs the arm — the rows are
     /// disabled there anyway; the gate never trusts the widget).
-    pub(crate) fn status_remediation_arm(&mut self, window: &AppWindow, action: crate::requests::StatusRemediationAction) {
+    pub(crate) fn status_remediation_arm(
+        &mut self,
+        window: &AppWindow,
+        action: crate::requests::StatusRemediationAction,
+    ) {
         if self.kiosk {
             tracing::info!(?action, "the remediation arm refused: kiosk posture");
             return;
@@ -9312,7 +9309,9 @@ impl Adapter {
         if let Some(vm) = self.export_vm.as_mut() {
             vm.preview_busy = false;
             match outcome {
-                crate::requests::ExportPreviewOutcome::Payload { text, truncated, .. } => {
+                crate::requests::ExportPreviewOutcome::Payload {
+                    text, truncated, ..
+                } => {
                     vm.preview_settled_refusal = None;
                     vm.preview_shown = true;
                     vm.preview_text = text;

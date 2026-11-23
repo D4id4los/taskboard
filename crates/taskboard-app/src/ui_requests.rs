@@ -89,13 +89,15 @@ pub struct ExportWorkspace {
     /// failed open/write — the typed `ClipboardUnavailable`). The
     /// default is the real arboard write; tests inject.
     #[allow(clippy::type_complexity)]
-    pub clipboard_write:
-        std::sync::Arc<dyn Fn(&str) -> Result<(), ()> + Send + Sync>,
+    pub clipboard_write: std::sync::Arc<dyn Fn(&str) -> Result<(), ()> + Send + Sync>,
 }
 
 impl Default for ExportWorkspace {
     fn default() -> Self {
-        Self::with_real_clipboard(std::sync::Arc::new(crate::config::AppConfig::default()), false)
+        Self::with_real_clipboard(
+            std::sync::Arc::new(crate::config::AppConfig::default()),
+            false,
+        )
     }
 }
 
@@ -618,11 +620,8 @@ pub async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace
             // enable flags are presentation, not authorization); the
             // reply is fire-and-forget-honest as everywhere on the
             // lane.
-            let outcome = crate::status_remediation::run_remediation(
-                &workspace.remediation,
-                action,
-            )
-            .await;
+            let outcome =
+                crate::status_remediation::run_remediation(&workspace.remediation, action).await;
             tracing::info!(?outcome, ?action, "the status remediation settled");
             let _ = reply.send(outcome);
         }
@@ -2640,6 +2639,7 @@ mod tests {
                     )
                 }
             }),
+            remediation: crate::status_remediation::RemediationWorkspace::default(),
         };
         WorkspaceFixture {
             workspace,
