@@ -185,6 +185,13 @@ fn read_holder_pid(path: &Path) -> Option<u32> {
     text.trim_start_matches("pid=").trim().parse().ok()
 }
 
+/// The lock sidecar's path (the remediation lane's removal address —
+/// the same `<db>.lock` derivation [`lock_path`] mints).
+#[must_use]
+pub fn lock_sidecar_path(db_path: &Path) -> PathBuf {
+    lock_path(db_path)
+}
+
 /// Best-effort read of the holder PID recorded in `db_path`'s lock
 /// sidecar — the `status` client-side answer's diagnostic field. No
 /// lock is taken (or held) by this read; the recorded PID may belong to

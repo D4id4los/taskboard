@@ -63,10 +63,7 @@ fn workspace(
         engine: app.engine.clone(),
         device_json: None,
         connector_owners: app.connector_owners.clone(),
-        export: ExportWorkspace {
-            config: Arc::new(app.config.clone()),
-            may_open_viewer: false,
-        },
+        export: ExportWorkspace::with_real_clipboard(Arc::new(app.config.clone()), false),
         // The suite never drives the status panel; the source is the
         // in-session projection over the fixture's handles.
         status: Box::new({
@@ -83,6 +80,13 @@ fn workspace(
                 )
             }
         }),
+        // The suite never drives the remediation lane; the workspace
+        // is inert-but-typed (the executor's effects are seams).
+        remediation: taskboard_app::status_remediation::RemediationWorkspace {
+            db_path: None,
+            may_control_processes: false,
+            effects: taskboard_app::status_remediation::RemediationEffects::real(None),
+        },
     }
 }
 

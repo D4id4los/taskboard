@@ -402,7 +402,7 @@ pub enum ExportFamily {
 
 /// The tracking leg's payload format (the CLI's `ExportFormat`
 /// mirror; `Csv` the default).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ExportFileFormat {
     /// RFC-4180 CSV with a header row (the default).
     #[default]
@@ -461,8 +461,9 @@ pub struct ExportSpec {
 
 /// The typed refusal kinds the export run can answer with (D-5).
 /// Mapped from the engine's typed errors at the drain; the dialog
-/// renders the kind, never the engine's message text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// renders the kind, never the engine's message text. The serde
+/// derives ride the preview outcome's pin (the #993 pattern).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportRefusal {
     /// The pdf family dispatched on a build without the pdf-export
     /// feature (D-4's honest-absence arm at the trust boundary).
@@ -490,6 +491,12 @@ pub enum ExportRefusal {
     /// family's named kinds (the closed set's catch-all — the dialog
     /// renders the kind, never the engine's message text).
     EngineRefused,
+    /// The system clipboard could not be opened or written (the
+    /// clipboard handoff's environment refusal — the preview plan
+    /// D-3). Appended last: the dialog's refusal index order for the
+    /// existing kinds is pinned, so the new kind rides the table's
+    /// tail.
+    ClipboardUnavailable,
 }
 
 /// The refusal kinds' canonical index order (the dialog's refusal
@@ -507,6 +514,7 @@ pub const REFUSAL_KINDS: &[ExportRefusal] = &[
     ExportRefusal::DestinationUnwritable,
     ExportRefusal::LaneDropped,
     ExportRefusal::EngineRefused,
+    ExportRefusal::ClipboardUnavailable,
 ];
 
 /// The refusal kind's dialog index (the rendering address; -1 when
@@ -532,6 +540,102 @@ pub enum ExportRunOutcome {
     /// The run refused typed; the dialog stays mounted with its
     /// filter state intact.
     Refused(ExportRefusal),
+}
+
+/// The typed oneshot reply of `ExportClipboardCopy` (the preview plan
+/// D-3): the copied-byte fact or the typed refusal (the preview
+/// refusal kinds the generation carries, plus `ExportRefusal::
+/// ClipboardUnavailable` for the environment refusal). The copy
+/// ALWAYS regenerates app-side over the same [`ExportSpec`] the Run
+/// button sends (D-1's one-generator-two-sinks law) — it never rides
+/// the pane's possibly-truncated preview text.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExportClipboardOutcome {
+    /// The regenerated payload was written to the clipboard.
+    Copied {
+        /// The copied payload's byte length.
+        bytes: u64,
+    },
+    /// The copy refused typed; the dialog stays mounted with its
+    /// filter state intact.
+    Refused(ExportRefusal),
+}
+
+/// The typed oneshot reply of `ExportPreview` (the preview plan
+/// D-1/D-2): the engine-generated payload plus the typed
+/// `truncated` fact when it exceeded the presentation cap — the cap
+/// is a presentation budget, never a payload or engine limit (the
+/// file and clipboard payloads are never truncated).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExportPreviewOutcome {
+    /// The engine generated the payload.
+    Payload {
+        /// The payload text (the capped head when `truncated`).
+        text: String,
+        /// The payload's format (the spec's format verbatim).
+        format: ExportFileFormat,
+        /// The presentation-cap fact: the pane renders the capped
+        /// head; the file and clipboard payloads are never capped.
+        truncated: bool,
+    },
+    /// The preview refused typed (the same refusal kinds the export
+    /// run answers with — the same engine, the same spec).
+    Refused(ExportRefusal),
+}
+
+/// The status panel's remediation verb (the command plan D-1): one
+/// typed request, three actions — kill the lock holder, force-unlock
+/// the stale artifact, restart the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StatusRemediationAction {
+    /// SIGTERM to the displayed `holder_pid` (D-3).
+    KillHolder,
+    /// Remove the stale lock sidecar (D-4); authorized by the
+    /// executor's liveness re-check, never by the row's enable flag.
+    ForceUnlock,
+    /// Graceful stop over IPC (when serving), then a detached
+    /// `taskboard daemon run` spawn (D-5).
+    RestartDaemon,
+}
+
+/// The remediation refusals (the command plan D-7): typed kinds —
+/// the panel renders the kind, never message text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StatusRemediationRefusal {
+    /// A kill of a stale (not-alive) pid — ForceUnlock is the right
+    /// tool.
+    HolderNotAlive,
+    /// An unlock under a live holder (the executor's authorization
+    /// re-check refused; the sidecar is untouched).
+    HolderAlive,
+    /// The holder pid is this process's own pid.
+    SelfPid,
+    /// The restart's spawn leg failed.
+    SpawnFailed,
+    /// The IPC stop leg could not be reached, or the lane/posture
+    /// cannot carry the verb (the coarse infrastructure refusal).
+    IpcUnavailable,
+}
+
+/// The typed oneshot reply of `StatusRemediate` (the command plan
+/// D-1/D-3/D-4/D-5/D-7): the executed fact or the typed refusal.
+/// Every executed remediation is followed by one `StatusQuery`
+/// re-dispatch, so the outcome posture is never stale.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum StatusRemediationOutcome {
+    /// The holder was signalled (SIGTERM delivered).
+    HolderSignalled,
+    /// The stale lock sidecar was removed.
+    LockReleased,
+    /// The daemon was restarted; the new daemon's pid rides the
+    /// fact.
+    DaemonRestarted {
+        /// The freshly spawned daemon's OS pid.
+        pid: u32,
+    },
+    /// The verb refused typed; the panel stays mounted with state
+    /// intact and the same row is the retry affordance.
+    Refused(StatusRemediationRefusal),
 }
 
 /// The export dialog's config defaults (D-2/D-3), minted app-side at
@@ -924,6 +1028,43 @@ pub enum UiRequest {
         secs: u64,
         reply: oneshot::Sender<Result<SettingsSnapshot, SettingsError>>,
     },
+    /// The status panel's remediation lane (the command plan D-1):
+    /// one request, three typed actions over process/lock posture —
+    /// never domain state (R-3: no `StateCommand` exists for the
+    /// lane). The executor's typed decision logic re-checks liveness
+    /// at the trust boundary; the panel's row enable flags are
+    /// presentation, not authorization. The typed reply folds the
+    /// executed fact or the refusal kind; the panel re-queries after
+    /// any settle. Note: a `StatusWatchSubscribe` variant was planned
+    /// here and is deliberately absent — the D-6 fallback (the
+    /// supersession erratum, 2026-11-23) removed the live-refresh
+    /// story when the engine-side `StatusWatch*` seam did not exist
+    /// at dispatch time; the snapshot + explicit-Refresh posture
+    /// stands.
+    StatusRemediate {
+        action: StatusRemediationAction,
+        reply: oneshot::Sender<StatusRemediationOutcome>,
+    },
+    /// The export dialog's preview (the preview plan D-1, D-4): the
+    /// spec drives the SAME export engine the Run button drives —
+    /// the preview renders the payload the export would write (the
+    /// one-generator-two-sinks law) — with NO file written (the
+    /// written-path fact stays Run's exclusively). The reply carries
+    /// the payload plus the typed presentation-cap fact, or the
+    /// refusal. The drain consumes the reply even when the dialog
+    /// closed first (the OP2 escape law).
+    ExportPreview {
+        spec: ExportSpec,
+        reply: oneshot::Sender<ExportPreviewOutcome>,
+    },
+    /// The export dialog's clipboard handoff (the preview plan D-3):
+    /// the payload is REGENERATED app-side over the same spec (never
+    /// copied from the pane's possibly-truncated text) and written to
+    /// the system clipboard. Typed reply; no file written.
+    ExportClipboardCopy {
+        spec: ExportSpec,
+        reply: oneshot::Sender<ExportClipboardOutcome>,
+    },
 }
 
 #[cfg(test)]
@@ -967,6 +1108,86 @@ mod tests {
             "]}{[{(\"'\\",
         ] {
             invariant(secret);
+        }
+    }
+
+    /// The remediation wire's serde pin (the command plan D-8, the
+    /// #993 pattern): the action and outcome enums round-trip over
+    /// hand-written JSON — the receipts' wire stability is a consumed
+    /// contract, not serde defaults' luck. NOTE (the chunk's dated
+    /// deviation): the plan's W-8 cell nominates the pin at
+    /// `crates/taskboard-domain/src/undo/tests.rs`, but these types
+    /// live in the UI crate and the domain crate cannot depend on it
+    /// (the workspace boundary law, AGENTS §2) — the pin rides the
+    /// types, here.
+    #[test]
+    fn status_remediation_action_and_outcome_round_trip_serde() {
+        let actions = [
+            (r#""KillHolder""#, StatusRemediationAction::KillHolder),
+            (r#""ForceUnlock""#, StatusRemediationAction::ForceUnlock),
+            (r#""RestartDaemon""#, StatusRemediationAction::RestartDaemon),
+        ];
+        for (json, value) in actions {
+            let decoded: StatusRemediationAction =
+                serde_json::from_str(json).expect("the action spelling decodes");
+            assert_eq!(decoded, value, "the hand-written spelling decodes: {json}");
+            let encoded = serde_json::to_string(&value).expect("action serializes");
+            assert_eq!(
+                serde_json::from_str::<StatusRemediationAction>(&encoded).expect("decodes"),
+                value,
+                "the action round-trips: {encoded}"
+            );
+        }
+
+        let outcomes = [
+            r#""HolderSignalled""#,
+            r#""LockReleased""#,
+            r#"{"DaemonRestarted":{"pid":4242}}"#,
+            r#"{"Refused":"HolderNotAlive"}"#,
+            r#"{"Refused":"HolderAlive"}"#,
+            r#"{"Refused":"SelfPid"}"#,
+            r#"{"Refused":"SpawnFailed"}"#,
+            r#"{"Refused":"IpcUnavailable"}"#,
+        ];
+        for json in outcomes {
+            let decoded: StatusRemediationOutcome =
+                serde_json::from_str(json).expect("the outcome spelling decodes");
+            let encoded = serde_json::to_string(&decoded).expect("encodes");
+            let redecoded: StatusRemediationOutcome =
+                serde_json::from_str(&encoded).expect("re-decodes");
+            assert_eq!(redecoded, decoded, "the outcome round-trips: {json}");
+        }
+    }
+
+    /// The preview/clipboard outcomes' serde pin (the preview plan
+    /// D-6, the #993 pattern): hand-written-JSON round-trip, same
+    /// home deviation as the remediation pin above.
+    #[test]
+    fn export_preview_and_clipboard_outcomes_round_trip_serde() {
+        let previews = [
+            r#"{"Payload":{"text":"a,b\n1,2","format":"Csv","truncated":false}}"#,
+            r#"{"Payload":{"text":"he","format":"Json","truncated":true}}"#,
+            r#"{"Refused":"BadTaskFilter"}"#,
+        ];
+        for json in previews {
+            let decoded: ExportPreviewOutcome =
+                serde_json::from_str(json).expect("the preview spelling decodes");
+            let encoded = serde_json::to_string(&decoded).expect("encodes");
+            let redecoded: ExportPreviewOutcome =
+                serde_json::from_str(&encoded).expect("re-decodes");
+            assert_eq!(redecoded, decoded, "the preview outcome round-trips: {json}");
+        }
+        let clips = [
+            r#"{"Copied":{"bytes":7}}"#,
+            r#"{"Refused":"ClipboardUnavailable"}"#,
+        ];
+        for json in clips {
+            let decoded: ExportClipboardOutcome =
+                serde_json::from_str(json).expect("the clipboard spelling decodes");
+            let encoded = serde_json::to_string(&decoded).expect("encodes");
+            let redecoded: ExportClipboardOutcome =
+                serde_json::from_str(&encoded).expect("re-decodes");
+            assert_eq!(redecoded, decoded, "the clipboard outcome round-trips: {json}");
         }
     }
 }

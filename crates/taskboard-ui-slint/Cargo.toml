@@ -28,6 +28,9 @@ tracing.workspace = true
 # .stack_widths`, round-1 D16/D20 — serde-native shape; the domain
 # newtypes carry no serde impls).
 uuid.workspace = true
+# The request lane payloads' serde derives (the D2 chunk's D-8/D-6
+# pins; dev-only use existed before).
+serde.workspace = true
 
 [features]
 # Dev/testing only (design §8.2/Q19): compiles the embedded MCP server
@@ -49,7 +52,11 @@ insta.workspace = true
 criterion.workspace = true
 uuid.workspace = true
 proptest.workspace = true
-serde.workspace = true
+# the request lane payloads' serde derives (the D2 chunk's D-8/D-6
+# pins; dev-only use existed before).
+# The request-outcome serde pins (the D2 chunk's D-8/D-6, the #993
+# pattern): hand-written-JSON round-trip over the typed lane payloads.
+serde_json.workspace = true
 png.workspace = true
 # The golden manifest's comment-preserving upsert/parse (workspace-pinned)
 toml_edit.workspace = true
