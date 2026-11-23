@@ -1827,6 +1827,65 @@ async fn an_older_clock_habit_log_batch_never_overwrites_the_newer_row() {
     repo.close().await;
 }
 
+/// The whole-second grammar (#1095): a habit-log clock authored with
+/// sub-second precision is normalized to whole seconds at the write
+/// boundary — the normalization is observable in the loaded row, and
+/// the LWW guard's lexicographic comparison stays chronological.
+#[tokio::test]
+async fn a_fractional_second_habit_log_clock_is_stored_whole_second() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let key = taskboard_domain::HabitLogKey {
+        habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(61)),
+        window: taskboard_domain::WindowStart::of_period(
+            taskboard_domain::PeriodKind::Day,
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(),
+        ),
+    };
+    let authored = ts(1_000) + chrono::TimeDelta::try_milliseconds(500).expect("half a second");
+    repo.apply(vec![PersistenceAction::RecordHabitLog(
+        key,
+        taskboard_domain::HabitLogEntry {
+            count: 2,
+            clock: authored,
+            by: None,
+            skip: false,
+        },
+    )])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(
+        loaded.habits.log.get(&key).map(|e| e.clock),
+        Some(ts(1_000)),
+        "the sub-second precision is stripped at the boundary"
+    );
+    repo.close().await;
+}
+
+// Under the written grammar (`SecondsFormat::Secs`, UTC `Z`), the
+// guard's lexicographic clock comparison equals chronological
+// `DateTime` ordering for arbitrary instants — the property the
+// whole-second invariant (repo.rs, #1095) exists to guarantee.
+proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+
+    #[test]
+    fn whole_second_rfc3339_string_ordering_is_chronological(
+        a_secs in -30_000_000_000_i64..30_000_000_000_i64,
+        b_secs in -30_000_000_000_i64..30_000_000_000_i64,
+    ) {
+        let format = |secs: i64| {
+            chrono::DateTime::from_timestamp(secs, 0)
+                .expect("in-range instant")
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        };
+        let (a, b) = (format(a_secs), format(b_secs));
+        prop_assert_eq!(a.cmp(&b), a_secs.cmp(&b_secs));
+    }
+}
+
 /// The respite upgrade pin (D-12): a pre-0018 `time_entries` row (no
 /// `kind` column) decodes `Work` after the migration's DEFAULT backfill
 /// — the local default-off decode — and `break_rules` loads empty.
