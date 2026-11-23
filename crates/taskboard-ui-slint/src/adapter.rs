@@ -15305,7 +15305,7 @@ fn install_stack_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.finish_mutation(&window);
 
     });
-    install_seam!(window: window.on_palette_row_activated, adapter: adapter;
+    install_seam!(window: window.on_palette_row_activated, adapter: adapter; // slint callback: palette-row-activated (D3b W-10)
     bind mut (a, window), args (index), {        let target = a
         .tables
         .palette
