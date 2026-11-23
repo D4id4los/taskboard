@@ -3355,7 +3355,14 @@ impl Adapter {
         // law's refresh clamp, the rule cursor's reconcile arm): a
         // dead id, a foreign view, or a pane that no longer holds the
         // cursor clears it — never a stale row answering a stroke.
-        if self.view_state.view() != crate::view_state::ViewId::PlanNextDay
+        // The walk's embedded planner child is a live planner mount
+        // too (US-22, #1234): the cursor survives there — the surface
+        // check reads the chain, not just the root view.
+        let planner_live = self.view_state.view() == crate::view_state::ViewId::PlanNextDay
+            || self
+                .view_state
+                .chain_has_flow(|flow| matches!(flow, Flow::ReviewPlanner));
+        if !planner_live
             || !self
                 .view_state
                 .plan_cursor()
@@ -4033,8 +4040,6 @@ impl Adapter {
                 // `Completed(None)` (D-2's exit contract): the parent's
                 // consumption advances the walk to Prompts.
                 if self.view_state.walk_stage() == Some(WalkStage::Planner) {
-                    // The planner child's exit clears the K4 cursor
-                    // pane-scoped (US-22/S4 — the landed clear law).
                     self.view_state.clear_plan_cursor();
                     let state_guard = self.state.load();
                     return self.view_state.end_top_flow_with(
@@ -4053,8 +4058,6 @@ impl Adapter {
                 // (D-6's rung, J4 US-3/S1): the exit contract returns
                 // the walk to Carry, the walk stays open.
                 if self.view_state.walk_stage() == Some(WalkStage::Planner) {
-                    // The Cancelled exit clears the K4 cursor too
-                    // (US-22/S4 — the landed clear law).
                     self.view_state.clear_plan_cursor();
                     let state_guard = self.state.load();
                     let outcomes = self

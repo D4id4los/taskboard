@@ -1715,3 +1715,39 @@ fn us15_s4_pane_switch_preserves_cursor_law() {
         );
     });
 }
+
+/// US-15/AC-2's clamp leg (`us15_s5_foreign_view_refresh_prunes_cursor`):
+/// the refresh clamp's OTHER direction — an armed cursor under a
+/// foreign view is dead and the next refresh pass prunes it, so
+/// re-entering the planner presents no stale armed row. Pins the same
+/// `planner_live` conditional the embedded-planner extension (US-22,
+/// #1234) relaxed for the walk child: the walk mount survives the
+/// clamp (`misc_gated_journeys.rs::us22_s2`), a genuinely foreign
+/// view still does not.
+#[test]
+fn us15_s5_foreign_view_refresh_prunes_cursor() {
+    let (_fx, state, _box_task) = planner_fixture();
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.set_window_size(1200, 900);
+        harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::NavFocusDown);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![true], vec![false, false]),
+            "armed on the box"
+        );
+        // Leave the planner for a foreign view; the intervening
+        // refresh passes see `view != PlanNextDay` and prune.
+        harness.handle.dispatch_action(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::ViewPlanNextDay);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            plan_cursor_bits(harness),
+            (vec![false], vec![false, false]),
+            "the foreign-view refresh pruned the cursor; re-entry is disarmed"
+        );
+    });
+}

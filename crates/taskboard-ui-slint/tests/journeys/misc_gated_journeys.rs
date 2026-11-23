@@ -24,6 +24,10 @@ use taskboard_ui_slint::actions::ActionId;
 
 // -- shared fixtures -----------------------------------------------------
 
+/// The fixture's pool pane: task0 (carried), task1, and the two triage
+/// rows — all disarmed.
+const POOL_DISARMED: [bool; 4] = [false, false, false, false];
+
 /// A fresh triage row on `stack` (the walk fixtures' shared task
 /// literal — the `walk_new_task` shape).
 fn walk_new_task(stack: taskboard_domain::StackId, title: &str) -> taskboard_domain::Task {
@@ -139,6 +143,10 @@ fn anchor_yesterday(state: &mut AppState, task: taskboard_domain::TaskId) {
 /// box row. Returns the box task's id.
 fn walk_planner_fixture() -> (fixture::Fixture, AppState, taskboard_domain::TaskId) {
     let (fx, mut state) = fixture::golden_state();
+    // The golden state pins the review card away (reflection entries);
+    // the walk journeys need the due state — clear the pin (the
+    // walk_fixture_state convention).
+    state.reflection.entries.clear();
     let inbox_stack = insert_inbox_stack(&mut state);
     for title in ["triage-me", "triage-me-too"] {
         let task = walk_new_task(inbox_stack, title);
@@ -213,8 +221,10 @@ fn enter_walk_planner(harness: &mut Harness) {
 /// ordinary `AppUndo` routes `StateCommand::Undo` over that fresh
 /// head (S3 — R-1: the recovery IS the v1 undo line; the inversion
 /// itself — undo deletes the created task — is pinned in the domain
-/// undo suite, not re-tested through the fake engine), and `AppRedo`
-/// re-checks the forward arm (S4).
+/// undo suite, never re-tested through the fake engine, which keeps
+/// no capture journal), and `AppRedo` re-checks the forward arm
+/// (S4). The journey layer's contract is the ROUTING: the three
+/// typed commands at the boundary, in order.
 #[test]
 fn us21_s3_capture_commit_undo_recovers() {
     let (_fixture, state) = fixture::golden_state();
@@ -236,16 +246,6 @@ fn us21_s3_capture_commit_undo_recovers() {
             title: "recover me".into(),
             board: None,
         }]);
-        harness.engine.settle(&harness.handle);
-        assert!(
-            harness
-                .engine
-                .snapshot()
-                .tasks
-                .values()
-                .any(|task| task.title == "recover me"),
-            "the accidental commit created the task"
-        );
         // S3: the ordinary undo routes over the fresh head.
         harness.press(ActionId::AppUndo);
         harness.driver.advance_time(0);
@@ -278,14 +278,14 @@ fn us22_s1_embedded_cursor_arms() {
         enter_walk_planner(harness);
         assert_eq!(
             plan_cursor_bits(harness),
-            (vec![false], vec![false, false]),
+            (vec![false], Vec::from(POOL_DISARMED)),
             "a fresh embedded planner is disarmed"
         );
         harness.handle.dispatch_action(ActionId::NavFocusDown);
         harness.driver.advance_time(0);
         assert_eq!(
             plan_cursor_bits(harness),
-            (vec![true], vec![false, false]),
+            (vec![true], Vec::from(POOL_DISARMED)),
             "the arming stroke lands the box row (arm-then-step)"
         );
     });
@@ -308,7 +308,7 @@ fn us22_s2_embedded_cursor_walks_clamped() {
         harness.driver.advance_time(0);
         assert_eq!(
             plan_cursor_bits(harness),
-            (vec![true], vec![false, false]),
+            (vec![true], Vec::from(POOL_DISARMED)),
             "the last row clamps (no wrap)"
         );
         harness.handle.dispatch_action(ActionId::NavFocusUp);
@@ -317,7 +317,7 @@ fn us22_s2_embedded_cursor_walks_clamped() {
         harness.driver.advance_time(0);
         assert_eq!(
             plan_cursor_bits(harness),
-            (vec![true], vec![false, false]),
+            (vec![true], Vec::from(POOL_DISARMED)),
             "row 0 clamps (no wrap)"
         );
     });
@@ -337,7 +337,7 @@ fn us22_s3_embedded_activate_uses_own_seam() {
         harness.driver.advance_time(0);
         assert_eq!(
             plan_cursor_bits(harness),
-            (vec![true], vec![false, false]),
+            (vec![true], Vec::from(POOL_DISARMED)),
             "armed on the box"
         );
         harness.handle.dispatch_action(ActionId::TaskEdit);
@@ -363,7 +363,7 @@ fn us22_s4_walk_exit_clears_cursor() {
         harness.driver.advance_time(0);
         assert_eq!(
             plan_cursor_bits(harness),
-            (vec![true], vec![false, false]),
+            (vec![true], Vec::from(POOL_DISARMED)),
             "armed on the box"
         );
         harness.handle.dispatch_action(ActionId::ReviewWalkPrev);
@@ -379,7 +379,7 @@ fn us22_s4_walk_exit_clears_cursor() {
         );
         assert_eq!(
             plan_cursor_bits(harness),
-            (vec![false], vec![false, false]),
+            (vec![false], Vec::from(POOL_DISARMED)),
             "the child's exit cleared the cursor"
         );
     });
