@@ -17,6 +17,8 @@ use support::harness::Harness;
 
 use support::driver::JourneyDriver as _;
 
+use crate::walk_planner_support as planner_support;
+
 use slint::Model as _;
 use taskboard_domain::{AppState, StateCommand, SystemEvent};
 use taskboard_ui_slint::UiSettings;
@@ -28,151 +30,24 @@ use taskboard_ui_slint::actions::ActionId;
 /// rows — all disarmed.
 const POOL_DISARMED: [bool; 4] = [false, false, false, false];
 
-/// A fresh triage row on `stack` (the walk fixtures' shared task
-/// literal — the `walk_new_task` shape).
-fn walk_new_task(stack: taskboard_domain::StackId, title: &str) -> taskboard_domain::Task {
-    taskboard_domain::Task {
-        id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
-        remote: None,
-        label_memberships: std::collections::BTreeMap::new(),
-        title: title.to_owned(),
-        description: String::new(),
-        duedate: None,
-        scheduled: None,
-        done: None,
-        stack,
-        order: 0,
-        effort: None,
-        importance: None,
-        urgency: None,
-        recur: None,
-        kind: taskboard_domain::entities::TaskKind::Standard,
-        archived: false,
-        deleted: false,
-        clocks: taskboard_domain::entities::TaskClocks {
-            title: taskboard_domain::entities::BoardClocks::epoch(),
-            description: taskboard_domain::entities::BoardClocks::epoch(),
-            duedate: taskboard_domain::entities::BoardClocks::epoch(),
-            scheduled: taskboard_domain::entities::BoardClocks::epoch(),
-            done: taskboard_domain::entities::BoardClocks::epoch(),
-            position: taskboard_domain::entities::BoardClocks::epoch(),
-            effort: taskboard_domain::entities::BoardClocks::epoch(),
-            importance: taskboard_domain::entities::BoardClocks::epoch(),
-            urgency: taskboard_domain::entities::BoardClocks::epoch(),
-            recur: taskboard_domain::entities::BoardClocks::epoch(),
-            kind: taskboard_domain::entities::BoardClocks::epoch(),
-            archived: taskboard_domain::entities::BoardClocks::epoch(),
-            deleted: taskboard_domain::entities::BoardClocks::epoch(),
-        },
-        authors: taskboard_domain::entities::TaskAuthors::default(),
-        remote_seen: None,
-        remote_baseline: None,
-    }
-}
-
-/// An inbox board + stack to hang the triage rows on (the walk
-/// fixtures' `insert_inbox_board_and_stack` shape).
-fn insert_inbox_stack(state: &mut AppState) -> taskboard_domain::StackId {
-    use taskboard_domain::entities::{
-        Board, BoardAuthors, BoardClocks, Stack, StackAuthors, StackClocks,
-    };
-    let inbox = taskboard_domain::BoardId::from_uuid(uuid::Uuid::new_v4());
-    state.boards.insert(
-        inbox,
-        Board {
-            id: inbox,
-            remote: None,
-            title: "Inbox".to_owned(),
-            color: taskboard_domain::Color::new(""),
-            archived: false,
-            deleted: false,
-            clocks: BoardClocks {
-                title: BoardClocks::epoch(),
-                color: BoardClocks::epoch(),
-                archived: BoardClocks::epoch(),
-                deleted: BoardClocks::epoch(),
-            },
-            authors: BoardAuthors::default(),
-            remote_seen: None,
-        },
-    );
-    let inbox_stack = taskboard_domain::StackId::from_uuid(uuid::Uuid::new_v4());
-    state.stacks.insert(
-        inbox_stack,
-        Stack {
-            id: inbox_stack,
-            remote: None,
-            board: inbox,
-            title: "Inbox".to_owned(),
-            order: 0,
-            archived: false,
-            deleted: false,
-            clocks: StackClocks {
-                title: BoardClocks::epoch(),
-                order: BoardClocks::epoch(),
-                deleted: BoardClocks::epoch(),
-            },
-            authors: StackAuthors::default(),
-            remote_seen: None,
-        },
-    );
-    inbox_stack
-}
-
-/// Anchors `task` inside yesterday's window (the walk's carry row) —
-/// the clock discipline's relative-oracle anchor over the harness
-/// calendar's vocabulary (never a wall-clock assert).
-fn anchor_yesterday(state: &mut AppState, task: taskboard_domain::TaskId) {
-    let calendar = fixture::harness_calendar();
-    let yesterday = calendar
-        .today(chrono::Utc::now())
-        .pred_opt()
-        .expect("yesterday");
-    let carry = calendar.instant(
-        yesterday,
-        chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
-    );
-    let mut row = state.tasks.get(&task).expect("fixture task").clone();
-    row.scheduled = Some(carry);
-    state.tasks.insert(task, row);
-}
-
 /// The walk-planner journeys' fixture: the walk stage ladder's rows
 /// (two triage tasks, task0 carried from yesterday) plus one task
 /// scheduled into tomorrow's morning — the embedded planner's placed
-/// box row. Returns the box task's id.
+/// box row. Returns the box task's id. The builders come from the
+/// suite's shared `walk_planner_support` module.
 fn walk_planner_fixture() -> (fixture::Fixture, AppState, taskboard_domain::TaskId) {
     let (fx, mut state) = fixture::golden_state();
     // The golden state pins the review card away (reflection entries);
     // the walk journeys need the due state — clear the pin (the
     // walk_fixture_state convention).
     state.reflection.entries.clear();
-    let inbox_stack = insert_inbox_stack(&mut state);
+    let inbox_stack = planner_support::insert_inbox_stack(&mut state);
     for title in ["triage-me", "triage-me-too"] {
-        let task = walk_new_task(inbox_stack, title);
+        let task = planner_support::walk_new_task(inbox_stack, title);
         state.tasks.insert(task.id, task);
     }
-    anchor_yesterday(&mut state, fx.task0);
-    // Tomorrow's box: stack b's task (the fixture's third row — the
-    // planner journeys' placed-row convention).
-    let calendar = fixture::harness_calendar();
-    let tomorrow = calendar
-        .today(chrono::Utc::now())
-        .succ_opt()
-        .expect("tomorrow");
-    let box_instant = calendar.instant(
-        tomorrow,
-        chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
-    );
-    let box_task = state
-        .tasks
-        .values()
-        .find(|task| task.stack == fx.stack_b)
-        .expect("stack b's task")
-        .id;
-    let mut boxed = state.tasks.get(&box_task).expect("box task").clone();
-    boxed.scheduled = Some(box_instant);
-    state.tasks.insert(box_task, boxed);
+    planner_support::anchor_yesterday(&mut state, fx.task0);
+    let box_task = planner_support::place_stack_b_box(&mut state, fx.stack_b);
     (fx, state, box_task)
 }
 
