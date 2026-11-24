@@ -837,6 +837,14 @@ pub struct HabitState {
     /// never a decode failure.
     #[serde(default)]
     pub day_log: BTreeMap<HabitDayKey, HabitDayLogEntry>,
+    /// The habit time entries (journey plan 2026-11-24 D-1, #1305 —
+    /// the additive fact family; the open entry IS the running timer,
+    /// the task tracker's grammar verbatim). `serde(default)`: states
+    /// persisted before the map decode with an empty map — the
+    /// additive default-absent law, never a decode failure. Display/
+    /// duration data only (D-2): no stats projection reads it.
+    #[serde(default)]
+    pub time_log: BTreeMap<crate::ids::HabitTimeEntryId, crate::habit_time::HabitTimeEntry>,
 }
 
 /// The period-start local date of `date`'s period: the day itself;

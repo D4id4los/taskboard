@@ -1638,6 +1638,66 @@ async fn time_entry_rows_round_trip_including_the_open_row() {
     repo.close().await;
 }
 
+// ---- Habit time-entry storage (#1305, migration 0031) ------------------
+
+/// The load codec (the `time_entries` conventions verbatim): a settled
+/// and an open (`end` NULL) habit entry round-trip through apply → load
+/// as typed-equal rows — the open row IS the running timer (US-32/AC-3's
+/// rehydration seam: a persisted open entry renders running after
+/// reload).
+#[tokio::test]
+async fn habit_time_entry_rows_round_trip_including_the_open_row() {
+    let repo = open_memory(taskboard_domain::ConnectorId::from("nextcloud"))
+        .await
+        .expect("open");
+    let settled = taskboard_domain::habit_time::HabitTimeEntry {
+        id: taskboard_domain::ids::HabitTimeEntryId::from(uuid::Uuid::from_u128(30)),
+        habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(600)),
+        habit_title: "meditate".into(),
+        start: ts(1_000),
+        end: Some(ts(2_000)),
+        created_at: ts(999),
+        updated_at: ts(2_500),
+        by: None,
+    };
+    let open = taskboard_domain::habit_time::HabitTimeEntry {
+        id: taskboard_domain::ids::HabitTimeEntryId::from(uuid::Uuid::from_u128(31)),
+        habit: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(600)),
+        habit_title: "meditate".into(),
+        start: ts(3_000),
+        end: None,
+        created_at: ts(2_999),
+        updated_at: ts(3_000),
+        by: None,
+    };
+    repo.apply(vec![
+        PersistenceAction::UpsertHabitTimeEntry(settled.clone()),
+        PersistenceAction::UpsertHabitTimeEntry(open.clone()),
+    ])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.habits.time_log.get(&settled.id), Some(&settled));
+    assert_eq!(
+        loaded.habits.time_log.get(&open.id),
+        Some(&open),
+        "the open row's end column reads back None — the running timer rehydrates"
+    );
+    // The upsert discipline: replace by id, never duplicate.
+    let mut restamped = open.clone();
+    restamped.end = Some(ts(4_000));
+    restamped.updated_at = ts(4_000);
+    repo.apply(vec![PersistenceAction::UpsertHabitTimeEntry(
+        restamped.clone(),
+    )])
+    .await
+    .expect("apply");
+    let loaded = repo.load().await.expect("load");
+    assert_eq!(loaded.habits.time_log.get(&restamped.id), Some(&restamped));
+    assert_eq!(loaded.habits.time_log.len(), 2, "replace by id");
+    repo.close().await;
+}
+
 /// The batch contract's last-write-wins pin: upsert and delete for one
 /// entry id in a single apply batch lands the delete (the statements run
 /// in the fixed partition order, mirroring `apply_actions`' sequence).

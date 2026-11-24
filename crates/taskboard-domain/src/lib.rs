@@ -47,6 +47,7 @@ pub mod entities;
 pub mod find;
 pub mod focus;
 pub mod habit;
+pub mod habit_time;
 pub mod idgen;
 pub mod ids;
 pub mod journal;
@@ -114,6 +115,7 @@ pub use habit::{
     WindowStart, adherence, best_streak, habit_streak_unioned, log_window, per_period_totals,
     period_after, period_before, period_end, period_start, statistics_horizon, streak,
 };
+pub use habit_time::{HabitTimeEntry, HabitTimeLog};
 pub use idgen::{IdGenerator, UuidV7Generator};
 pub use ids::{
     AdhocAlarmId, BoardId, BreakRuleId, ConnectorId, HabitId, JournalId, LabelId, ReflectionId,

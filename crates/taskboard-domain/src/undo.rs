@@ -437,6 +437,12 @@ fn record_entry(
             }
         }
         // ---- the exclusions stay, reasons restated (§4) ----------------
+        StateCommand::StartHabitTracking { .. } | StateCommand::StopHabitTracking { .. } => {
+            // Structurally non-invertible (the tracking-surface law):
+            // the inverse would have to re-open closed entries — no
+            // command expresses that (ADR 0017's ruling, habit-side).
+            UndoFacts::NotUndoable(NotUndoableReason::TrackingSurface)
+        }
         StateCommand::StartTracking { .. } | StateCommand::StopTracking => {
             // Structurally non-invertible (ADR 0017): the inverse would
             // have to re-open closed entries — no command expresses
@@ -623,6 +629,8 @@ fn touched_board(
         StateCommand::UpdateHabit { habit, .. }
         | StateCommand::MoveHabit { habit, .. }
         | StateCommand::HabitReorder { habit, .. }
+        | StateCommand::StartHabitTracking { habit }
+        | StateCommand::StopHabitTracking { habit }
         | StateCommand::LogHabit { habit }
         | StateCommand::SkipHabit { habit }
         | StateCommand::UnskipHabit { habit }
@@ -1320,6 +1328,8 @@ impl JournalEntry {
             | StateCommand::DeleteBreakRule { .. }
             | StateCommand::StartTracking { .. }
             | StateCommand::StopTracking
+            | StateCommand::StartHabitTracking { .. }
+            | StateCommand::StopHabitTracking { .. }
             | StateCommand::PauseHabit { .. }
             | StateCommand::RecordReflection { .. }
             | StateCommand::UpdateReflection { .. }

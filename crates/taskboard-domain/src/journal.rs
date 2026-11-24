@@ -533,6 +533,8 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::DeleteBreakRule { .. } => "Delete break rule".into(),
         StateCommand::StartTracking { .. } => "Start tracking".into(),
         StateCommand::StopTracking => "Stop tracking".into(),
+        StateCommand::StartHabitTracking { .. } => "Start habit tracking".into(),
+        StateCommand::StopHabitTracking { .. } => "Stop habit tracking".into(),
         StateCommand::LogTime { .. } => "Log time".into(),
         StateCommand::AdjustTimeEntry { .. } => "Adjust time entry".into(),
         StateCommand::DeleteTimeEntry { .. } => "Delete time entry".into(),

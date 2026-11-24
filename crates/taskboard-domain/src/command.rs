@@ -366,6 +366,22 @@ pub enum CommandOutcome {
         /// The stamped rows.
         entries: Vec<crate::tracking::TimeEntry>,
     },
+    /// The command opened the habit entry and closed the named ones
+    /// (#1305, journey plan D-1/D-3; ids ascending per family).
+    HabitTrackingStarted {
+        /// The freshly minted open habit entry.
+        entry: crate::habit_time::HabitTimeEntry,
+        /// The open task entries the start closed, entry-id ascending.
+        closed_task_entries: Vec<crate::ids::TimeEntryId>,
+        /// The open habit entries the start closed, entry-id ascending.
+        closed_habit_entries: Vec<crate::ids::HabitTimeEntryId>,
+    },
+    /// The command closed these habit entries, post-stamp (entry-id
+    /// ascending).
+    HabitTrackingStopped {
+        /// The stamped rows.
+        entries: Vec<crate::habit_time::HabitTimeEntry>,
+    },
     /// The command logged the entry.
     TimeLogged {
         /// The freshly minted closed entry.
@@ -657,6 +673,28 @@ fn close_all_open(app: &AppState, now: DateTime<Utc>) -> (Vec<TimeEntry>, Vec<Ta
     }
     // Distinct tasks ascending (the ops' emission order).
     (rows, touched.into_iter().collect())
+}
+
+/// The habit-side twin of [`close_all_open`]: closes every open habit
+/// time entry at `now` (D-3's single-global close composes both maps
+/// deterministically; close stamps are exempt from the span predicate —
+/// the task-side skew ruling verbatim). Returns the stamped rows
+/// entry-id ascending.
+fn close_all_open_habits(
+    app: &AppState,
+    now: DateTime<Utc>,
+) -> Vec<crate::habit_time::HabitTimeEntry> {
+    app.habits
+        .time_log
+        .values()
+        .filter(|entry| entry.end.is_none())
+        .map(|entry| {
+            let mut stamped = entry.clone();
+            stamped.end = Some(now);
+            stamped.updated_at = now;
+            stamped
+        })
+        .collect()
 }
 
 /// `close_all_open` narrowed to one task's entries (the
@@ -2655,12 +2693,24 @@ pub fn plan_command(
                 .values()
                 .filter(|entry| entry.end.is_none())
                 .collect();
-            if open.len() == 1 && open[0].task == *task && open[0].kind == *kind {
+            let any_habit_open = app
+                .habits
+                .time_log
+                .values()
+                .any(|entry| entry.end.is_none());
+            if open.len() == 1 && open[0].task == *task && open[0].kind == *kind && !any_habit_open
+            {
+                // The accepted repeat: this task's entry is the ONE
+                // running timer app-wide (D-3, #1305 — a habit entry
+                // running alongside would be a switch, not a repeat).
                 return Ok(no_op());
             }
             // Resolve → close-all → open → dismiss → flush ops (the
             // order the stage gate enforces).
+            // D-3 (#1305): the single-global close composes both maps —
+            // task entries AND habit entries close at the same `now`.
             let (closed_rows, touched_tasks) = close_all_open(app, now);
+            let closed_habit_rows = close_all_open_habits(app, now);
             let closed_ids: Vec<crate::ids::TimeEntryId> =
                 closed_rows.iter().map(|row| row.id).collect();
             let entry = TimeEntry {
@@ -2678,6 +2728,11 @@ pub fn plan_command(
                 .iter()
                 .map(|row| PersistenceAction::UpsertTimeEntry(row.clone()))
                 .collect();
+            actions.extend(
+                closed_habit_rows
+                    .iter()
+                    .map(|row| PersistenceAction::UpsertHabitTimeEntry(row.clone())),
+            );
             actions.push(PersistenceAction::UpsertTimeEntry(entry.clone()));
             // The exact SetTaskDone dismissal machinery (D-T5): the
             // task's currently-active occurrences become dismissal rows
@@ -2737,6 +2792,116 @@ pub fn plan_command(
             Ok(CommandPlan {
                 actions,
                 outcome: CommandOutcome::TrackingStopped {
+                    entries: closed_rows,
+                },
+            })
+        }
+        StateCommand::StartHabitTracking { habit } => {
+            // No pause-gate (D-5): a paused habit is trackable — pause
+            // excuses windows, it never forbids measuring time; the
+            // guard resolves liveness only.
+            let live = live_habit(app, *habit)?;
+            // Idempotent repeat (D-3's accepted no-op): exactly one open
+            // habit entry and it is this habit's, AND no task entry runs
+            // (a running task tracker is a switch, not a repeat).
+            let open_habits: Vec<&crate::habit_time::HabitTimeEntry> = app
+                .habits
+                .time_log
+                .values()
+                .filter(|entry| entry.end.is_none())
+                .collect();
+            let any_task_open = app
+                .tracking
+                .entries
+                .values()
+                .any(|entry| entry.end.is_none());
+            if open_habits.len() == 1 && open_habits[0].habit == *habit && !any_task_open {
+                return Ok(no_op());
+            }
+            // D-3's single-global close: both maps close at the same
+            // engine-stamped `now`, deterministically (entry-id
+            // ascending per family).
+            let (closed_task_rows, _) = close_all_open(app, now);
+            let closed_habit_rows = close_all_open_habits(app, now);
+            let closed_task_ids: Vec<crate::ids::TimeEntryId> =
+                closed_task_rows.iter().map(|row| row.id).collect();
+            let closed_habit_ids: Vec<crate::ids::HabitTimeEntryId> =
+                closed_habit_rows.iter().map(|row| row.id).collect();
+            let entry = crate::habit_time::HabitTimeEntry {
+                id: ids.new_habit_time_entry_id(),
+                habit: *habit,
+                habit_title: live.title.clone(),
+                start: now,
+                end: None,
+                created_at: now,
+                updated_at: now,
+                by: author,
+            };
+            let mut actions: Vec<PersistenceAction> = closed_task_rows
+                .iter()
+                .map(|row| PersistenceAction::UpsertTimeEntry(row.clone()))
+                .collect();
+            actions.extend(
+                closed_habit_rows
+                    .iter()
+                    .map(|row| PersistenceAction::UpsertHabitTimeEntry(row.clone())),
+            );
+            actions.push(PersistenceAction::UpsertHabitTimeEntry(entry.clone()));
+            // The target's op last and always: a start always mints a
+            // row the sidecar must flush (the task-start ordering law).
+            actions.push(board_flush(live.board, ids, now));
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::HabitTrackingStarted {
+                    entry,
+                    closed_task_entries: closed_task_ids,
+                    closed_habit_entries: closed_habit_ids,
+                },
+            })
+        }
+        StateCommand::StopHabitTracking { habit } => {
+            // Existence-only lookup (D-4): a tombstoned habit's open
+            // entry keeps running until stopped — history outlives the
+            // habit — so only absence rejects; a tombstoned stop is the
+            // honest close.
+            existing_habit(app, *habit)?;
+            let open: Vec<&crate::habit_time::HabitTimeEntry> = app
+                .habits
+                .time_log
+                .values()
+                .filter(|entry| entry.habit == *habit && entry.end.is_none())
+                .collect();
+            if open.is_empty() {
+                // Stop is total (D-1): nothing open is the accepted
+                // no-op.
+                return Ok(no_op());
+            }
+            let closed_rows: Vec<crate::habit_time::HabitTimeEntry> = open
+                .into_iter()
+                .map(|entry| {
+                    let mut stamped = entry.clone();
+                    // The skew ruling verbatim: `end = now`
+                    // unconditionally — projections clamp degenerate
+                    // spans to zero, so a skewed close must not reject.
+                    stamped.end = Some(now);
+                    stamped.updated_at = now;
+                    stamped
+                })
+                .collect();
+            let board = app
+                .habits
+                .habits
+                .get(habit)
+                .map(|h| h.board)
+                .expect("existence proven above");
+            let actions: Vec<PersistenceAction> = closed_rows
+                .iter()
+                .map(|row| PersistenceAction::UpsertHabitTimeEntry(row.clone()))
+                .chain([board_flush(board, ids, now)])
+                .collect();
+            Ok(CommandPlan {
+                actions,
+                outcome: CommandOutcome::HabitTrackingStopped {
                     entries: closed_rows,
                 },
             })
@@ -10585,6 +10750,8 @@ mod tests {
             | CommandOutcome::BreakRuleDeleted { .. }
             | CommandOutcome::TrackingStarted { .. }
             | CommandOutcome::TrackingStopped { .. }
+            | CommandOutcome::HabitTrackingStarted { .. }
+            | CommandOutcome::HabitTrackingStopped { .. }
             | CommandOutcome::TimeLogged { .. }
             | CommandOutcome::EntryAdjusted { .. }
             | CommandOutcome::EntryDeleted { .. }
@@ -10621,6 +10788,17 @@ mod tests {
             T::from(uuid::Uuid::from_u128(u128::from(raw)))
         }
         let entry = tracked_entry(3_901, task_id(), T0 - 600, Some(T0 - 500));
+        let habit_time_entry =
+            |id: crate::ids::HabitTimeEntryId| crate::habit_time::HabitTimeEntry {
+                id,
+                habit: habit_id(),
+                habit_title: "h".into(),
+                start: ts(T0 - 600),
+                end: Some(ts(T0 - 500)),
+                created_at: ts(T0 - 600),
+                updated_at: ts(T0 - 500),
+                by: None,
+            };
         let reflection = crate::reflection::ReflectionEntry {
             id: raw_id(7_902),
             cadence: crate::reflection::ReviewCadence::Day,
@@ -10664,6 +10842,14 @@ mod tests {
             },
             CommandOutcome::TrackingStopped {
                 entries: vec![entry.clone()],
+            },
+            CommandOutcome::HabitTrackingStarted {
+                entry: habit_time_entry(raw_id(7_013)),
+                closed_task_entries: vec![raw_id(7_011)],
+                closed_habit_entries: vec![],
+            },
+            CommandOutcome::HabitTrackingStopped {
+                entries: vec![habit_time_entry(raw_id(7_013))],
             },
             CommandOutcome::TimeLogged {
                 entry: entry.clone(),
@@ -10739,7 +10925,7 @@ mod tests {
         // to extend both the match and this list; the count pin closes
         // the remaining drift — a silently *dropped* sample line (the
         // tag-uniqueness check below only catches duplicates) fails here.
-        assert_eq!(samples.len(), 38);
+        assert_eq!(samples.len(), 40);
         for outcome in &samples {
             assert_every_variant_is_round_tripped(outcome);
             let json = serde_json::to_string(outcome).expect("serializes");
@@ -13506,6 +13692,343 @@ mod tests {
                 ),
             ])
         }
+    }
+    // ---- Habit time tracking pins (#1305, journey plan 2026-11-24) ----
+
+    /// Fixture habit-time-entry id: high raw values never collide with
+    /// the fresh ids `run()`'s `CountingIds` mints (uuid 1, 2, ...).
+    fn habit_time_entry(
+        raw: u64,
+        habit: HabitId,
+        start: i64,
+        end: Option<i64>,
+    ) -> crate::habit_time::HabitTimeEntry {
+        crate::habit_time::HabitTimeEntry {
+            id: crate::ids::HabitTimeEntryId::from(uuid::Uuid::from_u128(u128::from(8_000 + raw))),
+            habit,
+            habit_title: "frozen habit title".into(),
+            start: ts(start),
+            end: end.map(ts),
+            created_at: ts(T0 - 120),
+            updated_at: ts(T0 - 120),
+            by: None,
+        }
+    }
+
+    /// Seeds one habit time entry into the fixture state's time log.
+    fn with_habit_entry(mut app: AppState, entry: crate::habit_time::HabitTimeEntry) -> AppState {
+        app.habits.time_log.insert(entry.id, entry);
+        app
+    }
+
+    #[test]
+    fn start_habit_tracking_closes_task_and_habit_open_entries_at_now() {
+        // D-3: the single-global close composes both maps at the same
+        // engine-stamped `now`.
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let stack = crate::ids::StackId::from(uuid::Uuid::from_u128(u128::from(STACK)));
+        app.tasks.insert(task_id(), task(11, stack, true));
+        let running_task_entry = tracked_entry(1, task_id(), T0 - 600, None);
+        app = with_entry(app, running_task_entry.clone());
+        let foreign_habit = crate::ids::HabitId::from(uuid::Uuid::from_u128(u128::from(HABIT + 1)));
+        let running_habit_entry = habit_time_entry(2, foreign_habit, T0 - 300, None);
+        app = with_habit_entry(app, running_habit_entry.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartHabitTracking { habit: habit_id() },
+        )
+        .expect("accepted");
+        let CommandOutcome::HabitTrackingStarted {
+            entry,
+            closed_task_entries,
+            closed_habit_entries,
+        } = &plan.outcome
+        else {
+            panic!("typed start outcome");
+        };
+        assert!(entry.end.is_none(), "the fresh entry is the running timer");
+        assert_eq!(entry.habit, habit_id());
+        assert_eq!(
+            entry.habit_title, "meditate",
+            "the title snapshots at start (D-4)"
+        );
+        assert_eq!(entry.start, now(), "stamps are the planner's now");
+        assert_eq!(closed_task_entries.as_slice(), &[running_task_entry.id]);
+        assert_eq!(closed_habit_entries.as_slice(), &[running_habit_entry.id]);
+        // Every closed row and the fresh entry ride the persistence
+        // batch; the board flush trigger is present.
+        let upserted_tasks: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::UpsertTimeEntry(row) => Some(row.id),
+                _ => None,
+            })
+            .collect();
+        let upserted_habits: Vec<_> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::UpsertHabitTimeEntry(row) => Some(row.id),
+                _ => None,
+            })
+            .collect();
+        assert!(upserted_tasks.contains(&running_task_entry.id));
+        assert!(upserted_habits.contains(&running_habit_entry.id));
+        assert!(upserted_habits.contains(&entry.id));
+        assert!(
+            plan.actions.iter().any(|action| matches!(
+                action,
+                PersistenceAction::EnqueueOp(op)
+                    if matches!(op.op, crate::outbox::LocalOp::FlushBoardAppData(_))
+            )),
+            "the board-level flush trigger rides the habit write"
+        );
+        // The applied state: exactly one open entry app-wide — the new
+        // habit entry.
+        let mut disk = crate::persistence::PersistedState {
+            tracking: app.tracking.clone(),
+            habits: app.habits.clone(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut disk, &plan.actions);
+        assert_eq!(
+            disk.tracking
+                .entries
+                .values()
+                .filter(|entry| entry.end.is_none())
+                .count(),
+            0,
+            "every task entry closed"
+        );
+        let open_habits: Vec<_> = disk
+            .habits
+            .time_log
+            .values()
+            .filter(|entry| entry.end.is_none())
+            .collect();
+        assert_eq!(open_habits.len(), 1);
+        assert_eq!(open_habits[0].id, entry.id);
+    }
+
+    #[test]
+    fn start_habit_tracking_repeat_is_the_accepted_no_op() {
+        // D-3: exactly one open habit entry and it is this habit's, no
+        // task entry running.
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let open = habit_time_entry(1, habit_id(), T0 - 60, None);
+        let app = with_habit_entry(app, open);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartHabitTracking { habit: habit_id() },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+    }
+
+    #[test]
+    fn start_habit_tracking_rejects_unknown_and_tombstoned_habits_typed() {
+        let (app, outbox) = base();
+        let stranger = crate::ids::HabitId::from(uuid::Uuid::from_u128(4242));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::StartHabitTracking { habit: stranger },
+        )
+        .expect_err("unknown habit is a typed rejection");
+        assert!(matches!(err, CommandError::UnknownHabit(id) if id == stranger));
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        app.habits.habits.get_mut(&habit_id()).unwrap().deleted = true;
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::StartHabitTracking { habit: habit_id() },
+        )
+        .expect_err("tombstoned habit is a typed rejection");
+        assert!(matches!(err, CommandError::HabitDeleted(id) if id == habit_id()));
+    }
+
+    #[test]
+    fn stop_is_total_and_stamps_now() {
+        // D-1: the stop stamps `end = now` unconditionally (the skew
+        // ruling verbatim); nothing open is the accepted no-op; a
+        // tombstoned habit's open entry stays stoppable (D-4).
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let open = habit_time_entry(1, habit_id(), T0 - 600, None);
+        app = with_habit_entry(app, open.clone());
+        let empty_app = app.clone();
+        // Nothing open: the accepted no-op.
+        let mut bare = empty_app.clone();
+        bare.habits.time_log.clear();
+        let plan = run(
+            &bare,
+            &outbox,
+            &StateCommand::StopHabitTracking { habit: habit_id() },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.actions, Vec::new());
+        // Nothing open for THIS habit (another habit's entry runs): the
+        // no-op is habit-scoped — the other entry is not touched.
+        let other = habit_time_entry(
+            3,
+            crate::ids::HabitId::from(uuid::Uuid::from_u128(4_244)),
+            T0 - 60,
+            None,
+        );
+        // `bare` (no open rows) + another habit's entry: the scoped
+        // stop names only this habit.
+        let scoped_app = with_habit_entry(bare, other);
+        let plan = run(
+            &scoped_app,
+            &outbox,
+            &StateCommand::StopHabitTracking { habit: habit_id() },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        // The stop: stamps now, keeps the row.
+        let plan = run(
+            &empty_app,
+            &outbox,
+            &StateCommand::StopHabitTracking { habit: habit_id() },
+        )
+        .unwrap();
+        let CommandOutcome::HabitTrackingStopped { entries } = &plan.outcome else {
+            panic!("typed stop outcome");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, open.id);
+        assert_eq!(entries[0].end, Some(now()));
+        assert_eq!(entries[0].updated_at, now());
+        let mut disk = crate::persistence::PersistedState {
+            tracking: empty_app.tracking.clone(),
+            habits: empty_app.habits.clone(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut disk, &plan.actions);
+        assert!(
+            disk.habits.time_log[&open.id].end.is_some(),
+            "the settled row persists in the map (history outlives the stop)"
+        );
+        // A tombstoned habit's open entry stops honestly (D-4).
+        let (mut dead_app, outbox2) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        dead_app.habits.habits.get_mut(&habit_id()).unwrap().deleted = true;
+        let dead_open = habit_time_entry(5, habit_id(), T0 - 600, None);
+        dead_app = with_habit_entry(dead_app, dead_open);
+        let plan = run(
+            &dead_app,
+            &outbox2,
+            &StateCommand::StopHabitTracking { habit: habit_id() },
+        )
+        .expect("a tombstoned habit's open entry stops (history outlives the habit)");
+        assert!(matches!(
+            plan.outcome,
+            CommandOutcome::HabitTrackingStopped { .. }
+        ));
+        // Unknown habit: typed rejection.
+        let stranger = crate::ids::HabitId::from(uuid::Uuid::from_u128(4243));
+        let err = run(
+            &dead_app,
+            &outbox2,
+            &StateCommand::StopHabitTracking { habit: stranger },
+        )
+        .expect_err("unknown habit is a typed rejection");
+        assert!(matches!(err, CommandError::UnknownHabit(id) if id == stranger));
+    }
+
+    #[test]
+    fn habit_tracking_start_after_stop_replays_deterministically() {
+        // Replay determinism (#986/#1095): every stamp is a pure
+        // function of (pre-state, command, now) — the same inputs plan
+        // byte-identical results (no wall reads inside the reducer).
+        let (app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let plan_a = run(
+            &app,
+            &outbox,
+            &StateCommand::StartHabitTracking { habit: habit_id() },
+        )
+        .unwrap();
+        let plan_b = run(
+            &app,
+            &outbox,
+            &StateCommand::StartHabitTracking { habit: habit_id() },
+        )
+        .unwrap();
+        assert_eq!(plan_a, plan_b, "same-instant re-plan is byte-identical");
+        // And a start-after-stop at the same `now` re-mints
+        // deterministically against the stopped pre-state.
+        let stopped = habit_time_entry(1, habit_id(), T0 - 600, Some(T0 - 60));
+        let stopped_app = with_habit_entry(app, stopped);
+        let plan_c = run(
+            &stopped_app,
+            &outbox,
+            &StateCommand::StartHabitTracking { habit: habit_id() },
+        )
+        .unwrap();
+        let plan_d = run(
+            &stopped_app,
+            &outbox,
+            &StateCommand::StartHabitTracking { habit: habit_id() },
+        )
+        .unwrap();
+        assert_eq!(plan_c, plan_d);
+    }
+
+    #[test]
+    fn start_task_tracking_closes_open_habit_entries_too() {
+        // D-3's other direction: starting a TASK tracker closes the
+        // running habit entry at the same `now` (one running timer
+        // app-wide).
+        let (mut app, outbox) = habit_app(crate::habit::HabitTarget::PerDay(
+            crate::habit::NonZeroCount::new(1).unwrap(),
+        ));
+        let stack = crate::ids::StackId::from(uuid::Uuid::from_u128(u128::from(STACK)));
+        app.tasks.insert(task_id(), task(11, stack, true));
+        let running = habit_time_entry(1, habit_id(), T0 - 300, None);
+        app = with_habit_entry(app, running.clone());
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::StartTracking {
+                task: task_id(),
+                kind: crate::tracking::TimeEntryKind::Work,
+            },
+        )
+        .unwrap();
+        let mut disk = crate::persistence::PersistedState {
+            tracking: app.tracking.clone(),
+            habits: app.habits.clone(),
+            ..crate::persistence::PersistedState::default()
+        };
+        crate::persistence::apply_actions(&mut disk, &plan.actions);
+        assert!(
+            disk.habits.time_log[&running.id].end == Some(now()),
+            "the habit entry closed at the task start's now"
+        );
+        assert_eq!(
+            disk.tracking
+                .entries
+                .values()
+                .filter(|entry| entry.end.is_none())
+                .count(),
+            1,
+            "the task entry is the one running timer"
+        );
     }
 }
 

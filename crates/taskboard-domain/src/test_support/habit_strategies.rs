@@ -263,6 +263,7 @@ impl HabitFixture {
             habits: BTreeMap::from([(self.habit.id, self.habit.clone())]),
             log: self.log.clone(),
             day_log: std::collections::BTreeMap::default(),
+            time_log: std::collections::BTreeMap::default(),
         }
     }
 }
