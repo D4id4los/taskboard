@@ -97,8 +97,11 @@ GitHub renders these — the precedent is docs/flow_model.org. -->
 kind for list rows (the UI is id-less; callbacks + action ids + command
 variants are the contract, not element ids). A row with — in Commands
 must say why in Journey steps (pure navigation/display). Test column:
-file::name embedding the step-ID token. Header row is a parser
-contract — do not rename or reorder columns. -->
+file::name embedding the step-ID token. A step whose evidence test is
+differently named binds the plan-invented name to the existing test
+with a `test-alias: <nom-name> -> <file>.rs::<existing-fn>` line in
+§8 (#1285) — a dead alias target is a gate failure, never a pass.
+Header row is a parser contract — do not rename or reorder columns. -->
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
