@@ -47,6 +47,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use taskboard_domain::OpId;
+use taskboard_domain::SyncErrorKind;
 use taskboard_domain::board_move::AdoptionRefusal;
 use taskboard_domain::ids::{AuthorId, BoardId, StackId, TaskId};
 use taskboard_domain::messages::SyncReport;
@@ -179,10 +180,46 @@ pub async fn run_board_lanes<T: FilesTransport>(
     let mut completed = 0usize;
     let mut outcomes = BTreeMap::new();
     let owned_ids: BTreeSet<BoardId> = owned.iter().map(|(board, _)| *board).collect();
-    for (board, remote) in owned {
+    // The orphan law (plan `.artifacts/plans/2026-11-24-sync-orphan-lanes-plan.md` §1):
+    // board-less outbox ops (owning entity rows wiped) are cycle-level
+    // bookkeeping — the planner synthesizes their completions, so they
+    // drain every cycle: riding the FIRST board lane's pass below, or
+    // (zero owned boards) through the standalone drain.
+    let tables = EntityTables {
+        tasks: &persisted.tasks,
+        stacks: &persisted.stacks,
+        labels: &persisted.labels,
+        boards: &persisted.boards,
+    };
+    let orphan_ops: Vec<taskboard_domain::PendingOp> = persisted
+        .outbox
+        .iter()
+        .filter(|entry| entry.op.owning_board(&tables).is_none())
+        .cloned()
+        .collect();
+    if owned.is_empty() {
+        // #1255: the zero-board leg — no lane exists, so the orphans
+        // drain standalone instead of stranding behind the empty set.
+        drain_orphans_only(ctx, &persisted, &orphan_ops).await;
+    }
+    for (index, (board, remote)) in owned.into_iter().enumerate() {
         let lane = lanes.boards.entry(board).or_default();
         lane.remote_uuid = Some(remote);
-        match run_lane(transport, ctx, lane, board, remote, &persisted).await {
+        // `if index == 0`, exactly like the Deck connector's ride: the
+        // orphans carry once per cycle, on the first board pass.
+        let carried_orphans: &[taskboard_domain::PendingOp] =
+            if index == 0 { &orphan_ops } else { &[] };
+        match run_lane(
+            transport,
+            ctx,
+            lane,
+            board,
+            remote,
+            &persisted,
+            carried_orphans,
+        )
+        .await
+        {
             Ok(()) => {
                 completed += 1;
                 outcomes.insert(remote, crate::status::LaneOutcome::Ok);
@@ -630,6 +667,7 @@ async fn run_lane<T: FilesTransport>(
     board: BoardId,
     remote: uuid::Uuid,
     persisted: &PersistedState,
+    orphan_ops: &[taskboard_domain::PendingOp],
 ) -> Result<(), TransportError> {
     let started = Instant::now();
     if !lane.attached {
@@ -641,7 +679,7 @@ async fn run_lane<T: FilesTransport>(
         // publish nothing (publish-after-import ordering, pinned).
         return Ok(());
     }
-    drain_board(transport, ctx, lane, board, remote, persisted).await?;
+    drain_board(transport, ctx, lane, board, remote, persisted, orphan_ops).await?;
     snapshot_duty(transport, ctx, lane, board, remote, persisted).await?;
     Ok(())
 }
@@ -996,6 +1034,7 @@ async fn drain_board<T: FilesTransport>(
     board: BoardId,
     remote: uuid::Uuid,
     persisted: &PersistedState,
+    orphan_ops: &[taskboard_domain::PendingOp],
 ) -> Result<(), TransportError> {
     let ownership = BoardOwnershipMap::from_boards(&persisted.boards);
     let tables = EntityTables {
@@ -1004,15 +1043,19 @@ async fn drain_board<T: FilesTransport>(
         labels: &persisted.labels,
         boards: &persisted.boards,
     };
-    let board_ops: Vec<&taskboard_domain::PendingOp> = persisted
+    // The orphan ride (the orphan law, plan §1): the carried ops append
+    // BEFORE the empty guard — a first board with no own ops must still
+    // drain them (the #1255 early-return trap).
+    let mut owned_ops: Vec<taskboard_domain::PendingOp> = persisted
         .outbox
         .iter()
         .filter(|entry| entry.op.owning_board(&tables) == Some(board))
+        .cloned()
         .collect();
-    if board_ops.is_empty() {
+    owned_ops.extend(orphan_ops.iter().cloned());
+    if owned_ops.is_empty() {
         return Ok(());
     }
-    let owned_ops: Vec<taskboard_domain::PendingOp> = board_ops.into_iter().cloned().collect();
     let groups = plan_pushes(&owned_ops, tables, &ownership);
     // The no-sidecar shape: no Document group exists for this board
     // (the planner pin); the dirty set is the group targets.
@@ -1120,8 +1163,32 @@ async fn drain_board<T: FilesTransport>(
     // Every op must have found an entity to materialize, or it is not
     // publishable — honesty over accounting pressure (an unpublished
     // op stays queued and retries; a pre-emptive Applied is data loss).
+    // The exception is the orphan ride's synthetic completions (the
+    // orphan law): a group whose target entity row is wiped
+    // materializes nothing, so nothing goes on the wire — its ops
+    // account alone, without a chunk (a synthetic completion never
+    // addresses the server; only a materialized write needs the
+    // create-once PUT). An unresolved ref-delete is not synthetic —
+    // it stays queued.
     if entries.is_empty() {
-        tracing::debug!(board = ?board, "drain found nothing publishable; ops stay queued");
+        let synthetic: Vec<OpId> = groups
+            .iter()
+            .filter(|group| match group.target {
+                PushTarget::Task(id) => !tables.tasks.contains_key(&id),
+                PushTarget::Stack(id) => !tables.stacks.contains_key(&id),
+                PushTarget::Label(id) => !tables.labels.contains_key(&id),
+                PushTarget::Board(id) => !tables.boards.contains_key(&id),
+                PushTarget::RemoteCard(_)
+                | PushTarget::RemoteStack(_)
+                | PushTarget::Document(_) => false,
+            })
+            .flat_map(|group| std::iter::once(group.primary).chain(group.subsumed.iter().copied()))
+            .collect();
+        if synthetic.is_empty() {
+            tracing::debug!(board = ?board, "drain found nothing publishable; ops stay queued");
+            return Ok(());
+        }
+        publish_drain_report(ctx, board, remote, &synthetic).await;
         return Ok(());
     }
     let Some((first_seq, last_seq)) = next_chunk_range(lane.last_published_seq, entries.len())
@@ -1197,6 +1264,96 @@ async fn drain_board<T: FilesTransport>(
         Err(err) => return Err(err),
     }
     Ok(())
+}
+
+/// The files tier's zero-board leg of the orphan law (plan
+/// `.artifacts/plans/2026-11-24-sync-orphan-lanes-plan.md` §2 D2 — the
+/// one recorded mechanism divergence): `drain_board` needs a bound
+/// (board, remote) pair — a chunk document publishes into a board
+/// subtree, and an orphan-only drain has neither. So the planner's
+/// synthetic completions (the entity row a group targets is absent
+/// from the tables — the same materialization check `drain_board`
+/// performs per entity) account through the board-less push-only
+/// report path (`Failed { board: None }` — the same accounting shape
+/// the Deck connector's standalone drain uses; no board exists to
+/// attribute a `Completed` to, and a fabricated identity would mint a
+/// phantom board row). A group that would need a lane — a
+/// materialized entity write or a ref-tombstone relay, both of which
+/// publish only as chunk entries — has no destination here and stays
+/// queued loudly until a board binds (mechanism, not semantics: the
+/// Deck connector drains the wire-shaped orphans; this tier drains
+/// everything publishable without a board, every cycle).
+async fn drain_orphans_only(
+    ctx: &SyncContext,
+    persisted: &PersistedState,
+    orphan_ops: &[taskboard_domain::PendingOp],
+) {
+    if orphan_ops.is_empty() {
+        // Zero-cost guard first: the empty lane publishes nothing.
+        return;
+    }
+    let tables = EntityTables {
+        tasks: &persisted.tasks,
+        stacks: &persisted.stacks,
+        labels: &persisted.labels,
+        boards: &persisted.boards,
+    };
+    let ownership = BoardOwnershipMap::from_boards(&persisted.boards);
+    let mut completions: Vec<OpId> = Vec::new();
+    for group in plan_pushes(orphan_ops, tables, &ownership) {
+        let row_present = match group.target {
+            PushTarget::Task(id) => tables.tasks.contains_key(&id),
+            PushTarget::Stack(id) => tables.stacks.contains_key(&id),
+            PushTarget::Label(id) => tables.labels.contains_key(&id),
+            PushTarget::Board(id) => tables.boards.contains_key(&id),
+            // No board subtree exists to relay a ref-tombstone into,
+            // and the flush needs a board's sidecar lane: these targets
+            // are never publishable without a board.
+            PushTarget::RemoteCard(_) | PushTarget::RemoteStack(_) | PushTarget::Document(_) => {
+                false
+            }
+        };
+        if row_present {
+            tracing::warn!(
+                connector = %ctx.connector,
+                "an orphan group needs a board lane; op stays queued until a board binds"
+            );
+            continue;
+        }
+        completions.push(group.primary);
+        completions.extend(group.subsumed.iter().copied());
+    }
+    if completions.is_empty() {
+        return;
+    }
+    let pushes: Vec<PushOutcome> = completions
+        .iter()
+        .map(|op_id| PushOutcome {
+            op: *op_id,
+            result: PushResult::Applied { echo: None },
+        })
+        .collect();
+    tracing::debug!(
+        connector = %ctx.connector,
+        ops = pushes.len(),
+        "zero-board orphan drain"
+    );
+    let report = SyncReport::Failed {
+        connector: ctx.connector.clone(),
+        kind: SyncErrorKind::NoBoard,
+        pushes,
+        read_at: ctx.clock.now(),
+        board: None,
+        duration: std::time::Duration::ZERO,
+        features: taskboard_domain::DeckFeatures::default(),
+    };
+    if ctx.board_reports.send(report).await.is_err() {
+        // The engine is gone; nothing to account to. The completions
+        // were local, so nothing is lost — the ops re-report on a
+        // later cycle only if still queued (the honest at-least-once
+        // posture).
+        tracing::warn!("board report lane closed; orphan completions re-report next cycle");
+    }
 }
 
 /// The snapshot duty (D-BF7's cadence, chunk 5's publisher): on boot
@@ -3033,5 +3190,168 @@ mod tests {
             Some(&crate::status::LaneOutcome::Ok)
         );
         assert!(fake.file(&peer_chunk).is_some());
+    }
+
+    // ---- C2: the orphan law in the files tier (#1255) ------------------
+
+    const WIPED_BOARD_UUID: uuid::Uuid = uuid::Uuid::from_u128(0xDEAD0);
+    const ORPHAN_OP: u128 = 0xB1A0;
+
+    /// An orphan op: its owning board row is wiped, so `owning_board`
+    /// is `None` and no board lane's per-board filter ever picks it.
+    /// A zero-board state carrying only the orphan op.
+    fn orphan_only_state() -> PersistedState {
+        PersistedState {
+            outbox: vec![orphan_op()],
+            ..PersistedState::default()
+        }
+    }
+
+    fn orphan_op() -> PendingOp {
+        PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(ORPHAN_OP)),
+            op: LocalOp::UpdateBoard(BoardId::from_uuid(WIPED_BOARD_UUID)),
+            queued_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        }
+    }
+
+    /// Every `Completed`/`Failed` report's op ids, flattened.
+    fn reported_op_ids(reports: &[SyncReport]) -> Vec<taskboard_domain::OpId> {
+        reports
+            .iter()
+            .flat_map(|report| match report {
+                SyncReport::Completed { pushes, .. } | SyncReport::Failed { pushes, .. } => {
+                    pushes.iter().map(|outcome| outcome.op).collect::<Vec<_>>()
+                }
+                SyncReport::BoardMoved { .. } => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// #1255 — the ride: an orphan op rides the first (and only) bound
+    /// board's drain and completes with it.
+    #[tokio::test]
+    async fn files_lane_drains_orphan_ops_on_first_board_pass() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let state = Arc::new(FixedState(state_with(vec![
+            queued_update(0xE1, TaskId::from_uuid(TASK_UUID)),
+            orphan_op(),
+        ])));
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(state, board_tx);
+        let mut lanes = Lanes::default();
+        let ran = run_board_lanes(&fake, &context, &mut lanes).await;
+        assert_eq!(ran, 1, "the owned board's lane ran");
+
+        let mut reports = Vec::new();
+        while let Ok(report) = board_rx.try_recv() {
+            reports.push(report);
+        }
+        assert!(
+            reported_op_ids(&reports)
+                .contains(&taskboard_domain::OpId(uuid::Uuid::from_u128(ORPHAN_OP))),
+            "the orphan op completed with the first board's drain"
+        );
+    }
+
+    /// #1255 — the early-return trap: the first board has no own ops,
+    /// so the per-board filter is empty — the orphan still drains (the
+    /// append must precede the guard). Nothing materializes, so no
+    /// chunk goes on the wire; the completions report alone.
+    #[tokio::test]
+    async fn files_first_board_with_no_own_ops_still_drains_orphans() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let state = Arc::new(FixedState(state_with(vec![orphan_op()])));
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(state, board_tx);
+        let mut lanes = Lanes::default();
+        run_board_lanes(&fake, &context, &mut lanes).await;
+
+        let mut reports = Vec::new();
+        while let Ok(report) = board_rx.try_recv() {
+            reports.push(report);
+        }
+        assert!(
+            reported_op_ids(&reports)
+                .contains(&taskboard_domain::OpId(uuid::Uuid::from_u128(ORPHAN_OP))),
+            "the orphan drained despite the empty own-op set"
+        );
+        assert!(
+            fake.requests().iter().all(|req| {
+                // A chunk file is an all-numeric name under `ops/` (the
+                // snapshot duty's `snapshot-<seq>.json` is a legitimate
+                // non-chunk write into the same collection).
+                let file = req.path.rsplit('/').next().unwrap_or(&req.path);
+                !(req.method == "PUT"
+                    && req
+                        .path
+                        .contains(taskboard_sync_files::layout::OPS_DIR_NAME)
+                    && file.parse::<u64>().is_ok())
+            }),
+            "a synthetic completion publishes no chunk"
+        );
+    }
+
+    /// #1255 — the zero-board leg (the recorded mechanism divergence):
+    /// no lane exists, so the synthetic orphan completions run through
+    /// the board-less push-only report path.
+    #[tokio::test]
+    async fn files_lanes_drain_orphans_when_zero_boards_bound() {
+        let fake = FakeFilesTransport::new();
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(Arc::new(FixedState(orphan_only_state())), board_tx);
+        let mut lanes = Lanes::default();
+        run_board_lanes(&fake, &context, &mut lanes).await;
+
+        let mut reports = Vec::new();
+        while let Ok(report) = board_rx.try_recv() {
+            reports.push(report);
+        }
+        assert!(
+            reports.iter().any(
+                |report| matches!(report, SyncReport::Failed { board: None, .. })
+                    && reported_op_ids(std::slice::from_ref(report))
+                        .contains(&taskboard_domain::OpId(uuid::Uuid::from_u128(ORPHAN_OP)))
+            ),
+            "the zero-board drain accounted the orphan through the board-less path"
+        );
+    }
+
+    /// #1255 — the zero-board drain's synthetic completions contact no
+    /// write endpoint (the fake's request log is the whole truth of
+    /// the wire).
+    #[tokio::test]
+    async fn files_orphan_drain_contacts_no_server_for_noop_groups() {
+        let fake = FakeFilesTransport::new();
+        let context = ctx(
+            Arc::new(FixedState(orphan_only_state())),
+            mpsc::channel(8).0,
+        );
+        let mut lanes = Lanes::default();
+        run_board_lanes(&fake, &context, &mut lanes).await;
+
+        assert!(
+            fake.requests()
+                .iter()
+                .all(|req| matches!(req.method.as_str(), "PROPFIND" | "MKCOL" | "GET")),
+            "a synthetic-completion drain never addresses a write endpoint"
+        );
+        // And the noop op actually drained (it is not stranded behind
+        // the zero-owned guard either).
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(Arc::new(FixedState(orphan_only_state())), board_tx);
+        let mut lanes = Lanes::default();
+        run_board_lanes(&fake, &context, &mut lanes).await;
+        let mut reports = Vec::new();
+        while let Ok(report) = board_rx.try_recv() {
+            reports.push(report);
+        }
+        assert!(
+            reported_op_ids(&reports)
+                .contains(&taskboard_domain::OpId(uuid::Uuid::from_u128(ORPHAN_OP))),
+            "the zero-board orphan drain completed the op"
+        );
     }
 }
