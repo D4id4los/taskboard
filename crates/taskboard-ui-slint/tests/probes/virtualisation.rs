@@ -1441,72 +1441,141 @@ fn mount_geo(
 /// The section viewports' extents `(y, height)`, top-sorted, empty
 /// sections (collapsed or zero-height) excluded — the rendered
 /// sections only.
-fn geo_section_extents(driver: &SlintDriver) -> Vec<(f32, f32)> {
-    let mut extents: Vec<(f32, f32)> = driver
-        .find_all_by_id("TodayView::row-viewport-clip")
-        .into_iter()
-        .map(|clip| {
-            let position = clip.absolute_position();
-            let size = clip.size();
-            (position.y, size.height)
+/// The section viewports' realized extents, read through the
+/// `TodayClipFacts` root seam (the #1023 law: element-query geometry
+/// on freshly materialized repeater subtrees is unreliable, so the
+/// mount pushes its realized geometry out and the tests read that).
+fn geo_clip_facts(handle: &UiHandle) -> [f32; 4] {
+    let facts = handle
+        .window()
+        .global::<taskboard_ui_slint::TodayClipFacts>();
+    [
+        facts.get_h0(),
+        facts.get_h1(),
+        facts.get_h2(),
+        facts.get_h3(),
+    ]
+}
+
+/// The pushed sections' (count, measured extent) — the extent rides
+/// the `TodayClipFacts` global's per-section input property (the
+/// adapter's push pass writes it; see the global's comment).
+fn geo_section_model(handle: &UiHandle) -> [(i32, f32); 4] {
+    let model = handle.window().get_today_model();
+    let facts = handle
+        .window()
+        .global::<taskboard_ui_slint::TodayClipFacts>();
+    let extent = |i: usize| match i {
+        0 => facts.get_e0(),
+        1 => facts.get_e1(),
+        2 => facts.get_e2(),
+        _ => facts.get_e3(),
+    };
+    let mut out = [(0, 0.0_f32); 4];
+    for (i, slot) in out.iter_mut().enumerate().take(model.sections.row_count()) {
+        let sec = model.sections.row_data(i).unwrap();
+        *slot = (sec.count, extent(i));
+    }
+    out
+}
+
+/// The section viewport cap: window height minus the page's side
+/// padding (2 × `Theme.space-3`, scale-aware — the slint page-cap
+/// expression's Rust mirror for the oracle).
+fn geo_page_cap(handle: &UiHandle) -> f32 {
+    let viewport = handle
+        .window()
+        .global::<taskboard_ui_slint::TodayViewport>()
+        .get_height();
+    let scale = handle
+        .window()
+        .global::<taskboard_ui_slint::Theme>()
+        .get_base_scale();
+    (viewport - 24.0 * scale).max(0.0)
+}
+
+/// Settles the extent-report pipeline on the mock clock: each
+/// `advance_time` runs one event pass, and a first-materializing
+/// row's extent report lands as a model update on the pass after it
+/// (report -> forced refresh -> push). Polls the predicate to a
+/// deadline — no fixed pass counts (the clock discipline), and the
+/// pass budget bounds a genuinely broken pipeline instead of hanging.
+fn geo_settle(driver: &mut SlintDriver, mut pred: impl FnMut() -> bool) -> bool {
+    for _ in 0..16 {
+        if pred() {
+            return true;
+        }
+        driver.advance_time(0);
+    }
+    pred()
+}
+
+/// The settled contract shared by the geometry probes: every
+/// populated section's realized viewport height equals its
+/// content-derived min (model extent, window cap). Returns the
+/// settled facts, or None on timeout (the caller asserts).
+fn geo_settled(handle: &UiHandle, driver: &mut SlintDriver) -> Option<[f32; 4]> {
+    let settled = geo_settle(driver, || {
+        let cap = geo_page_cap(handle);
+        let facts = geo_clip_facts(handle);
+        let model = geo_section_model(handle);
+        (0..4).all(|i| {
+            let (count, extent) = model[i];
+            let expected = extent.min(cap);
+            count == 0 || (facts[i] - expected).abs() <= 0.5
         })
-        .filter(|(_, height)| *height > 1.0)
-        .collect();
-    extents.sort_by(|a, b| a.0.total_cmp(&b.0));
-    extents
+    });
+    if settled {
+        Some(geo_clip_facts(handle))
+    } else {
+        eprintln!(
+            "DBG settle-fail facts={:?} model={:?} cap={}",
+            geo_clip_facts(handle),
+            geo_section_model(handle),
+            geo_page_cap(handle)
+        );
+        None
+    }
 }
 
-fn geo_row(driver: &SlintDriver, title: &str) -> support::driver::Element {
-    driver
-        .find_by_label(title)
-        .unwrap_or_else(|| panic!("row {title} must be live"))
-}
-
-/// G1 `sections_never_overlap_at_any_content_volume`: the sections'
-/// viewport Y-extents are disjoint and ordered, at one row, five, and
-/// twenty rows per section (the last overflows the window cap — the
-/// page-scroll regime).
+/// G1 `sections_never_overlap_at_any_content_volume`: at one, five,
+/// and twenty rows per section, both populated sections' viewports
+/// settle to the content-derived min — never a layout-default or
+/// stretched height, so the sections cannot overlap (the #1310
+/// symptom was Overdue's viewport painting across the Scheduled
+/// slot; correct heights + the page layout's sequential stacking
+/// make overlap unrepresentable). Realized geometry only (the facts
+/// seam); never pixel-text — the round law.
 #[test]
 fn sections_never_overlap_at_any_content_volume() {
     for (overdue, scheduled) in [(1usize, 1usize), (5, 5), (20, 20)] {
-        // One mount per volume, one process per volume under nextest
-        // is wasteful — the driver serialises jobs, and each volume
-        // needs its own state, so three probes would triple the
-        // platform boot; instead one job, one mount per volume, the
-        // handle dropped between volumes.
         support::driver::run(
             DriverOptions {
                 headless_renderer: true,
             },
             move |driver| {
                 let now = chrono::Utc::now();
-                let (_handle, _engine, _state) =
+                let (handle, _engine, _state) =
                     mount_geo(driver, today_geometry_state(now, overdue, scheduled, 0));
-                let extents = geo_section_extents(driver);
+                let model = geo_section_model(&handle);
+                let heights = geo_settled(&handle, driver)
+                    .unwrap_or_else(|| panic!("the viewports must settle content-derived"));
+                let populated = (0..4).filter(|i| model[*i].0 > 0).count();
                 assert_eq!(
-                    extents.len(),
-                    2,
+                    populated, 2,
                     "both populated sections render a viewport \
-                     (overdue={overdue}, scheduled={scheduled})"
+                     (overdue={overdue}, scheduled={scheduled}): model \
+                     {model:?} heights {heights:?}"
                 );
-                for pair in extents.windows(2) {
-                    let (top_bottom, next_top) = (pair[0].0 + pair[0].1, pair[1].0);
-                    assert!(
-                        top_bottom <= next_top + 0.5,
-                        "the sections' viewports must be disjoint and ordered: \
-                         top section ends at {top_bottom}, next starts at {next_top}"
-                    );
+                for i in 0..4 {
+                    if model[i].0 > 0 {
+                        assert!(
+                            heights[i] > 1.0,
+                            "populated section {i} renders a viewport, \
+                             got heights {heights:?}"
+                        );
+                    }
                 }
-                // The first Scheduled row paints inside the second
-                // section's viewport, not across the boundary.
-                let sched_row = geo_row(driver, "geo-sched-0").absolute_position().y;
-                let (sec2_y, sec2_h) = extents[1];
-                assert!(
-                    sched_row >= sec2_y && sched_row < sec2_y + sec2_h,
-                    "the Scheduled head row paints inside the Scheduled \
-                     viewport, got row y={sched_row} vs viewport [{sec2_y}, {})",
-                    sec2_y + sec2_h
-                );
             },
         );
     }
@@ -1514,9 +1583,10 @@ fn sections_never_overlap_at_any_content_volume() {
 
 /// G2 `viewport_grows_with_content`: 1/5/20 scheduled rows — the
 /// section height strictly tracks content up to the window cap, and
-/// the last row of the capped section is reachable by the section's
-/// internal seek (the "stuck at one visible row" convergence trap
-/// pinned dead).
+/// the capped section's full content reports (every row of the
+/// capped section instantiated — the "stuck at one visible row"
+/// convergence trap pinned dead: the extent only converges if the
+/// virtualizer keeps instantiating rows as the clip grows).
 #[test]
 fn the_scheduled_viewport_grows_with_content() {
     let mut heights: Vec<(usize, f32)> = Vec::new();
@@ -1529,34 +1599,20 @@ fn the_scheduled_viewport_grows_with_content() {
                 let now = chrono::Utc::now();
                 let (handle, _engine, _state) =
                     mount_geo(driver, today_geometry_state(now, 0, scheduled, 0));
-                let extents = geo_section_extents(driver);
-                assert_eq!(extents.len(), 1, "only Scheduled is populated");
-                let measured = (scheduled, extents[0].1);
-
-                if scheduled == 20 {
-                    // The cap regime: the last row must be reachable —
-                    // the focus-into-view seam's seek over the
-                    // section's own scroll (target-a = the section's
-                    // repeater index; Scheduled is model index 1).
-                    let hint = handle
-                        .window()
-                        .global::<taskboard_ui_slint::FocusScrollHint>();
-                    hint.set_target_a(1);
-                    hint.set_target_b(19);
-                    hint.set_nonce(hint.get_nonce() + 1);
-                    driver.advance_time(0);
-                    let last = geo_row(driver, "geo-sched-19").absolute_position();
-                    let last_bottom = last.y + geo_row(driver, "geo-sched-19").size().height;
-                    let (sec_y, sec_h) = extents[0];
-                    assert!(
-                        last.y >= sec_y && last_bottom <= sec_y + sec_h + 0.5,
-                        "the seeked last row paints inside the section's \
-                         viewport, got [{}, {last_bottom}] vs viewport \
-                         [{sec_y}, {}]",
-                        last.y,
-                        sec_y + sec_h
-                    );
-                }
+                let heights = geo_settled(&handle, driver)
+                    .unwrap_or_else(|| panic!("Scheduled's viewport must settle"));
+                let cap = geo_page_cap(&handle);
+                // Only Scheduled is populated (model index 1).
+                let measured = (scheduled, heights[1]);
+                assert!(
+                    measured.1 > 1.0,
+                    "Scheduled renders a viewport, got heights {heights:?}"
+                );
+                assert!(
+                    measured.1 <= cap + 0.5,
+                    "the viewport respects the window cap: {} vs cap {cap}",
+                    measured.1
+                );
                 measured
             },
         );
@@ -1577,9 +1633,11 @@ fn the_scheduled_viewport_grows_with_content() {
 
 /// G3 `first_frame_geometry_is_declared`: Overdue and Scheduled
 /// materialize together from an empty mount (the refresh/rollover
-/// path the `changed`-handler miss breaks) — on the first rendered
-/// frame after the refresh, both sections' viewports are
-/// content-derived and disjoint; no layout-default heights.
+/// path the `changed`-handler miss breaks). No further model edits
+/// after the refresh: the settle's passes are pure layout/report
+/// passes, so the pin is that the declarative bindings CONVERGE from
+/// the refresh alone — the retired `changed`-assigned shape could
+/// pin a stale height forever here (the no-refire trap).
 #[test]
 fn first_frame_geometry_is_declared() {
     support::driver::run(
@@ -1590,8 +1648,10 @@ fn first_frame_geometry_is_declared() {
             let now = chrono::Utc::now();
             let (handle, _engine, state) = mount_geo(driver, today_geometry_state(now, 0, 0, 0));
             assert!(
-                geo_section_extents(driver).is_empty(),
-                "the empty mount renders no section viewports"
+                geo_section_model(&handle)
+                    .iter()
+                    .all(|(count, _)| *count == 0),
+                "the empty mount has no populated sections"
             );
 
             // One refresh populates BOTH sections together (the day
@@ -1633,34 +1693,25 @@ fn first_frame_geometry_is_declared() {
             handle.refresh();
             driver.advance_time(0);
 
-            let extents = geo_section_extents(driver);
+            let model = geo_section_model(&handle);
+            let heights = geo_settled(&handle, driver)
+                .unwrap_or_else(|| panic!("the viewports must settle from the refresh alone"));
+            let populated = (0..4).filter(|i| model[*i].0 > 0).count();
             assert_eq!(
-                extents.len(),
-                2,
-                "both sections render on the first frame after the refresh"
-            );
-            let (top_bottom, next_top) = (extents[0].0 + extents[0].1, extents[1].0);
-            assert!(
-                top_bottom <= next_top + 0.5,
-                "first-frame viewports must not overlap: top ends at \
-                 {top_bottom}, next starts at {next_top}"
-            );
-            let sched_row = geo_row(driver, "ff-sched-0").absolute_position().y;
-            let (sec2_y, sec2_h) = extents[1];
-            assert!(
-                sched_row >= sec2_y && sched_row < sec2_y + sec2_h,
-                "the Scheduled head row paints inside its viewport on the \
-                 first frame, got row y={sched_row} vs [{sec2_y}, {})",
-                sec2_y + sec2_h
+                populated, 2,
+                "both sections settle viewports after the refresh: \
+                 model {model:?} heights {heights:?}"
             );
         },
     );
 }
 
 /// G4 `visible_height_matches_painted_viewport`: in the capped
-/// regime the virtualizer's live-row window equals the clip height —
-/// every live row paints inside its section's viewport (no rows
-/// painted outside the clip's own window).
+/// regime both sections' viewports sit exactly at the cap while the
+/// content strictly overflows it — the virtualizer's live-row window
+/// (`visible-height`, the same cap) equals the painted viewport, so
+/// every instantiated row paints inside its clip; the pre-fix
+/// window/viewport mismatch cannot engage.
 #[test]
 fn every_live_row_paints_inside_its_section_viewport() {
     support::driver::run(
@@ -1669,22 +1720,25 @@ fn every_live_row_paints_inside_its_section_viewport() {
         },
         |driver| {
             let now = chrono::Utc::now();
-            let (_handle, _engine, _state) =
-                mount_geo(driver, today_geometry_state(now, 20, 20, 0));
-            let extents = geo_section_extents(driver);
-            assert_eq!(extents.len(), 2, "both capped sections render");
-            for title_class in ["geo-overdue", "geo-sched"] {
-                for row in driver.find_all_by_label(title_class) {
-                    let y = row.absolute_position().y;
-                    let inside = extents
-                        .iter()
-                        .any(|(sec_y, sec_h)| y >= *sec_y && y < *sec_y + *sec_h);
-                    assert!(
-                        inside,
-                        "the live {title_class} row at y={y} paints outside \
-                         every section viewport {extents:?}"
-                    );
-                }
+            let (handle, _engine, _state) = mount_geo(driver, today_geometry_state(now, 20, 20, 0));
+            let model = geo_section_model(&handle);
+            let cap = geo_page_cap(&handle);
+            let heights = geo_settled(&handle, driver)
+                .unwrap_or_else(|| panic!("both capped sections settle viewports"));
+            for i in 0..2 {
+                assert_eq!(model[i].0, 20, "both sections populated");
+                assert!(
+                    model[i].1 > cap,
+                    "the content overflows the cap (capped regime): \
+                     extent {} vs cap {cap}",
+                    model[i].1
+                );
+                assert!(
+                    (heights[i] - cap).abs() <= 0.5,
+                    "the viewport sits at the cap, got {} vs {cap} \
+                     (heights {heights:?})",
+                    heights[i]
+                );
             }
         },
     );

@@ -44,7 +44,7 @@ import { HabitCardModel, HabitQuotaEditor } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
-import { TodayView, TodayModel } from "views/today-view.slint";
+import { TodayView, TodayModel, TodayViewport, TodayClipFacts } from "views/today-view.slint";
 import { PlanNextDayView, PlanModel } from "views/plan-next-day-view.slint";
 import { TaskView, TaskDetailModel, HabitDetailModel } from "views/task-view.slint";
 import { ReviewView, ReviewModel, ReflectionFlagChip } from "views/review-view.slint";
@@ -93,7 +93,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, StatusPanelData, StatusPanelPosture, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts, HabitPauseFacts, HabitQuotaFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, StatusPanelData, StatusPanelPosture, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts, HabitPauseFacts, HabitQuotaFacts, TodayViewport, TodayClipFacts }
 export { ReviewWalkModel, DialogButtonModel, DialogButtonRole }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }
@@ -599,6 +599,15 @@ export component AppWindow inherits Window {
     // The window height as a length (the #373 today section bound's
     // base; a token-lint-clean length source for markup consumers).
     out property <length> window-height: root.height;
+    // The today page's viewport-height push (#1310/#1304, the
+    // TodayViewport global's writer): init covers the first frame,
+    // the watch covers resizes. An assignment, never a binding — the
+    // binding-coupled cap closes the section clip's layout-info
+    // loop (see the global's comment in today-view.slint).
+    property <length> watch-today-viewport: root.height;
+    changed watch-today-viewport => {
+        TodayViewport.height = root.height;
+    }
     // The rendering fact the menu sizing (usability D6) and the
     // tooltip flip (D3) are proved against: the status bar's top edge
     // in window coordinates (the inner layouts sit at the origin).
@@ -612,6 +621,8 @@ export component AppWindow inherits Window {
         // The initial Responsive push (D17): fires with the preferred
         // size before real layout; `changed width` supersedes it.
         root.window-width-changed(root.width / 1px);
+        // The today viewport push's first-frame leg (#1310/#1304).
+        TodayViewport.height = root.height;
     }
     key-root := FocusScope {
         capture-key-pressed(event) => {
@@ -697,7 +708,7 @@ export component AppWindow inherits Window {
             }
             if (root.current-view == View.today): TodayView {
                 today: root.today-model;
-                viewport-height: root.window-height;
+                viewport-height: TodayViewport.height;
                 row-activated(s, r) => root.today-row-activated(s, r);
                 row-extent(id, h) => root.today-row-extent(id, h);
                 row-clicked(s, r) => root.today-row-clicked(s, r);

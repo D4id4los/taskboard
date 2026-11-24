@@ -25,6 +25,64 @@ import { HabitsSection, HabitCardModel } from "../compositions/habits.slint";
 import { TrackedTodaySection, TrackedTodayRowModel } from "../compositions/tracked-today.slint";
 import { TodayAnchorFacts } from "../today-anchor.slint";
 
+// The today page's window-height push (#1310/#1304, 2026-11-24): an
+// ASSIGNED global, not a binding chain. The section clip's
+// declarative height reads the window cap AND feeds the window's
+// layout info, and the window height flows back through
+// `window-height` — a binding-coupled cap closes that loop (the
+// compiler traces clip.height -> section-block.layoutinfo-v -> ...
+// -> window-height -> viewport-height -> page-cap -> clip.height,
+// and *rejects every declarative spelling* of the content-derived
+// min). The assignment severs the last edge imperatively — the
+// round-6 A1 plan D-1b's recorded fallback, applied to the cap's
+// INPUT so every height inside the section stays a binding (D-1a).
+// The app window re-assigns on init and on every height change; the
+// section's bindings re-evaluate from the assignment like from any
+// property write, first frame included.
+export global TodayViewport {
+    // The default only covers a first frame ahead of the app
+    // window's init assignment; never read as a semantic value.
+    in-out property <length> height: Theme.window-default-height;
+}
+
+// The section viewports' realized geometry, reported per delegate
+// (#1310/#1304, 2026-11-24; the #1023 law: element-query geometry on
+// freshly materialized repeater subtrees is unreliable, so the mount
+// pushes its realized geometry through a root seam and the tests
+// read that — the TodayAnchorFacts pattern). Display state only.
+// The report rides a declarative callback binding (the witness
+// property below), not `changed` handlers: Slint suppresses
+// first-layout changes (the value present at instantiation never
+// fires), which is exactly the failure mode this chunk fixes — the
+// report must see the first real geometry. The callback is
+// re-evaluated whenever its inputs (section index, y, height)
+// change, first evaluation included.
+// slint: today-clip-facts
+export global TodayClipFacts {
+    // The section viewports' geometry channel (#1310/#1304,
+    // 2026-11-24). INPUTS: the per-section measured content extents,
+    // written by the adapter's push pass (a model-row update does not
+    // propagate into a repeater delegate's bindings reliably, so the
+    // extents ride global properties — writes here invalidate the
+    // height bindings like any property write). OUTPUTS: the
+    // realized heights, mirrored by the callback below — the tests'
+    // #1023 root seam (element-query geometry on freshly materialized
+    // repeater subtrees is unreliable; the mount pushes its realized
+    // geometry out). "Pure" is the compiler's alias for
+    // re-evaluable-and-idempotent: the write is display state, never
+    // a command.
+    // slint: today-clip-facts-height
+    pure callback section-height(int, length, length) -> length;
+    in-out property <length> e0;
+    in-out property <length> e1;
+    in-out property <length> e2;
+    in-out property <length> e3;
+    in-out property <length> h0;
+    in-out property <length> h1;
+    in-out property <length> h2;
+    in-out property <length> h3;
+}
+
 export struct TodayRowModel {
     // The row's stable task key (#592): the extent cache and the
     // anchor facts address rows by task id, never by position (the
@@ -342,39 +400,61 @@ export component TodayView inherits FocusScope {
                         }
                     }
 
-                    // The section's row viewport (#373 D-7): content-sized
-                    // below the page bound, capped above it. The cycle this
-                    // shape must avoid: the repeater's content-height update
-                    // reads the viewport it fills, so the update may not
-                    // read what `height` reads. The decoupling: the repeater
-                    // fills the *bound* (`visible-height`, window-derived)
-                    // while the element's layout height is the content-sized
-                    // min. Consequence: a fitting section keeps up to a
-                    // bound-scale window of live rows (bounded, never
-                    // N-scale); `clip` keeps the surplus off the next
-                    // section.
+                    // The window cap (#373 D-7, #1310/#1304): the section
+                    // viewport's ceiling — window height minus the page's
+                    // side padding. One property so the reads below
+                    // cannot drift.
+                    property <length> page-cap: Math.max(root.viewport-height - 2 * Theme.space-3, 0);
+                    // The section's row viewport: content-sized below
+                    // the page cap, capped above it. Declarative from
+                    // the first frame (#1310/#1304, 2026-11-24): the
+                    // height BINDS to the section's measured content
+                    // extent (the model's `content-extent`, summed
+                    // adapter-side from the #592 row-extent reports) —
+                    // never to the ListView's content-height. The
+                    // direct min(content-height, cap) spelling is a
+                    // binding loop the compiler traces through the
+                    // layout-info chain
+                    // (clip.height -> section-block.layoutinfo-v -> ...
+                    // -> window-height -> viewport-height -> cap ->
+                    // row-viewport.height -> content-height), and the
+                    // former `changed`-assigned escape missed the
+                    // first frame and could stop re-firing
+                    // (the convergence trap). The extent channel is
+                    // the recorded decoupling (round-6 A1 plan D-1b):
+                    // the data leaves the layout graph entirely, so
+                    // the binding always re-evaluates when a report
+                    // lands — first materialization included — and a
+                    // fitting section is content-sized while an
+                    // overflowing one caps and scrolls internally.
                     row-viewport-clip := Rectangle {
-                        // The clip host owns the content-sized min (clip
-                        // is Rectangle-only). The height is *assigned* by
-                        // the changed handlers below, never bound: the
-                        // compiler adds a conservative
-                        // height -> content-height edge to every ListView,
-                        // so any declarative min(content-height, cap) is
-                        // rejected as a binding loop, and an assignment
-                        // (which replaces, never re-enters) is the only
-                        // escape. The update itself fills `visible-height`
-                        // — the window-derived bound — so one adjustment
-                        // converges: measure, then min(content, cap).
                         clip: true;
+                        // The content-derived min, computed by (and
+                        // reported through) the TodayClipFacts seam's
+                        // callback — the height binding's eager
+                        // evaluation is the report's driver, and its
+                        // extent argument is a global-property
+                        // dependency the adapter's pass invalidates.
+                        height: TodayClipFacts.section-height(
+                            sindex,
+                            sindex == 0 ? TodayClipFacts.e0
+                            : sindex == 1 ? TodayClipFacts.e1
+                            : sindex == 2 ? TodayClipFacts.e2
+                            : TodayClipFacts.e3,
+                            page-cap,
+                        );
                         row-viewport := ListView {
-                            height: 100%;
-                            visible-height: Math.max(root.viewport-height - 2 * Theme.space-3, 0);
-                            changed content-height => {
-                                parent.height = Math.min(
-                                    self.content-height,
-                                    Math.max(root.viewport-height - 2 * Theme.space-3, 0),
-                                );
-                            }
+                            // The viewport is cap-sized regardless of
+                            // the content volume: with short content
+                            // the rows occupy the content's head and
+                            // the clip hides nothing; with overflowing
+                            // content cap IS the painted viewport, so
+                            // the virtualizer's live-row window
+                            // (`visible-height`, same cap) always
+                            // equals the painted viewport — the
+                            // pre-fix window/viewport mismatch dies.
+                            height: page-cap;
+                            visible-height: page-cap;
                             request-row: FocusScrollHint.target-a == sindex
                             ? FocusScrollHint.target-b
                             : -1;
@@ -470,21 +550,6 @@ export component TodayView inherits FocusScope {
                             }
                         }
                         }
-                    }
-
-                    // Window resizes ride the section's viewport-height
-                    // (the window height push) via this watch property
-                    // (a changed handler can only attach to the element
-                    // owning the property, and `viewport-height` lives on
-                    // the view); content changes ride the row viewport's
-                    // content-height (above). Both re-apply the same
-                    // bound; a no-op write re-fires nothing.
-                    property <length> watch-viewport-height: root.viewport-height;
-                    changed watch-viewport-height => {
-                        row-viewport-clip.height = Math.min(
-                            row-viewport.content-height,
-                            Math.max(root.viewport-height - 2 * Theme.space-3, 0),
-                        );
                     }
                 }
             }
