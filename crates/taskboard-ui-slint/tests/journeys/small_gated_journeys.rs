@@ -218,6 +218,22 @@ fn us2_s2_invalid_draft_stays_open() {
             harness.handle.window().get_recur_editor_open(),
             "the invalid draft keeps the editor open"
         );
+        // #1221: the refusal is surfaced — the accept path's re-check
+        // sets the typed invalid flag (the caption's bound).
+        assert!(
+            harness.handle.window().get_recur_draft_invalid(),
+            "the refused commit sets the invalid flag"
+        );
+        // A valid draft edit clears the flag (the caption retires).
+        harness
+            .handle
+            .window()
+            .invoke_recur_every_days_edited(slint::SharedString::from("3"));
+        harness.driver.advance_time(0);
+        assert!(
+            !harness.handle.window().get_recur_draft_invalid(),
+            "a draft edit clears the invalid flag"
+        );
         harness.assert_commands(&[]);
     });
 }
