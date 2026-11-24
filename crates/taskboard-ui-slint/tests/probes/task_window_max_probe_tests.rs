@@ -13,7 +13,7 @@ use support::driver::{DriverOptions, advance_probe_clock};
 
 use slint::ComponentHandle as _;
 
-include!(concat!(env!("OUT_DIR"), "/window_max_probe.rs"));
+include!(concat!(env!("OUT_DIR"), "/task_window_max_probe.rs"));
 
 fn run_probe(job: impl FnOnce(&WindowMaxProbe) + Send + 'static) {
     support::driver::run(

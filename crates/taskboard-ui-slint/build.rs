@@ -44,7 +44,7 @@ fn main() {
         "task_card_title_probe",
         "task_card_hover_probe",
         "stat_bars_severing_probe",
-        "window_max_probe",
+        "task_window_max_probe",
         "plan_window_max_probe",
         "today_window_max_probe",
         "board_window_max_probe",
