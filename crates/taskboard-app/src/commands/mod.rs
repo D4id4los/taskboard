@@ -40,7 +40,9 @@ use taskboard_domain::{StateCommand, SyncErrorKind};
 use taskboard_sync_nextcloud::DeckError;
 
 use crate::bootstrap::BootstrapError;
-use crate::cli::{BoardsCmd, Command, DaemonCmd, LabelEditFlags, LabelsCmd, StacksCmd, TasksCmd};
+use crate::cli::{
+    BoardsCmd, Command, DaemonCmd, LabelEditFlags, LabelsCmd, RulesCmd, StacksCmd, TasksCmd,
+};
 use crate::config::{AppConfig, CredentialStoreKind};
 use crate::secrets::{CredentialError, CredentialStore};
 
@@ -1547,6 +1549,23 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
             None => unreachable!("the outer match selected the Remind arm"),
         },
         Command::Tasks {
+            cmd:
+                TasksCmd::Rules {
+                    cmd: RulesCmd::Clear { task },
+                },
+        } => {
+            // The verb spelling (#1246): the same `ClearReminderRules`
+            // dispatch through the flag grammar's own handler — one
+            // semantics, two fronts.
+            run_core(
+                &mut ctx.io,
+                ctx.config_path.clone(),
+                reminders::render_text_clear,
+                move |config, store| async move { reminders::clear(config, store, &task).await },
+            )
+            .await
+        }
+        Command::Tasks {
             cmd: repeat @ TasksCmd::Repeat { .. },
         } => match repeat::collapse(repeat) {
             Some(invocation) => {
@@ -1733,6 +1752,7 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
         }
         Command::Daemon { .. } => unreachable!("main handles the daemon arms itself"),
         Command::Gui => unreachable!("main handles the gui lifecycle arm itself"),
+        Command::Unlock => unreachable!("main handles the unlock remediation arm itself"),
     }
 }
 
@@ -2070,6 +2090,30 @@ pub async fn dispatch_line(
             unreachable!(
                 "the session loop intercepts connect/login/logout (ceremonies) and daemon/config/gui (refusals); the IPC server refuses all six before dispatch"
             )
+        }
+        Command::Unlock => {
+            // The session's own process holds the instance lock, so the
+            // reused executor answers with its typed `SelfPid` refusal —
+            // the honest in-session posture (unlocking your own lock is
+            // the corrupting act the executor exists to refuse). The
+            // session's own db path addresses the sidecar (never a
+            // fresh config load — the session's binding is the truth).
+            let db_path = app.config.db_path().to_path_buf();
+            let workspace = crate::status_remediation::RemediationWorkspace {
+                db_path: Some(db_path.clone()),
+                may_control_processes: true,
+                effects: crate::status_remediation::RemediationEffects::real(Some(db_path)),
+            };
+            let outcome = crate::status_remediation::run_remediation(
+                &workspace,
+                taskboard_ui_slint::requests::StatusRemediationAction::ForceUnlock,
+            )
+            .await;
+            emit_to(io, &outcome, &format!("{outcome:?}"));
+            u8::from(matches!(
+                outcome,
+                taskboard_ui_slint::requests::StatusRemediationOutcome::Refused(_)
+            ))
         }
         Command::Status => {
             // The session *is* the core holder; the honest client-side
@@ -2457,6 +2501,7 @@ async fn labels_line(app: &crate::App, cmd: LabelsCmd, io: &mut CommandIo<'_>) -
 /// The tasks family over a booted session: `list` renders against the
 /// session backend; the rest are core mutations (`label`/`unlabel`
 /// share one `*_on` body over the two state commands).
+#[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review (the dispatch_line convention)
 async fn tasks_line(
     session: &(impl CoreSession + ?Sized),
     app: &crate::App,
@@ -2513,6 +2558,13 @@ async fn tasks_line(
             Some(invocation) => reminders::remind_line(app, io, invocation).await,
             None => unreachable!("the outer match selected the Remind arm"),
         },
+        TasksCmd::Rules {
+            cmd: RulesCmd::Clear { task },
+        } => emit_result(
+            io,
+            reminders::clear_on(app, &task).await,
+            reminders::render_text_clear,
+        ),
         repeat @ TasksCmd::Repeat { .. } => match repeat::collapse(repeat) {
             Some(invocation) => repeat::repeat_line(app, io, invocation).await,
             None => unreachable!("the outer match selected the Repeat arm"),
@@ -2674,6 +2726,16 @@ pub fn route_for_ipc(command: &Command) -> IpcRoute {
         // refactor that routes it onto the wire changes this pinned
         // lane.
         | Command::Gui
+        // The remediation verbs (`unlock`, `daemon restart`) are
+        // posture arms main intercepts before routing (#1249): they
+        // act on THIS machine's lock/process posture through the GUI
+        // remediation executor — never relayed, the same convention
+        // as `Gui`.
+        | Command::Unlock
+        | Command::Daemon {
+            cmd: Some(DaemonCmd::Restart),
+            ..
+        }
         // `daemon` with no subcommand is the lifecycle run arm main
         // intercepts before routing (`daemon_run`); pinning it `Local`
         // keeps it off the wire — the same convention as `Gui`. A
@@ -2922,6 +2984,14 @@ mod ipc_routing_tests {
             // never relayed onto the wire (the gui precedent).
             Command::Daemon {
                 cmd: None,
+                no_ipc: false,
+            },
+            // The remediation verbs (#1249): posture arms main
+            // intercepts before routing — this machine's lock/process
+            // posture, never relayed.
+            Command::Unlock,
+            Command::Daemon {
+                cmd: Some(DaemonCmd::Restart),
                 no_ipc: false,
             },
         ];

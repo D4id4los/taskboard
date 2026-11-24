@@ -23,13 +23,14 @@ use clap::Parser as _;
 
 use taskboard_app::App;
 use taskboard_app::bootstrap::bootstrap;
-use taskboard_app::cli::{Cli, Command};
+use taskboard_app::cli::{Cli, Command, DaemonCmd};
 use taskboard_app::commands::{
     BasicSession, CommandCtx, CommandError, IpcOnlyVerb, IpcRoute, dispatch, report, route_for_ipc,
     verb_timeout_secs,
 };
 use taskboard_app::config::AppConfig;
 use taskboard_app::ipc::client;
+use taskboard_ui_slint::requests::StatusRemediationAction;
 
 fn init_tracing() {
     // The console subscriber is compile-time optional but runtime
@@ -107,6 +108,7 @@ fn exit_blocked_fallback(json: bool, db_path: &std::path::Path) -> ! {
     std::process::exit(i32::from(report(json, &err)));
 }
 
+#[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review
 async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
     // Subcommand arms are lib code (`commands::dispatch`); the process
     // exits with the returned code (0 success / 1 runtime failure).
@@ -131,6 +133,28 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
         // lane table pins it `Local` (never relayed).
         if matches!(command, Command::Gui) {
             return run_gui_verb(cli.config.clone(), cli.json).await;
+        }
+        // The remediation verbs (#1249: `unlock`, `daemon restart`) are
+        // posture arms like `gui`: they act on the lock/process posture
+        // of THIS machine through the GUI remediation executor (the
+        // same typed semantics, no fork) and must never relay — a
+        // relay would act on the daemon's posture from the wrong
+        // process. Handled before the transport routing; the lane
+        // table pins them `Local` (never relayed).
+        match command {
+            Command::Gui => return run_gui_verb(cli.config.clone(), cli.json).await,
+            Command::Unlock => {
+                let code = unlock_command(cli.config.take(), cli.json).await;
+                std::process::exit(i32::from(code));
+            }
+            Command::Daemon {
+                cmd: Some(DaemonCmd::Restart),
+                ..
+            } => {
+                let code = daemon_restart_command(cli.config.take(), cli.json).await;
+                std::process::exit(i32::from(code));
+            }
+            _ => {}
         }
         // Transport auto-routing (ADR 0012): silent in both human and
         // JSON modes — the observable contract (exit code, stdout
@@ -447,6 +471,81 @@ async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool
             130
         }
     }
+}
+
+/// The remediation lane's workspace over this machine's database (the
+/// GUI panel's exact shape: the desktop posture is the authorized one
+/// — `may_control_processes: true`; the effects are the production
+/// seams verbatim, so the terminal gets the same typed semantics the
+/// panel renders — #1249's whole point).
+fn remediation_workspace(
+    config: &AppConfig,
+) -> taskboard_app::status_remediation::RemediationWorkspace {
+    let db_path = Some(config.db_path().to_path_buf());
+    taskboard_app::status_remediation::RemediationWorkspace {
+        db_path: db_path.clone(),
+        may_control_processes: true,
+        effects: taskboard_app::status_remediation::RemediationEffects::real(db_path),
+    }
+}
+
+/// The typed outcome's terminal fold (#1249): one fact line on stdout
+/// (the JSON spelling under `--json`), exit 0 executed / 1 refused —
+/// the refusal's *kind* is the payload, never message text (the
+/// typed-outcomes round law).
+fn remediation_exit(
+    json: bool,
+    outcome: &taskboard_ui_slint::requests::StatusRemediationOutcome,
+) -> u8 {
+    use taskboard_ui_slint::requests::StatusRemediationOutcome as O;
+    if json {
+        let rendered = serde_json::to_string(outcome).expect("outcome serializes");
+        println!("{rendered}");
+    } else {
+        let line = match outcome {
+            O::LockReleased => "lock sidecar removed".to_owned(),
+            O::HolderSignalled => "lock holder signalled".to_owned(),
+            O::DaemonRestarted { pid } => format!("daemon restarted (pid {pid})"),
+            O::Refused(kind) => format!("refused: {kind:?}"),
+        };
+        println!("{line}");
+    }
+    u8::from(matches!(outcome, O::Refused(_)))
+}
+
+/// `taskboard unlock` (#1249): the executor's `ForceUnlock` verb —
+/// the stale-holder liveness re-check authorizes the sidecar removal,
+/// a live holder (or this process itself) refuses typed.
+async fn unlock_command(config_path: Option<std::path::PathBuf>, json: bool) -> u8 {
+    let config = match AppConfig::load(config_path) {
+        Ok(config) => config,
+        Err(err) => return report(json, &CommandError::from(err)),
+    };
+    let workspace = remediation_workspace(&config);
+    let outcome = taskboard_app::status_remediation::run_remediation(
+        &workspace,
+        StatusRemediationAction::ForceUnlock,
+    )
+    .await;
+    remediation_exit(json, &outcome)
+}
+
+/// `taskboard daemon restart` (#1249): the executor's `RestartDaemon`
+/// verb — graceful stop over IPC when serving (`no-daemon` skips the
+/// stop leg), then the detached `taskboard daemon run` spawn; the
+/// typed outcome carries the new pid.
+async fn daemon_restart_command(config_path: Option<std::path::PathBuf>, json: bool) -> u8 {
+    let config = match AppConfig::load(config_path) {
+        Ok(config) => config,
+        Err(err) => return report(json, &CommandError::from(err)),
+    };
+    let workspace = remediation_workspace(&config);
+    let outcome = taskboard_app::status_remediation::run_remediation(
+        &workspace,
+        StatusRemediationAction::RestartDaemon,
+    )
+    .await;
+    remediation_exit(json, &outcome)
 }
 
 /// The `IpcOnly` verb dispatch (the lane table's data-driven twin, ADR

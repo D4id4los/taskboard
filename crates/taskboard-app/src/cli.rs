@@ -223,6 +223,13 @@ pub enum Command {
     /// never triggers a sync cycle). With a running daemon: the live
     /// view over IPC; without: the lock sidecar's diagnostic PID.
     Status,
+    /// Remove the stale lock sidecar (#1249): the GUI status panel's
+    /// force-unlock verb at the terminal — the same remediation
+    /// executor, the same typed semantics (the stale-holder liveness
+    /// re-check before the sidecar removal, the `SelfPid` refusal),
+    /// never hand-rolled `rm`. Refused typed (exit 1) under a live
+    /// holder — kill it first (`status` names the pid).
+    Unlock,
     /// Run the headless sync daemon (M1) — boots the core, binds the
     /// per-database IPC socket, and serves commands until a signal or
     /// `daemon stop`.
@@ -265,6 +272,26 @@ pub enum DaemonCmd {
     /// Gracefully stop a running daemon over its IPC socket (typed
     /// `no-daemon` failure, exit 1, when nothing serves this database).
     Stop,
+    /// Restart the daemon (#1249): the GUI status panel's
+    /// restart verb at the terminal — the same remediation executor's
+    /// graceful-stop-then-detached-spawn semantics (a not-serving
+    /// database skips the stop leg and spawns; the typed outcome
+    /// carries the new pid). Never a forked kill/relaunch.
+    Restart,
+}
+
+/// `tasks rules` subcommands (#1246): the verb-shaped front of the
+/// `tasks remind` flag grammar.
+#[derive(Debug, Subcommand)]
+pub enum RulesCmd {
+    /// Remove all of the task's reminder rules — the verb spelling of
+    /// `tasks remind <task> --clear` (#1246, O-5 parity): the same
+    /// `ClearReminderRules` dispatch through the same handler, never a
+    /// forked path.
+    Clear {
+        /// The task (uuid | unique ≥8-char uuid prefix | exact title).
+        task: String,
+    },
 }
 
 /// `boards` subcommands.
@@ -2276,6 +2303,15 @@ pub enum TasksCmd {
         #[arg(long, requires = "task", conflicts_with_all = ["before", "clear", "off", "list"])]
         on: bool,
     },
+    /// Manage a task's reminder rules by verb spelling (#1246, O-5
+    /// parity): the verb-shaped front of the `tasks remind` flag
+    /// grammar. Each verb dispatches through the same handler as its
+    /// flag twin — one semantics, two fronts (the `find`/`search`
+    /// alias law).
+    Rules {
+        #[command(subcommand)]
+        cmd: RulesCmd,
+    },
     /// Repeat a task on a schedule (`--daily`/`--weekly`/`--monthly`
     /// with optional `--until`/`--count` bounds) or stop repeating
     /// (`--off`). Exactly one mode per line; the anchor is the task's
@@ -2497,6 +2533,57 @@ mod tests {
             panic!("expected timers add");
         };
         assert_eq!(insistence, Some(taskboard_domain::Insistence::Alarm));
+    }
+
+    #[test]
+    fn rules_clear_verb_parses_to_the_shared_handler_shape() {
+        // #1246: the verb spelling of `tasks remind <task> --clear` —
+        // the parse boundary proves the front exists; the handler is
+        // the flag grammar's own (r5 covers its semantics).
+        let Cli {
+            command:
+                Some(Command::Tasks {
+                    cmd:
+                        TasksCmd::Rules {
+                            cmd: RulesCmd::Clear { task },
+                        },
+                }),
+            ..
+        } = Cli::try_parse_from(["taskboard", "tasks", "rules", "clear", "Sweep"])
+            .expect("the verb spelling parses")
+        else {
+            panic!("expected tasks rules clear");
+        };
+        assert_eq!(task, "Sweep");
+    }
+
+    #[test]
+    fn daemon_restart_parses() {
+        // #1249: the restart arm joins the daemon subcommands.
+        let Cli {
+            command:
+                Some(Command::Daemon {
+                    cmd: Some(DaemonCmd::Restart),
+                    ..
+                }),
+            ..
+        } = Cli::try_parse_from(["taskboard", "daemon", "restart"])
+            .expect("the restart arm parses")
+        else {
+            panic!("expected daemon restart");
+        };
+    }
+
+    #[test]
+    fn unlock_parses_bare() {
+        // #1249: the top-level force-unlock verb.
+        let Cli {
+            command: Some(Command::Unlock),
+            ..
+        } = Cli::try_parse_from(["taskboard", "unlock"]).expect("unlock parses")
+        else {
+            panic!("expected unlock");
+        };
     }
 
     #[test]
