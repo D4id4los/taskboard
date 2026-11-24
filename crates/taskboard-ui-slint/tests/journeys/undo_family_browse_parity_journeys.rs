@@ -10,18 +10,12 @@
 //! (typed payloads, never label text — the oracles' law).
 
 use crate::support;
+use crate::undo_picker_journeys_support as prelude;
 
-use support::driver::{DriverOptions, JourneyDriver as _, SlintDriver};
-use support::fake_engine::FakeEngine;
 use support::fixture;
 
-use arc_swap::ArcSwap;
-use slint::ComponentHandle as _;
-use slint::Model as _;
-use std::sync::Arc;
 use taskboard_domain::{JournalId, StateCommand, UndoLabel, UndoView};
 use taskboard_ui_slint::{KeyboardState, UiSettings};
-use tokio::sync::mpsc;
 
 /// The row ids the fixture projection carries (minted once, shared by
 /// the cursor arithmetic and the commit payloads).
@@ -68,98 +62,15 @@ fn picker_state() -> taskboard_domain::AppState {
 /// A row model as `(id, payload)` — the typed enrichment read
 /// straight off the pushed global (the label is presentation, never
 /// asserted).
-#[allow(clippy::type_complexity)] // the pair-of-pair-lists shape is the assertion's vocabulary
-fn rows(global: &KeyboardState) -> (Vec<(uuid::Uuid, String)>, Vec<(uuid::Uuid, String)>) {
-    let read = |model: &slint::ModelRc<taskboard_ui_slint::UndoPickerRowModel>| {
-        (0..model.row_count())
-            .map(|i| {
-                let row = model.row_data(i).expect("row");
-                (
-                    uuid::Uuid::parse_str(row.id.as_str()).expect("typed id"),
-                    row.payload.to_string(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    (
-        read(&global.get_undo_picker_branch_rows()),
-        read(&global.get_undo_picker_target_rows()),
-    )
+fn rows(global: &KeyboardState) -> prelude::PickerRows {
+    prelude::picker_rows(global, |row| row.payload.to_string())
 }
 
 /// The picker journey harness: driver + fake engine + mounted window.
-struct BrowseHarness {
-    driver: SlintDriver,
-    handle: taskboard_ui_slint::UiHandle,
-    engine: FakeEngine,
-}
-
-fn dummy_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
-
-fn dummy_system_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
-
-impl BrowseHarness {
-    fn mount(state: taskboard_domain::AppState) -> Self {
-        let state = Arc::new(ArcSwap::from_pointee(state));
-        let (commands, engine) = FakeEngine::channel(Arc::clone(&state));
-        let (requests_tx, _requests_rx) = mpsc::channel(16);
-        let handle = taskboard_ui_slint::mount(
-            state,
-            dummy_receiver(),
-            dummy_system_receiver(),
-            commands,
-            requests_tx,
-            UiSettings::default(),
-            support::health::detached_health(),
-            None,
-        )
-        .expect("mount succeeds on the testing backend");
-        let mut harness = Self {
-            driver: SlintDriver::default(),
-            handle,
-            engine,
-        };
-        harness.driver.bind(&harness.handle);
-        harness
-    }
-
-    fn dispatch(&mut self, action: taskboard_ui_slint::actions::ActionId) {
-        self.handle.dispatch_action(action);
-        self.advance();
-    }
-
-    fn advance(&mut self) {
-        self.driver.advance_time(0);
-    }
-
-    fn keyboard(&self) -> KeyboardState<'_> {
-        self.handle.window().global::<KeyboardState>()
-    }
-
-    fn open(&self) -> bool {
-        self.keyboard().get_undo_picker_open()
-    }
-
-    fn cursor(&self) -> usize {
-        usize::try_from(self.keyboard().get_undo_picker_cursor()).unwrap_or(usize::MAX)
-    }
-}
+type BrowseHarness = prelude::PickerHarness;
 
 fn browse_journey(body: impl FnOnce() + Send + 'static) {
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            body();
-        },
-    );
+    prelude::picker_journey(body);
 }
 
 // -- US-1/S1: the picker mounts with the cursor and payload rows -----
@@ -172,7 +83,7 @@ fn browse_journey(body: impl FnOnce() + Send + 'static) {
 #[test]
 fn us1_s1_picker_mounts_with_cursor_and_payload_rows() {
     browse_journey(|| {
-        let mut harness = BrowseHarness::mount(picker_state());
+        let mut harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         assert!(!harness.open(), "closed at mount");
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         assert!(harness.open(), "the chord mounts the picker");
@@ -208,7 +119,7 @@ fn us1_s1_picker_mounts_with_cursor_and_payload_rows() {
 #[test]
 fn us1_s2_menu_ladder_moves_picker_cursor() {
     browse_journey(|| {
-        let mut harness = BrowseHarness::mount(picker_state());
+        let mut harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         // 2 reflex + 2 recent + 1 branch = 5 selectable rows.
         harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuNext);
@@ -236,7 +147,7 @@ fn us1_s2_menu_ladder_moves_picker_cursor() {
 #[test]
 fn us1_s5_escape_closes_the_picker_without_dispatch() {
     browse_journey(|| {
-        let mut harness = BrowseHarness::mount(picker_state());
+        let mut harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuNext);
         harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuNext);
@@ -260,7 +171,7 @@ fn us1_s5_escape_closes_the_picker_without_dispatch() {
 #[test]
 fn us1_s3_invoke_selected_dispatches_the_row_verb() {
     browse_journey(|| {
-        let mut harness = BrowseHarness::mount(picker_state());
+        let mut harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         let (_ancestor, head, _branch) = fixture_ids();
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         assert!(harness.open(), "the chord mounts the picker");
@@ -294,7 +205,7 @@ fn us1_s3_invoke_matches_click_dispatch() {
         let (_ancestor, _head, branch) = fixture_ids();
         // The keyboard path: remount, walk to the branch row (index 4
         // = 2 reflex + 2 recent + 1 branch), invoke.
-        let mut keyboard_harness = BrowseHarness::mount(picker_state());
+        let mut keyboard_harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         keyboard_harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         for _ in 0..4 {
             keyboard_harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuNext);
@@ -303,7 +214,7 @@ fn us1_s3_invoke_matches_click_dispatch() {
         keyboard_harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuInvoke);
         let keyboard_dispatch = keyboard_harness.engine.drain();
         // The click path: the row's seam, directly.
-        let mut click_harness = BrowseHarness::mount(picker_state());
+        let mut click_harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         click_harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         click_harness
             .handle
@@ -332,7 +243,7 @@ fn us1_s3_invoke_matches_click_dispatch() {
 #[test]
 fn us1_s4_presented_state_reflects_the_landed_head() {
     browse_journey(|| {
-        let mut harness = BrowseHarness::mount(picker_state());
+        let mut harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         let (ancestor, head, _branch) = fixture_ids();
         harness.engine.settle(&harness.handle);
         let (_fixture, mut branch_state) = fixture::golden_state();
@@ -375,12 +286,12 @@ fn us1_s4_presented_state_reflects_the_landed_head() {
 fn us4_s2_click_and_invoke_dispatch_identically() {
     browse_journey(|| {
         // The keyboard path: cursor at 0 (the Undo reflex row).
-        let mut keyboard_harness = BrowseHarness::mount(picker_state());
+        let mut keyboard_harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         keyboard_harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         keyboard_harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuInvoke);
         let keyboard_dispatch = keyboard_harness.engine.drain();
         // The click path: the reflex row's seam, directly.
-        let mut click_harness = BrowseHarness::mount(picker_state());
+        let mut click_harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         click_harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         click_harness.handle.window().invoke_undo_line_undo();
         click_harness.advance();
@@ -403,7 +314,7 @@ fn us4_s2_click_and_invoke_dispatch_identically() {
 #[test]
 fn us1_s3_stranded_cursor_closes_without_dispatch() {
     browse_journey(|| {
-        let mut harness = BrowseHarness::mount(picker_state());
+        let mut harness = BrowseHarness::mount(picker_state(), UiSettings::default());
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         // The cursor walks to the last row (index 4 = 2 reflex + 2
         // recent + 1 branch); the shell holds the mount-time count.
