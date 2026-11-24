@@ -8,7 +8,8 @@
 //! this crate calls `Utc::now()` directly. (The identity seam lives in
 //! [`crate::idgen`].)
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
+use chrono::Utc;
 
 /// Source of the current wall-clock time.
 ///
@@ -16,7 +17,7 @@ use chrono::{DateTime, Utc};
 /// or advancing logical times. Deterministic by construction.
 pub trait Clock: Send + Sync + std::fmt::Debug {
     /// The current instant.
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> Timestamp;
 }
 
 /// Production clock: `Utc::now()` via chrono's `clock` feature.
@@ -24,7 +25,7 @@ pub trait Clock: Send + Sync + std::fmt::Debug {
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> Timestamp {
         Utc::now()
     }
 }
