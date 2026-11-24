@@ -321,41 +321,13 @@ mod tests {
             .expect("in-range stamp")
     }
 
-    /// A logical stepping clock — 30 s per read from a fixed base:
-    /// heartbeat stamps stay distinct and strictly increasing without
-    /// any wall read.
-    #[derive(Debug)]
-    struct SteppingClock {
-        next_secs: std::sync::atomic::AtomicI64,
-        step_secs: i64,
-    }
-
-    impl SteppingClock {
-        fn new(start: DateTime<Utc>, step_secs: i64) -> Self {
-            Self {
-                next_secs: std::sync::atomic::AtomicI64::new(start.timestamp()),
-                step_secs,
-            }
-        }
-    }
-
-    impl taskboard_domain::Clock for SteppingClock {
-        fn now(&self) -> DateTime<Utc> {
-            use chrono::TimeZone as _;
-            let secs = self
-                .next_secs
-                .fetch_add(self.step_secs, std::sync::atomic::Ordering::Relaxed);
-            chrono::Utc
-                .timestamp_opt(secs, 0)
-                .single()
-                .expect("in-range stamp")
-        }
-    }
-
     fn cfg() -> FilesSyncConfig {
         FilesSyncConfig {
             connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
-            clock: Arc::new(SteppingClock::new(heartbeat_base(), 30)),
+            clock: Arc::new(taskboard_domain::test_support::StepClock::at(
+                heartbeat_base(),
+                30,
+            )),
             app_version: "test".into(),
             deck_origins: std::collections::BTreeMap::new(),
         }
@@ -2277,7 +2249,10 @@ mod tests {
                 created_at: heartbeat_base(),
             },
             app_version: "test".into(),
-            clock: Arc::new(SteppingClock::new(heartbeat_base(), 30)),
+            clock: Arc::new(taskboard_domain::test_support::StepClock::at(
+                heartbeat_base(),
+                30,
+            )),
             local: Arc::new(crate::cycle::EmptyDocument),
             report_tx: reports,
             connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
