@@ -1465,4 +1465,43 @@ mod render_pins {
         assert_ne!(at(7_200), at(172_800), "the day bucket must surface");
         assert_eq!(at(30), at(30), "deterministic in the two instants");
     }
+
+    /// The bucket-cut boundary table (#1267): adjacent instants across
+    /// each cut (60 s / 3 600 s / 86 400 s, all `<` comparisons) render
+    /// differently, interior neighbors do not, and the day bucket is
+    /// not flat. `assert_ne!` on prose pairs is a structural oracle —
+    /// no bucket's text is pinned. The anchor is a fixed instant (the
+    /// fixture, not the clock); the function takes instants, so the
+    /// table is clock-law compliant. Kills the nine M5 cut-flip mutants
+    /// (`<` → `==` collapses the (59, 60) pair; `<` → `>`/`<=` collapses
+    /// an interior pair).
+    #[test]
+    fn age_phrase_bucket_cuts_distinguish_adjacent_instants() {
+        use chrono::TimeZone as _;
+        let then = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 24, 12, 0, 0)
+            .unwrap();
+        let at = |secs: i64| age_phrase(then, then + chrono::TimeDelta::try_seconds(secs).unwrap());
+
+        // Interior pairs: the seconds bucket counts up (so its
+        // neighbors always differ — that pins the counter, not a cut);
+        // the divided buckets are flat between divisions.
+        assert_ne!(at(58), at(59), "the seconds bucket counts up");
+        assert_eq!(at(60), at(61), "the minutes bucket's interior is flat");
+        assert_eq!(at(3_600), at(3_601), "the hours bucket's interior is flat");
+        assert_eq!(at(86_400), at(86_401), "the days bucket's interior is flat");
+        assert_eq!(
+            at(58),
+            at(58),
+            "a bucket interior is stable across repeated reads"
+        );
+
+        // The three cuts distinguish their adjacent instants.
+        assert_ne!(at(59), at(60), "the 60 s cut");
+        assert_ne!(at(3_599), at(3_600), "the 3 600 s cut");
+        assert_ne!(at(86_399), at(86_400), "the 86 400 s cut");
+
+        // The day bucket is not flat (interior distinctness).
+        assert_ne!(at(172_800), at(259_200), "the days bucket counts up");
+    }
 }
