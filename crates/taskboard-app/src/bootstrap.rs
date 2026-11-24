@@ -1460,10 +1460,27 @@ async fn bootstrap_with_modules(
     let audio_allowed = config.app.mode == crate::config::AppMode::Desktop
         && crate::notifications::resolve_sink(config.reminders.sink, config.app.mode)
             == crate::notifications::SinkKind::Desktop;
+    if !audio_allowed {
+        // The muted-environment contract (escalation.rs module docs):
+        // daemon/kiosk are structurally silent by design — the log
+        // trail is the designed channel. This record is the designed
+        // boot-time trail, not a defect signal.
+        tracing::warn!(
+            mode = ?config.app.mode,
+            sink = ?crate::notifications::resolve_sink(config.reminders.sink, config.app.mode),
+            gate = "desktop-mode-and-desktop-sink",
+            "audio disabled by the boot gate: chimes (alarms and timers) are silent under this mode/sink combination"
+        );
+    }
     // One chime arc for the whole process (issue #600): the escalation
     // driver and the focus boundary surface share it — no second
     // `RodioChime`, ever (one audio stream owner, D-4).
-    let chime = crate::escalation::mount_chime(audio_allowed, crate::escalation::RodioChime::open);
+    let chime = crate::escalation::mount_chime(
+        audio_allowed,
+        config.app.mode,
+        crate::notifications::resolve_sink(config.reminders.sink, config.app.mode),
+        crate::escalation::RodioChime::open,
+    );
     let escalation_join = crate::escalation::spawn_escalation_driver(
         engine.shared_state(),
         // Only the boot-fixed offset travels: the defaults and the
