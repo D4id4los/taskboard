@@ -392,3 +392,36 @@ fn us4_s2_click_and_invoke_dispatch_identically() {
         );
     });
 }
+
+// -- the shrunken-projection strand arm ------------------------------
+
+/// The typed close-nothing-dispatch arm: the cursor rode past the
+/// projection's rows (the windows shrank between the stroke and the
+/// invoke — the shell's mount-time row count is stale), so the
+/// invoke resolves to no row: the picker closes and NOTHING
+/// dispatches (the AC-4 shape, not a panic, not a wild target).
+#[test]
+fn us1_s3_stranded_cursor_closes_without_dispatch() {
+    browse_journey(|| {
+        let mut harness = BrowseHarness::mount(picker_state());
+        harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
+        // The cursor walks to the last row (index 4 = 2 reflex + 2
+        // recent + 1 branch); the shell holds the mount-time count.
+        for _ in 0..4 {
+            harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuNext);
+        }
+        assert_eq!(harness.cursor(), 4);
+        // The projection shrinks to empty windows — the published rows
+        // drop to none while the picker stays mounted.
+        let (_fixture, mut shrunk) = fixture::golden_state();
+        shrunk.undo = UndoView::default();
+        harness.engine.replace_state(shrunk, &harness.handle);
+        harness.advance();
+        harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuInvoke);
+        assert!(!harness.open(), "the stranded invoke closes the picker");
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the stranded invoke dispatches nothing"
+        );
+    });
+}
