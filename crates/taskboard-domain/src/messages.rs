@@ -424,6 +424,31 @@ pub enum StateCommand {
     /// Close every open entry at the engine-stamped `now`. Nothing open
     /// is the accepted no-op.
     StopTracking,
+    /// Start tracking the named live habit (journey plan
+    /// 2026-11-24 D-1/D-3, #1305): every open entry — task **or**
+    /// habit — closes at the engine-stamped `now` (the single-global
+    /// intent extended across subjects), and a fresh open entry is
+    /// minted with the habit's title snapshotted (D-4). Kind-less: no
+    /// break-reminder consumer exists for habits (adding a kind later
+    /// is additive). Idempotent repeat: exactly one open habit entry
+    /// exists, it is this habit's, and no task entry runs — the
+    /// accepted no-op. Unknown/tombstoned habit is a typed rejection.
+    /// Old journal payloads never carry this variant (the additive
+    /// enum law).
+    StartHabitTracking {
+        /// The habit to track.
+        habit: HabitId,
+    },
+    /// Close the named habit's open time entries at the engine-stamped
+    /// `now` (D-1: the stop stamps `end = now` unconditionally — the
+    /// task stop's skew ruling verbatim; D-4: a tombstoned habit's
+    /// open entry stays stoppable — history outlives the habit).
+    /// Nothing open is the accepted no-op. Unknown habit is a typed
+    /// rejection.
+    StopHabitTracking {
+        /// The habit whose entries close.
+        habit: HabitId,
+    },
     /// Log a retroactive, closed entry for the live task. The span must
     /// validate (`end > start`) or the command is a typed rejection.
     /// Never touches the open set (logging yesterday's block while

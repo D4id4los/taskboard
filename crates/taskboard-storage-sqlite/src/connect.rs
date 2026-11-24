@@ -205,9 +205,9 @@ mod tests {
             .await
             .expect("migration bookkeeping");
         // The shipped-migration count (one literal per shipped file —
-        // 0029 is HF4's schedule/override family; the assertion's
+        // 0031 is the habit time-entry table, #1305; the assertion's
         // substance is idempotence: reopening records no new row).
-        assert_eq!(applied, 30, "each shipped migration recorded exactly once");
+        assert_eq!(applied, 31, "each shipped migration recorded exactly once");
         raw.close().await;
         second.close().await;
     }

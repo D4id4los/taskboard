@@ -1443,6 +1443,27 @@ impl SqliteTaskRepository {
         .await
         .map_err(|e| stmt_error(&e))?;
 
+        // The habit time entries (#1305): unchecked queries — the
+        // `habit_day_log` precedent (a fresh table need not re-seed the
+        // sqlx offline metadata).
+        type HabitTimeEntryRow = (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+        );
+        let habit_time_entry_rows: Vec<HabitTimeEntryRow> = sqlx::query_as(
+            r"SELECT entry_id, habit_id, habit_title, start, end, created_at, updated_at, au_by
+               FROM habit_time_entries ORDER BY entry_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+
         let reflection_rows = sqlx::query_as!(
             ReflectionEntryRow,
             r#"SELECT entry_id, day, cadence, window_start, window_end, text,
@@ -1867,6 +1888,57 @@ impl SqliteTaskRepository {
                     .map_err(|e| e.attached(PersistedTable::HabitDayLog, row_key))?;
                     habits.day_log.insert(decoded.0, decoded.1);
                 }
+                for (entry_id, habit_id, habit_title, start, end, created_at, updated_at, au_by) in
+                    &habit_time_entry_rows
+                {
+                    let row_key = Uuid::parse_str(entry_id).ok();
+                    let decoded = (|| {
+                        Result::<taskboard_domain::habit_time::HabitTimeEntry, RepositoryError>::Ok(
+                            {
+                                let id = taskboard_domain::ids::HabitTimeEntryId::from(
+                                    codec::uuid_from_text(entry_id).map_err(|_| {
+                                        corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid)
+                                    })?,
+                                );
+                                let habit = taskboard_domain::ids::HabitId::from(
+                                    codec::uuid_from_text(habit_id).map_err(|_| {
+                                        corrupt(DecodeStage::RowBuild, DecodeReason::MalformedUuid)
+                                    })?,
+                                );
+                                let parse = |raw: &str| -> Result<DateTime<Utc>, RepositoryError> {
+                                    DateTime::parse_from_rfc3339(raw)
+                                        .map(|t| t.with_timezone(&Utc))
+                                        .map_err(|_| {
+                                            corrupt(
+                                                DecodeStage::Column,
+                                                DecodeReason::MalformedClock,
+                                            )
+                                        })
+                                };
+                                let start = parse(start)?;
+                                let end = match end {
+                                    Some(raw) => Some(parse(raw)?),
+                                    None => None,
+                                };
+                                let created_at = parse(created_at)?;
+                                let updated_at = parse(updated_at)?;
+                                let by = decode::author(au_by.as_deref())?;
+                                taskboard_domain::habit_time::HabitTimeEntry {
+                                    id,
+                                    habit,
+                                    habit_title: habit_title.clone(),
+                                    start,
+                                    end,
+                                    created_at,
+                                    updated_at,
+                                    by,
+                                }
+                            },
+                        )
+                    })()
+                    .map_err(|e| e.attached(PersistedTable::HabitTimeEntries, row_key))?;
+                    habits.time_log.insert(decoded.id, decoded);
+                }
                 habits
             },
             reflection: {
@@ -2184,6 +2256,7 @@ async fn execute_batch(
     let mut habit_upserts = Vec::new();
     let mut habit_log_rows = Vec::new();
     let mut habit_day_log_rows = Vec::new();
+    let mut habit_time_upserts = Vec::new();
     // DR-7 chunk 2 (R-11 exception, the tracking DR-5/1 precedent):
     // the reflection upserts, written by the compile-checked macro
     // against migration 0022's table.
@@ -2243,6 +2316,9 @@ async fn execute_batch(
             }
             PersistenceAction::RecordHabitDayLog(key, entry) => {
                 habit_day_log_rows.push((key, entry));
+            }
+            PersistenceAction::UpsertHabitTimeEntry(entry) => {
+                habit_time_upserts.push(entry);
             }
             PersistenceAction::UpsertReflectionEntry(entry) => {
                 reflection_upserts.push(entry);
@@ -2872,6 +2948,35 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(habit = ?key.habit, day = %key.day, "habit day overlay recorded");
+    }
+    // The habit time-entry writes (#1305): the 0015 conventions —
+    // entity upsert discipline (replace by id), no FKs, history
+    // outlives the habit.
+    for entry in habit_time_upserts {
+        sqlx::query(
+            r"INSERT INTO habit_time_entries (entry_id, habit_id, habit_title, start, end, created_at, updated_at, au_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(entry_id) DO UPDATE SET
+                       habit_id = excluded.habit_id,
+                       habit_title = excluded.habit_title,
+                       start = excluded.start,
+                       end = excluded.end,
+                       created_at = excluded.created_at,
+                       updated_at = excluded.updated_at,
+                       au_by = excluded.au_by",
+        )
+        .bind(codec::uuid_to_text(entry.id.as_uuid()))
+        .bind(codec::uuid_to_text(entry.habit.as_uuid()))
+        .bind(&entry.habit_title)
+        .bind(entry.start.to_rfc3339())
+        .bind(entry.end.map(|end| end.to_rfc3339()))
+        .bind(entry.created_at.to_rfc3339())
+        .bind(entry.updated_at.to_rfc3339())
+        .bind(entry.by.map(|a| a.to_string()))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(entry = ?entry.id, "habit time entry upserted");
     }
 
     // Op removals before appends so a batch that completes and re-enqueues

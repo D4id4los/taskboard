@@ -39,6 +39,9 @@ pub trait IdGenerator: Send + Sync + std::fmt::Debug {
     fn new_series_id(&self) -> crate::ids::SeriesId;
     /// A fresh journal-entry id.
     fn new_journal_id(&self) -> JournalId;
+    /// A fresh habit-time-entry id (#1305, the `new_time_entry_id`
+    /// twin).
+    fn new_habit_time_entry_id(&self) -> crate::ids::HabitTimeEntryId;
     /// A fresh reflection-entry id.
     fn new_reflection_id(&self) -> crate::ids::ReflectionId;
     /// A fresh outbox-operation id.
@@ -92,6 +95,10 @@ impl IdGenerator for UuidV7Generator {
 
     fn new_journal_id(&self) -> JournalId {
         JournalId::from(Uuid::now_v7())
+    }
+
+    fn new_habit_time_entry_id(&self) -> crate::ids::HabitTimeEntryId {
+        crate::ids::HabitTimeEntryId::from(Uuid::now_v7())
     }
 
     fn new_reflection_id(&self) -> crate::ids::ReflectionId {

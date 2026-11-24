@@ -71,6 +71,7 @@ pub enum PersistedTable {
     Habits,
     HabitLog,
     HabitDayLog,
+    HabitTimeEntries,
     BreakRules,
     Reflection,
     Roaming,
@@ -494,6 +495,10 @@ pub enum PersistenceAction {
     /// Remove a time entry (the storage/roaming chunk derives the wire
     /// tombstone at flush).
     DeleteTimeEntry(crate::ids::TimeEntryId),
+    /// Insert or replace a habit time entry (#1305, journey plan D-1 —
+    /// the `UpsertTimeEntry` twin; the open entry IS the running
+    /// timer, persisted like any other row).
+    UpsertHabitTimeEntry(crate::habit_time::HabitTimeEntry),
     /// Insert or replace a habit (entity upsert discipline — replace by
     /// id; the tombstone rides the row).
     UpsertHabit(crate::habit::Habit),
@@ -656,6 +661,9 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::UpsertTimeEntry(entry) => {
                 state.tracking.entries.insert(entry.id, entry.clone());
+            }
+            PersistenceAction::UpsertHabitTimeEntry(entry) => {
+                state.habits.time_log.insert(entry.id, entry.clone());
             }
             PersistenceAction::DeleteTimeEntry(id) => {
                 state.tracking.entries.remove(id);

@@ -98,6 +98,13 @@ local_id!(
     JournalId
 );
 local_id!(
+    /// Local identity of a habit time entry (`UUIDv7`, generated
+    /// client-side; the #1305 additive fact family, journey plan D-1).
+    /// Roaming family: the entry UUID is the wire key of the synced
+    /// board-level `habit-time-entries` section.
+    HabitTimeEntryId
+);
+local_id!(
     /// Local identity of a reflection entry (`UUIDv7`, generated
     /// client-side). Roaming family — the entry UUID is the future
     /// import-fold's wire key (device-local in v0.2; the *family* is
