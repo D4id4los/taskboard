@@ -61,6 +61,8 @@ mod tracker_journeys;
 mod undo_family_browse_parity_journeys;
 #[path = "journeys/undo_family_restore_clear_surfaces_journeys.rs"]
 mod undo_family_restore_clear_surfaces_journeys;
+#[path = "journeys/undo_picker_journeys_support.rs"]
+mod undo_picker_journeys_support;
 #[path = "journeys/undo_ui_branch_picker_journeys.rs"]
 mod undo_ui_branch_picker_journeys;
 

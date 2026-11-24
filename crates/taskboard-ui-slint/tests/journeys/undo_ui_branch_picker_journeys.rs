@@ -11,18 +11,12 @@
 //! R-2 kiosk absence.
 
 use crate::support;
+use crate::undo_picker_journeys_support as prelude;
 
-use support::driver::{DriverOptions, JourneyDriver as _, SlintDriver};
-use support::fake_engine::FakeEngine;
 use support::fixture;
 
-use arc_swap::ArcSwap;
-use slint::ComponentHandle as _;
-use slint::Model as _;
-use std::sync::Arc;
 use taskboard_domain::{JournalId, StateCommand, UndoLabel, UndoView};
-use taskboard_ui_slint::{KeyboardState, UiSettings};
-use tokio::sync::mpsc;
+use taskboard_ui_slint::UiSettings;
 
 /// The row ids the fixture projection carries (minted once, shared by
 /// the mount assertions and the commit payloads).
@@ -68,98 +62,26 @@ fn picker_state() -> taskboard_domain::AppState {
 
 /// The picker's row models as `(id, label)` pairs (the typed
 /// addressing reads straight off the pushed global).
-#[allow(clippy::type_complexity)] // the pair-of-row-lists shape is the assertion's vocabulary
-fn rows(global: &KeyboardState) -> (Vec<(uuid::Uuid, String)>, Vec<(uuid::Uuid, String)>) {
-    let read = |model: &slint::ModelRc<taskboard_ui_slint::UndoPickerRowModel>| {
-        (0..model.row_count())
-            .map(|i| {
-                let row = model.row_data(i).expect("row");
-                (
-                    uuid::Uuid::parse_str(row.id.as_str()).expect("typed id"),
-                    row.label.to_string(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    (
-        read(&global.get_undo_picker_branch_rows()),
-        read(&global.get_undo_picker_target_rows()),
+fn rows(global: &taskboard_ui_slint::KeyboardState<'_>) -> prelude::PickerRows {
+    prelude::picker_rows(global, |row| row.label.to_string())
+}
+
+/// The picker journey harness: driver + fake engine + mounted window
+/// (the kiosk flag is this suite's only mount divergence).
+type PickerHarness = prelude::PickerHarness;
+
+fn mount(state: taskboard_domain::AppState, kiosk: bool) -> PickerHarness {
+    PickerHarness::mount(
+        state,
+        UiSettings {
+            kiosk,
+            ..UiSettings::default()
+        },
     )
 }
 
-/// The picker journey harness: driver + fake engine + mounted window.
-struct PickerHarness {
-    driver: SlintDriver,
-    handle: taskboard_ui_slint::UiHandle,
-    engine: FakeEngine,
-}
-
-fn dummy_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
-
-fn dummy_system_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
-
-impl PickerHarness {
-    fn mount(state: taskboard_domain::AppState, kiosk: bool) -> Self {
-        let settings = UiSettings {
-            kiosk,
-            ..UiSettings::default()
-        };
-        let state = Arc::new(ArcSwap::from_pointee(state));
-        let (commands, engine) = FakeEngine::channel(Arc::clone(&state));
-        let (requests_tx, _requests_rx) = mpsc::channel(16);
-        let handle = taskboard_ui_slint::mount(
-            state,
-            dummy_receiver(),
-            dummy_system_receiver(),
-            commands,
-            requests_tx,
-            settings,
-            support::health::detached_health(),
-            None,
-        )
-        .expect("mount succeeds on the testing backend");
-        let mut harness = Self {
-            driver: SlintDriver::default(),
-            handle,
-            engine,
-        };
-        harness.driver.bind(&harness.handle);
-        harness
-    }
-
-    fn dispatch(&mut self, action: taskboard_ui_slint::actions::ActionId) {
-        self.handle.dispatch_action(action);
-        self.advance();
-    }
-
-    fn advance(&mut self) {
-        self.driver.advance_time(0);
-    }
-
-    fn keyboard(&self) -> KeyboardState<'_> {
-        self.handle.window().global::<KeyboardState>()
-    }
-
-    fn open(&self) -> bool {
-        self.keyboard().get_undo_picker_open()
-    }
-}
-
 fn picker_journey(body: impl FnOnce() + Send + 'static) {
-    support::driver::run(
-        DriverOptions {
-            headless_renderer: true,
-        },
-        move |_driver| {
-            body();
-        },
-    );
+    prelude::picker_journey(body);
 }
 
 // -- US-1/S1: the picker mounts with its sections (W-1) ------------------
@@ -172,7 +94,7 @@ fn picker_journey(body: impl FnOnce() + Send + 'static) {
 #[test]
 fn us1_s1_picker_mounts_with_sections() {
     picker_journey(|| {
-        let mut harness = PickerHarness::mount(picker_state(), false);
+        let mut harness = mount(picker_state(), false);
         assert!(!harness.open(), "closed at mount");
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         assert!(harness.open(), "the chord mounts the picker");
@@ -197,7 +119,7 @@ fn us1_s1_picker_mounts_with_sections() {
 #[test]
 fn us1_s1_kiosk_picker_entry_renders_absent() {
     picker_journey(|| {
-        let mut harness = PickerHarness::mount(picker_state(), true);
+        let mut harness = mount(picker_state(), true);
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         assert!(!harness.open(), "the kiosk mount refuses the picker");
         assert!(
@@ -216,7 +138,7 @@ fn us1_s1_kiosk_picker_entry_renders_absent() {
 #[test]
 fn us1_s2_sibling_commit_redo_to() {
     picker_journey(|| {
-        let mut harness = PickerHarness::mount(picker_state(), false);
+        let mut harness = mount(picker_state(), false);
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         let (_ancestor, _head, branch) = fixture_ids();
         harness
@@ -244,7 +166,7 @@ fn us1_s2_sibling_commit_redo_to() {
 #[test]
 fn us1_s2b_stale_target_toasts_typed_refusal() {
     picker_journey(|| {
-        let mut harness = PickerHarness::mount(picker_state(), false);
+        let mut harness = mount(picker_state(), false);
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         let stale = JournalId::from_uuid(uuid::Uuid::from_u128(0xDEAD));
         harness
@@ -267,7 +189,7 @@ fn us1_s2b_stale_target_toasts_typed_refusal() {
 #[test]
 fn us1_s3_post_switch_state_reflects_branch() {
     picker_journey(|| {
-        let mut harness = PickerHarness::mount(picker_state(), false);
+        let mut harness = mount(picker_state(), false);
         let (ancestor, head, _branch) = fixture_ids();
         // The engine half: the walk landed on the branch, so the next
         // publish's projection shows the branch's head and its (empty)
@@ -304,7 +226,7 @@ fn us1_s3_post_switch_state_reflects_branch() {
 #[test]
 fn us1_s4_escape_closes_without_dispatch() {
     picker_journey(|| {
-        let mut harness = PickerHarness::mount(picker_state(), false);
+        let mut harness = mount(picker_state(), false);
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         assert!(harness.open());
         harness.dispatch(taskboard_ui_slint::actions::ActionId::MenuDismiss);
@@ -328,7 +250,7 @@ fn us1_s4_escape_closes_without_dispatch() {
 #[test]
 fn us2_s1_ancestor_commit_undo_to() {
     picker_journey(|| {
-        let mut harness = PickerHarness::mount(picker_state(), false);
+        let mut harness = mount(picker_state(), false);
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         let (ancestor, _head, _branch) = fixture_ids();
         harness
@@ -353,7 +275,7 @@ fn us2_s1_ancestor_commit_undo_to() {
 #[test]
 fn us3_s1_plain_rows_route_the_unchanged_v1_verbs() {
     picker_journey(|| {
-        let mut harness = PickerHarness::mount(picker_state(), false);
+        let mut harness = mount(picker_state(), false);
         harness.dispatch(taskboard_ui_slint::actions::ActionId::AppUndoBranches);
         harness.handle.window().invoke_undo_line_undo();
         harness.advance();
