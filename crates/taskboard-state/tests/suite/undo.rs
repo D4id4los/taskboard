@@ -85,7 +85,7 @@ impl Rig {
     /// with fixture ids minted the same way).
     async fn start_with(seed: PersistedState) -> Self {
         let repo = Arc::new(InMemoryRepository::with_state(seed));
-        let clock = FixedClock::new(T0);
+        let clock = Arc::new(FixedClock::from_secs(T0));
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
         let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
@@ -115,7 +115,7 @@ impl Rig {
     }
 
     async fn run(&mut self, command: StateCommand) -> Result<CommandOutcome, ExecuteError> {
-        self.clock.advance(60);
+        self.clock.advance_secs(60);
         self.handle.execute(command).await
     }
 
@@ -225,7 +225,7 @@ async fn a_not_undoable_head_refuses_typed_through_the_engine() {
 async fn a_storage_failure_leaves_the_journal_and_head_untouched() {
     let repo = Arc::new(FailingRepository::default());
     repo.trip(true);
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (system_tx, system_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
@@ -245,7 +245,7 @@ async fn a_storage_failure_leaves_the_journal_and_head_untouched() {
     )
     .await
     .expect("engine boots");
-    clock.advance(60);
+    clock.advance_secs(60);
     let err = handle
         .execute(StateCommand::CreateBoard {
             title: "b".into(),
@@ -1354,7 +1354,7 @@ async fn undo_after_burst_pops_one_increment() {
     let habit = habit_fixture(&mut rig).await;
     // Two logs inside the same wall-clock second: the bump mint stamps
     // the second row strictly past the first.
-    rig.clock.advance(0);
+    rig.clock.advance_secs(0);
     rig.handle
         .execute(StateCommand::LogHabit { habit })
         .await

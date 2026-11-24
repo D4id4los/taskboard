@@ -52,7 +52,7 @@ async fn i1_engine_roundtrips_durably_through_the_sqlite_actor() {
         let (engine, engine_join) = spawn_state_engine(
             repo_port,
             Arc::new(CountingIds::new()),
-            FixedClock::new(T0),
+            Arc::new(FixedClock::from_secs(T0)),
             sync_out,
             report_rx,
             system_tx.clone(),
@@ -253,7 +253,7 @@ async fn reloaded_rule_never_refires_a_delivered_occurrence() {
         let (engine, engine_join) = taskboard_state::spawn_state_engine(
             repo_port,
             Arc::new(CountingIds::new()),
-            FixedClock::new(T0), // now ≥ occurrence: the rule is eligible
+            Arc::new(FixedClock::from_secs(T0)), // now ≥ occurrence: the rule is eligible
             sync_out,
             report_rx,
             system_tx.clone(),
@@ -364,7 +364,7 @@ async fn i2_undo_line_survives_a_restart_over_sqlite() {
         let (engine, engine_join) = spawn_state_engine(
             repo_port,
             Arc::new(CountingIds::new()),
-            FixedClock::new(T0),
+            Arc::new(FixedClock::from_secs(T0)),
             sync_out,
             report_rx,
             system_tx.clone(),

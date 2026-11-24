@@ -115,7 +115,7 @@ fn record_command(text: &str) -> StateCommand {
 #[tokio::test]
 async fn t1_record_publishes_the_row_memory_equals_disk() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let h = spawn_over(repo, FixedClock::new(T0)).await;
+    let h = spawn_over(repo, Arc::new(FixedClock::from_secs(T0))).await;
 
     let outcome = h.handle.execute(record_command("the day's close")).await;
     let CommandOutcome::ReflectionRecorded { entry } = outcome.expect("accepted") else {
@@ -140,7 +140,7 @@ async fn t1_record_publishes_the_row_memory_equals_disk() {
 #[tokio::test]
 async fn t2_update_publishes_and_the_no_op_changes_nothing() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo, clock.clone()).await;
     let CommandOutcome::ReflectionRecorded { entry } = h
         .handle
@@ -151,7 +151,7 @@ async fn t2_update_publishes_and_the_no_op_changes_nothing() {
         panic!("wrong receipt");
     };
 
-    clock.advance(1_800);
+    clock.advance_secs(1_800);
     let outcome = h
         .handle
         .execute(StateCommand::UpdateReflection {
@@ -211,7 +211,7 @@ async fn t2_update_publishes_and_the_no_op_changes_nothing() {
 #[tokio::test]
 async fn t3_delete_tombstones_in_place() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo, clock.clone()).await;
     let CommandOutcome::ReflectionRecorded { entry } = h
         .handle
@@ -222,7 +222,7 @@ async fn t3_delete_tombstones_in_place() {
         panic!("wrong receipt");
     };
 
-    clock.advance(600);
+    clock.advance_secs(600);
     let outcome = h
         .handle
         .execute(StateCommand::DeleteReflection { id: entry.id })
@@ -269,7 +269,7 @@ async fn t3_delete_tombstones_in_place() {
 #[tokio::test]
 async fn t4_fresh_engine_over_the_same_repo_sees_the_entries() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let engine1 = spawn_over(repo.clone(), clock.clone()).await;
     let CommandOutcome::ReflectionRecorded { entry } = engine1
         .handle
@@ -281,7 +281,7 @@ async fn t4_fresh_engine_over_the_same_repo_sees_the_entries() {
     };
     engine1.shutdown().await;
 
-    clock.advance(3_600);
+    clock.advance_secs(3_600);
     let engine2 = spawn_over(repo.clone(), clock.clone()).await;
     let published = engine2.published_entries();
     assert_eq!(published.len(), 1, "the entry hydrated");
@@ -294,7 +294,7 @@ async fn t4_fresh_engine_over_the_same_repo_sees_the_entries() {
 #[tokio::test]
 async fn t5_undo_over_a_reflection_head_refuses_typed() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let h = spawn_over(repo, FixedClock::new(T0)).await;
+    let h = spawn_over(repo, Arc::new(FixedClock::from_secs(T0))).await;
     h.handle
         .execute(record_command("not undoable"))
         .await

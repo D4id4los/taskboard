@@ -53,7 +53,7 @@ fn cfg() -> SyncActorConfig {
     SyncActorConfig {
         // Every LWW-participating stamp the actor mints is `T + 1000` —
         // after every fixture stamp, preserving the real-clock orderings.
-        clock: Arc::new(FixedClock(ts(T + 1000))),
+        clock: Arc::new(FixedClock::new(ts(T + 1000))),
         day: taskboard_domain::DayCalendar {
             day_start_time: chrono::NaiveTime::MIN,
             offset: taskboard_state::DayRollConfig::disabled().offset,
@@ -4670,7 +4670,7 @@ async fn a18_sync_actor_stamps_come_from_the_injected_clock_when_skewed() {
         let server = start_server().await;
         mount_dead_board(&server).await;
         let mut cfg = cfg();
-        cfg.clock = Arc::new(FixedClock(ts(T + 1000)));
+        cfg.clock = Arc::new(FixedClock::new(ts(T + 1000)));
         let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), cfg);
         let report = nudge_and_report(&mut actor).await;
         let SyncReport::Completed {
@@ -4693,7 +4693,7 @@ async fn a18_sync_actor_stamps_come_from_the_injected_clock_when_skewed() {
     let server = start_server().await;
     mount_dead_board(&server).await;
     let mut cfg = cfg();
-    cfg.clock = Arc::new(FixedClock(ts(T - 3600)));
+    cfg.clock = Arc::new(FixedClock::new(ts(T - 3600)));
     let mut actor = spawn_with_cfg(&server, repo_with(&[(2, STACK)], &[]), cfg);
     let report = nudge_and_report(&mut actor).await;
     let SyncReport::Completed {

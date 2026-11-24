@@ -23,10 +23,8 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use taskboard_domain::Clock;
 use taskboard_domain::ids::ConnectorId;
 use taskboard_domain::messages::{SyncReport, UserDataReport};
 use taskboard_domain::persistence::{PersistedState, RepositoryError, SyncStateReader};
@@ -330,32 +328,6 @@ impl Respond for RetentionServer {
 // The cycle harness: `run_cycle` driven directly, all clocks injected.
 // ------------------------------------------------------------------
 
-/// A logical stepping clock — 30 s per read from a fixed base. No wall
-/// read anywhere (standing law b).
-#[derive(Debug)]
-struct TestClock {
-    next_secs: AtomicI64,
-}
-
-impl TestClock {
-    fn new(start_secs: i64) -> Self {
-        Self {
-            next_secs: AtomicI64::new(start_secs),
-        }
-    }
-}
-
-impl Clock for TestClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        use chrono::TimeZone as _;
-        let secs = self.next_secs.fetch_add(30, Ordering::Relaxed);
-        chrono::Utc
-            .timestamp_opt(secs, 0)
-            .single()
-            .expect("in range")
-    }
-}
-
 /// A swappable local contribution: the test sets the document each
 /// cycle's publish should fold.
 #[derive(Debug)]
@@ -504,7 +476,10 @@ impl Harness {
         let ctx = SyncContext {
             identity,
             app_version: "test".to_owned(),
-            clock: Arc::new(TestClock::new(1_760_000_000)),
+            clock: Arc::new(taskboard_domain::test_support::StepClock::new(
+                1_760_000_000,
+                30,
+            )),
             local: local.clone(),
             report_tx,
             connector: ConnectorId::from("files-sync"),

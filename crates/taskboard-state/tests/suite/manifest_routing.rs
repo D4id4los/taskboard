@@ -475,7 +475,7 @@ async fn the_engine_execute_path_routes_like_the_planner() {
     let (handle, join) = spawn_state_engine(
         repo.clone(),
         Arc::new(CountingIds::new()),
-        common::FixedClock::new(0),
+        Arc::new(common::FixedClock::from_secs(0)),
         sync_out,
         report_rx,
         system_tx,

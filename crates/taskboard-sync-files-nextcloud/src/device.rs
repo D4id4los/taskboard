@@ -102,14 +102,10 @@ mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
 
-    /// A fixed clock: the ceremony is deterministic under it.
-    #[derive(Debug)]
-    struct FixedClock(DateTime<Utc>);
-
-    impl Clock for FixedClock {
-        fn now(&self) -> DateTime<Utc> {
-            self.0
-        }
+    /// A fixed clock at the module's fixture stamp: the ceremony is
+    /// deterministic under it and no fixture builder reads the clock.
+    fn fixed_clock() -> taskboard_domain::test_support::FrozenClock {
+        taskboard_domain::test_support::FrozenClock::new("2026-11-05T09:15:32Z".parse().unwrap())
     }
 
     fn temp_dir() -> (tempfile::TempDir, PathBuf) {
@@ -118,16 +114,12 @@ mod tests {
         (dir, path)
     }
 
-    /// A fixed clock at the module's fixture stamp: the ceremony is
-    /// deterministic under it and no fixture builder reads the clock.
-    fn fixed_clock() -> FixedClock {
-        FixedClock("2026-11-05T09:15:32Z".parse().unwrap())
-    }
-
     #[tokio::test]
     async fn create_once_mints_writes_and_rereads_the_identity() {
         let (_dir, path) = temp_dir();
-        let clock = FixedClock("2026-11-05T09:15:32Z".parse::<DateTime<Utc>>().unwrap());
+        let clock = taskboard_domain::test_support::FrozenClock::new(
+            "2026-11-05T09:15:32Z".parse::<DateTime<Utc>>().unwrap(),
+        );
         let identity = load_or_create(&path, &clock).await.expect("creates");
         // The re-read yields exactly the written identity (create-once:
         // a second ceremony call is a load, not a re-mint).
@@ -136,7 +128,7 @@ mod tests {
         let raw = tokio::fs::read(&path).await.unwrap();
         let decoded: DeviceIdentity = serde_json::from_slice(&raw).unwrap();
         assert_eq!(decoded, identity);
-        assert_eq!(identity.created_at, clock.0);
+        assert_eq!(identity.created_at, clock.instant());
     }
 
     #[tokio::test]

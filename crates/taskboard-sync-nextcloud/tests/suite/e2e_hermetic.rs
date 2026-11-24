@@ -569,7 +569,7 @@ impl DeckSim {
 #[tokio::test(start_paused = true)]
 async fn i1_offline_creates_round_trip_to_the_server() {
     let server = std::sync::Arc::new(start_server().await);
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let sim = DeckSim::new(Arc::clone(&clock));
     sim.mount(&server).await;
     // The board's live column exists server-side from the start.
@@ -578,7 +578,7 @@ async fn i1_offline_creates_round_trip_to_the_server() {
         "lastModified": T, "deletedAt": 0, "archived": false, "cards": []
     }));
 
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server, seeded_state(), Arc::clone(&clock)).await;
     let (commands, _actor) = spawn_actor(&stack);
     // Deterministic: wait for the broadcast subscription (a structural
@@ -701,7 +701,7 @@ async fn i2_remote_newer_edit_adopts() {
         remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server, state, clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
@@ -772,7 +772,7 @@ async fn i3_concurrent_edits_resolve_per_field() {
         remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server, state, clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
@@ -794,7 +794,7 @@ async fn i3_concurrent_edits_resolve_per_field() {
 #[allow(clippy::too_many_lines)] // fixture seeding is the scenario
 async fn i4_move_label_and_delete_push_to_the_server() {
     let server = std::sync::Arc::new(start_server().await);
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let sim = DeckSim::new(Arc::clone(&clock));
     sim.mount(&server).await;
     // The two server-side columns and the card, matching the seeded state.
@@ -997,7 +997,7 @@ async fn i5_restart_resumes_conditional_polling() {
 
     // First lifetime: one full cycle (cold cache → fresh data + validators
     // persisted by the engine).
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server, seeded_state(), clock).await;
     let (commands, first_actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
@@ -1065,7 +1065,7 @@ async fn i6_crash_window_duplicate_reconciles_to_one_card() {
     // One clock for both lifetimes: the sim's stamps, the op's
     // `queued_at`, and the reports' `now` must share a timeline for the
     // detection window to hold.
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let sim = DeckSim::new(Arc::clone(&clock));
     sim.mount(&server).await;
     sim.stacks.lock().unwrap().push(serde_json::json!({
@@ -1208,7 +1208,7 @@ async fn i7_a_strangers_twin_card_adopts_without_a_create_in_scope() {
         remote_baseline: None,
     };
     state.tasks.insert(task.id, task);
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(Arc::new(server), state, clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
@@ -1394,7 +1394,7 @@ async fn i8_adopting_an_occurrence_card_learns_its_series() {
             remote_baseline: None,
         },
     );
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server, state, clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
@@ -1643,7 +1643,7 @@ mod strand_seed {
 async fn i9_wiped_board_ops_drain_after_one_cycle() {
     let server = std::sync::Arc::new(start_server().await);
     strand_seed::mount_drain_routes(&server, 200).await;
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server, strand_seed::state_with_stranded_ops(), clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
@@ -1667,7 +1667,7 @@ async fn i9_wiped_board_ops_drain_after_one_cycle() {
 async fn i10_remote_missing_ref_delete_drains_exactly_once() {
     let server = std::sync::Arc::new(start_server().await);
     strand_seed::mount_drain_routes(&server, 404).await;
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(
         server,
         strand_seed::state_with_stranded_ref_deletes(),
@@ -1724,7 +1724,7 @@ fn zero_board_state_with_orphan(op_raw: u128) -> taskboard_domain::PersistedStat
 #[tokio::test(start_paused = true)]
 async fn orphan_ops_drain_with_zero_owned_boards() {
     let server = std::sync::Arc::new(start_server().await);
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server.clone(), zero_board_state_with_orphan(300), clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
@@ -1749,7 +1749,7 @@ async fn orphan_ops_drain_with_zero_owned_boards() {
 #[tokio::test(start_paused = true)]
 async fn zero_board_cycle_with_empty_orphan_lane_publishes_nothing() {
     let server = std::sync::Arc::new(start_server().await);
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server, taskboard_domain::PersistedState::default(), clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;
@@ -1886,7 +1886,7 @@ async fn owned_boards_cycle_still_rides_orphans_on_first_board() {
     strand_seed::mount_drain_routes(&server, 200).await;
 
     let state = two_board_state_with_orphan_ref_delete();
-    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::at(ts(T + 1000), 1));
     let stack = boot(server, state, clock).await;
     let (commands, _actor) = spawn_actor(&stack);
     wait_subscribed(&stack.system_tx).await;

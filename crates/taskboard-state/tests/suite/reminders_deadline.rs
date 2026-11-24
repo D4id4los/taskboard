@@ -112,7 +112,7 @@ async fn spawn(
     settings: SettingsSnapshot,
     day_roll: DayRollConfig,
 ) -> Harness {
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (system_tx, boot_rx) = tokio::sync::broadcast::channel::<SystemEvent>(8);
@@ -143,7 +143,7 @@ async fn spawn(
 /// The lockstep primitive: the injected clock (what the evaluator sees)
 /// and tokio time (when the arm wakes) move together.
 async fn advance_both(clock: &FixedClock, secs: i64) {
-    clock.advance(secs);
+    clock.advance_secs(secs);
     tokio::time::advance(Duration::from_secs(u64::try_from(secs).expect("positive"))).await;
 }
 

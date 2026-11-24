@@ -49,7 +49,7 @@ async fn d1_detach_stops_the_actor_after_the_queued_cycle() {
     let (system, _system_rx) = broadcast::channel::<SystemEvent>(16);
     let client = DeckClient::new("http://127.0.0.1:9", "u", "t").expect("valid base url");
     let cfg = SyncActorConfig {
-        clock: Arc::new(FixedClock(ts(T + 1000))),
+        clock: Arc::new(FixedClock::new(ts(T + 1000))),
         day: taskboard_domain::DayCalendar {
             day_start_time: chrono::NaiveTime::MIN,
             offset: taskboard_state::DayRollConfig::disabled().offset,

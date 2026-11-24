@@ -17,8 +17,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -68,43 +67,9 @@ fn day_window() -> (DateTime<Utc>, DateTime<Utc>) {
     (start, start + chrono::TimeDelta::try_hours(24).unwrap())
 }
 
-/// A frozen logical clock, advanced explicitly per journey step.
-#[derive(Debug)]
-struct FrozenClock(Mutex<i64>);
-
-impl FrozenClock {
-    fn new(secs: i64) -> Arc<Self> {
-        Arc::new(Self(Mutex::new(secs)))
-    }
-
-    fn advance_secs(&self, secs: i64) {
-        *self.0.lock().expect("poisoned") += secs;
-    }
-
-    fn set(&self, secs: i64) {
-        *self.0.lock().expect("poisoned") = secs;
-    }
-}
-
-impl Clock for FrozenClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc.timestamp_opt(*self.0.lock().expect("poisoned"), 0)
-            .unwrap()
-    }
-}
-
-/// An advancing heartbeat stamp (30 s per read) so consecutive stamps
-/// stay distinct — deterministic, never the wall clock (AGENTS §5
-/// clock discipline; the stamps feed freshness math, not assertions).
-#[derive(Debug)]
-struct StepClock(AtomicI64);
-
-impl Clock for StepClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc.timestamp_opt(self.0.fetch_add(30, Ordering::Relaxed), 0)
-            .unwrap()
-    }
-}
+/// A frozen logical clock, advanced explicitly per journey step — the
+/// shared domain double (#1264), kept under the suite's spelling.
+type FrozenClock = taskboard_domain::test_support::ManualClock;
 
 /// Forwards one shared fake to both actors (the model is
 /// `Arc`-shared mutable state; sharing is its purpose).
@@ -174,7 +139,7 @@ async fn spawn_side(
     for _ in 0..skip_ids {
         ids.new_reflection_id();
     }
-    let clock = FrozenClock::new(start_secs);
+    let clock = Arc::new(FrozenClock::from_secs(start_secs));
     let author = taskboard_domain::ids::AuthorId::from_uuid(uuid::Uuid::from_u128(
         u128::try_from(start_secs).expect("side seed"),
     ));
@@ -327,7 +292,10 @@ impl Side {
             self.system.clone(),
             FilesSyncConfig {
                 connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
-                clock: Arc::new(StepClock(1_793_800_000.into())),
+                clock: Arc::new(taskboard_domain::test_support::StepClock::new(
+                    1_793_800_000,
+                    30,
+                )),
                 app_version: "convergence-journey".into(),
                 deck_origins: std::collections::BTreeMap::from([(
                     taskboard_domain::ids::ConnectorId::from("nextcloud"),
@@ -442,8 +410,8 @@ async fn two_engines_converge_their_journals_and_stay_quiet() {
     // Step 4 — concurrent equal-clock edits of X: both engines are
     // parked at the same logical T5 and both edit; whichever row the
     // fold's totaliser picks, both sides hold the *same* one.
-    a.clock.set(T5);
-    b.clock.set(T5);
+    a.clock.set_secs(T5);
+    b.clock.set_secs(T5);
     b.edit(x_id, "b's concurrent pick").await;
     a.edit(x_id, "a's concurrent pick").await;
     until("step4 concurrent tie", || {
@@ -858,7 +826,9 @@ async fn run_mover(
     use taskboard_domain::StateCommand;
     use taskboard_sync_files::board_move::{MOVE_RECORD_FORMAT, MoveRecord, MovedFrom};
     use taskboard_sync_files_nextcloud::board_cycle::{publish_move_floor, publish_move_record};
-    let clock: Arc<dyn taskboard_domain::Clock> = Arc::new(StepClock(1_793_700_000.into()));
+    let clock: Arc<dyn taskboard_domain::Clock> = Arc::new(
+        taskboard_domain::test_support::StepClock::new(1_793_700_000, 30),
+    );
     let identity = taskboard_sync_files_nextcloud::device::load_or_create(device, clock.as_ref())
         .await
         .expect("device");

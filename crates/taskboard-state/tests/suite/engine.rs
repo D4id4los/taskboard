@@ -125,7 +125,7 @@ impl Default for Spawner {
         Self {
             repo: Arc::new(InMemoryRepository::with_state(seed_board_state("board"))),
             ids: Arc::new(CountingIds::new()),
-            clock: FixedClock::new(T0),
+            clock: Arc::new(FixedClock::from_secs(T0)),
             reminders: taskboard_domain::SettingsSnapshot::default(),
             day_roll: DayRollConfig::disabled(),
             author: None,
@@ -873,7 +873,7 @@ async fn a12_boot_failure_surfaces_load_error() {
     let result = spawn_state_engine(
         Arc::new(DeadRepository),
         Arc::new(CountingIds::new()),
-        FixedClock::new(T0),
+        Arc::new(FixedClock::from_secs(T0)),
         sync_out,
         report_rx,
         system_tx,
@@ -2871,7 +2871,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
 /// freshness consumers may rely on.
 #[tokio::test]
 async fn counters_advance_across_a_backward_clock_step() {
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn(Spawner {
         clock: clock.clone(),
         ..Spawner::default()
@@ -2891,7 +2891,7 @@ async fn counters_advance_across_a_backward_clock_step() {
 
     // The backward step: a wall-stamp freshness comparison would read
     // the next report's stamp as older and misreport the cycle.
-    clock.advance(-3_600);
+    clock.advance_secs(-3_600);
 
     h.report_tx
         .send(completed_report())
@@ -3036,7 +3036,7 @@ async fn one_wake() {
 #[tokio::test(start_paused = true)]
 async fn rollover_rolls_stale_heads_once() {
     // The head sits at yesterday; today's first tick rolls it to today.
-    let clock = FixedClock::new(DAY0);
+    let clock = Arc::new(FixedClock::from_secs(DAY0));
     let repo = Arc::new(InMemoryRepository::with_state(seed_series_state(
         Some(DAY0 - 86_400 + 32_400),
         None,
@@ -3057,7 +3057,7 @@ async fn rollover_rolls_stale_heads_once() {
     // watermark fast path): no write, no publish.
     let quiet_repo = repo.snapshot();
     let mut signals = h.handle.subscribe();
-    clock.advance(3_600);
+    clock.advance_secs(3_600);
     one_wake().await;
     one_wake().await;
     assert_eq!(
@@ -3075,7 +3075,7 @@ async fn rollover_rolls_stale_heads_once() {
 #[tokio::test(start_paused = true)]
 async fn a_quiet_day_is_a_full_no_op() {
     // The head is dated today: nothing is stale across the rollover.
-    let clock = FixedClock::new(DAY0);
+    let clock = Arc::new(FixedClock::from_secs(DAY0));
     let repo = Arc::new(InMemoryRepository::with_state(seed_series_state(
         Some(DAY0 + 32_400),
         None,
@@ -3090,7 +3090,7 @@ async fn a_quiet_day_is_a_full_no_op() {
 
     let mut signals = h.handle.subscribe();
     let quiet_repo = repo.snapshot();
-    clock.advance(3_600);
+    clock.advance_secs(3_600);
     one_wake().await;
     one_wake().await;
     assert_eq!(
@@ -3118,7 +3118,7 @@ async fn boot_catchup_rolls_once_not_per_tick() {
     // A multi-day gap onto a non-member day: the weekly head rolls by
     // `roll_target`'s skip-ahead case, and later ticks stay quiet.
     let wednesday = day(1_781_654_400); // 2026-06-17 00:00 UTC
-    let clock = FixedClock::new(wednesday.timestamp());
+    let clock = Arc::new(FixedClock::from_secs(wednesday.timestamp()));
     let monday_09 = 1_781_514_000; // 2026-06-15 09:00 UTC (stale, a member)
     let next_monday_09 = 1_782_118_800; // 2026-06-22 09:00 UTC
     let mut state = seed_series_state(Some(monday_09), None);
@@ -3147,7 +3147,7 @@ async fn boot_catchup_rolls_once_not_per_tick() {
 
     // The next local day's tick is quiet: the roll happened once.
     let quiet_repo = repo.snapshot();
-    clock.advance(86_400);
+    clock.advance_secs(86_400);
     one_wake().await;
     assert_eq!(repo.snapshot().tasks, quiet_repo.tasks);
 }
@@ -3157,7 +3157,7 @@ async fn storage_failure_defers_the_roll_until_it_heals() {
     // First tick fails: nothing rolls, `StorageFailed` fires once, and
     // the watermark did not advance — the healed next tick rolls the
     // same day.
-    let clock = FixedClock::new(DAY0);
+    let clock = Arc::new(FixedClock::from_secs(DAY0));
     let repo = Arc::new(FlakyRepository::new(
         1,
         seed_series_state(Some(DAY0 - 86_400 + 32_400), None),
@@ -3215,7 +3215,7 @@ async fn the_roll_re_arms_reminders_by_construction() {
     // and the next reminder tick fires the *new* occurrence instant —
     // the moved date is a new `(reminder, occurrence)` key, no reminder
     // code involved.
-    let clock = FixedClock::new(DAY0);
+    let clock = Arc::new(FixedClock::from_secs(DAY0));
     let old_due = DAY0 - 2 * 86_400 + 61_200; // 2026-06-13 17:00 UTC
     let mut state = seed_series_state(None, Some(old_due));
     let rule_id = taskboard_domain::ReminderRuleId::from_uuid(uuid::Uuid::from_u128(700));
@@ -3277,7 +3277,7 @@ async fn the_roll_re_arms_reminders_by_construction() {
             }
             // The occurrence is due only once the logical clock passes
             // it: step the clock an hour and wake the ticks.
-            clock.advance(3_600);
+            clock.advance_secs(3_600);
             tokio::time::advance(Duration::from_secs(2)).await;
         }
     })
@@ -3304,7 +3304,7 @@ async fn completing_a_recurring_head_spawns_over_the_live_engine() {
     // The spawn end-to-end: the receipt is the domain plan's, the whole
     // batch persists, and the published state carries the open
     // successor with the rule copied verbatim.
-    let clock = FixedClock::new(DAY0);
+    let clock = Arc::new(FixedClock::from_secs(DAY0));
     let repo = Arc::new(InMemoryRepository::with_state(seed_series_state(
         Some(DAY0 + 32_400),
         Some(DAY0 + 61_200),

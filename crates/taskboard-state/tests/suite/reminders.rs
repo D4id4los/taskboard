@@ -70,7 +70,7 @@ impl Default for Spawner {
         let (state, _) = seeded_task_state(T0 - 3_600); // past due by an hour
         Self {
             repo: Arc::new(InMemoryRepository::with_state(state)),
-            clock: FixedClock::new(T0),
+            clock: Arc::new(FixedClock::from_secs(T0)),
             reminders: tick_config(),
         }
     }
@@ -125,7 +125,7 @@ async fn settle_boot_tick() {
 /// and tokio time (when the arm wakes) move together, so every firing is
 /// observable at a tick that can see it.
 async fn advance_both(clock: &FixedClock, secs: i64) {
-    clock.advance(secs);
+    clock.advance_secs(secs);
     tokio::time::advance(Duration::from_secs(u64::try_from(secs).expect("positive"))).await;
 }
 
@@ -1255,7 +1255,7 @@ async fn tracker_nudge_fires_once_through_the_tick_and_stays_quiet_in_its_window
     let state = seeded_tracker_state();
     let mut h = spawn(Spawner {
         repo: Arc::new(InMemoryRepository::with_state(state)),
-        clock: FixedClock::new(T0),
+        clock: Arc::new(FixedClock::from_secs(T0)),
         reminders: tick_config(),
     })
     .await;
@@ -1343,7 +1343,7 @@ async fn paused_habit_arms_no_nudge_and_resume_re_arms() {
         .paused_until = Some(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid"));
     let mut h = spawn(Spawner {
         repo: Arc::new(InMemoryRepository::with_state(state)),
-        clock: FixedClock::new(T0),
+        clock: Arc::new(FixedClock::from_secs(T0)),
         reminders: tick_config(),
     })
     .await;
