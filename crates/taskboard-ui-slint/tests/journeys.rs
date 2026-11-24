@@ -12887,6 +12887,22 @@ fn click_segment(harness: &mut Harness, label: &str) {
     harness.driver.advance_time(0);
 }
 
+/// The popover's segment click: the "Alarm"/"Normal" labels are
+/// shared with the timers view's inline form, and the popover mounts
+/// last in the tree — so, like the label field below, the *last*
+/// radio match is the popover's (the ordered-fixture discipline).
+fn click_popover_segment(harness: &mut Harness, label: &str) {
+    harness
+        .driver
+        .find_all_by_label(label)
+        .into_iter()
+        .rev()
+        .find(support::driver::Element::is_radio_button)
+        .unwrap_or_else(|| panic!("the popover's {label} segment is present"))
+        .invoke_default_action();
+    harness.driver.advance_time(0);
+}
+
 fn click_popover_label(harness: &mut Harness) {
     let matches = harness.driver.find_all_by_label("Timer label");
     let element = matches
@@ -12911,7 +12927,7 @@ fn the_setter_and_the_text_form_hit_the_same_commit_seam() {
         // The popover leg: open, quick-fill the 5m preset (never
         // auto-commit, D-T6), label, commit.
         open_setter(&mut *harness);
-        click_segment(&mut *harness, "5m");
+        click_popover_segment(&mut *harness, "5m");
         click_popover_label(&mut *harness);
         harness.type_text("Tea");
         harness.driver.click_by_label("Set timer");
@@ -13014,7 +13030,7 @@ fn the_setter_composes_the_custom_row_grammar() {
         harness.driver.click_at(x, y);
         harness.type_text("09:30");
         harness.driver.advance_time(0);
-        click_segment(&mut *harness, "Tomorrow");
+        click_popover_segment(&mut *harness, "Tomorrow");
         assert!(
             !harness
                 .handle
@@ -13115,6 +13131,100 @@ fn the_setter_dismissal_layers_close_without_committing() {
             when: taskboard_domain::AdhocWhen::In(TimeDelta::minutes(10)),
             insistence: taskboard_domain::Insistence::Normal,
         }]);
+    });
+}
+
+/// #1306 — the `SegmentedControl` echo pins (structural, round law a):
+/// the widget is deliberately stateless (r2 D26/D27), so the caller
+/// owns the feedback half — a pick must move the bound index (the
+/// adapter-pushed mirrors for day/insistence, the Slint-local in-out
+/// for the quick presets). Typed index assertions only; no text pins.
+#[test]
+fn the_setter_segments_echo_their_picked_selection() {
+    let (_fixture, state) = fixture::golden_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        open_setter(&mut *harness);
+
+        // T1 — the day row's reply-sourced echo: the seam writes
+        // `setter_day_offset` and the derive pass re-pushes it.
+        click_popover_segment(&mut *harness, "Tomorrow");
+        assert_eq!(
+            harness.handle.window().get_timer_setter_day_index(),
+            1,
+            "the day pick echoes through the adapter's mirror"
+        );
+
+        // T2 — the insistence row's echo (also pins D1's
+        // refresh_forced conversion: nothing else re-pushed this
+        // seam when it was bare_mut).
+        click_popover_segment(&mut *harness, "Alarm");
+        assert_eq!(
+            harness.handle.window().get_timer_setter_insist_index(),
+            1,
+            "the insistence pick echoes through the adapter's mirror"
+        );
+
+        // T3 — the presets row's Slint-local echo (a fill, not an
+        // adapter-owned selection, D-T6).
+        click_popover_segment(&mut *harness, "25m");
+        assert_eq!(
+            harness.handle.window().get_timer_setter_preset_index(),
+            3,
+            "the preset pick echoes through the local in-out"
+        );
+    });
+}
+
+/// #1306 — the wipe/reset pin (T4): the dismissal funnel clears the
+/// adapter's mirrors (`clear_timer_setter`), so a fresh open seeds
+/// every echoed index at 0; the preset mirror is reseeded by the
+/// open seam (D3).
+#[test]
+fn the_setter_wipe_reseeds_the_echoed_indices() {
+    let (_fixture, state) = fixture::golden_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        open_setter(&mut *harness);
+        click_popover_segment(&mut *harness, "Tomorrow");
+        click_popover_segment(&mut *harness, "Alarm");
+        click_popover_segment(&mut *harness, "5m");
+        assert_eq!(
+            harness.handle.window().get_timer_setter_day_index(),
+            1,
+            "the pre-dismiss picks moved the mirrors"
+        );
+        assert_eq!(harness.handle.window().get_timer_setter_insist_index(), 1);
+        assert_eq!(harness.handle.window().get_timer_setter_preset_index(), 1);
+
+        // Escape rides the dismiss seam — the explicit decline that
+        // routes `clear_timer_setter`.
+        click_popover_label(&mut *harness);
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        assert!(
+            !harness.handle.window().get_timer_setter_open(),
+            "Escape closed the panel"
+        );
+
+        open_setter(&mut *harness);
+        assert_eq!(
+            harness.handle.window().get_timer_setter_day_index(),
+            0,
+            "the wipe reseeded the day echo"
+        );
+        assert_eq!(
+            harness.handle.window().get_timer_setter_insist_index(),
+            0,
+            "the wipe reseeded the insistence echo"
+        );
+        assert_eq!(
+            harness.handle.window().get_timer_setter_preset_index(),
+            0,
+            "the fresh open reseeded the preset echo"
+        );
     });
 }
 
