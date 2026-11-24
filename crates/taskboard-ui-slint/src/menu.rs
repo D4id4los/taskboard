@@ -1042,7 +1042,12 @@ mod tests {
         ];
         // The census: every `menu_group: None` row in the registry
         // (2026-11-23; the T-1 doc comment's per-row ranks are the
-        // maintenance map).
+        // maintenance map). Dated absorption 2026-11-24: the sibling
+        // chunks D1i (#1295 — the HabitRestore confirm trio) and D2
+        // (#1288 — the Status panel remediation trio + the export
+        // dialog's preview/copy pair) landed their group-less
+        // internal verbs while this branch was in flight; the census
+        // absorbs them, the guard's teeth are unchanged.
         const CENSUS: &[ActionId] = &[
             ActionId::AppExit,
             ActionId::AppUndo,
@@ -1080,6 +1085,9 @@ mod tests {
             ActionId::HabitReminderEdit,
             ActionId::HabitPauseCommit,
             ActionId::HabitRemoveCancel,
+            ActionId::HabitRestore,
+            ActionId::HabitRestoreConfirm,
+            ActionId::HabitRestoreCancel,
             ActionId::HabitMoveUp,
             ActionId::HabitMoveDown,
             ActionId::HabitConvertCancel,
@@ -1127,6 +1135,11 @@ mod tests {
             ActionId::MenuPrevious,
             ActionId::MenuInvoke,
             ActionId::MenuDismiss,
+            ActionId::StatusHolderKill,
+            ActionId::StatusLockForceUnlock,
+            ActionId::StatusDaemonRestart,
+            ActionId::ExportPreview,
+            ActionId::ExportClipboardCopy,
         ];
         let mut census = CENSUS.to_vec();
         census.sort();
