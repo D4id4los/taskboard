@@ -3745,6 +3745,38 @@ fn push_today(
         // All four sections always push (the model arity is fixed —
         // the repetition-probe discipline); the empty groups COLLAPSE
         // in the view's conditional render (D7).
+        //
+        // The section's content extent (#1310/#1304, 2026-11-24): the
+        // observed live-row heights summed over this section's rows
+        // from the #592 extent cache — the clip's declarative
+        // content-derived height reads THIS (through the
+        // `TodayClipFacts` global's per-section property: a
+        // model-row update does not propagate into a repeater
+        // delegate's bindings reliably, a property write does). Rows
+        // never instantiated contribute 0 until their report lands;
+        // the report seam's refresh re-derives, so the extent
+        // converges from the first materialization onward — the
+        // no-refire trap of the retired `changed`-assigned shape
+        // cannot recur.
+        let content_extent: f32 = filtered
+            .iter()
+            .map(|id| {
+                models
+                    .today_row_extents
+                    .get(&SharedString::from(id.as_uuid().to_string()))
+                    .copied()
+                    .unwrap_or(0.0)
+            })
+            .sum();
+        {
+            let facts = window.global::<crate::TodayClipFacts>();
+            match index {
+                0 => facts.set_e0(content_extent),
+                1 => facts.set_e1(content_extent),
+                2 => facts.set_e2(content_extent),
+                _ => facts.set_e3(content_extent),
+            }
+        }
         section_models.push(TodaySectionModel {
             label: SharedString::from(*label),
             count: i32::try_from(filtered.len()).unwrap_or(i32::MAX),

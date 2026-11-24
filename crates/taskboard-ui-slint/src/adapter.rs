@@ -14346,10 +14346,48 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     // #592: the live rows' extent reports feed the height cache
     // (deduped — a no-op report costs one map insert comparison).
-    install_seam!(window: window.on_today_row_extent, adapter: adapter; [bare_mut]
-    bind mut (a), args (id, extent), {
-        a.models.today_row_extents.insert(id, extent);
+    // #1310/#1304 (2026-11-24): a report that CHANGES a cached
+    // extent also re-derives — the today sections' clip heights bind
+    // to the cache-summed content extents (`push_today`), so a
+    // first-materializing row's report must land as a model update,
+    // not sit for the next unrelated pass. The delegate-side
+    // last-report gate bounds the loop: only a real height change
+    // reports, and a re-derivation never changes row widths, so no
+    // further report fires (the refresh settles in one pass).
+    install_seam!(window: window.on_today_row_extent, adapter: adapter;
+    bind mut (a, window), args (id, extent), {
+        if a.models.today_row_extents.get(&id) != Some(&extent) {
+            a.models.today_row_extents.insert(id, extent);
+            a.refresh_forced(&window);
+        }
     });
+
+    // #1310/#1304 (2026-11-24): the section viewports' realized
+    // geometry report (the `section-clip-geometry` witness binding)
+    // mirrored into the `TodayClipFacts` display global — the tests'
+    // #1023 root seam. Display state only; the report is
+    // re-evaluated declaratively by the view, never a command, so no
+    // refresh rides it (the raw handler, not `install_seam!`: the
+    // callback returns the witness's length).
+    {
+        let seam_weak = window.as_weak();
+        window.global::<crate::TodayClipFacts>().on_section_height(
+            move |section: i32, extent: f32, cap: f32| {
+                let Some(window) = seam_weak.upgrade() else {
+                    return 0.0;
+                };
+                let facts = window.global::<crate::TodayClipFacts>();
+                let height = extent.min(cap);
+                match section {
+                    0 => facts.set_h0(height),
+                    1 => facts.set_h1(height),
+                    2 => facts.set_h2(height),
+                    _ => facts.set_h3(height),
+                }
+                height
+            },
+        );
+    }
 
     install_seam!(window: window.on_today_row_activated, adapter: adapter;
     bind mut (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
