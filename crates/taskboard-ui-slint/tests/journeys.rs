@@ -4922,6 +4922,148 @@ fn a_palette_activation_shows_the_task() {
     });
 }
 
+/// A5a S-1 (#1302, D-2): a habit landing and a break-rule roster
+/// landing arm the `FocusScrollHint` with their synthetic page slots
+/// (4 = the habits section, 5 = the roster subsection) — the same
+/// `(target-a, target-b)` convention the task rows speak. Red
+/// pre-fix: the habit and roster walk rows pushed no hint at all
+/// (the seam resolved `focused_task` only). Typed outcome pins (the
+/// globals' nonce/index), never text.
+#[test]
+fn habit_and_roster_landings_arm_the_hint() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    let _rule = fixture::add_break_rule(
+        &mut state,
+        board,
+        "Tea break",
+        chrono::TimeDelta::minutes(90),
+        taskboard_domain::Insistence::Alarm,
+    );
+    support::harness::run_journey(state, move |harness| {
+        macro_rules! window {
+            () => {
+                harness.handle.window()
+            };
+        }
+        macro_rules! hint {
+            () => {
+                window!().global::<taskboard_ui_slint::FocusScrollHint>()
+            };
+        }
+
+        harness.stroke(parse("Ctrl+T").expect("ctrl t"));
+        assert_eq!(window!().get_current_view(), View::Today);
+
+        // The walk's entry lands on the first today row: the overdue
+        // task (section 0, row 0).
+        let before = hint!().get_nonce();
+        harness.press(ActionId::NavFocusDown);
+        assert!(hint!().get_nonce() > before, "the task entry arms the hint");
+        assert_eq!(
+            (hint!().get_target_a(), hint!().get_target_b()),
+            (0, 0),
+            "the task landing keeps the (section, row) convention"
+        );
+
+        // Onto the habit row: the habits section's synthetic slot 4.
+        let after_task = hint!().get_nonce();
+        harness.press(ActionId::NavFocusDown);
+        assert!(
+            hint!().get_nonce() > after_task,
+            "the habit landing arms the hint (dark pre-fix)"
+        );
+        assert_eq!(
+            (hint!().get_target_a(), hint!().get_target_b()),
+            (4, 0),
+            "the habit landing targets the habits page slot"
+        );
+
+        // Onto the roster row: the roster's synthetic slot 5.
+        let after_habit = hint!().get_nonce();
+        harness.press(ActionId::NavFocusDown);
+        assert!(
+            hint!().get_nonce() > after_habit,
+            "the roster landing arms the hint (dark pre-fix)"
+        );
+        assert_eq!(
+            (hint!().get_target_a(), hint!().get_target_b()),
+            (5, 0),
+            "the roster landing targets the roster page slot"
+        );
+    });
+}
+
+/// A5a S-2 (#1302, D-7): the ends hold and the pointer law — a
+/// vertical walk into either walk end, a jump idempotent at its
+/// target, and a pointer row landing all leave the nonce unchanged
+/// (the scroll reacts to a focus landing that changed something,
+/// never to a key or a pointer). The pointer half rides the row
+/// click seam (a focus write with no hint push by construction).
+#[test]
+fn walk_ends_and_pointer_landings_rearm_nothing() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    let _rule = fixture::add_break_rule(
+        &mut state,
+        board,
+        "Tea break",
+        chrono::TimeDelta::minutes(90),
+        taskboard_domain::Insistence::Alarm,
+    );
+    support::harness::run_journey(state, move |harness| {
+        macro_rules! window {
+            () => {
+                harness.handle.window()
+            };
+        }
+        macro_rules! hint {
+            () => {
+                window!().global::<taskboard_ui_slint::FocusScrollHint>()
+            };
+        }
+
+        harness.stroke(parse("Ctrl+T").expect("ctrl t"));
+        let before = hint!().get_nonce();
+
+        // The first landing arms once; the top end holds after it.
+        harness.press(ActionId::NavFirstItem);
+        assert!(hint!().get_nonce() > before, "the first jump arms once");
+        let top = hint!().get_nonce();
+        harness.press(ActionId::NavFocusUp);
+        assert_eq!(hint!().get_nonce(), top, "the top end holds (no wrap)");
+
+        // The last row (the roster) arms once; the bottom end and a
+        // repeated jump both hold.
+        harness.press(ActionId::NavLastItem);
+        assert!(hint!().get_nonce() > top, "the last jump arms once");
+        let bottom = hint!().get_nonce();
+        harness.press(ActionId::NavFocusDown);
+        assert_eq!(
+            hint!().get_nonce(),
+            bottom,
+            "the bottom end holds (no wrap)"
+        );
+        harness.press(ActionId::NavLastItem);
+        assert_eq!(
+            hint!().get_nonce(),
+            bottom,
+            "the jump is idempotent at the target (the generalized              subject guard)"
+        );
+
+        // The pointer law: a row click moves the focus to the task
+        // row and arms nothing.
+        window!().invoke_today_row_clicked(0, 0);
+        assert_eq!(
+            hint!().get_nonce(),
+            bottom,
+            "a pointer selection hints nothing"
+        );
+    });
+}
+
 /// Round-3 D22 — the toolbar view switcher journey: the clicks drive
 /// the same registry actions the keyboard uses (click ≡ key), the
 /// pushed index tracks the mounted view in both directions

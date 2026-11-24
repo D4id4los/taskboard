@@ -148,6 +148,15 @@ pub struct IdTables {
 }
 
 impl IdTables {
+    /// The today page's synthetic hint slots (A5a D-2, #1302): the
+    /// habits section (4) and the break-rules roster (5) live on the
+    /// page above/outside the four task sections (`0..=3`), so no
+    /// inner section `ListView`'s `target-a == sindex` filter can
+    /// consume their hints — only the page seek does. Mirrors the
+    /// convention comment in ui/focus-scroll.slint.
+    pub const TODAY_HABIT_SLOT: usize = 4;
+    pub const TODAY_ROSTER_SLOT: usize = 5;
+
     /// The board task at (column, row), if the tables know it.
     #[must_use]
     pub fn board_task(&self, column: usize, row: usize) -> Option<(StackId, TaskId)> {
@@ -203,6 +212,36 @@ impl IdTables {
             consumed += *rows;
         }
         None
+    }
+
+    /// The today page's habit slot and row holding `habit` (A5a D-2,
+    /// #1302): the synthetic [`Self::TODAY_HABIT_SLOT`] section (the
+    /// page's habits block, no inner scroll) plus the row index into
+    /// the pushed habits model — `tables.habits` is index-aligned with
+    /// that model by `push_habits`, so walk == render coordinates by
+    /// construction.
+    #[must_use]
+    pub fn today_habit_position(&self, habit: taskboard_domain::HabitId) -> Option<(usize, usize)> {
+        self.habits
+            .iter()
+            .position(|h| *h == habit)
+            .map(|row| (Self::TODAY_HABIT_SLOT, row))
+    }
+
+    /// The today page's roster slot and row holding `rule` (A5a D-2,
+    /// #1302): the synthetic [`Self::TODAY_ROSTER_SLOT`] section (the
+    /// timers block's break-rule subsection) plus the row index into
+    /// the pushed roster model — `tables.break_rules` is
+    /// index-aligned with that model by `push_timers`.
+    #[must_use]
+    pub fn today_roster_position(
+        &self,
+        rule: taskboard_domain::BreakRuleId,
+    ) -> Option<(usize, usize)> {
+        self.break_rules
+            .iter()
+            .position(|r| *r == rule)
+            .map(|row| (Self::TODAY_ROSTER_SLOT, row))
     }
 
     /// The stack-detail row holding `task`.
@@ -5618,6 +5657,88 @@ mod tests {
                     walked,
                     [ha0, ha1, hb0, hb1],
                     "the walk's habit rows aggregate in the render order"
+                );
+            });
+        }
+
+        /// A5a S-3 (#1302, D-2): the habit and roster hint positions
+        /// resolve to exactly the pushed models' rows — walk == render
+        /// coordinates — against the synthetic page slots (4/5) that
+        /// no inner section `ListView` consumes (they sit outside the
+        /// four task sections' `0..=3` index space).
+        #[test]
+        fn today_habit_and_roster_positions_agree_with_the_pushed_models() {
+            on_slint_thread(|| {
+                let (mut state, board_a, _board_b, _ids) = two_board_state();
+                let ha0 = habit_on(&mut state, board_a, 10, "alpha-0");
+                let hb0 = habit_on(&mut state, board_a, 20, "alpha-1");
+                // Two rules: the canonical `(threshold, id)` order puts
+                // the 60-minute one first regardless of insertion.
+                let early = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+                state.reminders.break_rules.insert(
+                    early,
+                    taskboard_domain::BreakRule {
+                        id: early,
+                        board: board_a,
+                        label: "early".to_owned(),
+                        threshold: taskboard_domain::WorkThreshold::try_new(
+                            chrono::TimeDelta::minutes(60),
+                        )
+                        .expect("positive"),
+                        insistence: taskboard_domain::Insistence::Alarm,
+                        created_at: epoch(),
+                        by: None,
+                    },
+                );
+                let late = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+                state.reminders.break_rules.insert(
+                    late,
+                    taskboard_domain::BreakRule {
+                        id: late,
+                        board: board_a,
+                        label: "late".to_owned(),
+                        threshold: taskboard_domain::WorkThreshold::try_new(
+                            chrono::TimeDelta::minutes(90),
+                        )
+                        .expect("positive"),
+                        insistence: taskboard_domain::Insistence::Alarm,
+                        created_at: epoch(),
+                        by: None,
+                    },
+                );
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                let _ = vs.select_board(&state, board_a);
+                let mut models = PushModels::default();
+                let tables = push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+
+                // The habit positions are the pushed habits model's rows.
+                let titles: Vec<String> = (0..window.get_habits_model().row_count())
+                    .filter_map(|i| window.get_habits_model().row_data(i))
+                    .map(|row| row.card.title.to_string())
+                    .collect();
+                assert_eq!(titles, ["alpha-0", "alpha-1"]);
+                for (row, expected) in [(ha0, "alpha-0"), (hb0, "alpha-1")] {
+                    let Some((section, index)) = tables.today_habit_position(row) else {
+                        panic!("the habit position resolves");
+                    };
+                    assert_eq!(section, IdTables::TODAY_HABIT_SLOT, "the habits page slot");
+                    let rendered = window
+                        .get_habits_model()
+                        .row_data(index)
+                        .map(|r| r.card.title.to_string());
+                    assert_eq!(rendered.as_deref(), Some(expected));
+                }
+
+                // The roster positions are the canonical roster order.
+                assert_eq!(
+                    tables.today_roster_position(early),
+                    Some((IdTables::TODAY_ROSTER_SLOT, 0)),
+                );
+                assert_eq!(
+                    tables.today_roster_position(late),
+                    Some((IdTables::TODAY_ROSTER_SLOT, 1)),
                 );
             });
         }

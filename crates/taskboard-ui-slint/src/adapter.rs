@@ -85,10 +85,11 @@ pub(crate) enum MenuAnchor {
 /// time vs the next materialized refresh's. No new command, no new
 /// request (the origin §7 constraint).
 /// The handoff's payload (UX-R8 chunk-5 D-7): the pre-handoff focus
-/// (`None` when the create flow held none) — the hint push's input.
+/// triple (A5a D-2 widened the capture from the task alone; all-`None`
+/// when the create flow held no landing) — the hint push's input.
 #[derive(Debug, Clone)]
 struct CreateFocusHandoff {
-    before: Option<TaskId>,
+    before: crate::view_state::WalkFocus,
 }
 
 #[derive(Debug, Clone)]
@@ -1294,7 +1295,7 @@ impl Adapter {
                     && matches!(id, ActionId::NavNextItem | ActionId::NavPrevItem)
                     && self.view_state.view() == crate::view_state::ViewId::Board
                 {
-                    let before = self.view_state.focused_task();
+                    let before = self.view_state.walk_focus();
                     let state = self.state.load_full();
                     let direction = if id == ActionId::NavNextItem { 1 } else { -1 };
                     let outcomes = self.view_state.extend_selection_walk(&state, direction);
@@ -2332,8 +2333,10 @@ impl Adapter {
         // The row restore's scroll-into-view half (the FocusScrollHint
         // consumer pairs with the fact push).
         if kind == 1 {
-            let before = None;
-            self.push_focus_scroll_hint(window, before);
+            // The empty `before` triple arms unconditionally (the
+            // row-restore's deliberate always-seek; A5a D-2 widened
+            // the capture type only).
+            self.push_focus_scroll_hint(window, crate::view_state::WalkFocus::default());
         }
         true
     }
@@ -4779,7 +4782,7 @@ impl Adapter {
         // before/after discipline (round-3 D23 §3.3): `before` reads
         // the pre-effect focus so the jump always re-arms.
         let show_task = effect == UiEffect::ShowTask;
-        let focus_before = self.view_state.focused_task();
+        let focus_before = self.view_state.walk_focus();
         let leaving = matches!(
             effect,
             UiEffect::NextView
@@ -6114,33 +6117,56 @@ impl Adapter {
             // — no handoff (the one-shot law).
             return None;
         };
-        let before = self.view_state.focused_task();
+        let before = self.view_state.walk_focus();
         self.view_state.set_focused(Some(created));
         Some(CreateFocusHandoff { before })
     }
 
-    fn push_focus_scroll_hint(&mut self, window: &AppWindow, before: Option<TaskId>) {
-        let focused = self.view_state.focused_task();
-        if focused.is_none() || focused == before {
+    fn push_focus_scroll_hint(&mut self, window: &AppWindow, before: crate::view_state::WalkFocus) {
+        // The generalized no-change guard (A5a D-2, #1302): a landing
+        // whose whole subject tuple (task, habit, roster) is unchanged
+        // re-arms nothing — the ends-hold law, widened from the
+        // task-only capture. `before == landing` covers the old
+        // `focused.is_none() || focused == before` shape.
+        let landing = self.view_state.walk_focus();
+        if landing == before {
             return;
         }
-        let focused = focused.expect("checked above");
         // A slint int carries the index; the tables' lengths are far
         // below i32 reach.
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         let to_hint_index = |value: usize| value as i32;
         let hint = match self.view_state.view() {
-            crate::view_state::ViewId::Board => self
-                .tables
-                .board_position(focused)
+            crate::view_state::ViewId::Board => landing
+                .task
+                .and_then(|task| self.tables.board_position(task))
                 .map(|(column, row)| (to_hint_index(column), to_hint_index(row))),
-            crate::view_state::ViewId::Today => self
-                .tables
-                .today_position(focused)
-                .map(|(section, row)| (to_hint_index(section), to_hint_index(row))),
-            crate::view_state::ViewId::StackDetail => self
-                .tables
-                .stack_position(focused)
+            // The today walk's subject resolution (A5a D-2): task
+            // precedence (the walk_subject law), then the habit row,
+            // then the break-rule roster cursor — each against the
+            // same `(section, row)` convention, the habit/roster rows
+            // against the synthetic page slots
+            // (`IdTables::TODAY_HABIT_SLOT`/`TODAY_ROSTER_SLOT`) that
+            // no inner section ListView consumes.
+            crate::view_state::ViewId::Today => {
+                if let Some(task) = landing.task {
+                    self.tables
+                        .today_position(task)
+                        .map(|(section, row)| (to_hint_index(section), to_hint_index(row)))
+                } else if let Some(habit) = landing.habit {
+                    self.tables
+                        .today_habit_position(habit)
+                        .map(|(section, row)| (to_hint_index(section), to_hint_index(row)))
+                } else {
+                    landing
+                        .roster
+                        .and_then(|rule| self.tables.today_roster_position(rule))
+                        .map(|(section, row)| (to_hint_index(section), to_hint_index(row)))
+                }
+            }
+            crate::view_state::ViewId::StackDetail => landing
+                .task
+                .and_then(|task| self.tables.stack_position(task))
                 .map(|row| (-1, to_hint_index(row))),
             // The review page carries no focusable rows (D-8): the
             // focus-into-view seam never targets it, like the settings
@@ -7467,7 +7493,7 @@ impl Adapter {
             crate::view_state::Flow::Palette { selected } => *selected,
             _ => 0,
         };
-        let before = self.view_state.focused_task();
+        let before = self.view_state.walk_focus();
         let target = self.tables.palette.get(selected).copied();
         let state = self.state.load();
         let outcomes = match target {

@@ -39,6 +39,20 @@ pub enum TodayRow {
     BreakRule(taskboard_domain::BreakRuleId),
 }
 
+/// The focus walk's landing triple (A5a D-2, #1302): the subjects the
+/// scroll hint's guard compares. A landing that changes none of the
+/// three re-arms nothing — the ends-hold law, widened from the
+/// task-only `focused_task` capture to every walkable today row kind
+/// (task / habit / break-rule roster). The fields are mutually
+/// exclusive while the walk sits on a today row (the stepper's
+/// exclusivity law); a foreign-surface task focus clears the twins.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WalkFocus {
+    pub task: Option<TaskId>,
+    pub habit: Option<taskboard_domain::HabitId>,
+    pub roster: Option<taskboard_domain::BreakRuleId>,
+}
+
 /// The pass's time bundle (chunk 10 D4): the fresh `now` and the
 /// `day_window` pair the adapter derives from its held
 /// `(day_start_time, offset)` custody — time is data, recomputed on
@@ -1471,6 +1485,19 @@ impl ViewState {
         }
         self.focused_habit
             .map(crate::presentation::RowSubject::Habit)
+    }
+
+    /// The walk cursor's full landing triple (A5a D-2, #1302): the
+    /// scroll hint guard's before/after capture — task, habit, and
+    /// break-rule roster in one equality (the exclusivity law makes
+    /// at most one `Some` per landing).
+    #[must_use]
+    pub const fn walk_focus(&self) -> WalkFocus {
+        WalkFocus {
+            task: self.focused_task,
+            habit: self.focused_habit,
+            roster: self.break_rule_cursor,
+        }
     }
 
     /// The focused stack, always derived (D7): the focused task's
