@@ -4,6 +4,8 @@ import { Button } from "std-widgets.slint";
 export component FixtureView inherits Window {
     // wiring W-1: callback named in the plan's §6 inventory
     callback fixture_tap();
+    // (#1282) kebab spelling the snake-authored plan cell normalizes against
+    callback habit-edit-asked();
     // wiring W-4: installed surface callback (INVENTORY-MISS variant)
     callback fixture_badge();
     property <string> badge_caption: "fixture";
