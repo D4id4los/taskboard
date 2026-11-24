@@ -4569,11 +4569,14 @@ fn the_kiosk_gate_refuses_the_entries_open() {
     });
 }
 
-/// The kiosk Tracked section (#490, D-TS7): rows filter to the viewed
-/// board and the day total sums the filtered set — what you see is
-/// what's summed.
+/// The kiosk Tracked section (#490, D-TS7; RE-RECORDED 2026-11-24,
+/// round-6 A1 D-3, #1301 — this test previously pinned the viewed-
+/// board filter, a limitation not a contract): the rows aggregate
+/// over ALL live boards — the today view has no viewed board on
+/// kiosk — and the day total sums the aggregated set. What you see is
+/// what's summed (over everything).
 #[test]
-fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
+fn the_kiosk_tracked_section_aggregates_all_live_boards() {
     on_slint_thread(|| {
         use taskboard_domain::{Board, BoardClocks, BoardId, Color, Stack, StackClocks, StackId};
         let now = taskboard_domain::BoardClocks::epoch();
@@ -4708,20 +4711,23 @@ fn the_kiosk_tracked_section_filters_to_the_viewed_board() {
             a.view_state.set_view(crate::view_state::ViewId::Today);
             a.refresh_forced(handle.window());
         }
+        let mut tracked = adapter.borrow().test_tracked_today_rows();
+        tracked.sort();
+        let mut expected = vec![task_one, task_two];
+        expected.sort();
         assert_eq!(
-            adapter.borrow().test_tracked_today_rows(),
-            vec![task_two],
-            "kiosk filters the rows to the viewed board"
+            tracked, expected,
+            "kiosk aggregates the rows over all live boards"
         );
         // What you see is what's summed: the day total is the
-        // filtered set's phrase (derived, not pinned copy).
+        // aggregated set's phrase (derived, not pinned copy).
         let expected = crate::presentation::tracked_total_phrase(&crate::presentation::part_total(
-            chrono::TimeDelta::hours(1),
+            chrono::TimeDelta::hours(2),
         ));
         assert_eq!(
             handle.window().get_today_model().tracked_day_total,
             expected,
-            "the day total sums the filtered set"
+            "the day total sums the aggregated set"
         );
     });
 }

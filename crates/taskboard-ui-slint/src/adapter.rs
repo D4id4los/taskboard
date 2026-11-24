@@ -2706,7 +2706,14 @@ impl Adapter {
     pub(crate) fn day_ctx(&self) -> crate::view_state::DayCtx {
         let now = self.frozen_now.unwrap_or_else(chrono::Utc::now);
         let window = taskboard_domain::days::day_window(now, self.day_start.0, self.day_start.1);
-        crate::view_state::DayCtx { now, window }
+        crate::view_state::DayCtx {
+            now,
+            window,
+            calendar: taskboard_domain::DayCalendar {
+                day_start_time: self.day_start.0,
+                offset: self.day_start.1,
+            },
+        }
     }
     /// The placement commit funnel (#622, D-3/D-8): parse the two
     /// buffers through the due-editor's parsers verbatim, then route
@@ -3243,7 +3250,9 @@ impl Adapter {
         let break_rule_armed_index = self
             .break_rule_armed
             .and_then(|armed| {
-                crate::presentation::break_rule_rows(&state, self.view_state.board())
+                // Aggregated over all boards since round-6 A1 D-3
+                // (2026-11-24) — the same order the roster renders.
+                crate::presentation::break_rule_rows(&state, None)
                     .iter()
                     .position(|row| row.rule == armed)
             })
@@ -5223,7 +5232,10 @@ impl Adapter {
             }
             (_, UiEffect::HabitCreateToggle) if self.kiosk => Vec::new(),
             (_, UiEffect::HabitCreateToggle) => {
-                if self.view_state.board().is_some() {
+                // Round-6 A1 D-4 (2026-11-24, #1301): the today view is
+                // board-free — the gate is "any live board exists"; the
+                // commit mints into the first live board.
+                if !crate::presentation::live_boards(&state).is_empty() {
                     self.habit_create_open = !self.habit_create_open;
                     if !self.habit_create_open {
                         self.habit_create_draft = None;
@@ -13262,10 +13274,19 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // field refusal: a board that went away under the armed form
     // disarms it silently, whatever the fields hold (the stale-arm
     // law owns the seam's first word).
-    let Some(board) = a.view_state.board() else {
+    // Round-6 A1 D-4 (2026-11-24, #1301): the today view is
+    // board-free — the target is the FIRST live board (canonical
+    // order, the seed law's default); the picker is #1314's territory.
+    let state = a.state.load();
+    let Some(board) = crate::presentation::live_boards(&state)
+        .first()
+        .map(|board| board.id)
+    else {
+        drop(state);
         a.disarm_habit_create(&window);
         return false;
     };
+    drop(state);
     // A whitespace-empty title dispatches nothing (D-P14): the
     // raw text is never rewritten, an empty one never reaches the
     // engine.
