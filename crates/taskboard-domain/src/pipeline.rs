@@ -1623,11 +1623,6 @@ impl<'a> SectionFolds<'a> {
     }
 }
 
-/// Both ingestion entries' shared tail: the merged tables and the
-/// section folds' survivors assemble into the next `AppState`, the
-/// sync projection re-derives over the still-queued outbox (advisory —
-/// the engine re-derives after its own interpret), the board row's
-/// phase settles, and the application is logged.
 /// The carried deleted-entry section's live-row filter (#1291): a
 /// row survives the carry only while its entry is still absent from
 /// the tracking map in scope — the same check
@@ -1649,6 +1644,11 @@ fn carry_deleted_entries(
         .collect()
 }
 
+/// Both ingestion entries' shared tail: the merged tables and the
+/// section folds' survivors assemble into the next `AppState`, the
+/// sync projection re-derives over the still-queued outbox (advisory —
+/// the engine re-derives after its own interpret), the board row's
+/// phase settles, and the application is logged.
 #[allow(clippy::too_many_arguments)] // the assembly's inputs, one per merged table/folded section
 fn assemble_state(
     current: &AppState,
