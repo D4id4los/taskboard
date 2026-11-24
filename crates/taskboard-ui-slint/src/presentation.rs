@@ -9185,6 +9185,58 @@ mod habit_section_tests {
         state.habits.habits.clear();
     }
 
+    /// A5 (round-6 A1 D-2; armor): the reorder mint resolves against
+    /// the habit's OWN board's row source, never the concatenated
+    /// aggregate — the floor-midpoint arithmetic stays board-scoped.
+    #[test]
+    fn habit_move_slots_resolves_within_the_habits_own_board() {
+        let (mut state, board) = dense_habit_section(3); // orders 0,1,2
+        // A second board whose habit's order would collide with the
+        // subject board's rows if the mint aggregated.
+        let other = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        let foreign = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+        let foreign_habit = taskboard_domain::Habit {
+            id: foreign,
+            board: other,
+            title: "foreign".into(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(1).unwrap(),
+            ),
+            order: 1,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: taskboard_domain::HabitClocks::all(DateTime::<Utc>::UNIX_EPOCH),
+            continued_from: None,
+            deleted: false,
+            by: None,
+            paused_until: None,
+        };
+        state.habits.habits.insert(foreign, foreign_habit);
+        let ids: Vec<_> = {
+            let mut rows: Vec<_> = state
+                .habits
+                .habits
+                .values()
+                .filter(|h| h.board == board)
+                .map(|h| (h.order, h.id))
+                .collect();
+            rows.sort();
+            rows.into_iter().map(|(_, id)| id).collect()
+        };
+        // The middle row of the subject board still slots against the
+        // board's own 3-row source (up 0, down 3) — the foreign
+        // row is invisible to the arithmetic.
+        assert_eq!(
+            habit_move_slots(&state, ids[1]),
+            (Some((ids[1], 0)), Some((ids[1], 3)))
+        );
+        let _ = foreign;
+        state.habits.habits.clear();
+    }
+
     /// A dense section fixture: `count` live habits, orders 0..count,
     /// on the fixture board.
     fn dense_habit_section(

@@ -5513,6 +5513,282 @@ mod tests {
             )
         }
 
+        // -- the today aggregation pins (round-6 A1 D-2/D-3; red list) -----------
+
+        /// A live habit on `board` at `order` (the aggregation pins'
+        /// row factory; the H2 shape the render reads).
+        fn habit_on(
+            state: &mut AppState,
+            board: taskboard_domain::BoardId,
+            order: i64,
+            title: &str,
+        ) -> taskboard_domain::HabitId {
+            let id = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+            state.habits.habits.insert(
+                id,
+                taskboard_domain::Habit {
+                    id,
+                    board,
+                    title: title.to_owned(),
+                    description: String::new(),
+                    target: taskboard_domain::HabitTarget::PerDay(
+                        taskboard_domain::NonZeroCount::new(1).expect("nonzero"),
+                    ),
+                    order,
+                    anchor_time: None,
+                    anchor_day: None,
+                    scheduled_days: None,
+                    reminder: None,
+                    clocks: taskboard_domain::HabitClocks::all(epoch()),
+                    continued_from: None,
+                    deleted: false,
+                    by: None,
+                    paused_until: None,
+                },
+            );
+            id
+        }
+
+        /// A Work time entry inside the today window (the tracked-today
+        /// pins' input; `day.window` is (stamp(N), `stamp(N+86_400)`)).
+        fn work_entry(state: &mut AppState, task: TaskId, title: &str, start: i64, minutes: i64) {
+            let start = stamp(start);
+            state.tracking.entries.insert(
+                taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+                taskboard_domain::TimeEntry {
+                    id: taskboard_domain::TimeEntryId::from_uuid(uuid::Uuid::now_v7()),
+                    task,
+                    task_title: title.to_owned(),
+                    start,
+                    end: Some(start + chrono::TimeDelta::minutes(minutes)),
+                    created_at: epoch(),
+                    updated_at: epoch(),
+                    kind: taskboard_domain::tracking::TimeEntryKind::Work,
+                    by: None,
+                },
+            );
+        }
+
+        /// A1 + A4 (D-2): the habits section's rows — render and walk —
+        /// aggregate over ALL live boards in canonical board order,
+        /// stored `(order, id)` inner. Red pre-fix: the projection was
+        /// scoped to the selected board.
+        #[test]
+        fn the_today_habit_rows_aggregate_all_live_boards() {
+            on_slint_thread(|| {
+                let (mut state, board_a, board_b, _ids) = two_board_state();
+                let ha0 = habit_on(&mut state, board_a, 10, "alpha-0");
+                let hb0 = habit_on(&mut state, board_b, 10, "beta-0");
+                let hb1 = habit_on(&mut state, board_b, 20, "beta-1");
+                let ha1 = habit_on(&mut state, board_a, 20, "alpha-1");
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                let _ = vs.select_board(&state, board_a);
+                let mut models = PushModels::default();
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+
+                // The render: both boards' habits, board-canonical
+                // outer order (alpha before beta), stored (order, id)
+                // inner.
+                let rendered: Vec<String> = (0..window.get_habits_model().row_count())
+                    .filter_map(|i| window.get_habits_model().row_data(i))
+                    .map(|row| row.card.title.to_string())
+                    .collect();
+                assert_eq!(
+                    rendered,
+                    ["alpha-0", "alpha-1", "beta-0", "beta-1"],
+                    "the habits section aggregates all live boards"
+                );
+
+                // The walk agrees with the render by construction.
+                let walked: Vec<_> = vs
+                    .today_rows(&state, false, &day(31_563_600))
+                    .into_iter()
+                    .filter_map(|row| match row {
+                        crate::view_state::TodayRow::Habit(id) => Some(id),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    walked,
+                    [ha0, ha1, hb0, hb1],
+                    "the walk's habit rows aggregate in the render order"
+                );
+            });
+        }
+
+        /// A2 (D-2): an archived or deleted board's habits never render
+        /// on the Today view. Armor: pre-fix this holds vacuously for a
+        /// selected live board (the scope excluded the dead boards'
+        /// rows anyway); the pin keeps the exclusion under the
+        /// aggregated contract.
+        #[test]
+        fn dead_and_archived_boards_contribute_no_habit_rows() {
+            on_slint_thread(|| {
+                let (mut state, board_a, board_b, _ids) = two_board_state();
+                let _ = habit_on(&mut state, board_a, 10, "archived-0");
+                let live = habit_on(&mut state, board_b, 10, "live-0");
+                state.boards.get_mut(&board_a).expect("board").archived = true;
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                let _ = vs.select_board(&state, board_b);
+                let mut models = PushModels::default();
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                let rendered: Vec<String> = (0..window.get_habits_model().row_count())
+                    .filter_map(|i| window.get_habits_model().row_data(i))
+                    .map(|row| row.card.title.to_string())
+                    .collect();
+                assert_eq!(rendered, ["live-0"], "the archived board's habit is absent");
+                let _ = live;
+            });
+        }
+
+        /// A6 (D-4): zero live boards render no habit rows and keep the
+        /// create affordance unmountable (the typed mount flag).
+        #[test]
+        fn zero_live_boards_render_no_habit_rows_and_no_create_mount() {
+            on_slint_thread(|| {
+                let (mut state, board_a, _board_b, _ids) = two_board_state();
+                let _ = habit_on(&mut state, board_a, 10, "doomed");
+                for id in state.boards.keys().copied().collect::<Vec<_>>() {
+                    state.boards.get_mut(&id).expect("board").deleted = true;
+                }
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                assert_eq!(
+                    window.get_habits_model().row_count(),
+                    0,
+                    "no live boards, no habit rows"
+                );
+                assert!(
+                    !window.get_habits_create_mountable(),
+                    "the create affordance is unmountable without a live board"
+                );
+            });
+        }
+
+        /// A7 (D-3): on kiosk the tracked-today rows and the day total
+        /// fold the FULL aggregated set — what you see is what's summed
+        /// over all live boards. Red pre-fix: the retired board filter
+        /// emptied the kiosk set (no viewed board on kiosk).
+        #[test]
+        fn kiosk_tracked_today_sums_over_all_live_boards() {
+            on_slint_thread(|| {
+                let (mut state, board_a, board_b, ids) = two_board_state();
+                // ids: [overdue(beta), scheduled(alpha), due(alpha),
+                // anchor(alpha), done(beta)]. Track one task per board,
+                // 10 work minutes each, inside the day window.
+                let scheduled = ids[1];
+                let overdue = ids[0];
+                work_entry(&mut state, scheduled, "scheduled", 31_564_000, 10);
+                work_entry(&mut state, overdue, "overdue", 31_564_500, 10);
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                let tables = push_pass(&window, &state, &vs, day(31_563_600), true, &mut models);
+
+                let mut tracked = tables_tracked_today(&tables);
+                tracked.sort();
+                let mut expected = vec![scheduled, overdue];
+                expected.sort();
+                assert_eq!(
+                    tracked, expected,
+                    "kiosk tracked-today aggregates both boards' tracked tasks"
+                );
+                assert_eq!(
+                    window.get_today_model().tracked_day_total,
+                    "20m",
+                    "the day total folds the aggregated set"
+                );
+                let _ = board_a;
+                let _ = board_b;
+            });
+        }
+
+        /// The desktop leg of A7's invariant (armor): the tracked set
+        /// was already the full aggregate on desktop; it stays so.
+        #[test]
+        fn desktop_tracked_today_still_sums_all_live_boards() {
+            on_slint_thread(|| {
+                let (mut state, _a, _b, ids) = two_board_state();
+                let scheduled = ids[1];
+                let overdue = ids[0];
+                work_entry(&mut state, scheduled, "scheduled", 31_564_000, 10);
+                work_entry(&mut state, overdue, "overdue", 31_564_500, 10);
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let vs = ViewState::default();
+                let mut models = PushModels::default();
+                let tables = push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                let mut tracked = tables_tracked_today(&tables);
+                tracked.sort();
+                let mut expected = vec![scheduled, overdue];
+                expected.sort();
+                assert_eq!(tracked, expected);
+            });
+        }
+
+        /// D-3: the Today surface's break-rule roster aggregates over
+        /// all boards. Red pre-fix: the roster was scoped to the
+        /// selected board.
+        #[test]
+        fn the_today_break_rule_roster_aggregates_all_live_boards() {
+            on_slint_thread(|| {
+                let (mut state, board_a, board_b, _ids) = two_board_state();
+                for (board, label) in [(board_a, "rule-alpha"), (board_b, "rule-beta")] {
+                    let id = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+                    state.reminders.break_rules.insert(
+                        id,
+                        taskboard_domain::BreakRule {
+                            id,
+                            board,
+                            label: label.to_owned(),
+                            threshold: taskboard_domain::WorkThreshold::parse_text_form("30m")
+                                .expect("threshold"),
+                            insistence: taskboard_domain::Insistence::Normal,
+                            created_at: epoch(),
+                            by: None,
+                        },
+                    );
+                }
+
+                let window = crate::AppWindow::new().expect("window on the testing backend");
+                let mut vs = ViewState::default();
+                let _ = vs.select_board(&state, board_a);
+                let mut models = PushModels::default();
+                push_pass(&window, &state, &vs, day(31_563_600), false, &mut models);
+                let labels: Vec<String> = (0..window.get_break_rules_model().row_count())
+                    .filter_map(|i| window.get_break_rules_model().row_data(i))
+                    .map(|row| row.label.to_string())
+                    .collect();
+                assert_eq!(
+                    labels,
+                    ["rule-alpha", "rule-beta"],
+                    "the today roster aggregates all boards' rules"
+                );
+                // The walk agrees with the render (the D2 law).
+                let walked: Vec<_> = vs
+                    .today_rows(&state, false, &day(31_563_600))
+                    .into_iter()
+                    .filter_map(|row| match row {
+                        crate::view_state::TodayRow::BreakRule(rule) => Some(rule),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(walked.len(), 2, "the walk carries both rosters' rows");
+            });
+        }
+
+        fn tables_tracked_today(tables: &IdTables) -> Vec<TaskId> {
+            tables.tracked_today.clone()
+        }
+
         // -- the plan-next-day pass (#622, D-8) ----------------------------------
 
         /// One board, three tasks: placed (scheduled tomorrow 09:xx with

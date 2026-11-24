@@ -9480,6 +9480,100 @@ mod edit_recur_tests {
         vs
     }
 
+    /// A1 (round-6 A1 D-2; red list): the walk's habit rows aggregate
+    /// over ALL live boards — canonical board order outer, stored
+    /// `(order, id)` inner — regardless of the selected board. Red
+    /// pre-fix: the walk scoped the habits to `self.board`.
+    #[test]
+    fn today_rows_walk_aggregates_all_live_boards_habits() {
+        let (mut state, board_a, _, _) = today_fixture();
+        let board_b = BoardId::from_uuid(uuid::Uuid::now_v7());
+        state.boards.insert(
+            board_b,
+            taskboard_domain::Board {
+                id: board_b,
+                remote: None,
+                title: "beta".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: DateTime::<Utc>::UNIX_EPOCH,
+                    color: DateTime::<Utc>::UNIX_EPOCH,
+                    archived: DateTime::<Utc>::UNIX_EPOCH,
+                    deleted: DateTime::<Utc>::UNIX_EPOCH,
+                },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
+                remote_seen: None,
+            },
+        );
+        let hb0 = HabitId::from_uuid(uuid::Uuid::now_v7());
+        state.habits.habits.insert(hb0, habit(hb0, board_b, 10));
+        let ha0 = HabitId::from_uuid(uuid::Uuid::now_v7());
+        state.habits.habits.insert(ha0, habit(ha0, board_a, 10));
+        let vs = today_walk(&state, board_a);
+        let walked: Vec<HabitId> = vs
+            .today_rows(&state, false, &day())
+            .into_iter()
+            .filter_map(|row| match row {
+                TodayRow::Habit(id) => Some(id),
+                TodayRow::Task(_) | TodayRow::BreakRule(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            walked,
+            [ha0, hb0],
+            "the walk aggregates both boards' habits in canonical \
+             board order"
+        );
+    }
+
+    /// A2 (round-6 A1 D-2; armor): an archived board contributes no
+    /// habit rows under the aggregated contract.
+    #[test]
+    fn archived_boards_contribute_no_habit_rows() {
+        let (mut state, board_a, _, _) = today_fixture();
+        let archived = BoardId::from_uuid(uuid::Uuid::now_v7());
+        state.boards.insert(
+            archived,
+            taskboard_domain::Board {
+                id: archived,
+                remote: None,
+                title: "archived".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: DateTime::<Utc>::UNIX_EPOCH,
+                    color: DateTime::<Utc>::UNIX_EPOCH,
+                    archived: DateTime::<Utc>::UNIX_EPOCH,
+                    deleted: DateTime::<Utc>::UNIX_EPOCH,
+                },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
+                remote_seen: None,
+            },
+        );
+        let dead_habit = HabitId::from_uuid(uuid::Uuid::now_v7());
+        state
+            .habits
+            .habits
+            .insert(dead_habit, habit(dead_habit, archived, 10));
+        state.boards.get_mut(&archived).expect("board").archived = true;
+        let vs = today_walk(&state, board_a);
+        let walked: Vec<HabitId> = vs
+            .today_rows(&state, false, &day())
+            .into_iter()
+            .filter_map(|row| match row {
+                TodayRow::Habit(id) => Some(id),
+                TodayRow::Task(_) | TodayRow::BreakRule(_) => None,
+            })
+            .collect();
+        assert!(
+            !walked.contains(&dead_habit),
+            "the archived board's habits never render"
+        );
+    }
+
     #[test]
     fn us3_s1_today_rows_orders_tasks_then_habits_in_stored_order() {
         let (state, board, [a, b], [h0, h1, h2]) = today_fixture();
