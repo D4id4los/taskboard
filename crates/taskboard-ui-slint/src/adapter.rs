@@ -7615,9 +7615,6 @@ impl Adapter {
         self.route(window, action);
     }
 
-    /// The habit confirm staging's disarm (#1115): a menu close
-    /// clears all three armed one-shots (convert, remove, restore) —
-    /// the one-subject law's close leg.
     /// The refused-commit flag's push (#1221): the field and the
     /// window mirror move together — the edit seams' `refresh_forced`
     /// pass does not run the shell `sync`, so the mutation sites push
@@ -7627,6 +7624,9 @@ impl Adapter {
         window.set_recur_draft_invalid(invalid);
     }
 
+    /// The habit confirm staging's disarm (#1115): a menu close
+    /// clears all three armed one-shots (convert, remove, restore) —
+    /// the one-subject law's close leg.
     fn disarm_habit_confirm_staging(&mut self) {
         self.habit_convert_armed = None;
         self.habit_remove_armed = None;
