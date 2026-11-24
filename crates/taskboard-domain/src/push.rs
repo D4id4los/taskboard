@@ -916,79 +916,44 @@ mod tests {
         }
     }
 
+    /// The module's fixture convention over the shared mints (#1269):
+    /// locally-written clocks at `ts(100)`.
     fn task_row(raw: u128, stack: StackId) -> Task {
-        Task {
-            id: task_id(raw),
-            remote: None,
-            title: format!("task {raw}"),
-            description: String::new(),
-            duedate: None,
-            done: None,
-            scheduled: None,
-            stack,
-            order: 0,
-            label_memberships: BTreeMap::new(),
-            effort: None,
-            importance: None,
-            urgency: None,
-            recur: None,
-            kind: crate::entities::TaskKind::Standard,
-
-            archived: false,
-            deleted: false,
-            clocks: clocks(100),
-            authors: crate::entities::TaskAuthors::default(),
-            remote_seen: None,
-            remote_baseline: None,
-        }
+        let mut task = crate::test_support::mint_task(raw, stack, &format!("task {raw}"));
+        task.clocks = clocks(100);
+        task
     }
 
+    /// See [`task_row`] for the fixture convention.
     fn stack_row(raw: u128) -> Stack {
-        Stack {
-            id: stack_id(raw),
-            remote: None,
-            board: crate::ids::BoardId::from(uuid(900)),
-            title: format!("stack {raw}"),
-            order: 0,
-            archived: false,
-            deleted: false,
-            clocks: stack_clocks(100),
-            authors: crate::entities::StackAuthors::default(),
-            remote_seen: None,
-        }
+        let mut stack = crate::test_support::mint_stack(
+            raw,
+            crate::ids::BoardId::from(uuid(900)),
+            &format!("stack {raw}"),
+        );
+        stack.clocks = stack_clocks(100);
+        stack
     }
 
+    /// See [`task_row`] for the fixture convention (the green label).
     fn label_row(raw: u128, board: crate::ids::BoardId) -> Label {
-        Label {
-            id: label_id(raw),
-            remote: None,
-            board,
-            title: format!("label {raw}"),
-            color: crate::entities::Color::new("00ff00"),
-            deleted: false,
-            clocks: label_clocks(100),
-            authors: crate::entities::LabelAuthors::default(),
-            remote_seen: None,
-        }
+        let mut label = crate::test_support::mint_label(raw, board, &format!("label {raw}"));
+        label.color = crate::entities::Color::new("00ff00");
+        label.clocks = label_clocks(100);
+        label
     }
 
+    /// See [`task_row`] for the fixture convention (the green board).
     fn board_row(raw: u128) -> Board {
-        Board {
-            id: crate::ids::BoardId::from(uuid(raw)),
-            remote: None,
-            title: format!("board {raw}"),
-            color: crate::entities::Color::new("00ff00"),
-            archived: false,
-            deleted: false,
-            clocks: crate::entities::BoardClocks {
-                title: ts(100),
-                color: ts(100),
-                archived: ts(100),
-                deleted: ts(100),
-            },
-            authors: crate::entities::BoardAuthors::default(),
-            remote_seen: None,
-        }
+        let mut board = crate::test_support::mint_board(raw, &format!("board {raw}"));
+        board.color = crate::entities::Color::new("00ff00");
+        board.clocks = crate::entities::BoardClocks {
+            title: ts(100),
+            color: ts(100),
+            archived: ts(100),
+            deleted: ts(100),
+        };
+        board
     }
 
     fn op(raw: u128, kind: LocalOp) -> PendingOp {

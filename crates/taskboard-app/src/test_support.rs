@@ -195,29 +195,17 @@ impl PredicateEngineFixture {
 // same base the snapshot strategies use) and are open structs — tests
 // edit fields directly instead of growing a parameter per flag.
 
-/// A live, unbound local board from `raw`.
+/// A live board from `raw`: the domain mint with the seed family's
+/// hex-suffixed title convention (#1269).
 #[must_use]
 #[allow(dead_code)] // consumed by the predicate tests landing in this chunk
 pub(crate) fn seed_board(raw: u128) -> taskboard_domain::Board {
-    taskboard_domain::Board {
-        id: taskboard_domain::BoardId::from(uuid::Uuid::from_u128(raw)),
-        remote: None,
-        title: format!("board {raw:x}"),
-        color: taskboard_domain::Color::new(taskboard_domain::entities::DEFAULT_BOARD_COLOR),
-        archived: false,
-        deleted: false,
-        clocks: taskboard_domain::BoardClocks {
-            title: taskboard_domain::BoardClocks::epoch(),
-            color: taskboard_domain::BoardClocks::epoch(),
-            archived: taskboard_domain::BoardClocks::epoch(),
-            deleted: taskboard_domain::BoardClocks::epoch(),
-        },
-        authors: taskboard_domain::entities::BoardAuthors::default(),
-        remote_seen: None,
-    }
+    taskboard_domain::test_support::mint_board(raw, &format!("board {raw:x}"))
 }
 
-/// A live stack of `board` from `raw`, at `order`.
+/// A live stack of `board` from `raw`, at `order`: the domain mint
+/// with the seed family's hex-suffixed title and the caller's order
+/// (#1269).
 #[must_use]
 #[allow(dead_code)] // consumed by the predicate tests landing in this chunk
 pub(crate) fn seed_stack(
@@ -225,25 +213,15 @@ pub(crate) fn seed_stack(
     board: taskboard_domain::BoardId,
     order: i64,
 ) -> taskboard_domain::Stack {
-    taskboard_domain::Stack {
-        id: taskboard_domain::StackId::from_uuid(uuid::Uuid::from_u128(raw)),
-        remote: None,
-        board,
-        title: format!("stack {raw:x}"),
-        order,
-        archived: false,
-        deleted: false,
-        clocks: taskboard_domain::StackClocks {
-            title: taskboard_domain::BoardClocks::epoch(),
-            order: taskboard_domain::BoardClocks::epoch(),
-            deleted: taskboard_domain::BoardClocks::epoch(),
-        },
-        authors: taskboard_domain::entities::StackAuthors::default(),
-        remote_seen: None,
-    }
+    let mut stack =
+        taskboard_domain::test_support::mint_stack(raw, board, &format!("stack {raw:x}"));
+    stack.order = order;
+    stack
 }
 
-/// A live, open task of `stack` from `raw`, at `order`.
+/// A live, open task of `stack` from `raw`, at `order`: the domain
+/// mint with the seed family's hex-suffixed title and the caller's
+/// order (#1269).
 #[must_use]
 #[allow(dead_code)] // consumed by the predicate tests landing in this chunk
 pub(crate) fn seed_task(
@@ -251,72 +229,17 @@ pub(crate) fn seed_task(
     stack: taskboard_domain::StackId,
     order: i64,
 ) -> taskboard_domain::entities::Task {
-    taskboard_domain::entities::Task {
-        id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::from_u128(raw)),
-        remote: None,
-        title: format!("task {raw:x}"),
-        description: String::new(),
-        duedate: None,
-        scheduled: None,
-        done: None,
-        stack,
-        order,
-        label_memberships: std::collections::BTreeMap::new(),
-        effort: None,
-        importance: None,
-        urgency: None,
-        recur: None,
-        kind: taskboard_domain::entities::TaskKind::Standard,
-        archived: false,
-        deleted: false,
-        clocks: all_epoch_task_clocks(),
-        authors: taskboard_domain::entities::TaskAuthors::default(),
-        remote_seen: None,
-        remote_baseline: None,
-    }
+    let mut task = taskboard_domain::test_support::mint_task(raw, stack, &format!("task {raw:x}"));
+    task.order = order;
+    task
 }
 
-/// A live label of `board` from `raw`.
+/// A live label of `board` from `raw`: the domain mint with the seed
+/// family's hex-suffixed title convention (#1269).
 #[must_use]
 #[allow(dead_code)] // consumed by the predicate tests landing in this chunk
 pub(crate) fn seed_label(raw: u128, board: taskboard_domain::BoardId) -> taskboard_domain::Label {
-    taskboard_domain::Label {
-        id: taskboard_domain::LabelId::from_uuid(uuid::Uuid::from_u128(raw)),
-        remote: None,
-        board,
-        title: format!("label {raw:x}"),
-        color: taskboard_domain::Color::new(taskboard_domain::entities::DEFAULT_BOARD_COLOR),
-        deleted: false,
-        clocks: taskboard_domain::LabelClocks {
-            title: taskboard_domain::BoardClocks::epoch(),
-            color: taskboard_domain::BoardClocks::epoch(),
-            deleted: taskboard_domain::BoardClocks::epoch(),
-        },
-        authors: taskboard_domain::entities::LabelAuthors::default(),
-        remote_seen: None,
-    }
-}
-
-/// All-epoch task clocks (never locally written; the strategy base).
-#[must_use]
-#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
-pub(crate) fn all_epoch_task_clocks() -> taskboard_domain::entities::TaskClocks {
-    let e = taskboard_domain::BoardClocks::epoch();
-    taskboard_domain::entities::TaskClocks {
-        title: e,
-        description: e,
-        duedate: e,
-        scheduled: e,
-        done: e,
-        position: e,
-        effort: e,
-        importance: e,
-        urgency: e,
-        recur: e,
-        kind: e,
-        archived: e,
-        deleted: e,
-    }
+    taskboard_domain::test_support::mint_label(raw, board, &format!("label {raw:x}"))
 }
 
 pub(crate) async fn standalone_boot_fixture(tag: &str) -> StandaloneFixture {

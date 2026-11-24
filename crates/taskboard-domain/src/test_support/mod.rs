@@ -30,8 +30,9 @@ pub mod state;
 
 pub use entities::{
     effort_strategy, importance_strategy, label_clocks_strategy, membership_map_strategy,
-    membership_state_strategy, remote_task_baseline_strategy, stack_clocks_strategy,
-    task_clocks_strategy, task_strategy, urgency_strategy,
+    membership_state_strategy, mint_board, mint_label, mint_stack, mint_task,
+    remote_task_baseline_strategy, stack_clocks_strategy, task_clocks_strategy, task_strategy,
+    urgency_strategy,
 };
 pub use messages::{
     all_health_flag_names, label_changes_strategy, state_command_strategy, task_changes_strategy,
