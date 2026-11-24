@@ -1175,10 +1175,9 @@ fn us5_s3_escape_cancels_the_armed_menu() {
         harness.driver.advance_time(0);
         harness.assert_commands(&[]);
         // Escape through the shared nav-back grammar (the Menu
-        // context's dismiss): the menu retires and the escape itself
-        // dispatches nothing (the J1 §4 US-5/S3 escape cell; the
-        // staged arm's own survival past the close is filed
-        // separately — the escape dispatches no remove verb).
+        // context's dismiss): the menu retires, the staging disarms
+        // (#1115), and the escape itself dispatches nothing (the J1
+        // §4 US-5/S3 escape cell).
         harness.press(ActionId::MenuDismiss);
         harness.driver.advance_time(0);
         assert!(
@@ -1189,6 +1188,11 @@ fn us5_s3_escape_cancels_the_armed_menu() {
                 .get_menu_open(),
             "the Escape close retires the menu"
         );
+        // #1115: the close disarms the staging — a confirm dispatch
+        // after the Escape is the disarmed `NoTarget` path (typed
+        // outcome: no command reaches the boundary).
+        harness.handle.dispatch_action(ActionId::HabitRemoveConfirm);
+        harness.driver.advance_time(0);
         harness.assert_commands(&[]);
     });
 }
