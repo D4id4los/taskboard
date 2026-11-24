@@ -1255,6 +1255,103 @@ pub fn fold_time_entries(
     changes
 }
 
+/// The typed deltas one [`fold_habit_time_entries`] pass produced.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HabitTimeFoldChanges {
+    /// Entries adopted or updated from the document.
+    pub upserts: Vec<crate::habit_time::HabitTimeEntry>,
+    /// Entries removed by a strictly newer tombstone.
+    pub deletes: Vec<crate::ids::HabitTimeEntryId>,
+}
+
+/// The sidecar document fold for the board-level `habit-time-entries`
+/// section (#1305 D-6, the [`fold_time_entries`] shape — no card hop at
+/// all, so no resolution map is needed). Keyed by the entry UUID;
+/// per-key LWW against the local `updated_at` (`authored_doc_wins` —
+/// the `(clock, by)` tuple duel):
+///
+/// - A live `Entry` row whose tuple strictly outranks the local
+///   `(updated_at, by)` overwrites `habit`/`habit_title`/`start`/`end`
+///   with `updated_at = max(local, clock)`; an unknown UUID adopts the
+///   row verbatim with `updated_at = clock` (orphan import — the
+///   `habit_log` law: the row's habit may arrive in a later cycle); an
+///   older row leaves local standing.
+/// - A tombstone removes the local row iff strictly newer.
+///   Tombstones for locally-unknown ids leave no trace.
+/// - [`crate::appdata::HabitTimeRecord::Verbatim`] rows never fold.
+/// - Guard-immune: entries are independent rows with no collapse
+///   window (the [`fold_time_entries`] D-13 ruling).
+pub fn fold_habit_time_entries(
+    habits: &mut crate::habit::HabitState,
+    rows: &std::collections::BTreeMap<String, crate::appdata::HabitTimeRecord>,
+) -> HabitTimeFoldChanges {
+    let mut changes = HabitTimeFoldChanges::default();
+    for (key, row) in rows {
+        match row {
+            crate::appdata::HabitTimeRecord::Entry {
+                habit,
+                title,
+                start,
+                end,
+                created,
+                clock,
+                by,
+            } => {
+                let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+                    continue; // an unparseable key is not an entry identity
+                };
+                let Ok(habit_id) = uuid::Uuid::parse_str(habit) else {
+                    continue; // an unparseable habit ref is not a habit identity
+                };
+                let habit_id = crate::ids::HabitId::from(habit_id);
+                match habits
+                    .time_log
+                    .get_mut(&crate::ids::HabitTimeEntryId::from(uuid))
+                {
+                    Some(local) if authored_doc_wins(*clock, *by, local.updated_at, local.by) => {
+                        local.habit = habit_id;
+                        local.habit_title.clone_from(title);
+                        local.start = *start;
+                        local.end = *end;
+                        local.by = *by;
+                        local.updated_at = std::cmp::max(local.updated_at, *clock);
+                        changes.upserts.push(local.clone());
+                    }
+                    Some(_) => {} // local stands
+                    None => {
+                        let adopted = crate::habit_time::HabitTimeEntry {
+                            id: crate::ids::HabitTimeEntryId::from(uuid),
+                            habit: habit_id,
+                            habit_title: title.clone(),
+                            start: *start,
+                            end: *end,
+                            created_at: *created,
+                            updated_at: *clock,
+                            by: *by,
+                        };
+                        habits.time_log.insert(adopted.id, adopted.clone());
+                        changes.upserts.push(adopted);
+                    }
+                }
+            }
+            crate::appdata::HabitTimeRecord::Tombstone { clock, by } => {
+                let Ok(uuid) = uuid::Uuid::parse_str(key) else {
+                    continue;
+                };
+                let id = crate::ids::HabitTimeEntryId::from(uuid);
+                if habits.time_log.get(&id).is_some_and(|local| {
+                    authored_tombstone_wins(*clock, *by, local.updated_at, local.by)
+                }) {
+                    habits.time_log.remove(&id);
+                    changes.deletes.push(id);
+                }
+            }
+            crate::appdata::HabitTimeRecord::Verbatim(_) => {}
+        }
+    }
+    changes
+}
+
 /// The typed deltas one [`fold_habits`] pass produced (the
 /// [`TrackingFoldChanges`] pattern).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -6868,6 +6965,7 @@ mod habit_fold_tests {
         WindowStart,
     };
     use crate::ids::{BoardId, HabitId};
+    use crate::merge_testutil::BASE;
     use chrono::TimeZone;
 
     fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
@@ -7310,6 +7408,98 @@ mod habit_fold_tests {
         let one = fold(vec![&row_a, &row_b], vec![&log_a, &log_b]);
         let two = fold(vec![&row_b, &row_a], vec![&log_b, &log_a]);
         assert_eq!(one, two, "the fold totals are order-independent (LWW)");
+    } // ---- The habit-time-entries fold (#1305 D-6) --------------------------
+
+    fn habit_time_row(habit: &str, clock: i64) -> crate::appdata::HabitTimeRecord {
+        crate::appdata::HabitTimeRecord::Entry {
+            habit: habit.to_owned(),
+            title: "meditate".to_owned(),
+            start: ts(BASE),
+            end: Some(ts(BASE + 600)),
+            created: ts(BASE - 10),
+            clock: ts(clock),
+            by: None,
+        }
+    }
+
+    fn local_time_entry(raw: u128, clock: i64) -> crate::habit_time::HabitTimeEntry {
+        crate::habit_time::HabitTimeEntry {
+            id: crate::ids::HabitTimeEntryId::from(uuid::Uuid::from_u128(raw)),
+            habit: HabitId::from(uuid::Uuid::from_u128(10)),
+            habit_title: "local title".to_owned(),
+            start: ts(BASE),
+            end: None,
+            created_at: ts(BASE - 10),
+            updated_at: ts(clock),
+            by: None,
+        }
+    }
+
+    #[test]
+    fn fold_habit_time_entries_adopts_updates_and_tombstones_by_the_clock() {
+        let known = "00000000-0000-0000-0000-00000000000a";
+        let mut state = crate::habit::HabitState::default();
+        let local = local_time_entry(0xa, BASE + 100);
+        state.time_log.insert(local.id, local.clone());
+        let mut rows = BTreeMap::new();
+        // A newer peer row updates the local row (title + end stamp).
+        rows.insert(known.to_owned(), habit_time_row(known, BASE + 500));
+        // An unknown UUID adopts verbatim (orphan import).
+        rows.insert(
+            "00000000-0000-0000-0000-00000000000b".to_owned(),
+            habit_time_row("00000000-0000-0000-0000-000000000009", BASE + 400),
+        );
+        // A Verbatim row never folds.
+        rows.insert(
+            "00000000-0000-0000-0000-00000000000c".to_owned(),
+            crate::appdata::HabitTimeRecord::Verbatim(serde_json::json!(1)),
+        );
+        let changes = fold_habit_time_entries(&mut state, &rows);
+        assert_eq!(changes.upserts.len(), 2, "the update and the adoption");
+        assert_eq!(changes.deletes.len(), 0);
+        assert!(
+            state
+                .time_log
+                .contains_key(&crate::ids::HabitTimeEntryId::from(uuid::Uuid::from_u128(
+                    0xb
+                )))
+        );
+        let updated = &state.time_log[&local.id];
+        assert_eq!(updated.habit_title, "meditate");
+        assert_eq!(updated.updated_at, ts(BASE + 500));
+        // An older peer row leaves local standing.
+        let older = habit_time_row(known, BASE + 200);
+        let changes =
+            fold_habit_time_entries(&mut state, &BTreeMap::from([(known.to_owned(), older)]));
+        assert_eq!(changes.upserts.len(), 0);
+        assert_eq!(state.time_log[&local.id].updated_at, ts(BASE + 500));
+        // A strictly newer tombstone removes the row.
+        let tombstone = crate::appdata::HabitTimeRecord::Tombstone {
+            clock: ts(BASE + 900),
+            by: None,
+        };
+        let changes =
+            fold_habit_time_entries(&mut state, &BTreeMap::from([(known.to_owned(), tombstone)]));
+        assert_eq!(changes.deletes, vec![local.id]);
+        assert!(!state.time_log.contains_key(&local.id));
+    }
+
+    #[test]
+    fn fold_habit_time_entries_skips_unparseable_keys_and_habit_refs() {
+        let mut state = crate::habit::HabitState::default();
+        let rows = BTreeMap::from([
+            (
+                "not-a-uuid".to_owned(),
+                habit_time_row("00000000-0000-0000-0000-000000000009", BASE),
+            ),
+            (
+                "00000000-0000-0000-0000-00000000000d".to_owned(),
+                habit_time_row("also-not-a-uuid", BASE),
+            ),
+        ]);
+        let changes = fold_habit_time_entries(&mut state, &rows);
+        assert!(changes.upserts.is_empty() && changes.deletes.is_empty());
+        assert!(state.time_log.is_empty());
     }
 }
 

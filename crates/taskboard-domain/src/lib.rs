@@ -96,6 +96,7 @@ pub use appdata::{
     lane_gc_old_time_entries, lane_gc_scheduled, modeled_key, prune_absent_cards, rules_entry_for,
     task_entry_for, time_entries_for, union,
 };
+pub use appdata::{HabitTimeRecord, habit_time_entries_for, lane_gc_old_habit_time_entries};
 pub use calibration::{CalibrationAggregate, CalibrationReport, CalibrationRow, calibrate};
 pub use capabilities::{DeckFeatures, flags_for};
 pub use clock::{Clock, SystemClock};
