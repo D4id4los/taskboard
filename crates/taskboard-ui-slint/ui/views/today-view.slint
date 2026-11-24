@@ -246,6 +246,30 @@ export component TodayView inherits FocusScope {
     accessible-label: "Today";
     init => self.focus();
 
+    // slint: today-page-seek (A5a D-3, #1302): the outer page's
+    // focus-into-view seek. `top` is the target block's live top edge
+    // within the page viewport (absolute-position arithmetic —
+    // structural geometry, never a hard-coded offset) and
+    // `block-height` its realized height; the seek writes the minimal
+    // content-y shift that puts the block inside the visible window,
+    // clamped to the content. Fires on a hint edge only (a focus
+    // landing) — a content mutation never seeks (the
+    // no-scroll-on-insert contract holds); the inner ListViews keep
+    // their own consumption, so outer and inner seek compose (D-3).
+    public function seek-page(top: length, block-height: length) {
+        let view = page.height;
+        let max-shift = view - content.height;
+        if (top < 0) {
+            page.content-y = Math.clamp(page.content-y - top, max-shift, 0);
+        } else if (top + block-height > view) {
+            page.content-y = Math.clamp(
+                page.content-y - (top + block-height - view),
+                max-shift,
+                0,
+            );
+        }
+    }
+
     ring := Rectangle {
         width: 100%;
         height: 100%;
@@ -275,6 +299,20 @@ export component TodayView inherits FocusScope {
                 // status-bar chip's click target lands here visibly.
                 if (root.timers-visible || root.timers-absence-hint): TimersSection {
                     vertical-stretch: 0;
+                    // slint: today-page-seek-timers (A5a D-3/D-2): the
+                    // break-rules roster's page slot (5) — the roster
+                    // lives in this block, which is content-sized (no
+                    // inner scroll), so the page seek is the whole
+                    // fix.
+                    property <int> seek-nonce: FocusScrollHint.target-a == 5 ? FocusScrollHint.nonce : -1;
+                    changed seek-nonce => {
+                        if (self.seek-nonce >= 0) {
+                            root.seek-page(
+                                self.absolute-position.y - page.absolute-position.y,
+                                self.height,
+                            );
+                        }
+                    }
                     timers: root.timers;
                     timers-awaiting: root.timers-awaiting;
                     absence-hint: root.timers-absence-hint;
@@ -315,6 +353,18 @@ export component TodayView inherits FocusScope {
                     || root.habits-create-mountable
                     || root.habits-pause-mountable): HabitsSection {
                     vertical-stretch: 0;
+                    // slint: today-page-seek-habits (A5a D-3/D-2): the
+                    // habits section's page slot (4) — content-sized,
+                    // no inner scroll; the page seek is the whole fix.
+                    property <int> seek-nonce: FocusScrollHint.target-a == 4 ? FocusScrollHint.nonce : -1;
+                    changed seek-nonce => {
+                        if (self.seek-nonce >= 0) {
+                            root.seek-page(
+                                self.absolute-position.y - page.absolute-position.y,
+                                self.height,
+                            );
+                        }
+                    }
                     habits: root.habits;
                     editing-enabled: root.habits-editing-enabled;
                     row-activated(r) => root.habits-row-activated(r);
@@ -404,6 +454,19 @@ export component TodayView inherits FocusScope {
                     // render only when the group has rows.
                     visible: section.count > 0;
                     spacing: Theme.space-1;
+                    // slint: today-page-seek-sections (A5a D-3, #1302):
+                    // the task sections' page seek — the outer half of
+                    // the composition with the section's own ListView
+                    // consumption below (the walk-past-the-fold fix).
+                    property <int> seek-nonce: FocusScrollHint.target-a == sindex ? FocusScrollHint.nonce : -1;
+                    changed seek-nonce => {
+                        if (self.seek-nonce >= 0) {
+                            root.seek-page(
+                                self.absolute-position.y - page.absolute-position.y,
+                                self.height,
+                            );
+                        }
+                    }
 
                     HorizontalLayout {
                         spacing: Theme.space-2;
