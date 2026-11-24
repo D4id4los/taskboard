@@ -12,24 +12,9 @@ use support::driver::{DriverOptions, JourneyDriver, SlintDriver};
 use support::fixture;
 use support::golden_compare::Rgba8Image;
 use support::harness::Harness;
-use support::health::detached_health;
-
-use std::sync::Arc;
 
 use slint::ComponentHandle as _;
-
-use arc_swap::ArcSwap;
 use taskboard_ui_slint::UiSettings;
-
-fn dummy_signals() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
-
-fn dummy_system() -> tokio::sync::broadcast::Receiver<taskboard_domain::SystemEvent> {
-    let (_tx, rx) = tokio::sync::broadcast::channel(4);
-    rx
-}
 
 /// The populated board fixture, mounted at `scale` and sized to
 /// `(width, height)` — the shared arrange step of the geometry proofs.
@@ -678,61 +663,57 @@ fn the_segmented_picker_roles_and_routes_the_preset_pick() {
             headless_renderer: true,
         },
         move |driver: &mut SlintDriver| {
-            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
-            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
-            let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(16);
-            let handle = taskboard_ui_slint::mount(
-                state,
-                dummy_signals(),
-                dummy_system(),
-                commands,
-                requests_tx,
+            // The B4a harness owns the mount (the raw preamble's
+            // replacement, #1273); the request lane drains through the
+            // harness, so the driver scope ends before the drains.
+            let mut harness = Harness::mount_on_driver_no_escape_with_settings(
+                std::mem::take(driver),
+                fixture::golden_state().1,
                 UiSettings::default(),
-                detached_health(),
-                None,
-            )
-            .expect("mount succeeds on the testing backend");
-            driver.bind(&handle);
-            driver.advance_time(0);
-
-            // The settings surface opens through the component-test
-            // seam; the refresh pushes the view switch.
-            handle.set_view_context(Some(ContextId::Settings));
-            handle.refresh();
-            driver.advance_time(0);
-            assert_eq!(
-                handle.window().get_current_view(),
-                taskboard_ui_slint::View::Settings,
-                "the settings surface is open"
             );
+            harness.driver.advance_time(0);
+            {
+                let driver = &mut harness.driver;
+                let handle = &harness.handle;
 
-            // Exactly one segment per label, all RadioButton-role.
-            for label in ["Standard", "Emacs", "Vi"] {
-                let found = driver.find_all_by_label(label);
-                let roles = found
-                    .iter()
-                    .map(support::driver::Element::is_radio_button)
-                    .collect::<Vec<_>>();
+                // The settings surface opens through the component-test
+                // seam; the refresh pushes the view switch.
+                handle.set_view_context(Some(ContextId::Settings));
+                handle.refresh();
+                driver.advance_time(0);
                 assert_eq!(
-                    roles.iter().filter(|r| **r).count(),
-                    1,
-                    "exactly one {label} RadioButton is addressable (found {roles:?})"
+                    handle.window().get_current_view(),
+                    taskboard_ui_slint::View::Settings,
+                    "the settings surface is open"
                 );
+
+                // Exactly one segment per label, all RadioButton-role.
+                for label in ["Standard", "Emacs", "Vi"] {
+                    let found = driver.find_all_by_label(label);
+                    let roles = found
+                        .iter()
+                        .map(support::driver::Element::is_radio_button)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        roles.iter().filter(|r| **r).count(),
+                        1,
+                        "exactly one {label} RadioButton is addressable (found {roles:?})"
+                    );
+                }
+
+                // The RadioButton element itself (a segment's label also
+                // resolves its container through the a11y tree).
+                let vi = driver
+                    .find_all_by_label("Vi")
+                    .into_iter()
+                    .find(support::driver::Element::is_radio_button)
+                    .expect("the Vi segment's RadioButton element");
+
+                // Invoking the AT default action routes exactly one
+                // SetKeymapPreset — click ≡ AT activation.
+                vi.invoke_default_action();
             }
-
-            // The RadioButton element itself (a segment's label also
-            // resolves its container through the a11y tree).
-            let vi = driver
-                .find_all_by_label("Vi")
-                .into_iter()
-                .find(support::driver::Element::is_radio_button)
-                .expect("the Vi segment's RadioButton element");
-
-            // Invoking the AT default action routes exactly one
-            // SetKeymapPreset — click ≡ AT activation.
-            vi.invoke_default_action();
-            let mut requests =
-                std::iter::from_fn(|| requests_rx.try_recv().ok()).collect::<Vec<_>>();
+            let mut requests = harness.drain_requests();
             assert_eq!(requests.len(), 1, "exactly one preset request routed");
             assert!(matches!(
                 requests.remove(0),
@@ -760,51 +741,47 @@ fn the_backend_picker_renders_two_segments_with_only_nextcloud_enabled() {
             headless_renderer: true,
         },
         move |driver: &mut SlintDriver| {
-            let state = Arc::new(ArcSwap::from_pointee(fixture::golden_state().1));
-            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
-            let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(16);
-            let handle = taskboard_ui_slint::mount(
-                state,
-                dummy_signals(),
-                dummy_system(),
-                commands,
-                requests_tx,
+            // The B4a harness owns the mount (the raw preamble's
+            // replacement, #1273); the request lane drains through the
+            // harness, so the driver scope ends before the drains.
+            let mut harness = Harness::mount_on_driver_no_escape_with_settings(
+                std::mem::take(driver),
+                fixture::golden_state().1,
                 UiSettings::default(),
-                detached_health(),
-                None,
-            )
-            .expect("mount succeeds on the testing backend");
-            driver.bind(&handle);
-            driver.advance_time(0);
+            );
+            harness.driver.advance_time(0);
+            {
+                let driver = &mut harness.driver;
+                let handle = &harness.handle;
+                handle.set_view_context(Some(ContextId::Settings));
+                handle.refresh();
+                driver.advance_time(0);
 
-            handle.set_view_context(Some(ContextId::Settings));
-            handle.refresh();
-            driver.advance_time(0);
+                // Exactly one segment per option, both RadioButton-role.
+                for label in ["Nextcloud", "Standalone"] {
+                    let found = driver.find_all_by_label(label);
+                    let roles = found
+                        .iter()
+                        .map(support::driver::Element::is_radio_button)
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        roles.iter().filter(|r| **r).count(),
+                        1,
+                        "exactly one {label} RadioButton is addressable (found {roles:?})"
+                    );
+                }
 
-            // Exactly one segment per option, both RadioButton-role.
-            for label in ["Nextcloud", "Standalone"] {
-                let found = driver.find_all_by_label(label);
-                let roles = found
-                    .iter()
-                    .map(support::driver::Element::is_radio_button)
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    roles.iter().filter(|r| **r).count(),
-                    1,
-                    "exactly one {label} RadioButton is addressable (found {roles:?})"
-                );
+                // The disabled segment's AT activation routes nothing: the
+                // widget gate swallows the pick (and the settings instance
+                // wires no backend pick at all — presentational truth).
+                let standalone = driver
+                    .find_all_by_label("Standalone")
+                    .into_iter()
+                    .find(support::driver::Element::is_radio_button)
+                    .expect("the Standalone segment's RadioButton element");
+                standalone.invoke_default_action();
             }
-
-            // The disabled segment's AT activation routes nothing: the
-            // widget gate swallows the pick (and the settings instance
-            // wires no backend pick at all — presentational truth).
-            let standalone = driver
-                .find_all_by_label("Standalone")
-                .into_iter()
-                .find(support::driver::Element::is_radio_button)
-                .expect("the Standalone segment's RadioButton element");
-            standalone.invoke_default_action();
-            let requests = std::iter::from_fn(|| requests_rx.try_recv().ok()).collect::<Vec<_>>();
+            let requests = harness.drain_requests();
             assert!(
                 requests.is_empty(),
                 "the disabled segment's pick is swallowed"
@@ -812,13 +789,16 @@ fn the_backend_picker_renders_two_segments_with_only_nextcloud_enabled() {
 
             // Regression: the keymap trio (all segments enabled) still
             // routes its pick through the same widget.
-            let vi = driver
-                .find_all_by_label("Vi")
-                .into_iter()
-                .find(support::driver::Element::is_radio_button)
-                .expect("the Vi segment's RadioButton element");
-            vi.invoke_default_action();
-            let requests = std::iter::from_fn(|| requests_rx.try_recv().ok()).collect::<Vec<_>>();
+            {
+                let driver = &mut harness.driver;
+                let vi = driver
+                    .find_all_by_label("Vi")
+                    .into_iter()
+                    .find(support::driver::Element::is_radio_button)
+                    .expect("the Vi segment's RadioButton element");
+                vi.invoke_default_action();
+            }
+            let requests = harness.drain_requests();
             assert_eq!(requests.len(), 1, "the enabled picker still routes");
             assert!(matches!(
                 requests[0],
