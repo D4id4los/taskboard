@@ -72,4 +72,34 @@ grep -qF "$scratch/WT-unique-agent" <<<"$decisions" \
   exit 1
 }
 
-echo "worktree-doctor fixture: 3/3 ok"
+# 4. #1277 locale sort: a case-mixed + non-ASCII WT-suffix pair must not
+#    make comm spew `not in sorted order` under a UTF-8 collation. The
+#    doctor's stderr is asserted STRUCTURALLY (no comm sort complaint),
+#    unfiltered — the guard genuinely fails without the LC_ALL=C pin.
+pick_utf8_locale() { # first available UTF-8 locale that collates non-byte-order
+  local l
+  for l in en_US.UTF-8 en_US.utf8 de_AT.UTF-8; do
+    locale -a 2>/dev/null | grep -qiF "$l" && { echo "$l"; return 0; }
+  done
+  return 1
+}
+if utf8_locale="$(pick_utf8_locale)"; then
+  git worktree add -q -b Zebra-agent "$scratch/WT-Zebra-agent" 2>/dev/null
+  mkdir -p "$scratch/WT-apple-örphan" # unregistered orphan sibling
+  doctor_err="$scratch/doctor.err"
+  (cd "$root" && WORKTREE_DOCTOR_ROOT="$scratch/repo" \
+     WORKTREE_DOCTOR_MIN_FREE_G=0 WORKTREE_DOCTOR_MIN_AVAIL_MIB=0 \
+     WORKTREE_DOCTOR_GRACE_HOURS=0 LC_ALL="$utf8_locale" \
+     bash "$doctor") >/dev/null 2>"$doctor_err"
+  if grep -q "not in sorted order" "$doctor_err"; then
+    echo "FAIL: comm emitted sort complaints under LC_ALL=$utf8_locale with case-mixed/non-ASCII WT names:" >&2
+    sed 's/^/    /' <"$doctor_err" >&2
+    exit 1
+  fi
+  echo "worktree-doctor fixture: 4/4 ok"
+else
+  # No non-byte-order collation installed: the pin is untestable here
+  # (byte order == collation order) — report, don't lie with a vacuous
+  # pass.
+  echo "worktree-doctor fixture: 3/3 ok (locale test skipped: no UTF-8 collation locale installed)"
+fi
