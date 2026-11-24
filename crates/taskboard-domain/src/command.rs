@@ -734,27 +734,6 @@ fn bound_admits(app: &AppState, rule: &RecurRule, next_date: NaiveDate) -> bool 
     }
 }
 
-/// The drop-slot order (D-C13): the **floor midpoint of the drop
-/// slot's free interval** — `prev`/`next` are the orders bracketing
-/// the slot (`None` at either end; the empty row source mints 0). B3
-/// (2026-11-24, #1247): NO move path delegates here anymore — the
-/// compact-move pair and the board's same-stack drag-drop both moved
-/// onto engine-side gap-index reorders (`StateCommand::TaskReorder` —
-/// a dense list has no free integer to floor-midpoint into, and the
-/// width-1 interval's tie was the shared defect). The remaining
-/// callers are insertion-shaped, not crossing moves: the completion
-/// spawn's `insertion_order_after` and the end-gap minting (the
-/// free-interval midpoint has room there by construction).
-#[must_use]
-pub fn floor_midpoint_order(prev: Option<i64>, next: Option<i64>) -> i64 {
-    match (prev, next) {
-        (None, None) => 0,
-        (None, Some(next)) => next - 1,
-        (Some(prev), None) => prev + 1,
-        (Some(prev), Some(next)) => prev + (next - prev) / 2,
-    }
-}
-
 /// The one same-stack task reorder resolution (B3, 2026-11-24, #1247 —
 /// the #1198 chunk A1 D1 habit law verbatim, one reorder law two
 /// entity kinds): `target` is a gap index into the stack's live rows
