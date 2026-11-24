@@ -75,7 +75,7 @@ if ! git -C "$ROOT" fetch origin --prune --quiet 2>/dev/null; then
 fi
 
 if porcelain="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null)"; then
-  mapfile -t REGISTERED < <(sed -n 's/^worktree //p' <<<"$porcelain" | sort)
+  mapfile -t REGISTERED < <(sed -n 's/^worktree //p' <<<"$porcelain" | LC_ALL=C sort)
   mapfile -t WORKTREES < <(sed -n 's/^worktree //p' <<<"$porcelain" | grep -vxF "$ROOT")
 else
   echo "WARN  cannot enumerate worktrees"
@@ -179,9 +179,16 @@ done
 while IFS= read -r orphan; do
   [ -n "$orphan" ] || continue
   echo "WARN  not a registered worktree (left alone): $orphan"
+# (#1277) both comm inputs sort in the C locale: comm expects byte
+# order, and under a locale collation (en_US.UTF-8 — case-insensitive
+# primary weights, punctuation deweighted) the case-mixed and
+# non-ASCII WT-suffix names this layout produces sort differently,
+# spewing `comm: file N is not in sorted order` on every run. The pin
+# makes comm's expectation match the collation regardless of the
+# ambient locale.
 done < <(comm -23 \
-           <(ls -d "$ROOT"-WT-* 2>/dev/null | sort) \
-           <(printf '%s\n' "${REGISTERED[@]}" | sort) )
+           <(ls -d "$ROOT"-WT-* 2>/dev/null | LC_ALL=C sort) \
+           <(printf '%s\n' "${REGISTERED[@]}" | LC_ALL=C sort) )
 
 if pgrep -f llvm-cov >/dev/null 2>&1; then
   echo "SKIP   coverage scrub (an llvm-cov run looks active)"
