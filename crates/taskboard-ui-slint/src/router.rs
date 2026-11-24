@@ -1284,6 +1284,13 @@ pub struct DispatchCtx {
     /// round 9 chunk 11): `task.effort-clear`'s route gate — the
     /// `focused_task_scheduled` shape.
     pub focused_task_effort: bool,
+    /// Whether the toggle target (the one-shot `habit_target`, else
+    /// the focused habit) holds an open habit time entry (journey plan
+    /// 2026-11-24, #1305 — the `focused_task_tracking` twin): the
+    /// smart toggle's state half — synced at dispatch time in the
+    /// adapter's `route`. `habit.track-toggle` reads it to route
+    /// `StopHabitTracking`; otherwise `StartHabitTracking`.
+    pub habit_tracking: bool,
 }
 
 /// The one-shot ctx fields a dispatched action may consume
@@ -1465,7 +1472,7 @@ pub(crate) fn route_consumes(id: ActionId) -> OneShotSet {
         A::TimerCancel => OneShotSet::default().timer_target(),
         A::BreakRuleCreate => OneShotSet::default().break_rule_draft(),
         A::BreakRuleRemoveConfirm => OneShotSet::default().break_rule_target(),
-        A::HabitLog | A::HabitSkip => OneShotSet::default().habit_target(),
+        A::HabitLog | A::HabitSkip | A::HabitTrackToggle => OneShotSet::default().habit_target(),
         A::HabitUndoLog => OneShotSet::default().habit_undo(),
         A::HabitMove => OneShotSet::default().habit_move(),
         A::HabitMoveUp => OneShotSet::default().habit_move_up(),
@@ -1698,6 +1705,22 @@ impl ActionRouter {
             ActionId::HabitLog => match ctx.habit_target {
                 Some(habit) => DispatchOutcome::Command(StateCommand::LogHabit { habit }),
                 None => DispatchOutcome::NoTarget,
+            },
+            // The ONE smart habit-tracking toggle (#1305, the
+            // `TaskTrackToggle` arm's twin): the state-correct half
+            // over the target — this habit's open entry routes
+            // `StopHabitTracking`; anything else routes
+            // `StartHabitTracking` (whose own law closes any
+            // running-elsewhere entry first). The planner's idempotent
+            // NoOps own the refusals.
+            ActionId::HabitTrackToggle => match (ctx.habit_target, ctx.habit_tracking) {
+                (Some(habit), true) => {
+                    DispatchOutcome::Command(StateCommand::StopHabitTracking { habit })
+                }
+                (Some(habit), false) => {
+                    DispatchOutcome::Command(StateCommand::StartHabitTracking { habit })
+                }
+                (None, _) => DispatchOutcome::NoTarget,
             },
             // The −1 recovery (UX R-2 D-3, #786): the audited
             // `AdjustHabitLog` valve over the row's own current
@@ -2487,6 +2510,7 @@ mod tests {
             alarm_row: None,
             track_target: None,
             habit_target: None,
+            habit_tracking: false,
             habit_undo: None,
             habit_move: None,
             habit_repair: None,

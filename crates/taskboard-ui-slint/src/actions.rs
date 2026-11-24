@@ -494,6 +494,14 @@ pub enum ActionId {
     // ledger demands keyboard parity for creation, so it ships bound
     // in every preset.
     HabitLog,
+    /// The ONE smart habit-tracking toggle (journey plan 2026-11-24
+    /// W-1/W-2/W-3, D-8, #1305 — the `task.track-toggle` twin, O-7's
+    /// one semantics one seam): start-if-idle, stop-if-running over
+    /// the row's/one-shot habit subject. Routes exactly the two new
+    /// domain commands' outcomes; the planner's idempotent `NoOps` own
+    /// the refusals. The dead play control's wiring and the context
+    /// menu row re-root here.
+    HabitTrackToggle,
     /// The row's "−1" recovery (UX R-2 D-3, #786): the mis-click
     /// class recovers through the audited `AdjustHabitLog` valve —
     /// routes the row's current window with the count decremented
@@ -889,6 +897,7 @@ impl ActionId {
             Self::TaskTrackEntryDismiss => "task.track-entry-dismiss",
             Self::FocusModeToggle => "focus.toggle",
             Self::HabitLog => "habit.log",
+            Self::HabitTrackToggle => "habit.track-toggle",
             Self::HabitUndoLog => "habit.unlog",
             Self::HabitQuotaEdit => "habit.quota-edit",
             Self::HabitQuotaCommit => "habit.quota-commit",
@@ -2316,6 +2325,20 @@ pub const REGISTRY: &[ActionEntry] = &[
         // Section-scoped (R-11): the row's own affordance is the only
         // invocation — the menu surface is untouched, like the plan's
         // "menu/keymap: nothing" ruling.
+        menu_group: None,
+    },
+    ActionEntry {
+        id: ActionId::HabitTrackToggle,
+        label: "Track habit",
+        contexts: GLOBAL,
+        category: Category::Task,
+        enabled: true,
+        menu_rank: 191,
+        description: "Start or stop a time tracker on the addressed habit (one running timer app-wide).",
+        // The context menu row (journey plan W-2, US-31/S1): the
+        // HABIT_CONTEXT carries it right after the log row (the
+        // destructive-last grammar leaves it in the body — a toggle is
+        // not destructive).
         menu_group: None,
     },
     ActionEntry {

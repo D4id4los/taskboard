@@ -7791,6 +7791,14 @@ pub struct HabitRow {
     /// row renders the paused badge with the through-date (display
     /// only).
     pub paused: bool,
+    /// The running bit (journey plan 2026-11-24 W-4/D-7, #1305): this
+    /// habit's open time entry exists — the card fold reports
+    /// `RunningHere` and the elapsed chip mounts (display derives at
+    /// read, never cached).
+    pub running_here: bool,
+    /// The open entry's elapsed phrase (W-5): `open_elapsed_phrase`
+    /// over the open entry's start (empty while not running).
+    pub elapsed_phrase: String,
     /// The inclusive pause-through date (the badge's meta text;
     /// `None` while unpaused).
     pub paused_until: Option<chrono::NaiveDate>,
@@ -7894,6 +7902,19 @@ pub fn habit_rows(
                 off_schedule: habit
                     .effective_scheduled_days()
                     .is_some_and(|set| !set.contains(today.weekday())),
+                // W-4/D-7 (#1305): the open entry IS the running timer —
+                // the fold reads the map, nothing ticks.
+                running_here: state
+                    .habits
+                    .time_log
+                    .values()
+                    .any(|entry| entry.habit == habit.id && entry.end.is_none()),
+                elapsed_phrase: state
+                    .habits
+                    .time_log
+                    .values()
+                    .find(|entry| entry.habit == habit.id && entry.end.is_none())
+                    .map_or_else(String::new, |entry| open_elapsed_phrase(entry.start, now)),
             }
         })
         .collect()

@@ -449,6 +449,11 @@ pub const TASK_CONTEXT_MULTI: &[ActionId] = &[ActionId::TaskComplete, ActionId::
 /// destructive-last law has no delete row to pin yet.
 pub const HABIT_CONTEXT: &[ActionId] = &[
     ActionId::HabitLog,
+    // The tracking row (journey plan 2026-11-24 W-2, US-31/S1, #1305):
+    // routes `habit.track-toggle` — the same seam the play control
+    // speaks (one semantics, one seam; the running echo follows the
+    // card fold's `track_state`, US-31/AC-3).
+    ActionId::HabitTrackToggle,
     ActionId::HabitSkip,
     ActionId::HabitPause,
     ActionId::HabitResume,

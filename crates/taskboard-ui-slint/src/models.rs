@@ -968,6 +968,16 @@ pub fn habit_card_decorations(row: &presentation::HabitRow) -> Vec<TaskDecoratio
             tone: Tone::Info,
         });
     }
+    // The running/elapsed chip (journey plan 2026-11-24 W-5, #1305):
+    // the open habit entry's elapsed phrase, derived at read — display
+    // is not an edit verb, it renders on kiosk too (D-P13).
+    if row.running_here {
+        decorations.push(TaskDecoration {
+            kind: DecorationKind::Tracking,
+            label: SharedString::from(row.elapsed_phrase.clone()),
+            tone: Tone::Info,
+        });
+    }
     // The paused badge (HF1, W-4): the standing pause renders with the
     // inclusive through-date (US-2/S4).
     if row.paused {
@@ -1011,7 +1021,15 @@ pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
         dragging_source: false,
         selected: false,
         anchor: false,
-        track_state: TrackCardState::None,
+        // W-4/D-7 (#1305): the fold maps `time_log`'s open set to the
+        // shown half — `RunningHere` while this habit's open entry
+        // exists (today it was hardwired `None`; the dead-affordance
+        // repair is the issue's own ask).
+        track_state: if row.running_here {
+            TrackCardState::RunningHere
+        } else {
+            TrackCardState::None
+        },
         decorations: ModelRc::new(VecModel::from(decorations)),
         label_chips: ModelRc::new(VecModel::from(std::vec::Vec::new())),
         label_chips_overflow: 0,
@@ -7216,6 +7234,8 @@ mod habit_card_tests {
     ) -> HabitRow {
         HabitRow {
             habit: taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7()),
+            running_here: false,
+            elapsed_phrase: String::new(),
             title: "water".into(),
             target_phrase: "3/day".into(),
             count,
@@ -7264,6 +7284,30 @@ mod habit_card_tests {
         assert_eq!(decorations.len(), 1);
         assert_eq!(decorations[0].tone, Tone::Neutral);
         assert_eq!(model.scheduled_phrase, "", "no chip facts, no chip");
+    }
+
+    /// W-4/W-5 (journey plan 2026-11-24, US-30/S3 + US-32/AC-1,
+    /// #1305): the fold maps `time_log`'s open set to the shown half —
+    /// `RunningHere` while the row's open entry exists (today it was
+    /// hardwired `None`), and the elapsed chip derives at read. The
+    /// not-running twin keeps the pre-feature shape byte-for-byte.
+    #[test]
+    fn us30_s3_fold_reports_running_here_while_open() {
+        let mut running = row(1, 3, 0, None, None);
+        running.running_here = true;
+        running.elapsed_phrase = "5m".into();
+        let model = habit_card(&running);
+        assert_eq!(model.track_state, TrackCardState::RunningHere);
+        let decorations: Vec<_> = model.decorations.iter().collect();
+        assert_eq!(decorations.len(), 2, "progress + the elapsed chip");
+        assert_eq!(decorations[1].label, "5m", "the chip derives at read");
+        assert_eq!(decorations[1].tone, Tone::Info);
+        // The not-running twin: `None`, no chip (the D-3 global stop
+        // already closed nothing — display reflects the maps,
+        // US-32/AC-2).
+        let idle = habit_card(&row(1, 3, 0, None, None));
+        assert_eq!(idle.track_state, TrackCardState::None);
+        assert_eq!(idle.decorations.iter().count(), 1);
     }
 
     // H2 A4 — the property: for any `(count, quota, streak, chip,

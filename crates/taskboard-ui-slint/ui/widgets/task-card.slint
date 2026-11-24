@@ -120,6 +120,12 @@ export component TaskCard inherits Rectangle {
     // US-4): state-less like done-toggled; the adapter routes the
     // existing tracking ids from the model's shown half.
     callback track-toggled();
+    // The control's enablement (journey plan 2026-11-24 W-1, #1305):
+    // the greyed-affordance law (HAB-14/D-P13) — a habit row on kiosk
+    // renders the control DISABLED, never unmounted (a greyed control
+    // reads "exists, not for this device"). Task surfaces default
+    // `true` (the desktop-only posture is unchanged).
+    in property <bool> track-enabled: true;
     // The right-click context request (round-1 D13): pointer coords
     // in window coordinates (the card's absolute position + the local
     // mouse position).
@@ -239,7 +245,9 @@ export component TaskCard inherits Rectangle {
             width: Theme.space-6;
             height: Theme.space-6;
             track-hit := TouchArea {
-                clicked => { root.track-toggled(); }
+                clicked => {
+                    if (root.track-enabled) { root.track-toggled(); }
+                }
             }
             background: track-hit.has-hover ? Theme.surface-hover : transparent;
             border-radius: Theme.radius-small;
@@ -264,6 +272,10 @@ export component TaskCard inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 kind: root.model.track-state == TrackCardState.running-here
                     ? IconKind.stop : IconKind.play;
+                // The disabled half-dim (the greyed-affordance law): a
+                // kiosk's habit row shows the control exists but is not
+                // for this device.
+                opacity: root.track-enabled ? 1.0 : 0.4;
                 colorize: track-hit.has-hover ? Theme.text-primary : Theme.text-secondary;
             }
         }

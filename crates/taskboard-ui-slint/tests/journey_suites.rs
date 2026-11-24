@@ -41,6 +41,8 @@ mod golden_visuals;
 mod habit_family_journeys;
 #[path = "journeys/habit_surface_journeys.rs"]
 mod habit_surface_journeys;
+#[path = "journeys/habit_tracking_journeys.rs"]
+mod habit_tracking_journeys;
 #[path = "journeys/habits_journey.rs"]
 mod habits_journey;
 #[path = "journeys/keymap_case_seam.rs"]
