@@ -4,10 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Days, FixedOffset, NaiveDate, NaiveDateTime, Offset, Utc};
+use chrono::{DateTime, Days, FixedOffset, NaiveDateTime, Offset, Utc};
 
 use crate::entities::Task;
 use crate::ids::TaskId;
+use crate::time::{LocalDate, LocalTime, Timestamp};
 
 /// The instant whose offset-local reading is `date` at
 /// `day_start_time` — the start instant of that local date's day
@@ -15,11 +16,7 @@ use crate::ids::TaskId;
 /// A night-owl `05:00` start makes this the reading that puts 03:00
 /// local into *yesterday's* window.
 #[must_use]
-pub fn window_start(
-    date: NaiveDate,
-    day_start_time: chrono::NaiveTime,
-    offset: FixedOffset,
-) -> DateTime<Utc> {
+pub fn window_start(date: LocalDate, day_start_time: LocalTime, offset: FixedOffset) -> Timestamp {
     offset_local_to_utc(date.and_time(day_start_time), offset)
 }
 
@@ -53,10 +50,10 @@ pub fn window_start(
 /// [`chrono::NaiveDate`]'s extremes).
 #[must_use]
 pub fn day_window(
-    now: DateTime<Utc>,
-    day_start_time: chrono::NaiveTime,
+    now: Timestamp,
+    day_start_time: LocalTime,
     offset: FixedOffset,
-) -> (DateTime<Utc>, DateTime<Utc>) {
+) -> (Timestamp, Timestamp) {
     let local_date = now.with_timezone(&offset).date_naive();
     let candidate = window_start(local_date, day_start_time, offset);
     let start_date = if candidate > now {
@@ -97,10 +94,10 @@ pub fn day_window(
 /// the environment: time and offset are data (the crate's clock rule).
 #[must_use]
 pub fn day_window_end(
-    date: NaiveDate,
-    day_start_time: chrono::NaiveTime,
+    date: LocalDate,
+    day_start_time: LocalTime,
     offset: FixedOffset,
-) -> DateTime<Utc> {
+) -> Timestamp {
     window_start(date + Days::new(1), day_start_time, offset)
 }
 
@@ -127,7 +124,7 @@ pub fn day_window_end(
 /// `TimeDelta::try_milliseconds(1)` that cannot fail (1 fits every
 /// representable bound).
 #[must_use]
-pub fn last_covered_instant(window_end: DateTime<Utc>) -> DateTime<Utc> {
+pub fn last_covered_instant(window_end: Timestamp) -> Timestamp {
     window_end - chrono::TimeDelta::try_milliseconds(1).expect("one millisecond is representable")
 }
 
@@ -140,11 +137,11 @@ pub fn last_covered_instant(window_end: DateTime<Utc>) -> DateTime<Utc> {
 /// `now − 168h`. Pure — `now` and the calendar are data.
 #[must_use]
 pub fn trailing_days_window(
-    now: DateTime<Utc>,
-    day_start_time: chrono::NaiveTime,
+    now: Timestamp,
+    day_start_time: LocalTime,
     offset: FixedOffset,
     days: std::num::NonZeroU32,
-) -> (DateTime<Utc>, DateTime<Utc>) {
+) -> (Timestamp, Timestamp) {
     let (today_start, _) = day_window(now, day_start_time, offset);
     let today_date = today_start.with_timezone(&offset).date_naive();
     let start = window_start(
@@ -180,7 +177,7 @@ pub fn trailing_days_window(
 pub struct DayCalendar {
     /// The local time a day window opens at (`[preferences]
     /// day_start_time`).
-    pub day_start_time: chrono::NaiveTime,
+    pub day_start_time: LocalTime,
     /// The device's fixed UTC offset, resolved once at boot.
     pub offset: FixedOffset,
 }
@@ -189,7 +186,7 @@ impl DayCalendar {
     /// The window-date of `now`: the plain calendar date of the instant
     /// that opens `now`'s day window.
     #[must_use]
-    pub fn today(&self, now: DateTime<Utc>) -> NaiveDate {
+    pub fn today(&self, now: Timestamp) -> LocalDate {
         let (start, _) = day_window(now, self.day_start_time, self.offset);
         self.calendar_date(start)
     }
@@ -197,14 +194,14 @@ impl DayCalendar {
     /// The plain offset-calendar date of an instant (no window
     /// step-back).
     #[must_use]
-    pub fn calendar_date(&self, t: DateTime<Utc>) -> NaiveDate {
+    pub fn calendar_date(&self, t: Timestamp) -> LocalDate {
         t.with_timezone(&self.offset).date_naive()
     }
 
     /// Offset-local `(date, time-of-day)` → UTC. Total: a fixed offset
     /// has no transitions, so no reading is ambiguous or missing.
     #[must_use]
-    pub fn instant(&self, date: NaiveDate, time_of_day: chrono::NaiveTime) -> DateTime<Utc> {
+    pub fn instant(&self, date: LocalDate, time_of_day: LocalTime) -> Timestamp {
         offset_local_to_utc(date.and_time(time_of_day), self.offset)
     }
 
@@ -216,7 +213,7 @@ impl DayCalendar {
     /// due/scheduled entry — use [`DayCalendar::day_last_instant`]:
     /// the window end itself is excluded by that very membership.
     #[must_use]
-    pub fn day_end(&self, date: NaiveDate) -> DateTime<Utc> {
+    pub fn day_end(&self, date: LocalDate) -> Timestamp {
         day_window_end(date, self.day_start_time, self.offset)
     }
 
@@ -227,7 +224,7 @@ impl DayCalendar {
     /// [`today_sections`] where the raw window end does not — a task
     /// re-committed to its own today stays in Today.
     #[must_use]
-    pub fn day_last_instant(&self, date: NaiveDate) -> DateTime<Utc> {
+    pub fn day_last_instant(&self, date: LocalDate) -> Timestamp {
         last_covered_instant(self.day_end(date))
     }
 
@@ -237,7 +234,7 @@ impl DayCalendar {
     /// tracker pass's window and quota gate roll exactly there). Always
     /// strictly after `now`.
     #[must_use]
-    pub fn next_boundary(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+    pub fn next_boundary(&self, now: Timestamp) -> Timestamp {
         day_window(now, self.day_start_time, self.offset).1
     }
 }
@@ -246,7 +243,7 @@ impl DayCalendar {
 /// `utc = local − offset`, exact for every representable reading
 /// because a fixed offset has no transitions, so no reading is
 /// ambiguous or missing.
-fn offset_local_to_utc(local: NaiveDateTime, offset: FixedOffset) -> DateTime<Utc> {
+fn offset_local_to_utc(local: NaiveDateTime, offset: FixedOffset) -> Timestamp {
     DateTime::from_naive_utc_and_offset(local - offset.fix(), Utc)
 }
 
@@ -293,8 +290,8 @@ pub struct TodaySections {
 #[must_use]
 pub fn today_sections(
     tasks: &BTreeMap<TaskId, Task>,
-    now: DateTime<Utc>,
-    window: (DateTime<Utc>, DateTime<Utc>),
+    now: Timestamp,
+    window: (Timestamp, Timestamp),
 ) -> TodaySections {
     let (start, end) = window;
     let mut sections = TodaySections {
@@ -306,9 +303,9 @@ pub fn today_sections(
             .collect(),
         ..TodaySections::default()
     };
-    let mut scheduled: Vec<(DateTime<Utc>, i64, TaskId)> = Vec::new();
+    let mut scheduled: Vec<(Timestamp, i64, TaskId)> = Vec::new();
     let mut due_today: Vec<(i64, TaskId)> = Vec::new();
-    let mut done_today: Vec<(DateTime<Utc>, TaskId)> = Vec::new();
+    let mut done_today: Vec<(Timestamp, TaskId)> = Vec::new();
     for task in tasks.values() {
         if !task.is_live() || sections.overdue.contains(&task.id) {
             continue;
@@ -343,10 +340,10 @@ pub fn today_sections(
 /// Pure, total, deterministic.
 #[must_use]
 pub fn next_day_window(
-    now: DateTime<Utc>,
-    day_start_time: chrono::NaiveTime,
+    now: Timestamp,
+    day_start_time: LocalTime,
     offset: FixedOffset,
-) -> (DateTime<Utc>, DateTime<Utc>) {
+) -> (Timestamp, Timestamp) {
     let (today_start, today_end) = day_window(now, day_start_time, offset);
     let today_date = today_start.with_timezone(&offset).date_naive();
     let end = window_start(today_date + Days::new(2), day_start_time, offset);
@@ -385,8 +382,8 @@ pub struct PlanNextDaySections {
 #[must_use]
 pub fn plan_next_day(
     tasks: &BTreeMap<TaskId, Task>,
-    now: DateTime<Utc>,
-    day_start_time: chrono::NaiveTime,
+    now: Timestamp,
+    day_start_time: LocalTime,
     offset: FixedOffset,
 ) -> PlanNextDaySections {
     let window = next_day_window(now, day_start_time, offset);
@@ -432,7 +429,7 @@ mod tests {
         FixedOffset::east_opt(h * 3600).unwrap()
     }
 
-    fn utc(secs: i64) -> DateTime<Utc> {
+    fn utc(secs: i64) -> Timestamp {
         Utc.timestamp_opt(secs, 0).unwrap()
     }
 
@@ -507,7 +504,7 @@ mod tests {
 
     // ---- trailing_days_window (D-4) --------------------------------------
 
-    fn trailing(now: DateTime<Utc>, days: u32) -> (DateTime<Utc>, DateTime<Utc>) {
+    fn trailing(now: Timestamp, days: u32) -> (Timestamp, Timestamp) {
         super::trailing_days_window(
             now,
             time(0, 0),
@@ -590,7 +587,7 @@ mod tests {
 
     /// Dates two years either side of 2026 — far from chrono's
     /// saturation extremes, so the `+1 day` composition stays total.
-    fn date_strategy() -> impl Strategy<Value = NaiveDate> {
+    fn date_strategy() -> impl Strategy<Value = LocalDate> {
         (-800_i64..=800).prop_map(|days| {
             chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
                 .unwrap()
@@ -801,7 +798,7 @@ mod tests {
                 .from_local_datetime(&local_date.and_time(day_start_time))
                 .single()
                 .unwrap();
-            let boundary_utc: DateTime<Utc> = boundary.into();
+            let boundary_utc: Timestamp = boundary.into();
             let (start_at, _) = day_window(boundary_utc, day_start_time, offset);
             prop_assert_eq!(start_at, boundary_utc, "at B the new window opens");
 
@@ -843,16 +840,16 @@ mod today_tests {
         TimeDelta::try_hours(24).unwrap()
     }
 
-    fn stamp(secs: i64) -> DateTime<Utc> {
+    fn stamp(secs: i64) -> Timestamp {
         Utc.timestamp_opt(secs, 0).unwrap()
     }
 
     fn task(
         raw: u128,
         order: i64,
-        duedate: Option<DateTime<Utc>>,
-        scheduled: Option<DateTime<Utc>>,
-        done: Option<DateTime<Utc>>,
+        duedate: Option<Timestamp>,
+        scheduled: Option<Timestamp>,
+        done: Option<Timestamp>,
     ) -> Task {
         Task {
             id: TaskId::from(uuid::Uuid::from_u128(raw)),
@@ -907,11 +904,7 @@ mod today_tests {
     #[test]
     fn a_task_due_at_the_last_covered_instant_classifies_due_today() {
         let now = stamp(1_781_485_200); // 2026-06-15 01:20 UTC
-        let window = day_window(
-            now,
-            chrono::NaiveTime::MIN,
-            FixedOffset::east_opt(0).unwrap(),
-        );
+        let window = day_window(now, LocalTime::MIN, FixedOffset::east_opt(0).unwrap());
         let covered = last_covered_instant(window.1);
         let id = TaskId::from(uuid::Uuid::from_u128(7));
         let tasks = map(vec![task(7, 0, Some(covered), None, None)]);
@@ -921,7 +914,7 @@ mod today_tests {
     }
 
     /// `(start, now, end)`: a 24h window with `now` inside it.
-    fn span_strategy() -> impl Strategy<Value = (DateTime<Utc>, DateTime<Utc>, DateTime<Utc>)> {
+    fn span_strategy() -> impl Strategy<Value = (Timestamp, Timestamp, Timestamp)> {
         (31_536_000_i64..=4_096_000_000_i64, 0_i64..=86_399).prop_map(|(start, now_off)| {
             let start = stamp(start);
             let now = start + TimeDelta::try_seconds(now_off).unwrap();
@@ -931,10 +924,7 @@ mod today_tests {
 
     /// A live task whose three time stamps wander ±1 day around the
     /// window (the partition property needs timestamps on both flanks).
-    fn stamped_task_strategy(
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-    ) -> impl Strategy<Value = Task> {
+    fn stamped_task_strategy(start: Timestamp, end: Timestamp) -> impl Strategy<Value = Task> {
         let lo = (start - day()).timestamp();
         let hi = (end + day()).timestamp();
         (
@@ -956,12 +946,7 @@ mod today_tests {
     /// around that same window (ids shaped by a raw index, so the map
     /// has no collisions).
     /// The span-with-tuples tuple the generated fixtures consume.
-    type SpanWithTasks = (
-        DateTime<Utc>,
-        DateTime<Utc>,
-        DateTime<Utc>,
-        Vec<(u128, Task)>,
-    );
+    type SpanWithTasks = (Timestamp, Timestamp, Timestamp, Vec<(u128, Task)>);
 
     fn span_with_tasks_strategy() -> impl Strategy<Value = SpanWithTasks> {
         span_strategy().prop_flat_map(|(start, now, end)| {
@@ -976,9 +961,9 @@ mod today_tests {
 
     fn sections_of(
         tasks: &BTreeMap<TaskId, Task>,
-        now: DateTime<Utc>,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
+        now: Timestamp,
+        start: Timestamp,
+        end: Timestamp,
     ) -> TodaySections {
         today_sections(tasks, now, (start, end))
     }
@@ -1243,16 +1228,16 @@ mod plan_tests {
         FixedOffset::east_opt(h * 3600).unwrap()
     }
 
-    fn stamp(secs: i64) -> DateTime<Utc> {
+    fn stamp(secs: i64) -> Timestamp {
         Utc.timestamp_opt(secs, 0).unwrap()
     }
 
     fn task(
         raw: u128,
         order: i64,
-        duedate: Option<DateTime<Utc>>,
-        scheduled: Option<DateTime<Utc>>,
-        done: Option<DateTime<Utc>>,
+        duedate: Option<Timestamp>,
+        scheduled: Option<Timestamp>,
+        done: Option<Timestamp>,
     ) -> Task {
         Task {
             id: TaskId::from(uuid::Uuid::from_u128(raw)),
