@@ -478,6 +478,24 @@ async fn cycle(
 
     // ---- derive --------------------------------------------------------
     let owned = owned_boards(id, &persisted.boards);
+    let tables = EntityTables {
+        tasks: &persisted.tasks,
+        stacks: &persisted.stacks,
+        labels: &persisted.labels,
+        boards: &persisted.boards,
+    };
+    // The board-less outbox ops (owning entity rows wiped) are cycle-level
+    // bookkeeping under the orphan law (plan
+    // `.artifacts/plans/2026-11-24-sync-orphan-lanes-plan.md` §1): the
+    // planner synthesizes a no-op completion for them, so they drain
+    // every cycle — either riding the first owned board's planning pass
+    // below, or (zero owned boards) through the standalone drain.
+    let orphan_ops: Vec<taskboard_domain::PendingOp> = persisted
+        .outbox
+        .iter()
+        .filter(|entry| entry.op.owning_board(&tables).is_none())
+        .cloned()
+        .collect();
     if owned.is_empty() {
         if commanded {
             tracing::debug!("cycle skipped: no board bound for this connector");
@@ -495,6 +513,21 @@ async fn cycle(
             )
             .await;
         }
+        // #1256: the zero-board leg of the orphan law — no board lane
+        // exists, so the orphans drain standalone instead of stranding
+        // behind the early return.
+        drain_standalone_orphans(
+            id,
+            client,
+            reports,
+            system,
+            st,
+            &orphan_ops,
+            &persisted,
+            started,
+            read_at,
+        )
+        .await;
         return;
     }
     // Memory proportional to the live set: slots for remote ids that left
@@ -511,12 +544,6 @@ async fn cycle(
     st.documents.retain(|board, _| live.contains(board));
     st.evicted.retain(|board, _| live.contains(board));
 
-    let tables = EntityTables {
-        tasks: &persisted.tasks,
-        stacks: &persisted.stacks,
-        labels: &persisted.labels,
-        boards: &persisted.boards,
-    };
     // Bound cards' (archived, remote_seen), for the listing-lag detail
     // refresh (tier-2 verified: Deck's listings lag its cache, so an
     // archive/unarchive can carry a stale version stamp that LWW would
@@ -528,17 +555,6 @@ async fn cycle(
             let r = t.remote.as_ref()?;
             Some(((r.board, r.card), (t.archived, t.remote_seen)))
         })
-        .collect();
-
-    // The board-less outbox ops (owning entity rows wiped) are cycle-level
-    // bookkeeping: they ride the *first* owned board's planning pass, once
-    // per cycle — the planner synthetically completes no-ops for missing
-    // entities (D-13). Empty set ⇒ they strand unattempted.
-    let orphan_ops: Vec<taskboard_domain::PendingOp> = persisted
-        .outbox
-        .iter()
-        .filter(|entry| entry.op.owning_board(&tables).is_none())
-        .cloned()
         .collect();
 
     let was_offline = st.offline;
@@ -957,6 +973,93 @@ fn consume_reservoirs(st: &mut LoopState, migrated: &taskboard_domain::AppDataSe
         consume!(reminder_rules);
         consume!(dismissals);
     }
+}
+
+/// The zero-board leg of the orphan law (plan
+/// `.artifacts/plans/2026-11-24-sync-orphan-lanes-plan.md` §1, #1256):
+/// plan the board-less ops and execute whatever the planner produces —
+/// the shape is never assumed to be a no-op, so a planner change
+/// cannot strand ops behind a now-wrong assumption. The outcomes
+/// publish through the engine's push-only report path
+/// (`Failed { board: None }` carrying evidence): the ops complete, and
+/// no board's sync row is touched — no board exists to attribute the
+/// cycle to, so no `last_success` advances. A `Document` group has no
+/// flush lane here (no board, no sidecar document to anchor on); the
+/// op stays queued loudly and retries with the next cycle.
+#[allow(clippy::too_many_arguments)] // the cycle context is the argument list
+async fn drain_standalone_orphans(
+    id: &taskboard_domain::ConnectorId,
+    client: &DeckClient,
+    reports: &mpsc::Sender<SyncReport>,
+    system: &broadcast::Sender<SystemEvent>,
+    st: &mut LoopState,
+    orphan_ops: &[taskboard_domain::PendingOp],
+    persisted: &taskboard_domain::PersistedState,
+    started: std::time::Instant,
+    read_at: chrono::DateTime<chrono::Utc>,
+) {
+    if orphan_ops.is_empty() {
+        // Zero-cost guard first: the empty lane publishes nothing.
+        return;
+    }
+    let tables = EntityTables {
+        tasks: &persisted.tasks,
+        stacks: &persisted.stacks,
+        labels: &persisted.labels,
+        boards: &persisted.boards,
+    };
+    let ownership = taskboard_domain::ownership::BoardOwnershipMap::from_boards(&persisted.boards);
+    let mut executor = PushExecutor::new(client, BindingOverlay::orphan_drain(), st.features);
+    let mut pushes: Vec<PushOutcome> = Vec::new();
+    for group in plan_pushes(orphan_ops, tables, &ownership) {
+        if matches!(group.target, taskboard_domain::PushTarget::Document(_)) {
+            tracing::warn!(
+                connector = %id,
+                "orphan flush trigger has no board lane; op stays queued"
+            );
+            continue;
+        }
+        match executor.execute(&group, orphan_ops, tables).await {
+            GroupOutcome::Outcomes(mut outcomes) => pushes.append(&mut outcomes),
+            GroupOutcome::Aborted { landed, floor } => {
+                // Shared transport down mid-drain: the landed evidence
+                // travels, the episode edge fires, the cycle ends (the
+                // same D-12 shape as an in-cycle abort).
+                pushes.extend(landed);
+                fail_cycle(
+                    id,
+                    st,
+                    reports,
+                    system,
+                    SyncErrorKind::Network,
+                    floor,
+                    None,
+                    started,
+                    pushes,
+                    read_at,
+                )
+                .await;
+                return;
+            }
+        }
+    }
+    if pushes.is_empty() {
+        return;
+    }
+    tracing::debug!(connector = %id, ops = pushes.len(), "standalone orphan drain");
+    send_report(
+        reports,
+        SyncReport::Failed {
+            connector: id.clone(),
+            kind: SyncErrorKind::NoBoard,
+            pushes,
+            read_at,
+            board: None,
+            duration: started.elapsed(),
+            features: st.features,
+        },
+    )
+    .await;
 }
 
 /// Transport-classified failures broadcast `ConnectorLost` for this

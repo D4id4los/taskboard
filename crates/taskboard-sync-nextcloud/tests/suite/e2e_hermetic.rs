@@ -1695,3 +1695,219 @@ async fn i10_remote_missing_ref_delete_drains_exactly_once() {
         "a drained RemoteMissing op never re-pushes"
     );
 }
+
+// ---- C2: the orphan lane's zero-board leg (#1256) -----------------------
+//
+// The orphan law (plan 2026-11-24-sync-orphan-lanes §1): an outbox op
+// whose owning entity row was wiped is cycle-level bookkeeping — the
+// planner synthesizes a no-op completion for it, so it drains every
+// cycle. #1256: a connector that owns zero boards still runs the
+// standalone orphan drain; the ops never strand behind the empty-set
+// early return.
+
+/// The zero-board seed: no boards at all, one orphan op whose task row
+/// is absent (its `owning_board` is `None`).
+fn zero_board_state_with_orphan(op_raw: u128) -> taskboard_domain::PersistedState {
+    let mut state = taskboard_domain::PersistedState::default();
+    state.outbox.push(taskboard_domain::PendingOp {
+        op_id: taskboard_domain::OpId(uuid(op_raw)),
+        op: taskboard_domain::LocalOp::UpdateTask(taskboard_domain::TaskId::from(uuid(0xCAFE))),
+        queued_at: ts(T),
+    });
+    state
+}
+
+/// #1256 — the zero-board standalone drain: one cycle drains the
+/// orphan op with no board bound and without a single wire request
+/// (the planner's synthetic completion contacts nothing — and the
+/// code must execute whatever the planner produces, never assume it).
+#[tokio::test(start_paused = true)]
+async fn orphan_ops_drain_with_zero_owned_boards() {
+    let server = std::sync::Arc::new(start_server().await);
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server.clone(), zero_board_state_with_orphan(300), clock).await;
+    let (commands, _actor) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    nudge_cycle(&commands).await;
+
+    // One cycle drains the orphan: the engine persisted the completion
+    // (the outbox is the oracle — with zero boards the sync aggregate
+    // has no rows to count).
+    eventually_no_state(|| stack.repo.snapshot().outbox.is_empty()).await;
+    // A synthetic completion never addresses a write endpoint (the
+    // boot-time capabilities probe is the only traffic).
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert!(
+        requests.iter().all(|req| req.method == "GET"),
+        "the standalone drain is a local completion, not a wire cycle"
+    );
+}
+
+/// #1256 — the empty-orphan guard: a zero-board cycle with no orphan
+/// ops publishes nothing and changes nothing (the additive drain is a
+/// no-op; the commanded `NoBoard` verdict keeps its shape).
+#[tokio::test(start_paused = true)]
+async fn zero_board_cycle_with_empty_orphan_lane_publishes_nothing() {
+    let server = std::sync::Arc::new(start_server().await);
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server, taskboard_domain::PersistedState::default(), clock).await;
+    let (commands, _actor) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    nudge_cycle(&commands).await;
+
+    // Structural: the outbox is (and stays) empty, the connector's
+    // aggregate settles idle — nothing was published for the empty
+    // orphan lane.
+    eventually(&stack.engine, |app| {
+        app.sync.aggregate().pending_ops == 0 && app.sync.aggregate().phase == SyncPhase::Idle
+    })
+    .await;
+    assert_eq!(stack.repo.snapshot().outbox, Vec::new());
+}
+
+/// Pull listings for BOTH owned boards (42 and 43): the second board's
+/// detail and stacks payloads mirror the seeded helpers' shapes.
+async fn mount_two_board_pulls(server: &MockServer) {
+    let two_boards = serde_json::json!([
+        {"id": BOARD, "title": "board", "color": "00ff00",
+         "lastModified": T, "deletedAt": 0, "archived": false, "labels": []},
+        {"id": 43, "title": "second", "color": "00ff00",
+         "lastModified": T, "deletedAt": 0, "archived": false, "labels": []}
+    ])
+    .to_string();
+    let second_board = serde_json::json!({
+        "id": 43, "title": "second", "color": "00ff00",
+        "lastModified": T, "deletedAt": 0, "archived": false, "labels": []
+    })
+    .to_string();
+    let second_stacks = serde_json::json!([{
+        "id": STACK, "title": "col", "boardId": 43, "order": 0,
+        "lastModified": T, "deletedAt": 0, "archived": false, "cards": []
+    }])
+    .to_string();
+    for (p, body) in [
+        (
+            "/index.php/apps/deck/api/v1.0/boards".to_string(),
+            two_boards,
+        ),
+        (
+            "/index.php/apps/deck/api/v1.0/boards/43".to_string(),
+            second_board,
+        ),
+        (
+            "/index.php/apps/deck/api/v1.0/boards/43/stacks".to_string(),
+            second_stacks,
+        ),
+        (
+            "/index.php/apps/deck/api/v1.0/boards/43/stacks/archived".to_string(),
+            "[]".to_string(),
+        ),
+    ] {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(p))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("ETag", "\"gen-1\"")
+                    .set_body_string(body),
+            )
+            .mount(server)
+            .await;
+    }
+}
+
+/// The seeded board plus a second owned board (deck 43), and one
+/// orphan ref-delete whose board row is wiped (only the ref carries
+/// the remote address).
+fn two_board_state_with_orphan_ref_delete() -> taskboard_domain::PersistedState {
+    let mut state = seeded_state();
+    let board2 = taskboard_domain::Board {
+        id: taskboard_domain::BoardId::from(uuid(3)),
+        remote: Some(taskboard_domain::RemoteBoardBinding {
+            connector: taskboard_domain::ConnectorId::from("nextcloud"),
+            board: RemoteBoardId0::deck(43),
+        }),
+        title: "second".into(),
+        color: taskboard_domain::Color::new("00ff00"),
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::BoardClocks {
+            title: ts(T),
+            color: taskboard_domain::BoardClocks::epoch(),
+            archived: taskboard_domain::BoardClocks::epoch(),
+            deleted: taskboard_domain::BoardClocks::epoch(),
+        },
+        authors: taskboard_domain::entities::BoardAuthors::default(),
+        remote_seen: Some(ts(T)),
+    };
+    let stack2 = taskboard_domain::Stack {
+        id: taskboard_domain::StackId::from(uuid(4)),
+        remote: Some(taskboard_domain::RemoteStackRef {
+            board: RemoteBoardId0::deck(43),
+            stack: taskboard_domain::RemoteStackId::deck(STACK),
+        }),
+        board: board2.id,
+        title: "col".into(),
+        order: 0,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::StackClocks {
+            title: ts(T),
+            order: ts(T),
+            deleted: ts(T),
+        },
+        authors: taskboard_domain::entities::StackAuthors::default(),
+        remote_seen: Some(ts(T)),
+    };
+    state.boards.insert(board2.id, board2);
+    state.stacks.insert(stack2.id, stack2);
+    let wiped = strand_seed::wiped_board();
+    state.outbox.push(taskboard_domain::PendingOp {
+        op_id: taskboard_domain::OpId(uuid(303)),
+        op: taskboard_domain::LocalOp::DeleteRemoteCard {
+            board: wiped,
+            card: taskboard_domain::RemoteCardRef {
+                board: RemoteBoardId0::deck(BOARD),
+                stack: taskboard_domain::RemoteStackId::deck(9),
+                card: taskboard_domain::RemoteCardId::deck(777),
+            },
+        },
+        queued_at: ts(T),
+    });
+    state
+}
+
+/// #1256 — the existing ride is preserved: with two owned boards, the
+/// orphan rides exactly the *first* board's pass — one drain, not one
+/// per board (the ref-delete's wire observable counts the attempts).
+#[tokio::test(start_paused = true)]
+async fn owned_boards_cycle_still_rides_orphans_on_first_board() {
+    let server = std::sync::Arc::new(start_server().await);
+    mount_two_board_pulls(&server).await;
+    strand_seed::mount_drain_routes(&server, 200).await;
+
+    let state = two_board_state_with_orphan_ref_delete();
+    let clock: Arc<dyn Clock> = Arc::new(SteppingClock::new(ts(T + 1000), 1));
+    let stack = boot(server, state, clock).await;
+    let (commands, _actor) = spawn_actor(&stack);
+    wait_subscribed(&stack.system_tx).await;
+    nudge_cycle(&commands).await;
+
+    eventually(&stack.engine, |app| app.sync.aggregate().pending_ops == 0).await;
+    let deletes_after_one = strand_seed::delete_hits(&stack.server).await;
+    assert_eq!(
+        deletes_after_one, 1,
+        "the orphan rode the first board's pass exactly once"
+    );
+
+    // Cycle 2: drained ops never re-push.
+    nudge_cycle(&commands).await;
+    eventually(&stack.engine, |app| {
+        app.sync.aggregate().phase == SyncPhase::Idle
+    })
+    .await;
+    assert_eq!(
+        strand_seed::delete_hits(&stack.server).await,
+        deletes_after_one,
+        "a drained orphan never re-pushes"
+    );
+}
