@@ -401,13 +401,64 @@ pub fn mount(
     Ok(handle)
 }
 
-/// Arms the tooltip delay driver (usability pass D3): a one-shot
-/// slint timer restarted on every `delay-requested` invocation — the
-/// invocation path (not property changes) is what makes a re-hover
-/// inside the delay window restart it. Fires under the testing
-/// backend's mock clock, so the component tests are deterministic.
-fn install_tooltip_delay(window: &AppWindow) -> std::rc::Rc<slint::Timer> {
-    let tooltip = window.global::<TooltipState>();
+/// The tooltip host facts (the W-3 fold over the round-1 D10 driver):
+/// the only per-window differences between the main window's and the
+/// alarm window's tooltip machinery — where the placement reads the
+/// window geometry and what the globals' adapters resolve to. The
+/// shared driver and placement below are written once against this.
+trait TooltipHost: slint::ComponentHandle + 'static {
+    /// The window's logical extent and the status-strip offset the
+    /// tooltip must clear (the alarm window is its own frame — the
+    /// offset is zero there).
+    fn tooltip_geometry(&self) -> ((f32, f32), f32);
+    /// The theme's base scale (the margin/gap multiplier).
+    fn tooltip_scale(&self) -> f32;
+    /// The shared [`TooltipState`] global adapter.
+    fn tooltip_state(&self) -> TooltipState<'_>;
+}
+
+impl TooltipHost for AppWindow {
+    fn tooltip_geometry(&self) -> ((f32, f32), f32) {
+        (
+            (self.get_window_w(), self.get_window_h()),
+            self.get_status_top(),
+        )
+    }
+    fn tooltip_scale(&self) -> f32 {
+        self.global::<Theme>().get_base_scale()
+    }
+    fn tooltip_state(&self) -> TooltipState<'_> {
+        self.global::<TooltipState>()
+    }
+}
+
+impl TooltipHost for AlarmWindow {
+    fn tooltip_geometry(&self) -> ((f32, f32), f32) {
+        // The px casts (physical u32 → logical f32): precision loss
+        // far below any visible geometry step, the scale.rs precedent.
+        #[allow(clippy::cast_precision_loss)]
+        let logical = |w: u32, h: u32, scale: f32| (w as f32 / scale, h as f32 / scale);
+        let slint_window = self.window();
+        let size = slint_window.size();
+        let scale = slint_window.scale_factor();
+        (logical(size.width, size.height, scale), 0.0)
+    }
+    fn tooltip_scale(&self) -> f32 {
+        self.global::<Theme>().get_base_scale()
+    }
+    fn tooltip_state(&self) -> TooltipState<'_> {
+        self.global::<TooltipState>()
+    }
+}
+
+/// Arms the tooltip delay driver (usability pass D3; the alarm
+/// window's W-3 mounts the same driver): a one-shot slint timer
+/// restarted on every `delay-requested` invocation — the invocation
+/// path (not property changes) is what makes a re-hover inside the
+/// delay window restart it. Fires under the testing backend's mock
+/// clock, so the component tests are deterministic.
+fn install_tooltip_driver<H: TooltipHost>(window: &H) -> std::rc::Rc<slint::Timer> {
+    let tooltip = window.tooltip_state();
     let weak = window.as_weak();
     let timer = std::rc::Rc::new(slint::Timer::default());
     let arm = std::rc::Rc::clone(&timer);
@@ -436,7 +487,7 @@ fn install_tooltip_delay(window: &AppWindow) -> std::rc::Rc<slint::Timer> {
             std::time::Duration::from_millis(TOOLTIP_DELAY_MS),
             move || {
                 if let Some(window) = fire_weak.upgrade() {
-                    let tooltip = window.global::<TooltipState>();
+                    let tooltip = window.tooltip_state();
                     tooltip.set_visible(true);
                     tooltip.set_pending(false);
                     place_tooltip(&window, &fire_tip);
@@ -451,19 +502,35 @@ fn install_tooltip_delay(window: &AppWindow) -> std::rc::Rc<slint::Timer> {
     timer
 }
 
+/// Arms the main window's tooltip driver (the `install_seam!`-era
+/// wrapper name kept for the install inventory).
+fn install_tooltip_delay(window: &AppWindow) -> std::rc::Rc<slint::Timer> {
+    install_tooltip_driver(window)
+}
+
+/// Arms the alarm window's tooltip driver (W-3, US-3): the same
+/// [`install_tooltip_driver`] over the alarm window's host facts.
+/// The panel mounts Slint-side; without this driver the pending
+/// state would never become visible (the placement hand-off would
+/// never land).
+fn install_alarm_tooltip(window: &AlarmWindow) -> std::rc::Rc<slint::Timer> {
+    install_tooltip_driver(window)
+}
+
 /// The placement hand-off (round-1 D10): when the tooltip is visible
 /// and its size is known, compute the top-left with the pure
 /// [`tooltip::place`] math and mark it placed. Either input may
 /// arrive last — both call sites run this.
-fn place_tooltip(window: &AppWindow, tip_size: &std::cell::Cell<Option<(f32, f32)>>) {
+fn place_tooltip<H: TooltipHost>(window: &H, tip_size: &std::cell::Cell<Option<(f32, f32)>>) {
     let Some((tip_w, tip_h)) = tip_size.get() else {
         return;
     };
-    let tooltip = window.global::<TooltipState>();
+    let tooltip = window.tooltip_state();
     if !tooltip.get_visible() {
         return;
     }
-    let scale = window.global::<Theme>().get_base_scale();
+    let scale = window.tooltip_scale();
+    let (window_size, status_top) = window.tooltip_geometry();
     let input = tooltip::TooltipInput {
         // Slint lengths cross the boundary as plain f32 logical px.
         anchor: (
@@ -473,8 +540,8 @@ fn place_tooltip(window: &AppWindow, tip_size: &std::cell::Cell<Option<(f32, f32
             tooltip.get_anchor_height(),
         ),
         tip: (tip_w, tip_h),
-        window: (window.get_window_w(), window.get_window_h()),
-        status_top: window.get_status_top(),
+        window: window_size,
+        status_top,
         margin: 8.0 * scale,
         gap: 4.0 * scale,
     };
@@ -482,100 +549,6 @@ fn place_tooltip(window: &AppWindow, tip_size: &std::cell::Cell<Option<(f32, f32
     tooltip.set_tip_x(x);
     tooltip.set_tip_y(y);
     tooltip.set_placed(true);
-}
-
-/// The alarm window's placement hand-off (W-3, US-3): the same pure
-/// [`tooltip::place`] math over the alarm window's own geometry (the
-/// window is its own frame — no status strip, so `status_top` is
-/// zero). Either input may arrive last — both call sites run this.
-fn place_alarm_tooltip(window: &AlarmWindow, tip_size: &std::cell::Cell<Option<(f32, f32)>>) {
-    let Some((tip_w, tip_h)) = tip_size.get() else {
-        return;
-    };
-    let tooltip = window.global::<TooltipState>();
-    if !tooltip.get_visible() {
-        return;
-    }
-    let scale = window.global::<Theme>().get_base_scale();
-    let input = tooltip::TooltipInput {
-        // Slint lengths cross the boundary as plain f32 logical px.
-        anchor: (
-            tooltip.get_anchor_x(),
-            tooltip.get_anchor_y(),
-            tooltip.get_anchor_width(),
-            tooltip.get_anchor_height(),
-        ),
-        tip: (tip_w, tip_h),
-        window: {
-            // The px casts (physical u32 → logical f32): precision
-            // loss far below any visible geometry step, the scale.rs
-            // precedent.
-            #[allow(clippy::cast_precision_loss)]
-            let logical = |w: u32, h: u32, scale: f32| (w as f32 / scale, h as f32 / scale);
-            let size = window.window().size();
-            let scale = window.window().scale_factor();
-            logical(size.width, size.height, scale)
-        },
-        status_top: 0.0,
-        margin: 8.0 * scale,
-        gap: 4.0 * scale,
-    };
-    let (x, y) = tooltip::place(&input);
-    tooltip.set_tip_x(x);
-    tooltip.set_tip_y(y);
-    tooltip.set_placed(true);
-}
-
-/// Arms the alarm window's tooltip delay driver (W-3, US-3): the
-/// shape of [`install_tooltip_delay`] retargeted at the alarm window
-/// — the delay is a one-shot slint timer restarted per invocation,
-/// fires under the testing backend's mock clock, and the placement
-/// runs against the alarm window's own geometry. The panel mounts
-/// Slint-side; without this driver the pending state would never
-/// become visible (the placement hand-off would never land).
-fn install_alarm_tooltip(window: &AlarmWindow) -> std::rc::Rc<slint::Timer> {
-    let tooltip = window.global::<TooltipState>();
-    let weak = window.as_weak();
-    let timer = std::rc::Rc::new(slint::Timer::default());
-    let arm = std::rc::Rc::clone(&timer);
-    // The measured tip size (the size hand-off): shared by the
-    // observation callback and the delay fire, so placement lands
-    // whenever both facts are present, whichever comes last.
-    let tip_size: std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>> =
-        std::rc::Rc::new(std::cell::Cell::new(None));
-    {
-        let weak = weak.clone();
-        let tip_size = std::rc::Rc::clone(&tip_size);
-        tooltip.on_size_observed(move |w, h| {
-            tip_size.set(Some((w, h)));
-            if let Some(window) = weak.upgrade() {
-                place_alarm_tooltip(&window, &tip_size);
-            }
-        });
-    }
-    let fire_weak = weak;
-    let fire_tip = std::rc::Rc::clone(&tip_size);
-    tooltip.on_delay_requested(move || {
-        let fire_weak = fire_weak.clone();
-        let fire_tip = std::rc::Rc::clone(&fire_tip);
-        arm.start(
-            slint::TimerMode::SingleShot,
-            std::time::Duration::from_millis(TOOLTIP_DELAY_MS),
-            move || {
-                if let Some(window) = fire_weak.upgrade() {
-                    let tooltip = window.global::<TooltipState>();
-                    tooltip.set_visible(true);
-                    tooltip.set_pending(false);
-                    place_alarm_tooltip(&window, &fire_tip);
-                }
-            },
-        );
-    });
-    let dismiss_timer = std::rc::Rc::clone(&timer);
-    tooltip.on_dismiss_requested(move || {
-        dismiss_timer.stop();
-    });
-    timer
 }
 
 /// The tooltip delay (usability D3): a duration, not a layout
