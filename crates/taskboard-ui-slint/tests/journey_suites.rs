@@ -72,3 +72,5 @@ mod undo_ui_branch_picker_journeys;
 mod undo_ui_reminder_undo_journeys;
 #[path = "journeys/usability_components.rs"]
 mod usability_components;
+#[path = "journeys/walk_planner_support.rs"]
+mod walk_planner_support;

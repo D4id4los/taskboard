@@ -12,6 +12,8 @@
 
 use crate::support;
 
+use crate::walk_planner_support as planner_support;
+
 use support::driver::{DriverOptions, JourneyDriver as _, SlintDriver};
 use support::fixture;
 use support::harness::Harness;
@@ -1157,98 +1159,14 @@ fn us9_s3_roster_row_verb_uses_own_seam() {
 fn walk_fixture_state() -> (fixture::Fixture, taskboard_domain::AppState) {
     let (fixture, mut state) = fixture::golden_state();
     state.reflection.entries.clear();
-    let board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::new_v4());
-    state.boards.insert(
-        board,
-        taskboard_domain::entities::Board {
-            id: board,
-            remote: None,
-            title: "Inbox".to_owned(),
-            color: taskboard_domain::entities::Color::new(""),
-            archived: false,
-            deleted: false,
-            clocks: taskboard_domain::entities::BoardClocks {
-                title: taskboard_domain::entities::BoardClocks::epoch(),
-                color: taskboard_domain::entities::BoardClocks::epoch(),
-                archived: taskboard_domain::entities::BoardClocks::epoch(),
-                deleted: taskboard_domain::entities::BoardClocks::epoch(),
-            },
-            authors: taskboard_domain::entities::BoardAuthors::default(),
-            remote_seen: None,
-        },
-    );
-    let inbox_stack = taskboard_domain::StackId::from_uuid(uuid::Uuid::new_v4());
-    state.stacks.insert(
-        inbox_stack,
-        taskboard_domain::entities::Stack {
-            id: inbox_stack,
-            remote: None,
-            board,
-            title: "Inbox".to_owned(),
-            order: 0,
-            archived: false,
-            deleted: false,
-            clocks: taskboard_domain::entities::StackClocks {
-                title: taskboard_domain::entities::BoardClocks::epoch(),
-                order: taskboard_domain::entities::BoardClocks::epoch(),
-                deleted: taskboard_domain::entities::BoardClocks::epoch(),
-            },
-            authors: taskboard_domain::entities::StackAuthors::default(),
-            remote_seen: None,
-        },
-    );
+    let inbox_stack = planner_support::insert_inbox_stack(&mut state);
     for title in ["triage-me", "triage-me-too"] {
-        let task = taskboard_domain::entities::Task {
-            id: taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7()),
-            remote: None,
-            label_memberships: std::collections::BTreeMap::new(),
-            title: title.to_owned(),
-            description: String::new(),
-            duedate: None,
-            scheduled: None,
-            done: None,
-            stack: inbox_stack,
-            order: 0,
-            effort: None,
-            importance: None,
-            urgency: None,
-            recur: None,
-            kind: taskboard_domain::entities::TaskKind::Standard,
-            archived: false,
-            deleted: false,
-            clocks: taskboard_domain::entities::TaskClocks {
-                title: taskboard_domain::entities::BoardClocks::epoch(),
-                description: taskboard_domain::entities::BoardClocks::epoch(),
-                duedate: taskboard_domain::entities::BoardClocks::epoch(),
-                scheduled: taskboard_domain::entities::BoardClocks::epoch(),
-                done: taskboard_domain::entities::BoardClocks::epoch(),
-                position: taskboard_domain::entities::BoardClocks::epoch(),
-                effort: taskboard_domain::entities::BoardClocks::epoch(),
-                importance: taskboard_domain::entities::BoardClocks::epoch(),
-                urgency: taskboard_domain::entities::BoardClocks::epoch(),
-                recur: taskboard_domain::entities::BoardClocks::epoch(),
-                kind: taskboard_domain::entities::BoardClocks::epoch(),
-                archived: taskboard_domain::entities::BoardClocks::epoch(),
-                deleted: taskboard_domain::entities::BoardClocks::epoch(),
-            },
-            authors: taskboard_domain::entities::TaskAuthors::default(),
-            remote_seen: None,
-            remote_baseline: None,
-        };
+        let task = planner_support::walk_new_task(inbox_stack, title);
         state.tasks.insert(task.id, task);
     }
     // task0 carries a scheduled anchor inside yesterday's window (the
     // midnight-aligned convention; the harness calendar's vocabulary).
-    let calendar = fixture::harness_calendar();
-    let now = chrono::Utc::now();
-    let yesterday = calendar.today(now).pred_opt().expect("yesterday");
-    let carry = calendar.instant(
-        yesterday,
-        chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
-    );
-    let mut task0 = state.tasks.get(&fixture.task0).expect("task0").clone();
-    task0.scheduled = Some(carry);
-    state.tasks.insert(fixture.task0, task0);
+    planner_support::anchor_yesterday(&mut state, fixture.task0);
     (fixture, state)
 }
 
@@ -1508,23 +1426,7 @@ fn planner_fixture() -> (
     taskboard_domain::TaskId,
 ) {
     let (fx, mut state) = fixture::golden_state();
-    let calendar = fixture::harness_calendar();
-    let now = chrono::Utc::now();
-    let tomorrow = calendar.today(now).succ_opt().expect("tomorrow");
-    let box_instant = calendar.instant(
-        tomorrow,
-        chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
-    );
-    // The box: stack b's task (the fixture's third row).
-    let box_task = state
-        .tasks
-        .values()
-        .find(|task| task.stack == fx.stack_b)
-        .expect("stack b's task")
-        .id;
-    let mut boxed = state.tasks.get(&box_task).expect("box task").clone();
-    boxed.scheduled = Some(box_instant);
-    state.tasks.insert(box_task, boxed);
+    let box_task = planner_support::place_stack_b_box(&mut state, fx.stack_b);
     (fx, state, box_task)
 }
 
