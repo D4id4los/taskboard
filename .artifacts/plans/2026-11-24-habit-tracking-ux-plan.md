@@ -348,3 +348,19 @@ through the two commands above (US-33's steps dispatch nothing new).
 - [ ] All matrix absences carry rulings (R-1..R-5); census updated
 - [ ] Non-goals filed as backlog issues (numbers recorded in the
   dispatch plan)
+
+## 10. Evidence bindings (stage-3 review, 2026-11-24)
+
+The §8-nominated journeys tests own the UI-chain steps; the
+engine/storage/sync steps are behavior-bearing tests at their lowest
+layer (AGENTS §5 "one behavior, one test, lowest layer" — the reducer
+unit lives in `taskboard-domain`, not a second copy through the
+journeys harness). The `bound-test:` lines below are the coverage
+gate's (#768) evidence bindings, checked with the fn-boundary match:
+
+bound-test: US-30/S2 -> crates/taskboard-domain/src/command.rs::start_habit_tracking_closes_task_and_habit_open_entries_at_now
+bound-test: US-31/S3 -> crates/taskboard-ui-slint/tests/journeys/habit_tracking_journeys.rs::us31_s3_toggle_stop_dispatches_stop
+bound-test: US-32/S2 -> crates/taskboard-storage-sqlite/tests/roundtrip.rs::habit_time_entry_rows_round_trip_including_the_open_row
+bound-test: US-33/S1 -> crates/taskboard-storage-sqlite/tests/roundtrip.rs::habit_time_entry_rows_round_trip_including_the_open_row
+bound-test: US-33/S2 -> crates/taskboard-domain/src/appdata.rs::habit_time_entries_builder_scopes_the_board_and_the_retention_window
+bound-test: US-33/S3 -> crates/taskboard-domain/src/merge.rs::fold_habit_time_entries_adopts_updates_and_tombstones_by_the_clock
