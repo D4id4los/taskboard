@@ -1102,8 +1102,11 @@ mod tests {
         // J3 US-4 (round 9 chunk 11): the vi Global set grew to the
         // today jump plus the board-return's Alt+Left alternate (the
         // D-table's Back ruling; the dated supersession of the
-        // one-row pin).
-        assert_eq!(vi.bindings_in(ContextId::Global).expect("rows").len(), 2);
+        // one-row pin). #1194 (2026-11-24, dated supersession): the
+        // status panel's global open chord joins as the third row —
+        // the close twin's Escape lives in the StatusPanel context,
+        // the shared mnemonic chord rides the small Global block.
+        assert_eq!(vi.bindings_in(ContextId::Global).expect("rows").len(), 3);
     }
 
     /// The chord-shift normalization (keymap-parity plan D-3, N-17;
@@ -1460,14 +1463,17 @@ mod tests {
         // J3 US-4 (round 9 chunk 11, 2026-11-19): the Global row set
         // grows to two — the today jump plus the board-return's
         // Alt+Left alternate (the D-table's Back ruling; the dated
-        // supersession of the one-row pin).
+        // supersession of the one-row pin). #1194 (2026-11-24, dated
+        // supersession): the status panel's global open chord joins
+        // as the third row.
         assert_eq!(
             global.len(),
-            2,
-            "Global carries the today jump + the back alternate"
+            3,
+            "Global carries the today jump + the back alternate + the status panel open chord"
         );
         assert_eq!(global[0].0, ActionId::ViewToday);
-        assert_eq!(global[1].0, ActionId::NavFocusBoard);
+        assert_eq!(global[1].0, ActionId::StatusPanelOpen);
+        assert_eq!(global[2].0, ActionId::NavFocusBoard);
         assert_eq!(
             by_context
                 .get(&ContextId::ViInsert)
