@@ -126,6 +126,13 @@ export component TaskCard inherits Rectangle {
     callback context-requested(float, float);
     // The task.edit binding hint (round-1 D8; a keymap projection).
     in property <[string]> hint-keys;
+    // The done slot's a11y verb pair (#1286): the task literals are
+    // the property defaults — every task surface's instantiation is
+    // behavior-identical with zero edits; a habit row's instantiation
+    // supplies its own +1 log verb (the slot stays pure geometry per
+    // the W-1 design — only the labels are overridable).
+    in property <string> done-label: "Mark task done";
+    in property <string> done-undone-label: "Mark task not done";
 
     // Hover stays distinct from the emphasis ring (focus ≠ hover,
     // both may coexist — usability D2). At rest the card paints the
@@ -214,8 +221,8 @@ export component TaskCard inherits Rectangle {
             checked: root.model.done;
             // The done/undone verb pair (a presentation literal; the
             // role + label pair is what the a11y tree announces).
-            checked-label: "Mark task not done";
-            unchecked-label: "Mark task done";
+            checked-label: root.done-undone-label;
+            unchecked-label: root.done-label;
             toggled => root.done-toggled();
         }
 

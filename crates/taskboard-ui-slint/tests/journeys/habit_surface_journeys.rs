@@ -135,16 +135,24 @@ fn us1_s1_log_button_removed_checkbox_logs() {
             "the detached strip's Log habit button is gone"
         );
         // The done slot routes the log (the landed seam, still wired).
+        // #1286: the slot's a11y address is the habit verb, not the
+        // task verb — the label is the corpus's address (the address
+        // changed with the fix; the pin's shape is unchanged).
         let checkbox = harness
             .driver
-            .find_by_label("Mark task done")
-            .expect("the card's done checkbox renders");
+            .find_by_label("Log habit +1")
+            .expect("the card's done checkbox renders the habit verb");
         checkbox.invoke_default_action();
         harness.driver.advance_time(0);
         match harness.engine.drain().as_slice() {
             [StateCommand::LogHabit { .. }] => {}
             other => panic!("the done slot logs the habit, got {other:?}"),
         }
+        // The task verb is not on the habit surface (#1286).
+        assert!(
+            harness.driver.find_by_label("Mark task done").is_none(),
+            "the habit row does not carry the task done verb"
+        );
     });
 }
 

@@ -344,6 +344,13 @@ export component HabitsSection inherits Rectangle {
                 habit-card := TaskCard {
                     model: row.card;
                     hint-keys: [];
+                    // The done slot labels the habit's own verb
+                    // (#1286): it routes the +1 log, never the task
+                    // done flip — the a11y pair names the log both
+                    // ways (surplus is first-class; the slot never
+                    // disables, W-2).
+                    done-label: "Log habit +1";
+                    done-undone-label: "Log habit +1";
                     activated => {
                         root.edit-asked(row-index);
                     }
