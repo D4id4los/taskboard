@@ -345,6 +345,15 @@ pub struct UndoView {
 pub struct UndoLabel {
     pub id: JournalId,
     pub label: String,
+    /// D-3 (D1ii, #1226): the engine-derived payload context — the
+    /// journaled command's own data (a task title, a stack name, …).
+    /// `None` where the arm has no natural subject; the UI hides a
+    /// `None` payload, never renders a blank dash. One derivation for
+    /// both windows (D-2), carried by `recent` and `branch_children`
+    /// alike. Additive + serde-additive (the struct is `Serialize`
+    /// only; no consumer pins its byte shape — #993 pins
+    /// `CommandOutcome`, not this row).
+    pub payload: Option<String>,
 }
 
 impl UndoView {
@@ -373,6 +382,7 @@ impl UndoView {
                         journal.entry(id).map(|entry| UndoLabel {
                             id,
                             label: command_label(&entry.command),
+                            payload: command_payload(&entry.command),
                         })
                     })
                     .collect()
@@ -391,6 +401,7 @@ impl UndoView {
                 .map(|entry| UndoLabel {
                     id: entry.id,
                     label: command_label(&entry.command),
+                    payload: command_payload(&entry.command),
                 })
                 .collect(),
             branch_children,
@@ -437,9 +448,43 @@ impl UndoView {
                 .map(|entry| UndoLabel {
                     id: entry.id,
                     label: command_label(&entry.command),
+                    payload: command_payload(&entry.command),
                 })
                 .collect(),
         }
+    }
+}
+
+/// The derived payload context of a journaled intent (D1ii D-3,
+/// #1226): the command's own data only — a natural subject present in
+/// the journaled payload (a title, a name). `None` where the arm
+/// carries no subject (id-only or subjectless arms; never an empty
+/// string). Presentation-only, like [`command_label`]; a sibling
+/// function, not a rewrite of it (I-2: `command_label`'s consumers —
+/// toasts, `head_label` — keep their bare verb phrases byte-for-byte).
+#[must_use]
+// The same-bodied arms bind different change-set types (`LabelChanges`
+// vs `HabitChanges`); merging them is not expressible without erasing
+// the types, and the arms stay separate on purpose.
+#[allow(clippy::match_same_arms)]
+pub fn command_payload(command: &StateCommand) -> Option<String> {
+    match command {
+        StateCommand::CreateTask { title, .. } | StateCommand::CaptureTask { title, .. } => {
+            Some(title.clone())
+        }
+        StateCommand::UpdateTask { changes, .. } => changes.title.clone(),
+        StateCommand::CreateStack { title, .. }
+        | StateCommand::CreateLabel { title, .. }
+        | StateCommand::CreateBoard { title, .. }
+        | StateCommand::RenameBoard { title, .. }
+        | StateCommand::CreateHabit { title, .. } => Some(title.clone()),
+        StateCommand::RenameStack { new_title, .. } => Some(new_title.clone()),
+        StateCommand::UpdateLabel { changes, .. } => changes.title.clone(),
+        StateCommand::UpdateHabit { changes, .. } => changes.title.clone(),
+        StateCommand::CreateAdhocAlarm { label, .. }
+        | StateCommand::CreateBreakRule { label, .. } => Some(label.clone()),
+        StateCommand::UpdateReflection { text, .. } => text.clone(),
+        _ => None,
     }
 }
 

@@ -5451,3 +5451,98 @@ fn us3_s5_clear_reminder_rules_undo_restores_all_rules() {
         );
     }
 }
+
+// ---- #1226 fence (D1ii US-4/AC-1) ---------------------------------------
+
+/// US-4/S1 (W-4's fence): with the payload-enriched projection in
+/// place, the plain v1 reflex (`Undo`/`Redo`) keeps its exact
+/// semantics — the enriched rows ride along but the walk's outcomes
+/// and the line's shape are unchanged.
+#[test]
+fn us4_s1_plain_reflex_semantics_unchanged_with_enriched_rows() {
+    let mut h = Harness::new();
+    let board = h
+        .exec(&StateCommand::CreateBoard {
+            title: "b".into(),
+            color: crate::entities::Color::new("000000"),
+        })
+        .expect("board create");
+    let CommandOutcome::CreatedBoard(board) = board else {
+        panic!("created board: {board:?}")
+    };
+    let stack = h
+        .exec(&StateCommand::CreateStack {
+            board,
+            title: "s".into(),
+            order: 1,
+        })
+        .expect("stack create");
+    let CommandOutcome::CreatedStack(stack) = stack else {
+        panic!("created stack: {stack:?}")
+    };
+    h.exec(&StateCommand::CreateTask {
+        title: "alpha".into(),
+        stack,
+        order: 1,
+    })
+    .expect("task one");
+    h.exec(&StateCommand::CreateTask {
+        title: "beta".into(),
+        stack,
+        order: 2,
+    })
+    .expect("task two");
+
+    // The projection carries the enrichment…
+    let view = crate::journal::UndoView::derive(&h.journal);
+    assert_eq!(view.recent[0].payload.as_deref(), Some("beta"));
+    assert_eq!(view.recent[1].payload.as_deref(), Some("alpha"));
+
+    // …and the reflex semantics are byte-identical: two undos drain
+    // the line in append order, one redo re-applies the newest child.
+    assert!(matches!(
+        h.exec(&StateCommand::Undo).expect("undo one"),
+        CommandOutcome::Undone { .. }
+    ));
+    assert!(matches!(
+        h.exec(&StateCommand::Undo).expect("undo two"),
+        CommandOutcome::Undone { .. }
+    ));
+    assert!(
+        h.app()
+            .tasks
+            .values()
+            .filter(|t| t.title == "beta")
+            .all(|t| t.deleted),
+        "beta is gone after two undos"
+    );
+    let view = crate::journal::UndoView::derive(&h.journal);
+    assert_eq!(view.branch_children.len(), 1, "one sibling branch");
+    // Both undone tasks hang off the line as the walk's abandoned
+    // steps; the head's direct child is `alpha`.
+    assert_eq!(view.branch_children[0].payload.as_deref(), Some("alpha"));
+    assert!(matches!(
+        h.exec(&StateCommand::Redo).expect("redo one"),
+        CommandOutcome::Redone { .. }
+    ));
+    assert!(
+        h.app()
+            .tasks
+            .values()
+            .filter(|t| t.title == "alpha")
+            .any(|t| !t.deleted),
+        "the newest child (alpha) re-applies first"
+    );
+    assert!(matches!(
+        h.exec(&StateCommand::Redo).expect("redo two"),
+        CommandOutcome::Redone { .. }
+    ));
+    assert!(
+        h.app()
+            .tasks
+            .values()
+            .filter(|t| t.title == "beta")
+            .any(|t| !t.deleted),
+        "beta is back after the second redo"
+    );
+}

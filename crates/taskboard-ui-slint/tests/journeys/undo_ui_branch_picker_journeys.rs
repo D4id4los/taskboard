@@ -49,15 +49,18 @@ fn picker_state() -> taskboard_domain::AppState {
             UndoLabel {
                 id: head,
                 label: "Mark done".into(),
+                payload: Some("Mark done".into()),
             },
             UndoLabel {
                 id: ancestor,
                 label: "Move task".into(),
+                payload: Some("Move task".into()),
             },
         ],
         branch_children: vec![UndoLabel {
             id: branch,
             label: "Create task".into(),
+            payload: Some("Create task".into()),
         }],
     };
     state
@@ -277,10 +280,12 @@ fn us1_s3_post_switch_state_reflects_branch() {
             recent: vec![UndoLabel {
                 id: ancestor,
                 label: "Move task".into(),
+                payload: Some("Move task".into()),
             }],
             branch_children: vec![UndoLabel {
                 id: head,
                 label: "Mark done".into(),
+                payload: Some("Mark done".into()),
             }],
         };
         harness.engine.settle(&harness.handle);

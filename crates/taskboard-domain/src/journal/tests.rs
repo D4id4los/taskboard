@@ -657,3 +657,124 @@ fn us1_ac3_branch_children_empty_without_fork() {
     assert!(view.can_undo);
     assert!(!view.can_redo);
 }
+
+// ---- #1226: the payload enrichment (D1ii W-4, D-2/D-3) -----------------
+
+/// US-1/AC-3 (D1ii): two sibling branches of the same verb carry
+/// distinct typed payloads — the recognition contract (#1226). Pure
+/// projection inequality, never label text.
+#[test]
+fn us1_ac3_sibling_rows_carry_distinct_payloads() {
+    let ids = CountingIds::new();
+    let fork = entry_at(&ids, None, 100);
+    let fork_id = fork.id;
+    let mut older = entry_at(&ids, Some(fork.id), 200);
+    older.command = crate::messages::StateCommand::CreateTask {
+        title: "alpha".into(),
+        stack: crate::ids::StackId::from_uuid(uuid::Uuid::nil()),
+        order: 1,
+    };
+    let mut newer = entry_at(&ids, Some(fork.id), 300);
+    newer.command = crate::messages::StateCommand::CreateTask {
+        title: "beta".into(),
+        stack: crate::ids::StackId::from_uuid(uuid::Uuid::nil()),
+        order: 2,
+    };
+    let journal = JournalState {
+        entries: vec![fork, older, newer],
+        head: Some(fork_id),
+    };
+    let view = UndoView::derive(&journal);
+    assert_eq!(view.branch_children.len(), 2);
+    assert_eq!(
+        view.branch_children[0].payload.as_deref(),
+        Some("beta"),
+        "newest sibling first"
+    );
+    assert_eq!(view.branch_children[1].payload.as_deref(), Some("alpha"));
+    assert_ne!(
+        view.branch_children[0].payload, view.branch_children[1].payload,
+        "same-verb siblings are distinguishable by typed payload"
+    );
+}
+
+/// US-1/AC-5 (D1ii D-3): an arm with no natural subject in the
+/// journaled command's own data derives `None` — never an empty
+/// string.
+#[test]
+fn us1_ac5_subjectless_arm_derives_none_payload() {
+    use crate::messages::StateCommand;
+    let ids = CountingIds::new();
+    let only = entry_at(&ids, None, 100);
+    let subjectless = [
+        StateCommand::TaskMoveUp {
+            id: crate::ids::TaskId::from_uuid(uuid::Uuid::nil()),
+        },
+        StateCommand::StopTracking,
+        StateCommand::RequestSync,
+    ];
+    for command in subjectless {
+        let entry = JournalEntry {
+            command: command.clone(),
+            ..only.clone()
+        };
+        let journal = JournalState {
+            entries: vec![entry.clone()],
+            head: Some(entry.id),
+        };
+        let view = UndoView::derive(&journal);
+        assert_eq!(view.recent.len(), 1);
+        assert!(
+            view.recent[0].payload.is_none(),
+            "subjectless arm derives None: {command:?}"
+        );
+    }
+}
+
+/// US-2/S1 (D1ii D-2): the enrichment is one projection — the `recent`
+/// and `branch_children` windows carry it from the same derivation.
+#[test]
+fn us2_s1_both_windows_carry_the_enrichment() {
+    let ids = CountingIds::new();
+    let head = entry_at(&ids, None, 100);
+    let mut branch = entry_at(&ids, Some(head.id), 200);
+    branch.command = crate::messages::StateCommand::CreateStack {
+        board: crate::ids::BoardId::from_uuid(uuid::Uuid::nil()),
+        title: "sibling stack".into(),
+        order: 1,
+    };
+    let journal = JournalState {
+        entries: vec![head.clone(), branch],
+        head: Some(head.id),
+    };
+    let view = UndoView::derive(&journal);
+    assert_eq!(
+        view.recent.first().and_then(|row| row.payload.as_deref()),
+        Some("sibling stack"),
+        "newest-first window: the one subjectful row is the head of the window"
+    );
+    assert_eq!(
+        view.branch_children
+            .first()
+            .and_then(|row| row.payload.as_deref()),
+        Some("sibling stack")
+    );
+    // The per-board projection carries the same enrichment (one
+    // derivation, D-2).
+    let board = crate::ids::BoardId::from_uuid(uuid::Uuid::from_u128(9));
+    let mut scoped = entry_at(&ids, None, 50);
+    scoped.command = crate::messages::StateCommand::CreateLabel {
+        board,
+        title: "scoped label".into(),
+        color: crate::entities::Color::new("0000ff"),
+    };
+    scoped.board = Some(board);
+    let mut journal = journal;
+    journal.entries.push(scoped);
+    let view = UndoView::derive_for_board(&journal, board);
+    assert_eq!(
+        view.recent.last().and_then(|row| row.payload.as_deref()),
+        Some("scoped label"),
+        "oldest in the newest-first window is the scoped label row"
+    );
+}
