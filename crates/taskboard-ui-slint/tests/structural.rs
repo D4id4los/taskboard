@@ -14,6 +14,8 @@
 #[path = "../benches/support/mod.rs"]
 mod support;
 
+#[path = "inventory/alarm_window_structural.rs"]
+mod alarm_window_structural;
 #[path = "inventory/bench_fixture_contract.rs"]
 mod bench_fixture_contract;
 #[path = "inventory/icon_mapping.rs"]

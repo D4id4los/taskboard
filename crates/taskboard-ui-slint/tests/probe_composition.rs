@@ -26,6 +26,12 @@ pub(crate) const HEADLESS_RENDERER: bool = false;
 
 #[path = "probes/action_menu_bar_probe_tests.rs"]
 mod action_menu_bar_probe_tests;
+#[path = "probes/alarm_window_drag_tests.rs"]
+mod alarm_window_drag_tests;
+#[path = "probes/alarm_window_max_probe_tests.rs"]
+mod alarm_window_max_probe_tests;
+#[path = "probes/alarm_window_ring_probe_tests.rs"]
+mod alarm_window_ring_probe_tests;
 #[path = "probes/armed_ring_probe_tests.rs"]
 mod armed_ring_probe_tests;
 #[path = "probes/board_bar_probe_tests.rs"]
