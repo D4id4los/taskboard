@@ -59,11 +59,12 @@ fn us2_s1_the_move_survives_directional_column_hops() {
         harness.advance();
         harness.assert_commands(&[]);
 
-        // Return completes: exactly one MoveTask at the boundary.
+        // Return completes: exactly one command at the boundary — the
+        // same-stack aim mints the engine-side reorder (B3 #1247).
         harness.press_preset(preset, ActionId::TaskEdit);
         harness.advance();
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveTask { .. }] => {}
+            [StateCommand::TaskReorder { .. }] => {}
             other => panic!("the move completes after the hops, got {other:?}"),
         }
     });
@@ -103,11 +104,12 @@ fn us2_s2_the_stack_chords_hop_the_drop_column_mid_move() {
         harness.advance();
         assert_eq!(aim(&harness), Some(0), "the twin chord hopped back");
 
-        // The flow still completes: exactly one MoveTask.
+        // The flow still completes: exactly one command — the
+        // same-stack aim mints the engine-side reorder (B3 #1247).
         harness.press_preset(preset, ActionId::TaskEdit);
         harness.advance();
         match harness.engine.drain().as_slice() {
-            [StateCommand::MoveTask { .. }] => {}
+            [StateCommand::TaskReorder { .. }] => {}
             other => panic!("the move completes after the chord hops, got {other:?}"),
         }
     });

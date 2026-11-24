@@ -1298,12 +1298,15 @@ fn us13_s2_candidate_rows_accessible_button() {
 /// US-14/AC-1 (`us14_s1_task_move_up_dispatches`): Shift+Up over a
 /// task-focused walk dispatches `StateCommand::TaskMoveUp` (the R-8
 /// kind resolution — the shared stroke, no second binding), and the
-/// engine resolves the floor-midpoint slot (0, 10) → 5.
+/// engine's gap-index reorder lands the mover BEYOND the crossed
+/// neighbour (B3 2026-11-24 #1247 — the floor-midpoint slot
+/// arithmetic is retired; the pin is the canonical sequence, never an
+/// order value).
 #[test]
 fn us14_s1_task_move_up_dispatches() {
     let (fx, mut state) = fixture::journey_state();
     let task1 = fx.task1;
-    // Widen the stack-a gap so the up slot is an interior midpoint.
+    // Widen the stack-a gap so the crossing is unambiguous.
     state.tasks.get_mut(&fx.task0).expect("task0").order = 0;
     state.tasks.get_mut(&task1).expect("task1").order = 10;
     support::harness::run_journey(state, move |harness| {
@@ -1319,12 +1322,14 @@ fn us14_s1_task_move_up_dispatches() {
             [StateCommand::TaskMoveUp { id }] => assert_eq!(*id, task1),
             other => panic!("the task twin dispatched, got {other:?}"),
         }
-        // The engine folded the midpoint slot in.
+        // The engine folded the reorder in: task1 now precedes task0
+        // in the canonical sequence (the dense renumber's values are
+        // an engine affair, never a pin).
         harness.engine.settle(&harness.handle);
-        assert_eq!(
-            harness.engine.snapshot().tasks[&task1].order,
-            5,
-            "the shared floor-midpoint arithmetic"
+        let snapshot = harness.engine.snapshot();
+        assert!(
+            snapshot.tasks[&task1].order < snapshot.tasks[&fx.task0].order,
+            "the mover landed beyond the crossed neighbour"
         );
     });
 }

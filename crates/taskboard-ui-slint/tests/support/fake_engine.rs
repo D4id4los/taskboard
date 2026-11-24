@@ -66,11 +66,12 @@ impl FakeEngine {
     }
 }
 
-/// The compact-move pair's fake-side resolution (US-14, #1031): the
-/// same stack-adjacent slot the real engine plans — one step toward
-/// the named edge through the shared floor-midpoint arithmetic; the
-/// boundary is the fake's no-op (the typed refusal is the real
-/// engine's).
+/// The compact-move pair's fake-side resolution (US-14, #1031; B3
+/// 2026-11-24 #1247): the same gap-index strokes the real engine
+/// plans through `task_reorder_plan` — up targets the row above's gap
+/// (`position - 1`), down the gap after the lower neighbour
+/// (`position + 2`); the boundary is the fake's no-op (the typed
+/// refusal is the real engine's).
 fn apply_compact_move(state: &mut AppState, id: taskboard_domain::TaskId, up: bool) {
     let Some(subject) = state.tasks.get(&id).cloned() else {
         return;
@@ -84,22 +85,50 @@ fn apply_compact_move(state: &mut AppState, id: taskboard_domain::TaskId, up: bo
     let Some(position) = rows.iter().position(|t| t.id == id) else {
         return;
     };
-    let prev = position
-        .checked_sub(1)
-        .and_then(|i| rows.get(i))
-        .map(|t| t.order);
-    let next = rows.get(position + 1).map(|t| t.order);
-    let order = if up {
-        prev.map(|prev| {
-            taskboard_domain::command::floor_midpoint_order(Some(prev), Some(subject.order))
-        })
+    let target = if up {
+        position.checked_sub(1)
     } else {
-        next.map(|next| {
-            taskboard_domain::command::floor_midpoint_order(Some(subject.order), Some(next))
-        })
+        (position + 2 <= rows.len()).then_some(position + 2)
     };
-    if let (Some(order), Some(task)) = (order, state.tasks.get_mut(&id)) {
-        task.order = order;
+    if let Some(target) = target {
+        apply_task_reorder(state, id, target);
+    }
+}
+
+/// The same-stack task reorder's fake-side resolution (B3, 2026-11-24
+/// #1247 — the engine's `task_reorder_plan` mirrored verbatim): the
+/// canonical `(order, id)` row source, the clamped gap, the in-place
+/// no-op and the dense renumber — fake ≡ engine by construction.
+fn apply_task_reorder(state: &mut AppState, id: taskboard_domain::TaskId, target: usize) {
+    let Some(subject) = state.tasks.get(&id).cloned() else {
+        return;
+    };
+    let mut rows: Vec<taskboard_domain::entities::Task> = state
+        .tasks
+        .values()
+        .filter(|t| t.is_live() && t.stack == subject.stack)
+        .cloned()
+        .collect();
+    rows.sort_by_key(|t| (t.order, t.id));
+    let Some(position) = rows.iter().position(|t| t.id == id) else {
+        return;
+    };
+    let target = target.min(rows.len());
+    if target == position || target == position + 1 {
+        return;
+    }
+    let moved = rows.remove(position);
+    let insert_at = if target <= position {
+        target
+    } else {
+        target - 1
+    };
+    rows.insert(insert_at, moved);
+    for (index, mut row) in rows.into_iter().enumerate() {
+        row.order = i64::try_from(index).expect("stack length fits i64");
+        if let Some(stored) = state.tasks.get_mut(&row.id) {
+            *stored = row;
+        }
     }
 }
 
@@ -424,6 +453,13 @@ impl FakeEngine {
                 }
                 StateCommand::TaskMoveDown { id } => {
                     apply_compact_move(&mut state, id, false);
+                }
+                // The same-stack reorder's continuity half (B3,
+                // 2026-11-24 #1247): the engine's `task_reorder_plan`
+                // mirrored — the canonical row source, the clamped
+                // gap, the dense renumber.
+                StateCommand::TaskReorder { id, target } => {
+                    apply_task_reorder(&mut state, id, target);
                 }
                 // The habit reorder's continuity half (#1198 chunk
                 // A1 D1): the engine's resolution mirrored (the
