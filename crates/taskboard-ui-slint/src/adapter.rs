@@ -7168,6 +7168,12 @@ impl Adapter {
                         self.menu_entries = self.root_entries.clone();
                         self.sync_menu_models(window);
                         self.finish_mutation(window);
+                    } else {
+                        // The ladder's close leg (#1115): the root's
+                        // MenuBack is the full close — the habit
+                        // staging disarms with it (this path does not
+                        // funnel through `apply_close_menu`).
+                        self.disarm_habit_confirm_staging();
                     }
                 }
             }
@@ -7496,6 +7502,13 @@ impl Adapter {
         self.menu_kind = MenuKind::Main;
         self.menu_subject = MenuSubject::None;
         self.quick_bar_entries.clear();
+        // One rule (#1115): a menu close disarms every habit confirm
+        // staging — the armed one-shot must not survive a hidden menu
+        // (a later confirm on a closed menu is exactly the #1059
+        // armed-confirm grammar's failure mode). The step-down leg of
+        // `MenuBack` deliberately does NOT join: the menu is still
+        // open there.
+        self.disarm_habit_confirm_staging();
         self.sync_menu_models(window);
         // The direct callers (toggle, dismissal layer, mouse invoke)
         // bypass `route`'s trailing sync; the shared helper keeps the
@@ -7586,6 +7599,15 @@ impl Adapter {
         }
         self.apply_close_menu(window);
         self.route(window, action);
+    }
+
+    /// The habit confirm staging's disarm (#1115): a menu close
+    /// clears all three armed one-shots (convert, remove, restore) —
+    /// the one-subject law's close leg.
+    fn disarm_habit_confirm_staging(&mut self) {
+        self.habit_convert_armed = None;
+        self.habit_remove_armed = None;
+        self.habit_restore_armed = None;
     }
 
     /// The dispatch-outcome notice's arming (T-41/T-43, #824/#826):
