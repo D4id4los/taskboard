@@ -66,6 +66,7 @@ pub mod remote;
 pub mod roster;
 pub mod settings;
 pub mod state;
+pub mod time;
 pub mod tracking;
 pub mod tracking_stats;
 pub mod undo;
