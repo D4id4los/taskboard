@@ -406,6 +406,21 @@ async fn status_command(config_path: Option<std::path::PathBuf>, json: bool) -> 
     0
 }
 
+/// The shared `IpcOnly` command prologue (#1297 dedup): load the config
+/// (typed error verbatim) and connect to the daemon, or the typed
+/// `no-daemon`. Each caller keeps its own incident-law commentary —
+/// this helper only folds the repeated load+connect shape, it never
+/// changes an error.
+async fn load_config_and_connect(
+    config_path: Option<std::path::PathBuf>,
+) -> Result<(AppConfig, client::Connection), CommandError> {
+    let config = AppConfig::load(config_path).map_err(CommandError::from)?;
+    let conn = client::try_connect(config.db_path())
+        .await
+        .ok_or(CommandError::NoDaemon)?;
+    Ok((config, conn))
+}
+
 /// `taskboard daemon stop`: the graceful remote shutdown. Without a
 /// daemon: typed `no-daemon`, exit 1.
 async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool) -> u8 {
@@ -413,12 +428,9 @@ async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool
     // unconditionally; a cancelled stop reports the typed `cancelled`
     // envelope and exits 130 (Q10).
     let mut cancel = taskboard_app::signals::install_oneshot_watcher();
-    let config = match AppConfig::load(config_path) {
-        Ok(config) => config,
-        Err(err) => return report(json, &CommandError::from(err)),
-    };
-    let Some(conn) = client::try_connect(config.db_path()).await else {
-        return report(json, &CommandError::NoDaemon);
+    let (config, conn) = match load_config_and_connect(config_path).await {
+        Ok(pair) => pair,
+        Err(err) => return report(json, &err),
     };
     // `daemon stop` carries no verb budget: the flag-less ceiling (or
     // the operator's override) bounds only the wedged daemon — a
@@ -464,12 +476,9 @@ async fn config_reload_command(
     // IpcOnly verbs are never ceremonies: the watcher installs
     // unconditionally (Q10, the `daemon stop` posture verbatim).
     let mut cancel = taskboard_app::signals::install_oneshot_watcher();
-    let config = match AppConfig::load(config_path) {
-        Ok(config) => config,
-        Err(err) => return report(json, &CommandError::from(err)),
-    };
-    let Some(conn) = client::try_connect(config.db_path()).await else {
-        return report(json, &CommandError::NoDaemon);
+    let (config, conn) = match load_config_and_connect(config_path).await {
+        Ok(pair) => pair,
+        Err(err) => return report(json, &err),
     };
     // The verb carries no budget flag: the flag-less ceiling (or the
     // operator's override) bounds only the wedged daemon.

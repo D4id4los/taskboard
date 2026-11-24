@@ -13537,19 +13537,8 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // crosses to Rust, D-E). Resolves the column against the id
     // tables and reports the target; inert without the drag flow.
     install_seam!(window: window.on_board_drag_hovered, adapter: adapter;
-    bind mut (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
-        return;
-    };
-    let Flow::DragMove { .. } = a.view_state.flow() else {
-        return;
-    };
-    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
-        return;
-    };
-    let state = a.state.load_full();
-    let outcomes = a.view_state.drag_target(&state, stack);
-    a.apply_outcomes(&window, &outcomes);
-
+    bind mut (a, window), args (column), {
+        a.drag_target_report(&window, column);
     });
 
     // The drop: re-assert the target from the drop column, then
@@ -13639,19 +13628,8 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // index is absorbed silently.
     // slint: switcher-drop-hovered
     install_seam!(window: window.on_board_switcher_drop_hovered, adapter: adapter;
-    bind mut (a, window), args (column), {        let Ok(column) = usize::try_from(column) else {
-        return;
-    };
-    let Flow::DragMove { .. } = a.view_state.flow() else {
-        return;
-    };
-    let Some(stack) = a.tables.stack_ids.get(column).copied() else {
-        return;
-    };
-    let state = a.state.load_full();
-    let outcomes = a.view_state.drag_target(&state, stack);
-    a.apply_outcomes(&window, &outcomes);
-
+    bind mut (a, window), args (column), {
+        a.drag_target_report(&window, column);
     });
 
     // The compact segment drop (UX-R8 D-3, US-3/S2): resolve the
@@ -13904,6 +13882,27 @@ impl Adapter {
         uuid::Uuid::parse_str(id)
             .ok()
             .map(taskboard_domain::JournalId::from_uuid)
+    }
+
+    /// The column drag hover report shared by the board `DropArea` and
+    /// the compact switcher segment (#1297 dedup): the column resolves
+    /// against the id tables and the target is reported; a non-index
+    /// column, a non-DragMove flow and a stale column index are
+    /// absorbed silently (the bodies were token-identical at both
+    /// seams — the incident-law comments stay at each seam).
+    fn drag_target_report(&mut self, window: &AppWindow, raw_column: i32) {
+        let Ok(column) = usize::try_from(raw_column) else {
+            return;
+        };
+        let Flow::DragMove { .. } = self.view_state.flow() else {
+            return;
+        };
+        let Some(stack) = self.tables.stack_ids.get(column).copied() else {
+            return;
+        };
+        let state = self.state.load_full();
+        let outcomes = self.view_state.drag_target(&state, stack);
+        self.apply_outcomes(window, &outcomes);
     }
 
     /// The picker-invoke routing (#1227, US-1/S3): the cursor's row

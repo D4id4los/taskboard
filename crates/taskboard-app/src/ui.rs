@@ -458,63 +458,69 @@ pub fn settings_snapshot_from_domain(
 /// `Live` badge on a value that does not move is the pretend-live
 /// failure D5 exists to prevent, so they stay `OnRestart` with their
 /// reasons.
+/// The registry-entry shorthands (#1297 dedup): the tuple+Apply shape
+/// repeated at every row folds into these two constructors; the reasons
+/// (the incident-law prose) move verbatim.
+fn live_entry(key: &'static str) -> (&'static str, taskboard_ui_slint::requests::ApplySemantics) {
+    (key, taskboard_ui_slint::requests::ApplySemantics::live())
+}
+
+fn restart_entry(
+    key: &'static str,
+    reason: &'static str,
+) -> (&'static str, taskboard_ui_slint::requests::ApplySemantics) {
+    (
+        key,
+        taskboard_ui_slint::requests::ApplySemantics::on_restart(reason),
+    )
+}
+
 #[must_use]
 pub fn settings_apply_registry()
 -> std::collections::BTreeMap<&'static str, taskboard_ui_slint::requests::ApplySemantics> {
-    use taskboard_ui_slint::requests::ApplySemantics as Apply;
     [
-        ("preferences.day_start_time", Apply::live()),
-        ("reminders.enabled", Apply::live()),
-        ("reminders.tick_secs", Apply::live()),
-        ("reminders.default_before", Apply::live()),
-        (
+        live_entry("preferences.day_start_time"),
+        live_entry("reminders.enabled"),
+        live_entry("reminders.tick_secs"),
+        live_entry("reminders.default_before"),
+        restart_entry(
             "reminders.sink",
-            Apply::on_restart(
-                "the notifier sink is one boot Arc per process (D-R13); a live swap must \
-                 rebuild the sink chain and the escalation/focus posture with it — \
-                 deferred to a dedicated chunk",
-            ),
+            "the notifier sink is one boot Arc per process (D-R13); a live swap must \
+             rebuild the sink chain and the escalation/focus posture with it — \
+             deferred to a dedicated chunk",
         ),
-        ("sync.poll_interval_secs", Apply::live()),
-        ("sync.backoff_initial_secs", Apply::live()),
-        ("sync.backoff_max_secs", Apply::live()),
-        ("ui.due_soon_days", Apply::live()),
-        (
+        live_entry("sync.poll_interval_secs"),
+        live_entry("sync.backoff_initial_secs"),
+        live_entry("sync.backoff_max_secs"),
+        live_entry("ui.due_soon_days"),
+        restart_entry(
             "focus.enabled",
-            Apply::on_restart(
-                "the runtime spawn decision is boot-time (focus_spawn_decision); a \
-                 boot-disabled runtime cannot be live-enabled without a respawn path — \
-                 the live-disable/inert direction applies to an already-spawned runtime, \
-                 the asymmetric half is restart-scoped",
-            ),
+            "the runtime spawn decision is boot-time (focus_spawn_decision); a \
+             boot-disabled runtime cannot be live-enabled without a respawn path — \
+             the live-disable/inert direction applies to an already-spawned runtime, \
+             the asymmetric half is restart-scoped",
         ),
-        ("focus.work_mins", Apply::live()),
-        ("focus.break_mins", Apply::live()),
-        ("focus.chain", Apply::live()),
-        ("focus.long_break_mins", Apply::live()),
-        ("focus.long_break_every", Apply::live()),
-        (
+        live_entry("focus.work_mins"),
+        live_entry("focus.break_mins"),
+        live_entry("focus.chain"),
+        live_entry("focus.long_break_mins"),
+        live_entry("focus.long_break_every"),
+        restart_entry(
             "focus.notify",
-            Apply::on_restart(
-                "the boundary posture is resolved into the sink arc at boot \
-                 (mount_focus_boundaries); it rides the sink's restart semantics",
-            ),
+            "the boundary posture is resolved into the sink arc at boot \
+             (mount_focus_boundaries); it rides the sink's restart semantics",
         ),
-        (
+        restart_entry(
             "files_sync.enabled",
-            Apply::on_restart(
-                "the files-sync actor spawns at boot (files_sync_spawn_decision); a live \
-                 spawn needs substrate wiring fenced to the filesync round",
-            ),
+            "the files-sync actor spawns at boot (files_sync_spawn_decision); a live \
+             spawn needs substrate wiring fenced to the filesync round",
         ),
-        ("files_sync.poll_secs", Apply::live()),
-        (
+        live_entry("files_sync.poll_secs"),
+        restart_entry(
             "files_sync.anchor",
-            Apply::on_restart(
-                "the files-sync actor binds its account at boot \
-                 (files_sync_spawn_decision); the lane mirrors the resolved anchor from \
-                 the next process start",
-            ),
+            "the files-sync actor binds its account at boot \
+             (files_sync_spawn_decision); the lane mirrors the resolved anchor from \
+             the next process start",
         ),
     ]
     .into_iter()
