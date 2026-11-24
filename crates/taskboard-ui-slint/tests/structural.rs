@@ -24,6 +24,8 @@ mod icon_mapping;
 mod keymap_snapshots;
 #[path = "inventory/seam_inventory.rs"]
 mod seam_inventory;
+#[path = "inventory/severing_census.rs"]
+mod severing_census;
 #[path = "inventory/source_scan.rs"]
 mod source_scan;
 #[path = "inventory/view_mount_inventory.rs"]
