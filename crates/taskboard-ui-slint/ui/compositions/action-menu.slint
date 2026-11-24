@@ -202,9 +202,9 @@ export component ActionMenu inherits Rectangle {
                             text-color: Theme.text-secondary;
                             text: "Back";
                             vertical-alignment: center;
+                        }
                     }
                 }
-            }
 
             for entry[entry-index] in root.page: Rectangle {
                 border-width: root.page-cursor == entry-index ? Theme.focus-ring-width : 0;
@@ -271,7 +271,7 @@ export component ActionMenu inherits Rectangle {
                         }
                     }
                 }
-            }
+                }
             }
         }
     }
