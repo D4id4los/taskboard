@@ -240,6 +240,7 @@ habits:
   habits: {}
   log: {}
   day_log: {}
+  time_log: {}
 reflection:
   entries: {}
 roaming: {}
