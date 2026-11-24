@@ -1494,37 +1494,48 @@ fn geo_page_cap(handle: &UiHandle) -> f32 {
     (viewport - 24.0 * scale).max(0.0)
 }
 
-/// Settles the extent-report pipeline on the mock clock: each
-/// `advance_time` runs one event pass, and a first-materializing
-/// row's extent report lands as a model update on the pass after it
-/// (report -> forced refresh -> push). Polls the predicate to a
-/// deadline — no fixed pass counts (the clock discipline), and the
-/// pass budget bounds a genuinely broken pipeline instead of hanging.
-fn geo_settle(driver: &mut SlintDriver, mut pred: impl FnMut() -> bool) -> bool {
-    for _ in 0..16 {
-        if pred() {
-            return true;
-        }
-        driver.advance_time(0);
-    }
-    pred()
-}
-
 /// The settled contract shared by the geometry probes: every
 /// populated section's realized viewport height equals its
 /// content-derived min (model extent, window cap). Returns the
 /// settled facts, or None on timeout (the caller asserts).
 fn geo_settled(handle: &UiHandle, driver: &mut SlintDriver) -> Option<[f32; 4]> {
-    let settled = geo_settle(driver, || {
-        let cap = geo_page_cap(handle);
+    // Quiescence, not just the settled predicate: a row batch's
+    // reports can be in flight when the predicate first holds (each
+    // report -> refresh -> push cycle grows the extent further), so
+    // the loop ends only after the facts tuple is unchanged across
+    // six consecutive passes (under a loaded workspace run two and
+    // four proved too tight).
+    let mut previous = geo_clip_facts(handle);
+    let mut stable = 0;
+    let mut settled = false;
+    // The budget covers the report -> refresh -> push chain of a
+    // 20-row section under a loaded workspace run (each report's
+    // synchronous extent write re-derives on the same pass; the newly
+    // revealed rows report on the pass after).
+    for _ in 0..128 {
+        driver.advance_time(0);
         let facts = geo_clip_facts(handle);
+        // Exact comparison is the point: the facts change only when a
+        // report or a push lands (the quiescence contract).
+        #[allow(clippy::float_cmp)]
+        let unchanged = facts == previous;
+        let cap = geo_page_cap(handle);
         let model = geo_section_model(handle);
-        (0..4).all(|i| {
+        settled = (0..4).all(|i| {
             let (count, extent) = model[i];
             let expected = extent.min(cap);
             count == 0 || (facts[i] - expected).abs() <= 0.5
-        })
-    });
+        });
+        previous = facts;
+        if unchanged {
+            stable += 1;
+        } else {
+            stable = 0;
+        }
+        if settled && stable >= 6 {
+            break;
+        }
+    }
     if settled {
         Some(geo_clip_facts(handle))
     } else {

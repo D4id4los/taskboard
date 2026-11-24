@@ -9261,7 +9261,6 @@ mod habit_section_tests {
             habit_move_slots(&state, ids[1]),
             (Some((ids[1], 0)), Some((ids[1], 3)))
         );
-        let _ = foreign;
         state.habits.habits.clear();
     }
 

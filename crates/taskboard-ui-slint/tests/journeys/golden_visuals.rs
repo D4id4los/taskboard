@@ -127,6 +127,24 @@ fn scale_settings(scale: f64) -> UiSettings {
 /// `settings`, bind, let `frame` do the capture-specific steps (a
 /// view escape, the kiosk rotation dwell), snapshot at `width` ×
 /// HEIGHT, and regen-or-compare against `path`.
+/// The `TodayClipFacts` halves as one tuple — the quiescence
+/// comparison's unit (a report landing changes either half).
+fn today_clip_facts(handle: &taskboard_ui_slint::UiHandle) -> [f32; 8] {
+    let facts = handle
+        .window()
+        .global::<taskboard_ui_slint::TodayClipFacts>();
+    [
+        facts.get_e0(),
+        facts.get_h0(),
+        facts.get_e1(),
+        facts.get_h1(),
+        facts.get_e2(),
+        facts.get_h2(),
+        facts.get_e3(),
+        facts.get_h3(),
+    ]
+}
+
 #[allow(clippy::too_many_arguments)] // each capture-site parameter is load-bearing
 fn capture_golden(
     driver: &mut SlintDriver,
@@ -155,6 +173,37 @@ fn capture_golden(
     frame(driver, &handle);
     driver.advance_time(0); // instantiate conditionals
     driver.set_window_size(width, HEIGHT);
+    // Settle the today sections' extent-report pipeline (round-6 A1,
+    // #1310/#1304: the clip heights converge over report -> refresh
+    // -> push passes; the golden pins the SETTLED frame — terminal
+    // state, never a transient per the clock discipline). Poll to a
+    // deadline on the mock clock; the today view's facts global is
+    // the oracle (no-op for non-Today captures: no populated
+    // sections trivially settles).
+    // Quiescence, not just the settled predicate: a report can be in
+    // flight when the predicate first holds (the clip lags its rows
+    // by one pass), so the loop ends only after the facts tuple is
+    // unchanged across four consecutive passes (two proved too tight
+    // under load, where an in-flight report lands one pass later).
+    let mut previous = today_clip_facts(&handle);
+    let mut stable = 0;
+    for _ in 0..32 {
+        driver.advance_time(0);
+        let current = today_clip_facts(&handle);
+        // Exact comparison is the point: the facts change only when a
+        // report or a push lands, never by float noise (the quiescence
+        // contract — a changed bit means work is still in flight).
+        #[allow(clippy::float_cmp)]
+        if current == previous {
+            stable += 1;
+        } else {
+            stable = 0;
+        }
+        previous = current;
+        if stable >= 4 {
+            break;
+        }
+    }
 
     // The renderer-presence assertion FIRST (§10/stress §3.5's
     // silent-fallback warning): the snapshot must exist and match the
