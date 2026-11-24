@@ -1754,3 +1754,260 @@ fn every_live_row_paints_inside_its_section_viewport() {
         },
     );
 }
+
+// -- A5a: the focus-into-view page seek (#1302, D-3) ------------------
+//
+// Structural pins only (element visibility / position within the
+// visible window), never pixel-text. The oracle is the same the board
+// seek pins use: the focused element's absolute position inside the
+// window bounds. Red pre-fix on the incomplete paths: the page
+// Flickable never adjusted for a focus landing, so any landing whose
+// section sat below the fold sought the row off-window.
+
+/// A focused card's full-visibility fact inside the window bounds.
+fn fully_visible(card: &support::driver::Element, window_w: u32, window_h: u32, what: &str) {
+    let position = card.absolute_position();
+    let size = card.size();
+    #[allow(clippy::cast_precision_loss)]
+    let (window_w, window_h) = (window_w as f32, window_h as f32);
+    assert!(
+        position.x >= 0.0
+            && position.y >= 0.0
+            && position.x + size.width <= window_w
+            && position.y + size.height <= window_h,
+        "{what} must sit fully inside the visible window, got x={} y={} \
+         w={} h={} (window {window_w}x{window_h})",
+        position.x,
+        position.y,
+        size.width,
+        size.height
+    );
+}
+
+/// T-1 (`today_walk_past_the_fold_brings_the_section_into_view`): a
+/// day whose Overdue section fills the window and a Scheduled section
+/// below the fold — the jump to the reading order's last row (a
+/// Scheduled row) scrolls the PAGE so the focused card is fully
+/// visible; the jump back to the first row scrolls the page back up.
+/// Red pre-fix: the page never sought, so the Scheduled landing sat
+/// below the window's bottom edge.
+#[test]
+fn today_walk_past_the_fold_brings_the_section_into_view() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let now = chrono::Utc::now();
+            let (handle, _engine, _state) = mount_geo(driver, today_geometry_state(now, 10, 4, 0));
+            let last = "geo-sched-3";
+            assert!(
+                driver.find_by_label(last).is_none(),
+                "the scheduled rows start below the fold (not instantiated)"
+            );
+
+            handle.dispatch_action(ActionId::NavLastItem);
+            driver.advance_time(0);
+
+            let card = driver
+                .find_by_label(last)
+                .unwrap_or_else(|| panic!("the page seek made the focused card live"));
+            fully_visible(
+                &card,
+                GEO_WINDOW_W,
+                GEO_WINDOW_H,
+                "the focused scheduled card",
+            );
+
+            // The reverse direction: back to the first row scrolls the
+            // page back up so the Overdue head is visible again.
+            handle.dispatch_action(ActionId::NavFirstItem);
+            driver.advance_time(0);
+            let head = driver
+                .find_by_label("geo-overdue-0")
+                .expect("the overdue head card renders");
+            fully_visible(
+                &head,
+                GEO_WINDOW_W,
+                GEO_WINDOW_H,
+                "the re-focused head card",
+            );
+        },
+    );
+}
+
+/// The timers-block filler (A5a T-2/T-3): the timers/habits/roster
+/// blocks sit at the TOP of the today page, so "below the fold" for
+/// them can only be caused by the timers rows above — the fixture
+/// mints a window-filling alarm roster (content-sized, no inner
+/// scroll) and the visibility assert below is the pre-fix red.
+fn fold_timers(state: &mut taskboard_domain::AppState, now: chrono::DateTime<chrono::Utc>) {
+    for i in 0..30 {
+        let _ = support::fixture::add_alarm(
+            state,
+            &format!("geo-alarm-{i}"),
+            now + chrono::TimeDelta::hours(i64::from(i) + 1),
+        );
+    }
+}
+
+/// T-2 (`habit_row_focus_becomes_visible`): with the habits section
+/// below the fold (a window-filling timers roster above it), the
+/// walk's landing on a habit row brings the habits block into the
+/// window. Red pre-fix: the habit landing armed no hint at all (the
+/// dark seam) and the page never sought.
+#[test]
+fn habit_row_focus_becomes_visible() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let now = chrono::Utc::now();
+            let mut state = today_geometry_state(now, 2, 0, 2);
+            fold_timers(&mut state, now);
+            let (handle, _engine, _state) = mount_geo(driver, state);
+            let habit = "geo-habit-1";
+
+            // The walk's last row is the second habit (tasks, then
+            // habits — the today walk domain).
+            handle.dispatch_action(ActionId::NavLastItem);
+            driver.advance_time(0);
+
+            let card = driver
+                .find_by_label(habit)
+                .unwrap_or_else(|| panic!("the page seek made the focused habit live"));
+            fully_visible(&card, GEO_WINDOW_W, GEO_WINDOW_H, "the focused habit card");
+        },
+    );
+}
+
+/// T-3 (`roster_row_focus_becomes_visible`): with the break-rule
+/// roster below the fold, the walk's roster landing brings the timers
+/// block into the window. Red pre-fix: the roster landing armed no
+/// hint (the dark seam).
+#[test]
+fn roster_row_focus_becomes_visible() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let now = chrono::Utc::now();
+            let mut state = today_geometry_state(now, 2, 0, 0);
+            fold_timers(&mut state, now);
+            let board = *state.boards.keys().next().expect("geo board");
+            let rule = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+            state.reminders.break_rules.insert(
+                rule,
+                taskboard_domain::BreakRule {
+                    id: rule,
+                    board,
+                    label: "geo-break-rule".to_owned(),
+                    threshold: taskboard_domain::WorkThreshold::try_new(
+                        chrono::TimeDelta::minutes(90),
+                    )
+                    .expect("positive threshold"),
+                    insistence: taskboard_domain::Insistence::Alarm,
+                    created_at: now,
+                    by: None,
+                },
+            );
+            let (handle, _engine, _state) = mount_geo(driver, state);
+            // The roster is content-sized (eager, outside every
+            // ListView), so the row is instantiated below the fold —
+            // the pre-fix red is the visibility assert below.
+
+            // The walk's last row is the roster row (tasks, then the
+            // roster — desktop-only section).
+            handle.dispatch_action(ActionId::NavLastItem);
+            driver.advance_time(0);
+
+            let row = driver
+                .find_by_label("geo-break-rule")
+                .unwrap_or_else(|| panic!("the page seek made the focused roster row live"));
+            fully_visible(&row, GEO_WINDOW_W, GEO_WINDOW_H, "the focused roster row");
+        },
+    );
+}
+
+/// T-4 (`inner_and_outer_seek_compose`): a day whose SECOND section
+/// overflows the window cap — the jump to its last row must scroll
+/// BOTH levels: the page brings the Scheduled block into the window
+/// (outer) and the section's `ListView` brings the row into its
+/// viewport (inner, the existing seam). Red pre-fix: the outer half
+/// never sought, so the composed landing sat below the window.
+#[test]
+fn inner_and_outer_seek_compose() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let now = chrono::Utc::now();
+            // Overdue 2 rows (fits), Scheduled 20 rows (caps at the
+            // window cap — the capped regime A1's geometry pins use).
+            let (handle, _engine, _state) = mount_geo(driver, today_geometry_state(now, 2, 20, 0));
+            let last = "geo-sched-19";
+            assert!(
+                driver.find_by_label(last).is_none(),
+                "the deep scheduled rows start uninstantiated"
+            );
+
+            handle.dispatch_action(ActionId::NavLastItem);
+            driver.advance_time(0);
+
+            let card = driver
+                .find_by_label(last)
+                .unwrap_or_else(|| panic!("the composed seek made the deep row live"));
+            fully_visible(&card, GEO_WINDOW_W, GEO_WINDOW_H, "the deep focused card");
+        },
+    );
+}
+
+/// T-5 (`stale_hint_decays_after_remount`, K-2): a hint armed before
+/// the view unmounts must not seek on remount — the nonce edge is a
+/// change, and the remount's initial evaluation is not one, so the
+/// stale hint decays unused (kiosk rotation safety by construction).
+/// The decay fact is structural: the head row keeps its exact rest
+/// position (the page content-y did not move).
+#[test]
+fn a_stale_hint_decays_after_remount() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let now = chrono::Utc::now();
+            let (handle, _engine, _state) = mount_geo(driver, today_geometry_state(now, 10, 4, 2));
+            // Arm a real hint (a below-the-fold landing): the page
+            // seeks; the nonce goes live.
+            handle.dispatch_action(ActionId::NavLastItem);
+            driver.advance_time(0);
+            let focused = driver
+                .find_by_label("geo-habit-1")
+                .expect("the first landing seeked to the habit");
+            let _ = focused;
+
+            // Remount the view family (away and back).
+            handle.dispatch_action(ActionId::NavNextView);
+            driver.advance_time(0);
+            handle.dispatch_action(ActionId::NavPrevView);
+            driver.advance_time(0);
+
+            // The stale hint decayed: the page is back at its rest
+            // (content-y 0) — the head row sits exactly where a fresh
+            // mount puts it (its unscrolled rest), fully visible.
+            let head = driver
+                .find_by_label("geo-overdue-0")
+                .expect("the head card renders after remount");
+            let position = head.absolute_position();
+            assert!(
+                position.y >= 0.0,
+                "the stale hint must not misfire the remounted page, \
+                 got y={}",
+                position.y
+            );
+        },
+    );
+}

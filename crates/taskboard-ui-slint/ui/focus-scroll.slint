@@ -15,3 +15,11 @@ export global FocusScrollHint {
     in property <int> target-b: -1;
     in property <int> nonce: 0;
 }
+//
+// The today page's synthetic slots (A5a D-2, #1302): `target-a` 4 is
+// the habits section's page block, 5 the break-rules roster's (the
+// timers block) — both live on the page outside the four task
+// sections, so no inner section ListView's `target-a == sindex`
+// filter can consume their hints; only the page seek does
+// (today-view.slint). Mirrors `IdTables::TODAY_HABIT_SLOT` /
+// `TODAY_ROSTER_SLOT` (models.rs).
