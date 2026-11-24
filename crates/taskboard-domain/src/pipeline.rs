@@ -1628,6 +1628,27 @@ impl<'a> SectionFolds<'a> {
 /// sync projection re-derives over the still-queued outbox (advisory —
 /// the engine re-derives after its own interpret), the board row's
 /// phase settles, and the application is logged.
+/// The carried deleted-entry section's live-row filter (#1291): a
+/// row survives the carry only while its entry is still absent from
+/// the tracking map in scope — the same check
+/// [`crate::roster::RestoreRoster::derive_parts`] performs at full
+/// derivation, re-derived here because the journal is out of the
+/// pipeline's reach (a restore or re-create lands through the command
+/// lane's tracking section, so the stale row fully drains one cycle
+/// after the row exists again).
+fn carry_deleted_entries(
+    current: &AppState,
+    tracking: &crate::tracking::TrackingState,
+) -> Vec<crate::roster::DeletedEntryRow> {
+    current
+        .roster
+        .deleted_entries
+        .iter()
+        .filter(|row| !tracking.entries.contains_key(&row.entry_id))
+        .cloned()
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)] // the assembly's inputs, one per merged table/folded section
 fn assemble_state(
     current: &AppState,
@@ -1646,15 +1667,16 @@ fn assemble_state(
     // The tombstone sections re-derive from the folded entity maps (a
     // pushed/pulled remote delete moves them); the journal is out of
     // the pipeline's reach, so the deleted-entry section carries
-    // through (it does not change across the cycle).
+    // through with its live-row filter re-derived from the tracking
+    // map in scope (#1291 — a restored/recreated entry's row must not
+    // list one cycle longer than the row exists).
     let habits = folded
         .habits
         .clone()
         .unwrap_or_else(|| current.habits.clone());
+    let tracking = folded.tracking.unwrap_or_else(|| current.tracking.clone());
     let mut roster = crate::roster::RestoreRoster::derive_tombstones(&labels, &habits);
-    roster
-        .deleted_entries
-        .clone_from(&current.roster.deleted_entries);
+    roster.deleted_entries = carry_deleted_entries(current, &tracking);
     let mut state = AppState {
         boards,
         stacks,
@@ -1672,7 +1694,7 @@ fn assemble_state(
                 .unwrap_or_else(|| current.reminders.break_rules.clone()),
             ..current.reminders.clone()
         },
-        tracking: folded.tracking.unwrap_or_else(|| current.tracking.clone()),
+        tracking,
         habits,
         reflection: current.reflection.clone(),
         roaming: current.roaming.clone(),
@@ -2112,11 +2134,11 @@ pub fn apply_push_report(
     }
     // The tombstone sections re-derive from the folded entity maps
     // (the journal is out of the pipeline's reach — the deleted-entry
-    // section carries through, it does not change across the cycle).
+    // section carries through with its live-row filter re-derived from
+    // the carried tracking map; #1291, the same check the cycle's
+    // rebuild performs).
     let mut roster = crate::roster::RestoreRoster::derive_tombstones(&labels, &current.habits);
-    roster
-        .deleted_entries
-        .clone_from(&current.roster.deleted_entries);
+    roster.deleted_entries = carry_deleted_entries(current, &current.tracking);
     let mut state = AppState {
         boards,
         stacks,
@@ -2826,6 +2848,135 @@ mod tests {
 
             by: None,
         }
+    }
+
+    // ---- C2: the carried deleted-entries live-row filter (#1291) -------
+
+    use crate::ids::TimeEntryId;
+    use crate::roster::DeletedEntryRow;
+
+    fn entry_id(raw: u128) -> TimeEntryId {
+        TimeEntryId::from_uuid(uuid::Uuid::from_u128(raw))
+    }
+
+    /// Mints any domain id newtype from a raw u128 (the row fixture's
+    /// journal id carries no identity — the guard is `entry_id`).
+    fn id_from_uuid<I: From<uuid::Uuid>>(raw: u128) -> I {
+        I::from(uuid::Uuid::from_u128(raw))
+    }
+
+    fn deleted_row(raw: u128) -> DeletedEntryRow {
+        DeletedEntryRow {
+            entry_id: entry_id(raw),
+            journal_id: id_from_uuid(0xF001),
+            label: String::new(),
+        }
+    }
+
+    fn live_tracking_entry(raw: u128) -> crate::tracking::TimeEntry {
+        crate::tracking::TimeEntry {
+            id: entry_id(raw),
+            task: crate::ids::TaskId::from_uuid(uuid::Uuid::from_u128(1)),
+            task_title: "t".into(),
+            start: ts(BASE),
+            end: Some(ts(BASE + 60)),
+            created_at: ts(BASE),
+            updated_at: ts(BASE),
+            kind: crate::tracking::TimeEntryKind::Work,
+            by: None,
+        }
+    }
+
+    /// The fixture both rebuild sites share: a carried
+    /// `deleted_entries` section with one row whose entry is live in
+    /// the tracking map (#1291's transient) and one whose entry is
+    /// still gone.
+    fn state_with_carried_rows() -> AppState {
+        let mut state = base_state(bound_task(1));
+        let live = live_tracking_entry(0xE10);
+        state.tracking.entries.insert(live.id, live);
+        state.roster.deleted_entries = vec![deleted_row(0xE10), deleted_row(0xE11)];
+        state
+    }
+
+    /// #1291 — the cycle rebuild drops the live-entry row (the
+    /// transient listing on the issue) while the still-gone entry's
+    /// row carries.
+    #[test]
+    fn carried_deleted_entries_drop_rows_whose_entry_is_live() {
+        let state = state_with_carried_rows();
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let (app, _actions, _events) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &AppDataEvidence::Absent,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        assert_eq!(
+            app.roster
+                .deleted_entries
+                .iter()
+                .map(|row| row.entry_id)
+                .collect::<Vec<_>>(),
+            vec![entry_id(0xE11)],
+            "the live entry's row dropped; the gone entry's row carried"
+        );
+    }
+
+    /// #1291's over-filter guard: rows for still-gone entries survive
+    /// the carry untouched (the filter keys on the tracking map, not
+    /// on a blanket drop).
+    #[test]
+    fn carried_deleted_entries_keep_rows_whose_entry_is_still_gone() {
+        let mut state = base_state(bound_task(1));
+        state.roster.deleted_entries = vec![deleted_row(0xE11), deleted_row(0xE12)];
+        let snap = single_stack_snapshot(vec![remote_task(1, 1, BASE)], BASE);
+        let (app, _actions, _events) = fold_report(
+            &state,
+            &[],
+            &snap,
+            &AppDataEvidence::Absent,
+            DeckFeatures::CONSERVATIVE,
+            BASE + 3_600,
+        );
+        assert_eq!(
+            app.roster
+                .deleted_entries
+                .iter()
+                .map(|row| row.entry_id)
+                .collect::<Vec<_>>(),
+            vec![entry_id(0xE11), entry_id(0xE12)],
+            "every still-gone row carried through"
+        );
+    }
+
+    /// #1291 — the push-only rebuild (the `Failed`-report pipeline)
+    /// applies the same live-row filter against the carried tracking
+    /// map.
+    #[test]
+    fn push_only_rebuild_applies_the_same_live_row_filter() {
+        let state = state_with_carried_rows();
+        let (app, _actions) = apply_push_report(
+            &state,
+            &[],
+            &[],
+            ts(BASE + 1),
+            &CountingIds::default(),
+            ts(BASE + 1),
+            None,
+            DeckFeatures::CONSERVATIVE,
+        );
+        assert_eq!(
+            app.roster
+                .deleted_entries
+                .iter()
+                .map(|row| row.entry_id)
+                .collect::<Vec<_>>(),
+            vec![entry_id(0xE11)],
+            "the live entry's row dropped in the push-only rebuild too"
+        );
     }
 
     pub(super) fn fold_report(
