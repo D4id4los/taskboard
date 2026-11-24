@@ -94,6 +94,18 @@ tests:
   leading every view chain's root page); re-curation of the
   group-less families is queued upstream (#1184 comment + the D4
   report's backlog issue). No surface change ships.
+  **Closure note (2026-11-24, the backlog-reduction round 6 C1
+  chunk, #1289)**: the re-curation question is closed — decided NOT
+  to re-curate. The "fifth row clips" measurement no longer
+  reproduces: G6 passes with the full root page as landed at every
+  measured geometry (the kiosk panel's 1024×600 included), so that
+  passing run is the law's cited re-measurement. The registry stays
+  as measured (the census with its dated absorptions); the guard's
+  teeth are unchanged — a new group-less registration still fails
+  and must join a group page or amend the census with a dated note.
+  The law text re-base lives in the census guard's doc block
+  (`crates/taskboard-ui-slint/src/menu.rs`,
+  `us25_s1_root_quick_rows_within_budget`).
 - **Labels multi-toggle dropdown (#1104)**: **design-only story** —
   US-26 records the multi-select Dropdown design; implementation is
   NOT D4 scope and queues as the follow-up (#1104 stays open, linked
