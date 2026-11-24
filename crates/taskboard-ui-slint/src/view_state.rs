@@ -383,8 +383,9 @@ pub enum Flow {
     /// `slot` (UX-R8 D-1, #823): the gap index into
     /// `tasks_in_stack(target)` — `0..=len` (gap `i` = before task
     /// `i`, gap `len` = after the last). One flow carries both aim
-    /// coordinates; the confirm computes the order presentation-side
-    /// through [`slot_order`].
+    /// coordinates; the confirm mints through [`move_aim_command`]
+    /// (B3 2026-11-24 #1247: a same-stack gap is the engine-side
+    /// reorder's index, never a presentation-side order value).
     Move {
         task: TaskId,
         target: StackId,
@@ -828,26 +829,61 @@ pub fn append_order(state: &AppState, stack: StackId) -> i64 {
         .map_or(0, |t| t.order + 1)
 }
 
-/// The insertion slot's canonical order (UX-R8 D-1): gap `gap` in
-/// `stack`'s canonical order — `0..=len`. Gap before the first takes
-/// `first.order - 1`; after the last the [`append_order`]; between
-/// `a` and `b` the i64 midpoint (saturating arithmetic is unnecessary
-/// on non-negative engine orders — the documented leniency is the
-/// tie: an adjacent-pair midpoint can equal `a.order`, and the
-/// engine's `(order, id)` sort keeps that collision deterministic;
-/// `command.rs` no-ops the same-(stack, order) write).
+/// The insertion slot's END orders (UX-R8 D-1, re-signed B3 2026-11-24
+/// #1247): gap `0` takes `first.order - 1` (before the first); any
+/// other gap takes the [`append_order`] (after the last). The
+/// between-ends midpoint arm is DELETED: its adjacent-pair midpoint
+/// could equal `a.order` — an occupied order whose `(order, id)` tie
+/// resolved by `UUIDv7` mint-order luck (#1247's verified defect) — and
+/// every same-stack move now mints a gap index for
+/// `StateCommand::TaskReorder` instead; cross-stack insertion is the
+/// append (interior cross-stack positions are the multi-move
+/// block-splice's named out-of-scope sibling). No move path computes
+/// a midpoint anymore: a gap is either an engine-side reorder index
+/// or one of these two end orders.
 #[must_use]
 pub fn slot_order(state: &AppState, stack: StackId, gap: usize) -> i64 {
-    let tasks = state.tasks_in_stack(stack);
     if gap == 0 {
-        return tasks.first().map_or(0, |t| t.order - 1);
+        return state
+            .tasks_in_stack(stack)
+            .first()
+            .map_or(0, |t| t.order - 1);
     }
-    if gap >= tasks.len() {
-        return tasks.last().map_or(0, |t| t.order + 1);
+    append_order(state, stack)
+}
+
+/// The one move-aim mint (B3 2026-11-24 #1247, the r2 chunk-8 D-F
+/// one-construction-site law carried onto the reorder grammar): the
+/// keyboard confirm and the pointer drop both build their command
+/// HERE, so command equivalence is by construction. A same-stack aim
+/// mints `StateCommand::TaskReorder` at the gap (`None` = the append
+/// gap, index `len`); a cross-stack aim keeps `MoveTask` — gap `0`
+/// via the first-position end arm of [`slot_order`], anything else
+/// via the [`append_order`].
+#[must_use]
+pub fn move_aim_command(
+    state: &AppState,
+    task: TaskId,
+    target: StackId,
+    gap: Option<usize>,
+) -> StateCommand {
+    let same_stack = state.tasks.get(&task).is_some_and(|t| t.stack == target);
+    if same_stack {
+        let append_gap = state.tasks_in_stack(target).len();
+        return StateCommand::TaskReorder {
+            id: task,
+            target: gap.unwrap_or(append_gap),
+        };
     }
-    let a = tasks[gap - 1].order;
-    let b = tasks[gap].order;
-    a + (b - a) / 2
+    let order = match gap {
+        Some(0) => slot_order(state, target, 0),
+        _ => append_order(state, target),
+    };
+    StateCommand::MoveTask {
+        id: task,
+        stack: target,
+        order,
+    }
 }
 
 /// The multi-move sequence (UX-R8 D-6, US-4/S2): one `MoveTask` per
@@ -941,12 +977,11 @@ pub fn multi_move_commands(
         .collect()
 }
 
-/// The one `MoveTask` construction site (r2 chunk-8 D-F): the
-/// keyboard confirm and the pointer drop both build their command
-/// here — command equivalence by construction. UX-R8 D-1 adds
-/// [`slot_order`] as the second construction *input* (the keyboard
-/// flow's aimed slot); the pointer drop's end-of-stack append is the
-/// [`append_order`] input. Not a second site.
+/// The review-walk's file verb (r2 chunk-8 D-F): a bare append into
+/// `target` — a NEW-surface insertion, not a same-stack crossing move,
+/// so it stays an absolute-order `MoveTask` at the [`append_order`]
+/// (B3 2026-11-24 #1247: the move-aim mint — keyboard confirm and
+/// pointer drop — lives in [`move_aim_command`]; this is not it).
 fn append_move_command(state: &AppState, task: TaskId, target: StackId) -> FlowOutcome {
     FlowOutcome::Command(StateCommand::MoveTask {
         id: task,
@@ -4318,20 +4353,20 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// `Activate` during a move flow: confirm — `MoveTask` at the
-    /// aimed slot's canonical order (UX-R8 D-1). The in-place confirm
-    /// (a walked-back slot mapping to the identical (stack, order))
-    /// dispatches and the engine's same-(stack, order) no-op absorbs
-    /// it — typed, no special case presentation-side.
+    /// `Activate` during a move flow: confirm (UX-R8 D-1, re-signed
+    /// B3 2026-11-24 #1247). A SAME-stack aim mints the engine-side
+    /// gap-index reorder — `StateCommand::TaskReorder` at the aimed
+    /// gap (the engine's in-place gaps are the accepted no-op the
+    /// walked-back slot dispatches into; typed, no presentation-side
+    /// special case). A cross-stack aim keeps `MoveTask`: gap `0` is
+    /// the first-position mint (`slot_order`'s surviving end arm),
+    /// anything else appends (interior cross-stack insertion is out of
+    /// the reorder law — D-2). The one mint this flow speaks.
     pub fn confirm_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         let Flow::Move { task, target, slot } = self.flow().clone() else {
             return Vec::new();
         };
-        let command = FlowOutcome::Command(StateCommand::MoveTask {
-            id: task,
-            stack: target,
-            order: slot_order(state, target, slot),
-        });
+        let command = FlowOutcome::Command(move_aim_command(state, task, target, Some(slot)));
         self.write_flow(Flow::None);
         vec![command, FlowOutcome::RefreshNow]
     }
@@ -4401,15 +4436,16 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// The drop (r2 D-F): the same `MoveTask` command the keyboard
-    /// flow confirms — both funnel through [`append_move_command`],
-    /// the one construction site (equivalence by construction; the
-    /// pin test compares the commands). UX-R8 D-2: an armed gap
-    /// confirms at its [`slot_order`]; the *in-place* confirm — the
-    /// confirmed gap on the dragged card's own position (gap `idx` or
-    /// `idx + 1` of its own stack) — dispatches nothing and ends the
-    /// flow (US-2/AC-2; the gesture is silent too, so a release back
-    /// on the card lands no ghosting refresh).
+    /// The drop (r2 D-F; re-signed B3 2026-11-24 #1247): the same
+    /// command the keyboard flow confirms — both funnel through
+    /// [`move_aim_command`], the one construction site (equivalence by
+    /// construction; the pin test compares the commands). A same-stack
+    /// drop mints the engine-side `TaskReorder` gap; cross-stack keeps
+    /// `MoveTask` (D-2). The *in-place* confirm — the confirmed gap on
+    /// the dragged card's own position (gap `idx` or `idx + 1` of its
+    /// own stack) — dispatches nothing and ends the flow (US-2/AC-2;
+    /// the gesture is silent too, so a release back on the card lands
+    /// no ghosting refresh).
     pub fn confirm_drag_move(&mut self, state: &AppState) -> Vec<FlowOutcome> {
         let Flow::DragMove { task, target, gap } = self.flow().clone() else {
             return Vec::new();
@@ -4437,15 +4473,9 @@ impl ViewState {
                 .map(FlowOutcome::Command)
                 .collect()
         } else {
-            let order = gap.map_or_else(
-                || append_order(state, target),
-                |g| slot_order(state, target, g),
-            );
-            vec![FlowOutcome::Command(StateCommand::MoveTask {
-                id: task,
-                stack: target,
-                order,
-            })]
+            vec![FlowOutcome::Command(move_aim_command(
+                state, task, target, gap,
+            ))]
         };
         self.write_flow(Flow::None);
         let mut outcomes = commands;
@@ -5755,11 +5785,19 @@ mod tests {
     }
 
     #[test]
-    fn slot_order_spans_the_between_ends_and_empty_grammar() {
+    fn slot_order_spans_only_the_end_arms_after_the_midpoint_retirement() {
+        // B3 (2026-11-24, #1247): the between-ends midpoint arm is
+        // deleted — the between grammar is the engine-side reorder
+        // gap's business now; `slot_order` is the two END orders of
+        // the cross-stack `MoveTask` mint only.
         let (state, _, [s0, s1], _) = fixture();
         // s0: a(0), b(1); s1: c(0).
         assert_eq!(slot_order(&state, s0, 0), -1, "before the first");
-        assert_eq!(slot_order(&state, s0, 1), 0, "between a(0) and b(1)");
+        assert_eq!(
+            slot_order(&state, s0, 1),
+            2,
+            "a between gap mints the append — no midpoint anymore"
+        );
         assert_eq!(slot_order(&state, s0, 2), 2, "after the last (append)");
         assert_eq!(slot_order(&state, s1, 0), -1, "before the only task");
         assert_eq!(slot_order(&state, s1, 1), 1, "after the only task");
@@ -7422,6 +7460,107 @@ mod tests {
             })][..]
         );
         assert_eq!(*vs.flow(), Flow::None);
+    }
+
+    // -- the same-stack reorder mint (B3, 2026-11-24, #1247) ---------------
+
+    #[test]
+    fn move_flow_same_stack_confirm_mints_the_engine_side_gap_reorder() {
+        // U1: a same-stack aim mints `TaskReorder` at the aimed gap —
+        // never a `MoveTask` order value (the midpoint mint is retired
+        // from every move path). The walked-back in-place slot still
+        // dispatches; the engine's in-place gaps absorb it as the
+        // accepted no-op.
+        let (state, _, [s0, _], [a, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        // The flow arms at a's own gap + 1 (the in-place bottom edge):
+        // the confirm dispatches `TaskReorder` there and the engine
+        // no-ops it.
+        let outcomes = vs.confirm_move(&state);
+        assert_eq!(
+            outcomes[..1],
+            [FlowOutcome::Command(StateCommand::TaskReorder {
+                id: a,
+                target: 1,
+            })][..]
+        );
+        // Gap 0 (above the first row) mints the crossing gap.
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.activate_card(a, s0);
+        vs.start_move(&state);
+        vs.cycle_move_target(&state, -1); // wrap back to (s0, 0)
+        let outcomes = vs.confirm_move(&state);
+        assert_eq!(
+            outcomes[..1],
+            [FlowOutcome::Command(StateCommand::TaskReorder {
+                id: a,
+                target: 0,
+            })][..]
+        );
+    }
+
+    #[test]
+    fn pointer_drop_on_an_adjacent_pair_mints_the_crossing_gap() {
+        // U2, #1247's user-visible symptom pinned at the flow level:
+        // dragging a card to the gap beyond its adjacent neighbour
+        // mints the engine-side reorder that swaps them — the old
+        // midpoint mint landed on an occupied order and resolved the
+        // tie by mint-order luck (the silent above/below lottery).
+        let (state, _, [s0, _], [_a, b, ..]) = fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        vs.begin_drag_move(&state, b); // b is s0's second row
+        vs.drag_gap(&state, s0, 0); // the gap above a
+        let outcomes = vs.confirm_drag_move(&state);
+        assert_eq!(
+            outcomes[..1],
+            [FlowOutcome::Command(StateCommand::TaskReorder {
+                id: b,
+                target: 0,
+            })][..]
+        );
+    }
+
+    #[test]
+    fn keyboard_confirm_and_pointer_drop_mint_equal_same_stack_reorders() {
+        // U3, the one-construction-site law carried onto the reorder
+        // grammar: the same (task, same-stack gap) builds ONE command
+        // shape through `move_aim_command` — the pins compare the
+        // commands, whatever surface produced them.
+        let (state, _, [s0, _], [_, b, ..]) = fixture();
+        // b is s0's second row: gap 0 is a crossing gap for it (a's
+        // own gap 0 would be the in-place silent confirm).
+        let keyboard = {
+            let mut vs = ViewState::new();
+            vs.reconcile(&state);
+            vs.activate_card(b, s0);
+            vs.start_move(&state);
+            vs.cycle_move_target(&state, -1); // (s0, 1) → (s0, 0)
+            vs.cycle_move_target(&state, -1);
+            vs.confirm_move(&state)
+        };
+        let drag = {
+            let mut vs = ViewState::new();
+            vs.reconcile(&state);
+            vs.begin_drag_move(&state, b);
+            vs.drag_gap(&state, s0, 0);
+            vs.confirm_drag_move(&state)
+        };
+        let pick = |outcomes: &[FlowOutcome]| {
+            outcomes.iter().find_map(|o| match o {
+                FlowOutcome::Command(cmd @ StateCommand::TaskReorder { .. }) => Some(cmd.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(pick(&keyboard), pick(&drag), "one reorder mint");
+        assert!(
+            pick(&keyboard).is_some(),
+            "the same-stack legs mint the reorder verb, not MoveTask"
+        );
     }
 
     #[test]

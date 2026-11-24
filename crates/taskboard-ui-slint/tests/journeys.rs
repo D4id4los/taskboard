@@ -21093,7 +21093,9 @@ fn us1_s5_quick_set_forms_follow_the_law() {
 
 /// US-1/S1–S3 — the keyboard reorder commits the exact slot move:
 /// arm (M), walk to a same-stack slot, confirm → exactly one
-/// `MoveTask { id, stack, order: slot_order }`; the flow ends.
+/// engine-side gap reorder `TaskReorder { id, target }` (B3
+/// 2026-11-24 #1247 — the slot mint is a gap index, never an order
+/// value); the flow ends.
 #[test]
 fn us1_s3_keyboard_reorder_commits_the_exact_move() {
     let (fixture, state) = fixture::journey_state();
@@ -21111,10 +21113,9 @@ fn us1_s3_keyboard_reorder_commits_the_exact_move() {
         // Walk back one slot: (stack a, gap 0) — before the first.
         harness.stroke(parse("Up").expect("Up"));
         harness.stroke(parse("Return").expect("Return"));
-        harness.assert_commands(&[StateCommand::MoveTask {
+        harness.assert_commands(&[StateCommand::TaskReorder {
             id: fixture.task0,
-            stack: fixture.stack_a,
-            order: -1,
+            target: 0,
         }]);
         assert_eq!(
             harness.handle.window().get_board_model().move_target,
@@ -21153,14 +21154,15 @@ fn us1_s2_flow_escape_dispatches_nothing() {
     });
 }
 
-/// US-2/S1–S2 — the gap drop commits the insertion order: drag armed,
-/// gap hover, gap drop → one `MoveTask` with the between-A-and-B
-/// order (here: the before-first slot, `first.order - 1`); the
+/// US-2/S1–S2 — the gap drop commits the aimed move: drag armed, gap
+/// hover, gap drop → one same-stack `TaskReorder` at the aimed gap
+/// (B3 2026-11-24 #1247 — the before-first drop mints gap 0, the
+/// engine resolves the swap; the midpoint order mint is retired); the
 /// in-place release dispatches nothing (AC-2); a stale (column, gap)
 /// drop settles (the F8 twin).
 #[test]
 fn us2_s2_gap_drop_commits_the_insertion_order() {
-    let (fixture, state) = fixture::golden_state();
+    let (_fixture, state) = fixture::golden_state();
     let task1 = state
         .tasks
         .values()
@@ -21173,10 +21175,9 @@ fn us2_s2_gap_drop_commits_the_insertion_order() {
         harness.handle.window().invoke_board_card_drag_armed(0, 1);
         harness.handle.window().invoke_board_gap_hovered(0, 0);
         harness.handle.window().invoke_board_gap_dropped(0, 0);
-        harness.assert_commands(&[StateCommand::MoveTask {
+        harness.assert_commands(&[StateCommand::TaskReorder {
             id: task1,
-            stack: fixture.stack_a,
-            order: -1,
+            target: 0,
         }]);
         harness.engine.settle(&harness.handle);
 
