@@ -1514,7 +1514,18 @@ fn board_compact_item_walk_visits_every_card() {
 #[test]
 fn today_has_no_pointer_only_controls() {
     run(|| {
-        let mounted = today_fixture();
+        let mut mounted = today_fixture();
+        // Settle the extent-report pipeline (round-6 A1: the clip
+        // heights converge over report -> refresh -> push passes;
+        // poll to a deadline on the mock clock, never fixed counts).
+        for _ in 0..16 {
+            if visible_delegates(&root_item(&mounted.handle), "TodayView::today-row").len()
+                == today_rows(&mounted.handle).len()
+            {
+                break;
+            }
+            mounted.driver.advance_time(0);
+        }
         let root = root_item(&mounted.handle);
         assert_visible_count(
             &root,

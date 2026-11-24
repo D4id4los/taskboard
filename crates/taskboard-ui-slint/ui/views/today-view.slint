@@ -444,16 +444,18 @@ export component TodayView inherits FocusScope {
                             page-cap,
                         );
                         row-viewport := ListView {
-                            // The viewport is cap-sized regardless of
-                            // the content volume: with short content
-                            // the rows occupy the content's head and
-                            // the clip hides nothing; with overflowing
-                            // content cap IS the painted viewport, so
-                            // the virtualizer's live-row window
-                            // (`visible-height`, same cap) always
-                            // equals the painted viewport — the
-                            // pre-fix window/viewport mismatch dies.
-                            height: page-cap;
+                            // `height: 100%` (the clip) is safe again:
+                            // the height binding above reads the
+                            // facts channel, never the ListView's
+                            // content-height, so the old
+                            // height -> content-height cycle does not
+                            // exist. The virtualizer's live-row window
+                            // stays `visible-height` (the cap — the
+                            // pre-fix semantics): in the capped regime
+                            // cap IS the painted viewport, and in the
+                            // fitting regime the surplus window is
+                            // clipped away by `clip: true`.
+                            height: 100%;
                             visible-height: page-cap;
                             request-row: FocusScrollHint.target-a == sindex
                             ? FocusScrollHint.target-b

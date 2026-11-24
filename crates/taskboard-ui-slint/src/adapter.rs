@@ -14378,8 +14378,39 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_today_row_extent, adapter: adapter;
     bind mut (a, window), args (id, extent), {
         if a.models.today_row_extents.get(&id) != Some(&extent) {
-            a.models.today_row_extents.insert(id, extent);
-            a.refresh_forced(&window);
+            a.models.today_row_extents.insert(id.clone(), extent);
+            // The section's content extent updates SYNCHRONOUSLY
+            // (round-6 A1, #1310/#1304): the clip height binding
+            // reads the `TodayClipFacts` extents, so a one-pass lag
+            // here would leave the clip smaller than its rows for a
+            // pass — the virtualizer's placement math scrolls the
+            // content by exactly that difference. The incremental
+            // sum matches `push_today`'s wholesale re-derivation.
+            if let Some(section) = a
+                .models
+                .today_section_row_ids
+                .iter()
+                .position(|ids| ids.iter().any(|row_id| row_id == &id))
+            {
+                let sum: f32 = a.models.today_section_row_ids[section]
+                    .iter()
+                    .map(|row_id| {
+                        a.models
+                            .today_row_extents
+                            .get(row_id)
+                            .copied()
+                            .unwrap_or(0.0)
+                    })
+                    .sum();
+                a.models.today_section_extents[section] = sum;
+                let facts = window.global::<crate::TodayClipFacts>();
+                match section {
+                    0 => facts.set_e0(sum),
+                    1 => facts.set_e1(sum),
+                    2 => facts.set_e2(sum),
+                    _ => facts.set_e3(sum),
+                }
+            }
         }
     });
 

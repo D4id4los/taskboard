@@ -339,6 +339,17 @@ pub struct PushModels {
     /// (the row-extent seam) — exact for ever-live rows, the fallback
     /// source for an above-viewport change's compensation extent.
     pub(crate) today_row_extents: std::collections::HashMap<SharedString, f32>,
+    /// Per-section row id lists (round-6 A1, #1310/#1304): the
+    /// row-extent seam's reverse map — a report recomputes its
+    /// section's content extent SYNCHRONOUSLY (the clip height
+    /// binding re-evaluates on the `TodayClipFacts` write; a
+    /// one-pass lag here left the clip smaller than its rows for a
+    /// pass, and the virtualizer's placement math scrolled the
+    /// content by the difference).
+    pub(crate) today_section_row_ids: [Vec<SharedString>; 4],
+    /// The per-section content-extent sums the seam keeps incremental
+    /// (`push_today` re-derives them wholesale each pass).
+    pub(crate) today_section_extents: [f32; 4],
     /// The plan-next-day surface's pane row handles (#622): the same
     /// diff pattern — stable identity across refreshes.
     plan_boxes: MirroredRows<PlanRowModel>,
@@ -3747,16 +3758,16 @@ fn push_today(
         // converges from the first materialization onward — the
         // no-refire trap of the retired `changed`-assigned shape
         // cannot recur.
-        let content_extent: f32 = filtered
+        let row_ids: Vec<SharedString> = filtered
             .iter()
-            .map(|id| {
-                models
-                    .today_row_extents
-                    .get(&SharedString::from(id.as_uuid().to_string()))
-                    .copied()
-                    .unwrap_or(0.0)
-            })
+            .map(|id| SharedString::from(id.as_uuid().to_string()))
+            .collect();
+        let content_extent: f32 = row_ids
+            .iter()
+            .map(|id| models.today_row_extents.get(id).copied().unwrap_or(0.0))
             .sum();
+        models.today_section_row_ids[index] = row_ids;
+        models.today_section_extents[index] = content_extent;
         {
             let facts = window.global::<crate::TodayClipFacts>();
             match index {
@@ -5621,7 +5632,7 @@ mod tests {
             on_slint_thread(|| {
                 let (mut state, board_a, board_b, _ids) = two_board_state();
                 let _ = habit_on(&mut state, board_a, 10, "archived-0");
-                let live = habit_on(&mut state, board_b, 10, "live-0");
+                let _live = habit_on(&mut state, board_b, 10, "live-0");
                 state.boards.get_mut(&board_a).expect("board").archived = true;
 
                 let window = crate::AppWindow::new().expect("window on the testing backend");
@@ -5634,7 +5645,6 @@ mod tests {
                     .map(|row| row.card.title.to_string())
                     .collect();
                 assert_eq!(rendered, ["live-0"], "the archived board's habit is absent");
-                let _ = live;
             });
         }
 
@@ -5672,7 +5682,7 @@ mod tests {
         #[test]
         fn kiosk_tracked_today_sums_over_all_live_boards() {
             on_slint_thread(|| {
-                let (mut state, board_a, board_b, ids) = two_board_state();
+                let (mut state, _board_a, _board_b, ids) = two_board_state();
                 // ids: [overdue(beta), scheduled(alpha), due(alpha),
                 // anchor(alpha), done(beta)]. Track one task per board,
                 // 10 work minutes each, inside the day window.
@@ -5695,8 +5705,8 @@ mod tests {
                     "kiosk tracked-today aggregates both boards' tracked tasks"
                 );
                 // Derived, never pinned copy (the no-text-assertions
-                // law): the total is the aggregated set's two-hour...
-                // two ten-minute entries' phrase.
+                // law): the total phrase of the aggregated set's
+                // twenty summed minutes.
                 let expected = crate::presentation::tracked_total_phrase(
                     &crate::presentation::part_total(chrono::TimeDelta::minutes(20)),
                 );
@@ -5705,8 +5715,6 @@ mod tests {
                     expected,
                     "the day total folds the aggregated set"
                 );
-                let _ = board_a;
-                let _ = board_b;
             });
         }
 
