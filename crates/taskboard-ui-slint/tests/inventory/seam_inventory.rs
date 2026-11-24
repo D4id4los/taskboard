@@ -65,6 +65,15 @@ const SEAM_INVENTORY: &[&str] = &[
     // rosters and the rule list's clear-all.
     "label_restore_requested",
     "label_restore_cancelled",
+    // The bulk restore pair (#1245, the labels overlay's restore-all
+    // row) and the deleted-habits section's quartet (#1290/#1245 —
+    // the menu trio retired with the enumeration).
+    "label_restore_all_requested",
+    "label_restore_all_cancelled",
+    "habits_habit_restore_requested",
+    "habits_habit_restore_cancelled",
+    "habits_habit_restore_all_requested",
+    "habits_habit_restore_all_cancelled",
     "entry_restore_requested",
     "entry_restore_cancelled",
     "rules_clear_asked",

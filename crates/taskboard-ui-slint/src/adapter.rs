@@ -632,13 +632,19 @@ pub(crate) struct Adapter {
     /// task-delete/`BreakRuleRemove` grammar verbatim — the arm
     /// stages adapter-side, the confirm routes `DeleteHabit`.
     habit_remove_armed: Option<taskboard_domain::HabitId>,
-    /// The undo-family restore's armed subject (W-3): the roster
-    /// habit the open menu's confirm would resurrect; `take()`n by
-    /// the confirm's one-shot collection.
+    /// The undo-family restore's armed subject (W-3, #1290
+    /// enumeration): the roster habit the deleted-habits section's
+    /// strip would resurrect.
     habit_restore_armed: Option<taskboard_domain::HabitId>,
+    /// The deleted-habits section's armed bulk restore (#1245): the
+    /// confirm dispatches one `RestoreHabit` per roster row.
+    habit_restore_all_armed: bool,
     /// The labels overlay's armed restore subject (W-2): the roster
     /// row the strip's Confirm would resurrect.
     label_restore_armed: Option<taskboard_domain::LabelId>,
+    /// The labels overlay's armed bulk restore (#1245): the confirm
+    /// dispatches one `RestoreLabel` per board-scoped roster row.
+    label_restore_all_armed: bool,
     /// The track panel's armed restore target (W-9): the journal id
     /// the strip's Confirm dispatches `RestoreTimeEntryFromJournal`
     /// over (the zero-input payload carries the id only).
@@ -1911,14 +1917,6 @@ impl Adapter {
             // is the disarmed `NoTarget`).
             ctx.habit_remove_target = self.habit_remove_armed.take();
         }
-        if wants.wants(crate::router::OneShotSet::HABIT_RESTORE_TARGET) {
-            // The staged restore's armed subject (W-3): the arm
-            // recorded it; the confirm consumes the one-shot (the
-            // armed state clears with the dispatch — the #1187 law's
-            // re-delete then leaves the habit tombstoned again, the
-            // roster re-derives).
-            ctx.habit_restore_target = self.habit_restore_armed.take();
-        }
         if wants.wants(crate::router::OneShotSet::HABIT_PAUSE_TARGET) {
             ctx.habit_pause_target = self.habit_pause_target.take();
         }
@@ -3109,6 +3107,11 @@ impl Adapter {
         {
             self.habit_restore_armed = None;
         }
+        // The armed bulk restore absorbs when the roster empties (the
+        // same stale law — nothing left to resurrect in bulk).
+        if self.habit_restore_all_armed && state.roster.tombstoned_habits.is_empty() {
+            self.habit_restore_all_armed = false;
+        }
         // The pause editor's one-shot subject absorbs when its habit
         // dies (the same stale-index law; HF1) — the open editor
         // unmounts with it.
@@ -3197,6 +3200,11 @@ impl Adapter {
                 .all(|row| row.id != armed)
         {
             self.label_restore_armed = None;
+        }
+        // The armed bulk label restore absorbs when the tombstone set
+        // empties (the stale law inverted — nothing left in bulk).
+        if self.label_restore_all_armed && state.roster.tombstoned_labels.is_empty() {
+            self.label_restore_all_armed = false;
         }
         // The armed entry restore absorbs when the journal id left the
         // roster (restored, re-created, or evicted — the bounded
@@ -3331,6 +3339,40 @@ impl Adapter {
         window.set_track_has_deleted(!entry_deleted_rows.is_empty());
         window.set_track_deleted_rows(ModelRc::new(slint::VecModel::from(entry_deleted_rows)));
         window.set_track_restore_armed_index(entry_restore_armed_index);
+        // The deleted-habits section's pushed halves (#1290/#1245, D-4):
+        // the roster's rows and armed mirrors; kiosk pushes empty — the
+        // affordances render absent, the CLI carries the restore path.
+        let (habit_deleted_rows, habit_restore_armed_index): (Vec<slint::SharedString>, i32) =
+            if self.kiosk {
+                (Vec::new(), -1)
+            } else {
+                let armed = self
+                    .habit_restore_armed
+                    .and_then(|id| {
+                        state
+                            .roster
+                            .tombstoned_habits
+                            .iter()
+                            .position(|row| row.id == id)
+                    })
+                    .and_then(|p| i32::try_from(p).ok())
+                    .unwrap_or(-1);
+                (
+                    state
+                        .roster
+                        .tombstoned_habits
+                        .iter()
+                        .map(|row| slint::SharedString::from(row.name.as_str()))
+                        .collect(),
+                    armed,
+                )
+            };
+        window.set_habits_has_deleted(!habit_deleted_rows.is_empty());
+        window.set_habits_deleted_rows(ModelRc::new(slint::VecModel::from(habit_deleted_rows)));
+        window.set_habits_restore_armed_index(habit_restore_armed_index);
+        window.set_habits_restore_all_armed(self.habit_restore_all_armed && !self.kiosk);
+        // The labels overlay's bulk armed mirror (#1245).
+        window.set_label_overlay_restore_all_armed(self.label_restore_all_armed && !self.kiosk);
         // The clear-all row's pushed halves (W-4): the subject's rule
         // count (the row's consequence names it), the clearable
         // verdict (D-2: zero rules is the disabled row, never a
@@ -5139,57 +5181,6 @@ impl Adapter {
             // was dispatched.
             (_, UiEffect::HabitRemoveCancel) => {
                 self.habit_remove_armed = None;
-                self.reproject_habit_menu(window);
-                self.refresh_forced(window);
-                Vec::new()
-            }
-            // The undo-family restore's arm (W-3): the roster's newest
-            // tombstone is the armed subject (D-4: kiosk is
-            // structurally inert — the CLI carries its restore path).
-            // Staging touches no engine state; the open menu's page
-            // re-projects (the confirm flips enabled). An empty roster
-            // is the no-op arm (D-2: the row never rendered).
-            (_, UiEffect::HabitRestoreArm) => {
-                let armed = if self.kiosk {
-                    None
-                } else {
-                    let state = self.state.load_full();
-                    state.roster.tombstoned_habits.first().map(|row| row.id)
-                };
-                self.habit_restore_armed = armed;
-                if armed.is_none() {
-                    self.arm_no_target_notice(ActionId::HabitRestore);
-                } else {
-                    // The arm names its subject (the stage-3
-                    // walkthrough's Manual item): the menu's arm row is
-                    // registry-static, so the roster row's name rides
-                    // the notice lane — the confirm's consequence is
-                    // visible, not remembered.
-                    let name = self
-                        .state
-                        .load()
-                        .roster
-                        .tombstoned_habits
-                        .iter()
-                        .find(|row| Some(row.id) == armed)
-                        .map(|row| row.name.clone());
-                    if let Some(name) = name {
-                        self.notice = Some(Notice {
-                            text: crate::presentation::habit_restore_arm_notice_phrase(&name),
-                            until: chrono::Utc::now() + crate::presentation::MENU_NOTICE_HORIZON,
-                        });
-                    }
-                }
-                self.push_notice(window);
-                self.reproject_habit_menu(window);
-                self.refresh_forced(window);
-                Vec::new()
-            }
-            // The armed restore's cancel step: disarms INSIDE the open
-            // menu — the re-projected confirm greys again; nothing was
-            // dispatched (the remove cancel's twin).
-            (_, UiEffect::HabitRestoreCancel) => {
-                self.habit_restore_armed = None;
                 self.reproject_habit_menu(window);
                 self.refresh_forced(window);
                 Vec::new()
@@ -7378,8 +7369,6 @@ impl Adapter {
             | UiEffect::HabitConvertCancel
             | UiEffect::HabitRemoveArm
             | UiEffect::HabitRemoveCancel
-            | UiEffect::HabitRestoreArm
-            | UiEffect::HabitRestoreCancel
             | UiEffect::HabitCreateToggle
             | UiEffect::SeriesConvertArm
             // The H4 editor opener interprets like every view intent
@@ -7837,12 +7826,6 @@ impl Adapter {
         states.insert(ActionId::HabitRemove, !remove_armed);
         states.insert(ActionId::HabitRemoveConfirm, remove_armed);
         states.insert(ActionId::HabitRemoveCancel, remove_armed);
-        // The undo-family restore's verdicts (W-3): the remove trio's
-        // exact grammar over the roster-addressed subject.
-        let restore_armed = self.habit_restore_armed.is_some();
-        states.insert(ActionId::HabitRestore, !restore_armed);
-        states.insert(ActionId::HabitRestoreConfirm, restore_armed);
-        states.insert(ActionId::HabitRestoreCancel, restore_armed);
         let repair = state
             .habits
             .habits
@@ -7912,19 +7895,10 @@ impl Adapter {
             &state,
             Some(crate::presentation::RowSubject::Habit(habit)),
         );
-        // The restore row source (W-3, D-4): the roster's newest
-        // tombstone gates the row; kiosk passes none (the affordance
-        // renders absent — the CLI carries the kiosk restore path).
-        let restore = if self.kiosk {
-            None
-        } else {
-            state
-                .roster
-                .tombstoned_habits
-                .first()
-                .map(|row| row.name.as_str())
-        };
-        let page = crate::menu::habit_context_page(&self.keymap, &chain, subject, &states, restore);
+        // The undo-family restore moved out of the menu (#1290's
+        // enumeration: the deleted-habits section owns the roster
+        // rows — the newest-only menu arm retired with it).
+        let page = crate::menu::habit_context_page(&self.keymap, &chain, subject, &states);
         drop(state);
         page
     }
@@ -12295,7 +12269,9 @@ pub(crate) fn install(
         habit_convert_armed: None,
         habit_remove_armed: None,
         habit_restore_armed: None,
+        habit_restore_all_armed: false,
         label_restore_armed: None,
+        label_restore_all_armed: false,
         entry_restore_armed: None,
         rules_clear_armed: false,
         habit_edit_draft: None,
@@ -16117,6 +16093,135 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     });
     install_seam!(window: window.on_entry_restore_cancelled, adapter: adapter;
     bind mut (a, window), args (), {        if a.entry_restore_armed.take().is_some() {
+            a.refresh_forced(&window);
+        }
+
+    });
+    // The deleted-habits section's seams (#1290 enumeration + #1245
+    // bulk): the labels-overlay restore seam's exact grammar over the
+    // habits roster — the index resolves against the same row list the
+    // push derived; a stale index is the typed inert. The first
+    // activation arms (the strip mounts), the Confirm dispatches the
+    // exact `RestoreHabit { id }`, Cancel disarms.
+    install_seam!(window: window.on_habits_habit_restore_requested, adapter: adapter;
+    bind mut (a, window), args (index), {        let Some(index_us) = usize::try_from(index).ok() else {
+            return;
+        };
+        let state = a.state.load_full();
+        let row_id = state
+            .roster
+            .tombstoned_habits
+            .get(index_us)
+            .map(|row| row.id);
+        drop(state);
+        let Some(habit) = row_id else {
+            return; // a stale index against an older roster pass
+        };
+        a.habit_restore_all_armed = false;
+        if a.habit_restore_armed == Some(habit) {
+            // The second activation IS the confirm.
+            a.habit_restore_armed = None;
+            if a
+                .commands
+                .try_send(StateCommand::RestoreHabit { id: habit })
+                .is_err()
+            {
+                tracing::warn!("habit restore dropped: command channel full or closed");
+            }
+        } else {
+            a.habit_restore_armed = Some(habit);
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_habits_habit_restore_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.habit_restore_armed.take().is_some() {
+            a.refresh_forced(&window);
+        }
+
+    });
+    // The bulk row (#1245): first activation arms (the strip mounts),
+    // the Confirm dispatches one `RestoreHabit` per roster row — the
+    // per-habit journal facts stay honest (each restore is its own
+    // undo step, the #1187 law per row).
+    install_seam!(window: window.on_habits_habit_restore_all_requested, adapter: adapter;
+    bind mut (a, window), args (), {        if a.habit_restore_all_armed {
+            a.habit_restore_all_armed = false;
+            a.habit_restore_armed = None;
+            let state = a.state.load_full();
+            let ids: Vec<_> = state.roster.tombstoned_habits.iter().map(|row| row.id).collect();
+            drop(state);
+            for id in ids {
+                if a
+                    .commands
+                    .try_send(StateCommand::RestoreHabit { id })
+                    .is_err()
+                {
+                    tracing::warn!("habit bulk restore dropped: command channel full or closed");
+                    break;
+                }
+            }
+        } else {
+            a.habit_restore_armed = None;
+            a.habit_restore_all_armed = true;
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_habits_habit_restore_all_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.habit_restore_all_armed {
+            a.habit_restore_all_armed = false;
+            a.refresh_forced(&window);
+        }
+
+    });
+    // The labels overlay's bulk seam (#1245): the same grammar over
+    // the board-scoped label roster (the push's exact filter).
+    install_seam!(window: window.on_label_restore_all_requested, adapter: adapter;
+    bind mut (a, window), args (), {        if a.label_restore_all_armed {
+            a.label_restore_all_armed = false;
+            let state = a.state.load_full();
+            let overlay_board = match a.view_state.labels_subject() {
+                Some(crate::view_state::LabelOverlaySubject::Board(board)) => Some(board),
+                _ => a
+                    .view_state
+                    .subject_task()
+                    .and_then(|t| state.tasks.get(&t).cloned())
+                    .and_then(|t| state.stacks.get(&t.stack).cloned())
+                    .map(|stack| stack.board),
+            };
+            let ids: Vec<_> = state
+                .roster
+                .tombstoned_labels
+                .iter()
+                .filter(|row| {
+                    state.labels.get(&row.id).is_some_and(|label| {
+                        label.deleted && Some(label.board) == overlay_board
+                    })
+                })
+                .map(|row| row.id)
+                .collect();
+            drop(state);
+            for id in ids {
+                if a
+                    .commands
+                    .try_send(StateCommand::RestoreLabel { id })
+                    .is_err()
+                {
+                    tracing::warn!("label bulk restore dropped: command channel full or closed");
+                    break;
+                }
+            }
+        } else {
+            a.label_restore_armed = None;
+            a.label_restore_all_armed = true;
+        }
+        a.refresh_forced(&window);
+
+    });
+    install_seam!(window: window.on_label_restore_all_cancelled, adapter: adapter;
+    bind mut (a, window), args (), {        if a.label_restore_all_armed {
+            a.label_restore_all_armed = false;
             a.refresh_forced(&window);
         }
 

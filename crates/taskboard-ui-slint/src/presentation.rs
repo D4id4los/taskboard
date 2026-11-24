@@ -2548,16 +2548,6 @@ pub fn no_target_notice_phrase(description: &str) -> String {
     format!("Nothing is selected for that — {description}")
 }
 
-/// The armed habit-restore's naming phrase (the undo-family journey
-/// plan W-3 — the stage-3 walkthrough's Manual item): the menu's arm
-/// row is registry-static, so the consequence's *subject* rides the
-/// status-notice lane — the roster row names the habit the confirm
-/// will resurrect. The phrase is never asserted (AGENTS §5).
-#[must_use]
-pub fn habit_restore_arm_notice_phrase(name: &str) -> String {
-    format!("Restore armed for {name} — confirm to bring it back")
-}
-
 /// The curated health flags in declaration order (T-15, #798): the
 /// flag chips' fixed row source — the delta never carries the parked
 /// extra names (the write paths never park; the domain's posture).
