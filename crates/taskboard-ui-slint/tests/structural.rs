@@ -24,5 +24,7 @@ mod icon_mapping;
 mod keymap_snapshots;
 #[path = "inventory/seam_inventory.rs"]
 mod seam_inventory;
+#[path = "inventory/source_scan.rs"]
+mod source_scan;
 #[path = "inventory/view_mount_inventory.rs"]
 mod view_mount_inventory;
