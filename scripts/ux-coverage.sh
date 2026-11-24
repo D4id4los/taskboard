@@ -17,7 +17,13 @@
 #     (<file>.rs::<token-or-name>); a token named in no Test cell can
 #     never be credited from the shared tree (an ambient hit is
 #     AMBIGUOUS — triage, never FOUND). Retro plans map pre-existing
-#     descriptively-named tests with `bound-test:` lines (#768);
+#     descriptively-named tests with `bound-test:` lines (#768). A plan
+#     whose §6 Test column nominates an invented evidence name binds it
+#     to the differently-named behavior-bearing test with a
+#     `test-alias: <nom-name> -> <file>.rs::<existing-fn>` line
+#     (#1285) — the alias is checked with the same fn-boundary match as
+#     an exact-name nomination and reads BOUND with the *target's*
+#     evidence; a dead target is a lie (MISSING, never a pass).
 #   - capability-matrix cells citing a story: that story's §4 table
 #     exists and every one of its steps is covered;
 #   - rulings: every ruling row carries a non-empty reason.
@@ -71,8 +77,9 @@ usage: scripts/ux-coverage.sh <plan.md> [--gate] [--root <dir>]
   --self-test    exercise the bundled fixture's PASS, BOUND, AMBIGUOUS,
                  INVENTORY-MISS, MISSING and dead-bound-test paths, a
                  malformed-table variant, the #965 boundary-matching
-                 variants (prefix-miss and prefix-found), and the
-                 #967/#970 exclusion variants; asserts exit codes and
+                 variants (prefix-miss and prefix-found), the
+                 #967/#970 exclusion variants and the #1285
+                 test-alias variants; asserts exit codes and
                  row counts only
 
 exit codes: 0 all FOUND/BOUND / informational; 1 open rows under
@@ -677,6 +684,68 @@ self_test() {
     rc=1
   fi
 
+  # 17. #1285 test-alias PASS: a step nominated via a `test-alias:` line
+  #     whose target fn exists reads BOUND with the *target's* file:line
+  #     evidence (fixture_journeys.rs), exit 0.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-alias.md" --gate --root "$fx/tree" \
+    >"$tmp/alias.out" 2>&1 && code=0 || code=$?
+  n=$(grep -c ' BOUND (.*fixture_journeys.rs:' "$tmp/alias.out" || true)
+  b=$(grep -c ' BOUND (' "$tmp/alias.out" || true)
+  if [[ $code -eq 0 && $b -eq 2 && $n -ge 1 ]]; then
+    echo "self-test 17 (#1285 alias to an existing fn reads BOUND with the target's evidence, exit 0): PASS"
+  else
+    echo "self-test 17 (#1285 alias to an existing fn reads BOUND with the target's evidence, exit 0): FAIL (exit $code, $b BOUND, $n BOUND citing the target file)"
+    sed 's/^/    /' "$tmp/alias.out"
+    rc=1
+  fi
+
+  # 18. #1285 dead alias target: a lying alias is a lie — the nominating
+  #     step reads MISSING (no credit from the twin-shaped name), the
+  #     unrelated bound-test row stays BOUND.
+  sed 's#test-alias: us1_s1_alias_create -> fixture_journeys.rs::us1_s1_fixture_create#test-alias: us1_s1_alias_create -> fixture_journeys.rs::us9_s9_does_not_exist#' \
+    "$fx/plan-alias.md" >"$tmp/plan-alias-dead.md"
+  bash "${BASH_SOURCE[0]}" "$tmp/plan-alias-dead.md" --gate --root "$fx/tree" \
+    >"$tmp/aliasdead.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'US-1/S1 journey test → MISSING$' "$tmp/aliasdead.out" || true)
+  b=$(grep -c ' BOUND (' "$tmp/aliasdead.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 && $b -eq 1 ]]; then
+    echo "self-test 18 (#1285 dead alias target reads MISSING, honest bound row stays BOUND): PASS"
+  else
+    echo "self-test 18 (#1285 dead alias target reads MISSING, honest bound row stays BOUND): FAIL (exit $code, $c step MISSING, $b BOUND)"
+    sed 's/^/    /' "$tmp/aliasdead.out"
+    rc=1
+  fi
+
+  # 19. #1285 malformed alias line: hard parse error, exit 2.
+  sed 's#test-alias: us1_s1_alias_create -> fixture_journeys.rs#test-alias: us1_s1_alias_create => fixture_journeys.rs#' \
+    "$fx/plan-alias.md" >"$tmp/plan-alias-malformed.md"
+  bash "${BASH_SOURCE[0]}" "$tmp/plan-alias-malformed.md" --gate --root "$fx/tree" \
+    >"$tmp/aliasmal.out" 2>&1 && code=0 || code=$?
+  if [[ $code -eq 2 ]]; then
+    echo "self-test 19 (#1285 malformed test-alias line exits 2): PASS"
+  else
+    echo "self-test 19 (#1285 malformed test-alias line exits 2): FAIL (exit $code)"
+    sed 's/^/    /' "$tmp/aliasmal.out"
+    rc=1
+  fi
+
+  # 20. #1285 priority: when both the real fn name and an alias for the
+  #     same token are nominated, the existing real test wins (FOUND) —
+  #     aliasing never shadows a real test.
+  sed 's#fixture_journeys.rs::us1_s1_alias_create |#fixture_journeys.rs::us1_s1_alias_create; fixture_journeys.rs::us1_s1_fixture_create |#' \
+    "$fx/plan-alias.md" >"$tmp/plan-alias-priority.md"
+  bash "${BASH_SOURCE[0]}" "$tmp/plan-alias-priority.md" --gate --root "$fx/tree" \
+    >"$tmp/aliasprio.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'US-1/S1 journey test → FOUND' "$tmp/aliasprio.out" || true)
+  b=$(grep -c ' BOUND (' "$tmp/aliasprio.out" || true)
+  if [[ $code -eq 0 && $c -eq 1 && $b -eq 1 ]]; then
+    echo "self-test 20 (#1285 exact-name fn wins over the alias for the same token): PASS"
+  else
+    echo "self-test 20 (#1285 exact-name fn wins over the alias for the same token): FAIL (exit $code, $c step FOUND, $b BOUND)"
+    sed 's/^/    /' "$tmp/aliasprio.out"
+    rc=1
+  fi
+
   rm -rf "$tmp"
   return $rc
 }
@@ -859,6 +928,34 @@ main() {
   # bullet in §8; the grammar binds the line shape, not its margin)
   done < <(grep -E '^[[:space:]]*bound-test:' "$plan" || true)
 
+  # --- Test-alias mapping (#1285). A plan's §6 Test column may nominate
+  #     a plan-invented evidence name that no real fn bears; a
+  #     `test-alias: <nom-name> -> <file>.rs::<existing-fn>` line binds
+  #     it to the differently-named behavior-bearing test. Grammar
+  #     mirrors bound-test (same margin tolerance, same PARSE-ERROR
+  #     discipline); the target must be a full fn name (a bare/scoped
+  #     token would collide with scoped_nom semantics). A dead target is
+  #     a lie: the nominating step reads MISSING, never a pass (#768
+  #     precedent). Priority is unchanged (§resolve_step): an existing
+  #     exact-name fn beats an alias for the same token — aliasing never
+  #     shadows a real test.
+  local -A alias_target=()
+  local a_line a_name a_fn
+  while IFS= read -r a_line; do
+    # shellcheck disable=SC2001 # trimming every leading-space char class; a ${var//} replacement cannot express a class
+    a_line=$(sed 's/^[[:space:]]*//' <<<"$a_line")
+    [[ $a_line =~ ^test-alias:[[:space:]]*(\`?[A-Za-z0-9_]+\`?)[[:space:]]*-\>[[:space:]]*([A-Za-z0-9_/.-]+\.rs)::([A-Za-z0-9_]+)[[:space:]]*$ ]] || {
+      echo "PARSE-ERROR: test-alias: malformed line: $a_line" >&2
+      exit 2
+    }
+    a_name=${BASH_REMATCH[1]}
+    a_name=${a_name//\`/} # (#1181) an inline code span around the name
+    a_fn=${BASH_REMATCH[3]}
+    alias_target[$a_name]=$a_fn
+  # (leading indentation tolerated — plans list mappings under a
+  # bullet in §8; the grammar binds the line shape, not its margin)
+  done < <(grep -E '^[[:space:]]*test-alias:' "$plan" || true)
+
   # Resolve a nomination file side to a path: sides containing `/` are
   # root-relative; bare names live under the Test-root, falling back to
   # a by-name search (src unit-test files like lib.rs).
@@ -882,23 +979,42 @@ main() {
     local name files f path
     local -a hits=()
 
-    # 1. Exact-name nomination covering the token.
-    for name in "${!exact_nom[@]}"; do
-      [[ $name == "$token" || $name == "${token}_"* ]] || continue
-      IFS=',' read -ra files <<<"${exact_nom[$name]}"
-      for f in "${files[@]}"; do
-        path=$(nom_file "$f")
-        [[ -n $path && -f $path ]] || continue
-        mapfile -t hits < <(fn_boundary_matches "$name" "$path")
-        if (( ${#hits[@]} > 0 )); then
-          FOUND_EV=$(ev_fileline "${hits[0]}")
-          emit_found "$label"
-          return 0
+    # 1. Exact-name nomination covering the token. Aliased nominations
+    #    (#1285) resolve in a second pass: an existing real fn always
+    #    beats an alias for the same token (aliasing never shadows a
+    #    real test); an alias reads BOUND with the *target's* evidence.
+    local verdict_fn verdict_emit
+    for verdict_emit in found alias; do
+      for name in "${!exact_nom[@]}"; do
+        [[ $name == "$token" || $name == "${token}_"* ]] || continue
+        if [[ $verdict_emit == found ]]; then
+          # First pass: real (non-aliased) nominations only.
+          [[ -z ${alias_target[$name]:-} ]] || continue
+          verdict_fn=$name
+        else
+          # Second pass: aliased nominations resolve against the target.
+          [[ -n ${alias_target[$name]:-} ]] || continue
+          verdict_fn=${alias_target[$name]}
         fi
+        IFS=',' read -ra files <<<"${exact_nom[$name]}"
+        for f in "${files[@]}"; do
+          path=$(nom_file "$f")
+          [[ -n $path && -f $path ]] || continue
+          mapfile -t hits < <(fn_boundary_matches "$verdict_fn" "$path")
+          if (( ${#hits[@]} > 0 )); then
+            FOUND_EV=$(ev_fileline "${hits[0]}")
+            if [[ $verdict_emit == alias ]]; then
+              emit_bound "$label"
+            else
+              emit_found "$label"
+            fi
+            return 0
+          fi
+        done
+        # Nominated, but the named test does not exist — a lie, not a pass.
+        emit_missing "$label"
+        return 1
       done
-      # Nominated, but the named test does not exist — a lie, not a pass.
-      emit_missing "$label"
-      return 1
     done
 
     # 2. File-scoped token nomination.
