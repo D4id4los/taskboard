@@ -6,6 +6,16 @@
 //! never bound the window's max size — the severing cap at the root
 //! (`Theme.layout-severing-max-width`) is what keeps a bounded-max
 //! row from collapsing the OS window's max width once mounted.
+//!
+//! Two-way evidence (stage-3 review, 2026-11-24): the probe FAILS
+//! against the pre-redesign shape (a fixed `width:` at the window
+//! root — the collapse mechanism #1251 reported) and PASSES with only
+//! the sever cap removed — the W-1 redesign left no bounded-max row
+//! (elide keeps the rows' layout max unbounded), so the cap is
+//! defense-in-depth over a precondition that is currently structurally
+//! absent. The probe pins the invariant at the read-back point so the
+//! regression class re-entering via any future row geometry still
+//! fails here.
 
 use crate::support;
 
