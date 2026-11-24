@@ -24,6 +24,28 @@ import { TextField, FieldValidity } from "../widgets/text-field.slint";
 import { SegmentedControl } from "../widgets/segmented-control.slint";
 import { CheckBox } from "../widgets/check-box.slint";
 
+// The refusal labels (#1190): one static table, indexed by the
+// model's typed refusal index (the canonical REFUSAL_KINDS order the
+// adapter docs — recognition over recall). The structural pin in the
+// journey corpus keeps this table's length equal to the canonical
+// table's; the label text itself is presentation and never asserted.
+export global ExportRefusalLabels {
+    in property <[string]> kinds: [
+        "this build cannot write pdf (the pdf-export feature is off)",
+        "the filters do not apply to this export family",
+        "the chosen options do not apply to this export family",
+        "the task filter matched nothing",
+        "the board filter matched nothing",
+        "the pdf layout name is not one this build knows",
+        "the destination path could not be opened for writing",
+        "the pdf renderer failed while writing the sheet",
+        "the destination refused the write",
+        "a lane fell outside the presentation cap and was dropped",
+        "the export engine refused the run",
+        "the clipboard is not available in this environment",
+    ];
+}
+
 // The dialog's pushed model (the recur-editor shape): the pickers'
 // typed indices, the fields' verbatim text, the enabled/busy/outcome
 // folds. Index contracts (documented once, mapped at the adapter):
@@ -266,7 +288,7 @@ export component ExportDialog inherits Rectangle {
         if (root.model.outcome-kind == 2): RoleText {
             role: Typography.caption;
             text-color: Semantic.danger;
-            text: "The export refused (kind " + root.model.refusal + "); the filters are intact — correct the failing field and run again.";
+            text: "The export refused: " + ExportRefusalLabels.kinds[root.model.refusal] + "; the filters are intact — correct the failing field and run again.";
             overflow: elide;
         }
         // The clipboard outcome's fold (the preview plan W-3's twin):
@@ -281,7 +303,7 @@ export component ExportDialog inherits Rectangle {
         if (root.model.copy-settled && root.model.copy-refusal >= 0): RoleText {
             role: Typography.caption;
             text-color: Semantic.danger;
-            text: "The copy refused (kind " + root.model.copy-refusal + "); the filters are intact.";
+            text: "The copy refused: " + ExportRefusalLabels.kinds[root.model.copy-refusal] + "; the filters are intact.";
             overflow: elide;
         }
         // The preview's typed refusal fold (US-1/S4): filter state
@@ -289,7 +311,7 @@ export component ExportDialog inherits Rectangle {
         if (root.model.preview-refusal >= 0): RoleText {
             role: Typography.caption;
             text-color: Semantic.danger;
-            text: "The preview refused (kind " + root.model.preview-refusal + "); the filters are intact.";
+            text: "The preview refused: " + ExportRefusalLabels.kinds[root.model.preview-refusal] + "; the filters are intact.";
             overflow: elide;
         }
     }
