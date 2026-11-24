@@ -156,6 +156,9 @@ expression: rows
             - Shift+F10
           action: row.menu
         - sequence:
+            - Ctrl+F10
+          action: habit.track-toggle
+        - sequence:
             - F11
           action: task.schedule-today
         - sequence:
@@ -847,6 +850,9 @@ expression: rows
         - sequence:
             - Shift+F10
           action: row.menu
+        - sequence:
+            - Ctrl+F10
+          action: habit.track-toggle
     - context: board
       bindings:
         - sequence:
@@ -1453,6 +1459,9 @@ expression: rows
         - sequence:
             - Shift+F10
           action: row.menu
+        - sequence:
+            - Ctrl+F10
+          action: habit.track-toggle
     - context: board
       bindings:
         - sequence:

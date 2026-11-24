@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-ui-slint/tests/inventory/keymap_snapshots.rs
-assertion_line: 49
 expression: rows
 ---
 - id: app.exit
@@ -1108,6 +1107,15 @@ expression: rows
   menu_rank: 190
   description: "+1 the addressed tracker's current window (surplus logs are first-class)."
   menu_group: ~
+- id: habit.track-toggle
+  label: Track habit
+  contexts:
+    - global
+  category: task
+  enabled: true
+  menu_rank: 191
+  description: Start or stop a time tracker on the addressed habit (one running timer app-wide).
+  menu_group: task
 - id: habit.unlog
   label: Take one habit log back
   contexts:

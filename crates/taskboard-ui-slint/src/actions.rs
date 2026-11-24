@@ -2338,8 +2338,12 @@ pub const REGISTRY: &[ActionEntry] = &[
         // The context menu row (journey plan W-2, US-31/S1): the
         // HABIT_CONTEXT carries it right after the log row (the
         // destructive-last grammar leaves it in the body — a toggle is
-        // not destructive).
-        menu_group: None,
+        // not destructive). Grouped Task (the HabitSkip shape): a
+        // group-less registration would join the root quick rows and
+        // break the #1184/#1289 budget census — the HABIT_CONTEXT page
+        // filters the registry directly, so the group is its display
+        // home, not its only surface.
+        menu_group: Some(MenuGroup::Task),
     },
     ActionEntry {
         id: ActionId::HabitUndoLog,
