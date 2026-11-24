@@ -420,7 +420,14 @@ pub fn find_all_by_id_on<C: slint::ComponentHandle>(component: &C, id: &str) -> 
 /// repeater — `ops.len()` — did not have), so identity is taken
 /// from the node's own geometry: duplicates of one instance read
 /// back exactly equal positions and sizes; distinct list
-/// delegates never overlap.
+/// delegates never overlap. (2026-11-24, round-6 A1: the
+/// "distinct delegates never overlap" assumption is now a REAL
+/// invariant — the today sections' viewports are declaratively
+/// content-sized (#1310/#1304), and the today geometry probes
+/// (`tests/probes/virtualisation.rs`) pin it; note also that this
+/// dedupe STALE-reads on freshly materialized repeater subtrees —
+/// the #1023 law — so today-section geometry tests read the
+/// `TodayClipFacts` root seam instead of element queries.)
 fn dedupe_instances(elements: Vec<Element>) -> Vec<Element> {
     let mut seen = std::collections::HashSet::new();
     elements

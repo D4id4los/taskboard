@@ -48,6 +48,10 @@ pub enum TodayRow {
 pub struct DayCtx {
     pub now: DateTime<Utc>,
     pub window: (DateTime<Utc>, DateTime<Utc>),
+    /// The day calendar the window was derived with (the aggregated
+    /// today walk's habit rows read the window date through it;
+    /// round-6 A1 D-2, 2026-11-24).
+    pub calendar: taskboard_domain::DayCalendar,
 }
 
 /// The v0.1.0 views (D7): one tree, one cycle
@@ -2250,8 +2254,8 @@ impl ViewState {
         // The Today view has no stack level: the flat section walk is
         // the domain (chunk 10 D7), even in compact. Chunk 8 (D2,
         // #934) widens the domain to `TodayRow` — the task sections
-        // then the active board's live habits — so the same keys
-        // traverse the habit section.
+        // then the aggregated live habits (all live boards; round-6
+        // A1 D-2) — so the same keys traverse the habit section.
         if self.view() == ViewId::Today {
             let rows = self.today_rows(state, kiosk, day);
             let outcomes = self.step_today_rows(direction, compact, &rows);
@@ -2525,11 +2529,14 @@ impl ViewState {
     }
 
     /// The today walk's rows (chunk 8 D2, #934): `today_domain`'s
-    /// task rows in display order, then the active board's live
-    /// habits in stored `(order, id)` order — the section model's own
-    /// derivation (`presentation::live_habits_in_order`), so the
+    /// task rows in display order, then the aggregated live habits
+    /// (`presentation::today_habit_rows` — all live boards, canonical
+    /// board order outer, stored `(order, id)` inner; round-6 A1
+    /// D-2, 2026-11-24, #1301 — the board-scoped walk retired), then
+    /// the aggregated break-rule roster (`break_rule_rows(state,
+    /// None)`, D-3) — the section model's own derivations, so the
     /// walk's landing and the rendered rows agree by construction.
-    /// Board-less days carry no habit rows (the section renders
+    /// Zero live boards carry no habit rows (the section renders
     /// empty with them).
     #[must_use]
     pub fn today_rows(&self, state: &AppState, kiosk: bool, day: &DayCtx) -> Vec<TodayRow> {
@@ -2538,21 +2545,20 @@ impl ViewState {
             .into_iter()
             .map(TodayRow::Task)
             .collect();
-        if let Some(board) = self.board {
-            rows.extend(
-                crate::presentation::live_habits_in_order(state, board)
-                    .into_iter()
-                    .map(|habit| TodayRow::Habit(habit.id)),
-            );
-        }
+        rows.extend(
+            crate::presentation::today_habit_rows(state, day.now, day.calendar)
+                .into_iter()
+                .map(|row| TodayRow::Habit(row.habit)),
+        );
         // The break-rules roster's rows (US-9, W-10, #1066's roster
         // half): after the habit section, in the same canonical order
         // the section's model speaks (`break_rule_rows` — the walk's
         // landing and the rendered rows agree by construction).
-        // Desktop-only (the section's kiosk absence).
+        // Desktop-only (the section's kiosk absence); the roster
+        // aggregates over all boards (round-6 A1 D-3).
         if !kiosk {
             rows.extend(
-                crate::presentation::break_rule_rows(state, self.board)
+                crate::presentation::break_rule_rows(state, None)
                     .into_iter()
                     .map(|row| TodayRow::BreakRule(row.rule)),
             );
@@ -5380,6 +5386,10 @@ mod tests {
                 Utc.timestamp_opt(1_781_481_600, 0).unwrap(),
                 Utc.timestamp_opt(1_781_568_000, 0).unwrap(),
             ),
+            calendar: taskboard_domain::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).expect("utc offset"),
+            },
         }
     }
 
@@ -9444,6 +9454,10 @@ mod edit_recur_tests {
                 Utc.timestamp_opt(1_781_481_600, 0).unwrap(),
                 Utc.timestamp_opt(1_781_568_000, 0).unwrap(),
             ),
+            calendar: taskboard_domain::DayCalendar {
+                day_start_time: chrono::NaiveTime::MIN,
+                offset: chrono::FixedOffset::east_opt(0).expect("utc offset"),
+            },
         }
     }
 
@@ -9486,7 +9500,7 @@ mod edit_recur_tests {
     /// pre-fix: the walk scoped the habits to `self.board`.
     #[test]
     fn today_rows_walk_aggregates_all_live_boards_habits() {
-        let (mut state, board_a, _, _) = today_fixture();
+        let (mut state, board_a, _, fixture_habits) = today_fixture();
         let board_b = BoardId::from_uuid(uuid::Uuid::now_v7());
         state.boards.insert(
             board_b,
@@ -9509,8 +9523,6 @@ mod edit_recur_tests {
         );
         let hb0 = HabitId::from_uuid(uuid::Uuid::now_v7());
         state.habits.habits.insert(hb0, habit(hb0, board_b, 10));
-        let ha0 = HabitId::from_uuid(uuid::Uuid::now_v7());
-        state.habits.habits.insert(ha0, habit(ha0, board_a, 10));
         let vs = today_walk(&state, board_a);
         let walked: Vec<HabitId> = vs
             .today_rows(&state, false, &day())
@@ -9520,9 +9532,12 @@ mod edit_recur_tests {
                 TodayRow::Task(_) | TodayRow::BreakRule(_) => None,
             })
             .collect();
+        // The fixture's three habits lead (board_a, canonical order),
+        // board_b's habit trails: canonical board order outer.
+        let mut expected = fixture_habits.to_vec();
+        expected.push(hb0);
         assert_eq!(
-            walked,
-            [ha0, hb0],
+            walked, expected,
             "the walk aggregates both boards' habits in canonical \
              board order"
         );

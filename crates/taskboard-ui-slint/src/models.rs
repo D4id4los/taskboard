@@ -802,7 +802,6 @@ fn push_timers(
     now: DateTime<Utc>,
     calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
-    board: Option<taskboard_domain::BoardId>,
     break_rule_armed_index: i32,
     break_rule_selected: Option<taskboard_domain::BreakRuleId>,
     tables: &mut IdTables,
@@ -843,13 +842,17 @@ fn push_timers(
         },
         &shown,
     );
-    // The break-rule roster (T-14, #797): the active board's rules in
-    // the CLI list's canonical order; the armed index marks the one
-    // staged remove (the label form's armed-index convention). The
+    // The break-rule roster (T-14, #797): all boards' rules (round-6
+    // A1 D-3) in the CLI list's canonical order; the armed index marks
+    // the one staged remove (the label form's armed-index convention). The
     // kiosk gate rides the section's own (`absence-hint` hides the
     // whole subsection), so the model still derives — harmless, the
     // section never mounts it.
-    let break_rows: Vec<presentation::BreakRuleRow> = presentation::break_rule_rows(state, board);
+    // The board-free roster (round-6 A1 D-3, 2026-11-24, #1301): the
+    // today view aggregates all boards' rules; the create form's
+    // dispatch still targets the selected board (the target-board
+    // default is #1314's territory).
+    let break_rows: Vec<presentation::BreakRuleRow> = presentation::break_rule_rows(state, None);
     tables.break_rules = break_rows.iter().map(|row| row.rule).collect();
     let break_shown: Vec<BreakRuleRowModel> = break_rows
         .iter()
@@ -965,11 +968,12 @@ pub fn habit_card(row: &presentation::HabitRow) -> TaskCardModel {
     }
 }
 
-/// The habits section (DR-6/6, §4.6; H2 card-ified): the active
-/// board's tracker rows on the task-card substrate. No kiosk model
-/// gate (D-P13): the rows render on the appliance — only the
-/// section's actions disable (`habits-editing-enabled`). Returns the
-/// diff's mutation count.
+/// The habits section (DR-6/6, §4.6; H2 card-ified): the aggregated
+/// tracker rows over ALL live boards (round-6 A1 D-2, 2026-11-24,
+/// #1301 — the active board's scope retired) on the task-card
+/// substrate. No kiosk model gate (D-P13): the rows render on the
+/// appliance — only the section's actions disable
+/// (`habits-editing-enabled`). Returns the diff's mutation count.
 #[allow(clippy::too_many_arguments)] // the pass-shaped parameter list, like `push`
 fn push_habits(
     window: &AppWindow,
@@ -981,10 +985,10 @@ fn push_habits(
     tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
-    let board = vs.board();
-    let rows: Vec<presentation::HabitRow> = board
-        .map(|board| presentation::habit_rows(state, board, now, calendar))
-        .unwrap_or_default();
+    // The board-free row source (round-6 A1 D-2, #1301, 2026-11-24):
+    // the Today view aggregates over all live boards; `vs.board()` is
+    // gone from the habit path.
+    let rows: Vec<presentation::HabitRow> = presentation::today_habit_rows(state, now, calendar);
     tables.habits = rows.iter().map(|row| row.habit).collect();
     let shown: Vec<HabitCardModel> = rows
         .iter()
@@ -1027,11 +1031,12 @@ fn push_habits(
         })
         .collect();
     window.set_habits_editing_enabled(presentation::habit_editing_enabled(kiosk));
-    // The create affordance's mount gate (round-7 D-7.2): desktop
-    // with an active board — the header-only section is how the
-    // first habit gets made. Kiosk and board-less days keep the old
-    // rows-only gate (D-P13 posture untouched).
-    window.set_habits_create_mountable(!kiosk && board.is_some());
+    // The create affordance's mount gate (round-7 D-7.2; re-recorded
+    // 2026-11-24, round-6 A1 D-4, #1301): desktop with ANY live board
+    // — the commit mints into the first live board (canonical order).
+    // Kiosk and zero-live-board days keep the rows-only posture
+    // (D-P13 untouched).
+    window.set_habits_create_mountable(!kiosk && !presentation::live_boards(state).is_empty());
     push_rows(
         &mut models.habits,
         |rc| {
@@ -1366,7 +1371,6 @@ pub fn push(
         now,
         calendar,
         kiosk,
-        vs.board(),
         break_rule_armed_index,
         vs.break_rule_cursor(),
         &mut tables,
@@ -3602,29 +3606,14 @@ fn push_today(
     let sections = taskboard_domain::days::today_sections(&state.tasks, day.now, day.window);
     let multi_board = presentation::live_boards(state).len() > 1;
     let tracked_task = presentation::tracking_open_task(state);
-    // The "Tracked" day summary (r4 chunk 10, D-TS7): Work-only
-    // per-task sums over the day window (`work_in_window` — the
-    // recorded aggregator deviation), filtered to the viewed board on
-    // kiosk, and the day total summed over the FILTERED set (what you
-    // see is what's summed).
-    let tracked_today_all = presentation::tracked_today_rows(state, day.window, day.now);
-    let tracked_today: Vec<(TaskId, TimeDelta)> = tracked_today_all
-        .into_iter()
-        .filter(|(task, _)| {
-            !kiosk
-                || state
-                    .stacks
-                    .get(
-                        &state
-                            .tasks
-                            .get(task)
-                            .map_or(taskboard_domain::StackId::from(uuid::Uuid::nil()), |t| {
-                                t.stack
-                            }),
-                    )
-                    .is_some_and(|s| Some(s.board) == vs.board())
-        })
-        .collect();
+    // The "Tracked" day summary (r4 chunk 10, D-TS7; re-recorded
+    // 2026-11-24, round-6 A1 D-3, #1301): Work-only per-task sums over
+    // the day window (`work_in_window` — the recorded aggregator
+    // deviation), NOT filtered by board anywhere — the kiosk board
+    // filter retired (the today view has no viewed board on kiosk
+    // either; what is shown is what is summed, over all live boards).
+    let tracked_today: Vec<(TaskId, TimeDelta)> =
+        presentation::tracked_today_rows(state, day.window, day.now);
     let tracked_day_total = tracked_today
         .iter()
         .fold(TimeDelta::zero(), |acc, (_, total)| acc + *total);
@@ -5367,6 +5356,10 @@ mod tests {
             DayCtx {
                 now: stamp(now),
                 window: (stamp(now), stamp(now + 86_400)),
+                calendar: taskboard_domain::DayCalendar {
+                    day_start_time: chrono::NaiveTime::MIN,
+                    offset: chrono::FixedOffset::east_opt(0).expect("utc offset"),
+                },
             }
         }
 
@@ -5701,9 +5694,15 @@ mod tests {
                     tracked, expected,
                     "kiosk tracked-today aggregates both boards' tracked tasks"
                 );
+                // Derived, never pinned copy (the no-text-assertions
+                // law): the total is the aggregated set's two-hour...
+                // two ten-minute entries' phrase.
+                let expected = crate::presentation::tracked_total_phrase(
+                    &crate::presentation::part_total(chrono::TimeDelta::minutes(20)),
+                );
                 assert_eq!(
                     window.get_today_model().tracked_day_total,
-                    "20m",
+                    expected,
                     "the day total folds the aggregated set"
                 );
                 let _ = board_a;

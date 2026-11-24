@@ -2252,12 +2252,13 @@ pub struct BreakRuleRow {
 /// The break-rule roster rows for one board (T-14, #797): the
 /// board's live rules in the CLI `breaks list` canonical
 /// `(threshold, id)` order — one derivation, no second list to
-/// drift. The board scope mirrors the habits section's (`habit_rows`
-/// board parameter): the timers composition renders the active
-/// board's family, and the create form's dispatch targets the same
-/// board (the today view is board-scoped, so the active board is the
-/// unambiguous default — the CLI `--board` default's letter, made
-/// structural by the view's own scope).
+/// drift. The `board` parameter scopes the BOARD-bound surfaces'
+/// reads; the Today surface passes `None` since round-6 A1 D-3
+/// (2026-11-24, #1301) — the today view is board-free, so its roster
+/// aggregates over all boards (map membership is rule liveness: the
+/// only verbs are create and delete, a removed rule leaves the map).
+/// The create form's dispatch still targets the selected board (the
+/// target-board default is #1314's territory).
 #[must_use]
 pub fn break_rule_rows(
     state: &AppState,
@@ -7835,10 +7836,14 @@ pub(crate) fn live_habits_in_order(
     live
 }
 
-/// The today view's habit rows (pure): the active board's **live**
-/// habits in stored manual `(order, id)` order, the count read from
-/// the current window's row, the streak the domain walk unioned
-/// through the conversion seam.
+/// One board's habit rows (pure): the board's **live** habits in
+/// stored manual `(order, id)` order, the count read from the current
+/// window's row, the streak the domain walk unioned through the
+/// conversion seam. Re-recorded 2026-11-24 (round-6 A1 D-2, #1301):
+/// this is the board-scoped INNER reader — the Today view's row
+/// source is [`today_habit_rows`], which folds it over the live
+/// boards; the board view (if any surface scopes again) and the
+/// reorder mint's arithmetic keep this reader.
 #[must_use]
 pub fn habit_rows(
     state: &taskboard_domain::AppState,
@@ -8143,6 +8148,29 @@ pub fn habit_move_slots(
         (target <= rows.len()).then_some((habit, target))
     });
     (up, down)
+}
+
+/// The today view's habit rows (pure; #1301, round-6 A1 D-2,
+/// 2026-11-24): the **aggregate over all live boards** — each board's
+/// [`habit_rows`] in canonical board order (the board bar's order,
+/// `live_boards`), stored `(order, id)` within a board. The board-free
+/// law: the Today view has no viewed board, so what renders is the
+/// whole live fold; an archived or deleted board's habits never
+/// appear (`live_boards`'s filter), and zero live boards contribute
+/// no rows (the section collapses per the D7 empty-collapse law).
+/// The reorder mint stays board-scoped (`habit_move_slots` reads
+/// [`live_habits_in_order`] of the habit's own board).
+#[must_use]
+pub fn today_habit_rows(
+    state: &taskboard_domain::AppState,
+    now: DateTime<Utc>,
+    day: taskboard_domain::DayCalendar,
+) -> Vec<HabitRow> {
+    let mut rows = Vec::new();
+    for board in live_boards(state) {
+        rows.extend(habit_rows(state, board.id, now, day));
+    }
+    rows
 }
 
 /// The focused-subject key translation (chunk 8 D3): at the dispatch
