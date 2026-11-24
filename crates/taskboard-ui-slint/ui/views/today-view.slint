@@ -199,6 +199,9 @@ export component TodayView inherits FocusScope {
     callback habits-habit-restore-all-cancelled();
     in property <FieldValidity> habits-quota-validity;
     in property <string> habits-quota-error-hint;
+    // The habit row's play control (journey plan 2026-11-24 W-1,
+    // #1305): routes `habit.track-toggle` over the row.
+    callback habits-track-asked(int);
     callback habits-skip-asked(int);
     callback habits-pause-asked(int);
     callback habits-resume-asked(int);
@@ -375,6 +378,7 @@ export component TodayView inherits FocusScope {
                     repair-clicked(r) => root.habits-repair-clicked(r);
                     context-requested(r, x, y) => root.habits-context-requested(r, x, y);
                     drop-asked(r, g) => root.habits-drop-asked(r, g);
+                    track-asked(r) => root.habits-track-asked(r);
                     skip-asked(r) => root.habits-skip-asked(r);
                     pause-asked(r) => root.habits-pause-asked(r);
                     resume-asked(r) => root.habits-resume-asked(r);

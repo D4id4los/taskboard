@@ -1785,7 +1785,12 @@ impl Adapter {
         }
         if let Some(habit) = self.effective_habit() {
             match id {
-                ActionId::HabitLog | ActionId::HabitSkip if self.habit_target.is_none() => {
+                // The chord's subject mint (#1305, W-3/D-8): the
+                // keyboard path mints the one-shot habit subject exactly
+                // as the row seams do (the skip chord's shape).
+                ActionId::HabitLog | ActionId::HabitSkip | ActionId::HabitTrackToggle
+                    if self.habit_target.is_none() =>
+                {
                     self.habit_target = Some(habit);
                 }
                 // HF1 (W-11, O-8 parity): the resume chord over the
@@ -1982,6 +1987,15 @@ impl Adapter {
             let open = crate::presentation::tracking_open_task(&self.state.load());
             ctx.focused_task_tracking =
                 open.is_some_and(|open| Some(open) == ctx.track_target.or(ctx.focused_task));
+        }
+        // The habit toggle's state half (#1305, the twin read): answers
+        // about the exact resolved target — the one-shot `habit_target`
+        // minted above, else the focused habit.
+        if id == ActionId::HabitTrackToggle {
+            let state = self.state.load();
+            ctx.habit_tracking = ctx
+                .habit_target
+                .is_some_and(|habit| habit_open_entry(&state, habit).is_some());
         }
         let outcome = ActionRouter::dispatch(id, &ctx);
         match outcome {
@@ -13132,6 +13146,21 @@ fn habit_undo_target(
     (count >= 1).then_some((habit, window, count))
 }
 
+/// Whether `habit` holds an open time entry (the running timer) —
+/// `send_habit_track_toggle`'s router fact read over the published
+/// state (display derives, never caches).
+fn habit_open_entry(
+    state: &taskboard_domain::AppState,
+    habit: taskboard_domain::HabitId,
+) -> Option<taskboard_domain::ids::HabitTimeEntryId> {
+    state
+        .habits
+        .time_log
+        .values()
+        .find(|entry| entry.habit == habit && entry.end.is_none())
+        .map(|entry| entry.id)
+}
+
 /// The habits section's seams (DR-6/6, D-P13; H2 reworked): the +1
 /// resolves the `IdTables.habits` index (stale index → no-op, the
 /// notification-row guard shape) and routes `habit.log`; the −1
@@ -13156,6 +13185,26 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // plan D-2, #832): click ≡ key composes both directions.
     a.focused_habit = Some(habit);
     a.route(&window, ActionId::HabitLog);
+
+    });
+
+    // The card play/pause control's routing (journey plan 2026-11-24
+    // W-1, US-30/S1, #1305 — `send_card_track_toggle`'s twin): the seam
+    // only addresses the target (the one-shot `habit_target`) and
+    // routes `HabitTrackToggle` — the state read and the Start/Stop
+    // outcome choice live in the router arm (one semantics, one home).
+    install_seam!(window: window.on_habits_track_asked, adapter: adapter; // slint: habits-track-asked
+    bind mut (a, window), args (index), {        let Some(habit) = a
+        .tables
+        .habits
+        .get(usize::try_from(index).unwrap_or(usize::MAX))
+        .copied()
+    else {
+        return; // a stale index degrades to a no-op
+    };
+    a.habit_target = Some(habit);
+    a.focused_habit = Some(habit);
+    a.route(&window, ActionId::HabitTrackToggle);
 
     });
 

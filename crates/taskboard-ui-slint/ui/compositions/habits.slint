@@ -112,6 +112,11 @@ export component HabitsSection inherits Rectangle {
     // routes `habit.skip` over the row (the streak survives the gap).
     // slint: habits-skip-asked
     callback skip-asked(int);
+    // The row's play control (journey plan 2026-11-24 W-1, #1305):
+    // routes `habit.track-toggle` over the row — the adapter resolves
+    // the one-shot subject and the smart toggle picks the half.
+    // slint: habits-track-asked
+    callback track-asked(int);
     // The pause editor's opener (HF1, W-3): routes `habit.pause` —
     // the adapter resolves the one-shot subject and flips `pause-open`.
     // slint: habits-pause-asked
@@ -366,6 +371,15 @@ export component HabitsSection inherits Rectangle {
                 habit-card := TaskCard {
                     model: row.card;
                     hint-keys: [];
+                    // W-1 (#1305): the play control is LIVE — the dead
+                    // affordance's repair is the issue's own ask (D-7).
+                    // Kiosk greys it (the editing verb's gate), never
+                    // hides it (D-P13).
+                    track-enabled: root.editing-enabled;
+                    // slint: habits-track-asked
+                    track-toggled => {
+                        root.track-asked(row-index);
+                    }
                     // The done slot labels the habit's own verb
                     // (#1286): it routes the +1 log, never the task
                     // done flip — the a11y pair names the log both

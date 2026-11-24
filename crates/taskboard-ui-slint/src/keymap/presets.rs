@@ -174,6 +174,14 @@ const HABIT_TODAY_ROWS: &[(ActionId, ContextId, &[&str])] = &[
     // ctx.habit_target; no per-row dispatch bypass). The Today
     // chain's `l` was free in every preset; the case-law spelling.
     (ActionId::HabitLog, ContextId::Today, &["Ctrl+Shift+l"]),
+    // The smart habit-tracking toggle (journey plan D-8, #1305 — the
+    // `task.track-toggle` chord's twin; a chordless common verb is a
+    // defect, not a posture).
+    (
+        ActionId::HabitTrackToggle,
+        ContextId::Today,
+        &["Ctrl+Shift+p"],
+    ),
     // D3a (W-16, #1202 — the keyboard-first law, docs/ux_planning.org
     // §2.7): the row activation is the TaskEdit twin. The single
     // Return row at Today serves the widened walk's BOTH row kinds —

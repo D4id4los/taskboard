@@ -138,6 +138,10 @@ impl KeymapShell {
     #[must_use]
     pub fn dispatch_ctx(&self) -> crate::router::DispatchCtx {
         crate::router::DispatchCtx {
+            // The habit toggle's state half defaults false here; the
+            // `route` sync overwrites it for `HabitTrackToggle` (the
+            // `focused_task_tracking` twin).
+            habit_tracking: false,
             focused_task: self.focused_task,
             focused_stack: self.focused_stack,
             habit_create_draft: None,

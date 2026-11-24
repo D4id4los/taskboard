@@ -755,6 +755,7 @@ export component AppWindow inherits Window {
                 habits-repair-clicked(r) => root.habits-repair-clicked(r);
                 habits-context-requested(r, x, y) => root.habits-context-requested(r, x, y);
                 habits-drop-asked(r, g) => root.habits-drop-asked(r, g);
+                habits-track-asked(r) => root.habits-track-asked(r);
                 habits-skip-asked(r) => root.habits-skip-asked(r);
                 habits-pause-asked(r) => root.habits-pause-asked(r);
                 habits-resume-asked(r) => root.habits-resume-asked(r);
@@ -2652,6 +2653,9 @@ export component AppWindow inherits Window {
     // the toggle; the commit funnels the minted draft (`false` = an
     // absorbed miss, the field text kept); quota keystrokes ride the
     // per-keystroke validity pass.
+    // The habit row's play control (journey plan 2026-11-24 W-1,
+    // #1305): routes `habit.track-toggle` over the row.
+    pure callback habits-track-asked(int);
     pure callback habits-skip-asked(int);
     pure callback habits-pause-asked(int);
     pure callback habits-resume-asked(int);
