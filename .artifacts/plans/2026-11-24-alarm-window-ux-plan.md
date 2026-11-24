@@ -104,7 +104,7 @@ surface census already uses (`docs/ux-surface-census.org:1174-1176`).
 | ID | Ruling | Reason | Home |
 |---|---|---|---|
 | R-1 | The matrix adds no create/edit/remove verb for the reminder entity; the window is an actor over existing reminders, and the anchor-aware shape (D-P11, closed ruling #815) stands unchanged — alarm rows carry Dismiss/Snooze/Cancel, never Done/Mute | An alarm anchor has no task; the r7 shape is landed and closed | This plan, §1 |
-| R-2 | `alarm.window_reposition` is **absent on Wayland as a gesture** (the drag strip renders but drag deltas cannot apply — clients may not position windows there); the posture is deliberate: under Wayland `no-frame` no-ops too, so the compositor's own title bar is the native move affordance, and the drag strip degrades to a logged no-op (never a wrong-position bug) | Wayland forbids client-side window positioning; the recorded alternative (persisted placement setting) is deferred to #1321 | This plan, US-2 |
+| R-2 | `alarm.window_reposition` is **absent on Wayland as a delta gesture**, but present as a compositor-driven gesture: the strip press requests `xdg_toplevel.move(seat, serial)` through winit's `Window::drag_window()` (reached via a small backend seam that downcasts Slint's window adapter to the winit window, the `as_any` pattern of slint-ui/slint#3032) — the compositor moves the window (native title-bar feel). The logged no-op is the FALLBACK arm: taken only when the backend seam cannot produce the winit window (non-winit backend, API change) — a typed outcome, never a panic, never a wrong-position bug. **Amendment 2026-11-24 (operator-approved)**: upgrades the original "degrades to a logged no-op" posture; on X11/Windows the delta-accumulator applier stays as designed. UX note: same affordance, per-platform engine — Wayland hands the drag to the compositor, X11/Windows the client applies deltas | Wayland forbids client-side positioning; the compositor-driven interactive move is the protocol's sanctioned channel; the recorded alternative (persisted placement setting) is deferred to #1321 | This plan, US-2 |
 | R-3 | `alarm.snooze` stays absent on CLI (no `timers snooze`) | CLI snooze has no duration story yet; same home as the snooze-duration non-goal | #352 |
 | R-4 | `alarm.button_hint` is absent on CLI and on kiosk | CLI has typed verb names in help text (no hover concept); kiosk never mounts the window (R3.5.3 fence) | This plan, §8 kiosk gates |
 
@@ -149,11 +149,14 @@ surface census already uses (`docs/ux-surface-census.org:1174-1176`).
     the accumulated drag delta on platforms where client positioning
     is honored — verified by seam test on the position-applier seam
     (the delta accumulator, not a real WM).
-  - AC-2: Given a Wayland session, When the same drag occurs, Then
-    the apply degrades to a logged no-op and the window stays at its
-    compositor-assigned position — verified by seam test on the
-    applier's platform-degrade arm (typed outcome, no text
-    assertions).
+  - AC-2: Given a Wayland session, When the strip is pressed, Then
+    the seam requests the compositor-driven interactive move
+    (`xdg_toplevel.move` via winit `drag_window()`) and the window
+    position is compositor-driven for the gesture — verified by seam
+    test on the backend seam (typed, faked seam — the request
+    happened; no text assertions). **Amendment 2026-11-24**: replaces
+    the original "logged no-op" AC; the logged no-op is now the
+    fallback arm (non-winit backend), still typed-pinned.
   - AC-3: Given rapid pointer events during a drag, When deltas are
     applied, Then no position update is lost by re-derivation from
     the alarm pass (the pass re-shows the window but never resets a
@@ -274,7 +277,7 @@ UI is id-less by design). -->
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
 |---|---|---|---|---|---|---|---|---|---|
 | W-1 | `crates/taskboard-ui-slint/ui/alarm-window.slint` | Window geometry rework: drop the fixed `width`; the VerticalLayout sizes to content; the FocusScope is re-homed (`vertical-stretch: 0`, zero layout mass, still the mount-focus keyboard surface); a row floor of `Theme.card-title-min-width` for the title elide | — | `run_alarm_pass` keeps feeding `rows` unchanged | — | — | index-keyed (unchanged) | US-1/S1-S4, US-2/S3, US-4/S1-S2 | `journeys.rs::us2_s3_alarm_rederive_keeps_the_dragged_position` |
-| W-2 | `crates/taskboard-ui-slint/ui/alarm-window.slint` | Drag strip: a grab handle spanning the header's top edge (TouchArea `pointer-event`/`moved` → delta extraction) | `drag-by(length, length)` | `install_alarm_callbacks` gains the applier: accumulate deltas, `window.set_position`; Wayland arm = logged no-op | — | — | n/a (window-level) | US-2/S1-S2 | `probes/alarm_window_drag_tests.rs::us2_s2_drag_by_applies_the_accumulated_delta` and `probes/alarm_window_drag_tests.rs::us2_s2_wayland_arm_degrades_to_a_noop` |
+| W-2 | `crates/taskboard-ui-slint/ui/alarm-window.slint` | Drag strip: a grab handle spanning the header's top edge (TouchArea `pointer-event`/`moved` → delta extraction); Wayland: the press requests the compositor interactive move via the backend seam (`drag_window()` downcast) — **amended 2026-11-24** | `drag-by(length, length)` | `install_alarm_callbacks` gains the applier: accumulate deltas, `window.set_position`; Wayland arm = compositor-driven interactive move (fallback: logged no-op when the winit window is unreachable) | — | — | n/a (window-level) | US-2/S1-S2 | `probes/alarm_window_drag_tests.rs::us2_s2_drag_by_applies_the_accumulated_delta` and `probes/alarm_window_drag_tests.rs::us2_s2_wayland_arm_requests_the_compositor_move` (fallback: `us2_s2_wayland_arm_falls_back_to_a_noop`) |
 | W-3 | `crates/taskboard-ui-slint/ui/alarm-window.slint` | `TooltipPanel` mount inside `AlarmWindow` reading the shared `TooltipState` global (the `IconButton`s already raise it) | — | none (the global is the seam) | — | — | n/a | US-3/S1-S2 | `structural.rs::us3_s1_alarm_window_mounts_its_own_tooltip_panel` |
 | W-4 | `crates/taskboard-ui-slint/ui/alarm-window.slint` | Selection-ring fix: the ring `Rectangle` is deleted from inside the row's `ListRow` and re-declared row-local (binds the row's own geometry, never `root.width/height`) | — | none | — | — | index-keyed (unchanged) | US-4/S1 | `probes/alarm_window_ring_probe_tests.rs::us4_s1_selection_ring_is_row_local` |
 | W-5 | `crates/taskboard-ui-slint/ui/alarm-window.slint` + `tests/alarm_window_max_probe.slint` | #1251: the content root carries `max-width: Theme.layout-severing-max-width`; the probe twin `alarm_window_max_probe` follows the per-view pattern of `1276151a` | — | none | — | — | n/a | guards every story | `probes/alarm_window_max_probe_tests.rs::alarm_window_max_probe_severs_the_layout` |
@@ -330,8 +333,10 @@ bound-test: US-4/S2 -> journeys.rs::us4_s2_alarm_escape_hides_committing_nothing
   reworked geometry committing nothing).
 - **Seam tests**:
   `us2_s2_drag_by_applies_the_accumulated_delta`,
-  `us2_s2_wayland_arm_degrades_to_a_noop` (typed degrade outcome, no
-  text assertions), plus the kept-green routing suite
+  `us2_s2_wayland_arm_requests_the_compositor_move` (typed, faked
+  seam — the request happened; **amended 2026-11-24** from the
+  logged-no-op pin) with the fallback
+  `us2_s2_wayland_arm_falls_back_to_a_noop`, plus the kept-green routing suite
   (`router.rs::alarm_verbs_route_the_button_commands_from_the_selected_row`,
   `every_preset_binds_the_alarm_window_grammar`) as the US-1/US-4
   regression fence.
