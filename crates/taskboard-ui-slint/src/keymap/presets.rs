@@ -349,6 +349,14 @@ static STANDARD_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AppMenu, ContextId::Global, &["Ctrl+Shift+m"]),
     (ActionId::AppExit, ContextId::Global, &["Ctrl+Shift+q"]),
     (ActionId::AppSettings, ContextId::Global, &["Ctrl+,"]),
+    // The status panel's open chord (#1194): the close twin is the
+    // panel's Escape (the D28b shape); the open rides the
+    // settings-opener's grammar, shifted off the taken `Ctrl+,`.
+    (
+        ActionId::StatusPanelOpen,
+        ContextId::Global,
+        &["Ctrl+Shift+,"],
+    ),
     (ActionId::AppHelp, ContextId::Global, &["F1"]),
     (ActionId::CaptureQuick, ContextId::Global, &["Ctrl+Shift+k"]),
     (
@@ -845,6 +853,16 @@ static EMACS_S0: &[(ActionId, ContextId, &[&str])] = &[
     (ActionId::AppMenu, ContextId::Global, &["Alt+x"]),
     (ActionId::AppHelp, ContextId::Global, &["Ctrl+h"]),
     (ActionId::AppSettings, ContextId::Global, &["Ctrl+x", "c"]),
+    // The status panel's open chord (#1194): the close twin is the
+    // panel's Escape; the same mnemonic chord as the other presets —
+    // a deliberate deviation from strict emacs grammar for
+    // cross-preset consistency (this preset's settings opener is the
+    // `Ctrl+x c` chain, not a comma chord).
+    (
+        ActionId::StatusPanelOpen,
+        ContextId::Global,
+        &["Ctrl+Shift+,"],
+    ),
     (ActionId::CaptureQuick, ContextId::Global, &["Ctrl+c", "c"]),
     (ActionId::PaletteSearch, ContextId::Global, &["Ctrl+s"]),
     // Focus mode (#496): the CUA toggle chord (Ctrl+j is free in this
@@ -1479,6 +1497,15 @@ static VI_S0: &[(ActionId, ContextId, &[&str])] = &[
     // free w (the walk), beside the view-nav's g t.
     (ActionId::ReviewOpen, ContextId::ViNormal, &["g", "w"]),
     (ActionId::ViewToday, ContextId::Global, &["Ctrl+Shift+t"]),
+    // The status panel's open chord (#1194): the close twin is the
+    // panel's Escape; the shared mnemonic chord rides vi's small
+    // Global block (this preset already carries the Ctrl+Shift+t
+    // global — the vi-shape contract's Global is not empty).
+    (
+        ActionId::StatusPanelOpen,
+        ContextId::Global,
+        &["Ctrl+Shift+,"],
+    ),
     (ActionId::TaskComplete, ContextId::ViNormal, &["Space"]),
     (ActionId::TaskCreate, ContextId::ViNormal, &["o"]),
     (ActionId::StackCreate, ContextId::ViNormal, &["O"]),

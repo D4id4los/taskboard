@@ -67,3 +67,24 @@ fn us3_s1_shifted_today_delivery_opens_today_and_us3_s2_bare_ctrl_t_does_not() {
         assert_eq!(harness.handle.window().get_current_view(), View::Board);
     });
 }
+
+/// #1194: the status panel's open chord resolves in all three
+/// presets at `ContextId::Global` (the close twin is the panel's
+/// Escape — the D28b shape; the open rides the settings-opener's
+/// grammar, shifted off the taken `Ctrl+,`). Typed outcome: the
+/// resolver's action id.
+#[test]
+fn status_panel_open_chord_resolves_in_all_presets() {
+    use taskboard_ui_slint::actions::ActionId;
+    use taskboard_ui_slint::actions::ContextId;
+    use taskboard_ui_slint::keymap::{Keymap, Preset};
+    let chord = taskboard_ui_slint::keymap::stroke::parse("Ctrl+Shift+,").expect("the chord");
+    for preset in [Preset::Standard, Preset::Emacs, Preset::Vi] {
+        let keymap = Keymap::from_preset(preset);
+        assert_eq!(
+            keymap.resolve(&[ContextId::Global], &[chord]),
+            Some(ActionId::StatusPanelOpen),
+            "{preset:?}: the global open chord resolves the status panel"
+        );
+    }
+}
