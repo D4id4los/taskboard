@@ -84,7 +84,7 @@ async fn spawn(
 /// The lockstep primitive: the injected clock (what the evaluator sees)
 /// and tokio time (when the arm wakes) move together.
 async fn advance_both(clock: &FixedClock, secs: i64) {
-    clock.advance(secs);
+    clock.advance_secs(secs);
     tokio::time::advance(Duration::from_secs(u64::try_from(secs).expect("positive"))).await;
 }
 
@@ -131,7 +131,7 @@ async fn the_boot_seed_is_published_with_the_hydrated_state() {
         Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
             None,
         ))),
-        FixedClock::new(T0),
+        Arc::new(FixedClock::from_secs(T0)),
         seed.clone(),
         DayRollConfig::disabled(),
     )
@@ -146,7 +146,7 @@ async fn update_settings_replaces_the_snapshot_wholesale() {
         Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
             None,
         ))),
-        FixedClock::new(T0),
+        Arc::new(FixedClock::from_secs(T0)),
         SettingsSnapshot::default(),
         DayRollConfig::disabled(),
     )
@@ -182,7 +182,7 @@ async fn update_settings_publishes_a_signal_and_rings_the_system_doorbell() {
         Arc::new(InMemoryRepository::with_state(seed_stack_with_due_task(
             None,
         ))),
-        FixedClock::new(T0),
+        Arc::new(FixedClock::from_secs(T0)),
         SettingsSnapshot::default(),
         DayRollConfig::disabled(),
     )
@@ -211,7 +211,7 @@ async fn a_past_due_mutation_fires_on_the_re_arm_not_the_old_cadence() {
     )));
     let mut h = spawn(
         repo,
-        FixedClock::new(T0),
+        Arc::new(FixedClock::from_secs(T0)),
         enabled(60),
         DayRollConfig::disabled(),
     )
@@ -264,7 +264,7 @@ async fn a_live_disable_stops_the_tick_and_a_re_enable_resumes_it() {
     )));
     let mut h = spawn(
         repo,
-        FixedClock::new(T0),
+        Arc::new(FixedClock::from_secs(T0)),
         enabled(1),
         DayRollConfig::disabled(),
     )
@@ -332,7 +332,7 @@ async fn the_implicit_reminder_reads_the_live_defaults() {
     )));
     let mut h = spawn(
         repo,
-        FixedClock::new(T0),
+        Arc::new(FixedClock::from_secs(T0)),
         enabled(1),
         DayRollConfig::disabled(),
     )
@@ -390,7 +390,7 @@ async fn a_day_start_move_never_re_rolls_an_already_rolled_date() {
     let repo = Arc::new(CountingRepository::new(daily_head(DAY0 - 86_400 + 32_400)));
     let h = spawn(
         repo.clone(),
-        FixedClock::new(now),
+        Arc::new(FixedClock::from_secs(now)),
         SettingsSnapshot::default(),
         utc_roll(),
     )

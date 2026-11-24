@@ -676,7 +676,7 @@ pub(crate) fn spawn_escalation_driver(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::atomic::Ordering;
 
     const T0: DateTime<Utc> =
         chrono::DateTime::<Utc>::from_timestamp(1_792_000_000, 0).expect("valid instant");
@@ -1177,23 +1177,6 @@ mod tests {
         chrono::FixedOffset::east_opt(0).unwrap()
     }
 
-    /// The fake clock: a nanos-timestamp cell the test drives.
-    #[derive(Debug, Default)]
-    struct FakeClock(AtomicI64);
-
-    impl Clock for FakeClock {
-        fn now(&self) -> DateTime<Utc> {
-            chrono::DateTime::<Utc>::from_timestamp(self.0.load(Ordering::SeqCst), 0)
-                .expect("valid fake instant")
-        }
-    }
-
-    impl FakeClock {
-        fn set(&self, t: DateTime<Utc>) {
-            self.0.store(t.timestamp(), Ordering::SeqCst);
-        }
-    }
-
     /// The recording sink: ordered `(deliver | withdraw, reminder,
     /// occurrence)` records (the `CollectingSink` pattern).
     #[derive(Default)]
@@ -1387,7 +1370,7 @@ mod tests {
         let state = Arc::new(arc_swap::ArcSwap::from_pointee(AppState::default()));
         let (signals_tx, _keepalive) = broadcast::channel::<EngineSignal>(8);
         let sink = Arc::new(FakeSink::default());
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         clock.set(T0);
         let driver = spawn_escalation_driver(
             Arc::clone(&state),
@@ -1480,7 +1463,7 @@ mod tests {
         let state = Arc::new(arc_swap::ArcSwap::from_pointee(normal_state));
         let (_, rx) = broadcast::channel::<EngineSignal>(8);
         let sink = Arc::new(FakeSink::default());
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         clock.set(T0 + TimeDelta::minutes(30));
         let driver = spawn_escalation_driver(
             state,
@@ -1510,7 +1493,7 @@ mod tests {
         let (signals_tx, _keepalive) = broadcast::channel::<EngineSignal>(8);
         let sink = Arc::new(FakeSink::default());
         let chime = Arc::new(RecordingChime::default());
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         clock.set(T0);
         let driver = spawn_escalation_driver(
             Arc::clone(&state),
@@ -1563,7 +1546,7 @@ mod tests {
         let state = Arc::new(arc_swap::ArcSwap::from_pointee(AppState::default()));
         let (signals_tx, _keepalive) = broadcast::channel::<EngineSignal>(8);
         let chime = Arc::new(RecordingChime::default());
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         clock.set(T0 - TimeDelta::minutes(1));
         let driver = spawn_escalation_driver(
             Arc::clone(&state),
@@ -1599,7 +1582,7 @@ mod tests {
     async fn the_driver_exits_when_the_broadcast_closes() {
         let (_, rx) = broadcast::channel::<EngineSignal>(8);
         let state = Arc::new(arc_swap::ArcSwap::from_pointee(AppState::default()));
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         let driver = spawn_escalation_driver(
             state,
             utc(),

@@ -24,9 +24,9 @@ use taskboard_domain::test_support::{
     CountingIds, InMemoryRepository, persisted_state_strategy, proptest_config, snapshot_strategy,
 };
 use taskboard_domain::{
-    AppState, Board, BoardClocks, BoardId, Clock, Color, CommandOutcome, Label, LabelClocks,
-    LocalOp, OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks, StackId,
-    SyncPhase, Task, TaskClocks, TaskId, apply_sync_report,
+    AppState, Board, BoardClocks, BoardId, Color, CommandOutcome, Label, LabelClocks, LocalOp,
+    OpId, PendingOp, PersistedState, PersistenceAction, Stack, StackClocks, StackId, SyncPhase,
+    Task, TaskClocks, TaskId, apply_sync_report,
 };
 use taskboard_domain::{StateCommand, SyncCounters};
 use taskboard_state::{EngineCore, spawn_state_engine};
@@ -561,7 +561,7 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
         let (handle, _join) = spawn_state_engine(
             repo.clone(),
             Arc::new(CountingIds::new()),
-            Arc::new(FixedTestClock),
+            Arc::new(taskboard_domain::test_support::FrozenClock::from_secs(T0)),
             sync_out,
             report_rx,
             system_tx,
@@ -787,15 +787,6 @@ fn drive_sequence(steps: &[Step]) -> Result<(), TestCaseError> {
         }
         Ok(())
     })
-}
-
-#[derive(Debug)]
-struct FixedTestClock;
-
-impl Clock for FixedTestClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        now()
-    }
 }
 
 proptest! {

@@ -3112,17 +3112,6 @@ mod flush_budget_tests {
     use taskboard_state::DayRollConfig;
     use tokio::sync::oneshot;
 
-    /// A constant logical clock (the state suite's `FixedClock` shape,
-    /// inlined) — the flush test never reads the time.
-    #[derive(Debug)]
-    struct FixedTestClock;
-    impl taskboard_domain::Clock for FixedTestClock {
-        fn now(&self) -> chrono::DateTime<chrono::Utc> {
-            use chrono::TimeZone as _;
-            chrono::Utc.timestamp_opt(36_000, 0).unwrap()
-        }
-    }
-
     /// One live board with a deterministic id (the state suite's board
     /// fixture shape, inlined — the app crate has no shared fixture for
     /// it).
@@ -3206,7 +3195,9 @@ mod flush_budget_tests {
             let (handle, engine_join) = taskboard_state::spawn_state_engine(
                 repo,
                 Arc::new(CountingIds::new()),
-                Arc::new(FixedTestClock),
+                Arc::new(taskboard_domain::test_support::FrozenClock::from_secs(
+                    36_000,
+                )),
                 sync_out,
                 report_rx,
                 system_tx.clone(),

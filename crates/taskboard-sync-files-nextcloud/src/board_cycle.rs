@@ -1873,7 +1873,9 @@ mod tests {
                 created_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
             },
             app_version: "test".into(),
-            clock: Arc::new(FixedClock),
+            clock: Arc::new(taskboard_domain::test_support::FrozenClock::from_secs(
+                1_000_000,
+            )),
             local: Arc::new(crate::cycle::EmptyDocument),
             report_tx: mpsc::channel(1).0,
             connector: taskboard_domain::ids::ConnectorId::from("files-sync"),
@@ -1884,19 +1886,6 @@ mod tests {
                 DECK_ORIGIN.to_owned(),
             )]),
             cancel: crate::cycle::CycleCancel::new(),
-        }
-    }
-
-    #[derive(Debug)]
-    struct FixedClock;
-
-    impl taskboard_domain::Clock for FixedClock {
-        fn now(&self) -> chrono::DateTime<chrono::Utc> {
-            use chrono::TimeZone as _;
-            chrono::Utc
-                .timestamp_opt(1_000_000, 0)
-                .single()
-                .expect("ts")
         }
     }
 

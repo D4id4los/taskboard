@@ -118,7 +118,7 @@ fn key(habit: taskboard_domain::HabitId, day_offset: i64) -> HabitLogKey {
 
 async fn h1_habit_journey_create_log_adjust_delete() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo, clock.clone()).await;
 
     // Create.
@@ -158,7 +158,7 @@ async fn h1_habit_journey_create_log_adjust_delete() {
         panic!("wrong receipt");
     };
     assert_eq!(w1, window(0), "T0's window-date under UTC midnight");
-    clock.advance(60);
+    clock.advance_secs(60);
     let CommandOutcome::HabitLogged { count: count2, .. } = h
         .handle
         .execute(StateCommand::LogHabit { habit })
@@ -175,7 +175,7 @@ async fn h1_habit_journey_create_log_adjust_delete() {
     assert_eq!(persisted.habits, published, "memory ≡ disk: habits");
 
     // Adjust: the audited correction rewrites the window.
-    clock.advance(60);
+    clock.advance_secs(60);
     let CommandOutcome::HabitLogAdjusted {
         window: w3,
         count: 5,
@@ -203,7 +203,7 @@ async fn h1_habit_journey_create_log_adjust_delete() {
     assert_eq!(h.repo.snapshot().habits, published);
 
     // Delete: the tombstone lands, the log survives everywhere.
-    clock.advance(60);
+    clock.advance_secs(60);
     let outcome = h
         .handle
         .execute(StateCommand::DeleteHabit { habit })
@@ -245,7 +245,7 @@ async fn h1_habit_journey_create_log_adjust_delete() {
 #[tokio::test]
 async fn h2_fresh_engine_over_the_same_repo_sees_the_log() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let engine1 = spawn_over(repo.clone(), clock.clone()).await;
     let board = engine1.board_id();
     let CommandOutcome::HabitCreated(habit) = engine1
@@ -281,7 +281,7 @@ async fn h2_fresh_engine_over_the_same_repo_sees_the_log() {
     let logged_window = window;
 
     // A "fresh process": a new engine over the same repository.
-    clock.advance(3_600);
+    clock.advance_secs(3_600);
     let engine2 = spawn_over(repo.clone(), clock.clone()).await;
     let published = engine2.published();
     assert_eq!(published.habits.len(), 1, "the habit hydrated");
@@ -310,7 +310,7 @@ async fn h2_fresh_engine_over_the_same_repo_sees_the_log() {
 #[tokio::test]
 async fn h3_unknown_habit_rejects_typed_and_persists_nothing() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo.clone(), clock.clone()).await;
     let stranger = taskboard_domain::HabitId::from(uuid::Uuid::from_u128(654_321));
     let before = h.repo.snapshot();
@@ -337,7 +337,7 @@ async fn h3_unknown_habit_rejects_typed_and_persists_nothing() {
 #[tokio::test]
 async fn us6_s1_update_habit_stores_the_day_inside_the_canonical_window() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo.clone(), clock.clone()).await;
     let board = h.board_id();
     let CommandOutcome::HabitCreated(habit) = h
@@ -418,7 +418,7 @@ async fn us6_s1_update_habit_stores_the_day_inside_the_canonical_window() {
     // both fields.
     let before = h.published();
     h.shutdown().await;
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h2 = spawn_over(repo, clock).await;
     assert_eq!(h2.published(), before, "memory ≡ disk across restarts");
     h2.shutdown().await;
@@ -434,7 +434,7 @@ async fn us6_s1_update_habit_stores_the_day_inside_the_canonical_window() {
 #[allow(clippy::too_many_lines)] // the journey reads best as one scenario
 async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo.clone(), clock.clone()).await;
     let board = h.board_id();
     let CommandOutcome::HabitCreated(habit) = h
@@ -455,7 +455,7 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
 
     // Every D5 row in one sparse changeset.
     let wednesday = taskboard_domain::habit::AnchorDay::Weekday(chrono::Weekday::Wed);
-    clock.advance(60);
+    clock.advance_secs(60);
     match h
         .handle
         .execute(StateCommand::UpdateHabit {
@@ -538,7 +538,7 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
     // `Some("")` clears the description; a kind change to PerDay
     // carries the now-mismatched day inert (no silent destructive
     // clearing).
-    clock.advance(60);
+    clock.advance_secs(60);
     match h
         .handle
         .execute(StateCommand::UpdateHabit {
@@ -570,7 +570,7 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
     );
 
     // `Some(None)` clears the double-Option fields.
-    clock.advance(60);
+    clock.advance_secs(60);
     match h
         .handle
         .execute(StateCommand::UpdateHabit {
@@ -600,7 +600,7 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
     // the final shape.
     let expected = h.published();
     h.shutdown().await;
-    let h2 = spawn_over(repo, FixedClock::new(T0)).await;
+    let h2 = spawn_over(repo, Arc::new(FixedClock::from_secs(T0))).await;
     assert_eq!(h2.published(), expected, "memory ≡ disk across restarts");
     h2.shutdown().await;
 }
@@ -614,7 +614,7 @@ async fn us5_editor_changeset_maps_each_field_and_preserves_untouched_clocks() {
 #[tokio::test(start_paused = true)]
 async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo, clock.clone()).await;
     let board = h.board_id();
     let CommandOutcome::HabitCreated(habit) = h
@@ -632,13 +632,13 @@ async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
         panic!("wrong receipt");
     };
     // Log once so the skip must preserve the count.
-    clock.advance(60);
+    clock.advance_secs(60);
     let _ = h
         .handle
         .execute(StateCommand::LogHabit { habit })
         .await
         .expect("accepted");
-    clock.advance(60);
+    clock.advance_secs(60);
     let CommandOutcome::HabitSkipped {
         window: skipped, ..
     } = h
@@ -657,7 +657,7 @@ async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
     assert_eq!(h.repo.snapshot().habits, published, "memory ≡ disk");
 
     // The repeat is the accepted no-op; nothing persisted.
-    clock.advance(60);
+    clock.advance_secs(60);
     let before = h.repo.snapshot();
     let repeat = h.handle.execute(StateCommand::SkipHabit { habit }).await;
     match repeat {
@@ -667,7 +667,7 @@ async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
     assert_eq!(h.repo.snapshot(), before, "the no-op persisted nothing");
 
     // The undo inverse clears the mark, keeps the count.
-    clock.advance(60);
+    clock.advance_secs(60);
     let _ = h
         .handle
         .execute(StateCommand::UnskipHabit { habit })
@@ -680,7 +680,7 @@ async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
     );
     assert_eq!(published.log[&key(habit, 0)].count, 1);
     // Unskipping an unmarked window is the accepted no-op.
-    clock.advance(60);
+    clock.advance_secs(60);
     let before = h.repo.snapshot();
     let repeat = h.handle.execute(StateCommand::UnskipHabit { habit }).await;
     match repeat {
@@ -698,7 +698,7 @@ async fn skip_habit_routes_the_exact_command_and_the_repeat_no_ops() {
 #[tokio::test(start_paused = true)]
 async fn pause_round_trips_resume_clears_and_past_date_is_typed_invalid() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo, clock.clone()).await;
     let board = h.board_id();
     let CommandOutcome::HabitCreated(habit) = h
@@ -752,7 +752,7 @@ async fn pause_round_trips_resume_clears_and_past_date_is_typed_invalid() {
     );
     assert_eq!(h.repo.snapshot().habits, published, "memory ≡ disk");
     // The unchanged value is the accepted no-op (no clock churn).
-    clock.advance(60);
+    clock.advance_secs(60);
     let before = h.repo.snapshot();
     let repeat = h
         .handle
@@ -767,7 +767,7 @@ async fn pause_round_trips_resume_clears_and_past_date_is_typed_invalid() {
     }
     assert_eq!(h.repo.snapshot(), before);
     // AC-4: the explicit None resume clears for badge hygiene.
-    clock.advance(60);
+    clock.advance_secs(60);
     let _ = h
         .handle
         .execute(StateCommand::PauseHabit { habit, until: None })
@@ -777,7 +777,7 @@ async fn pause_round_trips_resume_clears_and_past_date_is_typed_invalid() {
     assert_eq!(published.habits[&habit].paused_until, None);
     assert_eq!(h.repo.snapshot().habits, published);
     // Resuming an unpaused habit is the accepted no-op.
-    clock.advance(60);
+    clock.advance_secs(60);
     let before = h.repo.snapshot();
     let repeat = h
         .handle
@@ -799,7 +799,7 @@ async fn pause_round_trips_resume_clears_and_past_date_is_typed_invalid() {
 #[tokio::test]
 async fn us5_s2_schedule_save_routes_the_exact_update_habit() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo.clone(), clock.clone()).await;
     let board = h.board_id();
     let CommandOutcome::HabitCreated(habit) = h
@@ -816,7 +816,7 @@ async fn us5_s2_schedule_save_routes_the_exact_update_habit() {
     else {
         panic!("create names the habit");
     };
-    clock.advance(60);
+    clock.advance_secs(60);
     let set = taskboard_domain::habit::WeekdaySet::new([
         chrono::Weekday::Mon,
         chrono::Weekday::Wed,
@@ -847,7 +847,7 @@ async fn us5_s2_schedule_save_routes_the_exact_update_habit() {
     // Persisted intent.
     let expected = h.published();
     h.shutdown().await;
-    let h2 = spawn_over(repo, FixedClock::new(T0)).await;
+    let h2 = spawn_over(repo, Arc::new(FixedClock::from_secs(T0))).await;
     assert_eq!(h2.published(), expected, "memory ≡ disk across restarts");
     h2.shutdown().await;
 }
@@ -860,7 +860,7 @@ async fn us5_s2_schedule_save_routes_the_exact_update_habit() {
 #[tokio::test]
 async fn us6_s2_override_save_routes_the_exact_command_and_the_clear_leg_reverts() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo.clone(), clock.clone()).await;
     let board = h.board_id();
     let CommandOutcome::HabitCreated(habit) = h
@@ -883,7 +883,7 @@ async fn us6_s2_override_save_routes_the_exact_command_and_the_clear_leg_reverts
         time: Some(chrono::NaiveTime::from_hms_opt(7, 45, 0).unwrap()),
         snooze: taskboard_domain::habit::HabitSnooze::Days(1),
     };
-    clock.advance(60);
+    clock.advance_secs(60);
     match h
         .handle
         .execute(StateCommand::UpdateHabit {
@@ -900,7 +900,7 @@ async fn us6_s2_override_save_routes_the_exact_command_and_the_clear_leg_reverts
         other => panic!("the override save applies, got {other:?}"),
     }
     assert_eq!(h.published().habits[&habit].reminder, Some(ovr));
-    clock.advance(60);
+    clock.advance_secs(60);
     match h
         .handle
         .execute(StateCommand::UpdateHabit {
@@ -920,7 +920,7 @@ async fn us6_s2_override_save_routes_the_exact_command_and_the_clear_leg_reverts
     assert_eq!(reverted.reminder, None, "clear reverts to the O-1 default");
     // A zero-leg repetition stays the typed no-op (no clock churn).
     let before = h.published().habits[&habit].clone();
-    clock.advance(60);
+    clock.advance_secs(60);
     match h
         .handle
         .execute(StateCommand::UpdateHabit {
@@ -946,7 +946,7 @@ async fn us6_s2_override_save_routes_the_exact_command_and_the_clear_leg_reverts
 #[tokio::test]
 async fn us5_scheduled_days_on_a_daily_habit_is_a_typed_rejection() {
     let repo = Arc::new(InMemoryRepository::with_state(seed_board_state("kiosk")));
-    let clock = FixedClock::new(T0);
+    let clock = Arc::new(FixedClock::from_secs(T0));
     let h = spawn_over(repo, clock.clone()).await;
     let board = h.board_id();
     let CommandOutcome::HabitCreated(habit) = h
@@ -963,7 +963,7 @@ async fn us5_scheduled_days_on_a_daily_habit_is_a_typed_rejection() {
     else {
         panic!("create names the habit");
     };
-    clock.advance(60);
+    clock.advance_secs(60);
     let before = h.published();
     let outcome = h
         .handle

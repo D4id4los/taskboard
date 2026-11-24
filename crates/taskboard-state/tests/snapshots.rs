@@ -59,7 +59,7 @@ impl Scenario {
 
     async fn start_with(state: taskboard_domain::PersistedState) -> Self {
         let repo = Arc::new(InMemoryRepository::with_state(state));
-        let clock = FixedClock::new(T0);
+        let clock = Arc::new(FixedClock::from_secs(T0));
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
         let (user_data_tx, user_data) = tokio::sync::mpsc::channel::<UserDataReport>(4);
@@ -98,7 +98,7 @@ impl Scenario {
     /// command.
     async fn start_series(state: taskboard_domain::PersistedState, clock_secs: i64) -> Self {
         let repo = Arc::new(InMemoryRepository::with_state(state));
-        let clock = FixedClock::new(clock_secs);
+        let clock = Arc::new(FixedClock::from_secs(clock_secs));
         let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
         let (report_tx, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
         let (user_data_tx, user_data) = tokio::sync::mpsc::channel::<UserDataReport>(4);
@@ -146,7 +146,7 @@ impl Scenario {
     }
 
     async fn run(&mut self, command: StateCommand) -> CommandOutcome {
-        self.clock.advance(60);
+        self.clock.advance_secs(60);
         self.handle.execute(command).await.expect("accepted")
     }
 
@@ -156,7 +156,7 @@ impl Scenario {
         &mut self,
         command: StateCommand,
     ) -> Result<CommandOutcome, taskboard_state::ExecuteError> {
-        self.clock.advance(60);
+        self.clock.advance_secs(60);
         self.handle.execute(command).await
     }
 
@@ -447,7 +447,7 @@ async fn s2_offline_queue_accumulation() {
 #[tokio::test]
 async fn s3_sync_ingestion_binds_and_pulls() {
     let s = Scenario::start().await;
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(SyncReport::Completed {
             app_data: taskboard_domain::AppDataEvidence::Absent,
@@ -574,7 +574,7 @@ async fn s4_sync_resolution_drains_outbox() {
         pushes.push(push(pending.op_id, result));
     }
 
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(SyncReport::Completed {
             app_data: taskboard_domain::AppDataEvidence::Absent,
@@ -703,7 +703,7 @@ async fn s6_network_lost_restored_cycle() {
         panic!("wrong receipt");
     };
 
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.system_tx
         .send(SystemEvent::NetworkLost)
         .expect("broadcast");
@@ -719,12 +719,12 @@ async fn s6_network_lost_restored_cycle() {
     .await
     .expect("offline transition settles");
 
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.system_tx
         .send(SystemEvent::NetworkRestored)
         .expect("broadcast");
     // No phase change on restore; the next report fails with a typed kind.
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(SyncReport::Failed {
             duration: std::time::Duration::from_millis(100),
@@ -991,7 +991,7 @@ async fn s10_boards_reset() {
     })
     .await;
     // Warm validators: the reset must clear them (the 304 trap).
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(SyncReport::Completed {
             app_data: taskboard_domain::AppDataEvidence::Absent,
@@ -2066,7 +2066,7 @@ async fn s41_synced_card_absence_disappears() {
     let s = Scenario::start_with(bound_card_seed(false)).await;
     let mut events = s.system_tx.subscribe();
 
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(content_report(vec![live_stack(T0 + 60)], vec![], T0 + 60))
         .await
@@ -2092,7 +2092,7 @@ async fn s42_unsynced_edit_resurrects_as_new_card() {
     let s = Scenario::start_with(bound_card_seed(true)).await;
     let mut events = s.system_tx.subscribe();
 
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(content_report(vec![live_stack(T0 + 60)], vec![], T0 + 60))
         .await
@@ -2136,7 +2136,7 @@ async fn s43_second_absence_after_rebind_tombstones() {
     let mut events = s.system_tx.subscribe();
 
     // The resurrect cycle.
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(content_report(vec![live_stack(T0 + 60)], vec![], T0 + 60))
         .await
@@ -2162,7 +2162,7 @@ async fn s43_second_absence_after_rebind_tombstones() {
         .expect("task survives")
         .title
         .clone();
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(SyncReport::Completed {
             app_data: taskboard_domain::AppDataEvidence::Absent,
@@ -2198,7 +2198,7 @@ async fn s43_second_absence_after_rebind_tombstones() {
     wait_for_task(&s, |t| t.remote == Some(card_ref(11))).await;
 
     // Second delete of the fresh card: synced work ⇒ tombstone, no event.
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(content_report(vec![live_stack(T0 + 180)], vec![], T0 + 180))
         .await
@@ -2229,7 +2229,7 @@ async fn s44_cascade_absence_stays_tombstoned() {
 
     let mut dead_stack = live_stack(T0 + 60);
     dead_stack.deleted_at = Some(ts(T0 + 60));
-    s.clock.advance(60);
+    s.clock.advance_secs(60);
     s.report_tx
         .send(content_report(
             vec![dead_stack],

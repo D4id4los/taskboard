@@ -24,6 +24,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 taskboard-sync-files = { workspace = true, features = ["test-support"] }
+# The shared clock doubles (`test_support::clock`, #1264); the Deck
+# crate's convention — workspace pin, dev-only feature.
+taskboard-domain = { workspace = true, features = ["test-support"] }
 # The live Tier-3 pins' `.env` reader (the Deck crate's convention;
 # workspace pin — no new external dependency).
 dotenvy.workspace = true

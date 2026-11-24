@@ -451,7 +451,6 @@ pub(crate) fn focus_spawn_decision(
 mod tests {
     use super::*;
     use chrono::TimeDelta;
-    use std::sync::atomic::{AtomicI64, Ordering};
     use taskboard_domain::TimeEntry;
     use taskboard_domain::command::CommandOutcome;
     use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
@@ -795,25 +794,6 @@ mod tests {
 
     // -- the driver journeys (real engine, paused tokio time) ----------
 
-    /// The fake clock: a nanos-timestamp cell the test drives (the
-    /// escalation tests' shape). The *same* Arc feeds the engine and
-    /// the runtime, so engine stamps and runtime dues share one time.
-    #[derive(Debug, Default)]
-    struct FakeClock(AtomicI64);
-
-    impl Clock for FakeClock {
-        fn now(&self) -> DateTime<Utc> {
-            chrono::DateTime::<Utc>::from_timestamp(self.0.load(Ordering::SeqCst), 0)
-                .expect("valid fake instant")
-        }
-    }
-
-    impl FakeClock {
-        fn set(&self, t: DateTime<Utc>) {
-            self.0.store(t.timestamp(), Ordering::SeqCst);
-        }
-    }
-
     /// The journeys' boundary sink: records every typed event behind a
     /// Mutex, shared with the test through its Arc.
     #[derive(Debug, Default)]
@@ -848,9 +828,9 @@ mod tests {
     async fn harness() -> (
         EngineHandle,
         Arc<arc_swap::ArcSwap<AppState>>,
-        Arc<FakeClock>,
+        Arc<taskboard_domain::test_support::ManualClock>,
     ) {
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         clock.set(T0);
         let repo: Arc<dyn taskboard_domain::persistence::TaskRepository> =
             Arc::new(InMemoryRepository::default());
@@ -883,7 +863,7 @@ mod tests {
 
     /// The advance-both lockstep: the fake wall clock moves, the
     /// paused tokio timer moves with it.
-    async fn tick(clock: &FakeClock, to: DateTime<Utc>) {
+    async fn tick(clock: &taskboard_domain::test_support::ManualClock, to: DateTime<Utc>) {
         let delta = (to - clock.now()).to_std().expect("positive delta");
         clock.set(to);
         tokio::time::advance(delta).await;
@@ -943,7 +923,12 @@ mod tests {
     /// Drives `n` full work blocks with the chain off (the user stops
     /// the break and starts each next block), returning after the nth
     /// break has opened.
-    async fn drive_blocks(engine: &EngineHandle, clock: &FakeClock, task: TaskId, n: u32) {
+    async fn drive_blocks(
+        engine: &EngineHandle,
+        clock: &taskboard_domain::test_support::ManualClock,
+        task: TaskId,
+        n: u32,
+    ) {
         start_work(engine, task).await;
         for i in 0..n {
             tick(
@@ -1299,7 +1284,7 @@ mod tests {
         // Seed a repo with an open work entry started 3 × work ago, then
         // spawn the runtime: exactly one hand-off fires at engine now —
         // no backdating, no cascade of missed cycles.
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         clock.set(T0);
         // The stale entry's task must be a live row — StartTracking on
         // an unknown task is a typed rejection (the planner's law).
@@ -1713,7 +1698,7 @@ mod tests {
         // work block: the first hand-off is SHORT (position 3, not 5 —
         // the no-double-count pin) and the *fourth* block's break is
         // long.
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         clock.set(T0);
         let epoch = taskboard_domain::BoardClocks::epoch();
         let task = taskboard_domain::entities::Task {
@@ -1940,7 +1925,7 @@ mod tests {
         // Seed a repo with an open Respite long past its deadline,
         // spawn the runtime with the chain on: exactly one stop + one
         // chained Work start at engine now — no cascade.
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         clock.set(T0);
         let epoch = taskboard_domain::BoardClocks::epoch();
         let task = taskboard_domain::entities::Task {
@@ -2108,7 +2093,7 @@ mod tests {
     #[tokio::test]
     async fn the_runtime_exits_when_the_broadcast_closes() {
         let state = Arc::new(arc_swap::ArcSwap::from_pointee(AppState::default()));
-        let clock = Arc::new(FakeClock::default());
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
         // The only sender died at the binding: the broadcast is already
         // closed, so the runtime's first park answers `Closed` and the
         // task exits (the escalation Closed-exit shape).

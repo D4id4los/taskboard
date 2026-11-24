@@ -91,19 +91,6 @@ pub(crate) fn frozen_now() -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("the frozen instant exists")
 }
 
-/// A frozen [`Clock`]: `now` is a constant. The one shared impl the
-/// predicate fixture needs (the ~7 scattered local doubles' fold is
-/// #1264, out of scope here).
-#[derive(Debug)]
-#[allow(dead_code)] // consumed by the predicate tests landing in this chunk
-pub(crate) struct FrozenClock;
-
-impl Clock for FrozenClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        frozen_now()
-    }
-}
-
 /// The real engine over the seeded in-memory repo, with quiet lanes.
 /// The fixture owns every lane half the engine holds a receiver for, so
 /// nothing closes early; `shutdown` signals and joins.
@@ -136,7 +123,9 @@ pub(crate) async fn predicate_engine(
 ) -> PredicateEngineFixture {
     let repo: Arc<dyn TaskRepository> = Arc::new(InMemoryRepository::with_state(state));
     let ids: Arc<dyn IdGenerator> = Arc::new(CountingIds::new());
-    let clock: Arc<dyn Clock> = Arc::new(FrozenClock);
+    let clock: Arc<dyn Clock> = Arc::new(taskboard_domain::test_support::FrozenClock::new(
+        frozen_now(),
+    ));
     let (sync_out, sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (reports, report_rx) = tokio::sync::mpsc::channel::<SyncReport>(8);
     let (system, system_rx_parked) = tokio::sync::broadcast::channel::<SystemEvent>(64);

@@ -14,8 +14,6 @@
 
 use std::sync::Arc;
 
-use chrono::TimeZone as _;
-
 use taskboard_domain::persistence::{
     BoxFuture, CorruptionDetail, DecodeReason, DecodeStage, LoadDiagnostics, LoadDiagnosticsSource,
     PersistedState, PersistenceAction, RepositoryError, TaskRepository,
@@ -72,17 +70,6 @@ impl LoadDiagnosticsSource for DegradedRepository {
     }
 }
 
-/// The clock seam (state-suite `FixedClock` shape, local to this
-/// binary): a frozen instant — the routing under test reads no clocks.
-#[derive(Debug)]
-struct FrozenClock;
-
-impl Clock for FrozenClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono::Utc.timestamp_opt(0, 0).unwrap()
-    }
-}
-
 async fn spawn_with(
     repo: Arc<dyn TaskRepository>,
 ) -> (
@@ -90,7 +77,7 @@ async fn spawn_with(
     tokio::sync::broadcast::Receiver<SystemEvent>,
 ) {
     let ids: Arc<dyn IdGenerator> = Arc::new(taskboard_domain::test_support::CountingIds::new());
-    let clock: Arc<dyn Clock> = Arc::new(FrozenClock);
+    let clock: Arc<dyn Clock> = Arc::new(taskboard_domain::test_support::FrozenClock::from_secs(0));
     let (sync_out, _sync_in) = tokio::sync::mpsc::channel::<SyncCommand>(8);
     let (_report_tx, report_rx) = tokio::sync::mpsc::channel::<taskboard_domain::SyncReport>(8);
     let (_user_data_tx, _user_data) = tokio::sync::mpsc::channel::<UserDataReport>(4);

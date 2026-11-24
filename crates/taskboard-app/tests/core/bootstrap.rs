@@ -1236,17 +1236,6 @@ async fn b10_mixed_fleet_config_boots_and_covers_its_bindings() {
 // Boot-pull settle predicate (#1082, round-3 chunk R2b)
 // ---------------------------------------------------------------------
 
-/// A frozen logical clock: the settle-harness engine never stamps a
-/// moving time — the paused tokio clock governs the settle waits.
-#[derive(Debug)]
-struct FrozenClock;
-
-impl taskboard_domain::Clock for FrozenClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        chrono_t(36_000)
-    }
-}
-
 /// Spawns a bare state engine (no actor graph, no channels in use)
 /// hydrated from `persisted` — the lowest layer the predicate is
 /// testable at (one behavior, one test; AGENTS §5). The engine is idle
@@ -1264,7 +1253,9 @@ async fn settle_engine(
     let (handle, join) = taskboard_state::spawn_state_engine(
         Arc::new(taskboard_domain::test_support::InMemoryRepository::with_state(persisted)),
         Arc::new(taskboard_domain::test_support::CountingIds::new()),
-        Arc::new(FrozenClock),
+        Arc::new(taskboard_domain::test_support::FrozenClock::from_secs(
+            36_000,
+        )),
         sync_out,
         report_rx,
         system_tx.clone(),

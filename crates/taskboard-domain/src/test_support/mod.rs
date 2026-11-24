@@ -15,7 +15,9 @@
 //! re-exported here flat, so consumers import
 //! `taskboard_domain::test_support::<name>` regardless of file.
 
+pub mod clock;
 pub mod contract;
+pub use clock::{FrozenClock, ManualClock, StepClock};
 pub use memory::InMemoryRepository;
 pub mod entities;
 pub mod habit_strategies;

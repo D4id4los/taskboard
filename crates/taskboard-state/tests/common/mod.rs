@@ -6,13 +6,11 @@
 
 #![allow(dead_code)]
 
-use std::sync::Arc;
-
-use chrono::TimeZone;
+use chrono::TimeZone as _;
 
 use taskboard_domain::idgen::IdGenerator as _;
 use taskboard_domain::test_support::CountingIds;
-use taskboard_domain::{Board, Clock, PersistedState, TaskId};
+use taskboard_domain::{Board, PersistedState, TaskId};
 
 pub const T0: i64 = 36_000; // 10:00:00Z
 
@@ -21,25 +19,9 @@ pub fn ts(secs: i64) -> chrono::DateTime<chrono::Utc> {
 }
 
 /// Logical clock: every message in a scenario observes the same instant
-/// unless advanced explicitly.
-#[derive(Debug)]
-pub struct FixedClock(std::sync::Mutex<i64>);
-
-impl FixedClock {
-    pub fn new(secs: i64) -> Arc<Self> {
-        Arc::new(Self(std::sync::Mutex::new(secs)))
-    }
-
-    pub fn advance(&self, secs: i64) {
-        *self.0.lock().expect("poisoned") += secs;
-    }
-}
-
-impl Clock for FixedClock {
-    fn now(&self) -> chrono::DateTime<chrono::Utc> {
-        ts(*self.0.lock().expect("poisoned"))
-    }
-}
+/// unless advanced explicitly. The shared domain double (#1264); the
+/// suites keep the `FixedClock` spelling via this alias.
+pub type FixedClock = taskboard_domain::test_support::ManualClock;
 
 /// A live (unbound) board with a deterministic id — no command creates
 /// boards, so scenarios seed one.
