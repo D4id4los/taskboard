@@ -232,6 +232,10 @@ const SEAM_INVENTORY: &[&str] = &[
     "habits_create_quota_edited",
     // seam (H2 W-1): callback "habits-log-clicked".
     "habits_log_clicked",
+    // The card play control's routing (journey plan 2026-11-24 W-1,
+    // #1305): callback "habits-track-asked" — the
+    // send_card_track_toggle twin.
+    "habits_track_asked",
     // The inline quota edit's seams (HF2, W-5 #961): the phrase
     // click, the stepper rungs, the commit, and the dismissal funnel
     // (callbacks "habits-quota-edit-asked" / "-stepped" /
