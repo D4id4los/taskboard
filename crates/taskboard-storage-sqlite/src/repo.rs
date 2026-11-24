@@ -2257,6 +2257,7 @@ async fn execute_batch(
     let mut habit_log_rows = Vec::new();
     let mut habit_day_log_rows = Vec::new();
     let mut habit_time_upserts = Vec::new();
+    let mut habit_time_deletes = Vec::new();
     // DR-7 chunk 2 (R-11 exception, the tracking DR-5/1 precedent):
     // the reflection upserts, written by the compile-checked macro
     // against migration 0022's table.
@@ -2319,6 +2320,9 @@ async fn execute_batch(
             }
             PersistenceAction::UpsertHabitTimeEntry(entry) => {
                 habit_time_upserts.push(entry);
+            }
+            PersistenceAction::DeleteHabitTimeEntry(entry_id) => {
+                habit_time_deletes.push(*entry_id);
             }
             PersistenceAction::UpsertReflectionEntry(entry) => {
                 reflection_upserts.push(entry);
@@ -2977,6 +2981,14 @@ async fn execute_batch(
         .await
         .map_err(|e| stmt_error(&e))?;
         tracing::trace!(entry = ?entry.id, "habit time entry upserted");
+    }
+    for entry_id in habit_time_deletes {
+        sqlx::query(r"DELETE FROM habit_time_entries WHERE entry_id = ?")
+            .bind(codec::uuid_to_text(entry_id.as_uuid()))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| stmt_error(&e))?;
+        tracing::trace!(entry = ?entry_id, "habit time entry deleted");
     }
 
     // Op removals before appends so a batch that completes and re-enqueues

@@ -26,8 +26,9 @@ use taskboard_domain::{
     ReminderRuleId, RemoteBoardId, Stack, SyncErrorKind, Task, TaskId, TimeEntry, TimeEntryId,
     break_dismissals_entry_for, break_rules_for, derive_break_rule_tombstones,
     derive_rule_tombstones, derive_time_entry_tombstones, dismissals_entry_for, habit_log_for,
-    habits_for, lane_gc_old_habit_log, lane_gc_old_time_entries, lane_gc_scheduled,
-    prune_absent_cards, rules_entry_for, task_entry_for, time_entries_for, union,
+    habit_time_entries_for, habits_for, lane_gc_old_habit_log, lane_gc_old_habit_time_entries,
+    lane_gc_old_time_entries, lane_gc_scheduled, prune_absent_cards, rules_entry_for,
+    task_entry_for, time_entries_for, union,
 };
 
 use crate::anchor::{self, ANCHOR_ATTACHMENT_FILENAME, ANCHOR_ATTACHMENT_MIME, AnchorAction};
@@ -173,6 +174,13 @@ pub(crate) fn board_has_local_app_data(
         .keys()
         .next()
         .is_some()
+    // The habit-time clause (#1305 D-6): a board whose only sidecar
+    // content is habit time entries still grows its anchor. Same
+    // retention window as the task-tracking clause.
+    || habits
+        .time_log
+        .values()
+        .any(|entry| entry.start >= window_start)
     // The break clause (#588 D-7, D-H9's device): a board whose only
     // sidecar content is break rules still grows its anchor.
     || break_rules.values().any(|rule| rule.board == board)
@@ -417,6 +425,16 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     // fail-closed in-window rows. No tombstone *derivation* exists for
     // either section (D-H7): a deleted habit leaves a tombstoned row
     // the overlay emits directly, and log rows are never deleted.
+    // The habit-time-entries section is board-level too (#1305 D-6):
+    // in-window rows whose habit belongs to this board, no tombstone
+    // derivation (no delete verb exists — the habit-log posture).
+    let overlay_habit_time = habit_time_entries_for(
+        &ctx.habits.time_log,
+        &ctx.habits.habits,
+        ctx.board,
+        ctx.read_at,
+        ctx.author,
+    );
     let overlay_habits = habits_for(&ctx.habits.habits, ctx.board, ctx.author);
     let overlay_log = habit_log_for(
         &ctx.habits.habits,
@@ -466,6 +484,7 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
             habits: (!overlay_habits.is_empty()).then_some(overlay_habits),
             habit_log: (!overlay_log.is_empty()).then_some(overlay_log),
             break_rules: (!overlay_break_rules.is_empty()).then_some(overlay_break_rules),
+            habit_time_entries: (!overlay_habit_time.is_empty()).then_some(overlay_habit_time),
             unknown: BTreeMap::new(),
         },
         unknown: BTreeMap::new(),
@@ -479,6 +498,9 @@ pub(crate) async fn run_flush(ctx: FlushCtx<'_>) -> FlushVerdict {
     // The habit-log wire GC beside the time-entries one (D-H14):
     // document-side compaction only — the local database never drops.
     let merged = lane_gc_old_habit_log(&merged, ctx.today);
+    // The habit-time-entries wire GC beside the others (#1305 D-6):
+    // document-side compaction only — the local database never drops.
+    let merged = lane_gc_old_habit_time_entries(&merged, ctx.read_at);
     let present_cards: BTreeSet<String> = ctx
         .snapshot
         .tasks
@@ -1640,6 +1662,104 @@ mod habit_gate_tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &fresh_log,
+            &BTreeMap::new(),
+            today,
+            now,
+            board,
+            false
+        ));
+    }
+
+    #[test]
+    fn a_habit_time_only_board_fires_the_habit_time_clause() {
+        let empty_tasks: BTreeMap<TaskId, Task> = BTreeMap::new();
+        let empty_stacks: BTreeMap<taskboard_domain::StackId, Stack> = BTreeMap::new();
+        let tables = EntityTables {
+            tasks: &empty_tasks,
+            stacks: &empty_stacks,
+            labels: empty_labels(),
+            boards: empty_boards(),
+        };
+        let board = BoardId::from(uuid::Uuid::from_u128(1));
+        let now = ts(1_700_000_000);
+        let today = chrono::NaiveDate::from_ymd_opt(2023, 11, 14).unwrap();
+        let habit = |raw: u128, title: &str| taskboard_domain::Habit {
+            id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(raw)),
+            board,
+            title: title.to_owned(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(3).unwrap(),
+            ),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: taskboard_domain::HabitClocks::all(now),
+            continued_from: None,
+            deleted: true,
+            by: None,
+            paused_until: None,
+        };
+        // A tombstoned definition with NO other sidecar content and one
+        // in-window time entry: the habit-time clause fires alone
+        // (history outlives the tombstone, D-4).
+        let h = habit(10, "water");
+        let entry = taskboard_domain::habit_time::HabitTimeEntry {
+            id: taskboard_domain::ids::HabitTimeEntryId::from(uuid::Uuid::from_u128(20)),
+            habit: h.id,
+            habit_title: "water".into(),
+            start: ts(1_699_000_000),
+            end: Some(ts(1_699_000_600)),
+            created_at: ts(1_699_000_000),
+            updated_at: ts(1_699_000_600),
+            by: None,
+        };
+        let mut habits = taskboard_domain::HabitState::default();
+        habits.habits.insert(h.id, h);
+        habits.time_log.insert(entry.id, entry);
+        assert!(has_flush_work(
+            None,
+            &AppDataSections::default(),
+            &AppDataEvidence::Absent,
+            tables,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &habits,
+            &BTreeMap::new(),
+            today,
+            now,
+            board,
+            false
+        ));
+        // An aged entry does not hold the anchor up (the window agrees
+        // with the gate).
+        let dead = habit(11, "stale");
+        let aged_start = now
+            - chrono::TimeDelta::try_days(taskboard_domain::TRACKING_SYNC_RETENTION_DAYS).unwrap()
+            - chrono::TimeDelta::try_seconds(1).unwrap();
+        let aged = taskboard_domain::habit_time::HabitTimeEntry {
+            id: taskboard_domain::ids::HabitTimeEntryId::from(uuid::Uuid::from_u128(21)),
+            habit: dead.id,
+            habit_title: "stale".into(),
+            start: aged_start,
+            end: Some(aged_start + chrono::TimeDelta::try_seconds(60).unwrap()),
+            created_at: aged_start,
+            updated_at: aged_start,
+            by: None,
+        };
+        let mut aged_only = taskboard_domain::HabitState::default();
+        aged_only.habits.insert(dead.id, dead);
+        aged_only.time_log.insert(aged.id, aged);
+        assert!(!has_flush_work(
+            None,
+            &AppDataSections::default(),
+            &AppDataEvidence::Absent,
+            tables,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &aged_only,
             &BTreeMap::new(),
             today,
             now,

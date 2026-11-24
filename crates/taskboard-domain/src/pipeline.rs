@@ -1024,6 +1024,9 @@ pub fn apply_sync_report(
         // habits carry no card hop at all.
         folds.fold_habits(document.sections.habits.as_ref(), board_id);
         folds.fold_habit_log(document.sections.habit_log.as_ref());
+        // The habit-time-entries fold (#1305 D-6): board-level, right
+        // after the habit-log fold — no card map needed.
+        folds.fold_habit_time_entries(document.sections.habit_time_entries.as_ref());
         // The break folds are board-level too (#588 D-11/D-10, §5b's
         // order — after the habit folds): rules first (LWW against the
         // local rows, the fold stamps the locally-bound board), then
@@ -1567,6 +1570,27 @@ impl<'a> SectionFolds<'a> {
         }
     }
 
+    /// The board-level habit-time-entries fold (#1305 D-6, the
+    /// time-entries fold's shape; no card hop — no resolution map).
+    fn fold_habit_time_entries(
+        &mut self,
+        rows: Option<&std::collections::BTreeMap<String, crate::appdata::HabitTimeRecord>>,
+    ) {
+        let Some(rows) = rows else { return };
+        let habits = self
+            .folded_habits
+            .get_or_insert_with(|| self.current.habits.clone());
+        let changes = crate::merge::fold_habit_time_entries(habits, rows);
+        for entry in changes.upserts {
+            self.habit_actions
+                .push(PersistenceAction::UpsertHabitTimeEntry(entry));
+        }
+        for entry_id in changes.deletes {
+            self.habit_actions
+                .push(PersistenceAction::DeleteHabitTimeEntry(entry_id));
+        }
+    }
+
     /// The board-level break-rules fold (LWW against the local rows).
     fn fold_break_rules(
         &mut self,
@@ -1971,6 +1995,9 @@ pub fn apply_files_board_snapshot(
         }
         folds.fold_habits(document.sections.habits.as_ref(), board_id);
         folds.fold_habit_log(document.sections.habit_log.as_ref());
+        // The habit-time-entries fold (#1305 D-6): board-level, right
+        // after the habit-log fold — no card map needed.
+        folds.fold_habit_time_entries(document.sections.habit_time_entries.as_ref());
         folds.fold_break_rules(document.sections.break_rules.as_ref(), board_id);
         folds.fold_break_dismissals(
             document
@@ -2771,6 +2798,7 @@ mod tests {
                 time_entries: None,
                 habits: None,
                 habit_log: None,
+                habit_time_entries: None,
                 break_rules: None,
                 unknown: std::collections::BTreeMap::new(),
             },

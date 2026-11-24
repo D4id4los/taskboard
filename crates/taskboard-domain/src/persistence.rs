@@ -499,6 +499,9 @@ pub enum PersistenceAction {
     /// the `UpsertTimeEntry` twin; the open entry IS the running
     /// timer, persisted like any other row).
     UpsertHabitTimeEntry(crate::habit_time::HabitTimeEntry),
+    /// Remove a habit time entry (a strictly newer peer tombstone's
+    /// fold consequence, #1305 D-6; no local verb produces it).
+    DeleteHabitTimeEntry(crate::ids::HabitTimeEntryId),
     /// Insert or replace a habit (entity upsert discipline — replace by
     /// id; the tombstone rides the row).
     UpsertHabit(crate::habit::Habit),
@@ -664,6 +667,9 @@ pub fn apply_actions(state: &mut PersistedState, actions: &[PersistenceAction]) 
             }
             PersistenceAction::UpsertHabitTimeEntry(entry) => {
                 state.habits.time_log.insert(entry.id, entry.clone());
+            }
+            PersistenceAction::DeleteHabitTimeEntry(id) => {
+                state.habits.time_log.remove(id);
             }
             PersistenceAction::DeleteTimeEntry(id) => {
                 state.tracking.entries.remove(id);

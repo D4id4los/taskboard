@@ -125,6 +125,19 @@ pub struct AppDataSections {
         skip_serializing_if = "Option::is_none"
     )]
     pub break_rules: Option<BTreeMap<String, BreakRuleEntry>>,
+    /// Board-level habit time entries (#1305, journey plan D-6), keyed
+    /// by the entry UUID string — the `time-entries` lane's structure,
+    /// habit-keyed (no card hop at all). Like `time_entries`/`habits`,
+    /// the keys are not card ids: history outlives any card and any
+    /// tombstoned habit, so `prune_absent_cards` must never see the
+    /// section. Additive: documents without the key decode unchanged
+    /// (the default-absent law).
+    #[serde(
+        rename = "habit-time-entries",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub habit_time_entries: Option<BTreeMap<String, HabitTimeRecord>>,
     /// Unknown sections: carried verbatim.
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown: BTreeMap<String, Value>,
@@ -1602,6 +1615,19 @@ pub fn union(base: &AppDataDocument, overlay: &AppDataDocument) -> AppDataDocume
             (None, Some(o)) => Some(o.clone()),
             (None, None) => None,
         },
+        habit_time_entries: match (
+            &base.sections.habit_time_entries,
+            &overlay.sections.habit_time_entries,
+        ) {
+            (Some(b), Some(o)) => {
+                let mut merged = b.clone();
+                union_habit_time_entries(&mut merged, o);
+                Some(merged)
+            }
+            (Some(b), None) => Some(b.clone()),
+            (None, Some(o)) => Some(o.clone()),
+            (None, None) => None,
+        },
         habit_log: match (&base.sections.habit_log, &overlay.sections.habit_log) {
             (Some(b), Some(o)) => {
                 let mut merged = b.clone();
@@ -1791,6 +1817,32 @@ fn union_habit_log(
             None => Some(overlay_row.clone()),
             Some(base_row) => match (base_row, overlay_row) {
                 (HabitLogRecord::Verbatim(_), _) | (_, HabitLogRecord::Verbatim(_)) => None,
+                (b, o) => match (b.clock(), o.clock()) {
+                    (Some(bc), Some(oc)) if bc > oc => None,
+                    _ => Some(o.clone()),
+                },
+            },
+        };
+        if let Some(winner) = winner {
+            base.insert(key.clone(), winner);
+        }
+    }
+}
+
+/// Per-row LWW on the row clock over the `habit-time-entries` section
+/// (#1305 D-6): the [`union_time_entries`] flavor — equal clocks
+/// resolve to the overlay (the flush's just-stamped local writes must
+/// win the pull-side tie). Verbatim shapes are never ordered against
+/// and never displaced.
+fn union_habit_time_entries(
+    base: &mut BTreeMap<String, HabitTimeRecord>,
+    overlay: &BTreeMap<String, HabitTimeRecord>,
+) {
+    for (key, overlay_row) in overlay {
+        let winner = match base.get(key) {
+            None => Some(overlay_row.clone()),
+            Some(base_row) => match (base_row, overlay_row) {
+                (HabitTimeRecord::Verbatim(_), _) | (_, HabitTimeRecord::Verbatim(_)) => None,
                 (b, o) => match (b.clock(), o.clock()) {
                     (Some(bc), Some(oc)) if bc > oc => None,
                     _ => Some(o.clone()),
@@ -2276,6 +2328,236 @@ pub fn lane_gc_old_time_entries(document: &AppDataDocument, now: DateTime<Utc>) 
             })
             .collect();
         gc.sections.time_entries = (!kept.is_empty()).then_some(kept);
+    }
+    gc
+}
+
+/// One synced habit time entry's document shape, or a deletion
+/// tombstone, or a shape this version does not model (preserved
+/// verbatim, never folded — the `TimeEntryRecord` pattern). Board-level
+/// section keyed by the entry UUID (#1305 D-6); `habit` is the habit
+/// UUID string (no card hop — habits carry none).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HabitTimeRecord {
+    /// `{ "habit": "<uuid>", "title": str, "start": rfc3339,
+    /// "end": rfc3339|null, "created": rfc3339, "clock": rfc3339 }`.
+    /// A present-but-unparseable field demotes the whole row to
+    /// [`HabitTimeRecord::Verbatim`] (never a silent downgrade).
+    Entry {
+        /// The tracked habit's UUID string.
+        habit: String,
+        /// The habit's title, snapshotted at start (D-4).
+        title: String,
+        start: DateTime<Utc>,
+        end: Option<DateTime<Utc>>,
+        created: DateTime<Utc>,
+        /// The row's LWW mutation clock.
+        clock: DateTime<Utc>,
+        /// The row's author (F1's `by` leg): default-absent.
+        by: Option<crate::ids::AuthorId>,
+    },
+    /// `{ "deleted": true, "clock": rfc3339 }` — a global delete. No
+    /// producer exists this slice (no delete verb); the arm exists so a
+    /// future producer's rows fold honestly instead of demoting to
+    /// `Verbatim`.
+    Tombstone {
+        clock: DateTime<Utc>,
+        by: Option<crate::ids::AuthorId>,
+    },
+    /// A shape this version does not model: preserved verbatim.
+    Verbatim(Value),
+}
+
+impl HabitTimeRecord {
+    /// The row's write clock; `None` for verbatim content (which the
+    /// union therefore never orders against a clocked row).
+    #[must_use]
+    pub fn clock(&self) -> Option<DateTime<Utc>> {
+        match self {
+            Self::Entry { clock, .. } | Self::Tombstone { clock, .. } => Some(*clock),
+            Self::Verbatim(_) => None,
+        }
+    }
+
+    /// Decodes one habit-time row; an unmodelable shape stays
+    /// `Verbatim` with the original value (never an error). Span
+    /// validity is **not** a decode input — synced rows fold as-is
+    /// (the §6 skew ruling); the read-side projections clamp.
+    fn deserialize_verbatim(raw: Value) -> Self {
+        let Value::Object(map) = &raw else {
+            return Self::Verbatim(raw);
+        };
+        if map.get("deleted") == Some(&Value::Bool(true)) {
+            if let (Ok(clock), Ok(by)) =
+                (serde_json::from_value(map["clock"].clone()), decode_by(map))
+            {
+                return Self::Tombstone { clock, by };
+            }
+            return Self::Verbatim(raw);
+        }
+        let habit = match map.get("habit") {
+            Some(Value::String(text)) => Some(text.clone()),
+            _ => None, // absent or not a string: unmodelable
+        };
+        let end = match map.get("end") {
+            None | Some(Value::Null) => Some(None),
+            Some(value) => serde_json::from_value(value.clone()).ok().map(Some),
+        };
+        if let (Some(habit), Some(end), Ok(title), Ok(start), Ok(created), Ok(clock), Ok(by)) = (
+            habit,
+            end,
+            serde_json::from_value(map.get("title").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("start").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("created").cloned().unwrap_or(Value::Null)),
+            serde_json::from_value(map.get("clock").cloned().unwrap_or(Value::Null)),
+            decode_by(map),
+        ) {
+            return Self::Entry {
+                habit,
+                title,
+                start,
+                end,
+                created,
+                clock,
+                by,
+            };
+        }
+        Self::Verbatim(raw)
+    }
+}
+
+impl<'de> Deserialize<'de> for HabitTimeRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The tolerant boundary: any shape this version does not model
+        // decodes as `Verbatim`, never a document failure.
+        Ok(Self::deserialize_verbatim(Value::deserialize(
+            deserializer,
+        )?))
+    }
+}
+
+impl Serialize for HabitTimeRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Entry {
+                habit,
+                title,
+                start,
+                end,
+                created,
+                clock,
+                by,
+            } => {
+                let mut map = serde_json::Map::new();
+                map.insert("habit".to_owned(), Value::String(habit.clone()));
+                map.insert("title".to_owned(), Value::String(title.clone()));
+                map.insert(
+                    "start".to_owned(),
+                    serde_json::to_value(start).map_err(serde::ser::Error::custom)?,
+                );
+                map.insert(
+                    "end".to_owned(),
+                    serde_json::to_value(end).map_err(serde::ser::Error::custom)?,
+                );
+                map.insert(
+                    "created".to_owned(),
+                    serde_json::to_value(created).map_err(serde::ser::Error::custom)?,
+                );
+                map.insert(
+                    "clock".to_owned(),
+                    serde_json::to_value(clock).map_err(serde::ser::Error::custom)?,
+                );
+                if let Some(by) = by {
+                    map.insert(
+                        "by".to_owned(),
+                        serde_json::to_value(by).map_err(serde::ser::Error::custom)?,
+                    );
+                }
+                Value::Object(map).serialize(serializer)
+            }
+            Self::Tombstone { clock, by } => {
+                let mut map = serde_json::Map::new();
+                map.insert("deleted".to_owned(), Value::Bool(true));
+                map.insert(
+                    "clock".to_owned(),
+                    serde_json::to_value(clock).map_err(serde::ser::Error::custom)?,
+                );
+                if let Some(by) = by {
+                    map.insert(
+                        "by".to_owned(),
+                        serde_json::to_value(by).map_err(serde::ser::Error::custom)?,
+                    );
+                }
+                Value::Object(map).serialize(serializer)
+            }
+            Self::Verbatim(raw) => raw.serialize(serializer),
+        }
+    }
+}
+
+/// Builds the flush overlay's `habit-time-entries` section from the
+/// local habit state (#1305 D-6): every in-window entry whose habit —
+/// live or tombstoned — belongs to `board` (history outlives
+/// tombstones, D-4; the tombstoned row's board stays known from the
+/// habits map). The retention window and open-entry rule are the
+/// `time_entries_for_lane` verbatim: `start` bounds emission, open
+/// entries get no exemption.
+#[must_use]
+pub fn habit_time_entries_for(
+    entries: &BTreeMap<crate::ids::HabitTimeEntryId, crate::habit_time::HabitTimeEntry>,
+    habits: &BTreeMap<crate::ids::HabitId, crate::habit::Habit>,
+    board: crate::ids::BoardId,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+) -> BTreeMap<String, HabitTimeRecord> {
+    let window_start = time_entry_window_start(now);
+    entries
+        .iter()
+        .filter_map(|(id, entry)| {
+            if entry.start < window_start {
+                return None; // aged: never re-emitted (the D-T13 rule)
+            }
+            let habit = habits.get(&entry.habit)?;
+            if habit.board != board {
+                return None; // another board's document
+            }
+            Some((
+                id.as_uuid().to_string(),
+                HabitTimeRecord::Entry {
+                    habit: entry.habit.as_uuid().to_string(),
+                    title: entry.habit_title.clone(),
+                    start: entry.start,
+                    end: entry.end,
+                    created: entry.created_at,
+                    clock: entry.updated_at,
+                    by: entry.by.or(author),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// The flush's habit-time-entries lane GC (#1305 D-6, the
+/// [`lane_gc_old_time_entries`] shape): strips section rows whose
+/// window instant falls out of the retention window. **Wire-only**:
+/// nothing here deletes a local row.
+#[must_use]
+pub fn lane_gc_old_habit_time_entries(
+    document: &AppDataDocument,
+    now: DateTime<Utc>,
+) -> AppDataDocument {
+    let mut gc = document.clone();
+    if let Some(section) = gc.sections.habit_time_entries.take() {
+        let window_start = time_entry_window_start(now);
+        let kept: BTreeMap<String, HabitTimeRecord> = section
+            .into_iter()
+            .filter(|(_, row)| match row {
+                HabitTimeRecord::Entry { start, .. } => *start >= window_start,
+                HabitTimeRecord::Tombstone { clock, .. } => *clock >= window_start,
+                HabitTimeRecord::Verbatim(_) => true,
+            })
+            .collect();
+        gc.sections.habit_time_entries = (!kept.is_empty()).then_some(kept);
     }
     gc
 }
@@ -6427,6 +6709,173 @@ mod author_by_tests {
             state.log.get(&key).map(|e| e.count),
             Some(4),
             "the authored equal-clock row outranks the relayed authorless one"
+        );
+    }
+    // ---- The habit-time-entries lane (#1305 D-6) --------------------------
+
+    fn habit_time_entry_fixture(
+        raw: u128,
+        habit_raw: u128,
+        start: i64,
+        end: Option<i64>,
+    ) -> crate::habit_time::HabitTimeEntry {
+        crate::habit_time::HabitTimeEntry {
+            id: crate::ids::HabitTimeEntryId::from(uuid::Uuid::from_u128(raw)),
+            habit: crate::ids::HabitId::from(uuid::Uuid::from_u128(habit_raw)),
+            habit_title: "meditate".into(),
+            start: ts(start),
+            end: end.map(ts),
+            created_at: ts(100),
+            updated_at: ts(start + 60),
+            by: None,
+        }
+    }
+
+    #[test]
+    fn habit_time_record_serde_roundtrips_and_tolerates_unknown_shapes() {
+        let row = HabitTimeRecord::Entry {
+            habit: "00000000-0000-0000-0000-000000000009".into(),
+            title: "meditate".into(),
+            start: ts(1_000),
+            end: None,
+            created: ts(900),
+            clock: ts(2_000),
+            by: None,
+        };
+        let json = serde_json::to_string(&row).unwrap();
+        let back: HabitTimeRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, row);
+        // A garbage shape demotes to Verbatim, never a document failure.
+        let verbatim: HabitTimeRecord = serde_json::from_value(serde_json::json!(1)).unwrap();
+        assert!(matches!(verbatim, HabitTimeRecord::Verbatim(_)));
+        // An entry missing the habit key is unmodelable.
+        let no_habit: HabitTimeRecord = serde_json::from_value(serde_json::json!({
+            "title": "x", "start": ts(1_000), "end": null,
+            "created": ts(900), "clock": ts(2_000)
+        }))
+        .unwrap();
+        assert!(matches!(no_habit, HabitTimeRecord::Verbatim(_)));
+    }
+
+    #[test]
+    fn old_document_without_habit_time_entries_decodes_unchanged() {
+        let old = serde_json::json!({
+            "format": APPDATA_FORMAT,
+            "board": 77_u64,
+            "sections": {
+                "tasks": { "412": { "fields": {} } },
+            },
+        });
+        let doc: AppDataDocument = serde_json::from_value(old).unwrap();
+        assert!(doc.sections.habit_time_entries.is_none());
+        // The section's absence is not a decode failure — the additive
+        // default-absent law.
+        assert!(doc.sections.tasks.is_some());
+    }
+
+    #[test]
+    fn habit_time_entries_builder_scopes_the_board_and_the_retention_window() {
+        let board = crate::ids::BoardId::from(uuid::Uuid::from_u128(1));
+        let foreign = crate::ids::BoardId::from(uuid::Uuid::from_u128(2));
+        let habit = crate::habit::Habit {
+            id: crate::ids::HabitId::from(uuid::Uuid::from_u128(9)),
+            board,
+            title: "water".into(),
+            description: String::new(),
+            target: crate::habit::HabitTarget::PerDay(crate::habit::NonZeroCount::new(1).unwrap()),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: crate::habit::HabitClocks::all(ts(1)),
+            continued_from: None,
+            deleted: false,
+            by: None,
+            paused_until: None,
+        };
+        let habits = BTreeMap::from([(habit.id, habit)]);
+        let now = ts(10_000_000);
+        let fresh = habit_time_entry_fixture(1, 9, 9_000_000, Some(9_000_600));
+        let open = habit_time_entry_fixture(2, 9, 9_500_000, None);
+        let foreign_habit = habit_time_entry_fixture(3, 99, 9_600_000, None);
+        let aged_start =
+            now - chrono::TimeDelta::try_days(TRACKING_SYNC_RETENTION_DAYS + 1).unwrap();
+        let aged = habit_time_entry_fixture(4, 9, aged_start.timestamp(), Some(0));
+        let entries = BTreeMap::from([
+            (fresh.id, fresh.clone()),
+            (open.id, open.clone()),
+            (foreign_habit.id, foreign_habit),
+            (aged.id, aged),
+        ]);
+        let section = habit_time_entries_for(&entries, &habits, board, now, None);
+        assert_eq!(section.len(), 2, "the fresh and the open rows emit");
+        assert!(section.contains_key(&fresh.id.as_uuid().to_string()));
+        assert!(section.contains_key(&open.id.as_uuid().to_string()));
+        let _ = foreign; // foreign board never emits (the habit lookup misses)
+    }
+
+    #[test]
+    fn habit_time_entries_lane_gc_strips_aged_rows_and_keeps_verbatim() {
+        let now = ts(10_000_000);
+        let fresh = HabitTimeRecord::Entry {
+            habit: "00000000-0000-0000-0000-000000000009".into(),
+            title: "x".into(),
+            start: ts(9_900_000),
+            end: None,
+            created: ts(9_900_000),
+            clock: ts(9_900_000),
+            by: None,
+        };
+        // 180 days ≈ 15.55 Ms, so an aged start sits far before
+        // `now − retention`.
+        let aged = HabitTimeRecord::Entry {
+            habit: "00000000-0000-0000-0000-000000000009".into(),
+            title: "x".into(),
+            start: ts(-6_000_000),
+            end: Some(ts(-5_999_000)),
+            created: ts(-6_000_000),
+            clock: ts(-5_999_000),
+            by: None,
+        };
+        let verbatim = HabitTimeRecord::Verbatim(serde_json::json!({"future": true}));
+        let doc = AppDataDocument {
+            format: APPDATA_FORMAT,
+            board: crate::ids::RemoteBoardId::deck(7),
+            sections: AppDataSections {
+                habit_time_entries: Some(BTreeMap::from([
+                    ("a".to_owned(), fresh),
+                    ("b".to_owned(), aged),
+                    ("c".to_owned(), verbatim),
+                ])),
+                ..AppDataSections::default()
+            },
+            unknown: BTreeMap::new(),
+        };
+        let gc = lane_gc_old_habit_time_entries(&doc, now);
+        let kept = gc.sections.habit_time_entries.as_ref().unwrap();
+        assert_eq!(kept.len(), 2, "the aged row dropped, verbatim kept");
+        assert!(kept.contains_key("a") && kept.contains_key("c"));
+        // Aged tombstones drop by their clock.
+        let tomb = HabitTimeRecord::Tombstone {
+            clock: ts(-6_000_000),
+            by: None,
+        };
+        let doc = AppDataDocument {
+            sections: AppDataSections {
+                habit_time_entries: Some(BTreeMap::from([("t".to_owned(), tomb)])),
+                ..doc.sections
+            },
+            ..doc
+        };
+        let gc = lane_gc_old_habit_time_entries(&doc, now);
+        assert!(
+            gc.sections.habit_time_entries.is_none()
+                || gc
+                    .sections
+                    .habit_time_entries
+                    .as_ref()
+                    .is_none_or(|s| !s.contains_key("t"))
         );
     }
 }

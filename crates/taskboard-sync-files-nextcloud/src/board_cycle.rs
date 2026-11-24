@@ -1715,6 +1715,11 @@ fn sections_document(
         } else {
             Some(break_rules)
         },
+        // The files connector folds no habit-time lane this slice
+        // (#1305 D-6 scopes the lane to the Deck sidecar; the
+        // unknown-section relay keeps files payloads honest — the
+        // section simply never emits here).
+        habit_time_entries: None,
         unknown: BTreeMap::new(),
     };
     taskboard_domain::appdata::AppDataDocument {

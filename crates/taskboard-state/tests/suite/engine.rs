@@ -2768,6 +2768,7 @@ async fn folded_synced_dismissal_withdraws_the_toast() {
                 .into(),
             ),
             unknown: std::collections::BTreeMap::new(),
+            habit_time_entries: None,
         },
         unknown: std::collections::BTreeMap::new(),
     }));
@@ -3734,6 +3735,7 @@ async fn break_rules_and_reserved_entry_fold_into_engine_state() {
             reminder_rules: None,
             time_entries: None,
             unknown: std::collections::BTreeMap::new(),
+            habit_time_entries: None,
         },
         unknown: std::collections::BTreeMap::new(),
     }));
