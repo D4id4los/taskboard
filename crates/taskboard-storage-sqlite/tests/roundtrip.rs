@@ -3477,3 +3477,66 @@ async fn pre_0027_habit_rows_decode_with_additive_defaults() {
     let loaded = db.repo().load().await.expect("reload");
     assert_eq!(loaded.habits.habits.get(&post.id), Some(&post));
 }
+
+/// The decode choke point normalizes a zero-duration snooze to the mint
+/// default (#1271): a payload carrying `Hours(0)` decodes to
+/// `Hours(1)` — garbage-in floor, typed outcome, no prose. The
+/// co-fields (base, offset, time) survive verbatim.
+#[tokio::test]
+async fn the_zero_duration_snooze_normalizes_to_the_mint_default_on_decode() {
+    use taskboard_domain::habit::{HabitSnooze, NudgeBase};
+    use taskboard_domain::persistence::PersistenceAction;
+
+    let mut db = common::FileDb::new().await;
+    let board = board(72);
+    db.repo()
+        .apply(vec![PersistenceAction::UpsertBoard(board.clone())])
+        .await
+        .expect("seed board");
+    let habit = taskboard_domain::Habit {
+        id: taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(0x73)),
+        board: board.id,
+        title: "degenerate snooze".into(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerWeek(
+            taskboard_domain::NonZeroCount::new(3).unwrap(),
+        ),
+        order: 1,
+        anchor_time: None,
+        anchor_day: None,
+        scheduled_days: None,
+        reminder: Some(taskboard_domain::habit::HabitReminderOverride {
+            base: NudgeBase::PeriodStart,
+            offset_days: -1,
+            time: Some(chrono::NaiveTime::from_hms_opt(21, 0, 0).unwrap()),
+            snooze: HabitSnooze::Hours(0),
+        }),
+        clocks: taskboard_domain::HabitClocks::all(
+            chrono::TimeZone::timestamp_opt(&chrono::Utc, 1_000, 0).unwrap(),
+        ),
+        continued_from: None,
+        deleted: false,
+        by: None,
+        paused_until: None,
+    };
+    db.repo()
+        .apply(vec![PersistenceAction::UpsertHabit(habit)])
+        .await
+        .expect("seed habit");
+    db.reopen().await;
+    let loaded = db.repo().load().await.expect("reload");
+    let id = taskboard_domain::ids::HabitId::from(uuid::Uuid::from_u128(0x73));
+    let habit = loaded.habits.habits.get(&id).expect("the habit loads");
+    let ovr = habit.reminder.expect("the override loads");
+    assert!(
+        matches!(ovr.snooze, HabitSnooze::Hours(1)),
+        "the degenerate zero-duration snooze decodes as the mint default"
+    );
+    assert_eq!(ovr.base, NudgeBase::PeriodStart, "the base survives");
+    assert_eq!(ovr.offset_days, -1, "the offset survives");
+    assert_eq!(
+        ovr.time,
+        Some(chrono::NaiveTime::from_hms_opt(21, 0, 0).unwrap()),
+        "the time survives"
+    );
+}

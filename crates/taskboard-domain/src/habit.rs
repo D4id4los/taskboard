@@ -265,7 +265,10 @@ impl HabitSnooze {
     /// (persisted-state / journal decode) keeps the raw variant
     /// construction — decode is not a rule decision boundary, and
     /// journals minted before this law may legitimately carry a zero
-    /// snooze; decode must not refuse to load history.
+    /// snooze; decode must not refuse to load history. The one stored
+    /// grammar exception: the sqlite decode normalizes a decoded
+    /// zero-duration snooze to `Hours(1)` (#1271) — the degenerate
+    /// value makes the snooze chain a silent no-op.
     #[must_use]
     pub fn hours(n: u8) -> Option<Self> {
         (n > 0).then_some(Self::Hours(n))

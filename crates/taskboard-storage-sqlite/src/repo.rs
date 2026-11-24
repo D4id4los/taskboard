@@ -852,6 +852,31 @@ struct HabitRow {
     au_by: Option<String>,
 }
 
+/// The reminder payload's strict serde decode with the #1271
+/// normalize-on-decode law applied: a zero-duration snooze is degenerate
+/// (the snooze chain walk moves the occurrence by zero) and unmintable
+/// today, but rows minted before the #1211 law may still carry one.
+/// Rewriting here — post-serde, pre-use, the single sqlite decode choke
+/// point — converges the stored grammar lazily to the mint default
+/// without a schema migration or a second codec.
+fn decode_reminder(
+    row: Option<&str>,
+) -> Result<Option<taskboard_domain::habit::HabitReminderOverride>, RepositoryError> {
+    let Some(text) = row else {
+        return Ok(None);
+    };
+    let mut ovr: taskboard_domain::habit::HabitReminderOverride = serde_json::from_str(text)
+        .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))?;
+    ovr.snooze = match ovr.snooze {
+        taskboard_domain::habit::HabitSnooze::Hours(0)
+        | taskboard_domain::habit::HabitSnooze::Days(0) => {
+            taskboard_domain::habit::HabitSnooze::Hours(1)
+        }
+        other => other,
+    };
+    Ok(Some(ovr))
+}
+
 fn decode_habit(
     row: &HabitRow,
 ) -> Result<(taskboard_domain::ids::HabitId, taskboard_domain::Habit), RepositoryError> {
@@ -900,14 +925,7 @@ fn decode_habit(
             Some(set)
         }
     };
-    let reminder = match &row.reminder {
-        None => None,
-        Some(text) => {
-            let ovr: taskboard_domain::habit::HabitReminderOverride = serde_json::from_str(text)
-                .map_err(|_| corrupt(DecodeStage::Payload, DecodeReason::SerdePayload))?;
-            Some(ovr)
-        }
-    };
+    let reminder = decode_reminder(row.reminder.as_deref())?;
     let clocks = taskboard_domain::HabitClocks {
         title: decode::clock(&row.ck_title)?,
         description: decode::clock(&row.ck_description)?,
