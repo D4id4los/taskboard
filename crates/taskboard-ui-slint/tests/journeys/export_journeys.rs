@@ -698,3 +698,31 @@ fn us1_s1_the_kiosk_gate_keeps_every_entry_point_absent() {
 /// journeys mount the shared fixture; kept for the docs' shape).
 #[allow(dead_code)]
 fn unused_state(_: &AppState) {}
+
+/// #1190: the presentation labels' table is structurally pinned to
+/// the canonical refusal kinds — one non-empty label per typed kind,
+/// no drift between the two tables. The label text itself is
+/// presentation and never asserted (round law (a): the journeys keep
+/// asserting the refusal index).
+#[test]
+fn refusal_labels_table_matches_the_canonical_kinds() {
+    let (_fx, state) = fixture::golden_state();
+    support::harness::run_journey_no_escape(state, move |harness| {
+        let labels = harness
+            .handle
+            .window()
+            .global::<taskboard_ui_slint::ExportRefusalLabels>()
+            .get_kinds();
+        assert_eq!(
+            labels.row_count(),
+            taskboard_ui_slint::requests::REFUSAL_KINDS.len(),
+            "the labels table drifts from the canonical refusal kinds"
+        );
+        for i in 0..labels.row_count() {
+            assert!(
+                !labels.row_data(i).expect("row").is_empty(),
+                "refusal kind {i} carries no label"
+            );
+        }
+    });
+}

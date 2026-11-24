@@ -21,7 +21,10 @@ import {
 import { SearchPalette, PaletteRowModel } from "compositions/search-palette.slint";
 import { CaptureOverlay } from "compositions/capture-overlay.slint";
 import { RecurEditor, RecurEditorModel } from "compositions/recur-editor.slint";
-import { ExportDialog, ExportDialogModel } from "compositions/export-dialog.slint";
+import { ExportDialog, ExportDialogModel, ExportRefusalLabels } from "compositions/export-dialog.slint";
+// Re-export the labels' global (#1190): the journey corpus's
+// structural pin reads the table over the compiled module.
+export { ExportRefusalLabels }
 import { ReviewWalkOverlay, ReviewWalkModel } from "views/review-walk-overlay.slint";
 import { HabitHistoryView, HabitHistoryModel } from "views/habit-history-view.slint";
 import { FocusOverlay, FocusRowModel } from "compositions/focus-overlay.slint";
