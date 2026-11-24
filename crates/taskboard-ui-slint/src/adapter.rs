@@ -7897,6 +7897,11 @@ impl Adapter {
         if self.kiosk {
             for id in [
                 ActionId::HabitLog,
+                // The tracking toggle greys with the rest (journey plan
+                // W-2, #1305 — the greyed-affordance law: reading a menu
+                // is passive; the control's own gate is habits.slint's
+                // editing-enabled binding).
+                ActionId::HabitTrackToggle,
                 // The HF1 trio greys with the rest (R-3: visible-
                 // disabled, never withheld).
                 ActionId::HabitSkip,
