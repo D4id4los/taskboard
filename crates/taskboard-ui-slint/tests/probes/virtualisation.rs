@@ -337,6 +337,8 @@ use taskboard_ui_slint::actions::ActionId;
 use taskboard_ui_slint::{UiHandle, UiSettings, mount};
 
 use bench_support::build_state;
+use taskboard_ui_slint::View;
+use taskboard_ui_slint::actions::ActionId as A;
 
 fn dummy_receiver() -> tokio::sync::broadcast::Receiver<taskboard_domain::EngineSignal> {
     let (_tx, rx) = tokio::sync::broadcast::channel(4);
@@ -2007,6 +2009,171 @@ fn a_stale_hint_decays_after_remount() {
                 "the stale hint must not misfire the remounted page, \
                  got y={}",
                 position.y
+            );
+        },
+    );
+}
+
+// -- A5a S-pins: the no-gap surfaces and the typed inerts (#1302) ----
+
+/// S-5 (no-gap pin, compact leg): the switcher-level landing swaps
+/// the whole visible column — after a `StackNext`, the newly selected
+/// stack's head card renders and is fully visible (the column swap IS
+/// the seek; there is no inner scroll to fight). Structural: element
+/// visibility inside the window bounds.
+#[test]
+fn compact_switcher_landing_shows_the_selected_column() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let (handle, _engine) = mount_board(driver, 1000, 1000, 600);
+            // Stack 1's head task (task i lives on stack i % 4).
+            let next_stack_head = bench_label(1);
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::StackNext);
+
+            driver.advance_time(0);
+
+            let card = driver
+                .find_by_label(&next_stack_head)
+                .unwrap_or_else(|| panic!("the switcher landing swaps to the next stack"));
+            fully_visible(&card, 1000, 600, "the newly selected stack's head card");
+        },
+    );
+}
+
+/// S-6 (unregression guard pin, stack detail): the existing
+/// `(target-a = −1, row)` seek survives the seam — the jump to the
+/// reading order's last card makes the far off-viewport stack-detail
+/// row live and fully visible. Guard, not new behavior.
+#[test]
+fn stack_detail_seek_unregressed() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let (handle, _engine) = mount_board(driver, 1000, 1000, 900);
+            // Board -> StackDetail (the view cycle's next leg).
+            handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavNextView);
+            driver.advance_time(0);
+            // The stack detail walk shares the reading-order domain:
+            // enter at the head row, then walk 100 rows down — deep
+            // past the viewport (task i lives on stack i % 4, so the
+            // reading order's row 100 is stack 0's task 400).
+            let last = bench_label(400);
+            assert!(
+                driver.find_by_label(&last).is_none(),
+                "the deep stack detail row starts off-viewport"
+            );
+            for _ in 0..100 {
+                handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusDown);
+            }
+            driver.advance_time(0);
+
+            let card = driver
+                .find_by_label(&last)
+                .unwrap_or_else(|| panic!("the seek made the stack detail's last row live"));
+            fully_visible(&card, 1000, 900, "the focused stack detail card");
+        },
+    );
+}
+
+/// S-7 (typed inerts stay inerts): on every inert surface (task
+/// detail, review, settings, plan-next-day, status) the focus jumps
+/// arm no hint — the `FocusScrollHint` nonce stays exactly where it
+/// was (typed outcome on the globals, no offset reads). Board and
+/// stack detail remain the counter-check: a landing there DOES
+/// advance the nonce (the suite's other pins).
+#[test]
+fn inert_surfaces_arm_no_hint() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let (handle, _engine) = mount_board(driver, 1000, 1000, 900);
+            let nonce = || {
+                handle
+                    .window()
+                    .global::<taskboard_ui_slint::FocusScrollHint>()
+                    .get_nonce()
+            };
+            let view = || handle.window().get_current_view();
+
+            // A subject: the walk's entry lands on the first card, so
+            // the view cycle can reach the task detail.
+            handle.dispatch_action(A::NavFocusDown);
+            driver.advance_time(0);
+            handle.dispatch_action(A::NavNextView);
+            driver.advance_time(0);
+            handle.dispatch_action(A::NavNextView);
+            driver.advance_time(0);
+            assert_eq!(view(), View::TaskDetail, "the cycle reaches the detail");
+
+            // The detail: the jumps are the retired no-op — the nonce
+            // holds.
+            let before = nonce();
+            handle.dispatch_action(A::NavFirstItem);
+            driver.advance_time(0);
+            handle.dispatch_action(A::NavLastItem);
+            driver.advance_time(0);
+            assert_eq!(nonce(), before, "the task detail arms nothing");
+
+            // Settings (toggle open, jump, toggle closed).
+            handle.dispatch_action(A::AppSettings);
+            driver.advance_time(0);
+            assert_eq!(view(), View::Settings, "settings opens");
+            handle.dispatch_action(A::NavFirstItem);
+            driver.advance_time(0);
+            handle.dispatch_action(A::NavLastItem);
+            driver.advance_time(0);
+            assert_eq!(nonce(), before, "settings arms nothing");
+            handle.dispatch_action(A::AppSettings);
+            driver.advance_time(0);
+
+            // Plan next day (toggle open, jump, toggle closed).
+            handle.dispatch_action(A::ViewPlanNextDay);
+            driver.advance_time(0);
+            assert_eq!(view(), View::PlanNextDay, "the planner opens");
+            handle.dispatch_action(A::NavFirstItem);
+            driver.advance_time(0);
+            handle.dispatch_action(A::NavLastItem);
+            driver.advance_time(0);
+            assert_eq!(nonce(), before, "the planner arms nothing");
+            handle.dispatch_action(A::ViewPlanNextDay);
+            driver.advance_time(0);
+
+            // Status (toggle open, jump, toggle closed).
+            handle.dispatch_action(A::StatusPanelOpen);
+            driver.advance_time(0);
+            assert_eq!(view(), View::Status, "the status panel opens");
+            handle.dispatch_action(A::NavFirstItem);
+            driver.advance_time(0);
+            handle.dispatch_action(A::NavLastItem);
+            driver.advance_time(0);
+            assert_eq!(nonce(), before, "the status panel arms nothing");
+            handle.dispatch_action(A::StatusPanelOpen);
+            driver.advance_time(0);
+
+            // Review (via the view cycle; jumps inert).
+            for _ in 0..8 {
+                handle.dispatch_action(A::NavNextView);
+                driver.advance_time(0);
+                if view() == View::Review {
+                    break;
+                }
+            }
+            assert_eq!(view(), View::Review, "the cycle reaches the review");
+            handle.dispatch_action(A::NavFirstItem);
+            driver.advance_time(0);
+            handle.dispatch_action(A::NavLastItem);
+            driver.advance_time(0);
+            assert_eq!(
+                nonce(),
+                before,
+                "no inert surface arms the hint (the typed inerts hold)"
             );
         },
     );
