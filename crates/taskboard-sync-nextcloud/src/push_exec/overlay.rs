@@ -46,6 +46,23 @@ impl BindingOverlay {
         }
     }
 
+    /// The standalone orphan drain's overlay (the zero-board cycle,
+    /// #1256): no cycle board exists, and every orphan group either
+    /// completes synthetically (its entity row is wiped, so the planner
+    /// materializes a no-op — no overlay lookup) or addresses the wire
+    /// by its own Deck-tagged ref (a ref-delete). No lookup can hit,
+    /// and the board scope is never consulted — it carries an
+    /// unaddressable placeholder purely to satisfy the constructor.
+    #[must_use]
+    pub fn orphan_drain() -> Self {
+        Self {
+            board: RemoteBoardId::files(uuid::Uuid::nil()),
+            stack_by_local: HashMap::new(),
+            task_by_local: HashMap::new(),
+            label_by_local: HashMap::new(),
+        }
+    }
+
     /// The board every push is addressed to (the cycle's pull target).
     #[must_use]
     pub const fn board(&self) -> RemoteBoardId {
