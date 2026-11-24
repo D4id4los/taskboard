@@ -23570,4 +23570,60 @@ fn the_menu_reorder_rows_mint_the_gap_index_slots() {
     });
 }
 
+// ---- #1311: the habit menu's hint chain — the opener installs the
+// Today-prefixed chain, so every habit row's hint carries its preset
+// chord (the projection tier's per-row parity rides the menu.rs pin).
+
+/// #1311 (the opener pin) — the mounted habit context menu's rows
+/// carry hints: every `habit.*` row's `hint` equals the keymap's
+/// `first_binding_display` over the Today-prefixed chain. Red
+/// pre-fix: the opener installed the task menus' `[Board, Global]`
+/// chain, while every habit verb is Today-bound — every hint
+/// projected empty.
+#[test]
+fn the_habit_menu_rows_hint_their_today_chords() {
+    let (_fx, mut state) = fixture::golden_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        harness
+            .handle
+            .window()
+            .invoke_habits_context_requested(0, 120.0, 120.0);
+        harness.driver.advance_time(0);
+        assert!(keyboard(&*harness).get_menu_open());
+        let entries = keyboard(&*harness).get_menu_entries();
+        let keymap = UiSettings::default().keymap;
+        let chain = [ContextId::Today, ContextId::Board, ContextId::Global].to_vec();
+        let mut habit_rows = 0;
+        let mut hinted_rows = 0;
+        for i in 0..entries.row_count() {
+            let row = entries.row_data(i).expect("row");
+            let Some(id) = ActionId::from_id(row.action.as_str()) else {
+                continue;
+            };
+            let expected = keymap.first_binding_display(id, &chain).unwrap_or_default();
+            let hint: Vec<String> = row.hint.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                hint, expected,
+                "{id:?}'s mounted row hints exactly its preset binding"
+            );
+            if row.action.starts_with("habit.") {
+                habit_rows += 1;
+                // The staged remove/restore rows are deliberately
+                // unbound (the parity note) — the count below is the
+                // "Today-bound verbs hint" oracle.
+                hinted_rows += usize::from(!hint.is_empty());
+            }
+        }
+        assert!(habit_rows > 0, "the habit page mounts habit verbs");
+        assert!(
+            hinted_rows > 0,
+            "the Today-bound habit verbs hint their chords"
+        );
+    });
+}
+
 // ---- J3 US-1/US-2: the directional-focus journeys (round 9 chunk 9) —
