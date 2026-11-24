@@ -155,7 +155,7 @@ impl EtagStore {
                 }
                 match (self.read_heartbeats.get(device), heartbeats.get(device)) {
                     (Some(mark), Some(stamp)) => {
-                        *stamp > *mark + chrono::Duration::seconds(SKEW_BAND_SECS)
+                        *stamp > *mark + taskboard_domain::time::delta_seconds(SKEW_BAND_SECS)
                     }
                     _ => false,
                 }
@@ -245,7 +245,10 @@ mod tests {
         assert_eq!(store.dirty_devices(&stamps), vec![peer]);
         // Within the band the stamp is unordered (second-granular
         // representation loss + clock skew), not newer: clean.
-        let stamps = BTreeMap::from([(peer, read_at + chrono::Duration::seconds(SKEW_BAND_SECS))]);
+        let stamps = BTreeMap::from([(
+            peer,
+            read_at + taskboard_domain::time::delta_seconds(SKEW_BAND_SECS),
+        )]);
         assert!(store.dirty_devices(&stamps).is_empty(), "clean");
         // A stamp at or before the mark: clean (quiet peer).
         let stamps = BTreeMap::from([(peer, read_at)]);
