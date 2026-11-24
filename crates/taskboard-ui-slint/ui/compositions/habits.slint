@@ -28,6 +28,7 @@ import { SectionHeader } from "../widgets/section-header.slint";
 import { TextButton, TextButtonEmphasis } from "../widgets/text-button.slint";
 import { AnchorMirror } from "../widgets/anchored-overlay.slint";
 import { HabitPauseFacts, HabitQuotaFacts } from "../menu-facts.slint";
+import { TooltipState } from "../widgets/tooltip.slint";
 
 // One tracker row on the card substrate (H2 D2): the card slots are
 // the model derivation's (models::habit_card); the strip facts ride
@@ -167,6 +168,27 @@ export component HabitsSection inherits Rectangle {
     // business data until the seam converts it). Index order
     // `[PerDay, PerWeek, PerMonth]`.
     in-out property <int> target-index: 0;
+
+    // The deleted-habits restore section (#1290 enumeration + #1245
+    // bulk restore; the undo-family journey plan US-2's amendment —
+    // the roster enumerates in the labels-overlay section shape, one
+    // row per tombstoned habit, each arming the same armed-confirm
+    // grammar, plus one restore-all row behind its own confirm). Ids
+    // stay adapter-side — the index resolves against the published
+    // roster's row order; kiosk pushes empty rows (the affordances
+    // render absent — the CLI carries the kiosk restore path, D-4).
+    // slint: habit-restore-requested / habit-restore-cancelled /
+    // habit-restore-all-requested / habit-restore-all-cancelled
+    // (adapter: habit_restore_requested / habit_restore_cancelled /
+    // habit_restore_all_requested / habit_restore_all_cancelled)
+    in property <[string]> deleted-rows;
+    in property <bool> has-deleted: false;
+    in property <int> restore-armed-index: -1;
+    in property <bool> restore-all-armed: false;
+    callback habit-restore-requested(int);
+    callback habit-restore-cancelled();
+    callback habit-restore-all-requested();
+    callback habit-restore-all-cancelled();
 
     background: transparent;
     accessible-role: AccessibleRole.region;
@@ -466,6 +488,137 @@ export component HabitsSection inherits Rectangle {
             height: 2px * Theme.base-scale;
             background: Semantic.sync-active;
             border-radius: Theme.radius-small;
+        }
+
+        // The deleted-habits restore section (#1290/#1245): mounted
+        // only when the roster is non-empty (no dead chrome); the
+        // armed strip names the subject and the consequence (the
+        // D-2 grammar — the labels-overlay section's exact shape).
+        if (root.has-deleted): VerticalLayout {
+            spacing: Theme.space-1;
+            RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: "Deleted habits";
+            }
+            if (root.restore-armed-index >= 0): Rectangle {
+                height: Theme.space-5 + Theme.space-2;
+                border-radius: Theme.radius-small;
+                background: Theme.surface-hover;
+                border-width: Theme.focus-ring-width;
+                border-color: Semantic.focus-ring;
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-1;
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Restores “" + root.deleted-rows[root.restore-armed-index] + "” — it comes back verbatim and its log is untouched.";
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.success;
+                        label: "Confirm restore";
+                        description: "Restores the armed habit.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.habit-restore-requested(root.restore-armed-index);
+                        }
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Cancel restore";
+                        description: "Disarms the restore without dispatching.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.habit-restore-cancelled();
+                        }
+                    }
+                }
+            }
+            if (root.restore-all-armed): Rectangle {
+                height: Theme.space-5 + Theme.space-2;
+                border-radius: Theme.radius-small;
+                background: Theme.surface-hover;
+                border-width: Theme.focus-ring-width;
+                border-color: Semantic.focus-ring;
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-1;
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Restores all " + root.deleted-rows.length + " deleted habits — each comes back verbatim.";
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.success;
+                        label: "Confirm restore all";
+                        description: "Restores every deleted habit.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.habit-restore-all-requested();
+                        }
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Cancel restore all";
+                        description: "Disarms the bulk restore without dispatching.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.habit-restore-all-cancelled();
+                        }
+                    }
+                }
+            }
+            for row[index] in root.deleted-rows: Rectangle {
+                height: Theme.space-5;
+                border-radius: Theme.radius-small;
+                background: deleted-touch.has-hover ? Theme.surface-hover : Theme.surface;
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-1;
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text: row;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    if (root.restore-armed-index != index): IconButton {
+                        icon: IconKind.history;
+                        tone: Tone.neutral;
+                        label: "Restore habit " + row;
+                        description: "Arms the restore: the habit comes back verbatim.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.habit-restore-requested(index);
+                        }
+                    }
+                }
+                deleted-touch := TouchArea {}
+            }
+            // The bulk row (#1245, N2's answer): last in the section,
+            // its own armed confirm — the same ceremony grammar, never
+            // a click-through.
+            if (root.restore-armed-index < 0 && !root.restore-all-armed): TextButton {
+                label: "Restore all deleted habits";
+                clicked => {
+                    TooltipState.unhover();
+                    root.habit-restore-all-requested();
+                }
+            }
         }
     }
 }

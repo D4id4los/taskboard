@@ -397,6 +397,12 @@ export component AppWindow inherits Window {
     // per pass (the create-open twin).
     in-out property <bool> habits-pause-open: false;
     in-out property <bool> habits-pause-mountable: false;
+    // The deleted-habits restore section (#1290/#1245): the roster
+    // rows, armed mirrors, and seams — pushed per pass, verbatim.
+    in-out property <[string]> habits-deleted-rows;
+    in-out property <bool> habits-has-deleted: false;
+    in-out property <int> habits-restore-armed-index: -1;
+    in-out property <bool> habits-restore-all-armed: false;
     in-out property <FieldValidity> habits-quota-validity: FieldValidity.neutral;
     in-out property <string> habits-quota-error-hint: "";
     in-out property <int> timers-awaiting: 0;
@@ -764,6 +770,14 @@ export component AppWindow inherits Window {
                 habits-create-confirmed(t, q, i) => root.habits-create-confirmed(t, q, i);
                 habits-create-cancelled() => root.habits-create-cancelled();
                 habits-create-quota-edited(s) => root.habits-create-quota-edited(s);
+                habits-deleted-rows: root.habits-deleted-rows;
+                habits-has-deleted: root.habits-has-deleted;
+                habits-restore-armed-index: root.habits-restore-armed-index;
+                habits-restore-all-armed: root.habits-restore-all-armed;
+                habits-habit-restore-requested(r) => root.habits-habit-restore-requested(r);
+                habits-habit-restore-cancelled() => root.habits-habit-restore-cancelled();
+                habits-habit-restore-all-requested() => root.habits-habit-restore-all-requested();
+                habits-habit-restore-all-cancelled() => root.habits-habit-restore-all-cancelled();
                 tracked-activated(i) => root.today-tracked-activated(i);
                 review-card-visible: root.review-card-visible;
                 review-card-title: root.review-card-title;
@@ -1420,8 +1434,11 @@ export component AppWindow inherits Window {
                 has-deleted: root.label-overlay-has-deleted;
                 deleted-rows: root.label-overlay-deleted-rows;
                 restore-armed-index: root.label-overlay-restore-armed-index;
+                restore-all-armed: root.label-overlay-restore-all-armed;
                 label-restore-requested(index) => root.label-restore-requested(index);
                 label-restore-cancelled() => root.label-restore-cancelled();
+                label-restore-all-requested() => root.label-restore-all-requested();
+                label-restore-all-cancelled() => root.label-restore-all-cancelled();
                 }
             }
             // The roster-only board mount (tag-color plan D-4, US-2):
@@ -1471,8 +1488,11 @@ export component AppWindow inherits Window {
                 has-deleted: root.label-overlay-has-deleted;
                 deleted-rows: root.label-overlay-deleted-rows;
                 restore-armed-index: root.label-overlay-restore-armed-index;
+                restore-all-armed: root.label-overlay-restore-all-armed;
                 label-restore-requested(index) => root.label-restore-requested(index);
                 label-restore-cancelled() => root.label-restore-cancelled();
+                label-restore-all-requested() => root.label-restore-all-requested();
+                label-restore-all-cancelled() => root.label-restore-all-cancelled();
                 }
             }
 
@@ -2641,6 +2661,13 @@ export component AppWindow inherits Window {
     pure callback habits-create-confirmed(string, string, int) -> bool;
     pure callback habits-create-cancelled();
     pure callback habits-create-quota-edited(string);
+    // The deleted-habits restore section's seams (#1290/#1245): the
+    // index resolves against the published roster's row order (the
+    // labels-overlay restore seam's exact grammar).
+    pure callback habits-habit-restore-requested(int);
+    pure callback habits-habit-restore-cancelled();
+    pure callback habits-habit-restore-all-requested();
+    pure callback habits-habit-restore-all-cancelled();
     // The task view's recur row (issue #506): pause open/editor +
     // resume + the conversion's arm/confirm/cancel.
     // The recur editor's window-level seams (round-7 D-7.1): the
@@ -2742,8 +2769,11 @@ export component AppWindow inherits Window {
     in property <bool> label-overlay-has-deleted;
     in property <[string]> label-overlay-deleted-rows;
     in property <int> label-overlay-restore-armed-index;
+    in property <bool> label-overlay-restore-all-armed: false;
     pure callback label-restore-requested(int);
     pure callback label-restore-cancelled();
+    pure callback label-restore-all-requested();
+    pure callback label-restore-all-cancelled();
     in property <bool> track-has-deleted;
     in property <[string]> track-deleted-rows;
     in property <int> track-restore-armed-index;

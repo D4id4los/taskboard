@@ -18,10 +18,8 @@ use support::driver::JourneyDriver as _;
 use support::fixture;
 use support::harness::Harness;
 
-use slint::ComponentHandle as _;
 use slint::Model as _;
 use taskboard_domain::StateCommand;
-use taskboard_ui_slint::KeyboardState;
 use taskboard_ui_slint::View;
 use taskboard_ui_slint::actions::ActionId;
 
@@ -126,19 +124,6 @@ fn open_detail_first_card(harness: &mut Harness) {
         View::TaskDetail,
         "the detail is open"
     );
-}
-
-/// The menu rows' action addresses (the typed row source — labels are
-/// addresses, not text oracles).
-fn menu_actions(harness: &Harness) -> Vec<String> {
-    let entries = harness
-        .handle
-        .window()
-        .global::<KeyboardState>()
-        .get_menu_entries();
-    (0..entries.row_count())
-        .map(|i| entries.row_data(i).expect("row").action.to_string())
-        .collect()
 }
 
 // ---- US-1: restore a deleted label from the labels overlay (W-2) ----
@@ -289,72 +274,134 @@ fn us1_s4_escape_disarms_without_dispatch() {
     });
 }
 
-// ---- US-2: restore a deleted habit from the habits context menu (W-3) ----
-
-/// US-2/S1 (W-3, AC-1): the context menu carries the restore row (the
-/// roster-addressed trio, pre-remove in the page order) when the
-/// roster is non-empty; the empty roster renders the menu unchanged.
+/// US-1/S5 (#1245): the labels overlay's bulk row — the armed confirm
+/// dispatches one `RestoreLabel` per board-scoped roster row; the arm
+/// alone dispatches nothing.
 #[test]
-fn us2_s1_context_menu_carries_restore_row() {
+fn us1_s5_restore_all_dispatches_one_command_per_row() {
     let (_fx, mut state) = fixture::golden_state();
-    let (live, _gone) = seed_habits(&mut state);
-    let _ = live;
+    let buried = seed_tombstoned_label(&mut state);
     support::harness::run_journey(state, move |harness| {
-        harness.driver.advance_time(0);
+        open_detail_first_card(harness);
         let window = harness.handle.window();
-        window.invoke_habits_context_requested(0, 120.0, 120.0);
+        window.invoke_labels_manage_asked();
         harness.driver.advance_time(0);
-        let actions = menu_actions(harness);
+        window.invoke_label_restore_all_requested();
+        harness.driver.advance_time(0);
         assert!(
-            actions.iter().any(|a| a == "habit.restore"),
-            "the restore row joined the menu: {actions:?}"
+            harness.engine.drain().is_empty(),
+            "the bulk arm stages; the confirm dispatches"
         );
+        assert!(
+            window.get_label_overlay_restore_all_armed(),
+            "the bulk strip mounted"
+        );
+        window.invoke_label_restore_all_requested();
+        harness.driver.advance_time(0);
+        harness.assert_commands(&[StateCommand::RestoreLabel { id: buried }]);
     });
 }
 
-/// US-2/S2 (W-5): the arm stages INSIDE the menu (the confirm row
-/// flips enabled, the confirm's routing id is armed) — nothing
-/// dispatches.
+// ---- US-2: restore a deleted habit from the deleted-habits section
+// (#1290's enumeration amendment: the roster enumerates in the
+// labels-overlay section shape; the newest-only context-menu arm
+// retired with it) ----
+
+/// Seeds a second tombstoned habit (the enumeration pin's tail: the
+/// older tombstone the retired menu arm could never reach).
+fn seed_second_tombstoned_habit(
+    state: &mut taskboard_domain::AppState,
+) -> taskboard_domain::HabitId {
+    let board = *state.boards.keys().next().expect("fixture board");
+    let now = chrono::Utc::now();
+    let id = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+    state.habits.habits.insert(
+        id,
+        taskboard_domain::habit::Habit {
+            id,
+            board,
+            title: "older-tombstone".into(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                taskboard_domain::NonZeroCount::new(2).unwrap(),
+            ),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: taskboard_domain::habit::HabitClocks::all(now),
+            continued_from: None,
+            deleted: true,
+            by: None,
+            paused_until: None,
+        },
+    );
+    // The roster is id-ordered (the derive's BTreeMap order); the
+    // second tombstone lands after the seed's.
+    state
+        .roster
+        .tombstoned_habits
+        .push(taskboard_domain::RestoreRow {
+            id,
+            name: "older-tombstone".into(),
+        });
+    state
+        .roster
+        .tombstoned_habits
+        .sort_by_key(|row| row.id.as_uuid());
+    id
+}
+
+/// US-2/S1 (AC-1): the section lists every tombstoned habit with its
+/// name — the enumeration pin (#1290): with TWO tombstones, both rows
+/// are reachable (the retired arm reached the newest only).
 #[test]
-fn us2_s2_habit_restore_arm_mounts_the_strip() {
+fn us2_s1_deleted_section_enumerates_the_roster() {
     let (_fx, mut state) = fixture::golden_state();
     let (_live, _gone) = seed_habits(&mut state);
+    let older = seed_second_tombstoned_habit(&mut state);
     support::harness::run_journey(state, move |harness| {
         harness.driver.advance_time(0);
         let window = harness.handle.window();
-        window.invoke_habits_context_requested(0, 120.0, 120.0);
-        harness.handle.dispatch_action(ActionId::HabitRestore);
+        let rows = window.get_habits_deleted_rows();
+        assert_eq!(
+            rows.row_count(),
+            2,
+            "the section enumerates the whole roster, not the newest only"
+        );
+        // The armed strip's index resolution reaches the OLDER row
+        // (the defect's typed pin: the retired arm could address only
+        // the roster head).
+        window.invoke_habits_habit_restore_requested(1);
         harness.driver.advance_time(0);
         assert!(
             harness.engine.drain().is_empty(),
             "the arm stages; the confirm dispatches"
         );
-        // The confirm row joined the re-projected page (armed-only).
-        let actions = menu_actions(harness);
-        assert!(
-            actions.iter().any(|a| a == "habit.restore-confirm"),
-            "the armed confirm row renders: {actions:?}"
-        );
+        window.invoke_habits_habit_restore_requested(1);
+        harness.driver.advance_time(0);
+        harness.assert_commands(&[StateCommand::RestoreHabit { id: older }]);
     });
 }
 
-/// US-2/S3 (W-3, AC-2): the confirm dispatches the exact
+/// US-2/S2 (AC-2): the confirm dispatches the exact
 /// `RestoreHabit { id }`; the settle flips the tombstone (the log is
-/// never touched — the fake's continuity arm reads/writes only the
-/// deleted flag); the roster drains (the confirm row leaves the
-/// re-projected menu).
+/// never touched — D26).
 #[test]
-fn us2_s3_restore_habit_dispatches_log_untouched() {
+fn us2_s2_restore_habit_dispatches_log_untouched() {
     let (_fx, mut state) = fixture::golden_state();
     let (_live, gone) = seed_habits(&mut state);
     support::harness::run_journey(state, move |harness| {
         harness.driver.advance_time(0);
         let window = harness.handle.window();
-        window.invoke_habits_context_requested(0, 120.0, 120.0);
-        harness.handle.dispatch_action(ActionId::HabitRestore);
-        harness
-            .handle
-            .dispatch_action(ActionId::HabitRestoreConfirm);
+        window.invoke_habits_habit_restore_requested(0);
+        harness.driver.advance_time(0);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the arm stages; the confirm dispatches"
+        );
+        window.invoke_habits_habit_restore_requested(0);
         harness.driver.advance_time(0);
         harness.assert_commands(&[StateCommand::RestoreHabit { id: gone }]);
         harness.engine.settle(&harness.handle);
@@ -369,28 +416,73 @@ fn us2_s3_restore_habit_dispatches_log_untouched() {
     });
 }
 
-/// US-2/S4 (W-5, AC-3): the cancel step disarms INSIDE the open menu —
-/// nothing dispatched, the confirm row leaves the re-projected page.
+/// US-2/S3 (AC-3): the cancel step disarms — nothing dispatched, the
+/// strip leaves (the armed index falls back to -1).
 #[test]
-fn us2_s4_escape_disarms_without_dispatch() {
+fn us2_s3_escape_disarms_without_dispatch() {
     let (_fx, mut state) = fixture::golden_state();
     let (_live, _gone) = seed_habits(&mut state);
     support::harness::run_journey(state, move |harness| {
         harness.driver.advance_time(0);
         let window = harness.handle.window();
-        window.invoke_habits_context_requested(0, 120.0, 120.0);
-        harness.handle.dispatch_action(ActionId::HabitRestore);
-        harness.handle.dispatch_action(ActionId::HabitRestoreCancel);
+        window.invoke_habits_habit_restore_requested(0);
+        harness.driver.advance_time(0);
+        window.invoke_habits_habit_restore_cancelled();
         harness.driver.advance_time(0);
         assert!(harness.engine.drain().is_empty(), "nothing dispatched");
-        let actions = menu_actions(harness);
+        assert_eq!(
+            window.get_habits_restore_armed_index(),
+            -1,
+            "the escape rung disarmed"
+        );
+    });
+}
+
+/// US-2/S4 (#1245): the bulk row's armed confirm dispatches one
+/// `RestoreHabit` per roster row; the arm alone dispatches nothing.
+#[test]
+fn us2_s4_restore_all_dispatches_one_command_per_row() {
+    let (_fx, mut state) = fixture::golden_state();
+    let (_live, gone) = seed_habits(&mut state);
+    let older = seed_second_tombstoned_habit(&mut state);
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        window.invoke_habits_habit_restore_all_requested();
+        harness.driver.advance_time(0);
         assert!(
-            !actions.iter().any(|a| a == "habit.restore-cancel"),
-            "the armed-only cancel row left the re-projected page: {actions:?}"
+            harness.engine.drain().is_empty(),
+            "the bulk arm stages; the confirm dispatches"
         );
         assert!(
-            actions.iter().any(|a| a == "habit.restore"),
-            "the disarm re-armed nothing: the arm row stays for a re-pick"
+            window.get_habits_restore_all_armed(),
+            "the bulk strip mounted"
+        );
+        window.invoke_habits_habit_restore_all_requested();
+        harness.driver.advance_time(0);
+        harness.assert_commands(&[
+            StateCommand::RestoreHabit { id: gone },
+            StateCommand::RestoreHabit { id: older },
+        ]);
+    });
+}
+
+/// US-2/S5 (#1245): the bulk cancel disarms without dispatching.
+#[test]
+fn us2_s5_restore_all_cancel_disarms_without_dispatch() {
+    let (_fx, mut state) = fixture::golden_state();
+    let (_live, _gone) = seed_habits(&mut state);
+    support::harness::run_journey(state, move |harness| {
+        harness.driver.advance_time(0);
+        let window = harness.handle.window();
+        window.invoke_habits_habit_restore_all_requested();
+        harness.driver.advance_time(0);
+        window.invoke_habits_habit_restore_all_cancelled();
+        harness.driver.advance_time(0);
+        assert!(harness.engine.drain().is_empty(), "nothing dispatched");
+        assert!(
+            !window.get_habits_restore_all_armed(),
+            "the cancel disarmed the bulk strip"
         );
     });
 }

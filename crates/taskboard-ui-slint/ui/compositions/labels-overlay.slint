@@ -13,6 +13,7 @@ import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
+import { TextButton } from "../widgets/text-button.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
 
 // One roster row: display parts plus the subject's assignment state
@@ -89,6 +90,14 @@ export component LabelsPanel inherits Rectangle {
     in property <[string]> deleted-rows;
     in property <bool> has-deleted: false;
     in property <int> restore-armed-index: -1;
+    // The bulk row (#1245, N2's answer): one restore-all row behind
+    // its own armed confirm — the same ceremony grammar, never a
+    // click-through; dispatches one `RestoreLabel` per roster row.
+    // slint: label-restore-all-requested / label-restore-all-cancelled
+    // (adapter: label_restore_all_requested / label_restore_all_cancelled)
+    in property <bool> restore-all-armed: false;
+    callback label-restore-all-requested();
+    callback label-restore-all-cancelled();
     callback label-restore-requested(int);
     callback label-restore-cancelled();
 
@@ -436,6 +445,60 @@ export component LabelsPanel inherits Rectangle {
                         }
                     }
                     deleted-touch := TouchArea {}
+                }
+            }
+            // The bulk restore's armed strip (#1245): the consequence
+            // names the whole roster; Confirm dispatches one
+            // `RestoreLabel` per row (each rides the journal — the
+            // per-label undo steps stay honest).
+            if (!root.form-open && root.restore-all-armed): Rectangle {
+                height: Theme.space-5 + Theme.space-2;
+                border-radius: Theme.radius-small;
+                background: Theme.surface-hover;
+                border-width: Theme.focus-ring-width;
+                border-color: Semantic.focus-ring;
+                HorizontalLayout {
+                    padding-left: Theme.space-2;
+                    padding-right: Theme.space-1;
+                    spacing: Theme.space-2;
+                    RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Restores all " + root.deleted-rows.length + " deleted labels — each comes back verbatim.";
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                    IconButton {
+                        icon: IconKind.check;
+                        tone: Tone.success;
+                        label: "Confirm restore all";
+                        description: "Restores every deleted label.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.label-restore-all-requested();
+                        }
+                    }
+                    IconButton {
+                        icon: IconKind.remove;
+                        tone: Tone.neutral;
+                        label: "Cancel restore all";
+                        description: "Disarms the bulk restore without dispatching.";
+                        clicked => {
+                            TooltipState.unhover();
+                            root.label-restore-all-cancelled();
+                        }
+                    }
+                }
+            }
+            // The bulk row itself: last in the section; it hides
+            // while a per-row or bulk ceremony is armed (one strip at
+            // a time — the D-2 grammar's focus law).
+            if (!root.form-open && root.restore-armed-index < 0 && !root.restore-all-armed): TextButton {
+                label: "Restore all deleted labels";
+                clicked => {
+                    TooltipState.unhover();
+                    root.label-restore-all-requested();
                 }
             }
             if (!root.form-open): list := VerticalLayout {

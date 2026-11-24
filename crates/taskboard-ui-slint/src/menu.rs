@@ -462,11 +462,6 @@ pub const HABIT_CONTEXT: &[ActionId] = &[
     ActionId::HabitRemove,
     ActionId::HabitRemoveConfirm,
     ActionId::HabitRemoveCancel,
-    // The undo-family restore trio (W-3): the context menu's restore
-    // rows route the roster-addressed resurrections.
-    ActionId::HabitRestore,
-    ActionId::HabitRestoreConfirm,
-    ActionId::HabitRestoreCancel,
 ];
 
 /// The habit row context menu's page (H2 D4, US-2): the curated core
@@ -493,7 +488,6 @@ pub fn habit_context_page(
     chain: &[ContextId],
     subject: TaskMenuSubject,
     states: &std::collections::BTreeMap<ActionId, bool>,
-    restore: Option<&str>,
 ) -> Vec<MenuEntry> {
     let mut rows: Vec<(u16, usize, MenuEntry)> = Vec::new();
     for (index, entry) in chain_visible(chain) {
@@ -506,9 +500,6 @@ pub fn habit_context_page(
         if matches!(
             id,
             ActionId::HabitRemove | ActionId::HabitRemoveConfirm | ActionId::HabitRemoveCancel
-        ) || matches!(
-            id,
-            ActionId::HabitRestore | ActionId::HabitRestoreConfirm | ActionId::HabitRestoreCancel
         ) {
             continue;
         }
@@ -529,40 +520,6 @@ pub fn habit_context_page(
             hint: Vec::new(),
             submenu: Some(Submenu::Task(TaskMenuGroup::Convert)),
         });
-    }
-    // The undo-family restore's page rows (W-3): BEFORE the staged
-    // remove (BF-W-N2 — the destructive trio stays last). The arm row
-    // is bespoke so its label names the restorable habit (the roster's
-    // row is the contract — the UI renders, never synthesizes); the
-    // confirm flips with the arm; the cancel joins armed-only. Kiosk
-    // passes `restore: None` (D-4: the affordance renders absent, the
-    // CLI carries the kiosk restore path).
-    if restore.is_some() {
-        let armed = states
-            .get(&ActionId::HabitRestoreConfirm)
-            .copied()
-            .unwrap_or(false);
-        if let Some(entry) = REGISTRY
-            .iter()
-            .find(|entry| entry.id == ActionId::HabitRestore)
-        {
-            let mut projected = row(keymap, chain, states, entry);
-            // The registry label stays static (MenuEntry's &'static str
-            // law); the armed strip's consequence names the habit via
-            // the adapter's notice lane (the naming half is the stage-3
-            // walkthrough's Manual item).
-            projected.enabled = states.get(&ActionId::HabitRestore).copied().unwrap_or(true);
-            page.push(projected);
-        }
-        for id in [ActionId::HabitRestoreConfirm, ActionId::HabitRestoreCancel] {
-            if let Some(entry) = REGISTRY.iter().find(|entry| entry.id == id) {
-                let projected = row(keymap, chain, states, entry);
-                if id == ActionId::HabitRestoreCancel && !armed {
-                    continue; // the cancel step joins while armed only
-                }
-                page.push(projected);
-            }
-        }
     }
     // The staged remove's page rows (H4 D4, #944), destructive-last:
     // the arm, the confirm (greyed while unarmed — consequence-first,
@@ -1058,7 +1015,11 @@ mod tests {
         // (#1288 — the Status panel remediation trio + the export
         // dialog's preview/copy pair) landed their group-less
         // internal verbs while this branch was in flight; the census
-        // absorbs them, the guard's teeth are unchanged.
+        // absorbs them, the guard's teeth are unchanged. Dated
+        // retirement 2026-11-24: the D1i HabitRestore confirm trio
+        // left the registry — #1290's enumeration moved the restore
+        // rows into the deleted-habits section (direct seams, no
+        // ActionIds).
         const CENSUS: &[ActionId] = &[
             ActionId::AppExit,
             ActionId::AppUndo,
@@ -1096,9 +1057,6 @@ mod tests {
             ActionId::HabitReminderEdit,
             ActionId::HabitPauseCommit,
             ActionId::HabitRemoveCancel,
-            ActionId::HabitRestore,
-            ActionId::HabitRestoreConfirm,
-            ActionId::HabitRestoreCancel,
             ActionId::HabitMoveUp,
             ActionId::HabitMoveDown,
             ActionId::HabitConvertCancel,
@@ -2065,7 +2023,7 @@ mod tests {
             is_habit: true,
             ..TaskMenuSubject::default()
         };
-        let page = habit_context_page(&keymap, &chain, subject, &BTreeMap::new(), None);
+        let page = habit_context_page(&keymap, &chain, subject, &BTreeMap::new());
         // The core rows in the projection's rank order, then the one
         // parent row. The arm row renders between the repair and the
         // reorder pair (the task family's shared rank space); the set
@@ -2165,7 +2123,7 @@ mod tests {
             is_habit: true,
             ..TaskMenuSubject::default()
         };
-        let page = habit_context_page(&keymap, &chain, habit_subject, &BTreeMap::new(), None);
+        let page = habit_context_page(&keymap, &chain, habit_subject, &BTreeMap::new());
         assert!(
             page.iter()
                 .all(|e| e.action.is_none_or(|id| HABIT_CONTEXT.contains(&id))),
@@ -2206,7 +2164,7 @@ mod tests {
             is_habit: true,
             ..TaskMenuSubject::default()
         };
-        let page = habit_context_page(&keymap, &chain, subject, &BTreeMap::new(), None);
+        let page = habit_context_page(&keymap, &chain, subject, &BTreeMap::new());
         let today_bound = [
             ActionId::HabitLog,
             ActionId::HabitSkip,

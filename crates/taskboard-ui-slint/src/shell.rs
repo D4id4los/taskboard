@@ -142,7 +142,6 @@ impl KeymapShell {
             focused_stack: self.focused_stack,
             habit_create_draft: None,
             habit_pause_target: None,
-            habit_restore_target: None,
             habit_quota_draft: None,
             habit_move_up: None,
             habit_move_down: None,
@@ -384,8 +383,6 @@ impl KeymapShell {
             | UiEffect::HabitConvertCancel
             | UiEffect::HabitRemoveArm
             | UiEffect::HabitRemoveCancel
-            | UiEffect::HabitRestoreArm
-            | UiEffect::HabitRestoreCancel
             | UiEffect::HabitEdit
             | UiEffect::HabitHistoryOpen
             | UiEffect::HabitCreateToggle

@@ -186,6 +186,17 @@ export component TodayView inherits FocusScope {
     // editor's seams, and the row affordances — verbatim.
     in property <bool> habits-pause-open: false;
     in property <bool> habits-pause-mountable: false;
+    // The deleted-habits restore section's forwarding (#1290/#1245,
+    // the undo-family amendment): the roster rows and armed mirrors,
+    // verbatim (the labels-overlay forwarding's shape).
+    in property <[string]> habits-deleted-rows;
+    in property <bool> habits-has-deleted: false;
+    in property <int> habits-restore-armed-index: -1;
+    in property <bool> habits-restore-all-armed: false;
+    callback habits-habit-restore-requested(int);
+    callback habits-habit-restore-cancelled();
+    callback habits-habit-restore-all-requested();
+    callback habits-habit-restore-all-cancelled();
     in property <FieldValidity> habits-quota-validity;
     in property <string> habits-quota-error-hint;
     callback habits-skip-asked(int);
@@ -300,6 +311,7 @@ export component TodayView inherits FocusScope {
                 // habit gets made; kiosk and board-less days keep the
                 // old rows-only gate model-side).
                 if (root.habits.length > 0
+                    || root.habits-has-deleted
                     || root.habits-create-mountable
                     || root.habits-pause-mountable): HabitsSection {
                     vertical-stretch: 0;
@@ -327,6 +339,14 @@ export component TodayView inherits FocusScope {
                     create-confirmed(t, q, i) => root.habits-create-confirmed(t, q, i);
                     create-cancelled() => root.habits-create-cancelled();
                     create-quota-edited(s) => root.habits-create-quota-edited(s);
+                    deleted-rows: root.habits-deleted-rows;
+                    has-deleted: root.habits-has-deleted;
+                    restore-armed-index: root.habits-restore-armed-index;
+                    restore-all-armed: root.habits-restore-all-armed;
+                    habit-restore-requested(r) => root.habits-habit-restore-requested(r);
+                    habit-restore-cancelled() => root.habits-habit-restore-cancelled();
+                    habit-restore-all-requested() => root.habits-habit-restore-all-requested();
+                    habit-restore-all-cancelled() => root.habits-habit-restore-all-cancelled();
                 }
                 // The surfacing card (DR-7 D-J10): the header slot,
                 // above the sections — outside every `ListView` (the
