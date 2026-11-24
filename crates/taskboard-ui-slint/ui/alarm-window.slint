@@ -10,8 +10,26 @@
 // shape (an alarm anchor has no task: no Done, no Mute). The command
 // targets are Rust-side (index-keyed, the notification surface's
 // convention); the buttons dispatch the existing engine commands.
+//
+// Geometry is content-sized (#1308 W-1): no fixed width, no height
+// formula — the VerticalLayout hugs its rows and the row's
+// `min-width` floor keeps the title elide legible. The keyboard
+// surface's layout mass is zero (`vertical-stretch: 0`, `height: 0`)
+// so it cannot absorb leftover height while remaining the
+// mount-focus keyboard surface (a zero-size focusable element still
+// receives keys while focused). The layout-severing max-width cap
+// (W-5, #1251) sits at the window root so no bounded row can bound
+// the OS window's max size. The top strip is the drag handle (W-2,
+// US-2): pointer drag dispatches the window-local `drag-by` deltas
+// to the Rust-side position applier — under Wayland the press hands
+// the gesture to the compositor instead (`xdg_toplevel.move` via
+// winit's `drag_window()`, journey R-2 as amended 2026-11-24). The
+// window mounts its own `TooltipPanel` (W-3, US-3): the verb
+// `IconButton`s already raise the shared `TooltipState`; the hover
+// text renders here, not only in the main window.
 
 import { Theme } from "theme.slint";
+import { TooltipState, TooltipPanel } from "widgets/tooltip.slint";
 import { IconButton, IconKind } from "widgets/icon-button.slint";
 import { ListRow } from "widgets/list-row.slint";
 
@@ -24,8 +42,12 @@ export component AlarmWindow inherits Window {
     no-frame: true;
     always-on-top: true;
     title: "taskboard — alarm";
-    width: Theme.space-15 * 4; // ~384 px at scale 1: the alarm card's fixed width
-    height: rows.length * Theme.space-8 + Theme.space-8;
+    // W-1 (#1308): content-sized — the layout decides, the rows hug.
+    // W-5 (#1251): the layout-severing cap severs the root's layout
+    // merge so a bounded-max row can never bound the OS window's max
+    // size (the 1276151a per-view pattern; the probe twin is
+    // `alarm_window_max_probe`).
+    max-width: Theme.layout-severing-max-width;
     background: Theme.background;
 
     in-out property <[AlarmRowModel]> rows;
@@ -38,6 +60,23 @@ export component AlarmWindow inherits Window {
     callback cancel(int);
     // The Escape arm: the window-local close, committing nothing.
     callback escape-requested();
+    // The drag strip's window-local seams (W-2, US-2/S1–S2):
+    // `drag-start` arms the Rust-side applier on the strip press
+    // (the platform arm is decided there — compositor-driven
+    // interactive move under Wayland, the delta accumulator
+    // elsewhere); `drag-by` carries the strip's incremental pointer
+    // deltas. No engine state rides either (window-manager-side
+    // only).
+    // slint: drag-start
+    callback drag-start();
+    // slint: drag-by
+    callback drag-by(length, length);
+    // The W-4 probe seam (the typed root mirror, the #1023 law): the
+    // selected row's realized width — written by the row itself from
+    // its own geometry (the same row-local source that paints the
+    // ring). The pre-redesign defect (a window-sized ring Rectangle
+    // inside every row) cannot produce this mirror.
+    out property <length> selected-row-width: 0;
 
     function select(delta: int) {
         if (delta < 0 && root.selected-row > 0) {
@@ -55,16 +94,50 @@ export component AlarmWindow inherits Window {
         padding-bottom: Theme.space-2;
         spacing: Theme.space-1;
 
+        // The drag strip (W-2, US-2/S1): the grab handle spanning
+        // the window's top edge. A click without drag is a no-op
+        // (the strip is not a verb button); the incremental deltas
+        // flow through `drag-by`, re-anchored per move event.
+        drag-strip := Rectangle {
+            height: Theme.space-2;
+            border-radius: Theme.radius-small;
+            background: strip-ta.pressed ? Theme.surface : transparent;
+
+            property <length> last-x;
+            property <length> last-y;
+
+            strip-ta := TouchArea {
+                mouse-cursor: self.pressed ? MouseCursor.grabbing : MouseCursor.grab;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        drag-strip.last-x = self.mouse-x;
+                        drag-strip.last-y = self.mouse-y;
+                        root.drag-start();
+                    }
+                }
+                moved => {
+                    root.drag-by(self.mouse-x - drag-strip.last-x, self.mouse-y - drag-strip.last-y);
+                    drag-strip.last-x = self.mouse-x;
+                    drag-strip.last-y = self.mouse-y;
+                }
+            }
+        }
+
         // The keyboard surface (T-22, #805): the window-local grammar
         // — Up/Down walk the selection, d/s/c fire the three verbs
         // over the selected row (the same callbacks the buttons
         // invoke: click ≡ key), Escape closes committing nothing. The
         // preset-bound `AlarmWindow` ids carry the same grammar in the
         // keymap registry (the contract suite's totality oracle); the
-        // window holds slint focus at mount.
+        // window holds slint focus at mount. Re-homed (W-1, #1308):
+        // zero layout mass — `vertical-stretch: 0` plus the explicit
+        // `height: 0` binding — so the scope stops absorbing leftover
+        // height (a zero-size focusable element still receives keys
+        // while focused).
         FocusScope {
             horizontal-stretch: 1;
-            vertical-stretch: 1;
+            vertical-stretch: 0;
+            height: 0;
             init => { self.focus(); }
             key-pressed(e) => {
                 if (e.text == Key.UpArrow) {
@@ -96,17 +169,27 @@ export component AlarmWindow inherits Window {
 
             row-info := ListRow {
                 horizontal-stretch: 1;
+                // The W-1 elide floor: the title never collapses
+                // below the legible card-title width for long names.
+                min-width: Theme.card-title-min-width;
                 text: row.title;
                 meta: row.phrase;
-                // The walk's visual (T-22): the selected row's card
-                // carries the focus-ring border — the keyboard
-                // target is visible before the stroke.
-                Rectangle {
-                    x: 0; y: 0;
-                    width: root.width; height: root.height;
-                    border-width: row-index == root.selected-row ? Theme.focus-ring-width : 0;
-                    border-color: Theme.focus-ring;
-                    border-radius: Theme.radius-small;
+                // The walk's visual (T-22, W-4/D-6): the ring is the
+                // row's own border (`emphasis`) — row-local geometry,
+                // never the window's; the stray window-sized ring
+                // Rectangle of the pre-redesign row is gone. The
+                // mirrors below push the row's own width to the W-4
+                // probe seam for the selected row.
+                emphasis: row-index == root.selected-row;
+                init => {
+                    if (row-index == root.selected-row) {
+                        root.selected-row-width = self.width;
+                    }
+                }
+                changed width => {
+                    if (row-index == root.selected-row) {
+                        root.selected-row-width = self.width;
+                    }
                 }
             }
             VerticalLayout {
@@ -131,5 +214,16 @@ export component AlarmWindow inherits Window {
                 }
             }
         }
+    }
+
+    // The window-local tooltip host (W-3, US-3/S1–S2): mounted while
+    // content exists so the size hand-off can measure it; opacity-0
+    // until the Rust placement lands (`placed`). Outside the layout
+    // (free-positioned via `tip-x`/`tip-y`), so its mount never
+    // shifts the rows. The main window's panel is unaffected — two
+    // concurrent panels render the same global, each inside its own
+    // window's scene.
+    if (TooltipState.pending || TooltipState.visible): TooltipPanel {
+        window-width: root.width;
     }
 }

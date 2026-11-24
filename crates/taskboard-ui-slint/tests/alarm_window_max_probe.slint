@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The alarm window's window-max probe (W-5, #1251 — the 1276151a
+// per-view twin): the real `AlarmWindow` mounted with a default row
+// model — the regression host for the window-max-width collapse (a
+// bounded-max row bounds the window root's layout merge, and Slint's
+// winit backend then applies it as the OS window's max size). The
+// assertion reads the root layout info from Rust
+// (`probes/alarm_window_max_probe_tests.rs`); the probe only carries
+// the mount.
+
+import { AlarmWindow, AlarmRowModel } from "../ui/alarm-window.slint";
+
+export component AlarmWindowMaxProbe inherits AlarmWindow {
+    // No explicit `width:`/`height:` bindings — an explicit width
+    // would replace the root's own layout info (the probe would read
+    // back its canvas, not the constraint merge under test).
+
+    rows: [
+        {
+            title: "tea is ready",
+            phrase: "14:05 · overdue",
+        },
+    ];
+}

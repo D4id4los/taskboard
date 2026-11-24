@@ -484,6 +484,100 @@ fn place_tooltip(window: &AppWindow, tip_size: &std::cell::Cell<Option<(f32, f32
     tooltip.set_placed(true);
 }
 
+/// The alarm window's placement hand-off (W-3, US-3): the same pure
+/// [`tooltip::place`] math over the alarm window's own geometry (the
+/// window is its own frame — no status strip, so `status_top` is
+/// zero). Either input may arrive last — both call sites run this.
+fn place_alarm_tooltip(window: &AlarmWindow, tip_size: &std::cell::Cell<Option<(f32, f32)>>) {
+    let Some((tip_w, tip_h)) = tip_size.get() else {
+        return;
+    };
+    let tooltip = window.global::<TooltipState>();
+    if !tooltip.get_visible() {
+        return;
+    }
+    let scale = window.global::<Theme>().get_base_scale();
+    let input = tooltip::TooltipInput {
+        // Slint lengths cross the boundary as plain f32 logical px.
+        anchor: (
+            tooltip.get_anchor_x(),
+            tooltip.get_anchor_y(),
+            tooltip.get_anchor_width(),
+            tooltip.get_anchor_height(),
+        ),
+        tip: (tip_w, tip_h),
+        window: {
+            // The px casts (physical u32 → logical f32): precision
+            // loss far below any visible geometry step, the scale.rs
+            // precedent.
+            #[allow(clippy::cast_precision_loss)]
+            let logical = |w: u32, h: u32, scale: f32| (w as f32 / scale, h as f32 / scale);
+            let size = window.window().size();
+            let scale = window.window().scale_factor();
+            logical(size.width, size.height, scale)
+        },
+        status_top: 0.0,
+        margin: 8.0 * scale,
+        gap: 4.0 * scale,
+    };
+    let (x, y) = tooltip::place(&input);
+    tooltip.set_tip_x(x);
+    tooltip.set_tip_y(y);
+    tooltip.set_placed(true);
+}
+
+/// Arms the alarm window's tooltip delay driver (W-3, US-3): the
+/// shape of [`install_tooltip_delay`] retargeted at the alarm window
+/// — the delay is a one-shot slint timer restarted per invocation,
+/// fires under the testing backend's mock clock, and the placement
+/// runs against the alarm window's own geometry. The panel mounts
+/// Slint-side; without this driver the pending state would never
+/// become visible (the placement hand-off would never land).
+fn install_alarm_tooltip(window: &AlarmWindow) -> std::rc::Rc<slint::Timer> {
+    let tooltip = window.global::<TooltipState>();
+    let weak = window.as_weak();
+    let timer = std::rc::Rc::new(slint::Timer::default());
+    let arm = std::rc::Rc::clone(&timer);
+    // The measured tip size (the size hand-off): shared by the
+    // observation callback and the delay fire, so placement lands
+    // whenever both facts are present, whichever comes last.
+    let tip_size: std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>> =
+        std::rc::Rc::new(std::cell::Cell::new(None));
+    {
+        let weak = weak.clone();
+        let tip_size = std::rc::Rc::clone(&tip_size);
+        tooltip.on_size_observed(move |w, h| {
+            tip_size.set(Some((w, h)));
+            if let Some(window) = weak.upgrade() {
+                place_alarm_tooltip(&window, &tip_size);
+            }
+        });
+    }
+    let fire_weak = weak;
+    let fire_tip = std::rc::Rc::clone(&tip_size);
+    tooltip.on_delay_requested(move || {
+        let fire_weak = fire_weak.clone();
+        let fire_tip = std::rc::Rc::clone(&fire_tip);
+        arm.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(TOOLTIP_DELAY_MS),
+            move || {
+                if let Some(window) = fire_weak.upgrade() {
+                    let tooltip = window.global::<TooltipState>();
+                    tooltip.set_visible(true);
+                    tooltip.set_pending(false);
+                    place_alarm_tooltip(&window, &fire_tip);
+                }
+            },
+        );
+    });
+    let dismiss_timer = std::rc::Rc::clone(&timer);
+    tooltip.on_dismiss_requested(move || {
+        dismiss_timer.stop();
+    });
+    timer
+}
+
 /// The tooltip delay (usability D3): a duration, not a layout
 /// dimension.
 pub const TOOLTIP_DELAY_MS: u64 = 600;
@@ -884,10 +978,213 @@ fn run_alarm_pass(
     *lanes.rows.borrow_mut() = rows;
 }
 
-/// The alarm window's button callbacks: index-keyed over the shared
-/// rows cell, each dispatching exactly one engine command (D-I8). A
-/// full inbox degrades to a logged drop, never a panic.
-fn install_alarm_callbacks(
+// -- the W-2 drag-position seam (US-2/S2, #1308) ---------------------
+//
+// The drag strip's delta path, extracted behind a small typed seam so
+// the tests assert the accumulator and the platform arms without a
+// real window manager. The Wayland arm is the compositor-driven
+// interactive move (journey plan R-2 as amended 2026-11-24):
+// `xdg_toplevel.move(seat, serial)` reached through winit's
+// `Window::drag_window()` via slint's `unstable-winit-030` re-export
+// (the `request_attention` precedent — no direct winit dependency
+// enters any manifest). The logged no-op is the FALLBACK arm:
+// taken only when the seam cannot produce a placement channel
+// (non-winit backend, or a Wayland compositor refusal) — a typed
+// outcome, never a panic, never a wrong-position bug.
+
+/// The typed outcome of one drag event (US-2/S2's platform arms).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DragApply {
+    /// The delta applied: the window's position moved to the given
+    /// logical coordinates (the delta-accumulator arm — X11/Windows
+    /// and every platform honoring client positioning).
+    Delta { x: f32, y: f32 },
+    /// The compositor-driven interactive move was requested (the
+    /// Wayland arm): the gesture is compositor-owned for its
+    /// duration; client deltas are ignored.
+    CompositorMove,
+    /// The fallback arm: no placement channel — a logged no-op.
+    Noop,
+}
+
+/// Why a compositor-move request refuses: unsupported by the current
+/// platform or backend (typed, not textual).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompositorMoveUnsupported;
+
+/// The placement sink the drag applier acts through: the live
+/// window's position read-modify-write (logical px throughout) and
+/// the compositor-move request. The seam the tests fake.
+pub trait AlarmPlacementSink {
+    /// The window's current position in logical px (the read side of
+    /// the read-modify-write — never a cached origin).
+    fn position(&self) -> (f32, f32);
+    /// Moves the window to the given logical px position.
+    fn set_position(&self, x: f32, y: f32);
+    /// Requests the compositor-driven interactive move
+    /// (`xdg_toplevel.move`): `Ok` means the compositor owns the
+    /// gesture from the press serial onward.
+    ///
+    /// # Errors
+    /// `CompositorMoveUnsupported` when the platform or backend
+    /// refuses the interactive move (typed, not textual).
+    fn request_compositor_move(&self) -> Result<(), CompositorMoveUnsupported>;
+    /// Whether any placement channel exists (a non-winit backend
+    /// has none — the fallback arm's precondition).
+    fn placement_available(&self) -> bool;
+}
+
+/// Which gesture engine owns the drag (decided at the strip press).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragArm {
+    /// The client applies deltas (X11/Windows posture).
+    Delta,
+    /// The compositor moves the window (Wayland posture, R-2 amended).
+    Compositor,
+    /// No placement channel — the fallback no-op.
+    Noop,
+}
+
+/// The drag-delta position applier (W-2, US-2/S2). `press` decides
+/// the platform arm; `drag_by` accumulates deltas in delta mode as a
+/// read-modify-write against the sink's LIVE position (trap 3: a
+/// hide/show cycle between drag events must never teleport the
+/// window — there is no cached origin to go stale).
+pub struct DragApplier<S: AlarmPlacementSink> {
+    sink: S,
+    arm: Option<DragArm>,
+    wayland_session: bool,
+}
+
+impl<S: AlarmPlacementSink> DragApplier<S> {
+    /// Constructs the applier with the session posture injected —
+    /// `wayland_session` selects the compositor-driven arm at the
+    /// press. The test seam: the drag probe drives both postures
+    /// without a real Wayland compositor.
+    pub fn with_session(sink: S, wayland_session: bool) -> Self {
+        Self {
+            sink,
+            arm: None,
+            wayland_session,
+        }
+    }
+
+    /// The strip press (US-2/S1): decide the platform arm. Under
+    /// Wayland the compositor-driven move is requested here — the
+    /// press event carries the fresh pointer serial winit needs —
+    /// and its outcome decides between the compositor and fallback
+    /// arms; everywhere else the delta accumulator takes over.
+    ///
+    /// # Panics
+    /// Never for a freshly constructed applier: `press` sets the arm
+    /// immediately before reading it (the `expect` is unreachable —
+    /// it exists to convert the `Option` into the return type).
+    pub fn press(&mut self) -> DragArm {
+        self.arm = Some(if !self.sink.placement_available() {
+            DragArm::Noop
+        } else if self.wayland_session {
+            match self.sink.request_compositor_move() {
+                Ok(()) => DragArm::Compositor,
+                // A Wayland refusal has no client-side fallback
+                // (`set_position` no-ops there too) — the fallback
+                // no-op keeps the posture "never a wrong-position bug".
+                Err(CompositorMoveUnsupported) => DragArm::Noop,
+            }
+        } else {
+            DragArm::Delta
+        });
+        self.arm.expect("the arm is set immediately above")
+    }
+
+    /// One strip move (US-2/S2): the accumulated delta applied as a
+    /// read-modify-write against the live position. In compositor or
+    /// fallback mode the delta is dropped (typed outcome).
+    pub fn drag_by(&mut self, dx: f32, dy: f32) -> DragApply {
+        match self.arm {
+            Some(DragArm::Delta) => {
+                let (x, y) = self.sink.position();
+                let (nx, ny) = (x + dx, y + dy);
+                self.sink.set_position(nx, ny);
+                DragApply::Delta { x: nx, y: ny }
+            }
+            Some(DragArm::Compositor) => {
+                tracing::debug!("alarm window drag: the compositor owns the gesture");
+                DragApply::CompositorMove
+            }
+            None | Some(DragArm::Noop) => {
+                tracing::debug!("alarm window drag: no placement channel — no-op");
+                DragApply::Noop
+            }
+        }
+    }
+}
+
+/// The Wayland session posture: detected once per sink construction
+/// from the standard Wayland socket variables. Inexact by design —
+/// a false positive on a non-Wayland box degrades to the fallback
+/// no-op after a compositor-move refusal, never to a wrong position.
+fn wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("WAYLAND_SOCKET").is_some()
+}
+
+/// The real placement sink over the lazily mounted alarm window: the
+/// weak handle upgrades per call (the window is torn down by a
+/// drained roster at any moment; the drag dies with it).
+struct AlarmWindowSink {
+    window: slint::Weak<AlarmWindow>,
+}
+
+impl AlarmPlacementSink for AlarmWindowSink {
+    fn position(&self) -> (f32, f32) {
+        let Some(window) = self.window.upgrade() else {
+            return (0.0, 0.0);
+        };
+        let slint_window = window.window();
+        let scale = slint_window.scale_factor();
+        let p = slint_window.position();
+        // The px cast (physical i32 → logical f32): precision loss
+        // far below any visible geometry step, the scale.rs precedent.
+        #[allow(clippy::cast_precision_loss)]
+        let logical = (p.x as f32 / scale, p.y as f32 / scale);
+        logical
+    }
+
+    fn set_position(&self, x: f32, y: f32) {
+        if let Some(window) = self.window.upgrade() {
+            window
+                .window()
+                .set_position(slint::LogicalPosition::new(x, y));
+        }
+    }
+
+    fn request_compositor_move(&self) -> Result<(), CompositorMoveUnsupported> {
+        use slint::winit_030::WinitWindowAccessor;
+        let Some(window) = self.window.upgrade() else {
+            return Err(CompositorMoveUnsupported);
+        };
+        window
+            .window()
+            .with_winit_window(slint::winit_030::winit::window::Window::drag_window)
+            .ok_or(CompositorMoveUnsupported)?
+            .map_err(|_| CompositorMoveUnsupported)
+    }
+
+    fn placement_available(&self) -> bool {
+        use slint::winit_030::WinitWindowAccessor;
+        self.window
+            .upgrade()
+            .is_some_and(|w| w.window().has_winit_window())
+    }
+}
+
+/// The alarm window's callback wiring: the three verbs index-keyed
+/// over the shared rows cell, each dispatching exactly one engine
+/// command (D-I8); the Escape arm; the W-2 drag seams over the
+/// position applier; the W-3 tooltip driver. Public for the journey
+/// suites (the established component-journey seam pattern — the
+/// golden-visuals host mounts the same window directly). A full
+/// inbox degrades to a logged drop, never a panic.
+pub fn install_alarm_callbacks(
     window: &AlarmWindow,
     commands: &mpsc::Sender<StateCommand>,
     rows: &std::rc::Rc<std::cell::RefCell<Vec<presentation::AlarmRow>>>,
@@ -934,6 +1231,31 @@ fn install_alarm_callbacks(
             }
         });
     }
+    // The W-2 drag seams (US-2/S1–S2): the press decides the
+    // platform arm, the moves accumulate through the applier. The
+    // applier state rides a shared cell (the two callbacks split the
+    // press from the moves); `request_attention` is never armed by
+    // drag motion — the applier touches only the window position.
+    {
+        let applier = std::rc::Rc::new(std::cell::RefCell::new(DragApplier::with_session(
+            AlarmWindowSink {
+                window: window.as_weak(),
+            },
+            wayland_session(),
+        )));
+        let press = std::rc::Rc::clone(&applier);
+        window.on_drag_start(move || {
+            let arm = press.borrow_mut().press();
+            tracing::debug!(?arm, "alarm window drag: strip press");
+        });
+        window.on_drag_by(move |dx, dy| {
+            applier.borrow_mut().drag_by(dx, dy);
+        });
+    }
+    // The W-3 tooltip driver (US-3): the delay timer, the size
+    // hand-off and the placement run against this window; the panel
+    // mounts Slint-side when the raised state pends.
+    install_alarm_tooltip(window);
 }
 
 impl UiHandle {

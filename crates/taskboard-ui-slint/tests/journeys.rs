@@ -23627,3 +23627,191 @@ fn the_habit_menu_rows_hint_their_today_chords() {
 }
 
 // ---- J3 US-1/US-2: the directional-focus journeys (round 9 chunk 9) —
+
+// ---- the alarm window redesign journeys (#1308, round 6 B1) --------
+
+/// The handwritten position fake (AGENTS: fakes over mocks): a
+/// delta-capable placement sink recording every apply — the journey
+/// drives the W-2 seam through it because the testing backend has no
+/// window manager.
+#[derive(Default)]
+struct DragRecordingSink {
+    pos: std::cell::Cell<(f32, f32)>,
+    placements: std::cell::RefCell<Vec<(f32, f32)>>,
+}
+
+impl taskboard_ui_slint::AlarmPlacementSink for DragRecordingSink {
+    fn position(&self) -> (f32, f32) {
+        self.pos.get()
+    }
+    fn set_position(&self, x: f32, y: f32) {
+        self.pos.set((x, y));
+        self.placements.borrow_mut().push((x, y));
+    }
+    fn request_compositor_move(&self) -> Result<(), taskboard_ui_slint::CompositorMoveUnsupported> {
+        // The journey's platform posture is the delta arm (X11-like):
+        // the compositor-driven move is not taken here.
+        Err(taskboard_ui_slint::CompositorMoveUnsupported)
+    }
+    fn placement_available(&self) -> bool {
+        true
+    }
+}
+
+/// US-2/S3 (#1308): the drag position survives a re-derivation pass.
+/// The pass re-shows the window (`set_rows` + `show` on the held
+/// instance) but never resets a user-dragged position — the applier
+/// accumulates against the live position, and the show path touches
+/// placement not at all (US-2/AC-3). The drag flows through the
+/// window's real callbacks into the applier seam over the
+/// recording fake.
+#[test]
+fn us2_s3_alarm_rederive_keeps_the_dragged_position() {
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: HEADLESS_RENDERER,
+        },
+        move |_driver| {
+            let window = taskboard_ui_slint::AlarmWindow::new()
+                .expect("the alarm window instantiates on the testing backend");
+            let set_rows = |window: &taskboard_ui_slint::AlarmWindow| {
+                let model: Vec<taskboard_ui_slint::AlarmRowModel> = vec![
+                    taskboard_ui_slint::AlarmRowModel {
+                        title: "tea is ready".into(),
+                        phrase: "14:05 · overdue".into(),
+                    },
+                    taskboard_ui_slint::AlarmRowModel {
+                        title: "standup in five".into(),
+                        phrase: "in 4 min".into(),
+                    },
+                ];
+                window.set_rows(slint::ModelRc::new(slint::VecModel::from(model)));
+            };
+
+            // The journey-level wiring: the strip's callbacks into
+            // the applier seam (the production wiring in
+            // `install_alarm_callbacks` is the same two lines; the
+            // delta arm is the deterministic posture here).
+            let sink = std::rc::Rc::new(DragRecordingSink::default());
+            sink.pos.set((120.0, 80.0));
+            let applier = std::rc::Rc::new(std::cell::RefCell::new(
+                taskboard_ui_slint::DragApplier::with_session(
+                    DragRecordingSinkHandle(std::rc::Rc::clone(&sink)),
+                    false,
+                ),
+            ));
+            {
+                let press = std::rc::Rc::clone(&applier);
+                window.on_drag_start(move || {
+                    press.borrow_mut().press();
+                });
+            }
+            {
+                let moves = std::rc::Rc::clone(&applier);
+                window.on_drag_by(move |dx, dy| {
+                    moves.borrow_mut().drag_by(dx, dy);
+                });
+            }
+
+            set_rows(&window);
+            window.show().expect("show on the testing platform");
+            support::driver::advance_probe_clock(0);
+
+            // US-2/S1–S2: press the strip, drag by two increments.
+            window.invoke_drag_start();
+            window.invoke_drag_by(30.0, 0.0);
+            window.invoke_drag_by(0.0, 12.0);
+            assert_eq!(
+                sink.pos.get(),
+                (150.0, 92.0),
+                "the window moved by exactly the accumulated delta"
+            );
+
+            // The re-derive pass: rows re-fed, the window re-shown on
+            // the held instance — the dragged position survives.
+            set_rows(&window);
+            window.show().expect("the pass re-shows the held window");
+            support::driver::advance_probe_clock(0);
+            assert_eq!(
+                sink.pos.get(),
+                (150.0, 92.0),
+                "the re-derivation never resets a user-dragged position"
+            );
+            assert_eq!(
+                sink.placements.borrow().len(),
+                2,
+                "the pass applied no placement of its own"
+            );
+            assert!(
+                window.window().is_visible(),
+                "the pass keeps the window shown"
+            );
+        },
+    );
+}
+
+/// Helper handing the shared fake to the applier (the trait takes an
+/// owned sink).
+struct DragRecordingSinkHandle(std::rc::Rc<DragRecordingSink>);
+
+impl taskboard_ui_slint::AlarmPlacementSink for DragRecordingSinkHandle {
+    fn position(&self) -> (f32, f32) {
+        self.0.position()
+    }
+    fn set_position(&self, x: f32, y: f32) {
+        self.0.set_position(x, y);
+    }
+    fn request_compositor_move(&self) -> Result<(), taskboard_ui_slint::CompositorMoveUnsupported> {
+        self.0.request_compositor_move()
+    }
+    fn placement_available(&self) -> bool {
+        self.0.placement_available()
+    }
+}
+
+/// US-4/S2 (#1308, the T-22 fence): Escape through the real key path
+/// — the re-homed, zero-layout-mass `FocusScope` is still the keyboard
+/// surface — hides the window committing nothing: no verb command is
+/// dispatched, and the next pass re-shows if rows still wait.
+#[test]
+fn us4_s2_alarm_escape_hides_committing_nothing() {
+    use slint::platform::WindowEvent;
+
+    support::driver::run(
+        support::driver::DriverOptions {
+            headless_renderer: HEADLESS_RENDERER,
+        },
+        move |_driver| {
+            let window = taskboard_ui_slint::AlarmWindow::new()
+                .expect("the alarm window instantiates on the testing backend");
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<taskboard_domain::StateCommand>(64);
+            let rows = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            taskboard_ui_slint::install_alarm_callbacks(&window, &tx, &rows);
+            let model: Vec<taskboard_ui_slint::AlarmRowModel> =
+                vec![taskboard_ui_slint::AlarmRowModel {
+                    title: "tea is ready".into(),
+                    phrase: "14:05 · overdue".into(),
+                }];
+            window.set_rows(slint::ModelRc::new(slint::VecModel::from(model)));
+            window.show().expect("show on the testing platform");
+            support::driver::advance_probe_clock(0);
+            assert!(
+                window.window().is_visible(),
+                "precondition: the window is shown"
+            );
+
+            // Escape through the real delivery path (the mount-focus
+            // FocusScope is the window's keyboard surface).
+            window.window().dispatch_event(WindowEvent::KeyPressed {
+                text: "\u{1b}".into(),
+            });
+            support::driver::advance_probe_clock(0);
+
+            assert!(!window.window().is_visible(), "Escape hides the window");
+            assert!(
+                rx.try_recv().is_err(),
+                "the escape commits nothing: no verb command dispatched"
+            );
+        },
+    );
+}

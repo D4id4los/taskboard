@@ -52,6 +52,7 @@ fn main() {
         "review_window_max_probe",
         "settings_window_max_probe",
         "habit_history_window_max_probe",
+        "alarm_window_max_probe",
         "widget_framework_probe",
         "action_menu_bar_probe",
         "overlay_migration_probe",

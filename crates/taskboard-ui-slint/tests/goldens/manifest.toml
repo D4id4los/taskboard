@@ -200,4 +200,4 @@ axes = { scale = 1.0, width = 1000, height = 900 }
 name = "alarm-window-1.0-1000"
 fixture = "golden_state_enriched_at + add_alarm/deliver_alarm"
 state = "alarm window; awaiting rows with elapsed phrases"
-axes = { scale = 1.0, width = 384, height = 128 }
+axes = { scale = 1.0, width = 351, height = 64 }
