@@ -258,11 +258,22 @@ FOUND_EV=""
 # always delimited by punctuation, whitespace or end of line, so the
 # anchor never turns an honest match into a miss.
 tok_match() { # tok_match <token> <file>...
-  local tok=$1 f out
+  local tok=$1 f out re
   shift
+  # (#1282) snake/kebab separator tolerance: the `_`/`-` axis
+  # normalizes, symmetrically — the token's separators widen to a
+  # `[-_]` class, so a snake-authored cell resolves against kebab slint
+  # callbacks and vice versa. Deliberate leniency, documented: the
+  # template §6 spelling rule (kebab, exact) stays normative; only
+  # separator drift is forgiven (letters must match), case is
+  # load-bearing (`ActionId::` tokens) and never folds, and the match
+  # stays boundary-anchored + first-hit — a cell that is genuinely
+  # absent never normalizes into a hit, and two matching callbacks
+  # cannot turn one cell into two credits.
+  re=${tok//_/[-_]}
   for f in "$@"; do
     [[ -f $f ]] || continue
-    if out=$(grep -nE -- "(^|[^A-Za-z0-9_])${tok}([^A-Za-z0-9_]|$)" "$f" 2>/dev/null | head -n 1); then
+    if out=$(grep -nE -- "(^|[^A-Za-z0-9_])${re}([^A-Za-z0-9_]|$)" "$f" 2>/dev/null | head -n 1); then
       FOUND_EV="${f}:${out%%:*}"
       return 0
     fi
@@ -743,6 +754,58 @@ self_test() {
   else
     echo "self-test 20 (#1285 exact-name fn wins over the alias for the same token): FAIL (exit $code, $c step FOUND, $b BOUND)"
     sed 's/^/    /' "$tmp/aliasprio.out"
+    rc=1
+  fi
+
+  # 21. #1282 snake cell vs kebab universe: a snake-authored callback
+  #     cell (`habit_edit_asked`) resolves against the kebab slint
+  #     callbacks (`habit-edit-asked`), the adapter through the
+  #     on_<cb> snake idiom, exit 0.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-kebab.md" --gate --root "$fx/tree" \
+    >"$tmp/kebab.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'W-K callback habit_edit_asked → FOUND' "$tmp/kebab.out" || true)
+  if [[ $code -eq 0 && $c -eq 1 ]]; then
+    echo "self-test 21 (#1282 snake callback cell resolves against the kebab universe, exit 0): PASS"
+  else
+    echo "self-test 21 (#1282 snake callback cell resolves against the kebab universe, exit 0): FAIL (exit $code, $c FOUND rows)"
+    sed 's/^/    /' "$tmp/kebab.out"
+    rc=1
+  fi
+
+  # 22. #1282 AMBIGUOUS-preservation: the snake cell matches TWO kebab
+  #     callbacks (fixture-view + collide-view twins) — the verdict is
+  #     a single deterministic citation across runs (tok_match is
+  #     first-hit; normalization must not turn one cell into two
+  #     credits, and the pre-#1282 verdict for this cell is MISSING, so
+  #     ambiguity machinery is unchanged — no AMBIGUOUS row appears
+  #     where the kebab spelling would not produce one).
+  local keb_ev run_i
+  local -a keb_runs=()
+  for run_i in 1 2 3; do
+    bash "${BASH_SOURCE[0]}" "$fx/plan-kebab.md" --gate --root "$fx/tree" \
+      >"$tmp/kebab-$run_i.out" 2>&1
+    keb_ev=$(grep -oE 'W-K callback habit_edit_asked → FOUND \([^)]*\)' "$tmp/kebab-$run_i.out" || true)
+    keb_runs+=("$keb_ev")
+  done
+  if [[ ${keb_runs[0]} == "${keb_runs[1]}" && "${keb_runs[1]}" == "${keb_runs[2]}" && $(grep -c 'W-K callback habit_edit_asked → FOUND' "$tmp/kebab-1.out" || true) -eq 1 ]]; then
+    echo "self-test 22 (#1282 two kebab twins stay one deterministic single-credit match): PASS"
+  else
+    echo "self-test 22 (#1282 two kebab twins stay one deterministic single-credit match): FAIL (runs differ or double credit: ${keb_runs[*]})"
+    sed 's/^/    /' "$tmp/kebab-1.out"
+    rc=1
+  fi
+
+  # 23. #1282 MISSING unchanged: a snake cell whose kebab twin differs
+  #     by letters, not just separators (`habit_edit_probe`), stays
+  #     MISSING — separator tolerance never fabricates a match.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-kebab-miss.md" --gate --root "$fx/tree" \
+    >"$tmp/kebabmiss.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'W-K callback habit_edit_probe → MISSING$' "$tmp/kebabmiss.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 ]]; then
+    echo "self-test 23 (#1282 snake cell with no kebab counterpart stays MISSING): PASS"
+  else
+    echo "self-test 23 (#1282 snake cell with no kebab counterpart stays MISSING): FAIL (exit $code, $c MISSING rows)"
+    sed 's/^/    /' "$tmp/kebabmiss.out"
     rc=1
   fi
 

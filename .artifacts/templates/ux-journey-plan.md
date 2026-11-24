@@ -101,6 +101,10 @@ file::name embedding the step-ID token. A step whose evidence test is
 differently named binds the plan-invented name to the existing test
 with a `test-alias: <nom-name> -> <file>.rs::<existing-fn>` line in
 §8 (#1285) — a dead alias target is a gate failure, never a pass.
+Callback cells are spelled exactly as the slint callback (kebab-case,
+no type annotation unless the cell carries a token) (#1282); the
+gate's snake/kebab separator tolerance is a safety net, not the
+contract.
 Header row is a parser contract — do not rename or reorder columns. -->
 
 | ID | Surface file | Widget | Callback | Adapter seam | ActionId | Commands | Row addressing | Journey steps | Test |
