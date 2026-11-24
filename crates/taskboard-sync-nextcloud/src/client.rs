@@ -335,15 +335,16 @@ pub struct Fetch<T> {
 /// is `None` — *absent, never an error*; the caller falls back to the
 /// policy backoff. The only impure call site is [`DeckClient::attempt`],
 /// which supplies `chrono::Utc::now()`, keeping this parser pure.
-fn parse_retry_after(header: &str, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+fn parse_retry_after(header: &str, now: taskboard_domain::time::Timestamp) -> Option<Duration> {
     if !header.is_empty() && header.bytes().all(|b| b.is_ascii_digit()) {
         return header.parse::<u64>().ok().map(Duration::from_secs);
     }
     // IMF-fixdate parses as RFC 2822 (the `GMT` zone name is
-    // RFC 2822-compatible with chrono).
-    let date = chrono::DateTime::parse_from_rfc2822(header).ok()?;
-    let delta = date.with_timezone(&chrono::Utc) - now;
-    if delta <= chrono::Duration::zero() {
+    // RFC 2822-compatible with chrono); the seam wrapper is the
+    // migration-facing spelling (#987).
+    let date = taskboard_domain::time::parse_http_date(header)?;
+    let delta = date - now;
+    if delta <= taskboard_domain::time::Delta::zero() {
         return Some(Duration::ZERO);
     }
     delta.to_std().ok().or(Some(Duration::MAX))
