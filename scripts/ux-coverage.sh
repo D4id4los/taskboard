@@ -394,7 +394,19 @@ emit_inventory_miss() { # emit_inventory_miss <label> <slint-ev> <adapter-ev>
   n_invmiss=$((n_invmiss + 1))
 }
 
-is_absent() { [[ -z $1 || $1 == "—" || $1 == "-" ]]; }
+# Absence predicate (#1266, strict superset): a cell is absent when it
+# is empty, a bare `—`/`-`, or begins (after leading whitespace) with
+# `—`/`-` — the remainder is annotation and is never tokenized.
+# Deliberate leniency, documented: a cell that begins with a dash is
+# *authored* as a marked-empty; no token this gate parses (`us<n>_s<k>`,
+# fn names, `ActionId::…`, paths, callback names) can begin with `-` or
+# `—`, so there is no real token the rule can swallow (pinned by the
+# self-test matrix; letters-differ prose cells like `see §4` stay
+# MISSING — absence is the dash, not vagueness).
+is_absent() {
+  local s=${1#"${1%%[![:space:]]*}"} # trim leading whitespace
+  [[ -z $s || $s == —* || $s == -* ]]
+}
 
 is_bare_token() { [[ $1 =~ ^us[0-9]+_s[0-9]+$ ]]; }
 
@@ -806,6 +818,52 @@ self_test() {
   else
     echo "self-test 23 (#1282 snake cell with no kebab counterpart stays MISSING): FAIL (exit $code, $c MISSING rows)"
     sed 's/^/    /' "$tmp/kebabmiss.out"
+    rc=1
+  fi
+
+  # 24. #1266 dash-with-annotation cells read as absence: `— (binding
+  #     rows)` in the Callback cell and `— (fold rows)` in Commands
+  #     produce NO MISSING rows for the annotation (exit 0).
+  bash "${BASH_SOURCE[0]}" "$fx/plan-dash.md" --gate --root "$fx/tree" \
+    >"$tmp/dash.out" 2>&1 && code=0 || code=$?
+  m=$(grep -c 'MISSING$' "$tmp/dash.out" || true)
+  c=$(grep -c 'W-D callback' "$tmp/dash.out" || true)
+  if [[ $code -eq 0 && $m -eq 0 && $c -eq 0 ]]; then
+    echo "self-test 24 (#1266 dash-annotated cells read as absence, no MISSING): PASS"
+  else
+    echo "self-test 24 (#1266 dash-annotated cells read as absence, no MISSING): FAIL (exit $code, $m MISSING, $c callback rows)"
+    sed 's/^/    /' "$tmp/dash.out"
+    rc=1
+  fi
+
+  # 25. #1266 strict superset: every pre-#1266 fixture verdict is
+  #     unchanged — the full self-test matrix (1-16, 21-23) exercises
+  #     the bare-dash cells (plan.md W-2, the `—` matrix cells); this
+  #     row re-asserts the flagship PASS and MISSING fixtures here so a
+  #     regression cannot hide behind an earlier exit-code.
+  bash "${BASH_SOURCE[0]}" "$fx/plan.md" --gate --root "$fx/tree" \
+    >"$tmp/dashsup.out" 2>&1 && code=0 || code=$?
+  bash "${BASH_SOURCE[0]}" "$fx/plan-missing.md" --gate --root "$fx/tree" \
+    >"$tmp/dashsup2.out" 2>&1 && code2=0 || code2=$?
+  m=$(grep -c 'MISSING$' "$tmp/dashsup2.out" || true)
+  if [[ $code -eq 0 && $code2 -eq 1 && $m -eq 3 ]]; then
+    echo "self-test 25 (#1266 strict superset — bare-dash fixture verdicts unchanged): PASS"
+  else
+    echo "self-test 25 (#1266 strict superset — bare-dash fixture verdicts unchanged): FAIL (exit $code/$code2, $m MISSING)"
+    sed 's/^/    /' "$tmp/dashsup.out" "$tmp/dashsup2.out"
+    rc=1
+  fi
+
+  # 26. #1266 MISSING unchanged: a prose cell not beginning with a dash
+  #     (`see §4`) is not absence — the callback row reads MISSING.
+  bash "${BASH_SOURCE[0]}" "$fx/plan-dash-miss.md" --gate --root "$fx/tree" \
+    >"$tmp/dashmiss.out" 2>&1 && code=0 || code=$?
+  c=$(grep -c 'W-D callback see §4 → MISSING$' "$tmp/dashmiss.out" || true)
+  if [[ $code -eq 1 && $c -eq 1 ]]; then
+    echo "self-test 26 (#1266 prose cell still MISSING — absence is the dash): PASS"
+  else
+    echo "self-test 26 (#1266 prose cell still MISSING — absence is the dash): FAIL (exit $code, $c MISSING rows)"
+    sed 's/^/    /' "$tmp/dashmiss.out"
     rc=1
   fi
 
