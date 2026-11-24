@@ -7838,7 +7838,12 @@ impl Adapter {
         habit: taskboard_domain::HabitId,
     ) -> Vec<crate::menu::MenuEntry> {
         let state = self.state.load_full();
-        let chain = [ContextId::Board, ContextId::Global].to_vec();
+        // #1311: the chain is the opener's — `open_habit_context_menu`
+        // installs the Today-prefixed chain, so this projection, the
+        // Convert submenu, and the arm-flip re-projection all resolve
+        // the Today-bound verbs' hints through `self.menu_chain` (one
+        // derivation, no per-consumer patching).
+        let chain = self.menu_chain.clone();
         // The reorder pair's slots (H2 D4): the shared mint (chunk 8
         // D4 — one arithmetic, `habit_move_slots` over the section's
         // shared live order: menu open, keyboard walk, drag gap).
@@ -7998,6 +8003,13 @@ impl Adapter {
         }
         self.focused_habit = Some(habit);
         self.menu_row_subject = Some(crate::presentation::RowSubject::Habit(habit));
+        // #1311: the habit menu's context chain — Today first (the
+        // menu opens exclusively over the Today view's habit rows, and
+        // the habit verbs are bound exactly there), Board and Global
+        // following for any verb bound above. The projection (this
+        // open, the Convert submenu, the re-projections) reads it
+        // through `self.menu_chain`.
+        self.menu_chain = [ContextId::Today, ContextId::Board, ContextId::Global].to_vec();
         let entries = self.habit_menu_entries(habit);
         self.open_context_menu_with(window, x, y, entries, Vec::new());
     }
@@ -14075,9 +14087,9 @@ impl Adapter {
         self.menu_anchor = MenuAnchor::Pointer(x, y);
         self.menu_kind = MenuKind::Object;
         self.menu_subject = MenuSubject::None;
-        // The one chain every object menu opens with (round-2 D21):
-        // every board-surface verb's binding hint resolves over it.
-        self.menu_chain = [ContextId::Board, ContextId::Global].to_vec();
+        // The chain is the opener's (round-2 D21, #1311): the task
+        // opener installs `[Board, Global]`, the habit opener the
+        // Today-prefixed one — this landing site overwrites nothing.
         self.root_entries = entries;
         self.menu_entries = self.root_entries.clone();
         // The quick bar (UX-R8 chunk-5 D-2): built once at open —

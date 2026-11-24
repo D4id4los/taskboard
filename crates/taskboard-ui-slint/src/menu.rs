@@ -2176,4 +2176,60 @@ mod tests {
             "a task subject renders no habit Convert parent"
         );
     }
+
+    /// #1311 (the hints pin, projection tier) — over the habit
+    /// opener's Today-prefixed chain (the derivation's one home is
+    /// `open_habit_context_menu`; the journey pin covers the opener
+    /// installing it), every `HABIT_CONTEXT` verb the preset binds at
+    /// Today carries that exact chord in its row's `hint`, and the
+    /// rows the preset deliberately leaves unbound carry no invented
+    /// hint. Audit half: the equality loop over
+    /// `first_binding_display` of the full chain doubles as the
+    /// no-Board/Global-chord audit — no habit verb is bound outside
+    /// Today, so any non-empty hint IS the Today chord.
+    #[test]
+    fn habit_hints_resolve_over_the_today_prefixed_chain() {
+        let keymap = standard_keymap();
+        let chain = vec![ContextId::Today, ContextId::Board, ContextId::Global];
+        let subject = TaskMenuSubject {
+            is_habit: true,
+            ..TaskMenuSubject::default()
+        };
+        let page = habit_context_page(&keymap, &chain, subject, &BTreeMap::new(), None);
+        let today_bound = [
+            ActionId::HabitLog,
+            ActionId::HabitSkip,
+            ActionId::HabitPause,
+            ActionId::HabitResume,
+            ActionId::HabitUndoLog,
+            ActionId::HabitRepair,
+            ActionId::HabitMoveUp,
+            ActionId::HabitMoveDown,
+            ActionId::HabitEdit,
+            ActionId::HabitHistory,
+            ActionId::HabitConvertArm,
+        ];
+        for id in today_bound {
+            let expected = keymap
+                .first_binding_display(id, &chain)
+                .unwrap_or_else(|| panic!("{id:?} is Today-bound in the preset"));
+            let row = page
+                .iter()
+                .find(|e| e.action == Some(id))
+                .unwrap_or_else(|| panic!("{id:?}'s row renders on the page"));
+            assert_eq!(row.hint, expected, "{id:?}'s row hints its Today chord");
+        }
+        for row in &page {
+            match row.action {
+                Some(id) if today_bound.contains(&id) => {}
+                // Unbound by decision (the staged remove pair, the
+                // parent row, the restore trio): the pointer-first
+                // posture invents no hint.
+                _ => assert!(
+                    row.hint.is_empty(),
+                    "the unbound row invents no hint: {row:?}"
+                ),
+            }
+        }
+    }
 }
