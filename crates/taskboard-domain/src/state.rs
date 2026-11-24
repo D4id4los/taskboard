@@ -1277,7 +1277,7 @@ mod sync_states_tests {
 #[cfg(test)]
 mod tests {
     use super::{AppState, SyncErrorKind, SyncPhase};
-    use crate::entities::{BoardClocks, Color, StackClocks};
+    use crate::entities::{BoardClocks, StackClocks};
     use crate::ids::{BoardId, StackId, TaskId};
     use crate::test_support;
     use chrono::TimeZone;
@@ -1354,42 +1354,32 @@ mod tests {
         assert_eq!(SyncPhase::parse_text_form("warp", None), None);
     }
 
+    /// The module's fixture convention over the shared mints (#1269):
+    /// locally-written clocks at `ts(100)` so LWW freshness against
+    /// remote rows stays deterministic.
     fn board(raw: u128, title: &str) -> crate::entities::Board {
-        crate::entities::Board {
-            id: BoardId::from(uuid::Uuid::from_u128(raw)),
-            remote: None,
-            title: title.into(),
-            color: Color::new("0082c9"),
-            archived: false,
-            deleted: false,
-            clocks: BoardClocks {
-                title: ts(100),
-                color: ts(100),
-                archived: ts(100),
-                deleted: ts(100),
-            },
-            authors: crate::entities::BoardAuthors::default(),
-            remote_seen: None,
-        }
+        let mut board = test_support::mint_board(raw, title);
+        let at = ts(100);
+        board.clocks = BoardClocks {
+            title: at,
+            color: at,
+            archived: at,
+            deleted: at,
+        };
+        board
     }
 
+    /// See [`board`] for the fixture convention.
     fn stack(raw: u128, on: BoardId, title: &str, order: i64) -> crate::entities::Stack {
-        crate::entities::Stack {
-            id: StackId::from(uuid::Uuid::from_u128(raw)),
-            remote: None,
-            board: on,
-            title: title.into(),
-            order,
-            archived: false,
-            deleted: false,
-            clocks: StackClocks {
-                title: ts(100),
-                order: ts(100),
-                deleted: ts(100),
-            },
-            authors: crate::entities::StackAuthors::default(),
-            remote_seen: None,
-        }
+        let mut stack = test_support::mint_stack(raw, on, title);
+        stack.order = order;
+        let at = ts(100);
+        stack.clocks = StackClocks {
+            title: at,
+            order: at,
+            deleted: at,
+        };
+        stack
     }
 
     #[test]
