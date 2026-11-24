@@ -1205,3 +1205,487 @@ fn a_compact_stack_switch_remounts_the_viewport_cleanly() {
         },
     );
 }
+
+// -- the today section-geometry pins (round-6 A1 D-1; #1310/#1304) --------
+//
+// The section viewport's height used to be *assigned* by `changed`
+// handlers (an escape from the compiler's conservative
+// height → content-height edge), which misses the value present at
+// delegate instantiation and can pin a stale height forever. These
+// pins hold the declarative contract: content-derived from the first
+// frame, growing with content up to the window cap, never overlapping
+// the neighbour section, and with the virtualizer's live-row window
+// equal to the painted viewport. Structural facts only (extents and
+// containment), never pixel-text — the round law.
+
+use taskboard_domain::entities::{BoardAuthors, StackAuthors, TaskAuthors};
+
+const GEO_WINDOW_W: u32 = 1000;
+const GEO_WINDOW_H: u32 = 900;
+
+fn geo_epoch() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::<chrono::Utc>::UNIX_EPOCH
+}
+
+fn geo_board(id: taskboard_domain::BoardId) -> taskboard_domain::Board {
+    taskboard_domain::Board {
+        id,
+        remote: None,
+        title: "geo board".to_owned(),
+        color: taskboard_domain::Color::new(""),
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::BoardClocks {
+            title: geo_epoch(),
+            color: geo_epoch(),
+            archived: geo_epoch(),
+            deleted: geo_epoch(),
+        },
+        authors: BoardAuthors::default(),
+        remote_seen: None,
+    }
+}
+
+fn geo_stack(
+    id: taskboard_domain::StackId,
+    board: taskboard_domain::BoardId,
+) -> taskboard_domain::Stack {
+    taskboard_domain::Stack {
+        id,
+        remote: None,
+        board,
+        title: "geo stack".to_owned(),
+        order: 0,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::StackClocks {
+            title: geo_epoch(),
+            order: geo_epoch(),
+            deleted: geo_epoch(),
+        },
+        authors: StackAuthors::default(),
+        remote_seen: None,
+    }
+}
+
+fn geo_task(
+    id: taskboard_domain::TaskId,
+    stack: taskboard_domain::StackId,
+    order: i64,
+    title: &str,
+) -> taskboard_domain::Task {
+    taskboard_domain::Task {
+        id,
+        remote: None,
+        title: title.to_owned(),
+        description: String::new(),
+        duedate: None,
+        scheduled: None,
+        done: None,
+        stack,
+        order,
+        label_memberships: std::collections::BTreeMap::new(),
+        effort: None,
+        importance: None,
+        urgency: None,
+        recur: None,
+        kind: taskboard_domain::entities::TaskKind::Standard,
+        archived: false,
+        deleted: false,
+        clocks: taskboard_domain::TaskClocks {
+            title: geo_epoch(),
+            description: geo_epoch(),
+            duedate: geo_epoch(),
+            scheduled: geo_epoch(),
+            done: geo_epoch(),
+            position: geo_epoch(),
+            effort: geo_epoch(),
+            importance: geo_epoch(),
+            urgency: geo_epoch(),
+            recur: geo_epoch(),
+            kind: geo_epoch(),
+            archived: geo_epoch(),
+            deleted: geo_epoch(),
+        },
+        authors: TaskAuthors::default(),
+        remote_seen: None,
+        remote_baseline: None,
+    }
+}
+
+fn geo_habit(
+    id: taskboard_domain::HabitId,
+    board: taskboard_domain::BoardId,
+    order: i64,
+) -> taskboard_domain::Habit {
+    taskboard_domain::Habit {
+        id,
+        board,
+        title: format!("geo-habit-{order}"),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerDay(
+            taskboard_domain::NonZeroCount::new(1).unwrap(),
+        ),
+        order,
+        anchor_time: None,
+        anchor_day: None,
+        scheduled_days: None,
+        reminder: None,
+        clocks: taskboard_domain::HabitClocks::all(geo_epoch()),
+        continued_from: None,
+        deleted: false,
+        by: None,
+        paused_until: None,
+    }
+}
+
+/// A Today fixture with exact section volumes: `overdue` tasks in the
+/// Overdue section (due inside the past hour) and `scheduled` tasks in
+/// Scheduled (scheduled inside today's window, the harness calendar's
+/// UTC offset making the window wall-clock-proof), plus `habits` live
+/// habits on the board. One board, one stack — the geometry pins'
+/// row-source variable is the section volumes only.
+#[allow(clippy::too_many_arguments)]
+fn today_geometry_state(
+    now: chrono::DateTime<chrono::Utc>,
+    overdue: usize,
+    scheduled: usize,
+    habits: usize,
+) -> taskboard_domain::AppState {
+    let mut state = taskboard_domain::AppState::default();
+    let board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+    let stack = taskboard_domain::StackId::from_uuid(uuid::Uuid::now_v7());
+    state.boards.insert(board, geo_board(board));
+    state.stacks.insert(stack, geo_stack(stack, board));
+    let calendar = crate::support::fixture::harness_calendar();
+    let window = taskboard_domain::days::day_window(now, calendar.day_start_time, calendar.offset);
+    let (window_start, window_end) = window;
+    for i in 0..overdue {
+        let id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut task = geo_task(
+            id,
+            stack,
+            i64::try_from(i).unwrap_or(i64::MAX),
+            &format!("geo-overdue-{i}"),
+        );
+        task.duedate = Some(now - chrono::TimeDelta::hours(1));
+        state.tasks.insert(id, task);
+    }
+    for i in 0..scheduled {
+        let id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+        let mut task = geo_task(
+            id,
+            stack,
+            i64::try_from(i).unwrap_or(i64::MAX),
+            &format!("geo-sched-{i}"),
+        );
+        // Half an hour into the window: inside [start, end) for every
+        // window the calendar derives from `now` (a day window is far
+        // longer than the offset from `now` to its start).
+        let slot = window_start
+            + (chrono::TimeDelta::hours(6)
+                + chrono::TimeDelta::minutes(i64::try_from(i).unwrap_or(i64::MAX) % 30));
+        debug_assert!(slot >= window_start && slot < window_end);
+        let _ = window_end;
+        task.scheduled = Some(slot);
+        state.tasks.insert(id, task);
+    }
+    for i in 0..habits {
+        let id = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+        state.habits.habits.insert(
+            id,
+            geo_habit(id, board, i64::try_from(i).unwrap_or(i64::MAX)),
+        );
+    }
+    taskboard_domain::derive_sync_states(
+        &state.boards,
+        &state.stacks,
+        &state.tasks,
+        &state.labels,
+        &[],
+        &mut state.sync,
+    );
+    state
+}
+
+/// Mounts a geometry fixture on the desktop default view (Today), the
+/// `mount_today` idiom with the caller's exact state.
+fn mount_geo(
+    driver: &mut SlintDriver,
+    state: taskboard_domain::AppState,
+) -> (
+    UiHandle,
+    support::fake_engine::FakeEngine,
+    Arc<ArcSwap<taskboard_domain::AppState>>,
+) {
+    let state = Arc::new(ArcSwap::from_pointee(state));
+    let (commands, engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+    let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+    let handle = mount(
+        Arc::clone(&state),
+        dummy_receiver(),
+        dummy_system_receiver(),
+        commands,
+        requests_tx,
+        UiSettings::default(),
+        detached_health(),
+        None,
+    )
+    .expect("mount succeeds on the testing backend");
+    driver.bind(&handle);
+    driver.set_window_size(GEO_WINDOW_W, GEO_WINDOW_H);
+    driver.advance_time(0);
+    (handle, engine, state)
+}
+
+/// The section viewports' extents `(y, height)`, top-sorted, empty
+/// sections (collapsed or zero-height) excluded — the rendered
+/// sections only.
+fn geo_section_extents(driver: &SlintDriver) -> Vec<(f32, f32)> {
+    let mut extents: Vec<(f32, f32)> = driver
+        .find_all_by_id("TodayView::row-viewport-clip")
+        .into_iter()
+        .map(|clip| {
+            let position = clip.absolute_position();
+            let size = clip.size();
+            (position.y, size.height)
+        })
+        .filter(|(_, height)| *height > 1.0)
+        .collect();
+    extents.sort_by(|a, b| a.0.total_cmp(&b.0));
+    extents
+}
+
+fn geo_row(driver: &SlintDriver, title: &str) -> support::driver::Element {
+    driver
+        .find_by_label(title)
+        .unwrap_or_else(|| panic!("row {title} must be live"))
+}
+
+/// G1 `sections_never_overlap_at_any_content_volume`: the sections'
+/// viewport Y-extents are disjoint and ordered, at one row, five, and
+/// twenty rows per section (the last overflows the window cap — the
+/// page-scroll regime).
+#[test]
+fn sections_never_overlap_at_any_content_volume() {
+    for (overdue, scheduled) in [(1usize, 1usize), (5, 5), (20, 20)] {
+        // One mount per volume, one process per volume under nextest
+        // is wasteful — the driver serialises jobs, and each volume
+        // needs its own state, so three probes would triple the
+        // platform boot; instead one job, one mount per volume, the
+        // handle dropped between volumes.
+        support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |driver| {
+                let now = chrono::Utc::now();
+                let (_handle, _engine, _state) =
+                    mount_geo(driver, today_geometry_state(now, overdue, scheduled, 0));
+                let extents = geo_section_extents(driver);
+                assert_eq!(
+                    extents.len(),
+                    2,
+                    "both populated sections render a viewport \
+                     (overdue={overdue}, scheduled={scheduled})"
+                );
+                for pair in extents.windows(2) {
+                    let (top_bottom, next_top) = (pair[0].0 + pair[0].1, pair[1].0);
+                    assert!(
+                        top_bottom <= next_top + 0.5,
+                        "the sections' viewports must be disjoint and ordered: \
+                         top section ends at {top_bottom}, next starts at {next_top}"
+                    );
+                }
+                // The first Scheduled row paints inside the second
+                // section's viewport, not across the boundary.
+                let sched_row = geo_row(driver, "geo-sched-0").absolute_position().y;
+                let (sec2_y, sec2_h) = extents[1];
+                assert!(
+                    sched_row >= sec2_y && sched_row < sec2_y + sec2_h,
+                    "the Scheduled head row paints inside the Scheduled \
+                     viewport, got row y={sched_row} vs viewport [{sec2_y}, {})",
+                    sec2_y + sec2_h
+                );
+            },
+        );
+    }
+}
+
+/// G2 `viewport_grows_with_content`: 1/5/20 scheduled rows — the
+/// section height strictly tracks content up to the window cap, and
+/// the last row of the capped section is reachable by the section's
+/// internal seek (the "stuck at one visible row" convergence trap
+/// pinned dead).
+#[test]
+fn the_scheduled_viewport_grows_with_content() {
+    let mut heights: Vec<(usize, f32)> = Vec::new();
+    for scheduled in [1usize, 5, 20] {
+        let measured = support::driver::run(
+            DriverOptions {
+                headless_renderer: true,
+            },
+            move |driver| {
+                let now = chrono::Utc::now();
+                let (handle, _engine, _state) =
+                    mount_geo(driver, today_geometry_state(now, 0, scheduled, 0));
+                let extents = geo_section_extents(driver);
+                assert_eq!(extents.len(), 1, "only Scheduled is populated");
+                let measured = (scheduled, extents[0].1);
+
+                if scheduled == 20 {
+                    // The cap regime: the last row must be reachable —
+                    // the focus-into-view seam's seek over the
+                    // section's own scroll (target-a = the section's
+                    // repeater index; Scheduled is model index 1).
+                    let hint = handle
+                        .window()
+                        .global::<taskboard_ui_slint::FocusScrollHint>();
+                    hint.set_target_a(1);
+                    hint.set_target_b(19);
+                    hint.set_nonce(hint.get_nonce() + 1);
+                    driver.advance_time(0);
+                    let last = geo_row(driver, "geo-sched-19").absolute_position();
+                    let last_bottom = last.y + geo_row(driver, "geo-sched-19").size().height;
+                    let (sec_y, sec_h) = extents[0];
+                    assert!(
+                        last.y >= sec_y && last_bottom <= sec_y + sec_h + 0.5,
+                        "the seeked last row paints inside the section's \
+                         viewport, got [{}, {last_bottom}] vs viewport \
+                         [{sec_y}, {}]",
+                        last.y,
+                        sec_y + sec_h
+                    );
+                }
+                measured
+            },
+        );
+        heights.push(measured);
+    }
+    for pair in heights.windows(2) {
+        assert!(
+            pair[0].1 < pair[1].1,
+            "the viewport height must grow with content: \
+             {} rows -> {}px, {} rows -> {}px",
+            pair[0].0,
+            pair[0].1,
+            pair[1].0,
+            pair[1].1
+        );
+    }
+}
+
+/// G3 `first_frame_geometry_is_declared`: Overdue and Scheduled
+/// materialize together from an empty mount (the refresh/rollover
+/// path the `changed`-handler miss breaks) — on the first rendered
+/// frame after the refresh, both sections' viewports are
+/// content-derived and disjoint; no layout-default heights.
+#[test]
+fn first_frame_geometry_is_declared() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let now = chrono::Utc::now();
+            let (handle, _engine, state) = mount_geo(driver, today_geometry_state(now, 0, 0, 0));
+            assert!(
+                geo_section_extents(driver).is_empty(),
+                "the empty mount renders no section viewports"
+            );
+
+            // One refresh populates BOTH sections together (the day
+            // rollover / refresh-from-empty shape).
+            let mut next = (**state.load()).clone();
+            let calendar = crate::support::fixture::harness_calendar();
+            let window =
+                taskboard_domain::days::day_window(now, calendar.day_start_time, calendar.offset);
+            let stack = *next.stacks.keys().next().expect("the fixture stack");
+            for i in 0..5usize {
+                let id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+                let mut overdue = geo_task(
+                    id,
+                    stack,
+                    i64::try_from(i).unwrap_or(i64::MAX),
+                    &format!("ff-overdue-{i}"),
+                );
+                overdue.duedate = Some(now - chrono::TimeDelta::hours(1));
+                next.tasks.insert(id, overdue);
+                let id = taskboard_domain::TaskId::from_uuid(uuid::Uuid::now_v7());
+                let mut sched = geo_task(
+                    id,
+                    stack,
+                    100 + i64::try_from(i).unwrap_or(i64::MAX),
+                    &format!("ff-sched-{i}"),
+                );
+                sched.scheduled = Some(window.0 + chrono::TimeDelta::hours(6));
+                next.tasks.insert(id, sched);
+            }
+            taskboard_domain::derive_sync_states(
+                &next.boards,
+                &next.stacks,
+                &next.tasks,
+                &next.labels,
+                &[],
+                &mut next.sync,
+            );
+            state.store(Arc::new(next));
+            handle.refresh();
+            driver.advance_time(0);
+
+            let extents = geo_section_extents(driver);
+            assert_eq!(
+                extents.len(),
+                2,
+                "both sections render on the first frame after the refresh"
+            );
+            let (top_bottom, next_top) = (extents[0].0 + extents[0].1, extents[1].0);
+            assert!(
+                top_bottom <= next_top + 0.5,
+                "first-frame viewports must not overlap: top ends at \
+                 {top_bottom}, next starts at {next_top}"
+            );
+            let sched_row = geo_row(driver, "ff-sched-0").absolute_position().y;
+            let (sec2_y, sec2_h) = extents[1];
+            assert!(
+                sched_row >= sec2_y && sched_row < sec2_y + sec2_h,
+                "the Scheduled head row paints inside its viewport on the \
+                 first frame, got row y={sched_row} vs [{sec2_y}, {})",
+                sec2_y + sec2_h
+            );
+        },
+    );
+}
+
+/// G4 `visible_height_matches_painted_viewport`: in the capped
+/// regime the virtualizer's live-row window equals the clip height —
+/// every live row paints inside its section's viewport (no rows
+/// painted outside the clip's own window).
+#[test]
+fn every_live_row_paints_inside_its_section_viewport() {
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        |driver| {
+            let now = chrono::Utc::now();
+            let (_handle, _engine, _state) =
+                mount_geo(driver, today_geometry_state(now, 20, 20, 0));
+            let extents = geo_section_extents(driver);
+            assert_eq!(extents.len(), 2, "both capped sections render");
+            for title_class in ["geo-overdue", "geo-sched"] {
+                for row in driver.find_all_by_label(title_class) {
+                    let y = row.absolute_position().y;
+                    let inside = extents
+                        .iter()
+                        .any(|(sec_y, sec_h)| y >= *sec_y && y < *sec_y + *sec_h);
+                    assert!(
+                        inside,
+                        "the live {title_class} row at y={y} paints outside \
+                         every section viewport {extents:?}"
+                    );
+                }
+            }
+        },
+    );
+}
