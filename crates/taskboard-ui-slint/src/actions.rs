@@ -3299,6 +3299,7 @@ mod tests {
             ActionId::TaskTrackEntryDismiss,
             ActionId::FocusModeToggle,
             ActionId::HabitLog,
+            ActionId::HabitTrackToggle,
             ActionId::HabitUndoLog,
             ActionId::HabitMove,
             ActionId::HabitCreate,

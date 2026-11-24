@@ -1224,6 +1224,10 @@ mod tests {
             // The smart toggle (J3 R-8, round 9 chunk 11): rank 187,
             // between the entries row and the habit section.
             ActionId::TaskTrackToggle,
+            // The smart habit-tracking toggle (journey plan W-2,
+            // #1305): rank 191, the task toggle's habit twin, ahead of
+            // the habit trio.
+            ActionId::HabitTrackToggle,
             // The habit trio (issue #506): the section-scoped verbs
             // join the Task group at ranks 200..270 (the registry's
             // reviewed rows; the arms route no commands).
@@ -2035,6 +2039,9 @@ mod tests {
         // is pinned, the parent closes the page.
         let mut expected: Vec<Option<ActionId>> = [
             ActionId::HabitLog,
+            // The tracking row (journey plan W-2, #1305): right after
+            // the log row (the declared HABIT_CONTEXT order).
+            ActionId::HabitTrackToggle,
             ActionId::HabitUndoLog,
             ActionId::HabitRepair,
             // The HF1 trio rides the shared rank space between the
@@ -2172,6 +2179,7 @@ mod tests {
         let page = habit_context_page(&keymap, &chain, subject, &BTreeMap::new());
         let today_bound = [
             ActionId::HabitLog,
+            ActionId::HabitTrackToggle,
             ActionId::HabitSkip,
             ActionId::HabitPause,
             ActionId::HabitResume,
