@@ -60,11 +60,11 @@ mod settings_window_max_probe_tests;
 mod slider_grab_probe_tests;
 #[path = "probes/stack_window_max_probe_tests.rs"]
 mod stack_window_max_probe_tests;
+#[path = "probes/task_window_max_probe_tests.rs"]
+mod task_window_max_probe_tests;
 #[path = "probes/today_window_max_probe_tests.rs"]
 mod today_window_max_probe_tests;
 #[path = "probes/walk_probe_tests.rs"]
 mod walk_probe_tests;
 #[path = "probes/widget_framework_probe_tests.rs"]
 mod widget_framework_probe_tests;
-#[path = "probes/window_max_probe_tests.rs"]
-mod window_max_probe_tests;
