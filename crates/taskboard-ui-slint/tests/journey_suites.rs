@@ -57,10 +57,10 @@ mod status_export_journeys_support;
 mod status_surface_journeys;
 #[path = "journeys/tracker_journeys.rs"]
 mod tracker_journeys;
-#[path = "journeys/undo_family_restore_clear_surfaces_journeys.rs"]
-mod undo_family_restore_clear_surfaces_journeys;
 #[path = "journeys/undo_family_browse_parity_journeys.rs"]
 mod undo_family_browse_parity_journeys;
+#[path = "journeys/undo_family_restore_clear_surfaces_journeys.rs"]
+mod undo_family_restore_clear_surfaces_journeys;
 #[path = "journeys/undo_ui_branch_picker_journeys.rs"]
 mod undo_ui_branch_picker_journeys;
 
