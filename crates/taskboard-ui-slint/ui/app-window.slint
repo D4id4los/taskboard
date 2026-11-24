@@ -1928,7 +1928,10 @@ export component AppWindow inherits Window {
                 }
             }
             dismissed => root.export-dialog-close();
-            accepted => root.export-dialog-close();
+            // No `accepted` arm (#1191, the palette dialog's #1026
+            // precedent): the ModalDialogHost kind law fires `accepted`
+            // only for the `edit` kind — never on this confirm-kind
+            // dialog; the arm was unreachable wiring.
             ExportDialog {
                 model: root.export-model;
                 spec-picked(control, index) => root.export-spec-picked(control, index);
