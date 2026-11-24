@@ -1295,34 +1295,92 @@ fn undo_of_move_restores_stack_and_order() {
 }
 
 #[test]
-fn undo_of_task_compact_move_restores_the_order_through_move_task() {
-    // US-14 (#1031): the compact-move pair shares `MoveTask`'s inverse
-    // class — the pre-image row's (stack, order) restores through the
-    // ordinary `MoveTask`, so the undo line carries one verb family
-    // for positional edits.
+fn undo_of_task_compact_move_restores_the_pre_move_sequence() {
+    // US-14 (#1031) / B3 (2026-11-24, #1247): the compact-move pair
+    // and the same-stack reorder verb share the multi-row
+    // `InverseClass::TaskReorder` — the swap-expressing move changes
+    // two rows' orders, which the single-pre-image `MoveTask` class
+    // cannot express. The undo batch restores every touched row's
+    // pre-move order; the canonical sequence equals the pre-move
+    // sequence (the D-4 requirement pin).
     let mut h = Harness::new();
     let board = h.board();
     let stack = h.stack(board);
     let _below = h.task(stack, "below");
     let subject = h.task(stack, "subject");
-    // Widen the gap so the up slot is an interior midpoint (subject
-    // pushed to 10, below stays at 1 → midpoint 5), then compact-move
-    // the subject up.
-    h.exec(&StateCommand::MoveTask {
-        id: subject,
-        stack,
-        order: 10,
-    })
-    .expect("widened");
+    let canonical = |h: &Harness| {
+        let mut rows: Vec<_> = h.disk.tasks.values().map(|t| (t.order, t.id)).collect();
+        rows.sort();
+        rows
+    };
+    let before = canonical(&h);
+    let subject_pre_clock = h.disk.tasks[&subject].clocks.position;
     h.exec(&StateCommand::TaskMoveUp { id: subject })
         .expect("moved up");
-    assert_eq!(h.disk.tasks[&subject].order, 5, "the floor midpoint slot");
+    assert_ne!(canonical(&h), before, "the dense adjacent stroke swapped");
     h.exec(&StateCommand::Undo).expect("undone");
-    let after = &h.disk.tasks[&subject];
-    // The pre-image is the compact move's own pre-state (order 10 —
-    // the widening landed before it), never a recomputation.
-    assert_eq!(after.order, 10, "the pre-image order restored");
-    assert_eq!(after.clocks.position, ts(h.now), "fresh position clock");
+    assert_eq!(
+        canonical(&h),
+        before,
+        "the pre-move canonical sequence restored"
+    );
+    // The mover re-stamped fresh at the undo (the batch's `MoveTask`
+    // payload writes its own position clock) — asserted structurally,
+    // never against the wall clock.
+    assert_ne!(
+        h.disk.tasks[&subject].clocks.position, subject_pre_clock,
+        "the mover re-stamped at the undo"
+    );
+}
+
+#[test]
+fn undo_of_task_reorder_restores_the_whole_stack() {
+    // B3 (2026-11-24, #1247): a long-distance `TaskReorder` renumbers
+    // up to the whole stack; its undo restores the whole pre-move
+    // sequence as one batch of `MoveTask` rows (per-row order
+    // watermarks — a diverged row refuses the whole batch).
+    let mut h = Harness::new();
+    let board = h.board();
+    let stack = h.stack(board);
+    let a = h.task(stack, "a");
+    let b = h.task(stack, "b");
+    let c = h.task(stack, "c");
+    let canonical = |h: &Harness| -> Vec<_> {
+        let mut rows: Vec<(i64, _)> = h.disk.tasks.values().map(|t| (t.order, t.id)).collect();
+        rows.sort();
+        rows.into_iter().map(|(_, id)| id).collect()
+    };
+    let before = canonical(&h);
+    assert_eq!(before, vec![a, b, c]);
+    h.exec(&StateCommand::TaskReorder { id: c, target: 0 })
+        .expect("reordered");
+    assert_eq!(canonical(&h), vec![c, a, b]);
+    h.exec(&StateCommand::Undo).expect("undone");
+    assert_eq!(
+        canonical(&h),
+        before,
+        "the whole stack's pre-move sequence restored"
+    );
+    // Two stacked reorders, the newest undone first (its own stamps
+    // still stand): the older entry's recorded post-write stamps have
+    // diverged on the re-restored rows, so the second undo refuses
+    // the whole batch typed — never a partial restore (the per-row
+    // watermark law, the `HabitReorder` precedent carried verbatim).
+    h.exec(&StateCommand::TaskReorder { id: c, target: 0 })
+        .expect("reordered");
+    assert_eq!(canonical(&h), vec![c, a, b]);
+    h.exec(&StateCommand::TaskReorder { id: c, target: 3 })
+        .expect("reordered back");
+    assert_eq!(canonical(&h), vec![a, b, c]);
+    h.exec(&StateCommand::Undo)
+        .expect("the newest reorder undoes");
+    assert_eq!(canonical(&h), vec![c, a, b]);
+    let refused = h.exec(&StateCommand::Undo);
+    assert!(
+        matches!(refused, Err(CommandError::TargetNoLongerInvertible { .. })),
+        "a diverged row refuses the whole batch"
+    );
+    assert_eq!(canonical(&h), vec![c, a, b], "no partial restore landed");
 }
 
 #[test]

@@ -66,23 +66,45 @@ pub enum StateCommand {
         order: i64,
     },
     /// Move a task one step up its stack's order (US-14, #1031): the
-    /// Today-scope compact-move twin of the habit pair. The engine
-    /// resolves the stack-adjacent slot through the shared
-    /// floor-midpoint drop arithmetic (`command::floor_midpoint_order`
-    /// — the one order arithmetic the drag gap and the habit pair also
-    /// speak). A boundary stroke (already the stack's first live row)
-    /// is the typed refusal — never a wrap.
+    /// Today-scope compact-move twin of the habit pair. B3 (2026-11-24,
+    /// #1247): the engine resolves the stroke through the same
+    /// gap-index reorder law [`StateCommand::TaskReorder`] speaks — up
+    /// targets the row above's gap (`position - 1`, the habit pair's
+    /// superseded minting law verbatim) and the mover lands **beyond**
+    /// the crossed neighbour with a dense renumber; the old
+    /// floor-midpoint slot arithmetic (whose width-1 interval pinned
+    /// every dense adjacent move to a silent no-op) is retired. A
+    /// boundary stroke (already the stack's first live row) is the
+    /// typed refusal — never a wrap.
     TaskMoveUp {
         /// Task to move.
         id: TaskId,
     },
     /// Move a task one step down its stack's order (US-14, #1031).
-    /// See [`StateCommand::TaskMoveUp`] for the shared semantics; a
-    /// boundary stroke (already the stack's last live row) refuses
-    /// typed.
+    /// See [`StateCommand::TaskMoveUp`] for the shared semantics; down
+    /// targets the gap after the lower neighbour (`position + 2` —
+    /// `position + 1` is the mover's own bottom edge, the accepted
+    /// in-place no-op). A boundary stroke (already the stack's last
+    /// live row) refuses typed.
     TaskMoveDown {
         /// Task to move.
         id: TaskId,
+    },
+    /// Reorder a task by **gap index** into its stack's live sequence
+    /// (`0..=len`, clamped; B3, 2026-11-24, #1247 — the #1198 chunk A1
+    /// D1 habit law promoted to THE task-order law): the UI mints
+    /// target indices only — the engine resolves the move over the
+    /// canonical `(order, id)` row source and renumbers the stack
+    /// dense, so dense integer orders can never wedge the verb the
+    /// absolute-order [`StateCommand::MoveTask`] mint could. The
+    /// mover's own gaps (its position or `position + 1`) are the
+    /// accepted no-op. `MoveTask` stays the CLI's verb, the cross-stack
+    /// verb, and the undo inverse's payload untouched.
+    TaskReorder {
+        /// Task to move.
+        id: TaskId,
+        /// Gap index into the stack's current live sequence.
+        target: usize,
     },
     /// Delete (tombstone) a task.
     DeleteTask {
