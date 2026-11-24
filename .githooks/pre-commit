@@ -30,7 +30,30 @@ fi
 # goes through the cross-worktree memory gate: builds take turns and never
 # start below the MemAvailable floor (2026-11-17 OOM incident). fmt and the
 # slint lint stay ungated (instant, memory-trivial).
-echo "[pre-commit] memory-gate: cargo clippy --workspace --all-targets -- -D warnings"
-scripts/memory-gate.sh -- cargo clippy --workspace --all-targets --quiet -- -D warnings
+#
+# #1274: the ADMISSION MODE follows the staged diff. A docs-only commit's
+# clippy run recompiles nothing (warm incremental cache ⇒ seconds), so it
+# admits via the gate's --preflight mode (floor check, fail closed, no
+# exclusive-lock wait) instead of queueing behind a multi-hour mutants
+# shard. Any staged Rust-relevant path (*.rs, Cargo.toml/lock, .cargo
+# config) keeps the full gated-HOLD mode. The mode decision lives in
+# scripts/commit-clippy-mode.sh (self-tested by
+# tests/scripts/commit-clippy-mode-test.sh); `--preflight` is a
+# memory-gate mode, not a bypass — AGENTS §10's un-gated-cargo law holds.
+mode="$(scripts/commit-clippy-mode.sh)"
+case "$mode" in
+  preflight)
+    echo "[pre-commit] memory-gate --preflight: cargo clippy --workspace --all-targets -- -D warnings (no staged Rust paths — #1274)"
+    scripts/memory-gate.sh --preflight -- cargo clippy --workspace --all-targets --quiet -- -D warnings
+    ;;
+  gated)
+    echo "[pre-commit] memory-gate: cargo clippy --workspace --all-targets -- -D warnings"
+    scripts/memory-gate.sh -- cargo clippy --workspace --all-targets --quiet -- -D warnings
+    ;;
+  *)
+    echo "[pre-commit] commit-clippy-mode returned unknown verdict: $mode" >&2
+    exit 1
+    ;;
+esac
 
 echo "[pre-commit] OK"
