@@ -1108,10 +1108,12 @@ mod predicate_tests {
                 UndoLabel {
                     id: in_window,
                     label: "renamed".to_owned(),
+                    payload: None,
                 },
                 UndoLabel {
                     id: other,
                     label: "created".to_owned(),
+                    payload: None,
                 },
             ],
             ..UndoView::default()
