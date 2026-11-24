@@ -6,6 +6,13 @@
 //! `FocusScope` is the single key path (§5.1); `KeyBinding` is unused
 //! for any rebindable action (Q9); the keymap is applied one-way at
 //! UI start (no live re-map machinery — §5.6).
+//!
+//! Boundary note (#1308 W-2, round 6): the alarm window's window-local
+//! seams are NOT adapter installs — the lazily mounted second window
+//! wires in `lib.rs::install_alarm_callbacks` (`on_drag-by` — slint
+//! `drag-by` — plus the `drag-start` press arm and the tooltip
+//! driver), so they are deliberately absent from this file's install
+//! census and from `seam_inventory.rs`'s listed seams.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
