@@ -137,58 +137,71 @@ export component ActionMenu inherits Rectangle {
     border-color: Theme.focus-ring;
     border-radius: Theme.radius-medium;
 
-    // The quick actions bar (UX-R8 chunk-5 D-2): a leading
-    // icon-button HorizontalLayout above the Flickable — only while
-    // the model carries a shown row (empty renders nothing).
-    if (root.quick-bar.length > 0): quick-bar-row := HorizontalLayout {
-        padding-left: Theme.space-2;
-        padding-right: Theme.space-2;
-        padding-top: Theme.space-2;
-        spacing: Theme.space-1;
-        for bar-entry[bar-index] in root.quick-bar: Rectangle {
-            visible: bar-entry.visible;
-            quick-bar-button := IconButton {
-                icon: bar-entry.icon;
-                enabled: bar-entry.enabled;
-                label: bar-entry.label;
-                hint-keys: bar-entry.hint-keys;
-                // slint: menu-quick-bar-invoked
-                clicked => { root.invoke-quick-bar(bar-index); }
+    // The #1309 geometry contract: the bar and the row list share one
+    // VerticalLayout host — the bar is layout row one, the Flickable
+    // row two — so the list can never overlap (paint or hit-test
+    // over) the bar's band at any geometry, and the bar lives
+    // OUTSIDE the scroll (it never scrolls away). The overlays below
+    // stay absolute siblings after the layout (the topmost-chrome
+    // invariant is unchanged).
+    VerticalLayout {
+        width: 100%;
+        height: 100%;
+
+        // The quick actions bar (UX-R8 chunk-5 D-2): a leading
+        // icon-button HorizontalLayout above the Flickable — only
+        // while the model carries a shown row (a conditional layout
+        // child contributes zero height when absent, so the barless
+        // consumers stay bit-identical).
+        if (root.quick-bar.length > 0): quick-bar-row := HorizontalLayout {
+            padding-left: Theme.space-2;
+            padding-right: Theme.space-2;
+            padding-top: Theme.space-2;
+            spacing: Theme.space-1;
+            for bar-entry[bar-index] in root.quick-bar: Rectangle {
+                visible: bar-entry.visible;
+                quick-bar-button := IconButton {
+                    icon: bar-entry.icon;
+                    enabled: bar-entry.enabled;
+                    label: bar-entry.label;
+                    hint-keys: bar-entry.hint-keys;
+                    // slint: menu-quick-bar-invoked
+                    clicked => { root.invoke-quick-bar(bar-index); }
+                }
             }
         }
-    }
 
-    flick := Flickable {
-        // The viewport auto-tracks the content's preferred size; the
-        // Flickable scrolls when the capped panel is shorter.
-        content := VerticalLayout {
-            padding: Theme.space-2;
-            spacing: Theme.space-1;
+        flick := Flickable {
+            // The viewport auto-tracks the content's preferred size; the
+            // Flickable scrolls when the capped panel is shorter.
+            content := VerticalLayout {
+                padding: Theme.space-2;
+                spacing: Theme.space-1;
 
-            // The replace mode's back row (round-1 D6): chrome above
-            // the list — the cursor only ever addresses entries; the
-            // label is the element's address.
-            if (root.compact && root.active-group >= 0): Rectangle {
-                border-radius: Theme.radius-small;
-                background: back-hit.has-hover ? Theme.surface-hover : transparent;
-                back-row := FocusScope {
-                    width: 100%;
-                    height: 100%;
-                    accessible-role: AccessibleRole.button;
-                    accessible-label: "Back";
-                    accessible-action-default => root.level-back();
-                    back-hit := TouchArea {
-                        clicked => root.level-back();
+                // The replace mode's back row (round-1 D6): chrome above
+                // the list — the cursor only ever addresses entries; the
+                // label is the element's address.
+                if (root.compact && root.active-group >= 0): Rectangle {
+                    border-radius: Theme.radius-small;
+                    background: back-hit.has-hover ? Theme.surface-hover : transparent;
+                    back-row := FocusScope {
+                        width: 100%;
+                        height: 100%;
+                        accessible-role: AccessibleRole.button;
+                        accessible-label: "Back";
+                        accessible-action-default => root.level-back();
+                        back-hit := TouchArea {
+                            clicked => root.level-back();
+                        }
                     }
-                }
-                HorizontalLayout {
-                    padding-left: Theme.space-2;
-                    padding-right: Theme.space-2;
-                    RoleText {
-                        role: Typography.body-emphasized;
-                        text-color: Theme.text-secondary;
-                        text: "Back";
-                        vertical-alignment: center;
+                    HorizontalLayout {
+                        padding-left: Theme.space-2;
+                        padding-right: Theme.space-2;
+                        RoleText {
+                            role: Typography.body-emphasized;
+                            text-color: Theme.text-secondary;
+                            text: "Back";
+                            vertical-alignment: center;
                     }
                 }
             }
@@ -258,6 +271,7 @@ export component ActionMenu inherits Rectangle {
                         }
                     }
                 }
+            }
             }
         }
     }
