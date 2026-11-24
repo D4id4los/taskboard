@@ -587,9 +587,22 @@ fn resolve_journal_entry(
             }
             [] => {}
             [_, ..] => {
-                return Err(CommandError::AmbiguousJournalEntry {
-                    candidates: hits.iter().map(|id| id.as_uuid().to_string()).collect(),
-                });
+                // The refusal always lists journal ids (#1293): each
+                // entry-id hit maps through its roster row, so both
+                // passes carry the one identity the `--from` selector
+                // consumes.
+                let candidates: Vec<String> = hits
+                    .iter()
+                    .map(|entry_id| {
+                        rows.iter()
+                            .find(|row| row.entry_id == *entry_id)
+                            .map(|row| row.journal_id)
+                            .expect("the hit matched a roster row")
+                            .as_uuid()
+                            .to_string()
+                    })
+                    .collect();
+                return Err(CommandError::AmbiguousJournalEntry { candidates });
             }
         }
     }
@@ -1957,6 +1970,54 @@ mod tests {
 
     fn phrase_of_seconds(secs: i64) -> String {
         duration_phrase(TimeDelta::try_seconds(secs).expect("secs"))
+    }
+
+    // ---- resolve_journal_entry's ambiguous-prefix identity (#1293) ----
+
+    fn roster_row(journal_raw: u128, entry_raw: u128) -> taskboard_domain::DeletedEntryRow {
+        taskboard_domain::DeletedEntryRow {
+            entry_id: taskboard_domain::TimeEntryId::from(uuid::Uuid::from_u128(entry_raw)),
+            journal_id: taskboard_domain::JournalId::from_uuid(uuid::Uuid::from_u128(journal_raw)),
+            label: "entry".to_owned(),
+        }
+    }
+
+    /// The refusal always lists journal ids (#1293): two roster rows
+    /// whose *entry-id* uuid prefixes collide under one selector produce
+    /// an `AmbiguousJournalEntry` whose candidates are exactly the rows'
+    /// journal-id uuids — the single identity pass 1 lists and the
+    /// `--from` selector consumes. Typed structural facts; no prose.
+    #[test]
+    fn the_entry_id_pass_lists_journal_ids_in_its_refusal() {
+        // Shared high prefix on the entry ids; journal ids elsewhere.
+        let prefix = "aaaaaaaa-1111-2222-3333-44";
+        let entry_a = uuid::Uuid::parse_str(&format!("{prefix}4444444401")).unwrap();
+        let entry_b = uuid::Uuid::parse_str(&format!("{prefix}4444444402")).unwrap();
+        let journal_a = uuid::Uuid::from_u128(0x000B_EEF1);
+        let journal_b = uuid::Uuid::from_u128(0x000B_EEF2);
+        let mut state = taskboard_domain::AppState::default();
+        state.roster.deleted_entries = vec![
+            roster_row(journal_a.as_u128(), entry_a.as_u128()),
+            roster_row(journal_b.as_u128(), entry_b.as_u128()),
+        ];
+
+        let err = resolve_journal_entry(&state, prefix)
+            .expect_err("the colliding entry-id prefix is ambiguous");
+
+        let CommandError::AmbiguousJournalEntry { candidates } = err else {
+            panic!("the refusal must be the typed ambiguous variant");
+        };
+        let journals = [journal_a.as_u128(), journal_b.as_u128()];
+        assert_eq!(candidates.len(), 2, "both colliding rows are candidates");
+        for candidate in &candidates {
+            let raw = uuid::Uuid::parse_str(candidate)
+                .expect("a candidate is a uuid")
+                .as_u128();
+            assert!(
+                journals.contains(&raw),
+                "every candidate is one of the rows' journal ids"
+            );
+        }
     }
 
     // ---- duration_phrase --------------------------------------------------

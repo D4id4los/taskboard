@@ -275,7 +275,8 @@ pub enum CommandError {
         selector: String,
     },
     /// The `--from` prefix matches several restorable deletes; carries
-    /// their full uuids.
+    /// their full uuids. Candidates are always journal ids, in both
+    /// passes (#1293).
     #[error("journal selector matches several deletes — pass one of {}", candidates.join(" | "))]
     AmbiguousJournalEntry {
         /// The matched journal ids' full uuids.
