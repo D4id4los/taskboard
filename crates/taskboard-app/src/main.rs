@@ -126,21 +126,15 @@ async fn run(mut cli: Cli, raw_argv: Vec<String>) -> color_eyre::Result<()> {
     if let Some(command) = cli.command.take()
         && !daemon_run
     {
-        // The explicit `gui` verb is a process-lifecycle arm (the daemon
-        // run arm's mirror): frontend selection, not a command to relay
-        // or dispatch — a relay would try to open the window in the
-        // daemon's process. Handled before the transport routing; the
-        // lane table pins it `Local` (never relayed).
-        if matches!(command, Command::Gui) {
-            return run_gui_verb(cli.config.clone(), cli.json).await;
-        }
-        // The remediation verbs (#1249: `unlock`, `daemon restart`) are
-        // posture arms like `gui`: they act on the lock/process posture
-        // of THIS machine through the GUI remediation executor (the
-        // same typed semantics, no fork) and must never relay — a
-        // relay would act on the daemon's posture from the wrong
-        // process. Handled before the transport routing; the lane
-        // table pins them `Local` (never relayed).
+        // The process-lifecycle arms (the daemon run arm's mirror):
+        // `gui` is frontend selection, not a command to relay or
+        // dispatch — a relay would try to open the window in the
+        // daemon's process. The remediation verbs (#1249: `unlock`,
+        // `daemon restart`) act on the lock/process posture of THIS
+        // machine through the GUI remediation executor (the same
+        // typed semantics, no fork) — never relayed. All handled
+        // before the transport routing; the lane table pins them
+        // `Local`.
         match command {
             Command::Gui => return run_gui_verb(cli.config.clone(), cli.json).await,
             Command::Unlock => {

@@ -5302,8 +5302,14 @@ impl Adapter {
             (_, UiEffect::LabelsDismiss)
                 if self.label_form.take().is_some()
                     || self.label_delete_armed.take().is_some()
-                    || self.label_restore_armed.take().is_some() =>
+                    || self.label_restore_armed.take().is_some()
+                    || self.label_restore_all_armed =>
             {
+                // The bulk flag joins the disarm rung (#1245): the
+                // armed strip is a staged state, the Escape ladder's
+                // "an armed row disarms" rung owns it — the overlay
+                // closes only on the last rung.
+                self.label_restore_all_armed = false;
                 self.refresh_forced(window);
                 Vec::new()
             }
@@ -16046,6 +16052,9 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 tracing::warn!("label restore dropped: command channel full or closed");
             }
         } else {
+            // One strip at a time (the habits twin's law): arming the
+            // per-row disarm's the bulk ceremony.
+            a.label_restore_all_armed = false;
             a.label_restore_armed = Some(label);
         }
         a.refresh_forced(&window);

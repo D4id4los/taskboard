@@ -302,6 +302,61 @@ fn us1_s5_restore_all_dispatches_one_command_per_row() {
     });
 }
 
+/// US-1/S6 (#1245): Escape at the ARMED BULK strip runs the same
+/// ladder rung as the per-row twin — it disarms first (the C1 law's
+/// staged-state rung), the overlay closes only on the next Escape.
+#[test]
+fn us1_s6_escape_disarms_the_bulk_strip() {
+    let (_fx, mut state) = fixture::golden_state();
+    seed_tombstoned_label(&mut state);
+    support::harness::run_journey(state, move |harness| {
+        open_detail_first_card(harness);
+        let window = harness.handle.window();
+        window.invoke_labels_manage_asked();
+        harness.driver.advance_time(0);
+        window.invoke_label_restore_all_requested();
+        harness.driver.advance_time(0);
+        assert!(window.get_label_overlay_restore_all_armed());
+        window.invoke_labels_overlay_dismiss_requested();
+        harness.driver.advance_time(0);
+        assert!(
+            !window.get_label_overlay_restore_all_armed(),
+            "the escape rung disarmed the bulk strip"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "nothing dispatched on the escape"
+        );
+    });
+}
+
+/// US-1/S7 (#1245): arming a per-row restore disarms the armed bulk
+/// strip — one ceremony at a time (the habits twin's law).
+#[test]
+fn us1_s7_per_row_arm_disarms_the_bulk_strip() {
+    let (_fx, mut state) = fixture::golden_state();
+    seed_tombstoned_label(&mut state);
+    support::harness::run_journey(state, move |harness| {
+        open_detail_first_card(harness);
+        let window = harness.handle.window();
+        window.invoke_labels_manage_asked();
+        harness.driver.advance_time(0);
+        window.invoke_label_restore_all_requested();
+        harness.driver.advance_time(0);
+        assert!(window.get_label_overlay_restore_all_armed());
+        window.invoke_label_restore_requested(0);
+        harness.driver.advance_time(0);
+        assert!(
+            !window.get_label_overlay_restore_all_armed(),
+            "the per-row arm took the ceremony over"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the handover staged; nothing dispatched"
+        );
+    });
+}
+
 // ---- US-2: restore a deleted habit from the deleted-habits section
 // (#1290's enumeration amendment: the roster enumerates in the
 // labels-overlay section shape; the newest-only context-menu arm
