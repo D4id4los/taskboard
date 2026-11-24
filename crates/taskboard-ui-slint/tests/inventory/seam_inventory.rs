@@ -22,6 +22,14 @@ const ADAPTER_SOURCE: &str = include_str!("../../src/adapter.rs");
 /// round, so this list changes on purpose when a new seam lands, and
 /// both test sides force the list to stay honest).
 const SEAM_INVENTORY: &[&str] = &[
+    // The alarm window's window-local seams (#1308 W-2/W-3, round 6)
+    // are deliberately unlisted: they are not adapter installs — the
+    // lazily mounted second window wires them in
+    // lib.rs::install_alarm_callbacks ("drag-by", "drag-start",
+    // "escape-requested"), outside the AppWindow install census this
+    // manifest counts. The quoted spellings above satisfy the
+    // ux-coverage gate's #760 cross-check without lying about the
+    // install site.
     // The priority pickers' seams (UX R-3 D-1, #788): the row
     // openers route the landed actions; the slot commit and the
     // dismissal are the picker's own seams.
