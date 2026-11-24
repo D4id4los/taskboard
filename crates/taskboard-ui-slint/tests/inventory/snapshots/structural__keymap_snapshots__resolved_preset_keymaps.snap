@@ -13,6 +13,9 @@ expression: rows
             - "Ctrl+,"
           action: app.settings
         - sequence:
+            - "Ctrl+Shift+,"
+          action: app.status-panel-open
+        - sequence:
             - Alt+1
           action: nav.focus-board
         - sequence:
@@ -661,6 +664,9 @@ expression: rows
         - sequence:
             - Escape
           action: task.move.cancel
+        - sequence:
+            - "Ctrl+Shift+,"
+          action: app.status-panel-open
         - sequence:
             - Ctrl+c
             - Ctrl+b
@@ -1370,6 +1376,9 @@ expression: rows
   contexts:
     - context: global
       bindings:
+        - sequence:
+            - "Ctrl+Shift+,"
+          action: app.status-panel-open
         - sequence:
             - Ctrl+Shift+t
           action: view.today
