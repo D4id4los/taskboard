@@ -3534,6 +3534,13 @@ impl Adapter {
                 .collect::<Vec<crate::TimeSlotRow>>(),
         )));
         window.set_timer_setter_time_nearest_row(i32::try_from(nearest).unwrap_or(0));
+        // The echoed selection halves (#1306): the day + insistence
+        // rows render these mirrors — reply-sourced echo (r2 D27),
+        // one push path for both adapter-owned rows. The wipe rides
+        // here too: `clear_timer_setter` reseeds both, so a fresh
+        // open pushes 0/0.
+        window.set_timer_setter_day_index(i32::try_from(self.setter_day_offset).unwrap_or(0));
+        window.set_timer_setter_insist_index(i32::from(self.setter_insist));
         window.set_timer_setter_fire_time(SharedString::from(self.setter_fire.map_or(
             String::new(),
             |fire| {
@@ -17274,7 +17281,12 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // the popover adds zero parse paths (the one-parser grep
     // contract). Quick presets are quick-fill, not auto-commit (D-T6).
     install_seam!(window: window.on_timers_setter_opened, adapter: adapter;
-    bind mut (a, window), args (), {        window.set_timer_setter_open(true);
+    bind mut (a, window), args (), {        // D3 (#1306): the panel mounts conditionally (its preset
+    // in-out dies with it), but the window-root two-way mirror
+    // outlives the panel — the open seam reseeds it (the
+    // focus-nonce seam's spelling).
+    window.set_timer_setter_preset_index(0);
+    window.set_timer_setter_open(true);
     a.refresh_forced(&window);
     // The focus hand-off lands after the mount pass (the
     // date-picker's changed-focus idiom; an init grab alone is
@@ -17368,8 +17380,12 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     a.refresh_forced(&window);
 
     });
-    install_seam!(window: window.on_timer_setter_insist_picked, adapter: adapter; [bare_mut]
-    bind mut (a), args (index), {        a.setter_insist = index == 1;
+    install_seam!(window: window.on_timer_setter_insist_picked, adapter: adapter;
+    bind mut (a, window), args (index), {        a.setter_insist = index == 1;
+    // D1 (#1306): the standard form, not the bare_mut carve-out —
+    // the echo is reply-sourced, so the pick must re-push through
+    // the derive pass (the day seam's shape).
+    a.refresh_forced(&window);
 
     });
     let commit = Rc::clone(adapter);

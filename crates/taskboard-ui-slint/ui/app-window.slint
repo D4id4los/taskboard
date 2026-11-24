@@ -1214,6 +1214,12 @@ export component AppWindow inherits Window {
             fire-time: root.timer-setter-fire-time;
             commit-enabled: root.timer-setter-commit-enabled;
             focus-nonce: root.timer-setter-focus-nonce;
+            day-index: root.timer-setter-day-index;
+            insist-index: root.timer-setter-insist-index;
+            // slint: timer-setter-preset-picked — the local echo half
+            // rides the two-way mirror (the panel's in-out owns the
+            // write; the root property only exposes it structurally).
+            preset-index <=> root.timer-setter-preset-index;
             preset-picked(index) => root.timer-setter-preset-picked(index);
             quick-toggled() => root.timer-setter-quick-toggled();
             time-edited(t) => root.timer-setter-time-edited(t);
@@ -2480,6 +2486,15 @@ export component AppWindow inherits Window {
     // two views: the popover edits and the inline text form's
     // validity mirror share the same `timer_when_draft`).
     in-out property <bool> timer-setter-open: false;
+    // The setter's echoed selection halves (#1306): day + insistence
+    // are the adapter's pushed mirrors (reply-sourced echo, r2 D27);
+    // the preset index is Slint-local (a fill, not a selection, D-T6)
+    // — the window root only mirrors it for the structural pin, and
+    // the open seam reseeds it (the mount is conditional, but the
+    // mirror outlives the panel).
+    in-out property <int> timer-setter-day-index: 0;
+    in-out property <int> timer-setter-insist-index: 0;
+    in-out property <int> timer-setter-preset-index: 0;
     // The quota popover's pushed halves (W-5, #961): the mount flag,
     // the adapter-held stepper draft, its typed validity (0 = the
     // invalid draft — commit blocked), and the locked kind phrase.

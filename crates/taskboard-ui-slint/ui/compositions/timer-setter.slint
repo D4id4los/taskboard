@@ -50,6 +50,16 @@ export component TimerSetter inherits Rectangle {
     // open seam bumps the nonce after the panel mounts — a mount-time
     // init grab alone is dropped (the DatePicker focus-on-mount
     // precedent).
+    // The echoed selection halves (#1306): the widget is deliberately
+    // stateless (r2 D26/D27), so the caller owns the feedback half.
+    // Day + insistence render the adapter's pushed mirrors
+    // (reply-sourced echo, r2 D27 — the adapter pushes, the widget
+    // renders); the quick presets are quick-fill, not a selection
+    // (D-T6), so nothing owns them — the echo is Slint-local
+    // (the timers.slint insistence-row precedent).
+    in property <int> day-index: 0;
+    in property <int> insist-index: 0;
+    in-out property <int> preset-index: 0;
     in property <int> focus-nonce: 0;
     changed focus-nonce => { setter-scope.focus(); }
 
@@ -108,8 +118,12 @@ export component TimerSetter inherits Rectangle {
                 // maps to `presentation::TIMER_PRESETS_MIN`.
                 SegmentedControl {
                     options: ["1m", "5m", "10m", "25m", "1h"];
+                    selected-index: root.preset-index;
                     group-label: "Quick presets";
-                    picked(index) => { root.preset-picked(index); }
+                    picked(index) => {
+                        root.preset-index = index;
+                        root.preset-picked(index);
+                    }
                 }
                 label-field := TextField {
                     placeholder: "Timer label";
@@ -136,6 +150,7 @@ export component TimerSetter inherits Rectangle {
                     }
                     SegmentedControl {
                         options: ["Today", "Tomorrow"];
+                        selected-index: root.day-index;
                         group-label: "Day";
                         picked(index) => { root.day-picked(index); }
                     }
@@ -148,6 +163,7 @@ export component TimerSetter inherits Rectangle {
                 }
                 SegmentedControl {
                     options: ["Normal", "Alarm"];
+                    selected-index: root.insist-index;
                     group-label: "Insistence";
                     picked(index) => { root.insist-picked(index); }
                 }
