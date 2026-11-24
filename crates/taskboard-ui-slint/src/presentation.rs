@@ -7861,6 +7861,11 @@ pub fn habit_rows(
             let count = state.habits.log.get(&key).map_or(0, |e| e.count);
             let quota = habit.target.quota().get();
             let repair_target = habit_repair_target(habit, &state.habits.log, now, day);
+            let open_habit_entry = state
+                .habits
+                .time_log
+                .values()
+                .find(|entry| entry.habit == habit.id && entry.end.is_none());
             HabitRow {
                 habit: habit.id,
                 title: habit.title.clone(),
@@ -7903,17 +7908,10 @@ pub fn habit_rows(
                     .effective_scheduled_days()
                     .is_some_and(|set| !set.contains(today.weekday())),
                 // W-4/D-7 (#1305): the open entry IS the running timer —
-                // the fold reads the map, nothing ticks.
-                running_here: state
-                    .habits
-                    .time_log
-                    .values()
-                    .any(|entry| entry.habit == habit.id && entry.end.is_none()),
-                elapsed_phrase: state
-                    .habits
-                    .time_log
-                    .values()
-                    .find(|entry| entry.habit == habit.id && entry.end.is_none())
+                // the fold reads the map, nothing ticks. One scan feeds
+                // both halves (the running bit and the elapsed phrase).
+                running_here: open_habit_entry.is_some(),
+                elapsed_phrase: open_habit_entry
                     .map_or_else(String::new, |entry| open_elapsed_phrase(entry.start, now)),
             }
         })
