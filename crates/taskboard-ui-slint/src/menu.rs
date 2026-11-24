@@ -1018,9 +1018,20 @@ mod tests {
     /// the five, and 60+ context-bound verbs (the walk, pickers,
     /// editors, overlays) are group-less by design. G6 holds with the
     /// page as landed. The plan's R-3 text carried a dated erratum at
-    /// landing; the re-curation question is queued upstream of this
-    /// guard (see the D4 report / the #1184 comment). No surface
-    /// change ships in D4.
+    /// landing.
+    ///
+    /// **Decision (#1289, 2026-11-24): the law re-bases on the
+    /// measured registry — no re-curation.** The "fifth row clips"
+    /// premise no longer reproduces: G6
+    /// (`the_open_menu_closes_its_box_above_the_status_bar_at_every_geometry`)
+    /// passes with the full root page as landed at every measured
+    /// geometry, the kiosk panel's 1024×600 included — that passing
+    /// run is the re-measurement the law cites. The registry stays as
+    /// measured: the curated five LEAD every root page; the group-less
+    /// set is exactly the enumerated census below (the 2026-11-23
+    /// measurement, absorbed 2026-11-24). A new group-less
+    /// registration still fails this guard and must join a group page
+    /// or amend the census with a dated note. No surface change ships.
     ///
     /// What the guard enforces instead, without weakening the teeth:
     /// 1. over every view chain the root page's quick rows LEAD with
