@@ -439,6 +439,10 @@ export component AppWindow inherits Window {
     // (round-7 D-7.1): the adapter owns both; the overlay mounts
     // exactly while Flow::EditRecur holds.
     in-out property <bool> recur-editor-open: false;
+    // The refused-commit mirror (#1221): set by the commit funnel's
+    // re-check rejection (the commit button and the outside-click
+    // accept share the seam), cleared on any draft edit and on close.
+    in-out property <bool> recur-draft-invalid: false;
     in-out property <RecurEditorModel> recur-editor-model;
     // The export dialog's window-level mount bit + pushed model (the
     // J2 export plan W-1..W-5). The mount bit is adapter-minted (the
@@ -1879,6 +1883,7 @@ export component AppWindow inherits Window {
             accepted => root.recur_commit_clicked();
             RecurEditor {
             model: root.recur-editor-model;
+            commit-refused: root.recur-draft-invalid;
             pattern-kind-picked(i) => root.recur-pattern-picked(i);
             every-days-edited(t) => root.recur-every-days-edited(t);
             weekly-interval-edited(t) => root.recur-weekly-interval-edited(t);

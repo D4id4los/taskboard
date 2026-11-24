@@ -67,6 +67,11 @@ export struct RecurEditorModel {
 
 export component RecurEditor inherits Rectangle {
     in property <RecurEditorModel> model;
+    // The commit funnel's refusal (#1221): a commit attempt (button
+    // or outside-click accept) over an invalid staged draft set the
+    // adapter's flag; the caption names the consequence while it
+    // holds (the dialog stays open — unchanged).
+    in property <bool> commit-refused: false;
 
     // The edit mirrors — every keystroke/pick rides up the moment it
     // happens; the adapter owns the buffer (one truth).
@@ -246,6 +251,15 @@ export component RecurEditor inherits Rectangle {
                 role: Typography.caption;
                 text-color: root.model.echo-valid ? Theme.text-secondary : Semantic.danger;
                 text: root.model.echo;
+                overflow: elide;
+            }
+
+            // -- The refused-commit caption (#1221): bound to the
+            //    typed flag, not to any text --
+            if (root.commit-refused): RoleText {
+                role: Typography.caption;
+                text-color: Semantic.danger;
+                text: "The repeat rule is not complete yet — fix the marked fields, then commit again.";
                 overflow: elide;
             }
 

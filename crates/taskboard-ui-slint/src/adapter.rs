@@ -581,6 +581,13 @@ pub(crate) struct Adapter {
     /// funnel re-mints the whole buffer and lands the rule here just
     /// before routing; consumed by the commit dispatch.
     recur_draft_rule: Option<taskboard_domain::RecurRule>,
+    /// The recur editor's refused-commit flag (#1221): set when the
+    /// commit funnel's re-check rejects the staged draft (the commit
+    /// button and the outside-click accept share the seam — both
+    /// accept paths surface through it), cleared on any draft field
+    /// edit and on editor close. Mirrored onto
+    /// `recur-draft-invalid` for the caption.
+    recur_draft_invalid: bool,
     /// The recur row's adapter-owned flags (issue #506, plan D-8):
     /// the inline pause editor and the armed confirm strip — cleared
     /// when the subject stops recurring (the buffers-never-outlive-
@@ -962,6 +969,10 @@ impl Adapter {
         // contract — the widget never holds state).
         let recur_open = matches!(self.view_state.flow(), Flow::EditRecur { .. });
         window.set_recur_editor_open(recur_open);
+        // The refused-commit mirror (#1221): rides the editor's open
+        // state — the flag dies with the flow (buffers-never-outlive-
+        // the-flow rule).
+        window.set_recur_draft_invalid(recur_open && self.recur_draft_invalid);
         if recur_open {
             window.set_recur_editor_model(self.recur_editor_model());
         }
@@ -5306,6 +5317,9 @@ impl Adapter {
             // the commit funnel). Insert/Activate stay the named
             // inert (the class row): only Escape cancels.
             (Flow::EditRecur { .. }, UiEffect::SetMode(Mode::Normal)) => {
+                // Escape's clean close (#1221): the refused-commit
+                // flag dies with the flow.
+                self.set_recur_draft_invalid(window, false);
                 self.view_state.end_edit_recur()
             }
             // vi's `i`/`a` open the view's editing flow rather than
@@ -7604,6 +7618,15 @@ impl Adapter {
     /// The habit confirm staging's disarm (#1115): a menu close
     /// clears all three armed one-shots (convert, remove, restore) —
     /// the one-subject law's close leg.
+    /// The refused-commit flag's push (#1221): the field and the
+    /// window mirror move together — the edit seams' `refresh_forced`
+    /// pass does not run the shell `sync`, so the mutation sites push
+    /// the half themselves.
+    fn set_recur_draft_invalid(&mut self, window: &AppWindow, invalid: bool) {
+        self.recur_draft_invalid = invalid;
+        window.set_recur_draft_invalid(invalid);
+    }
+
     fn disarm_habit_confirm_staging(&mut self) {
         self.habit_convert_armed = None;
         self.habit_remove_armed = None;
@@ -12246,6 +12269,7 @@ pub(crate) fn install(
         convert_target: None,
         recur_edit_target: None,
         recur_draft_rule: None,
+        recur_draft_invalid: false,
         recur_pause_open: false,
         habit_pause_open: false,
         habit_pause_target: None,
@@ -12864,6 +12888,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.pattern = kind;
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12876,6 +12901,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.monthly_mode = mode;
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12889,6 +12915,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.bound = bound;
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12902,6 +12929,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.monthly_nth_weekday = crate::presentation::weekday_of_slot(slot);
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12915,6 +12943,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.weekdays[slot] = !editor.weekdays[slot];
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12925,6 +12954,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.every_days = text.to_string();
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12932,6 +12962,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.weekly_interval = text.to_string();
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12939,6 +12970,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.monthly_day = text.to_string();
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12946,6 +12978,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.monthly_nth = text.to_string();
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12953,6 +12986,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.until_text = text.to_string();
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12960,6 +12994,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     bind mut (a, window), args (text), {        if let Some(editor) = a.view_state.recur_editor_mut() {
             editor.count = text.to_string();
         }
+        a.set_recur_draft_invalid(&window, false);
         a.refresh_forced(&window);
 
     });
@@ -12988,8 +13023,13 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
             return;
         };
         let Ok(rule) = crate::presentation::assemble_recur_draft(&draft, &head, day, now) else {
+            // The refusal is surfaced (#1221): the editor stays open
+            // and the invalid flag rides the mirror (the caption's
+            // bound) — the no-op dispatch contract is untouched.
+            a.set_recur_draft_invalid(&window, true);
             return; // an invalid draft dispatches nothing
         };
+        a.set_recur_draft_invalid(&window, false);
         a.recur_edit_target = Some(task);
         a.recur_draft_rule = Some(rule);
         a.route(&window, ActionId::SeriesEditCommit);
@@ -13006,6 +13046,7 @@ fn install_recur_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
     install_seam!(window: window.on_recur_editor_cancel_clicked, adapter: adapter;
     bind mut (a, window), args (), {        a.recur_edit_target = None;
         a.recur_draft_rule = None;
+        a.set_recur_draft_invalid(&window, false);
         let outcomes = a.view_state.end_edit_recur();
         a.apply_outcomes(&window, &outcomes);
 
