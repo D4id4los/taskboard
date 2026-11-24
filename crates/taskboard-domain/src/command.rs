@@ -734,17 +734,17 @@ fn bound_admits(app: &AppState, rule: &RecurRule, next_date: NaiveDate) -> bool 
     }
 }
 
-/// The drop-slot order (D-C13, US-14's shared arithmetic): the **floor
-/// midpoint of the drop slot's free interval** — `prev`/`next` are the
-/// orders bracketing the slot (`None` at either end; the empty row
-/// source mints 0). The ONE order arithmetic: the completion spawn's
-/// `insertion_order_after` expresses the same convention, and the
-/// `TaskMoveUp`/`TaskMoveDown` compact-move rule resolves its
-/// stack-adjacent slot through it — a second, divergent order
-/// arithmetic is the round's named finding. (The UI's habit reorder
-/// no longer delegates here: #1198 chunk A1 D1 moved it onto
-/// engine-side gap-index reorders — a dense list has no free integer
-/// to floor-midpoint into.)
+/// The drop-slot order (D-C13): the **floor midpoint of the drop
+/// slot's free interval** — `prev`/`next` are the orders bracketing
+/// the slot (`None` at either end; the empty row source mints 0). B3
+/// (2026-11-24, #1247): NO move path delegates here anymore — the
+/// compact-move pair and the board's same-stack drag-drop both moved
+/// onto engine-side gap-index reorders (`StateCommand::TaskReorder` —
+/// a dense list has no free integer to floor-midpoint into, and the
+/// width-1 interval's tie was the shared defect). The remaining
+/// callers are insertion-shaped, not crossing moves: the completion
+/// spawn's `insertion_order_after` and the end-gap minting (the
+/// free-interval midpoint has room there by construction).
 #[must_use]
 pub fn floor_midpoint_order(prev: Option<i64>, next: Option<i64>) -> i64 {
     match (prev, next) {
@@ -755,14 +755,91 @@ pub fn floor_midpoint_order(prev: Option<i64>, next: Option<i64>) -> i64 {
     }
 }
 
+/// The one same-stack task reorder resolution (B3, 2026-11-24, #1247 —
+/// the #1198 chunk A1 D1 habit law verbatim, one reorder law two
+/// entity kinds): `target` is a gap index into the stack's live rows
+/// in canonical `(order, id)` order (clamped `0..=len` by the caller's
+/// grammar); the mover's own gaps (`target == position ||
+/// target == position + 1`) are the accepted `no_op`; otherwise
+/// remove/insert and **renumber the stack's live rows dense `0..n`**,
+/// upserting only changed rows — each stamping the `MoveTask` stamp
+/// field (`clocks.position`) verbatim — plus the stack's board flush.
+/// The `TaskReorder` arm and the `TaskMoveUp`/`TaskMoveDown` pair both
+/// plan through here: no second arithmetic.
+fn task_reorder_plan(
+    app: &AppState,
+    id: TaskId,
+    target: usize,
+    ids: &dyn IdGenerator,
+    now: DateTime<Utc>,
+    author: Option<crate::ids::AuthorId>,
+) -> Result<CommandPlan, CommandError> {
+    let task = live_task(app, id)?;
+    let mut rows: Vec<Task> = app
+        .tasks
+        .values()
+        .filter(|t| t.is_live() && t.stack == task.stack)
+        .cloned()
+        .collect();
+    rows.sort_by_key(|t| (t.order, t.id));
+    let position = rows
+        .iter()
+        .position(|t| t.id == id)
+        .expect("the live guard enumerated the mover");
+    // The pointer grammar's past-end gap clamps to the append slot;
+    // the mover's own edges are the accepted in-place drops (the
+    // board's `confirm_drag_move` precedent).
+    let target = target.min(rows.len());
+    if target == position || target == position + 1 {
+        return Ok(no_op());
+    }
+    let moved = rows.remove(position);
+    let insert_at = if target <= position {
+        target
+    } else {
+        target - 1
+    };
+    rows.insert(insert_at, moved);
+    // Renumber the stack dense `0..n` (the #1198 D1 recorded
+    // decision): the stack stays gap-free forever, which is what
+    // keeps every future slot expressible. Only the changed rows
+    // upsert, each stamping the position clock (the `MoveTask` stamp
+    // field, kept verbatim per the plan's D-1), with the stack's
+    // board flush riding the batch.
+    let mut actions: Vec<PersistenceAction> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let order = i64::try_from(index).ok()?;
+            (row.order != order).then(|| {
+                let mut updated = row.clone();
+                updated.order = order;
+                updated.clocks.position = now;
+                updated.authors.position = author;
+                PersistenceAction::UpsertTask(updated)
+            })
+        })
+        .collect();
+    if let Some(board) = app.stacks.get(&task.stack).map(|s| s.board) {
+        actions.push(board_flush(board, ids, now));
+    }
+    Ok(CommandPlan {
+        actions,
+        outcome: CommandOutcome::Applied,
+    })
+}
+
 /// The successor's insertion order after `head` in its stack (D-E4): the
 /// least live order strictly above the head's decides — no candidate
 /// (head is last) appends at `head.order + 1`; an adjacent candidate
 /// (`gap == 1`) ties *the head only* (the canonical `(order, id)` sort
 /// plus `UUIDv7` minting resolve the tie; all orders strictly between two
 /// adjacent tasks' orders are free, so no third task can share it);
-/// otherwise the floor midpoint of the free interval. The single source
-/// the later habit-drag work (D-C13) reuses.
+/// otherwise the floor midpoint of the free interval. B3 (2026-11-24,
+/// #1247): this is a NEW-ROW insertion, not a crossing move — the
+/// adjacency tie here is a spawn landing level with its head, not the
+/// move geometry defect; every MOVE path now speaks gap-index
+/// reorders (`StateCommand::TaskReorder`) instead.
 fn insertion_order_after(app: &AppState, head: &Task) -> i64 {
     let next_order = app
         .tasks
@@ -1377,15 +1454,18 @@ pub fn plan_command(
                 outcome: CommandOutcome::Applied,
             })
         }
-        // The Today compact-move pair (US-14, #1031): the one-shot
-        // twins of the habit keyboard reorder. The engine resolves the
-        // stack-adjacent slot itself — the row source is the stack's
-        // live rows in the canonical `(order, id)` order (the same
-        // derivation the Today sections render from), and the slot
-        // arithmetic is the shared `floor_midpoint_order` (the drag
-        // gap's and the habit pair's exact convention: a gap-1
-        // neighbour ties, the canonical sort resolves). A boundary
-        // stroke refuses typed — the pair never wraps (US-14/AC-2).
+        // The Today compact-move pair (US-14, #1031; B3 2026-11-24,
+        // #1247): the one-shot twins of the habit keyboard reorder.
+        // The arms keep their command shapes but DELEGATE to the same
+        // gap-index resolution `TaskReorder` speaks (one reorder law,
+        // two entity kinds): up targets the row above's gap
+        // (`position - 1`), down the gap after the lower neighbour
+        // (`position + 2` — the habit pair's superseded minting law,
+        // `habit_move_slots`, verbatim). A missing gap — either end of
+        // the stack — is the typed `TaskAtBoundary` refusal; the pair
+        // never wraps (US-14/AC-2). The old floor-midpoint slot
+        // arithmetic (whose width-1 interval pinned every dense
+        // adjacent move to a silent no-op) is retired.
         StateCommand::TaskMoveUp { id } | StateCommand::TaskMoveDown { id } => {
             let task = live_task(app, *id)?;
             let up = matches!(command, StateCommand::TaskMoveUp { .. });
@@ -1396,53 +1476,24 @@ pub fn plan_command(
                 .collect();
             rows.sort_by_key(|t| (t.order, t.id));
             let position = rows.iter().position(|t| t.id == *id);
-            // The gap-1 tie is resolved explicitly on BOTH sides: the
-            // raw floor midpoint of a width-1 interval lands on the
-            // neighbour's own order when stepping up (`prev + 0/2`),
-            // which would collide with the neighbour instead of tying
-            // on the mover's own order — so both arms pin the width-1
-            // slot to `task.order` and the no-op branch below keeps
-            // the row where it is (the down arm happened to reach the
-            // tie through the midpoint; the up arm did not).
-            let slot = position.and_then(|position| {
-                let neighbour = if up {
-                    position
-                        .checked_sub(1)
-                        .and_then(|i| rows.get(i))
-                        .map(|t| t.order)
-                } else {
-                    rows.get(position + 1).map(|t| t.order)
-                };
-                neighbour.map(|neighbour| {
-                    if task.order.abs_diff(neighbour) == 1 {
-                        task.order
-                    } else if up {
-                        floor_midpoint_order(Some(neighbour), Some(task.order))
-                    } else {
-                        floor_midpoint_order(Some(task.order), Some(neighbour))
-                    }
-                })
-            });
-            let Some(order) = slot else {
+            let target = if up {
+                position.and_then(|p| p.checked_sub(1))
+            } else {
+                position.and_then(|p| (p + 2 <= rows.len()).then_some(p + 2))
+            };
+            let Some(target) = target else {
                 return Err(CommandError::TaskAtBoundary(*id));
             };
-            if order == task.order {
-                // The habit pair's accepted no-op: a gap-1 neighbour
-                // ties on the mover's own order, the canonical sort
-                // keeps the row where it is.
-                return Ok(no_op());
-            }
-            let mut updated = task.clone();
-            updated.order = order;
-            updated.clocks.position = now;
-            updated.authors.position = author;
-            Ok(CommandPlan {
-                actions: vec![
-                    PersistenceAction::UpsertTask(updated),
-                    enqueue(LocalOp::MoveTask(*id), ids, now),
-                ],
-                outcome: CommandOutcome::Applied,
-            })
+            task_reorder_plan(app, *id, target, ids, now, author)
+        }
+        // The same-stack reorder verb (B3, 2026-11-24, #1247 — the
+        // #1198 chunk A1 D1 habit law promoted to THE task-order law):
+        // the UI mints a gap index, the engine resolves the move over
+        // the stack's canonical `(order, id)` row source and renumbers
+        // dense. The board drag-drop consumer and the compact-move
+        // pair both land here.
+        StateCommand::TaskReorder { id, target } => {
+            task_reorder_plan(app, *id, *target, ids, now, author)
         }
         StateCommand::DeleteTask { id } => {
             // Terminal intent: a repeat is an accepted no-op, not an error.
@@ -4973,47 +5024,77 @@ mod tests {
     }
 
     // ---- US-14 (#1031): the Today compact-move pair -----------------
-    // The engine resolves the stack-adjacent slot through the shared
-    // floor-midpoint arithmetic (`floor_midpoint_order` — the drag
-    // gap's and the habit pair's exact convention) and refuses the
-    // boundary typed: no wrap (the chunk plan's traps).
+    // B3 (2026-11-24, #1247): the pair delegates to the same gap-index
+    // resolution `TaskReorder` speaks — one reorder law, two entity
+    // kinds. A compact move lands the mover BEYOND the crossed
+    // neighbour (remove/insert + dense renumber); the pins assert the
+    // canonical row sequence, never order values (D-6). The boundary
+    // refusal stays typed: no wrap.
+
+    /// The stack's canonical `(order, id)` id sequence with the plan's
+    /// upserts applied — the sequence the Today section renders from.
+    fn canonical_task_seq(app: &AppState, plan: &CommandPlan) -> Vec<TaskId> {
+        let mut tasks = app.tasks.clone();
+        for action in &plan.actions {
+            if let PersistenceAction::UpsertTask(t) = action {
+                tasks.insert(t.id, t.clone());
+            }
+        }
+        let mut rows: Vec<(i64, TaskId)> = tasks
+            .values()
+            .filter(|t| t.is_live() && t.stack == stack_id())
+            .map(|t| (t.order, t.id))
+            .collect();
+        rows.sort();
+        rows.into_iter().map(|(_, id)| id).collect()
+    }
 
     #[test]
-    fn us14_s1_task_move_up_resolves_the_floor_midpoint_slot() {
+    fn us14_s1_task_move_up_lands_the_mover_beyond_the_crossed_neighbour() {
         let (mut app, outbox) = base();
-        // Sibling below at 0, subject at 10: the free interval is
-        // (0, 10) — the shared floor midpoint lands at 5.
+        // Sparse sibling above at 0, subject at 10: up crosses it — the
+        // mover takes the top of the canonical sequence, whatever the
+        // renumbered order values are.
         let mut sibling = task(TASK + 1, stack_id(), true);
         sibling.order = 0;
-        app.tasks.insert(sibling.id, sibling);
+        let sibling_id = sibling.id;
+        app.tasks.insert(sibling_id, sibling);
         let subject = app.tasks.get_mut(&task_id()).expect("subject");
         subject.order = 10;
         let plan = run(&app, &outbox, &StateCommand::TaskMoveUp { id: task_id() }).unwrap();
         assert_eq!(plan.outcome, CommandOutcome::Applied);
-        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
-            panic!("first action must be the upsert");
-        };
-        assert_eq!(updated.order, 5);
-        assert_eq!(updated.clocks.position, now());
-        let PersistenceAction::EnqueueOp(op) = &plan.actions[1] else {
-            panic!("second action must be the enqueue");
-        };
-        assert!(matches!(op.op, LocalOp::MoveTask(id) if id == task_id()));
+        assert_eq!(
+            canonical_task_seq(&app, &plan),
+            vec![task_id(), sibling_id],
+            "the mover lands beyond the crossed neighbour"
+        );
+        let changed: Vec<&Task> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::UpsertTask(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert!(changed.iter().all(|t| t.clocks.position == now()));
     }
 
     #[test]
-    fn us14_s1_task_move_down_resolves_the_floor_midpoint_slot() {
+    fn us14_s1_task_move_down_lands_the_mover_beyond_the_crossed_neighbour() {
         let (mut app, outbox) = base();
         let mut sibling = task(TASK + 1, stack_id(), true);
         sibling.order = 10;
-        app.tasks.insert(sibling.id, sibling);
+        let sibling_id = sibling.id;
+        app.tasks.insert(sibling_id, sibling);
         let subject = app.tasks.get_mut(&task_id()).expect("subject");
         subject.order = 0;
         let plan = run(&app, &outbox, &StateCommand::TaskMoveDown { id: task_id() }).unwrap();
-        let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
-            panic!("first action must be the upsert");
-        };
-        assert_eq!(updated.order, 5);
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            canonical_task_seq(&app, &plan),
+            vec![sibling_id, task_id()],
+            "the mover lands beyond the crossed neighbour"
+        );
     }
 
     #[test]
@@ -5058,19 +5139,39 @@ mod tests {
     }
 
     #[test]
-    fn us14_task_move_adjacent_gap1_tie_is_the_accepted_no_op() {
-        // The habit pair's exact convention: a gap-1 neighbour ties the
-        // mover's own order (the canonical `(order, id)` sort keeps the
-        // row where it is) — the accepted no-op, not a second
-        // arithmetic.
+    fn us14_task_move_dense_adjacent_stroke_swaps_the_neighbour() {
+        // B3 (2026-11-24, #1247): the superseded gap-1 "accepted no-op"
+        // pin — on dense integer orders every adjacent pair is gap-1,
+        // so the tie made every adjacent compact move dead. The desired
+        // semantics: the stroke swaps the rows in canonical sequence.
         let (mut app, outbox) = base();
         let mut sibling = task(TASK + 1, stack_id(), true);
         sibling.order = 2;
-        app.tasks.insert(sibling.id, sibling);
+        let sibling_id = sibling.id;
+        app.tasks.insert(sibling_id, sibling);
         let subject = app.tasks.get_mut(&task_id()).expect("subject");
         subject.order = 1;
         let plan = run(&app, &outbox, &StateCommand::TaskMoveDown { id: task_id() }).unwrap();
-        assert_eq!(plan.outcome, CommandOutcome::NoOp);
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(canonical_task_seq(&app, &plan), vec![sibling_id, task_id()]);
+        // Symmetric up stroke, over the first stroke's applied state.
+        let mut applied = app.clone();
+        for action in &plan.actions {
+            if let PersistenceAction::UpsertTask(t) = action {
+                applied.tasks.insert(t.id, t.clone());
+            }
+        }
+        let plan = run(
+            &applied,
+            &outbox,
+            &StateCommand::TaskMoveUp { id: task_id() },
+        )
+        .unwrap();
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            canonical_task_seq(&applied, &plan),
+            vec![task_id(), sibling_id]
+        );
     }
 
     #[test]
@@ -5083,11 +5184,14 @@ mod tests {
         );
     }
 
-    // The chunk plan's Σ/order property (the habit pair's established
-    // pattern over the new engine rule): for randomized order
-    // vectors, a successful compact move permutes exactly one row's
-    // order, keeps it inside the bracket it stepped over, and the
-    // boundary rows refuse typed (no wrap).
+    // The chunk plan's re-stated property (B3, 2026-11-24, §2-3 — the
+    // superseded one-row-order oracle): for randomized order vectors,
+    // a compact move permutes the canonical sequence by exactly one
+    // removal + insertion (the mover lands beyond the crossed
+    // neighbour; every other row keeps its relative sequence, though
+    // NOT its order value — the renumber changes values, not
+    // sequence), the post orders are dense, and the boundary rows
+    // refuse typed (no wrap).
     proptest! {
         #![proptest_config(crate::test_support::proptest_config(64))]
 
@@ -5120,7 +5224,6 @@ mod tests {
             }
             let pick = pick % n;
             let subject = ids[pick];
-            let task_order = orders[pick];
             let command = if up {
                 StateCommand::TaskMoveUp { id: subject }
             } else {
@@ -5135,73 +5238,290 @@ mod tests {
                 Err(error) => panic!("unexpected refusal {error:?}"),
                 Ok(plan) => {
                     prop_assert!(!at_boundary, "a boundary stroke never plans");
-                    // The accepted gap-1 tie: the neighbour sits at
-                    // distance 1, the mover ties on its own order and
-                    // the stroke is a no-op (empty plan).
-                    let neighbour = if up {
-                        orders.get(pick.checked_sub(1).expect("non-boundary"))
-                    } else {
-                        orders.get(pick + 1)
+                    prop_assert_eq!(&plan.outcome, &CommandOutcome::Applied);
+                    let seq = canonical_task_seq(&app, &plan);
+                    // The sequence oracle: exactly one removal +
+                    // insertion past the crossed neighbour.
+                    let mut expected = ids.clone();
+                    expected.remove(pick);
+                    let insert_at = if up { pick - 1 } else { pick + 1 };
+                    expected.insert(insert_at, subject);
+                    prop_assert_eq!(&seq, &expected);
+                    // Post orders are dense non-negative, duplicate-free.
+                    let mut tasks = app.tasks.clone();
+                    for action in &plan.actions {
+                        if let PersistenceAction::UpsertTask(t) = action {
+                            tasks.insert(t.id, t.clone());
+                        }
                     }
-                    .expect("non-boundary neighbour");
-                    let gap_one_tie = task_order.abs_diff(*neighbour) == 1;
-                    if gap_one_tie {
-                        prop_assert_eq!(
-                            plan.actions.len(),
-                            0,
-                            "a gap-1 tie plans nothing"
-                        );
-                        prop_assert_eq!(plan.outcome, CommandOutcome::NoOp);
-                        return Ok(());
-                    }
-                    let PersistenceAction::UpsertTask(updated) = &plan.actions[0] else {
-                        panic!("first action must be the upsert");
-                    };
-                    prop_assert_eq!(updated.id, subject);
-                    let bracket = if up {
-                        orders[pick - 1]..=orders[pick]
-                    } else {
-                        orders[pick]..=orders[pick + 1]
-                    };
-                    prop_assert!(
-                        bracket.contains(&updated.order),
-                        "the new order stays inside the stepped bracket"
-                    );
-                    // The moved row never lands on a neighbour's
-                    // existing order (the midpoint's collision trap on
-                    // the up arm's width-1 interval).
-                    prop_assert!(
-                        app.tasks
-                            .values()
-                            .all(|t| t.id == subject || t.order != updated.order),
-                        "the new order collides with another row's order"
-                    );
-                    // Σ/order: only the subject's order moved; every
-                    // other row is byte-identical, so the row set is a
-                    // one-row permutation of the source.
-                    let mut untouched: Vec<(i64, TaskId)> = app
-                        .tasks
-                        .values()
-                        .filter(|t| t.id != subject)
-                        .map(|t| (t.order, t.id))
-                        .collect();
-                    untouched.sort();
-                    let mut after: Vec<(i64, TaskId)> = app
-                        .tasks
-                        .values()
-                        .map(|t| {
-                            if t.id == subject {
-                                (updated.order, t.id)
-                            } else {
-                                (t.order, t.id)
-                            }
-                        })
-                        .collect();
-                    after.retain(|(_, id)| *id != subject);
-                    after.sort();
-                    prop_assert_eq!(untouched, after);
+                    let mut post: Vec<i64> = seq.iter().map(|id| tasks[id].order).collect();
+                    post.sort_unstable();
+                    prop_assert_eq!(&post, &(0i64..).take(post.len()).collect::<Vec<i64>>());
                 }
             }
+        }
+    }
+
+    // ---- TaskReorder (B3, 2026-11-24, #1247): the engine-side
+    // reorder over the stack's canonical row source — the UI mints a
+    // gap index, the engine resolves and renumbers the stack dense.
+    // The HabitReorder pin block's shape, verbatim for tasks.
+
+    /// A dense fixture: `count` live tasks on one stack with orders
+    /// exactly 0..count, ids minted from TASK+0..; returns the state,
+    /// outbox, and the canonical id sequence.
+    fn task_reorder_app(count: usize) -> (AppState, Vec<PendingOp>, Vec<TaskId>) {
+        let (mut app, outbox) = base();
+        let stack = stack_id();
+        app.tasks.remove(&task_id());
+        let ids: Vec<TaskId> = (0..count)
+            .map(|k| {
+                let mut t = task(TASK + u64::try_from(k).expect("id fits"), stack, true);
+                t.order = i64::try_from(k).unwrap();
+                app.tasks.insert(t.id, t.clone());
+                t.id
+            })
+            .collect();
+        (app, outbox, ids)
+    }
+
+    #[test]
+    fn task_reorder_dense_orders_swaps_the_adjacent_upper_neighbour() {
+        let (app, outbox, ids) = task_reorder_app(3); // [A, B, C] orders 0,1,2
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::TaskReorder {
+                id: ids[1],
+                target: 0,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            canonical_task_seq(&app, &plan),
+            vec![ids[1], ids[0], ids[2]]
+        );
+    }
+
+    #[test]
+    fn task_reorder_dense_orders_swaps_the_adjacent_lower_neighbour() {
+        let (app, outbox, ids) = task_reorder_app(3);
+        // B at position 1 crosses C by dropping at the gap after C
+        // (gap 3 = the append slot); gap 2 is B's own bottom edge —
+        // the accepted in-place no-op.
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::TaskReorder {
+                id: ids[1],
+                target: 3,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            canonical_task_seq(&app, &plan),
+            vec![ids[0], ids[2], ids[1]]
+        );
+    }
+
+    #[test]
+    fn task_reorder_long_distance_lands_between_the_crossed_rows() {
+        // Dense: [A, B, C, D], drop D at gap 1 → [A, D, B, C].
+        let (app, outbox, ids) = task_reorder_app(4);
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::TaskReorder {
+                id: ids[3],
+                target: 1,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            canonical_task_seq(&app, &plan),
+            vec![ids[0], ids[3], ids[1], ids[2]]
+        );
+        // Sparse: the same move over orders {0, 10, 20, 30} lands
+        // identically — the engine never reads the integers' spacing.
+        let (mut app, outbox, ids) = task_reorder_app(4);
+        for (k, id) in ids.iter().enumerate() {
+            app.tasks.get_mut(id).unwrap().order = i64::try_from(k).unwrap() * 10;
+        }
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::TaskReorder {
+                id: ids[3],
+                target: 1,
+            },
+        )
+        .expect("planned");
+        assert_eq!(
+            canonical_task_seq(&app, &plan),
+            vec![ids[0], ids[3], ids[1], ids[2]]
+        );
+    }
+
+    #[test]
+    fn task_reorder_gap_grammar_clamps_and_no_ops_in_place() {
+        let (app, outbox, ids) = task_reorder_app(3);
+        // B at position 1: its own gaps are 1 and 2 — accepted no-ops.
+        for target in [1usize, 2] {
+            let plan = run(
+                &app,
+                &outbox,
+                &StateCommand::TaskReorder { id: ids[1], target },
+            )
+            .expect("planned");
+            assert_eq!(plan, no_op(), "gap {target} is in place");
+        }
+        // A past-end gap clamps to the append slot.
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::TaskReorder {
+                id: ids[0],
+                target: 9,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            canonical_task_seq(&app, &plan),
+            vec![ids[1], ids[2], ids[0]]
+        );
+    }
+
+    #[test]
+    fn task_reorder_renumbers_dense_and_sparse_alike_with_only_changed_upserts() {
+        // Sparse [A(0), B(10), C(20)]: drop A at gap 2 (after B) →
+        // [B, A, C], orders renumbered 0..2 — only the two rows whose
+        // order changed upsert.
+        let (mut app, outbox, ids) = task_reorder_app(3);
+        for (k, id) in ids.iter().enumerate() {
+            app.tasks.get_mut(id).unwrap().order = i64::try_from(k).unwrap() * 10;
+        }
+        let plan = run(
+            &app,
+            &outbox,
+            &StateCommand::TaskReorder {
+                id: ids[0],
+                target: 2,
+            },
+        )
+        .expect("planned");
+        assert_eq!(plan.outcome, CommandOutcome::Applied);
+        assert_eq!(
+            canonical_task_seq(&app, &plan),
+            vec![ids[1], ids[0], ids[2]]
+        );
+        let upserts: Vec<&Task> = plan
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                PersistenceAction::UpsertTask(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        // The renumber moves every row here (B 10→0, A 0→1, C 20→2) —
+        // the upsert set is exactly the changed set, no board-wide
+        // write of unchanged rows.
+        assert_eq!(upserts.len(), 3, "only the changed rows upsert");
+        for (index, id) in [ids[1], ids[0], ids[2]].iter().enumerate() {
+            let updated = upserts.iter().find(|t| &t.id == id).expect("row upserted");
+            assert_eq!(
+                updated.order,
+                i64::try_from(index).unwrap(),
+                "dense renumber"
+            );
+            assert_eq!(updated.clocks.position, now(), "fresh position clock");
+        }
+        assert!(
+            plan.actions.iter().any(|action| matches!(
+                action,
+                PersistenceAction::EnqueueOp(pending)
+                    if matches!(pending.op, LocalOp::FlushBoardAppData(_))
+            )),
+            "the board flush rides the batch"
+        );
+    }
+
+    #[test]
+    fn task_reorder_refuses_unknown_and_deleted_typed() {
+        let (mut app, outbox, ids) = task_reorder_app(2);
+        let unknown = TaskId::from(uuid::Uuid::from_u128(4242));
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::TaskReorder {
+                id: unknown,
+                target: 0,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CommandError::UnknownTask(id) if id == unknown));
+        let deleted = app.tasks.get_mut(&ids[1]).expect("row");
+        deleted.deleted = true;
+        let err = run(
+            &app,
+            &outbox,
+            &StateCommand::TaskReorder {
+                id: ids[1],
+                target: 0,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CommandError::TaskDeleted(id) if id == ids[1]));
+    }
+
+    proptest! {
+        /// The US-14 shape over the reorder verb (B3): for randomized
+        /// stack sizes and gap targets, an applied reorder yields
+        /// exactly the requested permutation of one row, and the
+        /// stack's post orders stay dense (0..n, no duplicates).
+        #[test]
+        fn task_reorder_yields_exactly_one_row_permutation(
+            count in 1usize..=6,
+            position in 0usize..8,
+            target in 0usize..9,
+        ) {
+            let pos = position % count;
+            let tgt = target % (count + 1); // the gap grammar is 0..=len
+            let (app, outbox, ids) = task_reorder_app(count);
+            let plan = run(
+                &app,
+                &outbox,
+                &StateCommand::TaskReorder { id: ids[pos], target: tgt },
+            )
+            .unwrap();
+            let seq = canonical_task_seq(&app, &plan);
+            if tgt == pos || tgt == pos + 1 {
+                prop_assert_eq!(&plan, &no_op());
+                prop_assert_eq!(seq.len(), count);
+            } else {
+                prop_assert_eq!(plan.outcome, CommandOutcome::Applied);
+                let insert_at = if tgt <= pos { tgt } else { tgt - 1 };
+                let mut expected: Vec<TaskId> = ids.clone();
+                let moved = expected.remove(pos);
+                expected.insert(insert_at, moved);
+                prop_assert_eq!(&seq, &expected);
+            }
+            // Post orders are dense non-negative integers, duplicate-free.
+            let mut tasks = app.tasks.clone();
+            for action in &plan.actions {
+                if let PersistenceAction::UpsertTask(t) = action {
+                    tasks.insert(t.id, t.clone());
+                }
+            }
+            let mut post: Vec<i64> = seq
+                .iter()
+                .map(|id| tasks[id].order)
+                .collect();
+            post.sort_unstable();
+            prop_assert_eq!(&post, &(0i64..).take(post.len()).collect::<Vec<i64>>());
         }
     }
 

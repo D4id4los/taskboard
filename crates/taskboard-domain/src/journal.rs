@@ -500,6 +500,7 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::MoveTask { .. } => "Move task".into(),
         StateCommand::TaskMoveUp { .. } => "Move task up".into(),
         StateCommand::TaskMoveDown { .. } => "Move task down".into(),
+        StateCommand::TaskReorder { .. } => "Reorder task".into(),
         StateCommand::DeleteTask { .. } => "Delete task".into(),
         StateCommand::CreateStack { .. } => "Create stack".into(),
         StateCommand::RenameStack { .. } => "Rename stack".into(),

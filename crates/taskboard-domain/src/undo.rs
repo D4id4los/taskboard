@@ -379,9 +379,11 @@ fn record_entry(
         StateCommand::LogTime { .. }
         | StateCommand::CreateHabit { .. }
         | StateCommand::MoveHabit { .. }
-        // The reorder journals every touched row's pre-image (chunk A1
-        // D1): the inverse restores the whole section, not one row.
-        | StateCommand::HabitReorder { .. } => journaled_pre_images(app, actions),
+        // The reorders journal every touched row's pre-image (chunk A1
+        // D1 for habits; B3 #1247 extends the law to task stacks):
+        // the inverse restores the whole section, not one row.
+        | StateCommand::HabitReorder { .. }
+        | StateCommand::TaskReorder { .. } => journaled_pre_images(app, actions),
         StateCommand::AdjustTimeEntry { id, .. } => {
             // D23/§7.1: an adjust that stamps an end onto an open entry
             // is inexpressible to invert — the change mask structurally
@@ -552,6 +554,7 @@ fn touched_board(
         | StateCommand::MoveTask { id, .. }
         | StateCommand::TaskMoveUp { id }
         | StateCommand::TaskMoveDown { id }
+        | StateCommand::TaskReorder { id, .. }
         | StateCommand::PauseSeries { head: id, .. }
         | StateCommand::DeleteTask { id }
         | StateCommand::SetTaskRemindersMuted { task: id, .. }
@@ -1184,6 +1187,14 @@ enum InverseClass {
     /// its own clock). The single-pre-image `MoveHabit` shape cannot
     /// express a multi-row renumber and stays the CLI verb's class.
     HabitReorder,
+    /// `TaskReorder` (B3, 2026-11-24, #1247) and the compact-move pair
+    /// that delegates to it: the stack's pre-move orders restore as
+    /// one journaled inverse step — the synthesis batches one
+    /// `MoveTask` per touched pre-image row (each stamps its own
+    /// position clock, guarded by its own watermark). The
+    /// single-pre-image `MoveTask` shape cannot express a multi-row
+    /// renumber and stays the CLI/cross-stack verb's class.
+    TaskReorder,
     /// `AdjustHabitLog`: the touched window's post-write row compared
     /// as a whole (count AND clock).
     AdjustHabitLog,
@@ -1235,12 +1246,14 @@ impl JournalEntry {
             | StateCommand::PauseSeries { .. } => Ok(InverseClass::UpdateTask),
             StateCommand::SetTaskDone { .. } => Ok(InverseClass::SetTaskDone),
             StateCommand::MoveTask { .. } => Ok(InverseClass::MoveTask),
-            // The Today compact-move pair (US-14): the shared
-            // `MoveTask` inverse — the pre-image row's (stack, order)
-            // restores the position through the ordinary `MoveTask`.
-            StateCommand::TaskMoveUp { .. } | StateCommand::TaskMoveDown { .. } => {
-                Ok(InverseClass::MoveTask)
-            }
+            // The Today compact-move pair and the same-stack reorder
+            // verb (B3, 2026-11-24, #1247): the multi-row
+            // `TaskReorder` inverse — a swap-expressing move changes
+            // two or more rows' orders, which the single-pre-image
+            // `MoveTask` class cannot express (D-4).
+            StateCommand::TaskMoveUp { .. }
+            | StateCommand::TaskMoveDown { .. }
+            | StateCommand::TaskReorder { .. } => Ok(InverseClass::TaskReorder),
             StateCommand::DeleteTask { .. } => Ok(InverseClass::DeleteTask),
             StateCommand::CreateStack { .. } => Ok(InverseClass::CreatedStack),
             StateCommand::DeleteStack { .. } => Ok(InverseClass::DeletedStack),
@@ -2255,6 +2268,38 @@ fn synthesize_undo(
                 }
                 batch.push(StateCommand::MoveHabit {
                     habit: pre.id,
+                    order: pre.order,
+                });
+            }
+            if batch.is_empty() {
+                return Err(CommandError::NothingToUndo);
+            }
+            Ok(batch)
+        }
+        InverseClass::TaskReorder => {
+            // The stack's inverse (B3, 2026-11-24, #1247 — the
+            // `HabitReorder` precedent carried verbatim): one
+            // `MoveTask` per touched pre-image row, each guarded by
+            // its own position watermark — the batch restores the
+            // whole pre-move sequence or refuses typed, never a
+            // partial restore. `MoveTask` stays the inverse's payload
+            // (the CLI verb and the cross-stack verb are untouched).
+            let mut batch = Vec::new();
+            for image in images {
+                let Some(pre) = (match image {
+                    PreImage::Task {
+                        before: Some(task), ..
+                    } => Some(task.as_ref()),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                check_task_field(app, pre.id, watermark, UndoField::Position, |clocks| {
+                    clocks.position
+                })?;
+                batch.push(StateCommand::MoveTask {
+                    id: pre.id,
+                    stack: pre.stack,
                     order: pre.order,
                 });
             }
