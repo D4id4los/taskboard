@@ -1,6 +1,5 @@
 ---
 source: crates/taskboard-state/tests/snapshots.rs
-assertion_line: 199
 expression: "&tail"
 ---
 sync:
