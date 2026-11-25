@@ -2302,12 +2302,13 @@ fn the_labels_overlay_golden_holds() {
 // R1–R6 (the golden-coverage review report §6). Recorded substitutions
 // (the plan §4 decision convention): R2b's "frequency dropdown flyout"
 // does not exist — the recur editor's pattern picker is a
-// SegmentedControl and no recur dropdown consumer is mounted — so the
-// flyout-anchor invariant is captured on the one hermetic anchored
-// flyout mount, the task detail's importance picker
-// (`dropdown-flyout-open-1.0-1000`). R5's kinds wall is extended to
-// the full vendored asset set first (the probe commit rides the same
-// regen as `icon-probe-1.0`'s re-base).
+// SegmentedControl, and the window-level dropdown flyout's task-detail
+// consumers are headless-unreachable (#1397) — so the anchored-over-
+// modal invariant is captured on the recur editor's own detach-arm
+// consequence strip (`recur-editor-detach-armed-1.0-1000`; the
+// per-test doc comment carries the full record). R5's kinds wall is
+// extended to the full vendored asset set first (the probe commit
+// rides the same regen as `icon-probe-1.0`'s re-base).
 
 /// The habit fixture (the habit-surface journeys' twin, pinned): two
 /// live daily habits on the fixture board — one logged to its quota
