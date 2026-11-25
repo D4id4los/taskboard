@@ -222,6 +222,24 @@ pub fn matches(golden: &Rgba8Image, candidate: &Rgba8Image) -> Result<(), String
 
 /// Encodes `image` as a PNG (the regeneration path's writer side).
 ///
+/// # The recorded encoder contract (chunk G1, #1241)
+///
+/// The settings below are stated **explicitly** even where they match
+/// the crate defaults: RGBA8, depth 8,
+/// `Compression::Balanced` (which resolves to the crate's adaptive
+/// filter + flate2 level 6). In-process encoding is a pure function of
+/// (pixels, settings, encoder-graph versions) — the runtime is
+/// deterministic (pinned by
+/// `png_encoding_is_byte_deterministic` and
+/// `golden_visuals`' corpus re-encode test), but the crate's own docs
+/// reserve the right to change DEFLATE/filter output **across
+/// versions** without a semver break. **Drift law:** a
+/// `png`/`flate2`/`miniz_oxide`/`fdeflate` version bump that moves the
+/// bytes therefore fails the corpus re-encode test and requires a
+/// **whole-corpus regen commit** (`TASKBOARD_REGEN_GOLDENS=1`, one
+/// drift source, reviewed as its own PNG diff). Never hand-edit PNGs;
+/// never mix encoder-version churn with content churn.
+///
 /// # Errors
 ///
 /// The `png` encoder's typed error, wrapped.
@@ -231,6 +249,10 @@ pub fn encode_png(image: &Rgba8Image) -> Result<Vec<u8>, png::EncodingError> {
         let mut encoder = png::Encoder::new(&mut bytes, image.width, image.height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
+        // Named explicitly (the historical default): the byte contract
+        // above depends on this setting, so a default change upstream
+        // must surface as a diff here, not as a silent corpus churn.
+        encoder.set_compression(png::Compression::Balanced);
         let mut writer = encoder.write_header()?;
         writer.write_image_data(&image.data)?;
     }
@@ -296,6 +318,31 @@ mod tests {
         let image = Rgba8Image::new(60, 40, gradient);
         let decoded = decode_png(&encode_png(&image).expect("encodes")).expect("decodes");
         assert_eq!(decoded, image);
+    }
+
+    /// T3 — the encoder contract's runtime half (#1241): encoding the
+    /// same noisy pixels twice yields byte-identical PNGs — no
+    /// session, allocator, or parallelism input reaches the encode
+    /// path, so any byte difference between regen runs can only come
+    /// from an encoder-graph version change (see [`encode_png`]'s
+    /// drift law).
+    #[test]
+    fn png_encoding_is_byte_deterministic() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            u8::try_from(state >> 33).unwrap_or(0)
+        };
+        let data: Vec<u8> = (0..96 * 64 * 4).map(|_| next()).collect();
+        let image = Rgba8Image::new(96, 64, data);
+        let first = encode_png(&image).expect("encodes");
+        let second = encode_png(&image).expect("encodes");
+        assert_eq!(
+            first, second,
+            "same pixels + settings must encode identically"
+        );
     }
 
     /// T3 — the scale-aware grid stays fine at the matrix's largest
