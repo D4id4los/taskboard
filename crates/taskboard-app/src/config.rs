@@ -2030,7 +2030,16 @@ fn collect_diffs(
 /// F8-09 fold — this was a hand-rolled fork of the same split); the
 /// sync crate parses the full URL again at client construction, so a
 /// drift here fails closed (bootstrap's `Client` variant).
-fn reqwest_host_ok(raw: &str) -> bool {
+///
+/// `#[doc(hidden)]` test exposure: the settings-form mirror's parity
+/// pin (`crates/taskboard-app/tests/settings_form_parity.rs`) asserts
+/// this authoritative predicate and the UI mirror agree over the
+/// shared fixture table — divergence breaks the pin loudly (issue
+/// #1358). Not part of the crate's public contract; advisory-only in
+/// any external use.
+#[doc(hidden)]
+#[must_use]
+pub fn reqwest_host_ok(raw: &str) -> bool {
     let (scheme, authority) = taskboard_sync_nextcloud::client::authority_of(raw);
     if !matches!(scheme, Some("http" | "https")) {
         return false;
