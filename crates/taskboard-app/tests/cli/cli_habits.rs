@@ -572,7 +572,6 @@ async fn h08_history_renders_the_grid_vocabulary_chronologically() {
     let dir = tempdir();
     let config = seeded_config(dir.path(), "h08.db").await;
     let now = anchor();
-    let today = now.date_naive();
 
     run_one(&config, parse(&["habits", "add", "water", "--daily", "3"]))
         .await
@@ -732,7 +731,6 @@ async fn h08_history_renders_the_grid_vocabulary_chronologically() {
         HabitWindowStateView::PreSchedule,
         "the weekly window whose first scheduled day is tomorrow"
     );
-    let _ = today;
 }
 
 /// Kills: the Stats routing closure (a Stats→History reroute returns
