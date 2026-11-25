@@ -27,6 +27,7 @@ import { Responsive, Breakpoint } from "../responsive.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TextButton } from "../widgets/text-button.slint";
 import { StatusNotice, NoticeShape } from "../widgets/status-notice.slint";
+import { StatusDot } from "../widgets/status-dot.slint";
 export enum SettingsRowStatus {
     idle,
     syncing,
@@ -351,51 +352,11 @@ export global SettingsModel {
 }
 
 
-// The tone of the row-status dot (D18: markup owns colour mapping).
-component RowDot inherits Rectangle {
-    in property <SettingsRowStatus> status: SettingsRowStatus.idle;
-    width: Theme.space-2;
-    height: self.width;
-    border-radius: self.width / 2;
-    background: root.status == SettingsRowStatus.down ? Semantic.danger
-        : root.status == SettingsRowStatus.failed ? Semantic.danger
-        : root.status == SettingsRowStatus.offline ? Semantic.warning
-        : root.status == SettingsRowStatus.syncing ? Semantic.focus-ring
-        : Semantic.success;
-}
-
-// The status line's tone dot (r2 D28): the RowDot shape over the
-// outcome. One deliberate fix against the old marker: busy renders
-// `Semantic.sync-active` — the old `surface-raised` was invisible on
-// the surface.
-component StatusDot inherits Rectangle {
-    in property <SettingsOutcome> outcome: SettingsOutcome.none;
-    width: Theme.space-2;
-    height: self.width;
-    border-radius: self.width / 2;
-    background: root.outcome == SettingsOutcome.ok ? Semantic.success
-        : root.outcome == SettingsOutcome.busy ? Semantic.sync-active
-        : root.outcome == SettingsOutcome.failed ? Semantic.danger
-        : Semantic.warning;
-}
-
-// The ceremony's busy dot (r2 D34): the status line's busy token in
-// the row's dot slot — structure is the model flag; the pulse is
-// purely decorative and never asserted (the mock-clock tests assert
-// the flag timeline, not pixels).
-component BusyDot inherits Rectangle {
-    width: Theme.space-2;
-    height: self.width;
-    border-radius: self.width / 2;
-    background: Semantic.sync-active;
-    opacity: 1.0;
-    states [
-        pulse when true: {
-            opacity: 0.45;
-            in { animate opacity { duration: 600ms; iteration-count: -1; } }
-        }
-    ]
-}
+// The row/outcome dot slot (#1352): the shared `StatusDot` primitive
+// with the `busy` knob replaces the in-view trio (RowDot / the
+// outcome StatusDot / BusyDot). The former enum→colour conditionals
+// move to the call sites as tone mappings (D18: markup owns the tone
+// choice; the theme owns the colour).
 
 // The settings buttons (W3, #950): the sites mount the TextButton
 // primitive directly — size=regular carries the content-sized height
@@ -499,77 +460,37 @@ export global SettingsPublishCopy {
     in-out property <string> empty-hint: "No unbound local boards";
 }
 
-// One remote row's local-board picker (the shared Dropdown, chunk-3
-// overlay grammar): every remote row's picker names the
-// `settings-remote` consumer kind and its item in
-// `SettingsBoardFacts.active-item` when it opens, so the window-level
-// flyout's pick resolves to this row.
-component RemotePicker inherits Dropdown {
+// The board pickers' shared grammar (#1352): the former twins
+// (RemotePicker / DeckPublishPicker) differed only in copy global,
+// consumer kind, and callback plumbing — one parameterized Dropdown
+// now carries both roles. The consumer-kind letter stands: the
+// window-level flyout resolves the pick by `consumer`, so the
+// settings-remote / settings-publish kinds are passed at the sites.
+// In-view merge (two consumers) — deliberately not a widget
+// promotion.
+component SettingsPicker inherits Dropdown {
     in property <int> item-index;
+    in property <DropdownConsumer> picker-consumer;
+    in property <string> placeholder;
+    in property <string> copy-label;
+    in property <string> copy-description;
+    in property <string> row-description;
+    in property <string> copy-empty-hint;
     callback picked(int, int);
     rows: SettingsModel.board-options;
     selected-index: 0;
-    field-text: SettingsBoardCopy.placeholder;
-    field-label: SettingsBoardCopy.label;
-    field-description: SettingsBoardCopy.description;
-    consumer: DropdownConsumer.settings-remote;
-    empty-hint: SettingsBoardCopy.empty-hint;
+    field-text: root.placeholder;
+    field-label: root.copy-label;
+    field-description: root.copy-description;
+    consumer: root.picker-consumer;
+    empty-hint: root.copy-empty-hint;
     row-activated(i) => {
         root.picked(root.item-index, i);
     }
     row-hovered(i, x, y, w, h) => {
         TooltipState.hover(
             SettingsModel.board-options[i].label,
-            SettingsBoardCopy.row-description,
-            [],
-            x, y, w, h);
-    }
-    row-unhovered() => {
-        TooltipState.unhover();
-    }
-    // The journeys' observation seam (the SettingsBoardFacts mirrors):
-    // the opening picker owns the facts.
-    changed open => {
-        if (self.open) {
-            SettingsBoardFacts.active-item = root.item-index;
-            SettingsBoardFacts.field-x = self.absolute-position.x;
-            SettingsBoardFacts.field-y = self.absolute-position.y;
-            SettingsBoardFacts.field-w = self.width;
-            SettingsBoardFacts.field-h = self.height;
-        }
-        SettingsBoardFacts.open = self.open;
-    }
-    changed highlight => {
-        SettingsBoardFacts.highlight = self.highlight;
-    }
-}
-
-// The account cards' publish picker (round-6 D-6.9, #699): one Deck
-// card's "publish a local board" affordance — the same Dropdown
-// grammar as the remote rows' pickers, beside the card's remote rows
-// (the consumer-kind grammar's letter: the files-sync-status plan
-// US-9, D-10 re-anchored the publish pick onto its own picker) and
-// mirroring the same `SettingsBoardFacts`, so the
-// window-level flyout's pick resolves to this card. The options are
-// the model's unbound-board list — the unbound-only filter IS the
-// publish precondition, the app re-derives it every pass.
-component DeckPublishPicker inherits Dropdown {
-    in property <int> item-index;
-    callback publish-picked(int, int);
-    rows: SettingsModel.board-options;
-    selected-index: 0;
-    field-text: SettingsPublishCopy.placeholder;
-    field-label: SettingsPublishCopy.label;
-    field-description: SettingsPublishCopy.description;
-    consumer: DropdownConsumer.settings-publish;
-    empty-hint: SettingsPublishCopy.empty-hint;
-    row-activated(i) => {
-        root.publish-picked(root.item-index, i);
-    }
-    row-hovered(i, x, y, w, h) => {
-        TooltipState.hover(
-            SettingsModel.board-options[i].label,
-            SettingsPublishCopy.row-description,
+            root.row-description,
             [],
             x, y, w, h);
     }
@@ -796,7 +717,12 @@ export component SettingsView inherits FocusScope {
             min-height: status-text.preferred-height + 2 * Theme.space-2;
             max-height: status-text.preferred-height + 2 * Theme.space-2;
             StatusDot {
-                outcome: SettingsModel.last-outcome;
+                busy: SettingsModel.last-outcome == SettingsOutcome.busy;
+                tone: SettingsModel.last-outcome == SettingsOutcome.ok ? Tone.success
+                    : SettingsModel.last-outcome == SettingsOutcome.busy ? Tone.sync-active
+                    : SettingsModel.last-outcome == SettingsOutcome.failed ? Tone.danger
+                    : Tone.warning;
+                height: Theme.space-2;
             }
             status-text := RoleText {
                 role: Typography.body;
@@ -1009,10 +935,16 @@ export component SettingsView inherits FocusScope {
                         alignment: center;
                         // The busy ceremony renders the pulse in the
                         // dot slot (r2 D34); otherwise the folded
-                        // status dot.
-                        if item.busy: BusyDot {}
-                        if !item.busy: RowDot {
-                            status: item.status;
+                        // status dot (#1352: one primitive, the busy
+                        // knob over the tone mapping).
+                        StatusDot {
+                            busy: item.busy;
+                            tone: item.status == SettingsRowStatus.down ? Tone.danger
+                                : item.status == SettingsRowStatus.failed ? Tone.danger
+                                : item.status == SettingsRowStatus.offline ? Tone.warning
+                                : item.status == SettingsRowStatus.syncing ? Tone.sync-active
+                                : Tone.success;
+                            height: Theme.space-2;
                         }
                     }
                     RoleText {
@@ -1069,7 +1001,10 @@ export component SettingsView inherits FocusScope {
                     // D-6.8 phase 2, D-9): one dot, no fake progress.
                     if item.busy: VerticalLayout {
                         alignment: center;
-                        BusyDot {}
+                        StatusDot {
+                            busy: true;
+                            height: Theme.space-2;
+                        }
                     }
                     SegmentedControl {
                         options: ["On", "Off"];
@@ -1147,7 +1082,10 @@ export component SettingsView inherits FocusScope {
                     spacing: Theme.space-2;
                     VerticalLayout {
                         alignment: center;
-                        if item.busy: BusyDot {}
+                        if item.busy: StatusDot {
+                            busy: true;
+                            height: Theme.space-2;
+                        }
                     }
                     RoleText {
                         role: Typography.body;
@@ -1244,7 +1182,10 @@ export component SettingsView inherits FocusScope {
                         }
                         VerticalLayout {
                             alignment: center;
-                            if item.busy: BusyDot {}
+                            if item.busy: StatusDot {
+                                busy: true;
+                                height: Theme.space-2;
+                            }
                             // The ceremony's phase badge (US-5, D-6):
                             // display-only, the terminal truth rides
                             // the outcome lane.
@@ -1278,9 +1219,15 @@ export component SettingsView inherits FocusScope {
                         // generic mount, keyed on `settings-publish`).
                         // slint: deck-publish-picker (the journey
                         // probe's element address, US-9/S1)
-                        deck-publish-picker := DeckPublishPicker {
+                        deck-publish-picker := SettingsPicker {
                             item-index: index;
-                            publish-picked(item-index, option) => {
+                            picker-consumer: DropdownConsumer.settings-publish;
+                            placeholder: SettingsPublishCopy.placeholder;
+                            copy-label: SettingsPublishCopy.label;
+                            copy-description: SettingsPublishCopy.description;
+                            row-description: SettingsPublishCopy.row-description;
+                            copy-empty-hint: SettingsPublishCopy.empty-hint;
+                            picked(item-index, option) => {
                                 root.publish-picked(item-index, option);
                             }
                         }
@@ -1295,7 +1242,10 @@ export component SettingsView inherits FocusScope {
                     spacing: Theme.space-2;
                     VerticalLayout {
                         alignment: center;
-                        if item.busy: BusyDot {}
+                        if item.busy: StatusDot {
+                            busy: true;
+                            height: Theme.space-2;
+                        }
                     }
                     RoleText {
                         role: Typography.body;
@@ -1342,10 +1292,16 @@ export component SettingsView inherits FocusScope {
                             clicked => { root.remove-cancelled(); }
                         }
                     }
-                    if !item.bound: remote-picker := RemotePicker {
+                    if !item.bound: remote-picker := SettingsPicker {
                         horizontal-stretch: 1;
                         item-index: index;
                         field-busy: item.busy;
+                        picker-consumer: DropdownConsumer.settings-remote;
+                        placeholder: SettingsBoardCopy.placeholder;
+                        copy-label: SettingsBoardCopy.label;
+                        copy-description: SettingsBoardCopy.description;
+                        row-description: SettingsBoardCopy.row-description;
+                        copy-empty-hint: SettingsBoardCopy.empty-hint;
                         picked(item-index, option) => {
                             root.remote-bind-picked(item-index, option);
                         }
