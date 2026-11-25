@@ -5001,6 +5001,100 @@ fn habit_and_roster_landings_arm_the_hint() {
 /// (the scroll reacts to a focus landing that changed something,
 /// never to a key or a pointer). The pointer half rides the row
 /// click seam (a focus write with no hint push by construction).
+/// #1320 (D-1320a/b): the planner's walk landings arm the
+/// `FocusScrollHint` with the cursor task's `(pane, row)` —
+/// `target-a` = the pane (0 = placed boxes, 1 = the pool), `target-b`
+/// = the row within the pane. The #622 fixed-page decision is NOT
+/// reopened (no paging hint); only the focus-into-view hint is added.
+/// Red pre-fix: the `PlanNextDay` arm was the typed inert, so the
+/// planner walk armed nothing. Typed outcome pins (nonce + indices).
+#[test]
+fn planner_walk_landings_arm_the_hint() {
+    let now = fixture::PINNED_NOW;
+    let (fixture, mut state) = fixture::golden_state_at(now);
+    // One placed box (tomorrow 9:00) + two pool rows: the panes both
+    // populated, the pool walk has a second row to land on.
+    let calendar = fixture::harness_calendar();
+    let tomorrow = calendar.today(now).succ_opt().expect("tomorrow");
+    let box_instant = calendar.instant(
+        tomorrow,
+        chrono::NaiveTime::from_hms_opt(9, 0, 0).expect("9:00"),
+    );
+    let mut boxed = state.tasks.get(&fixture.task0).expect("task").clone();
+    boxed.scheduled = Some(box_instant);
+    state.tasks.insert(fixture.task0, boxed);
+
+    support::harness::run_journey_with_settings(
+        state,
+        UiSettings {
+            clock: Some(now),
+            ..UiSettings::default()
+        },
+        move |harness| {
+            macro_rules! window {
+                () => {
+                    harness.handle.window()
+                };
+            }
+            macro_rules! hint {
+                () => {
+                    window!().global::<taskboard_ui_slint::FocusScrollHint>()
+                };
+            }
+
+            harness.press(ActionId::ViewPlanNextDay);
+            harness.driver.advance_time(0);
+            assert_eq!(window!().get_current_view(), View::PlanNextDay);
+
+            // The first vertical stroke arms the boxes pane's cursor at
+            // row 0 (arm-then-step, US-15).
+            let before = hint!().get_nonce();
+            harness.handle.dispatch_action(ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            assert!(
+                hint!().get_nonce() > before,
+                "the boxes-pane landing arms the hint"
+            );
+            assert_eq!(
+                (hint!().get_target_a(), hint!().get_target_b()),
+                (0, 0),
+                "pane 0 (the placed boxes), its first row"
+            );
+
+            // Onto the pool pane: the pane switch, then the arm-then-step
+            // stroke adopts the pool's first row.
+            harness.handle.dispatch_action(ActionId::NavFocusRight);
+            harness.driver.advance_time(0);
+            let after_switch = hint!().get_nonce();
+            harness.handle.dispatch_action(ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            assert!(
+                hint!().get_nonce() > after_switch,
+                "the pool-pane landing arms the hint"
+            );
+            assert_eq!(
+                (hint!().get_target_a(), hint!().get_target_b()),
+                (1, 0),
+                "pane 1 (the pool), its first row"
+            );
+
+            // One row down: the same convention, the next pool row.
+            let after_first = hint!().get_nonce();
+            harness.handle.dispatch_action(ActionId::NavFocusDown);
+            harness.driver.advance_time(0);
+            assert!(
+                hint!().get_nonce() > after_first,
+                "the second pool row's landing arms the hint"
+            );
+            assert_eq!(
+                (hint!().get_target_a(), hint!().get_target_b()),
+                (1, 1),
+                "pane 1, its second row"
+            );
+        },
+    );
+}
+
 #[test]
 fn walk_ends_and_pointer_landings_rearm_nothing() {
     let (_fixture, mut state) = fixture::journey_state();

@@ -16,6 +16,7 @@ import { EmptyState } from "../widgets/empty-state.slint";
 import { TextField } from "../widgets/text-field.slint";
 import { PressableRow } from "../widgets/pressable-row.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
+import { FocusScrollHint } from "../focus-scroll.slint";
 
 export struct PlanRowModel {
     card: TaskCardModel,
@@ -66,6 +67,30 @@ export component PlanNextDayView inherits FocusScope {
     callback effort-edited(string);
     callback place-commit();
     callback place-cancel();
+    // The focus-into-view seam's read half (#1320, the #1023-style
+    // root seam): the page Flickable's pan offset mirrored out for
+    // the seek pins (a length, never pixel/text). No app-side
+    // consumer — display state only.
+    in-out property <length> page-y <=> page.content-y;
+
+    // The focus-into-view seek (#1320, the today page's seek-page
+    // precedent, A5a D-3): the minimal content-y shift that puts the
+    // landed row inside the visible window, clamped to the content.
+    // Structural geometry only (absolute positions, never pixel or
+    // text); fires on a row's hint edge only.
+    public function seek-row(top: length, row-height: length) {
+        let view = page.height;
+        let max-shift = view - content.height;
+        if (top < 0) {
+            page.content-y = Math.clamp(page.content-y - top, max-shift, 0);
+        } else if (top + row-height > view) {
+            page.content-y = Math.clamp(
+                page.content-y - (top + row-height - view),
+                max-shift,
+                0,
+            );
+        }
+    }
 
     focus-on-tab-navigation: true;
     accessible-role: AccessibleRole.region;
@@ -87,7 +112,7 @@ export component PlanNextDayView inherits FocusScope {
         border-color: Semantic.focus-ring;
         border-radius: Theme.radius-medium;
 
-        Flickable {
+        page := Flickable {
             content := VerticalLayout {
                 padding: Theme.space-3;
                 spacing: Theme.space-3;
@@ -110,6 +135,25 @@ export component PlanNextDayView inherits FocusScope {
                     for box[bindex] in root.plan.boxes: box-row := HorizontalLayout {
                         vertical-stretch: 0;
                         spacing: Theme.space-2;
+                        // The pane walk's focus-into-view consumption
+                        // (#1320, D-1320b): this row seeks only when it
+                        // owns the landing — `target-a` 0 is the placed
+                        // boxes pane, `target-b` the row. The nonce
+                        // edge-triggers (identical re-lands never
+                        // re-fire); the seek is structural (the row's
+                        // absolute geometry against the page's).
+                        property <int> seek-nonce: FocusScrollHint.target-a == 0
+                            && FocusScrollHint.target-b == bindex
+                            ? FocusScrollHint.nonce
+                            : -1;
+                        changed seek-nonce => {
+                            if (self.seek-nonce >= 0) {
+                                root.seek-row(
+                                    self.absolute-position.y - page.absolute-position.y,
+                                    self.height,
+                                );
+                            }
+                        }
 
                         // The centralized pressable-row grammar
                         // (#1350): the a11y triple + the guarded
@@ -195,6 +239,25 @@ export component PlanNextDayView inherits FocusScope {
                     for pool-row[pindex] in root.plan.pool: pool-item := HorizontalLayout {
                         vertical-stretch: 0;
                         spacing: Theme.space-1;
+                        // The pane walk's focus-into-view consumption
+                        // (#1320, D-1320b): this row seeks only when it
+                        // owns the landing — `target-a` 1 is the
+                        // candidate pool pane, `target-b` the row. The
+                        // nonce edge-triggers (identical re-lands never
+                        // re-fire); the seek is structural (the row's
+                        // absolute geometry against the page's).
+                        property <int> seek-nonce: FocusScrollHint.target-a == 1
+                            && FocusScrollHint.target-b == pindex
+                            ? FocusScrollHint.nonce
+                            : -1;
+                        changed seek-nonce => {
+                            if (self.seek-nonce >= 0) {
+                                root.seek-row(
+                                    self.absolute-position.y - page.absolute-position.y,
+                                    self.height,
+                                );
+                            }
+                        }
                         // The carried misses' accent (the card's own
                         // overdue decoration communicates the miss;
                         // this is the pane-level echo).

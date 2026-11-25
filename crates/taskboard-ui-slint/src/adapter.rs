@@ -6187,15 +6187,21 @@ impl Adapter {
                 .task
                 .and_then(|task| self.tables.stack_position(task))
                 .map(|row| (-1, to_hint_index(row))),
+            // The planner's pane walk (#1320, D-1320a/b): the cursor
+            // task resolves `(pane, row)` — the #622 fixed-page
+            // decision is NOT reopened (no paging hint; the narrowed
+            // exception is the focus law only), the fixed surface's
+            // own Flickable consumes the landing.
+            crate::view_state::ViewId::PlanNextDay => landing
+                .plan
+                .and_then(|task| self.tables.plan_position(task))
+                .map(|(pane, row)| (to_hint_index(pane), to_hint_index(row))),
             // The review page carries no focusable rows (D-8): the
             // focus-into-view seam never targets it, like the settings
             // facts path and the detail's own container.
             crate::view_state::ViewId::TaskDetail
             | crate::view_state::ViewId::Settings
             | crate::view_state::ViewId::Review
-            // The planner's panes are a fixed surface (#622): no
-            // paging container — the same typed inert.
-            | crate::view_state::ViewId::PlanNextDay
             // The status panel: no paging container (OP3).
             | crate::view_state::ViewId::Status => None,
         };

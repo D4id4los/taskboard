@@ -51,6 +51,12 @@ pub struct WalkFocus {
     pub task: Option<TaskId>,
     pub habit: Option<taskboard_domain::HabitId>,
     pub roster: Option<taskboard_domain::BreakRuleId>,
+    /// The planner's in-pane cursor task (#1320): the fourth walkable
+    /// row kind — the pane walk's landing resolves the scroll hint's
+    /// `(pane, row)` through `IdTables::plan_position`. `None` while
+    /// the walk sits on any other surface (the planner cursor is
+    /// cleared on view leave, the clamp/prune law).
+    pub plan: Option<TaskId>,
 }
 
 /// The pass's time bundle (chunk 10 D4): the fresh `now` and the
@@ -1371,6 +1377,7 @@ impl ViewState {
             task: self.focused_task,
             habit: self.focused_habit,
             roster: self.break_rule_cursor,
+            plan: self.plan_cursor,
         }
     }
 
