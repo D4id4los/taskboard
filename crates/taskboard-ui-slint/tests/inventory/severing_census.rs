@@ -23,7 +23,9 @@
 //! the sever + `alarm_window_max_probe` (#1251, PR #1354, pinned by
 //! `alarm_window_structural` + its probe tests), and is admitted as a
 //! witnessed out-of-boundary registry entry (`OUT_OF_BOUNDARY_PROBES`);
-//! `ui/app-window.slint` carries no sever today (backlog issue).
+//! `ui/app-window.slint` is severed + twin since #1378, witnessed by
+//! `app_window_max_probe_tests` (the probe itself discharges the
+//! issue's witnessed-safety-analysis ask).
 //!
 //! Two-way evidence (the scratch-checkout pattern of commit
 //! `1276151a`, observed 2026-11-24): with the sever line deleted from
@@ -83,8 +85,10 @@ const EXEMPTIONS: &[Exemption] = &[Exemption {
 /// build.rs twin entries whose severed root lives outside the
 /// `ui/views/` census boundary, each witnessed by an existing
 /// inventory member (here: `alarm_window_structural` + the alarm
-/// window's probe tests pin #1251's landed sever).
-const OUT_OF_BOUNDARY_PROBES: &[&str] = &["alarm_window_max_probe"];
+/// window's probe tests pin #1251's landed sever, and
+/// `app_window_max_probe_tests` witnesses #1378's sever on the
+/// `AppWindow` Window root).
+const OUT_OF_BOUNDARY_PROBES: &[&str] = &["alarm_window_max_probe", "app_window_max_probe"];
 
 /// The constant the sever states, one string in the guard: a Theme
 /// rename fails the census loudly (fail-closed), and the fixer

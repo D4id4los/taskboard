@@ -32,6 +32,8 @@ mod alarm_window_drag_tests;
 mod alarm_window_max_probe_tests;
 #[path = "probes/alarm_window_ring_probe_tests.rs"]
 mod alarm_window_ring_probe_tests;
+#[path = "probes/app_window_max_probe_tests.rs"]
+mod app_window_max_probe_tests;
 #[path = "probes/armed_ring_probe_tests.rs"]
 mod armed_ring_probe_tests;
 #[path = "probes/board_bar_probe_tests.rs"]

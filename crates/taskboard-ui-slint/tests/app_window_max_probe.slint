@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The app window's window-max probe (#1378, the 1276151a per-view
+// twin pattern): the real `AppWindow` mounted bare — the regression
+// host for the window-max-width collapse (a bounded-max row bounds
+// the window root's layout merge, and Slint's winit backend then
+// applies it as the OS window's max size). `AppWindow` hosts every
+// severed view, so its own Window merge is the last merge point the
+// census boundary (`ui/views/` only) cannot see. The assertion reads
+// the root layout info from Rust
+// (`probes/app_window_max_probe_tests.rs`); the probe only carries
+// the mount.
+
+import { AppWindow } from "../ui/app-window.slint";
+
+export component AppWindowMaxProbe inherits AppWindow {
+    // No explicit `width:`/`height:` bindings — an explicit width
+    // would replace the root's own layout info (the probe would read
+    // back its canvas, not the constraint merge under test).
+}
