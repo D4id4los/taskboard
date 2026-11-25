@@ -268,10 +268,22 @@ That is exactly why this plan gates a UI chunk, not an engine chunk. -->
 - **Journey tests** (`crates/taskboard-ui-slint/tests/journeys/today_two_column_journeys.rs`, step-ID-named):
   - `us17_s1_wide_viewport_mounts_the_two_column_grid` (US-17/S1, AC-1)
   - `us17_s2_narrow_viewport_keeps_the_single_column` (US-17/S2, AC-2)
-  - `us17_s3_aggregated_row_sets_unchanged_in_both_columns` (US-17, AC-3)
+  - `us17_s3_aggregated_row_sets_unchanged_in_both_columns` (US-17/S3, AC-3)
   - `us18_s1_walk_wraps_left_column_to_right` (US-18/S1, AC-1)
   - `us18_s2_prev_mapping_mirrors_and_row_chords_hold` (US-18/S2, AC-2)
-  - `us19_s1_kiosk_stays_single_column` (US-19/S1, AC-1)
+  - `us19_s1_kiosk_mounts_the_grid_when_space_allows` (US-19/S1, AC-1,
+    the 2026-11-25 amendment: the width test alone rules every mount;
+    the pre-amendment `us19_s1_kiosk_stays_single_column` is
+    superseded) — plus the posture twin
+    `us19_s1_kiosk_posture_mounts_the_grid_when_space_allows`
+    (kiosk UiSettings mount).
+
+  Step→test bounds (the #768 grammar; the §6 Test column nominates
+  one test per wiring row, these bind the remaining steps):
+
+bound-test: US-17/S3 -> crates/taskboard-ui-slint/tests/journeys/today_two_column_journeys.rs::us17_s3_aggregated_row_sets_unchanged_in_both_columns
+bound-test: US-18/S2 -> crates/taskboard-ui-slint/tests/journeys/today_two_column_journeys.rs::us18_s2_prev_mapping_mirrors_and_row_chords_hold
+bound-test: US-19/S1 -> crates/taskboard-ui-slint/tests/journeys/today_two_column_journeys.rs::us19_s1_kiosk_mounts_the_grid_when_space_allows
 - **Seam tests**: none needed — no new seams; W-3's ordering is
   asserted through the journey test's successor sequence (typed
   row-kind sequence, not label text).
