@@ -40,8 +40,25 @@ env:
   PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
 
 jobs:
-  miri-domain-core:
-    name: cargo miri (domain — core)
+  # #1402: the old single `domain — core` job was cut at its 120-min cap
+  # for five consecutive weeks while its siblings finished in 4/41/99
+  # min — the slice outgrew one job. Re-sliced (measured, not a blind
+  # cap raise) into two jobs along the seam the local measurement found:
+  # the behavioural/property clusters dominate (a single board_move
+  # rekey test ran >16 min under Miri; command property tests ran
+  # 300-600s EACH; appdata aggregated 4 min), while the pure data
+  # modules are cheap. Filter lists are disjoint and easily edited —
+  # the first post-merge CI run is the true measurement; move tests
+  # between jobs by editing ONLY the filter lists. Jobs are sized with
+  # headroom against the cap, never as a guarantee: the dead-man's
+  # switch (lane-watch.yml) reports a job that drifts past it. The cap
+  # stays 120 (a raise is the fallback and is not needed — a clean seam
+  # exists). PROPTEST_CASES stays 16 on both: the local measurement was
+  # cut short by the dev box's serialization discipline before it could
+  # justify a change to the property budget, and changing it without a
+  # fresh measurement would be guesswork.
+  miri-domain-core-behavioural:
+    name: "cargo miri (domain — core: behavioural/property)"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -54,10 +71,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - name: Run Miri on taskboard-domain (core, capped)
+      - name: Run Miri on taskboard-domain (core, behavioural, capped)
         run: |
           cargo +nightly miri setup
-          cargo +nightly miri test -p taskboard-domain --lib --tests -- --skip pipeline:: --skip remote:: --skip state::
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- \
+            command:: reminders:: recur:: habit:: habit_time:: days:: time:: \
+            tracking:: tracking_stats:: reflection:: reflection_stats:: \
+            focus:: roster:: settings:: calibration:: clock:: find:: order::
+
+  miri-domain-core-data:
+    name: "cargo miri (domain — core: data/substrate)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PROPTEST_CASES: "16"
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Run Miri on taskboard-domain (core, data substrate, capped)
+        # The exact complement of the behavioural job's filter list:
+        # every core test NOT matched above lands here, so the split is
+        # disjoint AND complete by construction (no test can silently
+        # drop out of both jobs when a module is added).
+        run: |
+          cargo +nightly miri setup
+          cargo +nightly miri test -p taskboard-domain --lib --tests -- \
+            --skip pipeline:: --skip remote:: --skip state:: \
+            --skip command:: --skip reminders:: --skip recur:: \
+            --skip habit:: --skip habit_time:: --skip days:: \
+            --skip time:: --skip tracking:: --skip tracking_stats:: \
+            --skip reflection:: --skip reflection_stats:: \
+            --skip focus:: --skip roster:: --skip settings:: \
+            --skip calibration:: --skip clock:: --skip find:: \
+            --skip order::
 
   miri-domain-pipeline:
     name: cargo miri (domain — pipeline)
