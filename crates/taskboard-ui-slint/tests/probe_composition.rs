@@ -52,6 +52,8 @@ mod habit_history_window_max_probe_tests;
 mod menu_shell_probe_tests;
 #[path = "probes/overlay_migration_probe_tests.rs"]
 mod overlay_migration_probe_tests;
+#[path = "probes/plan_seek_probe_tests.rs"]
+mod plan_seek_probe_tests;
 #[path = "probes/plan_window_max_probe_tests.rs"]
 mod plan_window_max_probe_tests;
 #[path = "probes/review_window_max_probe_tests.rs"]

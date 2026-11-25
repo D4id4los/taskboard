@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The planner's focus-into-view seek probe (#1320, the walk-probe
+// pattern): the real `PlanNextDayView` mounted with a many-row pool
+// model — the regression host for the pane walk's seek (a keyboard
+// landing below the fold must move the page Flickable's content-y so
+// the landed row is inside the viewport). The assertion reads the
+// view's `page-y` root seam from Rust
+// (`probes/plan_seek_probe_tests.rs`); the probe only carries the
+// mount and the models.
+
+import { PlanNextDayView, PlanModel, PlanRowModel } from "../ui/views/plan-next-day-view.slint";
+// The root imports the hint global so the probe's Rust side reads and
+// writes the SAME instance the mounted view's rows consume (globals
+// are single-instance per component tree). The re-export makes the
+// generated Rust type public on the probe's module.
+import { FocusScrollHint } from "../ui/focus-scroll.slint";
+export { FocusScrollHint }
+
+export component PlanSeekProbe inherits Window {
+    // No explicit size bindings on the view — the viewport geometry
+    // is the probe's window (1000 × 900 set driver-side), the exact
+    // constraint frame the seek law reads.
+
+    in property <[PlanRowModel]> boxes;
+    in property <[PlanRowModel]> pool;
+    in property <bool> show-pool;
+
+    view := PlanNextDayView {
+        width: 100%;
+        height: 100%;
+        plan: {
+            boxes: root.boxes,
+            pool: root.show-pool ? root.pool : [],
+            placing: false,
+            focus-pane: 1,
+        };
+    }
+
+    // The seek pins' read seam: the view's pan offset (the view's
+    // `page-y` root property, #1320).
+    out property <length> page-y <=> view.page-y;
+}
