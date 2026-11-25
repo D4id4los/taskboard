@@ -272,7 +272,7 @@ fn p5_the_probe_golden_holds() {
             // part of the checked-in corpus, so its regen upserts too.
             support::golden_manifest::record(&support::golden_manifest::GoldenEntry {
                 name: "icon-probe-1.0-392".to_owned(),
-                fixture: "icon_probe.slint composition (25 vendored assets)".to_owned(),
+                fixture: "icon_probe.slint composition (27 vendored assets)".to_owned(),
                 state: "icon probe window; kinds wall + tone ladder + button box".to_owned(),
                 scale: 1.0,
                 width: snapshot.width,
