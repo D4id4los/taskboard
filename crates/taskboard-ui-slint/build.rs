@@ -24,47 +24,34 @@ fn main() {
     // `slint!` macro cannot enable the element debug info the
     // backend's element queries require. Every probe shares the
     // include shape: tests/<name>.slint → OUT_DIR/<name>.rs, with the
-    // rerun-if-changed riding the source (the icon probe additionally
-    // reruns on the vendored assets dir, tracked below).
+    // rerun-if-changed riding the source. The registry is DERIVED
+    // (#1362): every `tests/*.slint` file is a probe — a new probe
+    // file needs no build.rs edit. The derivation is name-sorted so
+    // the compile order is deterministic (the goldens' discovery
+    // order is stable across runs).
     let manifest =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("build script runs via cargo"));
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set"));
-    let probes = [
-        "armed_ring_probe",
-        "virtualisation_probe",
-        "focus_coverage_probe",
-        "focus_seam_probe",
-        "slider_grab_probe",
-        "walk_probe",
-        "icon_probe",
-        "tooltip_layout_probe",
-        "dropdown_probe",
-        "board_bar_probe",
-        "editor_viewport_probe",
-        "task_card_title_probe",
-        "task_card_hover_probe",
-        "stat_bars_severing_probe",
-        "task_window_max_probe",
-        "plan_window_max_probe",
-        "today_window_max_probe",
-        "board_window_max_probe",
-        "stack_window_max_probe",
-        "review_window_max_probe",
-        "settings_window_max_probe",
-        "habit_history_window_max_probe",
-        "alarm_window_max_probe",
-        "widget_framework_probe",
-        "action_menu_bar_probe",
-        "overlay_migration_probe",
-        "labeled_value_row_probe",
-        "stale_remount_probe",
-        "habit_entry_height_probe",
-        "small_widget_probe",
-        "menu_shell_probe",
-    ];
-    for name in probes {
+    let tests_dir = manifest.join("tests");
+    let mut probes: Vec<String> = std::fs::read_dir(&tests_dir)
+        .unwrap_or_else(|err| panic!("tests dir readable ({}): {err}", tests_dir.display()))
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.extension()?.to_str()? != "slint" {
+                return None;
+            }
+            path.file_stem()?.to_str().map(str::to_owned)
+        })
+        .collect();
+    probes.sort();
+    for name in &probes {
         compile_probe(&manifest.join(format!("tests/{name}.slint")), &out);
     }
+    // The rerun-if-changed on the tests dir itself: the derivation
+    // reads it, so a new/removed probe file must rerun this script.
+    println!("cargo:rerun-if-changed={}", tests_dir.display());
+    // The vendored icon assets: the icon probe (and any other icon
+    // consumer) reruns when they change.
     println!(
         "cargo:rerun-if-changed={}",
         manifest.join("ui/assets/icons").display()
