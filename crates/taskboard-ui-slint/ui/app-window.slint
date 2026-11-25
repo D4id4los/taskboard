@@ -1042,7 +1042,7 @@ export component AppWindow inherits Window {
                 anchor-height: DatePickerFacts.anchor-height;
                 viewport-width: root.width;
                 viewport-floor: status.y;
-                panel-preferred-width: 420px * Theme.base-scale;
+                panel-preferred-width: Theme.panel-width;
                 walk-stops: 1;
                 dismissed => root.date-editor-focus-lost();
                 // The picker-anchor keep-alive (#1206, the #954 idiom
@@ -1106,7 +1106,7 @@ export component AppWindow inherits Window {
                 anchor-height: DatePickerFacts.picker-anchor-height;
                 viewport-width: root.width;
                 viewport-floor: status.y;
-                panel-preferred-width: 280px * Theme.base-scale;
+                panel-preferred-width: Theme.panel-width-slim;
                 walk-stops: 1;
                 dismissed => root.date-picker-dismiss-requested();
                 DatePicker {
@@ -1211,7 +1211,7 @@ export component AppWindow inherits Window {
             anchor-height: HabitQuotaFacts.anchor-height;
             viewport-width: root.width;
             viewport-floor: status.y;
-            panel-preferred-width: 300px * Theme.base-scale;
+            panel-preferred-width: Theme.panel-width-narrow;
             walk-stops: 1;
             dismissed => root.habits-quota-dismissed();
             HabitQuotaEditor {
@@ -1230,7 +1230,7 @@ export component AppWindow inherits Window {
             anchor-height: TimerSetterFacts.anchor-height;
             viewport-width: root.width;
             viewport-floor: status.y;
-            panel-preferred-width: 300px * Theme.base-scale;
+            panel-preferred-width: Theme.panel-width-narrow;
             walk-stops: 1;
             dismissed => root.timer-setter-dismiss-requested();
             TimerSetter {
@@ -1287,7 +1287,7 @@ export component AppWindow inherits Window {
         anchor-height: TrackPanelFacts.anchor-height;
         viewport-width: root.width;
         viewport-floor: status.y;
-        panel-preferred-width: 360px * Theme.base-scale;
+        panel-preferred-width: Theme.menu-max-width;
         walk-stops: 1;
         dismissed => root.track-entries-dismiss-requested();
         TrackEntriesPanel {
@@ -1357,7 +1357,7 @@ export component AppWindow inherits Window {
             anchor-height: TrackPanelFacts.form-grid-anchor-height;
             viewport-width: root.width;
             viewport-floor: status.y;
-            panel-preferred-width: 280px * Theme.base-scale;
+            panel-preferred-width: Theme.panel-width-slim;
             walk-stops: 1;
             dismissed => root.track-form-grid-dismiss-requested();
             DatePicker {
@@ -1396,7 +1396,7 @@ export component AppWindow inherits Window {
                 title: "Labels";
                 kind: root.label-overlay-form-open
                     ? DialogKind.edit : DialogKind.confirm;
-                body-preferred-width: 360px * Theme.base-scale;
+                body-preferred-width: Theme.menu-max-width;
                 // The panel's own walk extent (3 roster stops; the add
                 // form's open flip re-arms 6 through the panel's
                 // changed watch) — the mount-time value matches the
@@ -1450,7 +1450,7 @@ export component AppWindow inherits Window {
                 title: "Labels";
                 kind: root.label-overlay-form-open
                     ? DialogKind.edit : DialogKind.confirm;
-                body-preferred-width: 360px * Theme.base-scale;
+                body-preferred-width: Theme.menu-max-width;
                 // The panel's own walk extent (3 roster stops; the add
                 // form's open flip re-arms 6 through the panel's
                 // changed watch) — the mount-time value matches the
@@ -1750,7 +1750,7 @@ export component AppWindow inherits Window {
             // window (status bar included) at any size.
             width: min(root.width - 2 * Theme.space-2,
                        max(320px * Theme.base-scale,
-                           min(self.preferred-width, 560px * Theme.base-scale)));
+                           min(self.preferred-width, Theme.dialog-max-width)));
             // The anchor rect: the hamburger, or the context menu's
             // pointer point (round-1 D13) — same clamp formula.
             x: max(Theme.space-2,
@@ -1796,7 +1796,7 @@ export component AppWindow inherits Window {
                 && Responsive.current-breakpoint != Breakpoint.compact): ActionMenu {
             width: min(root.width - 2 * Theme.space-2,
                        max(320px * Theme.base-scale,
-                           min(self.preferred-width, 560px * Theme.base-scale)));
+                           min(self.preferred-width, Theme.dialog-max-width)));
             x: max(Theme.space-2,
                    min(MenuPanelFacts.x - Theme.space-1 - self.width,
                        root.width - self.width - Theme.space-2));
@@ -1872,7 +1872,7 @@ export component AppWindow inherits Window {
             open: true;
             title: "Capture";
             kind: DialogKind.edit;
-            body-preferred-width: 560px * Theme.base-scale;
+            body-preferred-width: Theme.dialog-max-width;
             walk-stops: 1;
             viewport-floor: status.y;
             dismissed => root.capture_dismiss_requested();
@@ -1907,7 +1907,7 @@ export component AppWindow inherits Window {
             open: true;
             title: "Repeat";
             kind: DialogKind.edit;
-            body-preferred-width: 560px * Theme.base-scale;
+            body-preferred-width: Theme.dialog-max-width;
             walk-stops: 1;
             viewport-floor: status.y;
             accepted => root.recur_commit_clicked();
@@ -1940,7 +1940,7 @@ export component AppWindow inherits Window {
             open: true;
             title: "Export";
             kind: DialogKind.confirm;
-            body-preferred-width: 560px * Theme.base-scale;
+            body-preferred-width: Theme.dialog-max-width;
             walk-stops: 1;
             viewport-floor: status.y;
             buttons: [
@@ -1974,7 +1974,7 @@ export component AppWindow inherits Window {
             open: true;
             title: "Search";
             kind: DialogKind.confirm;
-            body-preferred-width: 560px * Theme.base-scale;
+            body-preferred-width: Theme.dialog-max-width;
             walk-stops: 1 + root.palette-model.length;
             viewport-floor: status.y;
             dismissed => root.palette-dismiss-requested();
@@ -2002,7 +2002,7 @@ export component AppWindow inherits Window {
             open: true;
             title: "Habit history";
             kind: DialogKind.confirm;
-            body-preferred-width: 560px * Theme.base-scale;
+            body-preferred-width: Theme.dialog-max-width;
             walk-stops: 1 + 2;
             viewport-floor: status.y;
             dismissed => root.habit_history_close_requested();
@@ -2033,7 +2033,7 @@ export component AppWindow inherits Window {
             open: true;
             title: root.walk-model.header;
             kind: DialogKind.confirm;
-            body-preferred-width: 560px * Theme.base-scale;
+            body-preferred-width: Theme.dialog-max-width;
             // The declared extent (#1053): the body's own stop (the
             // D-W1-4 declared body stop; the walk's row list is the
             // body's content and the cursor row's controls are masked
@@ -2135,7 +2135,7 @@ export component AppWindow inherits Window {
             clicked => root.focus-overlay-close-requested();
         }
         if (root.focus-overlay-open): FocusOverlay {
-            width: min(root.width - 2 * Theme.space-2, 560px * Theme.base-scale);
+            width: min(root.width - 2 * Theme.space-2, Theme.dialog-max-width);
             x: (root.width - self.width) / 2;
             y: max(Theme.space-4,
                    min((root.height - status.height - self.height) / 2,
