@@ -227,6 +227,46 @@ EDGE_RUN_EXEMPT_FRACTION = 0.3
 # rounded window corners (calibration: 18 of the raw runs are 1-2 px).
 C1_MIN_RUN_PX = 3
 
+# C1 classification (#1418, the clip-sentinel law, round 8 L1): every
+# emitted C1 finding carries a typed `classification` — exactly one of
+# `real-clip` / `thumb` / `chrome-speck` — and the D5 rubric reads the
+# classification instead of re-deriving prose. Calibration notes:
+#
+# SEVERING_EXTENT_PX: the fix-now floor (the severing class — flush
+# panels, #1365/#1378). Calibrated on the round-7 corpus: every
+# hand-graded fix-now C1 sits at ≥ 12 physical px, every
+# accept-as-legacy at ≤ 8. The 12-px line stays in the metric strings
+# as the calibration record.
+SEVERING_EXTENT_PX = 12
+
+# The scrollbar-thumb model is NOT a bare size threshold: a run
+# classifies `thumb` only when a track-column signature accompanies it
+# — a low-contrast (sub-content-floor, above-background) vertical band
+# along the same edge, contiguous through the run's position, spanning
+# at least TRACK_BAND_FRACTION of the edge (the track the thumb sits
+# in; the corpus thumbs' tracks span 0.29–0.94 of the edge while no
+# real-clip run's near-floor band reaches 0.25 with a sub-severing
+# extent). A real 8-px flush panel sliver without a track therefore
+# classifies `real-clip`, never `thumb`.
+TRACK_BAND_FRACTION = 0.25
+
+# The track band's deviation window: below the content floor (the
+# track renders dimmer than content) but above the sampling noise
+# (±2/255, the calibration run's floor) so a flat background column
+# does not read as track.
+TRACK_DEV_LOW = 2
+
+# Chrome-speck ceiling: sub-severing runs at or below this extent are
+# the window-chrome scale (the corpus specks are 3-4 px, the bottom-
+# edge frame runs 3 px). A sub-severing run wider than the speck scale
+# without a track is NOT a speck — it is a small real clip and the
+# rubric's fix-later class owns it (the 6 px editor-family sever runs
+# are the corpus population the old extent-only rubric blurred into
+# accept-as-legacy; the classification makes them visible instead).
+SPECK_EXTENT_MAX = 4
+
+C1_CLASSIFICATIONS = ("real-clip", "thumb", "chrome-speck")
+
 # ---------------------------------------------------------------------------
 
 
@@ -385,21 +425,26 @@ def _modal_colour(pixels: np.ndarray) -> tuple[int, int, int]:
 # physical px, metric, threshold strings).
 
 
-def detect_c1(mask: np.ndarray) -> list[dict]:
+def detect_c1(rgb: np.ndarray, mask: np.ndarray, bg: np.ndarray) -> list[dict]:
     """INV-C1 clip sentinel: content runs touching a canvas edge that are
     neither structural (spanning a large fraction of the edge — side
-    rails, window-chrome bands) nor anti-aliasing noise."""
+    rails, window-chrome bands) nor anti-aliasing noise.
+
+    Every emitted finding carries the typed `classification` (#1418):
+    `real-clip` / `thumb` / `chrome-speck`. The scrollbar-thumb model
+    is extent-band + track-column signature (see the calibration notes
+    on TRACK_BAND_FRACTION), never a bare size threshold."""
     h, w = mask.shape
     findings = []
 
     edge_specs = [
-        ("right", mask[:, w - 1]),
-        ("left", mask[:, 0]),
-        ("bottom", mask[h - 1, :]),
-        ("top", mask[0, :]),
+        ("right", mask[:, w - 1], np.abs(rgb[:, w - 1] - bg).max(axis=1)),
+        ("left", mask[:, 0], np.abs(rgb[:, 0] - bg).max(axis=1)),
+        ("bottom", mask[h - 1, :], np.abs(rgb[h - 1, :] - bg).max(axis=1)),
+        ("top", mask[0, :], np.abs(rgb[0, :] - bg).max(axis=1)),
     ]
 
-    for name, line in edge_specs:
+    for name, line, dev in edge_specs:
         runs = []
         start = None
         for i, v in enumerate(line):
@@ -416,6 +461,8 @@ def detect_c1(mask: np.ndarray) -> list[dict]:
                 continue  # structural band/rail, not a clip
             if run_len < C1_MIN_RUN_PX:
                 continue  # corner anti-aliasing noise
+            edge_len = len(line)
+            classification, rationale = classify_c1_run(run_len, r0, r1, dev, edge_len)
             if axis_region := (
                 (w - 1, r0, 1, run_len)
                 if name == "right"
@@ -431,14 +478,73 @@ def detect_c1(mask: np.ndarray) -> list[dict]:
                     "invariant": "C1",
                     "extent": run_len,
                     "region": region,
+                    "extent": run_len,
+                    "classification": classification,
+                    "rationale": rationale,
                     "metric": f"content run touches the {name} edge "
                     f"(extent {run_len} px along the edge)",
                     "threshold": f"structural exemption at ≥ {EDGE_RUN_EXEMPT_FRACTION:.0%} "
-                    f"of the edge; min run {C1_MIN_RUN_PX} px; otherwise touching runs "
-                    "are clips",
+                    f"of the edge; min run {C1_MIN_RUN_PX} px; severing floor "
+                    f"{SEVERING_EXTENT_PX} px; thumb band = sub-severing extent with a "
+                    f"track-column signature ≥ {TRACK_BAND_FRACTION:.0%} of the edge",
                 }
             )
     return findings
+
+
+def classify_c1_run(
+    run_len: int, r0: int, r1: int, dev: np.ndarray, edge_len: int
+) -> tuple[str, str]:
+    """The #1418 typed classifier for one edge-touching run.
+
+    Returns (classification, rationale). Sub-severing runs split by the
+    scrollbar-thumb model: a thumb needs the track-column signature —
+    a contiguous near-floor band through the run's position spanning
+    TRACK_BAND_FRACTION of the edge; without the track the run is a
+    chrome speck (a deliberate small flush element at the frame
+    periphery). Everything at or past the severing floor is a
+    real-clip regardless of company."""
+    if run_len >= SEVERING_EXTENT_PX:
+        return (
+            "real-clip",
+            f"extent {run_len} px at/above the {SEVERING_EXTENT_PX} px severing floor",
+        )
+    band_a, band_b = _near_floor_band(dev, r0, r1)
+    band_len = band_b - band_a + 1
+    if band_len / edge_len >= TRACK_BAND_FRACTION:
+        return (
+            "thumb",
+            f"extent {run_len} px inside the thumb band with a track-column "
+            f"signature (contiguous near-floor band {band_len} px = "
+            f"{band_len / edge_len:.0%} of the edge through the run)",
+        )
+    if run_len <= SPECK_EXTENT_MAX:
+        return (
+            "chrome-speck",
+            f"sub-severing extent {run_len} px at the chrome scale with no "
+            f"track-column signature (near-floor band {band_len} px = "
+            f"{band_len / edge_len:.0%} of the edge)",
+        )
+    return (
+        "real-clip",
+        f"sub-severing extent {run_len} px with no track-column signature "
+        f"(near-floor band {band_len} px = {band_len / edge_len:.0%} of the edge) "
+        "and past the chrome-speck scale — a small real clip",
+    )
+
+
+def _near_floor_band(dev: np.ndarray, r0: int, r1: int) -> tuple[int, int]:
+    """The contiguous band of near-floor deviation (TRACK_DEV_LOW ≤ dev ≤
+    CONTENT_FLOOR) containing/adjacent to the run's extent — the
+    scrollbar-track column signature probe."""
+    n = len(dev)
+    a = r0
+    while a > 0 and TRACK_DEV_LOW <= dev[a - 1] <= CONTENT_FLOOR:
+        a -= 1
+    b = r1
+    while b < n - 1 and TRACK_DEV_LOW <= dev[b + 1] <= CONTENT_FLOOR:
+        b += 1
+    return a, b
 
 
 def detect_m1(mask: np.ndarray, scale: float) -> list[dict]:
@@ -835,38 +941,55 @@ def logical(region: tuple[int, int, int, int], scale: float) -> dict:
     }
 
 
-def grade_for(finding: dict) -> str:
-    """Deterministic grading rules (D5, recorded verbatim in the emitted
-    report — the rubric absorbs legacy noise, never the detector):
-    C1 extent ≥ 12 px → fix-now, shorter → accept-as-legacy; A1 grid
-    delta ≤ 6 px → fix-later, larger (or no shared column, delta None)
-    → accept-as-legacy; A2 gap delta
-    ≤ 8 px → fix-later, larger → accept-as-legacy; T1 em ≥ 20 →
-    fix-later, smaller → accept-as-legacy; Q1 sub-floor → fix-now
-    (except the scrim-blend ink class → accept-as-legacy, calibration
-    evidence in the constant's comment); I1 → fix-later."""
+def grade_for(finding: dict, golden: str = "") -> str:
+    """The deterministic D5 rubric (the whole grading step is now
+    reproducible — the round-7 hand grades were this rubric applied by
+    hand; the #1418 work promotes C1's half from prose to the typed
+    classification).
+
+    C1 consumes the classification (law [L](c)): thumb / chrome-speck
+    → accept-as-legacy (rationale emitted from the classification);
+    real-clip at/above the severing floor → fix-now; real-clip below
+    it → fix-later (a real drift smaller than the severing class —
+    visible, never blurred into the thumb band). The other invariants
+    keep their recorded rule strings:
+    A1 — delta to the nearest shared grid column ≤ 6 px → fix-later,
+    larger (or no shared column) → accept-as-legacy;
+    A2 — |gap − median| ≤ 8 px → fix-later, larger → accept-as-legacy;
+    T1 — em ≥ 20 logical px → fix-later, below → accept-as-legacy;
+    Q1 — sub-floor → fix-now, except the scrim-blend ink class →
+    accept-as-legacy (calibration evidence in the constant's comment);
+    M1 — icon-probe and board-drag-indicator margins →
+    accept-as-legacy (the manifest's state note), the rest → fix-later.
+    """
     inv = finding["invariant"]
     if inv == "C1":
-        return "fix-now" if finding["extent"] >= 12 else "accept-as-legacy"
+        cls = finding.get("classification", "real-clip")
+        if cls in ("thumb", "chrome-speck"):
+            return "accept-as-legacy"
+        return "fix-now" if finding["extent"] >= SEVERING_EXTENT_PX else "fix-later"
     if inv == "A1":
-        d = finding["grid_delta"]
-        return "fix-later" if d is not None and d <= 6 else "accept-as-legacy"
+        delta = finding.get("grid_delta")
+        return "fix-later" if delta is not None and delta <= 6 else "accept-as-legacy"
     if inv == "A2":
-        return "fix-later" if finding["gap_delta"] <= 8 else "accept-as-legacy"
+        return "fix-later" if finding.get("gap_delta", 0) <= 8 else "accept-as-legacy"
     if inv == "T1":
-        return "fix-later" if finding["em"] >= 20.0 else "accept-as-legacy"
+        return "fix-later" if finding.get("em", 0) >= 20 else "accept-as-legacy"
     if inv == "Q1":
         return "accept-as-legacy" if finding.get("scrim") else "fix-now"
-    return "fix-later"  # I1, M1 (M1 scope grades applied per golden in run)
+    if inv == "M1":
+        legacy = ("icon-probe", "board-drag-indicator")
+        return "accept-as-legacy" if golden.startswith(legacy) else "fix-later"
+    return "fix-later"  # I1
 
 
 def analyze_golden(
-    rgb: np.ndarray, scale: float, name: str = ""
+    rgb: np.ndarray, scale: float, name: str = "", golden: str = ""
 ) -> tuple[list[dict], list[str]]:
     mask, bg = content_mask(rgb)
     components = connected_components(mask)  # one pass feeds T1, Q1, I1
     findings: list[dict] = []
-    findings += detect_c1(mask)
+    findings += detect_c1(rgb, mask, bg)
     findings += detect_m1(mask, scale)
     findings += detect_a1(mask, scale)
     findings += detect_a2(mask, scale)
@@ -876,13 +999,7 @@ def analyze_golden(
     findings += detect_i1(components, scale, name, lines)
     skips = [skip] if skip else []
     for f in findings:
-        f["grade"] = grade_for(f)
-        if f["invariant"] == "M1" and (
-            name.startswith("icon-probe") or name.startswith("board-drag-indicator")
-        ):
-            # recorded rubric: the manifest's state note explains the margins
-            # (deliberate kind-wall padding / mostly-empty drag canvas)
-            f["grade"] = "accept-as-legacy"
+        f["grade"] = grade_for(f, golden or name)
     return findings, skips
 
 
@@ -911,6 +1028,15 @@ def run(goldens_dir: Path, out: Path | None) -> tuple[list[dict], list[dict]]:
                     "logical_region": logical(f["region"], scale),
                     "metric": f["metric"],
                     "threshold": f["threshold"],
+                    **(
+                        {
+                            "classification": f["classification"],
+                            "rationale": f["rationale"],
+                            "extent": f["extent"],
+                        }
+                        if f["invariant"] == "C1"
+                        else {}
+                    ),
                 }
             )
         for s in sk:
@@ -947,7 +1073,12 @@ def tomllib_escape(v) -> str:
 # report.
 
 
-def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
+def emit_md(
+    findings_path: Path,
+    md_path: Path,
+    goldens_dir: str,
+    reconcile_path: Path | None = None,
+) -> None:
     with open(findings_path, "rb") as f:
         data = tomllib.load(f)
     findings = data.get("finding", [])
@@ -957,6 +1088,38 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
     by: dict[tuple[str, str], int] = {}
     for fnd in findings:
         by[(fnd["invariant"], fnd["grade"])] = by.get((fnd["invariant"], fnd["grade"]), 0) + 1
+
+    # Reconciliation (#1418 law [L](c)): when a previous (hand-graded)
+    # findings.toml is supplied, every grade that moved is enumerated
+    # here — disagreements are recorded, never silently flipped.
+    flips: list[tuple[str, str, str, str, str]] = []  # golden, metric, old, new, cls
+    if reconcile_path is not None:
+        with open(reconcile_path, "rb") as f:
+            old = tomllib.load(f)
+        old_grades = {
+            (o["golden"], o["invariant"], o["region"]["x"], o["region"]["y"], o["region"]["w"], o["region"]["h"]): o["grade"]
+            for o in old.get("finding", [])
+        }
+        for fnd in findings:
+            key = (
+                fnd["golden"],
+                fnd["invariant"],
+                fnd["region"]["x"],
+                fnd["region"]["y"],
+                fnd["region"]["w"],
+                fnd["region"]["h"],
+            )
+            prev = old_grades.get(key)
+            if prev is not None and prev != fnd["grade"]:
+                flips.append(
+                    (
+                        fnd["golden"],
+                        fnd["metric"],
+                        prev,
+                        fnd["grade"],
+                        fnd.get("classification", "-"),
+                    )
+                )
 
     out = []
     out.append("# Layout Review Analyzer — Findings (round 8, chunk L2, tier 2)")
@@ -983,7 +1146,9 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
         " byte-identically on re-run (the corpus is byte-deterministic per G1);"
         " `grade` fields are applied deterministically per the recorded grading"
         " rules below (grade_for — the toml grades re-derive from the metric"
-        " fields) and the"
+        " fields; for C1 the rubric consumes the #1418 typed classification"
+        " (real-clip / thumb / chrome-speck) emitted by the detector, so the"
+        " grade is reproducible without hand labour) and the"
         " accept-as-legacy grades name explained debt — the grade never"
         " silences the detector."
     )
@@ -1017,9 +1182,17 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
     out.append("Grading rules applied to this run (deterministic, recorded per D5 —"
     " the rubric absorbs legacy noise, never the detector):")
     out.append("")
-    out.append("- C1: extent ≥ 12 px → fix-now (flush panels, the open severing class"
-    " #1365/#1378); extent < 12 px → accept-as-legacy (scrollbar thumbs at 8 px"
-    " and window-chrome specks at 3 px — deliberate small flush elements).")
+    out.append("- C1 (the #1418 clip-sentinel law, 2026-11-25): every C1 finding"
+    " carries a typed classification — real-clip / thumb / chrome-speck —"
+    " and the rubric reads the classification, not raw extent: thumb or"
+    " chrome-speck → accept-as-legacy (rationale emitted from the"
+    " classification + the calibration note); real-clip ≥ 12 px → fix-now"
+    " (the severing class #1365/#1378); real-clip < 12 px → fix-later (a"
+    " real drift smaller than the severing class — the class the old"
+    " extent-only rubric had no home for). The thumb model is extent-band"
+    " + track-column signature (a contiguous near-floor band ≥ 25% of the"
+    " edge through the run), never a bare size threshold. The 12-px line"
+    " stays in the metric strings as the calibration record.")
     out.append("- A1: delta to the nearest shared grid column ≤ 6 px → fix-later"
     " (near-miss drift); larger → accept-as-legacy (a distinct layout region,"
     " not a near-miss of the grid); no shared column at all (a singleton"
@@ -1049,6 +1222,21 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
     out.append("")
     out.append("## Findings by golden")
     out.append("")
+    if flips:
+        out.append("### Grade reconciliation vs the previous hand-applied run")
+        out.append("")
+        out.append("| golden | metric | old grade | new grade | classification |")
+        out.append("|---|---|---|---|---|")
+        for g, metric, oldg, newg, cls in flips:
+            out.append(f"| `{g}` | {metric} | {oldg} | {newg} | {cls} |")
+        out.append("")
+        out.append("Every flip is recorded with its classifier rationale in"
+        " `findings.toml`; none is silent. The flips in this run are the"
+        " designed gap-fill of the #1418 rubric: sub-severing real clips"
+        " (the editor-family sever runs below 12 px) the old extent-only"
+        " rule blurred into accept-as-legacy now classify `real-clip` and"
+        " grade fix-later.")
+        out.append("")
     goldens = sorted({f["golden"] for f in findings})
     if not goldens:
         out.append("(no findings)")
@@ -1057,16 +1245,19 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
         rows = [f for f in findings if f["golden"] == g]
         out.append(f"### `{g}`")
         out.append("")
-        out.append("| invariant | grade | region (phys px) | logical | metric |")
-        out.append("|---|---|---|---|---|")
+        out.append("| invariant | grade | classification | region (phys px) | logical | metric |")
+        out.append("|---|---|---|---|---|---|")
         for r in rows:
             reg = r["region"]
             lg = r["logical_region"]
+            cls = r.get("classification", "-")
+            rat = r.get("rationale", "")
+            metric = r["metric"] + (f" — {rat}" if rat and r["invariant"] == "C1" else "")
             out.append(
-                f"| {r['invariant']} | {r['grade']} "
+                f"| {r['invariant']} | {r['grade']} | {cls} "
                 f"| x={reg['x']} y={reg['y']} w={reg['w']} h={reg['h']} "
                 f"| x={lg['x']} y={lg['y']} w={lg['w']} h={lg['h']} "
-                f"| {r['metric']} |"
+                f"| {metric} |"
             )
         out.append("")
     if skips:
@@ -1109,7 +1300,7 @@ def self_test() -> bool:
         mask, bg = content_mask(rgb)
         components = connected_components(mask)
         out = []
-        out += detect_c1(mask)
+        out += detect_c1(rgb, mask, bg)
         out += detect_m1(mask, scale)
         out += detect_a1(mask, scale)
         out += detect_a2(mask, scale)
@@ -1118,7 +1309,7 @@ def self_test() -> bool:
         out += detect_q1(mask, lines, scale, rgb, bg)
         out += detect_i1(components, scale, name, lines)
         for f in out:
-            f["grade"] = grade_for(f)
+            f["grade"] = grade_for(f, name)
         return out
 
     # --- A1 alignment grid -------------------------------------------------
@@ -1362,6 +1553,68 @@ def self_test() -> bool:
     fs = [f for f in findings_of(c1_hdr) if f["invariant"] == "C1"]
     check("C1 flat-backdrop exemption (flat edge band) → no C1 finding", not fs)
 
+    # --- C1 classification (#1418): constructed cases both ways -----------
+    # (a) thumb-in-track: a scrollbar thumb — a short run flush to the
+    # right edge (barely above the content floor) inside a low-contrast
+    # track column that runs most of the edge height.
+    def thumb_fixture() -> Image.Image:
+        im = _canvas(200, 300)
+        _rect(im, 196, 10, 199, 289, color=(41, 44, 52))  # the track column (dev 12)
+        _rect(im, 196, 130, 199, 137, color=(70, 74, 82))  # the thumb (dev > floor)
+        return im
+
+    fs = [f for f in findings_of(thumb_fixture()) if f["invariant"] == "C1"]
+    check(
+        "C1 thumb-in-track fixture → one finding classified thumb",
+        len(fs) == 1 and fs[0]["classification"] == "thumb",
+    )
+
+    # (b) bare sliver: the same 8-px flush run WITHOUT the track —
+    # must classify real-clip, never thumb (no bare size threshold).
+    def sliver_fixture() -> Image.Image:
+        im = _canvas(200, 300)
+        _rect(im, 196, 130, 199, 137, color=(70, 74, 82))
+        return im
+
+    fs = [f for f in findings_of(sliver_fixture()) if f["invariant"] == "C1"]
+    check(
+        "C1 bare sliver fixture (no track) → classified real-clip",
+        len(fs) == 1 and fs[0]["classification"] == "real-clip",
+    )
+
+    # (c) chrome speck: a 3-px run at the frame periphery, no track.
+    speck = _canvas(200, 300)
+    _rect(speck, 197, 40, 199, 42, color=(70, 74, 82))
+    fs = [f for f in findings_of(speck) if f["invariant"] == "C1"]
+    check(
+        "C1 chrome-speck fixture (3-px run, no track) → classified chrome-speck",
+        len(fs) == 1 and fs[0]["classification"] == "chrome-speck",
+    )
+
+    # (d) real flush panel: a wide, strongly-deviating panel flush at
+    # the edge, extent past the severing floor → real-clip fix-now.
+    panel = _canvas(200, 300)
+    _rect(panel, 150, 100, 199, 160, color=(200, 200, 200))
+    fs = [f for f in findings_of(panel) if f["invariant"] == "C1"]
+    check(
+        "C1 real flush panel fixture → real-clip graded fix-now",
+        len(fs) == 1
+        and fs[0]["classification"] == "real-clip"
+        and fs[0]["grade"] == "fix-now",
+    )
+
+    # (e) sub-severing real clip → real-clip graded fix-later (the
+    # rubric's new home for the small real drift, law [L](c)).
+    small_panel = _canvas(200, 300)
+    _rect(small_panel, 190, 100, 199, 107, color=(200, 200, 200))
+    fs = [f for f in findings_of(small_panel) if f["invariant"] == "C1"]
+    check(
+        "C1 small real clip fixture (8 px, strong ink, no track) → real-clip fix-later",
+        len(fs) == 1
+        and fs[0]["classification"] == "real-clip"
+        and fs[0]["grade"] == "fix-later",
+    )
+
     print()
     if failures:
         print(f"self-test: {len(failures)} failure(s)")
@@ -1384,13 +1637,26 @@ def main(argv: list[str]) -> int:
         default=None,
         help="render a findings.toml into the markdown report",
     )
+    ap.add_argument(
+        "--reconcile",
+        type=Path,
+        default=None,
+        help="with --emit-md: a previous findings.toml whose hand-applied"
+        " grades are reconciled against the new run; every flip is"
+        " enumerated in the report",
+    )
     ap.add_argument("--self-test", action="store_true", help="run the constructed-case pins")
     args = ap.parse_args(argv)
 
     if args.self_test:
         return 0 if self_test() else 1
     if args.emit_md:
-        emit_md(Path(args.emit_md[0]), Path(args.emit_md[1]), "crates/taskboard-ui-slint/tests/goldens")
+        emit_md(
+            Path(args.emit_md[0]),
+            Path(args.emit_md[1]),
+            "crates/taskboard-ui-slint/tests/goldens",
+            reconcile_path=args.reconcile,
+        )
         print(f"report written: {args.emit_md[1]}")
         return 0
     if not args.goldens_dir:
