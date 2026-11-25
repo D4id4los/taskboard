@@ -1,0 +1,9 @@
+---
+source: crates/taskboard-app/src/status_remediation.rs
+expression: rendered
+---
+lock sidecar removed	exit=0
+lock holder signalled	exit=0
+daemon restarted (pid 4242)	exit=0
+refused: SelfPid	exit=1
+refused: HolderAlive	exit=1
