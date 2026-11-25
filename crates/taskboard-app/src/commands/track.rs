@@ -2022,6 +2022,59 @@ mod tests {
 
     // ---- duration_phrase --------------------------------------------------
 
+    /// The v7-prefix hazard (#1284): two same-millisecond journal ids
+    /// share the 12-hex-char v7 timestamp prefix, so a ≥8-char selector
+    /// over a journal family hits the typed ambiguity far more often
+    /// than the v4-shaped entity ids — the refusal must list BOTH
+    /// candidates (the operator lengthens the prefix from the
+    /// refusal), and a unique longer prefix resolves. Typed
+    /// structural facts; the ≥8 minimum stays the documented
+    /// convention.
+    #[test]
+    fn same_millisecond_v7_journal_ids_resolve_loud_ambiguous_then_unique() {
+        // Two v7 ids minted inside one millisecond share the leading
+        // 12 hex chars (the 48-bit unix-ms timestamp).
+        let a = uuid::Uuid::now_v7();
+        let b = uuid::Uuid::now_v7();
+        let a_str = a.to_string();
+        let b_str = b.to_string();
+        let shared = a_str
+            .chars()
+            .zip(b_str.chars())
+            .take_while(|(x, y)| x == y)
+            .map(|(x, _)| x)
+            .collect::<String>();
+        let mut state = taskboard_domain::AppState::default();
+        state.roster.deleted_entries = vec![
+            roster_row(a.as_u128(), uuid::Uuid::from_u128(0x1001).as_u128()),
+            roster_row(b.as_u128(), uuid::Uuid::from_u128(0x1002).as_u128()),
+        ];
+
+        // The shared prefix (≥8 chars, v7 guarantees 12) is ambiguous
+        // with BOTH journal ids as candidates.
+        assert!(
+            shared.chars().count() >= 8,
+            "same-millisecond v7 ids share a >=8-char prefix (got {shared})"
+        );
+        let err =
+            resolve_journal_entry(&state, &shared).expect_err("the shared v7 prefix is ambiguous");
+        let CommandError::AmbiguousJournalEntry { candidates } = err else {
+            panic!("the refusal must be the typed ambiguous variant");
+        };
+        assert_eq!(candidates.len(), 2, "both journal ids are candidates");
+        assert!(
+            candidates.contains(&a_str) && candidates.contains(&b_str),
+            "the candidates are exactly the two same-millisecond journal ids"
+        );
+
+        // A prefix extended past the shared span resolves to the
+        // unique row it names.
+        let longer = &a_str[..shared.chars().count() + 4];
+        let resolved =
+            resolve_journal_entry(&state, longer).expect("the longer unique prefix resolves");
+        assert_eq!(resolved, taskboard_domain::JournalId::from_uuid(a));
+    }
+
     #[test]
     fn duration_phrase_composes_hours_and_minutes_at_minute_granularity() {
         assert_eq!(
