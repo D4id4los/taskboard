@@ -12,38 +12,7 @@ comment STAYS in the copy; only <...> placeholders go unfilled.
   contract for the Today view's two-column large-width layout (#1436).
   No implementation decisions beyond the command contract.
 - **Origin**: round-8 scope report §C-C3 (2026-11-25-backlog-reduction-round8-scope-report.md); issue #1436 (normative body); the A1 aggregation contract (plan `2026-11-24-today-geometry-aggregation-plan.md` §2/D-3 — the Today row sources are the all-live-boards aggregates `presentation.rs::today_habit_rows` and the aggregated task sets); the severing guard (`Theme.layout-severing-max-width` at the Today root) and the board layout's width-breakpoint machinery (the study target #1436 names).
-- **Status**: ACCEPTED with amendments (2026-11-25 — see the
-  amendment log below; unblocked C3a)
-
-## 0. Amendment log (dated, binding)
-
-- **2026-11-25 — operator acceptance with amendment** (recorded on
-  issue #1436,
-  https://github.com/D4id4los/taskboard/issues/1436#issuecomment-7172600684):
-  the kiosk mount is **NOT** special-cased — kiosk renders
-  two-column too, whenever space allows; the same breakpoint rules
-  apply on every mount and the layout logic carries **no
-  kiosk/non-kiosk branch**. This SUPERSEDES US-19 ("kiosk stays
-  single-column"), step US-19/S1, ruling R-2, and the "Kiosk
-  two-column" non-goal. US-19-as-amended pins the amended semantics:
-  a kiosk-mode window at/above the D-2 breakpoint mounts the grid
-  arm; below it, the single column — the width test alone decides.
-- **2026-11-25 — dispatch ruling (stage-2 clarification, operator
-  answered via the dispatch channel)**: the Today model renders
-  **four** task sections (Overdue, Scheduled, Due today, Done) while
-  D-1 names only the two the issue titled. Ruled: the left column
-  carries **all four task sections** in display order (D-1's "the
-  task sections, urgency first" vs "the meta sections" is a
-  grouping-by-kind), the right column Habits + Day Review; D-1's
-  "exactly four sections" reads as the issue's four *named* surfaces
-  (Overdue, Scheduled, Habits, Day Review) joining the grid
-  explicitly, with the remaining task sections joining their kind
-  group. D-3's column-major walk then needs **no successor
-  reordering at all**: the existing walk domain (task sections in
-  display order → aggregated habits → break-rule roster) already
-  reads left-column-then-right-column; the column wrap is
-  Done-last → Habits-first, and the break-rule roster keeps its
-  existing walk position (the full-width band is not a column).
+- **Status**: DRAFT — operator acceptance pending (GATE-PAUSED)
 - **Surfaces touched**: `crates/taskboard-ui-slint/ui/views/today-view.slint` (layout arm only); its goldens (`tests/journeys/golden_visuals.rs` wide variants); no adapters, no commands.
 - **Platform scope**: desktop (the two-column arm); kiosk (single column, unchanged — per story)
 
@@ -268,22 +237,10 @@ That is exactly why this plan gates a UI chunk, not an engine chunk. -->
 - **Journey tests** (`crates/taskboard-ui-slint/tests/journeys/today_two_column_journeys.rs`, step-ID-named):
   - `us17_s1_wide_viewport_mounts_the_two_column_grid` (US-17/S1, AC-1)
   - `us17_s2_narrow_viewport_keeps_the_single_column` (US-17/S2, AC-2)
-  - `us17_s3_aggregated_row_sets_unchanged_in_both_columns` (US-17/S3, AC-3)
+  - `us17_s3_aggregated_row_sets_unchanged_in_both_columns` (US-17, AC-3)
   - `us18_s1_walk_wraps_left_column_to_right` (US-18/S1, AC-1)
   - `us18_s2_prev_mapping_mirrors_and_row_chords_hold` (US-18/S2, AC-2)
-  - `us19_s1_kiosk_mounts_the_grid_when_space_allows` (US-19/S1, AC-1,
-    the 2026-11-25 amendment: the width test alone rules every mount;
-    the pre-amendment `us19_s1_kiosk_stays_single_column` is
-    superseded) — plus the posture twin
-    `us19_s1_kiosk_posture_mounts_the_grid_when_space_allows`
-    (kiosk UiSettings mount).
-
-  Step→test bounds (the #768 grammar; the §6 Test column nominates
-  one test per wiring row, these bind the remaining steps):
-
-bound-test: US-17/S3 -> crates/taskboard-ui-slint/tests/journeys/today_two_column_journeys.rs::us17_s3_aggregated_row_sets_unchanged_in_both_columns
-bound-test: US-18/S2 -> crates/taskboard-ui-slint/tests/journeys/today_two_column_journeys.rs::us18_s2_prev_mapping_mirrors_and_row_chords_hold
-bound-test: US-19/S1 -> crates/taskboard-ui-slint/tests/journeys/today_two_column_journeys.rs::us19_s1_kiosk_mounts_the_grid_when_space_allows
+  - `us19_s1_kiosk_stays_single_column` (US-19/S1, AC-1)
 - **Seam tests**: none needed — no new seams; W-3's ordering is
   asserted through the journey test's successor sequence (typed
   row-kind sequence, not label text).
