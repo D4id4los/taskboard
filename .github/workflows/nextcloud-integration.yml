@@ -58,9 +58,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install system deps (keyring sync-secret-service links libdbus-1)
+      - name: Install system deps (keyring links libdbus-1; Slint GUI links the rest)
+        # #1403: the stable leg builds taskboard-app (the daemon+CLI
+        # journey binary), whose Slint tree needs the same six GUI
+        # packages ci.yml installs — without them
+        # yeslogic-fontconfig-sys panics at pkg-config fontconfig.
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y lld libdbus-1-dev pkg-config
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            lld libdbus-1-dev pkg-config \
+            libasound2-dev libgl1-mesa-dev libegl1-mesa-dev \
+            libxkbcommon-dev libwayland-dev libfontconfig1-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
