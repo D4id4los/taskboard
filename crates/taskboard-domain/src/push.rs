@@ -266,6 +266,64 @@ pub struct EntityTables<'a> {
     pub boards: &'a BTreeMap<BoardId, Board>,
 }
 
+/// The planner's row-presence knowledge for a [`PushTarget`], derived
+/// once (the #1331 dedup): "which target kind maps to which table, and
+/// what counts as a present row" lives here, not re-derived per
+/// consumer. Three states because the two consumers apply genuinely
+/// different postures to remote targets — the difference must stay
+/// explicit and exhaustive, so a future variant forces every call site
+/// to decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetRowPresence {
+    /// A modeled target whose entity row exists in the tables.
+    Present,
+    /// A modeled target whose entity row is wiped (the orphan case).
+    Wiped,
+    /// A remote ref / document target — no local row by construction,
+    /// regardless of table contents.
+    Remote,
+}
+
+impl PushTarget {
+    /// Classifies the target against the current entity tables.
+    #[must_use]
+    pub fn row_presence(&self, tables: &EntityTables<'_>) -> TargetRowPresence {
+        match *self {
+            PushTarget::Board(id) => {
+                if tables.boards.contains_key(&id) {
+                    TargetRowPresence::Present
+                } else {
+                    TargetRowPresence::Wiped
+                }
+            }
+            PushTarget::Task(id) => {
+                if tables.tasks.contains_key(&id) {
+                    TargetRowPresence::Present
+                } else {
+                    TargetRowPresence::Wiped
+                }
+            }
+            PushTarget::Stack(id) => {
+                if tables.stacks.contains_key(&id) {
+                    TargetRowPresence::Present
+                } else {
+                    TargetRowPresence::Wiped
+                }
+            }
+            PushTarget::Label(id) => {
+                if tables.labels.contains_key(&id) {
+                    TargetRowPresence::Present
+                } else {
+                    TargetRowPresence::Wiped
+                }
+            }
+            PushTarget::RemoteCard(_) | PushTarget::RemoteStack(_) | PushTarget::Document(_) => {
+                TargetRowPresence::Remote
+            }
+        }
+    }
+}
+
 /// One coalesced push: a materialized client intent plus the outbox ops
 /// that ride on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1909,5 +1967,85 @@ mod tests {
         ];
         let groups = plan_pushes(&outbox, tables(&tasks, &stacks, &labels), &NO_OWNERSHIP);
         assert_eq!(groups.len(), 2, "one PUT per coalesced entity");
+    }
+
+    /// The one row-presence derivation (`TargetRowPresence`, the #1331
+    /// dedup): every modeled kind maps to its table — present vs wiped —
+    /// and every remote kind is `Remote` regardless of table contents.
+    #[test]
+    fn row_presence_classifies_every_target_kind() {
+        let stack = stack_row(1);
+        let mut stacks = BTreeMap::new();
+        stacks.insert(stack.id, stack.clone());
+        let task = task_row(10, stack.id);
+        let mut tasks = BTreeMap::new();
+        tasks.insert(task.id, task.clone());
+        let board = board_row(300);
+        let mut boards = BTreeMap::new();
+        boards.insert(board.id, board.clone());
+        let label = label_row(20, board.id);
+        let mut labels = BTreeMap::new();
+        labels.insert(label.id, label.clone());
+
+        let full = EntityTables {
+            tasks: &tasks,
+            stacks: &stacks,
+            labels: &labels,
+            boards: &boards,
+        };
+        let no_tasks = BTreeMap::new();
+        let no_stacks = BTreeMap::new();
+        let no_labels = BTreeMap::new();
+        let no_boards = BTreeMap::new();
+        let empty = EntityTables {
+            tasks: &no_tasks,
+            stacks: &no_stacks,
+            labels: &no_labels,
+            boards: &no_boards,
+        };
+
+        let modeled = [
+            PushTarget::Board(board.id),
+            PushTarget::Stack(stack.id),
+            PushTarget::Task(task.id),
+            PushTarget::Label(label.id),
+        ];
+        for target in &modeled {
+            assert_eq!(
+                target.row_presence(&full),
+                TargetRowPresence::Present,
+                "a present row classifies Present"
+            );
+            assert_eq!(
+                target.row_presence(&empty),
+                TargetRowPresence::Wiped,
+                "a wiped row classifies Wiped"
+            );
+        }
+
+        let refs = [
+            PushTarget::RemoteCard(crate::ids::RemoteCardRef {
+                board: crate::ids::RemoteBoardId::deck(42),
+                stack: crate::ids::RemoteStackId::deck(7),
+                card: crate::ids::RemoteCardId::deck(9),
+            }),
+            PushTarget::RemoteStack(crate::ids::RemoteStackRef {
+                board: crate::ids::RemoteBoardId::deck(42),
+                stack: crate::ids::RemoteStackId::deck(7),
+            }),
+            PushTarget::Document(crate::ids::BoardId::from(uuid(300))),
+        ];
+        for target in &refs {
+            assert_eq!(
+                target.row_presence(&full),
+                TargetRowPresence::Remote,
+                "a remote target is Remote even with full tables"
+            );
+            assert_eq!(
+                target.row_presence(&empty),
+                TargetRowPresence::Remote,
+                "a remote target is Remote with empty tables"
+            );
+        }
     }
 }

@@ -148,7 +148,8 @@ pub use persistence::{
 };
 pub use pipeline::{apply_files_board_snapshot, apply_push_report, apply_sync_report};
 pub use push::{
-    CardShape, EntityTables, MaterializedOp, NewCardShape, PushGroup, PushTarget, plan_pushes,
+    CardShape, EntityTables, MaterializedOp, NewCardShape, PushGroup, PushTarget,
+    TargetRowPresence, plan_pushes,
 };
 pub use reconcile::{ReconcileCounts, normalized_title, plan_reconcile};
 pub use recur::{
