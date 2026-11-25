@@ -17567,14 +17567,21 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             // return convention; the validity flavour renders).
             return false;
         };
-        // The roaming board is the section's host scope: the today
-        // view is board-scoped, so the active board IS the
-        // unambiguous default (the CLI `--board` default's letter,
-        // made structural by the view's own scope — stage-2 note on
-        // D-1). Board-less, nothing dispatches.
-        let Some(board) = a.view_state.board() else {
+        // The roaming board's target (#1335): the D-4 law's FIRST
+        // live board in canonical order (the habit-create twin's
+        // exact shape) — the board-free Today view has no selected
+        // board, and minting from `view_state.board()` was the
+        // retired board-scoping's leftover. The picker is #1314's
+        // territory.
+        let state = a.state.load();
+        let Some(board) = crate::presentation::live_boards(&state)
+            .first()
+            .map(|board| board.id)
+        else {
+            drop(state);
             return false;
         };
+        drop(state);
         let insistence = if alarm_rung {
             taskboard_domain::Insistence::Alarm
         } else {
