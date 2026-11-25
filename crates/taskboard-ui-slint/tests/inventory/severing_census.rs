@@ -6,8 +6,9 @@
 //! every exported component in a covered file is either a severing
 //! root — its root property block states
 //! `max-width: Theme.layout-severing-max-width` and its
-//! `<stem>_window_max_probe` twin exists (probe `.slint`, build.rs
-//! array entry, asserted probe tests module) — or a witnessed
+//! `<stem>_window_max_probe` twin exists (probe `.slint` — a member
+//! of the #1362 derived registry, which compiles every `tests/*.slint`
+//! verbatim — plus the asserted probe tests module) — or a witnessed
 //! exemption in `EXEMPTIONS`.
 //!
 //! The failure mode is a missing line of markup at the wrong depth
@@ -21,7 +22,7 @@
 //! out of boundary for this chunk — `ui/alarm-window.slint` carries
 //! the sever + `alarm_window_max_probe` (#1251, PR #1354, pinned by
 //! `alarm_window_structural` + its probe tests), and is admitted as a
-//! witnessed out-of-boundary build.rs entry (`OUT_OF_BOUNDARY_PROBES`);
+//! witnessed out-of-boundary registry entry (`OUT_OF_BOUNDARY_PROBES`);
 //! `ui/app-window.slint` carries no sever today (backlog issue).
 //!
 //! Two-way evidence (the scratch-checkout pattern of commit
@@ -47,13 +48,13 @@ pub(crate) enum SeveringViolation {
     /// severing max-width.
     MissingSever { file: String },
     /// A severed root whose `<stem>_window_max_probe` twin is absent
-    /// (no probe `.slint` + asserted tests module, or no build.rs
-    /// array entry).
+    /// (no probe `.slint` in the derived registry + asserted tests
+    /// module).
     MissingProbeTwin {
         file: String,
         expected_probe: String,
     },
-    /// A build.rs `*_window_max_probe` entry that maps to no census
+    /// A `*_window_max_probe` registry entry that maps to no census
     /// root (a deleted view's leftover twin).
     StaleProbeTwin { probe: String },
     /// An exported component that is neither its file's designated
@@ -149,29 +150,36 @@ fn sever_present(src: &Blanked, root: &ComponentDecl) -> bool {
     false
 }
 
-/// The `*_window_max_probe` literals in build.rs's probes array.
-fn build_rs_probes(build_rs: &str) -> Vec<String> {
+/// The `*_window_max_probe` stems in the DERIVED probe registry
+/// (#1362): every `tests/*.slint` file is a probe — build.rs compiles
+/// the `read_dir` enumeration verbatim, so the disk enumeration IS the
+/// registry. The census reads the same source of truth, not a stale
+/// literal array.
+fn probe_registry(manifest: &std::path::Path) -> Vec<String> {
     let mut out = Vec::new();
-    let mut rest = build_rs;
-    while let Some(open) = rest.find('"') {
-        let after = &rest[open + 1..];
-        match after.find('"') {
-            Some(close) => {
-                let literal = &after[..close];
-                if literal.ends_with("_window_max_probe") {
-                    out.push(literal.to_owned());
-                }
-                rest = &after[close + 1..];
-            }
-            None => break,
+    let Ok(entries) = std::fs::read_dir(manifest.join("tests")) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(stem) = name
+            .to_str()
+            .and_then(|n| n.strip_suffix(".slint"))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if stem.ends_with("_window_max_probe") {
+            out.push(stem);
         }
     }
+    out.sort();
     out
 }
 
 fn census(
     files: &[(String, String)],
-    build_rs: &str,
+    registry: &[String],
     present_twins: &[String],
 ) -> Vec<SeveringViolation> {
     let mut violations = Vec::new();
@@ -213,8 +221,12 @@ fn census(
             violations.push(SeveringViolation::MissingSever { file: file.clone() });
         }
         let probe = expected_probe_for(file);
+        // The twin halves under the derived registry (#1362): the
+        // probe `.slint` exists on disk (the registry IS the disk
+        // enumeration, and the derivation compiles it verbatim) and
+        // the asserted tests module exists beside it.
         let twin_ok =
-            build_rs.contains(&format!("\"{probe}\"")) && present_twins.iter().any(|t| t == &probe);
+            registry.iter().any(|t| t == &probe) && present_twins.iter().any(|t| t == &probe);
         if !twin_ok {
             violations.push(SeveringViolation::MissingProbeTwin {
                 file: file.clone(),
@@ -223,13 +235,15 @@ fn census(
         }
         roots.push((file.clone(), probe));
     }
-    // Reverse census: every build.rs `*_window_max_probe` entry maps
+    // Reverse census: every `*_window_max_probe` registry entry maps
     // back to a census root or a witnessed out-of-boundary root.
-    for probe in build_rs_probes(build_rs) {
-        let mapped = roots.iter().any(|(_, p)| p == &probe)
+    for probe in registry {
+        let mapped = roots.iter().any(|(_, p)| p == probe)
             || OUT_OF_BOUNDARY_PROBES.contains(&probe.as_str());
         if !mapped {
-            violations.push(SeveringViolation::StaleProbeTwin { probe });
+            violations.push(SeveringViolation::StaleProbeTwin {
+                probe: probe.clone(),
+            });
         }
     }
     // Honesty: each exemption names a live export in the covered
@@ -270,7 +284,7 @@ fn fixture_source(severed: bool) -> String {
 fn an_unsevered_view_root_reports_missing_sever() {
     let files = vec![("fixture-view.slint".to_owned(), fixture_source(false))];
     let probe = "fixture_window_max_probe";
-    let violations = census(&files, &format!("\"{probe}\",\n"), &[probe.to_owned()]);
+    let violations = census(&files, &[probe.to_owned()], &[probe.to_owned()]);
     assert!(
         matches!(&violations[..], [SeveringViolation::MissingSever { file }] if file == "fixture-view.slint"),
         "expected exactly MissingSever, got {violations:?}"
@@ -281,7 +295,7 @@ fn an_unsevered_view_root_reports_missing_sever() {
 fn a_severed_root_without_a_probe_twin_reports_missing_probe_twin() {
     let files = vec![("fixture-view.slint".to_owned(), fixture_source(true))];
     // No build.rs entry, no twin on disk.
-    let violations = census(&files, "", &[]);
+    let violations = census(&files, &[], &[]);
     assert!(
         matches!(&violations[..], [SeveringViolation::MissingProbeTwin { file, expected_probe }]
             if file == "fixture-view.slint" && expected_probe == "fixture_window_max_probe"),
@@ -290,20 +304,20 @@ fn a_severed_root_without_a_probe_twin_reports_missing_probe_twin() {
 }
 
 #[test]
-fn a_severed_root_twin_needs_both_the_build_rs_entry_and_the_disk_twin() {
+fn a_severed_root_twin_needs_both_the_registry_entry_and_the_disk_twin() {
     let files = vec![("fixture-view.slint".to_owned(), fixture_source(true))];
     let probe = "fixture_window_max_probe";
-    // build.rs entry only — the disk twin is missing.
-    let violations = census(&files, &format!("\"{probe}\",\n"), &[]);
+    // Registry entry only — the asserted disk twin is missing.
+    let violations = census(&files, &[probe.to_owned()], &[]);
     assert!(
         matches!(
             &violations[..],
             [SeveringViolation::MissingProbeTwin { .. }]
         ),
-        "expected MissingProbeTwin when only build.rs carries the twin, got {violations:?}"
+        "expected MissingProbeTwin when only the registry carries the twin, got {violations:?}"
     );
-    // disk twin only — the build.rs array entry is missing.
-    let violations = census(&files, "", &[probe.to_owned()]);
+    // Disk twin only — the registry entry is missing.
+    let violations = census(&files, &[], &[probe.to_owned()]);
     assert!(
         matches!(
             &violations[..],
@@ -312,7 +326,7 @@ fn a_severed_root_twin_needs_both_the_build_rs_entry_and_the_disk_twin() {
         "expected MissingProbeTwin when only the disk carries the twin, got {violations:?}"
     );
     // Both present: the root is fully compliant, no violations.
-    let violations = census(&files, &format!("\"{probe}\",\n"), &[probe.to_owned()]);
+    let violations = census(&files, &[probe.to_owned()], &[probe.to_owned()]);
     assert!(
         violations.is_empty(),
         "a severed, twinned root is compliant, got {violations:?}"
@@ -320,11 +334,11 @@ fn a_severed_root_twin_needs_both_the_build_rs_entry_and_the_disk_twin() {
 }
 
 #[test]
-fn a_build_rs_twin_for_a_missing_view_reports_a_stale_probe_twin() {
+fn a_registry_twin_for_a_missing_view_reports_a_stale_probe_twin() {
     let files = vec![("fixture-view.slint".to_owned(), fixture_source(true))];
     let probe = "fixture_window_max_probe";
-    let build_rs = format!("\"{probe}\",\n\"ghost_window_max_probe\",\n");
-    let violations = census(&files, &build_rs, &[probe.to_owned()]);
+    let registry = vec![probe.to_owned(), "ghost_window_max_probe".to_owned()];
+    let violations = census(&files, &registry, &[probe.to_owned()]);
     assert!(
         matches!(&violations[..], [SeveringViolation::StaleProbeTwin { probe }] if probe == "ghost_window_max_probe"),
         "expected exactly StaleProbeTwin for the ghost twin, got {violations:?}"
@@ -338,7 +352,7 @@ fn an_exported_non_root_component_without_an_exemption_is_unclassified() {
     let source = "export component SmallWidget inherits Rectangle {\n}\nexport component FixtureView inherits FocusScope {\nmax-width: Theme.layout-severing-max-width;\n}\n";
     let files = vec![("fixture-view.slint".to_owned(), source.to_owned())];
     let probe = "fixture_window_max_probe";
-    let violations = census(&files, &format!("\"{probe}\",\n"), &[probe.to_owned()]);
+    let violations = census(&files, &[probe.to_owned()], &[probe.to_owned()]);
     assert!(
         matches!(&violations[..], [SeveringViolation::UnclassifiedExport { file, component }]
             if file == "fixture-view.slint" && component == "SmallWidget"),
@@ -353,7 +367,7 @@ fn a_stale_exemption_fails_the_honesty_rule() {
     let source = fixture_source(true);
     let files = vec![("review-walk-overlay.slint".to_owned(), source)];
     let probe = "review_walk_overlay_window_max_probe";
-    let violations = census(&files, &format!("\"{probe}\",\n"), &[probe.to_owned()]);
+    let violations = census(&files, &[probe.to_owned()], &[probe.to_owned()]);
     let stale: Vec<&str> = violations
         .iter()
         .filter_map(|v| match v {
@@ -420,9 +434,9 @@ fn every_view_root_is_severed_and_twinned() {
         })
         .collect();
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    let build_rs = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/build.rs"));
+    let registry = probe_registry(manifest);
     let twins = present_twins(manifest);
-    let mut violations = census(&files, build_rs, &twins);
+    let mut violations = census(&files, &registry, &twins);
     // Honesty, absent-file half: every exemption's file is still
     // enumerated (the exemption table may not outlive its file).
     for e in EXEMPTIONS {
