@@ -335,7 +335,7 @@ fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: 
         },
         &GoldenMeta {
             fixture: "golden_state_enriched_at(PINNED_NOW)",
-            state: "board view; two stacks, label chips + recur + reminder                     badges, degraded sync, second board in the bar, running-timer chip",
+            state: "board view; two stacks, label chips + recur + reminder badges, degraded sync, second board in the bar, running-timer chip",
             scale,
         },
         width,
