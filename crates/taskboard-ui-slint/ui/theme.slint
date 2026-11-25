@@ -110,6 +110,13 @@ export global Theme {
     // it (the token tests' colour set is untouched).
     out property <length> hairline-width: 1px * base-scale;
 
+    // The two-logical-pixel rule (the separators/bars drawn at double
+    // the hairline weight — board column rules, habit list dividers).
+    // #1361: five raw `2px * base-scale` sites shared this recipe; the
+    // hairline token is deliberately NOT adopted there (halving the
+    // rule would be a visual change), so the value gets its own name.
+    out property <length> rule-width: 2px * base-scale;
+
 
     // ---- Window default dimensions (a spacing-class dimension, so it
     //      lives here — keeps the token lint's rule 3 total) -----------

@@ -600,7 +600,7 @@ export component BoardLayout inherits Rectangle {
                                     // TouchAreas beneath keep every click.
                                     if (column.aim-gap == task-index): Rectangle {
                                         width: 100%;
-                                        height: 2px * Theme.base-scale;
+                                        height: Theme.rule-width;
                                         y: 0;
                                         background: Semantic.sync-active;
                                         border-radius: Theme.radius-small;
@@ -655,7 +655,7 @@ export component BoardLayout inherits Rectangle {
                             // above the Add-Task ghost — the indicator's
                             // append twin, slint-local like the delegate's.
                             if (column.aim-gap == column.tasks.length): Rectangle {
-                                height: 2px * Theme.base-scale;
+                                height: Theme.rule-width;
                                 background: Semantic.sync-active;
                                 border-radius: Theme.radius-small;
                             }
@@ -702,7 +702,7 @@ export component BoardLayout inherits Rectangle {
                     // opacity while pressed (the min-stick reads).
                     Rectangle {
                         x: (parent.width - self.width) / 2;
-                        width: 2px * Theme.base-scale;
+                        width: Theme.rule-width;
                         height: 100%;
                         background: Semantic.focus-ring;
                         opacity: divider.pressed ? 1.0 : (divider.has-hover ? 0.6 : 0.0);

@@ -62,6 +62,9 @@ LAYOUT_PROPS = (
     r"|x|y"
     r"|(?:padding|margin)(?:-(?:top|bottom|left|right))?"
     r"|(?:[a-z-]+-)?spacing"
+    # #1361: the drop-shadow geometry joins the set — a bare-px blur or
+    # offset bypasses base-scale and desyncs across kiosk scales.
+    r"|drop-shadow-(?:blur|offset)"
 )
 LAYOUT_BINDING = re.compile(
     rf"\b({LAYOUT_PROPS})\s*(?::|<=>)\s*([^;}}]+)[;}}]",
@@ -206,10 +209,17 @@ def _self_test() -> int:
     expect_clean("rule3-arithmetic", "ui/other.slint", "rect { width: parent.width - Theme.space-1; }")
     expect_clean("rule3-theme", "ui/theme.slint", "property <length> s: 4px;")
 
-    # Non-layout px literals (e.g. border-radius-width on a shadow) are
-    # deliberately out of rule 3's scope (conservative bias: prefer a
-    # miss over a false hit; the reviewer greps diffs).
-    expect_clean("rule3-non-layout", "ui/other.slint", "rect { drop-shadow-blur: 4px; }")
+    # #1361: the drop-shadow geometry is in rule 3's scope — a bare-px
+    # blur/offset fails (it bypasses base-scale); a token reference or
+    # a token-arithmetic expression passes.
+    expect_violations("rule3-shadow-blur", "ui/other.slint", "rect { drop-shadow-blur: 12px; }")
+    expect_violations("rule3-shadow-offset", "ui/other.slint", "rect { drop-shadow-offset: 0 2px; }")
+    expect_clean("rule3-shadow-token", "ui/other.slint", "rect { drop-shadow-blur: Theme.shadow-blur; }")
+    expect_clean("rule3-shadow-token-expr", "ui/other.slint", "rect { drop-shadow-offset: 0 Theme.space-1; }")
+    # Other non-layout px literals (e.g. implicit-size) stay out of
+    # rule 3's scope (conservative bias: prefer a miss over a false
+    # hit; the reviewer greps diffs).
+    expect_clean("rule3-non-layout", "ui/other.slint", "rect { implicit-size: 4px; }")
 
     if failures:
         for failure in failures:
