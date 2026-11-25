@@ -13177,8 +13177,8 @@ fn habit_open_entry(
 /// resolves the row's current window (the `habit_undo_target` above)
 /// and routes `habit.unlog`; the right-click opens the habit context
 /// menu (the reorder pair and the conversion live there now — the
-/// slots minted at menu open with the same floor-midpoint law, the
-/// UI computes midpoints, the planner stamps).
+/// slots minted at menu open carry gap indices; the engine renumbers
+/// dense, no midpoint arithmetic anywhere).
 #[allow(clippy::too_many_lines)] // one seam block per wired callback
 fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_habits_log_clicked, adapter: adapter; // slint callback: habits-log-clicked (the done slot ≡ strip +1 shared seam, H2 W-1)

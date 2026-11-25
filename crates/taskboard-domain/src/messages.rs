@@ -559,9 +559,9 @@ pub enum StateCommand {
         /// The edits.
         changes: HabitChanges,
     },
-    /// Reorder a habit in its board's list (the UI computes midpoints on
-    /// drag, the `MoveTask` precedent). Identical order is the accepted
-    /// no-op.
+    /// Reorder a habit in its board's list (the `MoveTask` precedent;
+    /// the engine renumbers dense after applying). Identical order is
+    /// the accepted no-op.
     MoveHabit {
         /// Habit to move.
         habit: HabitId,

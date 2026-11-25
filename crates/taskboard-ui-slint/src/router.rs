@@ -1701,7 +1701,7 @@ impl ActionRouter {
             },
             // The habit verbs (DR-6/6, D-P13): +1 from the row target;
             // the reorder from the adapter-resolved (habit, order) —
-            // the UI computes midpoints, the planner stamps the value.
+            // the verb stores the absolute order, the engine renumbers.
             ActionId::HabitLog => match ctx.habit_target {
                 Some(habit) => DispatchOutcome::Command(StateCommand::LogHabit { habit }),
                 None => DispatchOutcome::NoTarget,
@@ -1767,8 +1767,8 @@ impl ActionRouter {
             // The Today compact-move pair (US-14, #1031): the R-8 task
             // twins of the shared Shift+Up/Down stroke — the direction
             // rides the routing id, the subject is the one-shot minted
-            // at the kind resolution; the engine's shared floor-midpoint
-            // rule resolves the slot and refuses the boundary typed.
+            // at the kind resolution; the engine's gap-index reorder
+            // resolves the slot and refuses the boundary typed.
             ActionId::TaskMoveUp | ActionId::TaskMoveDown => {
                 let up = matches!(id, ActionId::TaskMoveUp);
                 match ctx.task_move {

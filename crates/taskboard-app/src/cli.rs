@@ -1708,8 +1708,8 @@ pub enum HabitsCmd {
     },
     /// Edit a tracker's fields. Each flag is a change mask: omitted =
     /// unchanged; a zero-flag update is the typed no-op. `--order`
-    /// routes `MoveHabit` (the manual reorder — the UI computes
-    /// midpoints, this verb stores the absolute value).
+    /// routes `MoveHabit` (the manual reorder — this verb stores the
+    /// absolute value, the engine renumbers dense).
     Update {
         /// The habit (uuid | prefix | exact live title).
         habit: String,
