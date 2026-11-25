@@ -1167,7 +1167,10 @@ impl Adapter {
                         .action
                         .map_or(String::new(), |id| id.id().to_owned())
                         .into(),
-                    label: entry.label.into(),
+                    // #1283: the Cow label projects verbatim — the
+                    // owned (engine-derived) spelling survives the
+                    // shell bridge.
+                    label: entry.label.as_ref().to_owned().into(),
                     description: entry.description.into(),
                     enabled: entry.enabled,
                     submenu: entry.submenu.is_some(),
@@ -19248,5 +19251,49 @@ mod auto_list_backoff_tests {
         map.insert("deck".to_owned(), entry);
         map.remove("deck");
         assert!(!auto_list_suppressed(&map, "deck", now), "clear resets");
+    }
+}
+
+#[cfg(test)]
+mod menu_label_projection_tests {
+    use super::*;
+    use crate::menu::MenuEntry;
+    use slint::Model as _;
+
+    /// The #1283 pin: an owned (engine-derived) label projects through
+    /// the shell model verbatim — structural equality on the
+    /// projected value, not text-in-DOM. The borrowed leg keeps
+    /// projecting too (the source-compatibility half).
+    #[test]
+    fn an_owned_label_projects_through_the_shell_model() {
+        let rows = vec![
+            MenuEntry {
+                action: Some(ActionId::HabitLog),
+                label: std::borrow::Cow::Owned("Restore habit \u{201c}stretch\u{201d}".to_owned()),
+                description: "engine-derived",
+                enabled: true,
+                hint: Vec::new(),
+                submenu: None,
+            },
+            MenuEntry {
+                action: Some(ActionId::AppExit),
+                label: std::borrow::Cow::Borrowed("Quit taskboard"),
+                description: "registry",
+                enabled: true,
+                hint: Vec::new(),
+                submenu: None,
+            },
+        ];
+        let model = Adapter::menu_model(&rows);
+        assert_eq!(
+            model.row_data(0).expect("row 0").label.as_str(),
+            "Restore habit \u{201c}stretch\u{201d}",
+            "the owned label survives the bridge verbatim"
+        );
+        assert_eq!(
+            model.row_data(1).expect("row 1").label.as_str(),
+            "Quit taskboard",
+            "the borrowed label projects unchanged"
+        );
     }
 }
