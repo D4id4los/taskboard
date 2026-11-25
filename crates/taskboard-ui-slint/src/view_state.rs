@@ -820,162 +820,15 @@ pub struct ViewState {
 /// a unit-variant constant keeps the `&Flow` signature (R2).
 static FLOW_NONE: Flow = Flow::None;
 
-/// The canonical append position in `stack`: max canonical order + 1.
-#[must_use]
-pub fn append_order(state: &AppState, stack: StackId) -> i64 {
-    state
-        .tasks_in_stack(stack)
-        .last()
-        .map_or(0, |t| t.order + 1)
-}
-
-/// The insertion slot's END orders (UX-R8 D-1, re-signed B3 2026-11-24
-/// #1247): gap `0` takes `first.order - 1` (before the first); any
-/// other gap takes the [`append_order`] (after the last). The
-/// between-ends midpoint arm is DELETED: its adjacent-pair midpoint
-/// could equal `a.order` — an occupied order whose `(order, id)` tie
-/// resolved by `UUIDv7` mint-order luck (#1247's verified defect) — and
-/// every same-stack move now mints a gap index for
-/// `StateCommand::TaskReorder` instead; cross-stack insertion is the
-/// append (interior cross-stack positions are the multi-move
-/// block-splice's named out-of-scope sibling). No move path computes
-/// a midpoint anymore: a gap is either an engine-side reorder index
-/// or one of these two end orders.
-#[must_use]
-pub fn slot_order(state: &AppState, stack: StackId, gap: usize) -> i64 {
-    if gap == 0 {
-        return state
-            .tasks_in_stack(stack)
-            .first()
-            .map_or(0, |t| t.order - 1);
-    }
-    append_order(state, stack)
-}
-
-/// The one move-aim mint (B3 2026-11-24 #1247, the r2 chunk-8 D-F
-/// one-construction-site law carried onto the reorder grammar): the
-/// keyboard confirm and the pointer drop both build their command
-/// HERE, so command equivalence is by construction. A same-stack aim
-/// mints `StateCommand::TaskReorder` at the gap (`None` = the append
-/// gap, index `len`); a cross-stack aim keeps `MoveTask` — gap `0`
-/// via the first-position end arm of [`slot_order`], anything else
-/// via the [`append_order`].
-#[must_use]
-pub fn move_aim_command(
-    state: &AppState,
-    task: TaskId,
-    target: StackId,
-    gap: Option<usize>,
-) -> StateCommand {
-    let same_stack = state.tasks.get(&task).is_some_and(|t| t.stack == target);
-    if same_stack {
-        let append_gap = state.tasks_in_stack(target).len();
-        return StateCommand::TaskReorder {
-            id: task,
-            target: gap.unwrap_or(append_gap),
-        };
-    }
-    let order = match gap {
-        Some(0) => slot_order(state, target, 0),
-        _ => append_order(state, target),
-    };
-    StateCommand::MoveTask {
-        id: task,
-        stack: target,
-        order,
-    }
-}
-
-/// The multi-move sequence (UX-R8 D-6, US-4/S2): one `MoveTask` per
-/// selected member in `members` order (the anchor order, D-4),
-/// relative order preserved within the moved set — the set's members
-/// reinsert in their existing relative sequence at the aim point.
-/// Cross-stack (or bare-surface) aims append: `append_order + i` per
-/// member; a same-stack gap splices the block between the remaining
-/// neighbours (room allowing; otherwise the deterministic append
-/// fallback — the documented leniency, the engine's `(order, id)`
-/// sort keeps any collision stable). Per-task absorb: a member not
-/// live against the passed state is dropped and the sequence
-/// continues — no batch verb, no early abort.
-///
-/// # Panics
-/// Never: the per-member index conversions saturate at `i64::MAX`
-/// (the documented leniency — sequence lengths are far below the
-/// conversion's reach anyway).
-#[must_use]
-pub fn multi_move_commands(
-    state: &AppState,
-    members: &[TaskId],
-    target: StackId,
-    gap: Option<usize>,
-) -> Vec<StateCommand> {
-    let is_live = |id: TaskId| {
-        state
-            .tasks
-            .get(&id)
-            .is_some_and(taskboard_domain::Task::is_live)
-    };
-    let live: Vec<TaskId> = members.iter().copied().filter(|id| is_live(*id)).collect();
-    if live.is_empty() {
-        return Vec::new();
-    }
-    // The existing relative sequence: the members' current canonical
-    // position — stack ring order, then in-stack order.
-    let ring = ViewState::move_ring(state);
-    let mut sorted = live;
-    sorted.sort_by_key(|id| {
-        let task = &state.tasks[id];
-        (
-            ring.iter().position(|stack| *stack == task.stack),
-            task.order,
-        )
-    });
-    let same_stack = sorted
-        .iter()
-        .any(|id| state.tasks.get(id).is_some_and(|t| t.stack == target));
-    let per_member = |base: i64| -> Vec<i64> {
-        (0..sorted.len())
-            .map(|i| base + i64::try_from(i).unwrap_or(i64::MAX))
-            .collect()
-    };
-    let orders: Vec<i64> = if same_stack {
-        let set: std::collections::BTreeSet<TaskId> = sorted.iter().copied().collect();
-        let remaining: Vec<i64> = state
-            .tasks_in_stack(target)
-            .iter()
-            .filter(|t| !set.contains(&t.id))
-            .map(|t| t.order)
-            .collect();
-        let gap = gap.unwrap_or(remaining.len());
-        let append_base = remaining.last().map_or(0, |last| last + 1);
-        if gap >= remaining.len() {
-            per_member(append_base)
-        } else {
-            let a = remaining[gap - 1];
-            let b = remaining[gap];
-            let k = i64::try_from(sorted.len()).unwrap_or(i64::MAX);
-            if b - a > k {
-                let step = (b - a) / (k + 1);
-                (0..sorted.len())
-                    .map(|i| a + step * (i64::try_from(i).unwrap_or(i64::MAX) + 1))
-                    .collect()
-            } else {
-                per_member(append_base)
-            }
-        }
-    } else {
-        per_member(append_order(state, target))
-    };
-    sorted
-        .into_iter()
-        .zip(orders)
-        .map(|(id, order)| StateCommand::MoveTask {
-            id,
-            stack: target,
-            order,
-        })
-        .collect()
-}
+// The order-key minting family lives in the domain now (#1351's re-home,
+// round 7 chunk B3): the ONE home for "where does an inserted row land"
+// is `taskboard_domain::order`, pure over `AppState`. The UI re-exports
+// it so the adapter/actions/router call sites read unchanged; the
+// multi-move's caller-supplied move ring comes from
+// [`ViewState::move_ring`].
+pub use taskboard_domain::order::{
+    append_order, append_stack_order, move_aim_command, multi_move_commands, slot_order,
+};
 
 /// The review-walk's file verb (r2 chunk-8 D-F): a bare append into
 /// `target` — a NEW-surface insertion, not a same-stack crossing move,
@@ -988,20 +841,6 @@ fn append_move_command(state: &AppState, task: TaskId, target: StackId) -> FlowO
         stack: target,
         order: append_order(state, target),
     })
-}
-
-/// The canonical append position on `board`: the board's live stacks'
-/// max order + 1 (#304's "sensible default appended after the existing
-/// stacks"); 0 on an empty board.
-#[must_use]
-pub fn append_stack_order(state: &AppState, board: BoardId) -> i64 {
-    state
-        .stacks
-        .values()
-        .filter(|s| s.board == board && !s.deleted)
-        .map(|s| s.order)
-        .max()
-        .map_or(0, |max| max + 1)
 }
 
 /// The index `current` moved by `direction` (±1), wrapping over
@@ -4468,7 +4307,7 @@ impl ViewState {
             vec![task]
         };
         let commands: Vec<FlowOutcome> = if members.len() > 1 {
-            multi_move_commands(state, &members, target, gap)
+            multi_move_commands(state, &members, target, gap, &ViewState::move_ring(state))
                 .into_iter()
                 .map(FlowOutcome::Command)
                 .collect()
@@ -5596,114 +5435,6 @@ mod tests {
     // -- the multi sequences (UX-R8 D-6, US-4/S2) -------------------------
 
     #[test]
-    fn multi_move_appends_in_existing_relative_order() {
-        let (state, _, [_s0, s1], [a, b, _c]) = fixture();
-        // The pair a, b moves from s0 to s1 (cross-stack append):
-        // relative order kept, one command per member.
-        let commands = multi_move_commands(&state, &[a, b], s1, None);
-        assert_eq!(
-            commands,
-            vec![
-                StateCommand::MoveTask {
-                    id: a,
-                    stack: s1,
-                    order: 1
-                },
-                StateCommand::MoveTask {
-                    id: b,
-                    stack: s1,
-                    order: 2
-                },
-            ],
-            "append_order + i per member in existing sequence"
-        );
-        // The anchor order (a first) is the caller's; the sequence's
-        // members land in their existing relative order regardless.
-        let commands = multi_move_commands(&state, &[b, a], s1, None);
-        assert_eq!(
-            commands,
-            vec![
-                StateCommand::MoveTask {
-                    id: a,
-                    stack: s1,
-                    order: 1
-                },
-                StateCommand::MoveTask {
-                    id: b,
-                    stack: s1,
-                    order: 2
-                },
-            ],
-            "the set sorts into its existing relative sequence"
-        );
-    }
-
-    #[test]
-    fn multi_move_splices_the_block_at_the_same_stack_gap() {
-        let (mut state, _, [s0, _], [a, b, _c]) = fixture();
-        // A fourth task d(2) in s0: orders a(0), b(1), d(2). Moving
-        // the pair a, b between d and nothing (gap after the set's
-        // removal = len) appends after d.
-        let d = TaskId::from_uuid(uuid::Uuid::now_v7());
-        state.tasks.insert(d, task(d, s0, 2));
-        let commands = multi_move_commands(&state, &[a, b], s0, Some(2));
-        assert_eq!(
-            commands,
-            vec![
-                StateCommand::MoveTask {
-                    id: a,
-                    stack: s0,
-                    order: 3
-                },
-                StateCommand::MoveTask {
-                    id: b,
-                    stack: s0,
-                    order: 4
-                },
-            ],
-            "the block appends after the remaining neighbours"
-        );
-        // A between-gap with room: move a alone between b(1) and d(2)
-        // — no room for a block, but the single member takes the
-        // midpoint... the block path needs room > k; room = 1, k = 1
-        // → the append fallback (the documented leniency).
-        let commands = multi_move_commands(&state, &[a], s0, Some(2));
-        assert_eq!(
-            commands,
-            vec![StateCommand::MoveTask {
-                id: a,
-                stack: s0,
-                order: 3
-            }],
-            "a no-room gap falls back to the deterministic append"
-        );
-    }
-
-    #[test]
-    fn multi_move_absorbs_a_vanished_member_and_continues() {
-        let (mut state, _, [_s0, s1], [a, b, _c]) = fixture();
-        // b dies mid-sequence (the engine applied its deletion): the
-        // sequence drops b's command and continues with a.
-        state.tasks.get_mut(&b).expect("task").deleted = true;
-        let commands = multi_move_commands(&state, &[a, b], s1, None);
-        assert_eq!(
-            commands,
-            vec![StateCommand::MoveTask {
-                id: a,
-                stack: s1,
-                order: 1
-            }],
-            "the vanished member's command is dropped, no early abort"
-        );
-        // An all-dead set dispatches nothing.
-        state.tasks.get_mut(&a).expect("task").deleted = true;
-        assert_eq!(
-            multi_move_commands(&state, &[a, b], s1, None),
-            [] as [StateCommand; 0]
-        );
-    }
-
-    #[test]
     fn the_multi_delete_confirms_one_task_per_member() {
         let (state, _, [_s0, _s1], [a, b, _c]) = fixture();
         let mut vs = ViewState::new();
@@ -5781,40 +5512,6 @@ mod tests {
             ViewState::move_slots(&state),
             vec![(s0, 0), (s0, 1), (s0, 2), (s1, 0), (s1, 1),],
             "stacks in ring order, gaps 0..=len within each"
-        );
-    }
-
-    #[test]
-    fn slot_order_spans_only_the_end_arms_after_the_midpoint_retirement() {
-        // B3 (2026-11-24, #1247): the between-ends midpoint arm is
-        // deleted — the between grammar is the engine-side reorder
-        // gap's business now; `slot_order` is the two END orders of
-        // the cross-stack `MoveTask` mint only.
-        let (state, _, [s0, s1], _) = fixture();
-        // s0: a(0), b(1); s1: c(0).
-        assert_eq!(slot_order(&state, s0, 0), -1, "before the first");
-        assert_eq!(
-            slot_order(&state, s0, 1),
-            2,
-            "a between gap mints the append — no midpoint anymore"
-        );
-        assert_eq!(slot_order(&state, s0, 2), 2, "after the last (append)");
-        assert_eq!(slot_order(&state, s1, 0), -1, "before the only task");
-        assert_eq!(slot_order(&state, s1, 1), 1, "after the only task");
-        let mut empty = state.clone();
-        let orphan = StackId::from_uuid(uuid::Uuid::now_v7());
-        empty.stacks.insert(
-            orphan,
-            stack(
-                orphan,
-                empty.boards.keys().next().copied().expect("board"),
-                9,
-            ),
-        );
-        assert_eq!(
-            slot_order(&empty, orphan, 0),
-            0,
-            "an empty stack's slot is 0"
         );
     }
 
@@ -6902,23 +6599,8 @@ mod tests {
         assert_eq!(*vs.flow(), Flow::None, "the flow ends either way");
     }
 
-    #[test]
-    fn append_stack_order_continues_the_canonical_board_order() {
-        let (state, board_id, [s0, s1], _) = fixture();
-        assert_eq!(append_stack_order(&state, board_id), 2);
-        let mut empty = state.clone();
-        let stacks: Vec<_> = empty.stacks.keys().copied().collect();
-        for id in stacks {
-            empty.stacks.remove(&id);
-        }
-        assert_eq!(append_stack_order(&empty, board_id), 0);
-        let _ = (s0, s1);
-    }
-
-    /// The two-board fixture (deterministic ids: board 1 < board 2, so
-    /// board 1 is the seed): board one carries the classic two-stack
-    /// shape (stack a: tasks a, b; stack b: task c), board two one
-    /// stack (c: task d).
+    /// The two-board fixture's fixed render date (the clock-discipline
+    /// seam for committed artifacts that embed clock-derived text).
     pub(super) fn test_today() -> chrono::NaiveDate {
         chrono::NaiveDate::from_ymd_opt(2026, 11, 23).expect("fixed date")
     }
@@ -8102,15 +7784,6 @@ mod tests {
         state.stacks.get_mut(&s1).expect("stack").deleted = true;
         vs.reconcile(&state);
         assert_eq!(*vs.flow(), Flow::None);
-    }
-
-    #[test]
-    fn append_order_continues_the_canonical_order() {
-        let (state, _, [s0, s1], _) = fixture();
-        assert_eq!(append_order(&state, s0), 2);
-        assert_eq!(append_order(&state, s1), 1);
-        let empty = StackId::from_uuid(uuid::Uuid::now_v7());
-        assert_eq!(append_order(&state, empty), 0);
     }
 
     // -- stack column widths (round-1 D16) ---------------------------------
