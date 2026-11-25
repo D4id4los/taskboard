@@ -29,3 +29,5 @@ mod contract;
 mod e2e_hermetic;
 #[path = "suite/mapping_bench_fixtures.rs"]
 mod mapping_bench_fixtures;
+#[path = "suite/move_marker.rs"]
+mod move_marker;
