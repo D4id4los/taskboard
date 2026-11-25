@@ -312,20 +312,20 @@ export component ReviewWalkOverlay inherits Rectangle {
                 vertical-stretch: 0;
                 spacing: Theme.space-2;
                 TextButton {
-                size: TextButtonSize.compact;
-                vertical-stretch: 0;
+                    size: TextButtonSize.compact;
+                    vertical-stretch: 0;
                     label: "<";
                     clicked => root.file-prev-clicked();
                 }
                 TextButton {
-                size: TextButtonSize.compact;
-                vertical-stretch: 0;
+                    size: TextButtonSize.compact;
+                    vertical-stretch: 0;
                     label: ">";
                     clicked => root.file-next-clicked();
                 }
                 TextButton {
-                size: TextButtonSize.compact;
-                vertical-stretch: 0;
+                    size: TextButtonSize.compact;
+                    vertical-stretch: 0;
                     label: root.model.file-label;
                     clicked => root.file-commit-clicked();
                 }
@@ -378,8 +378,8 @@ export component ReviewWalkOverlay inherits Rectangle {
                 vertical-stretch: 0;
                 spacing: Theme.space-2;
                 TextButton {
-                size: TextButtonSize.compact;
-                vertical-stretch: 0;
+                    size: TextButtonSize.compact;
+                    vertical-stretch: 0;
                     label: root.model.pick-label;
                     clicked => root.date-commit-clicked();
                 }

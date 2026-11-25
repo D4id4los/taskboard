@@ -17,7 +17,7 @@ use taskboard_ui_slint::settings_form::{is_kebab, url_host_ok};
 /// the empty name, case/space/unicode rejects, and the `--` /
 /// edge-hyphen rules.
 #[test]
-fn the_kebab_mirror_paries_the_domain_mint() {
+fn the_kebab_mirror_matches_the_domain_mint() {
     // (input, expected verdict — identical for both predicates)
     let table: &[(&str, bool)] = &[
         ("", false),
@@ -62,7 +62,7 @@ fn the_kebab_mirror_paries_the_domain_mint() {
 /// asserts the settings-form mirror and the app's authoritative
 /// `reqwest_host_ok` return the same verdict.
 #[test]
-fn the_url_host_mirror_paries_the_app_authority() {
+fn the_url_host_mirror_matches_the_app_authority() {
     let table: &[(&str, bool)] = &[
         ("", false),
         ("cloud.example.com", false),
