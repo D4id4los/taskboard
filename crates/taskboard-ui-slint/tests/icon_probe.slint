@@ -11,7 +11,7 @@
 // eyeball). The cell grid
 // is absolutely positioned; `icon_probe_tests.rs` mirrors the same
 // grid in base-px constants (CELL 44, PITCH 48, ORIGIN 8, rows at
-// y 8/60/112, the button box at (8, 172) — `Theme` is at its
+// y 8/60/112, the button box at (8, 172), the wall rows at y 224..368 — `Theme` is at its
 // base-scale default of 1.0 in the probe window, so token arithmetic
 // equals those base-px values). Keep the two in step. This pre-swap
 // copy inlines the post-swap rendering (an `Image` + `colorize`)
@@ -63,8 +63,14 @@ component ButtonBoxCell inherits Rectangle {
 
 export component IconProbeWindow inherits Window {
     width: Theme.space-7 * 8 + Theme.space-2;
-    height: Theme.space-7 * 7 + Theme.space-5 + Theme.space-3;
+    height: Theme.space-7 * 8 + Theme.space-5 + Theme.space-3;
     background: Theme.background;
+
+    // The kinds wall's icon edge (G2 R5, #1312): the wall captures
+    // the IconKind set at the 0.5/1.0/3.0 icon-size coherence edges;
+    // the default is the base edge, so the 1.0 golden only changes
+    // with the wall's own growth.
+    in property <length> wall-edge: Theme.space-3;
 
     // Row A (y = space-2): the tone ladder — the 8 `Tone`s of the
     // icon-button's `icon-color()` map, in enum order.
@@ -100,25 +106,35 @@ export component IconProbeWindow inherits Window {
     // per vendored asset, in the plan §1 mapping-table order. The
     // mapping totality test (commit 3) pins the enum↔file pairing;
     // this wall is each file's decode + tint evidence.
-    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/menu.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/clock.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/bell.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/triangle-alert.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/plus.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/chevron-left.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 6; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/x.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 7; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/minus.svg"); }
+    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/menu.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/clock.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/bell.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/triangle-alert.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/plus.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/chevron-left.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 6; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/x.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 7; y: Theme.space-7 * 4 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/minus.svg"); }
 
-    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/chevron-right.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/calendar.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/check.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 * 5 + Theme.space-2; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/play.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/square.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/circle-x.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 6; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/timer.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 7; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/link.svg"); }
+    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/chevron-right.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/calendar.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/check.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 * 5 + Theme.space-2; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/play.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/square.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/circle-x.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 6; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/timer.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 7; y: Theme.space-7 * 5 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/link.svg"); }
 
-    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/unlink.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/chevron-down.svg"); }
-    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; source: @image-url("../ui/assets/icons/pencil.svg"); }
+    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/unlink.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/chevron-down.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 6 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/pencil.svg"); }
+    // The wall's sixth row (G2 R5, #1312): the assets the 19-cell
+    // wall lagged behind the IconKind enum — the full vocabulary's
+    // decode + tint evidence (the enum's `none` sentinel has no
+    // asset of its own by law; every asset-bearing kind is here).
+    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/bell-off.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;     y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/calendar-plus.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 2; y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/calendar-minus.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/history.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/trash-2.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/archive.svg"); }
 }

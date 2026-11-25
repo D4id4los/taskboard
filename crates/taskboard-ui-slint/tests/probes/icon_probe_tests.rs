@@ -25,7 +25,7 @@ const CELL: u32 = 44;
 const PITCH: u32 = 48;
 const ORIGIN: u32 = 8;
 const WINDOW_WIDTH: u32 = 392;
-const WINDOW_HEIGHT: u32 = 372;
+const WINDOW_HEIGHT: u32 = 420;
 
 // The probe's expected tints and backgrounds — the theme palette
 // values `tests/icon_probe.slint` names (the tone map's outputs in
@@ -45,12 +45,23 @@ const BACKGROUND: [u8; 3] = [0x14, 0x16, 0x1c];
 const SURFACE_RAISED: [u8; 3] = [0x26, 0x2a, 0x35];
 
 fn run_probe(job: impl FnOnce(&IconProbeWindow, &Rgba8Image) + Send + 'static) {
+    run_probe_with(|_| {}, job);
+}
+
+/// [`run_probe`] with a pre-show setup step (G2 R5, #1312): the
+/// wall-edge variants stage their icon edge before the window shows,
+/// so the snapshot renders the staged edge.
+fn run_probe_with(
+    setup: impl FnOnce(&IconProbeWindow) + Send + 'static,
+    job: impl FnOnce(&IconProbeWindow, &Rgba8Image) + Send + 'static,
+) {
     support::driver::run(
         DriverOptions {
             headless_renderer: true,
         },
         move |_driver: &mut SlintDriver| {
             let window = IconProbeWindow::new().expect("the probe window instantiates");
+            setup(&window);
             window.show().expect("show on the testing platform");
             let buffer = window
                 .window()
@@ -225,8 +236,8 @@ fn p4_the_button_box_interior_carries_the_glyph() {
 #[test]
 fn p6_every_vendored_asset_renders_glyph_pixels() {
     run_probe(|_window, snapshot| {
-        let wall_rows: [u32; 3] = [224, 272, 320];
-        let counts_per_row = [8usize, 8, 3];
+        let wall_rows: [u32; 4] = [224, 272, 320, 368];
+        let counts_per_row = [8usize, 8, 3, 6];
         let mut index = 0usize;
         for (row, y) in wall_rows.iter().enumerate() {
             for column in 0..counts_per_row[row] {
@@ -241,7 +252,7 @@ fn p6_every_vendored_asset_renders_glyph_pixels() {
                 index += 1;
             }
         }
-        assert_eq!(index, 19, "the wall covers the whole vendored set");
+        assert_eq!(index, 25, "the wall covers the whole vendored set");
     });
 }
 
@@ -261,7 +272,7 @@ fn p5_the_probe_golden_holds() {
             // part of the checked-in corpus, so its regen upserts too.
             support::golden_manifest::record(&support::golden_manifest::GoldenEntry {
                 name: "icon-probe-1.0-396".to_owned(),
-                fixture: "icon_probe.slint composition (19 vendored assets)".to_owned(),
+                fixture: "icon_probe.slint composition (25 vendored assets)".to_owned(),
                 state: "icon probe window; kinds wall + tone ladder + button box".to_owned(),
                 scale: 1.0,
                 width: snapshot.width,
@@ -280,4 +291,85 @@ fn p5_the_probe_golden_holds() {
         !regen,
         "probe golden regenerated — review the PNG diff before landing"
     );
+}
+
+/// R5's wall-edge captures (G2, #1312): the kinds wall at the 0.5
+/// and 3.0 icon-size edges — icon-size coherence across the whole
+/// vendored asset set (the 1.0 golden's siblings). The edge stages
+/// through the window's `wall-edge` property before show; the window
+/// size is unchanged, so the stem keeps the actual window width
+/// (392 → the `-396` family stem, #1390's law).
+fn probe_edge_golden(scale: f64, name: &'static str) {
+    let regen = std::env::var_os("TASKBOARD_REGEN_GOLDENS").is_some_and(|v| v == "1");
+    run_probe_with(
+        move |window| {
+            #[allow(clippy::cast_possible_truncation)] // the staged edge length
+            let edge = (scale * f64::from(window.get_wall_edge())) as f32;
+            window.set_wall_edge(edge);
+        },
+        move |_window, snapshot| {
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (WINDOW_WIDTH, WINDOW_HEIGHT),
+                "renderer-presence contract at the {name} edge golden"
+            );
+            // Ink floor over the whole wall region: every cell of the
+            // four wall rows carries glyph ink at this edge (a
+            // floor — never a ceiling).
+            let wall_rows: [(u32, u32); 4] = [(224, 8), (272, 8), (320, 3), (368, 6)];
+            for (y, cells) in wall_rows {
+                for column in 0..cells {
+                    let (cx, cy, cw, ch) = cell_rect(column, y);
+                    let count = ink_pixels(snapshot, (cx, cy, cw, ch), BACKGROUND);
+                    assert!(
+                        count > 0,
+                        "{name}: wall cell (row y {y}, column {column}) carries no ink — \
+                         the asset fails to decode or tint at this edge"
+                    );
+                }
+            }
+            let path = std::path::PathBuf::from(format!(
+                "{}/tests/goldens/{name}.png",
+                env!("CARGO_MANIFEST_DIR")
+            ));
+            if regen {
+                let bytes = golden_compare::encode_png(snapshot).expect("encodes");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+                std::fs::write(&path, bytes).expect("writes");
+                support::golden_manifest::record(&support::golden_manifest::GoldenEntry {
+                    name: name.to_owned(),
+                    fixture: format!("icon_probe.slint composition, wall-edge = {scale}x"),
+                    state: "icon probe window; kinds wall at the scale icon edge".to_owned(),
+                    scale,
+                    width: snapshot.width,
+                    height: snapshot.height,
+                });
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "probe golden regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R5a — the kinds wall at the 0.5 icon edge (the kiosk panel's
+/// sub-pixel extreme) across the whole vendored set.
+#[test]
+fn r5a_the_kinds_wall_holds_at_the_half_icon_edge() {
+    probe_edge_golden(0.5, "icon-probe-0.5-396");
+}
+
+/// R5b — the kinds wall at the 3.0 icon edge (the expansive
+/// extreme) across the whole vendored set.
+#[test]
+fn r5b_the_kinds_wall_holds_at_the_triple_icon_edge() {
+    probe_edge_golden(3.0, "icon-probe-3.0-396");
 }
