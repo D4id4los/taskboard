@@ -9,6 +9,8 @@
 //! from the preset tables alone, so the "resolution order untouched"
 //! guarantee is structural).
 
+use std::borrow::Cow;
+
 use crate::actions::{ActionId, ContextId, MenuGroup, REGISTRY};
 use crate::keymap::Keymap;
 
@@ -22,7 +24,13 @@ pub struct MenuEntry {
     /// `None` for a synthesized submenu-parent row (it never
     /// dispatches; activating it opens the group's page).
     pub action: Option<ActionId>,
-    pub label: &'static str,
+    /// `Cow<'static, str>` (#1283): registry rows keep their
+    /// `&'static str` (the borrowed leg — zero-cost, source-compatible
+    /// with every existing `&'static` call site via `Into`), while
+    /// engine-derived rows name their subject through an owned
+    /// string. Deliberate leniency: no newtype — the label is
+    /// presentation text, never a dispatch address.
+    pub label: Cow<'static, str>,
     /// The row's tooltip / a11y description (round-1 D7); every
     /// registry row carries one, parent rows too.
     pub description: &'static str,
@@ -143,7 +151,7 @@ fn row(
 ) -> MenuEntry {
     MenuEntry {
         action: Some(entry.id),
-        label: entry.label,
+        label: Cow::Borrowed(entry.label),
         description: entry.description,
         // Dynamic greying (round-3 D27c): an adapter-supplied state
         // override wins; the static registry `enabled` stays the
@@ -183,7 +191,7 @@ pub fn root_page(
         if !group_page(keymap, chain, states, *group).is_empty() {
             page.push(MenuEntry {
                 action: None,
-                label: group.label(),
+                label: Cow::Borrowed(group.label()),
                 description: "Opens this group of actions.",
                 enabled: true,
                 hint: Vec::new(),
@@ -402,7 +410,7 @@ pub fn task_context_page(
         }
         page.push(MenuEntry {
             action: None,
-            label: family.label(),
+            label: Cow::Borrowed(family.label()),
             description: "Opens this group of actions.",
             enabled: true,
             hint: Vec::new(),
@@ -519,7 +527,7 @@ pub fn habit_context_page(
     if !habit_convert_children(keymap, chain, subject, states, TaskMenuGroup::Convert).is_empty() {
         page.push(MenuEntry {
             action: None,
-            label: TaskMenuGroup::Convert.label(),
+            label: Cow::Borrowed(TaskMenuGroup::Convert.label()),
             description: "Opens this group of actions.",
             enabled: true,
             hint: Vec::new(),
@@ -903,7 +911,7 @@ mod tests {
             *rows.last().expect("non-empty"),
             MenuEntry {
                 action: Some(ActionId::AppExit),
-                label: "Quit taskboard",
+                label: "Quit taskboard".into(),
                 description: "Quits the application; local state is already saved.",
                 enabled: true,
                 hint: vec!["Ctrl+Shift+q".to_owned()],
