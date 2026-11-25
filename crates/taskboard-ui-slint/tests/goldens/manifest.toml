@@ -1,7 +1,7 @@
 [[golden]]
 name = "board-0.5-600"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "board view; two stacks, label chips + recur + reminder                     badges, degraded sync, second board in the bar, running-timer chip"
+state = "board view; two stacks, label chips + recur + reminder badges, degraded sync, second board in the bar, running-timer chip"
 axes = { scale = 0.5, width = 600, height = 900 }
 
 [[golden]]
@@ -61,7 +61,7 @@ axes = { scale = 0.5, width = 1000, height = 900 }
 [[golden]]
 name = "board-0.5-1000"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "board view; two stacks, label chips + recur + reminder                     badges, degraded sync, second board in the bar, running-timer chip"
+state = "board view; two stacks, label chips + recur + reminder badges, degraded sync, second board in the bar, running-timer chip"
 axes = { scale = 0.5, width = 1000, height = 900 }
 
 [[golden]]
@@ -85,7 +85,7 @@ axes = { scale = 0.5, width = 1000, height = 500 }
 [[golden]]
 name = "board-0.5-1500"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "board view; two stacks, label chips + recur + reminder                     badges, degraded sync, second board in the bar, running-timer chip"
+state = "board view; two stacks, label chips + recur + reminder badges, degraded sync, second board in the bar, running-timer chip"
 axes = { scale = 0.5, width = 1500, height = 900 }
 
 [[golden]]
@@ -103,7 +103,7 @@ axes = { scale = 1.5, width = 1000, height = 900 }
 [[golden]]
 name = "board-3.0-600"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "board view; two stacks, label chips + recur + reminder                     badges, degraded sync, second board in the bar, running-timer chip"
+state = "board view; two stacks, label chips + recur + reminder badges, degraded sync, second board in the bar, running-timer chip"
 axes = { scale = 3.0, width = 600, height = 900 }
 
 [[golden]]
@@ -121,7 +121,7 @@ axes = { scale = 1.5, width = 1000, height = 500 }
 [[golden]]
 name = "board-3.0-1000"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "board view; two stacks, label chips + recur + reminder                     badges, degraded sync, second board in the bar, running-timer chip"
+state = "board view; two stacks, label chips + recur + reminder badges, degraded sync, second board in the bar, running-timer chip"
 axes = { scale = 3.0, width = 1000, height = 900 }
 
 [[golden]]
@@ -139,7 +139,7 @@ axes = { scale = 3.0, width = 1000, height = 900 }
 [[golden]]
 name = "board-3.0-1500"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "board view; two stacks, label chips + recur + reminder                     badges, degraded sync, second board in the bar, running-timer chip"
+state = "board view; two stacks, label chips + recur + reminder badges, degraded sync, second board in the bar, running-timer chip"
 axes = { scale = 3.0, width = 1500, height = 900 }
 
 [[golden]]
