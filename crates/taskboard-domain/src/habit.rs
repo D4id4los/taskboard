@@ -528,8 +528,8 @@ pub struct Habit {
     /// analytically inert (D-H12).
     pub target: HabitTarget,
     /// Manual list order (D-C13); the planner appends on create and
-    /// the UI computes midpoints on drag. `anchor_time` never
-    /// influences any ordering.
+    /// a drag reorder carries a gap index (the engine renumbers dense).
+    /// `anchor_time` never influences any ordering.
     pub order: i64,
     /// The tracker nudge's anchor (#504, plan D-1): when set, the
     /// reminder engine arms a once-per-day-window nudge at this local
