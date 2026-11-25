@@ -13,7 +13,8 @@ import { ListView } from "../ui/widgets/listview.slint";
 // The B-1 probe's mount (round-9 W3): the walk overlay's real verb
 // button — the only F-1 copy without a keyboard, under migration to
 // the TextButton primitive (the sanctioned behavior change B-1).
-import { VerbButton, ReviewWalkOverlay, ReviewWalkModel } from "../ui/views/review-walk-overlay.slint";
+import { ReviewWalkOverlay, ReviewWalkModel } from "../ui/views/review-walk-overlay.slint";
+import { TextButton, TextButtonSize } from "../ui/widgets/text-button.slint";
 // The #1053/#1036 probe mounts: the walk host arm's shape — the
 // ModalDialogHost carrying the ReviewWalkOverlay body — and the
 // standalone planner surface (the #1036 focus gate's guard).
@@ -249,9 +250,12 @@ export component WalkProbeWindow inherits Window {
         height: Theme.space-5;
         focus-on-tab-navigation: true;
     }
-    b1-verb := VerbButton {
+    // The retired VerbButton wrapper's TextButton-compact mount
+    // (#1350): the B-1 tab-stop/Return gate rides the primitive.
+    b1-verb := TextButton {
         x: Theme.space-8;
         y: 0;
+        size: TextButtonSize.compact;
         label: "File it";
         clicked => { root.b1-verb-clicked += 1; }
     }
