@@ -1575,6 +1575,10 @@ pub enum TrackCmd {
         /// amendment D-5): the journaled `DeleteTimeEntry` whose
         /// captured pre-image is the verbatim payload (full uuid |
         /// unique ≥8-char uuid prefix over the restorable deletes).
+        /// Hazard (#1284): journal ids are v7 uuids, and ids minted in
+        /// the same millisecond share a 12-hex-char prefix — prefer
+        /// the full uuid or a prefix beyond 12 chars; an ambiguous
+        /// prefix refuses typed and lists the candidate uuids.
         /// When present, the payload flags are not read and must be
         /// omitted — the flag grammar stays the out-of-band recovery
         /// path, never the undo path.
@@ -2354,7 +2358,11 @@ pub enum TasksCmd {
 /// The journal jump's shared `to <id/prefix>` grammar (D1ii W-6): a
 /// full uuid or a unique ≥8-char prefix over the bounded windows only
 /// — exactly what `tasks history` printed (D-4's honest bound; a
-/// prefix beyond the windows refuses typed, never widens).
+/// prefix beyond the windows refuses typed, never widens). Hazard
+/// (#1284): journal ids are v7 uuids — ids minted in the same
+/// millisecond share a 12-hex-char prefix, so prefer the full uuid or
+/// a prefix beyond 12 chars; an ambiguous prefix refuses typed and
+/// lists the candidate uuids.
 #[derive(Debug, clap::Subcommand)]
 pub enum JournalJump {
     /// The bounded jump form.
