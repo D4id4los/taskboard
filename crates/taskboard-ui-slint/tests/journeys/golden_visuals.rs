@@ -15,10 +15,12 @@
 //!
 //! # Determinism
 //!
-//! The fixture is the clean two-stack board (no overdue banner — its
-//! labels derive from wall-clock relative time and would flake across
-//! hour boundaries; banner structure stays covered by the §6
-//! component tests). Titles are ASCII-only (system-font fallback can
+//! The fixture is the enriched golden fixture
+//! (`fixture::golden_state_enriched_at`, the #1239 re-base; the today
+//! captures layer overdue stamps via `today_overdue_enriched_at`) —
+//! every wall-derived caption is pinned/midnight-aligned against the
+//! frozen render clock, so no caption flakes across hour boundaries.
+//! Titles are ASCII-only (system-font fallback can
 //! never differ); fonts are the bundled Inter/JetBrains Mono
 //! registered by `mount`; the mock clock means no animation or timer
 //! state advances between capture and compare; the software
@@ -320,7 +322,7 @@ fn the_board_goldens_hold_across_the_scale_breakpoint_matrix() {
 
 fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) {
     let state = Arc::new(ArcSwap::from_pointee(
-        fixture::golden_state_at(fixture::PINNED_NOW).1,
+        fixture::golden_state_enriched_at(fixture::PINNED_NOW).1,
     ));
     capture_golden(
         driver,
@@ -332,8 +334,8 @@ fn capture_and_compare(driver: &mut SlintDriver, scale: f64, width: u32, regen: 
             handle.dispatch_action(taskboard_ui_slint::actions::ActionId::NavFocusBoard);
         },
         &GoldenMeta {
-            fixture: "golden_state_at(PINNED_NOW)",
-            state: "board view; two stacks, three tasks, running-timer chip",
+            fixture: "golden_state_enriched_at(PINNED_NOW)",
+            state: "board view; two stacks, label chips + recur + reminder                     badges, degraded sync, second board in the bar, running-timer chip",
             scale,
         },
         width,
@@ -359,7 +361,7 @@ fn the_focused_cell_golden_pins_the_ring() {
                 env!("CARGO_MANIFEST_DIR")
             ));
             let state = Arc::new(ArcSwap::from_pointee(
-                fixture::golden_state_at(fixture::PINNED_NOW).1,
+                fixture::golden_state_enriched_at(fixture::PINNED_NOW).1,
             ));
             let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
             let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
@@ -403,8 +405,8 @@ fn the_focused_cell_golden_pins_the_ring() {
                 manifest_record(
                     &path,
                     &GoldenMeta {
-                        fixture: "golden_state_at(PINNED_NOW)",
-                        state: "task detail; the D18 focus ring on the due row",
+                        fixture: "golden_state_enriched_at(PINNED_NOW)",
+                        state: "task detail; the D18 focus ring on the due row (enriched base)",
                         scale: 1.0,
                     },
                     TASK_VIEW_WIDTH,
@@ -474,9 +476,9 @@ fn today_golden_path(scale: f64, width: u32) -> PathBuf {
 }
 
 fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) {
-    let state = Arc::new(ArcSwap::from_pointee(
-        fixture::today_overdue_state_at(fixture::PINNED_NOW).1,
-    ));
+    let state = Arc::new(ArcSwap::from_pointee(fixture::today_overdue_enriched_at(
+        fixture::PINNED_NOW,
+    )));
     capture_golden(
         driver,
         state,
@@ -485,8 +487,8 @@ fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) 
         // desktop default is the capture subject.
         |_, _| {},
         &GoldenMeta {
-            fixture: "today_overdue_state_at(PINNED_NOW)",
-            state: "today view; overdue rows, tracked-time chip",
+            fixture: "today_overdue_enriched_at(PINNED_NOW)",
+            state: "today view; overdue rows per board, tracked-time chip, enriched base",
             scale,
         },
         width,
@@ -539,24 +541,24 @@ fn capture_kiosk(driver: &mut SlintDriver, mode: &str, regen: bool) {
     // phrase-stable subject) — its pinned-board degeneration is the
     // golden's point.
     let state = if mode == "today" {
-        Arc::new(ArcSwap::from_pointee(
-            fixture::today_overdue_state_at(fixture::PINNED_NOW).1,
-        ))
+        Arc::new(ArcSwap::from_pointee(fixture::today_overdue_enriched_at(
+            fixture::PINNED_NOW,
+        )))
     } else {
         Arc::new(ArcSwap::from_pointee(
-            fixture::golden_state_at(fixture::PINNED_NOW).1,
+            fixture::golden_state_enriched_at(fixture::PINNED_NOW).1,
         ))
     };
     let meta = if mode == "today" {
         GoldenMeta {
-            fixture: "today_overdue_state_at(PINNED_NOW)",
-            state: "kiosk rotation; today mode after one forced flip",
+            fixture: "today_overdue_enriched_at(PINNED_NOW)",
+            state: "kiosk rotation; today mode after one forced flip (enriched base)",
             scale: KIOSK_SCALE,
         }
     } else {
         GoldenMeta {
-            fixture: "golden_state_at(PINNED_NOW)",
-            state: "kiosk rotation; board mode (modes[0])",
+            fixture: "golden_state_enriched_at(PINNED_NOW)",
+            state: "kiosk rotation; board mode (modes[0]), enriched base",
             scale: KIOSK_SCALE,
         }
     };
@@ -641,7 +643,7 @@ fn the_notification_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let (fixture, mut state) = fixture::golden_state_at(fixture::PINNED_NOW);
+            let (fixture, mut state) = fixture::golden_state_enriched_at(fixture::PINNED_NOW);
             // The task's due (and with it the at-due rule's whole
             // firing — the row's occurrence IS the effective
             // occurrence) is midnight-aligned yesterday at the pin:
@@ -667,8 +669,8 @@ fn the_notification_golden_holds() {
                 scale_settings(3.0),
                 |_, _| {},
                 &GoldenMeta {
-                    fixture: "golden_state_at + deliver_task_notification + add_alarm",
-                    state: "notification surface; one task row + one alarm row",
+                    fixture: "golden_state_enriched_at + deliver_task_notification + add_alarm",
+                    state: "notification surface; one task row + one alarm row (enriched base)",
                     scale: 3.0,
                 },
                 1000,
@@ -737,7 +739,7 @@ fn the_task_view_goldens_hold_across_the_scale_height_matrix() {
 
 fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: bool) {
     let state = Arc::new(ArcSwap::from_pointee(
-        fixture::golden_state_at(fixture::PINNED_NOW).1,
+        fixture::golden_state_enriched_at(fixture::PINNED_NOW).1,
     ));
     let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
     let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
@@ -780,8 +782,8 @@ fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: b
         manifest_record(
             &path,
             &GoldenMeta {
-                fixture: "golden_state_at(PINNED_NOW)",
-                state: "task detail; header/summary/description regions",
+                fixture: "golden_state_enriched_at(PINNED_NOW)",
+                state: "task detail; header/summary/description regions (enriched base)",
                 scale,
             },
             TASK_VIEW_WIDTH,
@@ -820,7 +822,7 @@ fn the_focus_overlay_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let mut golden = fixture::golden_state_at(fixture::PINNED_NOW).1;
+            let mut golden = fixture::golden_state_enriched_at(fixture::PINNED_NOW).1;
             // The timings ride the published settings (round-5 chunk
             // 5), not the hand-over.
             golden.settings.focus_enabled = true;
@@ -873,8 +875,8 @@ fn the_focus_overlay_golden_holds() {
                 manifest_record(
                     &path,
                     &GoldenMeta {
-                        fixture: "golden_state_at + FocusTiming settings",
-                        state: "concentration overlay; work caption + pool + quick note",
+                        fixture: "golden_state_enriched_at + FocusTiming settings",
+                        state: "concentration overlay; work caption + pool + quick note (enriched base)",
                         scale: 1.0,
                     },
                     1000,
@@ -919,7 +921,7 @@ fn the_track_entries_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let (fx, mut state) = fixture::golden_state_at(fixture::PINNED_NOW);
+            let (fx, mut state) = fixture::golden_state_enriched_at(fixture::PINNED_NOW);
             // Two closed spans at fixed absolute instants (UTC-pinned
             // zone): an evening span crossing local midnight (the
             // `+1d` mark, newest-first) over an afternoon span.
@@ -1008,8 +1010,8 @@ fn the_track_entries_golden_holds() {
                 manifest_record(
                     &path,
                     &GoldenMeta {
-                        fixture: "golden_state_at + two closed fixed-instant entries",
-                        state: "time-entries overlay; closed rows + armed deletes",
+                        fixture: "golden_state_enriched_at + two closed fixed-instant entries",
+                        state: "time-entries overlay; closed rows + armed deletes (enriched base)",
                         scale: 1.0,
                     },
                     1000,
@@ -1051,6 +1053,12 @@ fn the_review_empty_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
+            // The #1239 re-base finding (round 7 G1): the review view's
+            // header chrome projects the board bar (the second board
+            // and the degraded-sync badge), so re-basing this capture
+            // onto the enriched fixture changed its pixels — it stays
+            // on the un-enriched base to keep the committed bytes
+            // stable (the four-surface byte-identity law).
             let (_fixture, mut state) = fixture::golden_state();
             // D-S9's tier-1 extension (#623 slice A): tracked time
             // alone keeps the view standing, and `golden_state` seeds
@@ -1072,7 +1080,7 @@ fn the_review_empty_golden_holds() {
                 scale_settings(1.0),
                 |_, handle| enter_review(handle),
                 &GoldenMeta {
-                    fixture: "golden_state_at; tracking + reflection entries cleared",
+                    fixture: "golden_state; tracking + reflection entries cleared",
                     state: "review view; empty tier (both sections folded)",
                     scale: 1.0,
                 },
@@ -1118,6 +1126,10 @@ fn the_review_ledger_golden_holds() {
             // instant (#663), so no seed can land in the frozen day's
             // future.
             let now = fixture::PINNED_NOW;
+            // The #1239 re-base finding (round 7 G1): same as
+            // review-empty's — the review header chrome projects the
+            // board bar, so this capture stays on the un-enriched base
+            // to keep the committed bytes stable.
             let (fixture, mut state) = fixture::golden_state_at(now);
             let span = |start: chrono::TimeDelta, secs: i64| {
                 (
@@ -1210,8 +1222,11 @@ fn the_review_ledger_golden_holds() {
 //
 // One golden per zero-coverage surface at the doc-publishable sweet
 // spot (scale 1.0, 1000×900) over the enriched fixture
-// (`fixture::golden_state_enriched_at` — the wave plan's superset
-// decision: `golden_state_at` stays byte-stable for the 27). Every
+// (`fixture::golden_state_enriched_at` — which, since the #1239
+// re-base, is also the pre-wave goldens' base; the review-walk
+// capture below deliberately keeps the un-enriched
+// `golden_state_at` + its Inbox layer so its committed bytes stay
+// stable). Every
 // wall-derived caption rides the frozen `UiSettings::clock` and the
 // fixture's pinned/midnight-aligned stamps; every overlay open asserts
 // a typed precondition (the mount's view/state field) before the

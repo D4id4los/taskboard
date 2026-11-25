@@ -93,6 +93,11 @@ pub fn manifest_path() -> PathBuf {
 /// mistyped one) is [`ManifestError::Field`].
 pub fn read_entries() -> Result<Vec<GoldenEntry>, ManifestError> {
     let text = std::fs::read_to_string(manifest_path())?;
+    parse_entries(&text)
+}
+
+/// The parse half of [`read_entries`]: manifest text → entries.
+fn parse_entries(text: &str) -> Result<Vec<GoldenEntry>, ManifestError> {
     let doc = text.parse::<toml_edit::DocumentMut>()?;
     let Some(array) = doc.get("golden").and_then(|item| item.as_array_of_tables()) else {
         return Ok(Vec::new());
@@ -220,6 +225,19 @@ pub fn record(entry: &GoldenEntry) {
 
 fn upsert(entry: &GoldenEntry) -> Result<(), toml_edit::TomlError> {
     let text = std::fs::read_to_string(manifest_path()).unwrap_or_default();
+    let rendered = render_upsert(&text, entry)?;
+    std::fs::write(manifest_path(), rendered).map_err(|error| {
+        panic!("manifest {} writable: {error}", manifest_path().display());
+    })
+}
+
+/// The upsert's pure half: `entry` replaces the row with the same
+/// `name` in place (order preserved) or is appended, and the rendered
+/// document text is returned. The write back lives with `upsert` —
+/// the round-7 G1 fix (#1239): the matched path previously mutated an
+/// in-memory document and returned *without writing*, so a re-based
+/// golden's row silently kept its stale fixture/state strings.
+fn render_upsert(text: &str, entry: &GoldenEntry) -> Result<String, toml_edit::TomlError> {
     let mut doc = text.parse::<toml_edit::DocumentMut>()?;
     let array = doc
         .entry("golden")
@@ -228,18 +246,17 @@ fn upsert(entry: &GoldenEntry) -> Result<(), toml_edit::TomlError> {
         ))
         .as_array_of_tables_mut()
         .expect("the golden key stays an array of tables");
-    for table in array.iter_mut() {
-        if table.get("name").and_then(|item| item.as_str()) == Some(entry.name.as_str()) {
-            fill(table, entry);
-            return Ok(());
-        }
+    let matched = array.iter_mut().find(|table| {
+        table.get("name").and_then(|item| item.as_str()) == Some(entry.name.as_str())
+    });
+    if let Some(table) = matched {
+        fill(table, entry);
+    } else {
+        let mut table = toml_edit::Table::new();
+        fill(&mut table, entry);
+        array.push(table);
     }
-    let mut table = toml_edit::Table::new();
-    fill(&mut table, entry);
-    array.push(table);
-    std::fs::write(manifest_path(), doc.to_string()).map_err(|error| {
-        panic!("manifest {} writable: {error}", manifest_path().display());
-    })
+    Ok(doc.to_string())
 }
 
 fn fill(table: &mut toml_edit::Table, entry: &GoldenEntry) {
@@ -308,5 +325,32 @@ mod tests {
             verify_corpus(&single, &pngs),
             Err(CorpusError::AxisMismatch { .. })
         ));
+    }
+
+    /// T3 — the round-7 G1 regression (#1239): an upsert against an
+    /// existing name re-renders that row in place (order preserved)
+    /// — the old matched path mutated an in-memory document and
+    /// never wrote, leaving stale fixture/state strings on disk.
+    #[test]
+    fn an_upsert_of_an_existing_row_rewrites_it_in_place() {
+        let text = "[[golden]]\nname = \"a-1.0-100\"\n\
+                    fixture = \"golden_state_at(PINNED_NOW)\"\n\
+                    state = \"board view\"\n\
+                    axes = { scale = 1.0, width = 100, height = 90 }\n\n\
+                    [[golden]]\nname = \"b-1.0-100\"\n\
+                    fixture = \"golden_state_at(PINNED_NOW)\"\n\
+                    state = \"board view\"\n\
+                    axes = { scale = 1.0, width = 100, height = 90 }\n";
+        let mut re_based = entry("a-1.0-100", 100, 90);
+        re_based.fixture = "golden_state_enriched_at(PINNED_NOW)".to_owned();
+        let rendered = render_upsert(text, &re_based).expect("renders");
+        let entries = parse_entries(&rendered).expect("re-parses");
+        assert_eq!(entries.len(), 2, "no row appended");
+        assert_eq!(entries[0].name, "a-1.0-100", "order preserved");
+        assert_eq!(
+            entries[0].fixture, "golden_state_enriched_at(PINNED_NOW)",
+            "the matched row's fields are rewritten"
+        );
+        assert_eq!(entries[1].fixture, "golden_state_at(PINNED_NOW)");
     }
 }
