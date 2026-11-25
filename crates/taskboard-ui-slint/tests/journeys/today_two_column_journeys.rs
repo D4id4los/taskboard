@@ -304,8 +304,10 @@ fn us18_s2_prev_mapping_mirrors_and_row_chords_hold() {
         assert!(grid_arm(mounted), "precondition: the wide arm mounted");
         let task_rows = task_row_ids(mounted).len();
 
-        // Walk onto the first habit row, then mirror back.
-        for _ in 0..task_rows {
+        // Walk onto the first habit row, then mirror back. From no
+        // focus the first step LANDS on row 0 (the entry), so the
+        // habit sits task_rows + 1 steps out.
+        for _ in 0..=task_rows {
             mounted.handle.dispatch_action(ActionId::NavNextItem);
             mounted.driver.advance_time(0);
         }

@@ -616,6 +616,16 @@ export component AppWindow inherits Window {
     changed watch-today-viewport => {
         TodayViewport.height = root.height;
     }
+    // The today layout arm's width push (#1436, the TodayViewport
+    // height precedent): the arm's measurement input assigned, never
+    // bound — the declarative width→arm spelling at the view root is
+    // a layout-info binding loop (see the global's comment in
+    // today-view.slint). Init covers the first frame, the watch
+    // covers resizes.
+    property <length> watch-today-width: root.width;
+    changed watch-today-width => {
+        TodayLayoutFacts.viewport-width = root.width;
+    }
     // The rendering fact the menu sizing (usability D6) and the
     // tooltip flip (D3) are proved against: the status bar's top edge
     // in window coordinates (the inner layouts sit at the origin).
@@ -631,6 +641,8 @@ export component AppWindow inherits Window {
         root.window-width-changed(root.width / 1px);
         // The today viewport push's first-frame leg (#1310/#1304).
         TodayViewport.height = root.height;
+        // The today layout arm's width push's first-frame leg (#1436).
+        TodayLayoutFacts.viewport-width = root.width;
     }
     key-root := FocusScope {
         capture-key-pressed(event) => {
