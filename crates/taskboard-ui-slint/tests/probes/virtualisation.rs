@@ -664,7 +664,7 @@ fn the_today_sections_virtualise() {
             driver.set_window_size(1000, 900);
             driver.advance_time(0);
 
-            let rows = driver.find_all_by_id("TodayView::today-row");
+            let rows = driver.find_all_by_id("TodaySectionBlock::today-row");
             assert!(
                 !rows.is_empty(),
                 "the engaged Today view still renders its head rows"
