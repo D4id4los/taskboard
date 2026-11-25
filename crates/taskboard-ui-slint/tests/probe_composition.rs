@@ -40,8 +40,6 @@ mod armed_ring_probe_tests;
 mod board_bar_probe_tests;
 #[path = "probes/board_window_max_probe_tests.rs"]
 mod board_window_max_probe_tests;
-#[path = "probes/columns_seek_probe_tests.rs"]
-mod columns_seek_probe_tests;
 #[path = "probes/dropdown_probe_tests.rs"]
 mod dropdown_probe_tests;
 #[path = "probes/editor_viewport_probe_tests.rs"]
