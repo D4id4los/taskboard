@@ -716,8 +716,11 @@ export component SettingsView inherits FocusScope {
             vertical-stretch: 0;
             min-height: status-text.preferred-height + 2 * Theme.space-2;
             max-height: status-text.preferred-height + 2 * Theme.space-2;
+            // The busy outcome maps to the sync-active TONE only — the
+            // pulse knob stays off (the former in-view outcome dot was
+            // static; animating here would be a golden-visible render
+            // change and an animation-phase flake at capture).
             StatusDot {
-                busy: SettingsModel.last-outcome == SettingsOutcome.busy;
                 tone: SettingsModel.last-outcome == SettingsOutcome.ok ? Tone.success
                     : SettingsModel.last-outcome == SettingsOutcome.busy ? Tone.sync-active
                     : SettingsModel.last-outcome == SettingsOutcome.failed ? Tone.danger
