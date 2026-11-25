@@ -259,10 +259,6 @@ export component AppWindow inherits Window {
     pure callback reflection-remove-confirmed(int);
     pure callback reflection-remove-cancelled();
     // The settings seams (round-1 chunk 3, D6.6/D7/D9).
-    // slint: status-panel-open — the mount's snapshot-on-open dispatch
-    // (OP3 W-1, D-3, US-1/S1): the panel fires it once per mount; the
-    // adapter answers with exactly one `UiRequest::StatusQuery`.
-    callback status-panel-open();
     // slint: status-panel-refresh — the Refresh control's re-query
     // (OP3 W-1, US-1/S4): keyboard-reachable, never a timer.
     callback status-panel-refresh();
@@ -850,7 +846,6 @@ export component AppWindow inherits Window {
                 // W-1..W-4/W-6); the panel dispatches no command
                 // (OP3 R-3 — the remediation lane rides the request
                 // lane, not the command lane).
-                status-panel-open-requested() => root.status-panel-open();
                 status-panel-refresh-requested() => root.status-panel-refresh();
                 status-holder-kill-requested() => root.status_holder_kill();
                 status-lock-force-unlock-requested() => root.status_lock_force_unlock();

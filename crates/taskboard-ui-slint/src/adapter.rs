@@ -5700,15 +5700,17 @@ impl Adapter {
                 self.interpret_ceremony(UiEffect::BoardReconcile, &state)
             }
             // The status panel's toggle (OP3 W-1, the settings
-            // opener's twin, D-5): the open is a pushed view level;
-            // the snapshot-on-open query dispatches from the panel's
-            // own mount seam (`status-panel-open` — one query per
-            // mount, never a timer), so this arm is pure view state.
+            // opener's twin, D-5): the open is a pushed view level,
+            // and the snapshot query dispatches HERE — the route arm
+            // is the query's sole dispatcher (one query per mount,
+            // OP3 D-3; #1281 retired the doubled init seam).
             (Flow::None, UiEffect::OpenStatusPanel) => {
                 if self.view_state.view() == crate::view_state::ViewId::Status {
                     self.view_state.close_status_panel()
                 } else {
-                    self.view_state.open_status_panel()
+                    let outcomes = self.view_state.open_status_panel();
+                    self.dispatch_status_query(window);
+                    outcomes
                 }
             }
             // Round-1 chunk 3 (D28b, D6.3): toggle semantics — the
@@ -13795,19 +13797,16 @@ fn install_drag_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 /// only ever fire while the menu is closed, so the pre-menu chain the
 /// projection reads is the real one on every open.
 /// The status panel's seams (OP3 W-1..W-3): the mount's
-/// snapshot-on-open dispatch and the Refresh control's re-query ride
-/// the `AppWindow` root callbacks (the seam census's manifest shape —
-/// both listed in `seam_inventory.rs`). The fold/failure directions
+/// snapshot-on-open dispatch retired (#1281: the route arm is the
+/// sole dispatcher) and the Refresh control's re-query rides the
+/// `AppWindow` root callback (the seam census's manifest shape —
+/// listed in `seam_inventory.rs`). The fold/failure directions
 /// are invokes (Rust → slint). The panel dispatches no `StateCommand`
 /// — R-3's read-only contract is structural here: no seam body touches
 /// the command lane.
 fn install_status_panel_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
-    // slint: status-panel-open — the mount's snapshot-on-open dispatch
-    // (D-3, US-1/S1).
-    install_seam!(window: window.on_status_panel_open, adapter: adapter;
-    bind mut (a, window), args (), {        a.dispatch_status_query(&window);
-
-    });
+    // #1281: the `status-panel-open` seam retired — the route arm is
+    // the snapshot query's sole dispatcher (one query per mount).
     // slint: status-panel-refresh — the explicit re-query (US-1/S4).
     install_seam!(window: window.on_status_panel_refresh, adapter: adapter;
     bind mut (a, window), args (), {        a.dispatch_status_query(&window);
