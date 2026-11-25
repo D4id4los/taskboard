@@ -228,3 +228,126 @@ impl ExportVm {
         crate::requests::refusal_index(kind)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Kills: any drift in the `Default` buffer's initial flags (the
+    /// measurement's dark region — the journeys always seed from the
+    /// hand-over defaults, so `Default` never executes there). The
+    /// defaults are the dialog's pre-open posture: Tracking/Csv/Fold,
+    /// every field empty, nothing busy, no settled outcome.
+    #[test]
+    fn default_vm_starts_at_the_dialogs_pre_open_posture() {
+        let vm = ExportVm::default();
+        assert_eq!(vm.family, ExportFamily::Tracking);
+        assert_eq!(vm.format, ExportFileFormat::Csv);
+        assert_eq!(vm.layout, PdfLayoutChoice::Fold);
+        for field in [&vm.since, &vm.until, &vm.task, &vm.board, &vm.destination] {
+            assert!(field.is_empty(), "every filter starts empty: {field:?}");
+        }
+        assert!(!vm.open_after);
+        assert!(!vm.busy);
+        assert!(!vm.preview_busy);
+        assert!(!vm.copy_busy);
+        assert!(!vm.preview_shown);
+        assert!(!vm.preview_truncated);
+        assert!(!vm.copy_settled);
+        assert_eq!(vm.copy_bytes, 0);
+        assert_eq!(vm.outcome, None);
+        assert_eq!(vm.preview_text, "");
+        assert_eq!(vm.preview_settled_refusal, None);
+        assert_eq!(vm.copy_refusal, None);
+    }
+
+    /// Kills: a format-string drift or an empty/malformed handling
+    /// swap in `parse_date` — the mint halves of the validity fold.
+    #[test]
+    fn parse_date_folds_empty_valid_and_malformed() {
+        assert_eq!(ExportVm::parse_date(""), None, "empty is no filter");
+        assert_eq!(
+            ExportVm::parse_date("2026-11-25"),
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 25),
+            "the YYYY-MM-DD form parses"
+        );
+        assert_eq!(ExportVm::parse_date("not a date"), None);
+        assert_eq!(ExportVm::parse_date("2026-13-40"), None, "out-of-range");
+        assert_eq!(
+            ExportVm::parse_date("25/11/2026"),
+            None,
+            "a non-canonical separator is invalid, never reinterpreted"
+        );
+    }
+
+    /// Kills: the `out`/`layout`/filter arms of `mint_spec` — the
+    /// default VM's product is the engine-default contract (empty
+    /// destination mints `None`, the tracking leg mints no layout, the
+    /// empty selectors mint no filters); a non-empty destination
+    /// mints `Some`, verbatim.
+    #[test]
+    fn mint_spec_default_vm_mints_the_engine_default_contract() {
+        let vm = ExportVm::default();
+        let spec = vm.mint_spec();
+        assert_eq!(spec.what, ExportFamily::Tracking);
+        assert_eq!(spec.format, ExportFileFormat::Csv);
+        assert_eq!(spec.since, None);
+        assert_eq!(spec.until, None);
+        assert_eq!(spec.task, None);
+        assert_eq!(spec.board, None);
+        assert_eq!(spec.layout, None, "the tracking leg carries no layout");
+        assert_eq!(
+            spec.out, None,
+            "the empty destination is the engine-default contract (D-2/D-3)"
+        );
+        assert!(!spec.open_after);
+
+        // A non-empty destination mints Some, verbatim.
+        let vm = ExportVm {
+            destination: " /tmp/exports/november.csv ".to_owned(),
+            ..ExportVm::default()
+        };
+        let spec = vm.mint_spec();
+        assert_eq!(
+            spec.out,
+            Some(std::path::PathBuf::from("/tmp/exports/november.csv")),
+            "the destination mints trimmed"
+        );
+    }
+
+    /// Kills: any swapped or duplicate entry in the refusal index
+    /// table (`requests::refusal_index` is the dialog's rendering
+    /// address — the mapping is an address space, so every kind sits
+    /// at its literal pinned row and the rows are pairwise distinct).
+    /// The expectations are literals, not re-reads of the table: a
+    /// swapped pair must fail here.
+    #[test]
+    fn refusal_index_maps_every_kind_to_a_distinct_canonical_row() {
+        let rows: [(crate::requests::ExportRefusal, i32); 12] = [
+            (crate::requests::ExportRefusal::PdfUnavailable, 0),
+            (crate::requests::ExportRefusal::FiltersNotApplicable, 1),
+            (crate::requests::ExportRefusal::OptionsNotApplicable, 2),
+            (crate::requests::ExportRefusal::BadTaskFilter, 3),
+            (crate::requests::ExportRefusal::BadBoardFilter, 4),
+            (crate::requests::ExportRefusal::UnknownPdfLayout, 5),
+            (crate::requests::ExportRefusal::PdfPath, 6),
+            (crate::requests::ExportRefusal::PdfRender, 7),
+            (crate::requests::ExportRefusal::DestinationUnwritable, 8),
+            (crate::requests::ExportRefusal::LaneDropped, 9),
+            (crate::requests::ExportRefusal::EngineRefused, 10),
+            (crate::requests::ExportRefusal::ClipboardUnavailable, 11),
+        ];
+        let mut seen = std::collections::BTreeMap::new();
+        for (kind, expected) in rows {
+            let index = ExportVm::refusal_index(kind);
+            assert_eq!(
+                index, expected,
+                "{kind:?} sits at its canonical row {expected}"
+            );
+            assert!(
+                seen.insert(index, kind).is_none(),
+                "indices are pairwise distinct: {index}"
+            );
+        }
+    }
+}
