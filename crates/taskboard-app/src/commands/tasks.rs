@@ -14,6 +14,7 @@ use std::time::Duration;
 use chrono::{TimeDelta, Utc};
 use taskboard_domain::{
     AppState, CommandOutcome, LabelId, Stack, StackId, StateCommand, TaskChanges, TaskId,
+    order::append_order,
 };
 
 use crate::commands::CommandError;
@@ -110,15 +111,6 @@ fn resolve_target(state: &AppState, selector: Option<&str>) -> Result<StackId, C
         (CommandError::NoStacks, true) => CommandError::AmbiguousBoard { candidates: vec![] },
         (err, _) => err,
     })
-}
-
-/// The append order for a stack: `max(order) + 1` over the canonical
-/// task order, `0` when empty.
-fn append_order(state: &AppState, stack: StackId) -> i64 {
-    state
-        .tasks_in_stack(stack)
-        .last()
-        .map_or(0, |t| t.order + 1)
 }
 
 /// The stack groups of the task list, in board order; an optional
