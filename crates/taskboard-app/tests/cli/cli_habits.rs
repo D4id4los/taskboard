@@ -6,6 +6,7 @@
 //! typed values; refusals via `matches!`/`error_kind()`, never
 //! message text.
 
+use chrono::Datelike as _;
 use clap::Parser;
 
 use taskboard_app::cli::{Cli, Command};
@@ -370,4 +371,429 @@ fn habits_render_arity_and_distinguishment() {
     }));
     assert_eq!(added_some.split('\n').count(), 1);
     assert_ne!(added_some, added_none, "the row-less arm must surface");
+}
+
+// -- H-series extension: the five subcommands (#1368, h06–h09) -------
+
+use taskboard_app::commands::output::{
+    HabitHistoryView, HabitPauseReceipt, HabitSkipReceipt, HabitStatsView, HabitWindowStateView,
+};
+
+/// The fixture's captured clock: every seeded window derives from this
+/// one capture (the relative-oracle rule, §6.1 — never a hard-coded
+/// calendar date; cf. #606/#680).
+fn anchor() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now()
+}
+
+/// Kills: the Skip routing closure (the `collapse` arm and `run_on`'s
+/// skip invocation). `habits skip` marks the current window typed (the
+/// receipt names the window and the surviving streak), the history
+/// projection classifies that window `Skipped`, and an unknown
+/// selector misses typed — never a panic.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one seeded grid, one assertion per arm
+async fn h06_skip_marks_the_current_window_and_misses_typed_on_an_unknown_selector() {
+    let dir = tempdir();
+    let config = seeded_config(dir.path(), "h06.db").await;
+    run_one(&config, parse(&["habits", "add", "water", "--daily", "3"]))
+        .await
+        .expect("add");
+    // A met yesterday (quota reached) gives the streak a run to
+    // survive; R-4 says the typed planned skip keeps it alive.
+    let now0 = anchor();
+    let yesterday = (now0 - chrono::Duration::hours(24)).date_naive();
+    let yesterday_text = yesterday.format("%Y-%m-%d").to_string();
+    run_one(
+        &config,
+        parse(&[
+            "habits",
+            "adjust",
+            "--window",
+            &yesterday_text,
+            "--count",
+            "3",
+            "water",
+        ]),
+    )
+    .await
+    .expect("met seed");
+    // A row must exist for the window to render (the horizon walks the
+    // log): one logged unit keeps the window under quota.
+    run_one(&config, parse(&["habits", "log", "water"]))
+        .await
+        .expect("log");
+
+    // Before the skip: the current window is under quota with grace
+    // open — the walk's Pending arm.
+    let history = run_one(&config, parse(&["habits", "history", "water"]))
+        .await
+        .expect("history");
+    let habits::HabitOutcome::History(HabitHistoryView { windows, .. }) = history else {
+        panic!("history outcome");
+    };
+    let latest = windows.last().expect("the current window");
+    assert_eq!(latest.state, HabitWindowStateView::Pending);
+    assert_eq!(latest.count, 1, "the logged unit renders");
+
+    let skipped = run_one(&config, parse(&["habits", "skip", "water"]))
+        .await
+        .expect("skip");
+    let habits::HabitOutcome::Skipped(HabitSkipReceipt {
+        habit_id,
+        window,
+        streak,
+    }) = skipped
+    else {
+        panic!("the skip receipt: {skipped:?}");
+    };
+    assert!(uuid::Uuid::parse_str(&habit_id).is_ok(), "durable uuid");
+    let now = anchor();
+    assert!(
+        window.num_days_from_ce() == now.date_naive().num_days_from_ce()
+            || window.num_days_from_ce()
+                == (now - chrono::Duration::hours(24))
+                    .date_naive()
+                    .num_days_from_ce(),
+        "the marked window is the running day's window: {window}"
+    );
+    assert!(streak >= 1, "R-4: the planned skip survives the streak");
+
+    // The history projection classifies the marked window Skipped.
+    let history = run_one(&config, parse(&["habits", "history", "water"]))
+        .await
+        .expect("history");
+    let habits::HabitOutcome::History(HabitHistoryView { windows, .. }) = history else {
+        panic!("history outcome");
+    };
+    let marked = windows
+        .iter()
+        .find(|row| row.window == window)
+        .expect("the marked window renders");
+    assert_eq!(marked.state, HabitWindowStateView::Skipped);
+
+    // The typed miss.
+    let err = run_one(&config, parse(&["habits", "skip", "ffffffff"]))
+        .await
+        .expect_err("typed miss");
+    assert_eq!(err.error_kind(), "unknown-habit");
+}
+
+/// Kills: the Pause/Resume routing closures and the
+/// `pause_covers_window` composition order (the walk's Paused arm
+/// wins over every other classification while covered). The pause
+/// receipt carries the stored through-date; resume clears it typed
+/// (the badge-hygiene posture); a past through-date refuses typed.
+#[tokio::test]
+async fn h07_pause_covers_and_resume_clears_the_pause() {
+    let dir = tempdir();
+    let config = seeded_config(dir.path(), "h07.db").await;
+    run_one(&config, parse(&["habits", "add", "water", "--daily", "3"]))
+        .await
+        .expect("add");
+    run_one(&config, parse(&["habits", "log", "water"]))
+        .await
+        .expect("log");
+
+    let now = anchor();
+    let until = (now + chrono::Duration::hours(48)).date_naive();
+    let until_text = until.format("%Y-%m-%d").to_string();
+    let paused = run_one(
+        &config,
+        parse(&["habits", "pause", "water", "--until", &until_text]),
+    )
+    .await
+    .expect("pause");
+    let habits::HabitOutcome::Paused(HabitPauseReceipt { until: stored, .. }) = paused else {
+        panic!("the pause receipt: {paused:?}");
+    };
+    assert_eq!(stored, Some(until), "the through-date is stored verbatim");
+
+    // The covered current window classifies Paused — the composing
+    // arm's precedence over Pending.
+    let history = run_one(&config, parse(&["habits", "history", "water"]))
+        .await
+        .expect("history");
+    let habits::HabitOutcome::History(HabitHistoryView { windows, .. }) = history else {
+        panic!("history outcome");
+    };
+    assert_eq!(
+        windows.last().expect("the current window").state,
+        HabitWindowStateView::Paused,
+        "the pause covers the current window"
+    );
+
+    let resumed = run_one(&config, parse(&["habits", "resume", "water"]))
+        .await
+        .expect("resume");
+    let habits::HabitOutcome::Paused(HabitPauseReceipt { until: cleared, .. }) = resumed else {
+        panic!("the resume receipt: {resumed:?}");
+    };
+    assert_eq!(cleared, None, "resume clears the pause typed");
+
+    // After the resume the same window reads Pending again (under
+    // quota, grace open — the pause's classification is gone).
+    let history = run_one(&config, parse(&["habits", "history", "water"]))
+        .await
+        .expect("history");
+    let habits::HabitOutcome::History(HabitHistoryView { windows, .. }) = history else {
+        panic!("history outcome");
+    };
+    assert_eq!(
+        windows.last().expect("the current window").state,
+        HabitWindowStateView::Pending,
+        "the resumed window is pending again"
+    );
+
+    // A past through-date is the planner's typed refusal.
+    let past = (now - chrono::Duration::hours(24)).date_naive();
+    let past_text = past.format("%Y-%m-%d").to_string();
+    let err = run_one(
+        &config,
+        parse(&["habits", "pause", "water", "--until", &past_text]),
+    )
+    .await
+    .expect_err("the past-date pause refuses");
+    assert_eq!(err.error_kind(), "invalid-habit-pause");
+}
+
+/// Kills: the History routing closure and each `window_state_view`
+/// arm's inversion. The seed spreads the grid vocabulary across two
+/// habits, all windows anchored relative to one captured `now` (§6.1):
+/// Met (quota reached on a past window), Missed (past window under
+/// quota, grace closed), Skipped (`h06`'s verb), Paused (the covered
+/// current window), `PreSchedule` (a weekly habit whose only scheduled
+/// day is tomorrow — first scheduled day strictly after today), and
+/// Pending (the fresh current window). Chronological order pins the
+/// rendering order.
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one seeded grid, one assertion per arm
+async fn h08_history_renders_the_grid_vocabulary_chronologically() {
+    let dir = tempdir();
+    let config = seeded_config(dir.path(), "h08.db").await;
+    let now = anchor();
+    let today = now.date_naive();
+
+    run_one(&config, parse(&["habits", "add", "water", "--daily", "3"]))
+        .await
+        .expect("add water");
+    // Met: the yesterday window reached its quota.
+    let met_window = (now - chrono::Duration::hours(24)).date_naive();
+    let met_text = met_window.format("%Y-%m-%d").to_string();
+    run_one(
+        &config,
+        parse(&[
+            "habits", "adjust", "--window", &met_text, "--count", "3", "water",
+        ]),
+    )
+    .await
+    .expect("met seed");
+    // Missed: the day-before-yesterday window stayed empty and its
+    // grace closed (any now inside today's UTC day is past its grace
+    // end).
+    let missed_window = (now - chrono::Duration::hours(48)).date_naive();
+    let missed_text = missed_window.format("%Y-%m-%d").to_string();
+    run_one(
+        &config,
+        parse(&[
+            "habits",
+            "adjust",
+            "--window",
+            &missed_text,
+            "--count",
+            "0",
+            "water",
+        ]),
+    )
+    .await
+    .expect("missed seed");
+    // Skipped: the current window's typed planned skip (a logged row
+    // must exist for the window to render, and it stays under quota).
+    run_one(&config, parse(&["habits", "log", "water"]))
+        .await
+        .expect("current-window row");
+    run_one(&config, parse(&["habits", "skip", "water"]))
+        .await
+        .expect("skip seed");
+
+    // Paused: a second daily habit paused through the far side of the
+    // running week; a logged row gives the window a render, and it
+    // stays under quota so the Paused arm (not Met) classifies.
+    run_one(
+        &config,
+        parse(&["habits", "add", "stretch", "--daily", "3"]),
+    )
+    .await
+    .expect("add stretch");
+    run_one(&config, parse(&["habits", "log", "stretch"]))
+        .await
+        .expect("stretch row");
+    let until = (now + chrono::Duration::hours(96)).date_naive();
+    let until_text = until.format("%Y-%m-%d").to_string();
+    run_one(
+        &config,
+        parse(&["habits", "pause", "stretch", "--until", &until_text]),
+    )
+    .await
+    .expect("pause seed");
+
+    // PreSchedule: a weekly habit whose only scheduled day is
+    // tomorrow's weekday — its current window's first scheduled day is
+    // strictly after today, whatever day the wall clock says.
+    run_one(&config, parse(&["habits", "add", "run", "--weekly", "2"]))
+        .await
+        .expect("add run");
+    // A row (under quota) so the window renders at all.
+    run_one(&config, parse(&["habits", "log", "run"]))
+        .await
+        .expect("run row");
+    let tomorrow = (now + chrono::Duration::hours(24)).date_naive();
+    let day_name = match tomorrow.weekday() {
+        chrono::Weekday::Mon => "mon",
+        chrono::Weekday::Tue => "tue",
+        chrono::Weekday::Wed => "wed",
+        chrono::Weekday::Thu => "thu",
+        chrono::Weekday::Fri => "fri",
+        chrono::Weekday::Sat => "sat",
+        chrono::Weekday::Sun => "sun",
+    };
+    run_one(
+        &config,
+        parse(&["habits", "update", "run", "--days", day_name]),
+    )
+    .await
+    .expect("schedule run");
+
+    // The grid: water's windows chronological, one row per seeded arm.
+    let history = run_one(&config, parse(&["habits", "history", "water"]))
+        .await
+        .expect("history");
+    let habits::HabitOutcome::History(HabitHistoryView { windows, .. }) = history else {
+        panic!("history outcome");
+    };
+    let mut sorted = windows.clone();
+    sorted.sort_by_key(|row| row.window);
+    assert_eq!(
+        windows.iter().map(|row| row.window).collect::<Vec<_>>(),
+        sorted.iter().map(|row| row.window).collect::<Vec<_>>(),
+        "chronological order (HF3)"
+    );
+    let state_of = |date: chrono::NaiveDate| -> HabitWindowStateView {
+        windows
+            .iter()
+            .find(|row| row.window == date)
+            .unwrap_or_else(|| panic!("window {date} renders"))
+            .state
+    };
+    assert_eq!(state_of(missed_window), HabitWindowStateView::Missed);
+    assert_eq!(state_of(met_window), HabitWindowStateView::Met);
+    assert_eq!(
+        windows.last().expect("the current window").state,
+        HabitWindowStateView::Skipped,
+        "the skipped current window"
+    );
+    assert!(
+        windows.len() >= 3,
+        "the three seeded windows render: {}",
+        windows.len()
+    );
+    assert_eq!(
+        windows
+            .iter()
+            .find(|row| row.window == met_window)
+            .expect("met row")
+            .count,
+        3,
+        "the Met row carries the adjusted count"
+    );
+
+    // Paused beats Pending on the covered stretch's current window.
+    let paused_history = run_one(&config, parse(&["habits", "history", "stretch"]))
+        .await
+        .expect("history");
+    let habits::HabitOutcome::History(HabitHistoryView { windows, .. }) = paused_history else {
+        panic!("history outcome");
+    };
+    assert_eq!(
+        windows.last().expect("the current window").state,
+        HabitWindowStateView::Paused,
+    );
+
+    // PreSchedule: tomorrow's only scheduled day is strictly after
+    // today, so the current weekly window is pre-schedule.
+    let preschedule = run_one(&config, parse(&["habits", "history", "run"]))
+        .await
+        .expect("history");
+    let habits::HabitOutcome::History(HabitHistoryView { windows, .. }) = preschedule else {
+        panic!("history outcome");
+    };
+    assert_eq!(
+        windows.last().expect("the current window").state,
+        HabitWindowStateView::PreSchedule,
+        "the weekly window whose first scheduled day is tomorrow"
+    );
+    let _ = today;
+}
+
+/// Kills: the Stats routing closure (a Stats→History reroute returns
+/// the wrong outcome variant) and the typed stats projection. The
+/// daily habit has no weekly/monthly day set — the adherence
+/// denominator's join law makes it the typed empty state, while the
+/// per-window totals render the seeded log rows and the streak reads
+/// back nonzero.
+#[tokio::test]
+async fn h09_stats_projects_the_typed_view_on_a_seeded_series() {
+    let dir = tempdir();
+    let config = seeded_config(dir.path(), "h09.db").await;
+    let now = anchor();
+    run_one(&config, parse(&["habits", "add", "water", "--daily", "1"]))
+        .await
+        .expect("add");
+    let met_window = (now - chrono::Duration::hours(24)).date_naive();
+    let met_text = met_window.format("%Y-%m-%d").to_string();
+    run_one(
+        &config,
+        parse(&[
+            "habits", "adjust", "--window", &met_text, "--count", "1", "water",
+        ]),
+    )
+    .await
+    .expect("met seed");
+    run_one(&config, parse(&["habits", "skip", "water"]))
+        .await
+        .expect("skip seed");
+
+    let stats = run_one(&config, parse(&["habits", "stats", "water"]))
+        .await
+        .expect("stats");
+    let habits::HabitOutcome::Stats(HabitStatsView {
+        habit_id,
+        title,
+        adherence_empty,
+        adherence_met,
+        adherence_scheduled,
+        best_streak,
+        totals,
+    }) = stats
+    else {
+        panic!("the stats outcome: {stats:?}");
+    };
+    assert!(uuid::Uuid::parse_str(&habit_id).is_ok(), "durable uuid");
+    assert_eq!(title, "water");
+    assert!(
+        !adherence_empty,
+        "the seeded horizon is non-empty, so the ratio exists"
+    );
+    assert_eq!(adherence_met, 1, "the met window joins the numerator");
+    assert_eq!(
+        adherence_scheduled, 1,
+        "the met window joins the denominator; the skipped one is transparent"
+    );
+    assert!(best_streak >= 1, "the met window is a real run");
+    assert!(
+        totals
+            .iter()
+            .any(|(window, count)| *window == met_window && *count == 1),
+        "the met window's total renders: {totals:?}"
+    );
 }
