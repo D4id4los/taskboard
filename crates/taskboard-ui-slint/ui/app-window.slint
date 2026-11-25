@@ -1646,6 +1646,13 @@ export component AppWindow inherits Window {
             border-radius: Theme.radius-small;
             border-width: Theme.focus-ring-width;
             border-color: Semantic.focus-ring;
+            // Waiver (#1416): the tight 8px blur is deliberate here —
+            // this is the 24px-tall inline board-colour strip, not a
+            // floating overlay; the tokenized `Theme.shadow-blur` (12px
+            // × base-scale) would wash a micro element into its
+            // background. The floating flyouts (menu-shell,
+            // date-picker, search-palette, recur-editor, focus-overlay,
+            // modal-dialog-host) carry the token.
             drop-shadow-blur: Theme.space-2;
             drop-shadow-color: Theme.surface-hover;
         HorizontalLayout {
