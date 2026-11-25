@@ -2099,6 +2099,31 @@ fn the_task_view_overdue_banner_golden_holds() {
     );
 }
 
+/// Stages the daily series (the enriched fixture's task2 rule shape)
+/// onto the walk's landing row, so the recur goldens' subject is
+/// deterministic: the walks' `NavFirstItem` lands on the first task,
+/// and the staged rule's fixed series id keeps the assembled echo's
+/// JSON (which embeds the series uuid) byte-stable — a rule-less
+/// subject mints a fresh v7 series per run (the drift this staging
+/// closes; found by the regen-twice proof).
+fn stage_daily_series_on_first_task(state: &mut taskboard_domain::AppState) {
+    let first = state_first_task(state);
+    let task = state
+        .tasks
+        .get_mut(&first)
+        .expect("the fixture's first task");
+    task.recur = Some(taskboard_domain::RecurRule {
+        series: taskboard_domain::SeriesId::from_uuid(uuid::Uuid::from_u128(0x5EED)),
+        anchor: fixture::PINNED_NOW.date_naive(),
+        pattern: taskboard_domain::RecurPattern::Daily {
+            every: taskboard_domain::EveryDays::new(1).expect("1 is a valid interval"),
+        },
+        bound: taskboard_domain::RecurBound::None,
+        continued_from: None,
+        paused_until: None,
+    });
+}
+
 /// The fixture board's first task (the walk's landing row): the
 /// lowest-order task of the first stack (the models' display order).
 fn state_first_task(state: &taskboard_domain::AppState) -> taskboard_domain::TaskId {
@@ -2453,7 +2478,11 @@ fn the_recur_editor_modal_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            // The recurring series staged on the walk's landing row
+            // (`stage_daily_series_on_first_task`'s determinism law).
+            let mut staged = enriched_state();
+            stage_daily_series_on_first_task(&mut staged);
+            let state = Arc::new(ArcSwap::from_pointee(staged));
             capture_golden(
                 driver,
                 state,
@@ -2461,10 +2490,15 @@ fn the_recur_editor_modal_golden_holds() {
                 |driver, handle| {
                     handle.dispatch_action(ActionId::NavFocusBoard);
                     handle.dispatch_action(ActionId::NavFirstItem);
-                    // task0 -> task1 -> task2 (the recurring series).
-                    handle.dispatch_action(ActionId::NavNextItem);
-                    handle.dispatch_action(ActionId::NavNextItem);
                     handle.dispatch_action(ActionId::TaskEdit);
+                    // The subject's recurring badge is the staged
+                    // rule's typed presence (a rule-less walk target
+                    // would mint a fresh series per run — the drift
+                    // law above).
+                    assert!(
+                        handle.window().get_task_model().recur_visible,
+                        "typed precondition: the walked-into task carries the staged series"
+                    );
                     handle.dispatch_action(ActionId::SeriesEdit);
                     driver.advance_time(0);
                     assert!(
@@ -2511,7 +2545,11 @@ fn the_recur_detach_strip_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            // The recurring series staged on the walk's landing row
+            // (`stage_daily_series_on_first_task`'s determinism law).
+            let mut staged = enriched_state();
+            stage_daily_series_on_first_task(&mut staged);
+            let state = Arc::new(ArcSwap::from_pointee(staged));
             capture_golden(
                 driver,
                 state,
@@ -2519,8 +2557,6 @@ fn the_recur_detach_strip_golden_holds() {
                 |driver, handle| {
                     handle.dispatch_action(ActionId::NavFocusBoard);
                     handle.dispatch_action(ActionId::NavFirstItem);
-                    handle.dispatch_action(ActionId::NavNextItem);
-                    handle.dispatch_action(ActionId::NavNextItem);
                     handle.dispatch_action(ActionId::TaskEdit);
                     handle.dispatch_action(ActionId::SeriesEdit);
                     handle.dispatch_action(ActionId::SeriesEditDetachArm);
