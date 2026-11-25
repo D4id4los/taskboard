@@ -180,7 +180,12 @@ export component ActionMenu inherits Rectangle {
 
                 // The replace mode's back row (round-1 D6): chrome above
                 // the list — the cursor only ever addresses entries; the
-                // label is the element's address.
+                // label is the element's address. The #1350 disposition:
+                // the hand block STAYS — the row is a11y-only (no raw
+                // keys), and MenuRow's anatomy (its colour ladder, the
+                // glyph slot's spacing) cannot reproduce this row's
+                // plain band pixel-identically; the migration would be
+                // a visible chrome change.
                 if (root.compact && root.active-group >= 0): Rectangle {
                     border-radius: Theme.radius-small;
                     background: back-hit.has-hover ? Theme.surface-hover : transparent;
@@ -376,7 +381,7 @@ export component UndoBranchPicker inherits Rectangle {
     background: transparent;
     init => { root.undo_branches_open(); }
 
-    width: 360px * Theme.base-scale;
+    width: Theme.menu-max-width;
 
     MenuShell {
         row-count: root.target-rows.length + root.branch-rows.length + 4;
