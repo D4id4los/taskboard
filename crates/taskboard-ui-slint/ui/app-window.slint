@@ -183,6 +183,12 @@ export component AppWindow inherits Window {
     // review invariant; winit rejects resizes below the floors).
     min-width: 480px * Theme.base-scale;
     min-height: 400px * Theme.base-scale;
+    // The severing cap (#1378, D-1378): the Window's own layout merge
+    // is the last merge point the `ui/views/` census boundary cannot
+    // see — a bounded-max row reaching this root's merge would clamp
+    // the OS window's max size once mounted (the #778/#1197/#1251
+    // class). Witnessed by `app_window_max_probe_tests`.
+    max-width: Theme.layout-severing-max-width;
 
     // ---- The one-way model push surface (D2: models in, indices
     //      back — no ids cross the seam). ---------------------------
