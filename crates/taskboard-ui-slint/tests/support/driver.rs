@@ -160,14 +160,6 @@ impl Element {
         self.handle.size()
     }
 
-    /// The element's origin mapped into window coordinates (logical
-    /// px) — the vertical-ordering/pan-offset oracle for the layout
-    /// pins (a Flickable's content-x/y translation shows up here).
-    #[must_use]
-    pub fn window_pos(&self) -> slint::LogicalPosition {
-        self.handle.absolute_position()
-    }
-
     /// The accessible value (a text-input's buffer) — the
     /// buffer-emptiness oracle (r2 D24); a value is never assertion
     /// text, only emptiness/presence is pinned.
