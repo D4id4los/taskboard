@@ -53,6 +53,7 @@ pub mod ids;
 pub mod journal;
 pub mod merge;
 pub mod messages;
+pub mod order;
 pub mod outbox;
 pub mod ownership;
 pub mod persistence;
