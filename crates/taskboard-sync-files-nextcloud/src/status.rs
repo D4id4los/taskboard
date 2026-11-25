@@ -164,3 +164,65 @@ pub struct FilesSyncStatus {
     /// Boards moved from Deck by another device, by files identity.
     pub moved_boards: BTreeMap<uuid::Uuid, BoardMoveFinding>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::TransportError;
+
+    /// Kills: any swapped, renamed, or dropped projection arm in
+    /// `From<&TransportError> for LaneFailure` — the exhaustive
+    /// one-row-per-variant table, including the deliberate collapses
+    /// (`InvalidBaseUrl` joins `BadRequest`; the `Json`/`PropfindListing`
+    /// pair joins `Payload`; `Server` carries the status through).
+    #[tokio::test]
+    async fn lane_failure_projection_table_covers_every_transport_error() {
+        // The one variant whose payload is a foreign error type: the
+        // real reqwest construction (the connect-refused dial, the
+        // mapping.rs precedent).
+        let transport_err = reqwest::get("http://127.0.0.1:1/")
+            .await
+            .expect_err("dialing port 1 refuses");
+        let rows: Vec<(TransportError, LaneFailure)> = vec![
+            (
+                TransportError::Transport(transport_err),
+                LaneFailure::Transport,
+            ),
+            (
+                TransportError::Json(serde_json::from_str::<()>("nope").unwrap_err()),
+                LaneFailure::Payload,
+            ),
+            (
+                TransportError::PropfindListing(
+                    crate::extract::extract_207(b"not a 207").unwrap_err(),
+                ),
+                LaneFailure::Payload,
+            ),
+            (TransportError::Unauthorized, LaneFailure::Unauthorized),
+            (TransportError::Forbidden, LaneFailure::Forbidden),
+            (TransportError::NotFound, LaneFailure::NotFound),
+            (TransportError::InvalidBaseUrl, LaneFailure::BadRequest),
+            (TransportError::BadRequest, LaneFailure::BadRequest),
+            (TransportError::Conflict, LaneFailure::Conflict),
+            (
+                TransportError::PreconditionFailed,
+                LaneFailure::PreconditionFailed,
+            ),
+            (
+                TransportError::RateLimited {
+                    retry_after: Some(std::time::Duration::from_secs(7)),
+                },
+                LaneFailure::RateLimited,
+            ),
+            (TransportError::Server(521), LaneFailure::Server(521)),
+            (TransportError::Unavailable, LaneFailure::Unavailable),
+        ];
+        for (err, expected) in rows {
+            assert_eq!(
+                LaneFailure::from(&err),
+                expected,
+                "the {err:?} projection drifted"
+            );
+        }
+    }
+}

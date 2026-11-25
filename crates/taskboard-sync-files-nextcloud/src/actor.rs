@@ -2233,8 +2233,170 @@ mod tests {
         assert_eq!(cycles(&harness.fake), baseline + 1);
     }
 
-    // -- the shutdown-abort matrix (#1085, option (a)) ----------------
+    // -- the cycle error + own-file adoption arms (#1372) -------------
 
+    /// The direct `run_cycle` harness: an empty persisted state, the
+    /// fixture identity, a fresh status watch.
+    #[allow(clippy::type_complexity)] // the four-tuple is the harness
+    fn plain_cycle() -> (
+        FakeFilesTransport,
+        SyncContext,
+        LoopState,
+        watch::Sender<FilesSyncStatus>,
+        watch::Receiver<FilesSyncStatus>,
+    ) {
+        let fake = FakeFilesTransport::new();
+        let cancel = crate::cycle::CycleCancel::new();
+        let ctx = cycle_ctx(
+            cancel,
+            Arc::new(EmptyPersistedState::new()),
+            mpsc::channel(4).0,
+            mpsc::channel(4).0,
+        );
+        let (status_tx, status_rx) = watch::channel(FilesSyncStatus::default());
+        // `send_modify` works with zero receivers; the sender rides
+        // the harness because `run_cycle` takes it by reference.
+        (fake, ctx, LoopState::default(), status_tx, status_rx)
+    }
+
+    /// Kills: the per-variant cycle error propagation (`attach`'s `?`
+    /// arms) and `publish_status`'s `CycleOutcome::Failed` arm. One
+    /// scripted wire status per row fails the ceremony's first
+    /// request; the typed verdict and the status surface agree — and
+    /// only the 429 row counts a retryable failure (the backoff's
+    /// classification contract).
+    #[tokio::test]
+    async fn scripted_wire_errors_fail_the_cycle_typed() {
+        use crate::cycle::CycleVerdict;
+        let rows: [(u16, bool); 5] = [
+            (403, false),
+            (404, false),
+            (400, false),
+            (429, true),
+            (500, false),
+        ];
+        for (status, retryable) in rows {
+            let (fake, ctx, mut st, status_tx, status_rx) = plain_cycle();
+            fake.stage(Effect::Status(status));
+            let verdict = crate::cycle::run_cycle(&fake, &ctx, &mut st, &status_tx).await;
+            assert!(
+                matches!(
+                    &verdict,
+                    CycleVerdict::Failed {
+                        retryable: is_retryable,
+                        ..
+                    } if *is_retryable == retryable
+                ),
+                "status {status} produced {verdict:?}"
+            );
+            assert_eq!(
+                status_rx.borrow().last_cycle,
+                Some(CycleOutcome::Failed),
+                "status {status} published the failed outcome"
+            );
+            assert!(
+                status_rx.borrow().lanes.is_empty(),
+                "no files-owned boards: no lane rows"
+            );
+            assert_eq!(
+                st.failure_streak, 1,
+                "status {status} advanced the streak exactly once"
+            );
+        }
+    }
+
+    /// The rate-limited row's typed tail: the verdict carries the
+    /// server's `Retry-After` projection (the fake serves none, so the
+    /// floor is the typed zero — the projection arm, not the parse).
+    #[tokio::test]
+    async fn rate_limited_cycles_carry_the_retry_after_projection() {
+        use crate::cycle::CycleVerdict;
+        let (fake, ctx, mut st, status_tx, _status_rx) = plain_cycle();
+        fake.stage(Effect::Status(429));
+        let verdict = crate::cycle::run_cycle(&fake, &ctx, &mut st, &status_tx).await;
+        assert!(matches!(
+            verdict,
+            CycleVerdict::Failed {
+                retryable: true,
+                retry_after,
+            } if retry_after == Duration::ZERO
+        ));
+        assert_eq!(st.retry_after_floor, Duration::ZERO);
+    }
+
+    /// Kills: the attach-time `adopt_own_file` 404 arm (`Ok(())`, the
+    /// create raced a delete). The appdata create-once answers 412
+    /// (staged), the adoption GET answers 404 (staged) — the ceremony
+    /// still completes, nothing is stored (the cold-store rule keeps
+    /// guarding), and the next steady cycle recreates the file
+    /// create-once.
+    #[tokio::test(start_paused = true)]
+    async fn a_missing_own_appdata_file_at_attach_is_adopted_and_recreated() {
+        let (fake, ctx, mut st, status_tx, _status_rx) = plain_cycle();
+        let dirs = dirs_of(&[SELF]);
+        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        fake.seed_dirs(&refs);
+        // The ceremony's request order: 3 MKCOLs, the identity PUT,
+        // the devices PROPFIND, the appdata create-once (412), the
+        // adoption GET (404). The info PUT rides the model.
+        for _ in 0..5 {
+            fake.stage(Effect::Pass);
+        }
+        fake.stage(Effect::Status(412));
+        fake.stage(Effect::Status(404));
+        let verdict = crate::cycle::run_cycle(&fake, &ctx, &mut st, &status_tx).await;
+        assert!(
+            matches!(verdict, crate::cycle::CycleVerdict::Completed { .. }),
+            "both adoption arms are non-fatal: {verdict:?}"
+        );
+        let appdata = appdata_path(SELF);
+        let gets = fake
+            .requests()
+            .into_iter()
+            .filter(|req| req.method == "GET" && req.path == appdata)
+            .count();
+        assert_eq!(gets, 1, "exactly the adoption GET ran");
+
+        // The next steady cycle recreates the file create-once (nothing
+        // was stored by the vanished adoption).
+        let verdict = crate::cycle::run_cycle(&fake, &ctx, &mut st, &status_tx).await;
+        assert!(matches!(
+            verdict,
+            crate::cycle::CycleVerdict::Completed { .. }
+        ));
+        assert!(fake.file(&appdata).is_some(), "recreated create-once");
+    }
+
+    /// Kills: the corrupt-own-seed decode arm of `adopt_own_file` —
+    /// the fail-closed quarantine (stop-write) of the adoption path.
+    /// The served appdata is undecodable garbage: the path parks
+    /// `Quarantined` and joins the fork set, while the ceremony itself
+    /// still completes (the quarantine is a finding, not a crash).
+    #[tokio::test(start_paused = true)]
+    async fn a_corrupt_own_seed_at_attach_quarantines_the_path() {
+        let (fake, ctx, mut st, status_tx, status_rx) = plain_cycle();
+        let dirs = dirs_of(&[SELF]);
+        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        fake.seed_dirs(&refs);
+        fake.seed_file(&appdata_path(SELF), b"definitely not json".to_vec());
+        let verdict = crate::cycle::run_cycle(&fake, &ctx, &mut st, &status_tx).await;
+        assert!(
+            matches!(verdict, crate::cycle::CycleVerdict::Completed { .. }),
+            "the quarantine is a finding, not a cycle failure: {verdict:?}"
+        );
+        let appdata = appdata_path(SELF);
+        assert_eq!(
+            status_rx.borrow().parked.get(&appdata),
+            Some(&ParkKind::Quarantined),
+            "the corrupt own seed parked typed"
+        );
+        assert!(
+            status_rx.borrow().forked_paths.contains(&appdata),
+            "writes to the quarantined path stopped"
+        );
+    }
+
+    // -- the shutdown-abort matrix (#1085, option (a)) ----------------
     /// A `SyncContext` over the fixture identity — the direct
     /// `run_cycle` abort tests' harness.
     fn cycle_ctx(
