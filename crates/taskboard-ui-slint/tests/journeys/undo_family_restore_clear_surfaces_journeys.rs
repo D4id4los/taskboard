@@ -278,7 +278,7 @@ fn us1_s4_escape_disarms_without_dispatch() {
 /// dispatches one `RestoreLabel` per board-scoped roster row; the arm
 /// alone dispatches nothing.
 #[test]
-fn us1_s5_restore_all_dispatches_one_command_per_row() {
+fn us1_s5_restore_all_dispatches_one_bulk_fact() {
     let (_fx, mut state) = fixture::golden_state();
     let buried = seed_tombstoned_label(&mut state);
     support::harness::run_journey(state, move |harness| {
@@ -298,7 +298,9 @@ fn us1_s5_restore_all_dispatches_one_command_per_row() {
         );
         window.invoke_label_restore_all_requested();
         harness.driver.advance_time(0);
-        harness.assert_commands(&[StateCommand::RestoreLabel { id: buried }]);
+        // #1345: ONE `RestoreLabelsBulk` fact — the pre-image bundle
+        // makes the roster one undo step, not N per-row facts.
+        harness.assert_commands(&[StateCommand::RestoreLabelsBulk { ids: vec![buried] }]);
     });
 }
 
@@ -496,7 +498,7 @@ fn us2_s3_escape_disarms_without_dispatch() {
 /// US-2/S4 (#1245): the bulk row's armed confirm dispatches one
 /// `RestoreHabit` per roster row; the arm alone dispatches nothing.
 #[test]
-fn us2_s4_restore_all_dispatches_one_command_per_row() {
+fn us2_s4_restore_all_dispatches_one_bulk_fact() {
     let (_fx, mut state) = fixture::golden_state();
     let (_live, gone) = seed_habits(&mut state);
     let older = seed_second_tombstoned_habit(&mut state);
@@ -515,10 +517,11 @@ fn us2_s4_restore_all_dispatches_one_command_per_row() {
         );
         window.invoke_habits_habit_restore_all_requested();
         harness.driver.advance_time(0);
-        harness.assert_commands(&[
-            StateCommand::RestoreHabit { id: gone },
-            StateCommand::RestoreHabit { id: older },
-        ]);
+        // #1345: ONE `RestoreHabitsBulk` fact carrying the whole
+        // roster (one undo walks it back).
+        harness.assert_commands(&[StateCommand::RestoreHabitsBulk {
+            ids: vec![gone, older],
+        }]);
     });
 }
 

@@ -2252,6 +2252,151 @@ async fn s44_cascade_absence_stays_tombstoned() {
 }
 
 // ---------------------------------------------------------------------
+/// #1345: the bulk restore is ONE journal fact, and ONE `Undo`
+/// re-tombstones the whole roster it resurrected — the pre-bulk
+/// `AppState` tree comes back exactly (typed facts; the snapshot is
+/// the disk contract beside them).
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s55_bulk_habit_restore_is_one_fact_and_one_undo() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    let mut roster = Vec::new();
+    for title in ["meditate", "stretch"] {
+        let CommandOutcome::HabitCreated(habit) = s
+            .run(StateCommand::CreateHabit {
+                board,
+                title: title.into(),
+                target: taskboard_domain::HabitTarget::PerDay(
+                    taskboard_domain::NonZeroCount::new(1).unwrap(),
+                ),
+            })
+            .await
+        else {
+            panic!("wrong receipt");
+        };
+        roster.push(habit);
+    }
+    for habit in &roster {
+        s.run(StateCommand::DeleteHabit { habit: *habit }).await;
+    }
+    let pre_bulk = s.handle.shared_state().load_full();
+    let undo_len = pre_bulk.undo.recent.len();
+
+    // The bulk confirm: ONE journal fact, not N.
+    let CommandOutcome::HabitsRestoredBulk { restored } = s
+        .run(StateCommand::RestoreHabitsBulk {
+            ids: roster.clone(),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    assert_eq!(restored, 2, "both tombstoned legs moved");
+    let post_bulk = s.handle.shared_state().load_full();
+    assert_eq!(
+        post_bulk.undo.recent.len(),
+        undo_len + 1,
+        "the bulk confirm emits exactly ONE journal fact"
+    );
+    assert!(
+        roster
+            .iter()
+            .all(|habit| !post_bulk.habits.habits[habit].deleted),
+        "the roster is live"
+    );
+
+    // ONE Undo: the whole roster walks back to the pre-bulk tree.
+    s.run(StateCommand::Undo).await;
+    let post_undo = s.handle.shared_state().load_full();
+    for habit in &roster {
+        assert!(
+            post_undo.habits.habits[habit].deleted,
+            "one Undo re-tombstones the row"
+        );
+    }
+    // The re-delete rides the ordinary `DeleteHabit` inverse, so the
+    // tombstone clock re-stamps (the single-row restore undo's exact
+    // semantics) — every content field comes back verbatim.
+    let strip_tombstone_clock = |tree: &std::collections::BTreeMap<
+        taskboard_domain::HabitId,
+        taskboard_domain::habit::Habit,
+    >| {
+        tree.iter()
+            .map(|(id, habit)| {
+                let mut habit = habit.clone();
+                habit.clocks.deleted = taskboard_domain::BoardClocks::epoch();
+                (*id, habit)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    assert_eq!(
+        strip_tombstone_clock(&post_undo.habits.habits),
+        strip_tombstone_clock(&pre_bulk.habits.habits),
+        "one Undo restores the pre-bulk tree (fresh tombstone stamps)"
+    );
+    s.snap("s55");
+}
+
+/// The labels twin (#1345): the restore-all overlay confirm as one
+/// fact, one `Undo` re-deleting the roster.
+#[cfg_attr(miri, ignore)]
+#[tokio::test]
+async fn s56_bulk_label_restore_is_one_fact_and_one_undo() {
+    let mut s = Scenario::start().await;
+    let board = s.board_id();
+    let mut roster = Vec::new();
+    for title in ["urgent", "chore"] {
+        let CommandOutcome::CreatedLabel(label) = s
+            .run(StateCommand::CreateLabel {
+                board,
+                title: title.into(),
+                color: taskboard_domain::Color::new("0082c9"),
+            })
+            .await
+        else {
+            panic!("wrong receipt");
+        };
+        roster.push(label);
+    }
+    for label in &roster {
+        s.run(StateCommand::DeleteLabel { id: *label }).await;
+    }
+    let pre_bulk = s.handle.shared_state().load_full();
+    let undo_len = pre_bulk.undo.recent.len();
+    let CommandOutcome::LabelsRestoredBulk { restored } = s
+        .run(StateCommand::RestoreLabelsBulk {
+            ids: roster.clone(),
+        })
+        .await
+    else {
+        panic!("wrong receipt");
+    };
+    assert_eq!(restored, 2);
+    let post_bulk = s.handle.shared_state().load_full();
+    assert_eq!(post_bulk.undo.recent.len(), undo_len + 1, "one fact, not N");
+    s.run(StateCommand::Undo).await;
+    let post_undo = s.handle.shared_state().load_full();
+    // The tombstone clock re-stamps (the single-row semantics); the
+    // content comes back verbatim.
+    let strip_tombstone_clock =
+        |tree: &std::collections::BTreeMap<taskboard_domain::LabelId, taskboard_domain::Label>| {
+            tree.iter()
+                .map(|(id, label)| {
+                    let mut label = label.clone();
+                    label.clocks.deleted = taskboard_domain::BoardClocks::epoch();
+                    (*id, label)
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+    assert_eq!(
+        strip_tombstone_clock(&post_undo.labels),
+        strip_tombstone_clock(&pre_bulk.labels),
+        "one Undo restores the pre-bulk tree (fresh tombstone stamps)"
+    );
+    s.snap("s56");
+}
+
 // S45 — the habit trackers enter the disk contract (DR-6/5). One
 // scenario pair: the created habit with its first log increment (s45a),
 // then the audited correction, a second window's row, and the

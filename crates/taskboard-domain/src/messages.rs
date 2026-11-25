@@ -859,6 +859,25 @@ pub enum StateCommand {
         /// The tombstoned habit to resurrect.
         id: HabitId,
     },
+    /// Restore a whole tombstone roster in ONE undoable journal fact
+    /// (#1345, the bulk confirm's verb): the confirm resurrects every
+    /// id at once and the journal captures the rows' pre-images as one
+    /// bundle, so ONE `Undo` re-deletes the roster the bulk created —
+    /// unlike N × [`StateCommand::RestoreHabit`], each its own undo
+    /// step. Ids that are not tombstoned restore nothing (their leg is
+    /// the accepted no-op); an empty roster is the whole-verb no-op.
+    /// The journal/undo law rides the single-row restore verbatim
+    /// (pre-images in, re-delete inverses out — N rows, one fact).
+    RestoreHabitsBulk {
+        /// The tombstoned habits to resurrect (the roster).
+        ids: Vec<HabitId>,
+    },
+    /// The labels twin of [`StateCommand::RestoreHabitsBulk`] (#1345):
+    /// the labels overlay's restore-all confirm as one journal fact.
+    RestoreLabelsBulk {
+        /// The tombstoned labels to resurrect (the roster).
+        ids: Vec<LabelId>,
+    },
     /// Re-materialize one hard-deleted time entry **from the journal's
     /// own pre-image** (the zero-input restore, the undo-family
     /// amendment D-5 of 2026-11-23): `from` names the journaled

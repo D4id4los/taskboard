@@ -522,6 +522,18 @@ pub enum CommandOutcome {
         /// The resurrected habit.
         habit: HabitId,
     },
+    /// The bulk restore resurrected `restored` rows as ONE journal
+    /// fact (#1345) — the receipt counts what moved, not the roster
+    /// size (already-live rows are the accepted no-op legs).
+    HabitsRestoredBulk {
+        /// How many tombstoned rows the bulk resurrected.
+        restored: usize,
+    },
+    /// The bulk restore's labels twin (#1345).
+    LabelsRestoredBulk {
+        /// How many tombstoned rows the bulk resurrected.
+        restored: usize,
+    },
     /// The command re-materialized the named time entry (the #901
     /// restore-family verb's receipt).
     EntryRestored {
@@ -3799,6 +3811,18 @@ pub fn plan_command(
             plan_entry_restore(app, entry.as_ref(), ids, now)
         }
         StateCommand::RestoreHabit { id } => plan_habit_restore(app, *id, ids, now),
+        StateCommand::RestoreHabitsBulk { ids: roster } => plan_restore_bulk(
+            app,
+            roster.iter().copied(),
+            |app, id| plan_habit_restore(app, id, ids, now),
+            |restored| CommandOutcome::HabitsRestoredBulk { restored },
+        ),
+        StateCommand::RestoreLabelsBulk { ids: roster } => plan_restore_bulk(
+            app,
+            roster.iter().copied(),
+            |app, id| plan_label_restore(app, outbox, id, ids, now),
+            |restored| CommandOutcome::LabelsRestoredBulk { restored },
+        ),
         // Journal-routed commands (the totality arm, ADR 0019): they
         // plan in `plan_journaled_command` before the catalogue sees
         // them — the zero-input wrapper (the undo-family amendment
@@ -3926,6 +3950,42 @@ fn plan_stack_restore(
     Ok(CommandPlan {
         actions,
         outcome: CommandOutcome::StackRestored { stack: id },
+    })
+}
+
+/// The bulk restore's planner body (#1345): fold the single-row
+/// planner over the roster — the per-leg actions merge into ONE
+/// `CommandPlan` (one journal fact carries the whole pre-image
+/// bundle), no-op legs (already-live rows) contribute nothing, and an
+/// all-no-op roster is the whole-verb no-op. The receipt counts the
+/// legs that moved.
+fn plan_restore_bulk<I, E, P, O>(
+    app: &AppState,
+    roster: E,
+    mut plan_one: P,
+    outcome: O,
+) -> Result<CommandPlan, CommandError>
+where
+    I: Copy,
+    E: IntoIterator<Item = I>,
+    P: FnMut(&AppState, I) -> Result<CommandPlan, CommandError>,
+    O: FnOnce(usize) -> CommandOutcome,
+{
+    let mut actions = Vec::new();
+    let mut restored = 0usize;
+    for id in roster {
+        let plan = plan_one(app, id)?;
+        if plan.outcome != CommandOutcome::NoOp {
+            restored += 1;
+            actions.extend(plan.actions);
+        }
+    }
+    if restored == 0 {
+        return Ok(no_op());
+    }
+    Ok(CommandPlan {
+        actions,
+        outcome: outcome(restored),
     })
 }
 
@@ -10776,6 +10836,8 @@ mod tests {
             | CommandOutcome::SettingsApplied
             | CommandOutcome::LabelRestored { .. }
             | CommandOutcome::HabitRestored { .. }
+            | CommandOutcome::HabitsRestoredBulk { .. }
+            | CommandOutcome::LabelsRestoredBulk { .. }
             | CommandOutcome::EntryRestored { .. } => (),
         }
     }

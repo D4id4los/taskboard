@@ -330,6 +330,12 @@ fn record_entry(
         | StateCommand::RestoreLabel { .. }
         | StateCommand::RestoreTimeEntry { .. }
         | StateCommand::RestoreHabit { .. }
+        // The bulk rosters journal ONE fact carrying every row's
+        // pre-image (#1345): the arm-agnostic capture reads the merged
+        // plan's upserts verbatim, so one undo synthesizes one
+        // re-delete per restored row.
+        | StateCommand::RestoreHabitsBulk { .. }
+        | StateCommand::RestoreLabelsBulk { .. }
         // The zero-input wrapper journals the restore's own `PreImages`
         // exactly like its payload-carrying sibling (D-5): undoing it
         // re-deletes (the #1187 law).
@@ -617,6 +623,9 @@ fn touched_board(
         StateCommand::RecordReflection { .. }
         | StateCommand::UpdateReflection { .. }
         | StateCommand::DeleteReflection { .. } => None,
+        // The bulk rosters are board-free aggregates (the Today
+        // confirm) — honest `None` (the CreateBoard arm's shape).
+        StateCommand::RestoreHabitsBulk { .. } | StateCommand::RestoreLabelsBulk { .. } => None,
         // Ambiguous or not board-scoped: honest `None`.
         StateCommand::SnoozeReminder { .. }
         | StateCommand::DismissReminder { .. }
@@ -1163,6 +1172,13 @@ enum InverseClass {
     /// live on the title/target/order stamps; the inverse is
     /// `DeleteHabit`.
     RestoredHabit,
+    /// `RestoreHabitsBulk` (#1345): every restored row must still
+    /// stand live on the same stamps; the inverse is N ×
+    /// `DeleteHabit` — one fact, one undo, the whole roster.
+    RestoredHabitsBulk,
+    /// `RestoreLabelsBulk` (#1345): the labels twin — the inverse is
+    /// N × `DeleteLabel`.
+    RestoredLabelsBulk,
     /// `RenameStack`: the title clock.
     RenameStack,
     /// `MoveStack`: the order clock.
@@ -1298,6 +1314,11 @@ impl JournalEntry {
                 Ok(InverseClass::RestoredTimeEntry)
             }
             StateCommand::RestoreHabit { .. } => Ok(InverseClass::RestoredHabit),
+            // The bulk rosters (#1345): the multi-row shapes of the
+            // single restore — the synthesis walks every pre-image of
+            // the fact, one re-delete inverse per restored row.
+            StateCommand::RestoreHabitsBulk { .. } => Ok(InverseClass::RestoredHabitsBulk),
+            StateCommand::RestoreLabelsBulk { .. } => Ok(InverseClass::RestoredLabelsBulk),
             // The #354 rule-verb rows (UF1): the add's inverse is the
             // ordinary remove; a remove/clear's inverse is the #900
             // verbatim resurrect (an empty synthesis batch — the
@@ -1864,6 +1885,72 @@ fn synthesize_undo(
                 return Err(refuse(entity, UndoField::Color));
             }
             Ok(vec![StateCommand::DeleteLabel { id }])
+        }
+        InverseClass::RestoredHabitsBulk | InverseClass::RestoredLabelsBulk => {
+            // The bulk undo (#1345): ONE fact, N re-deletes — every
+            // restored row of the bundle must still stand live on the
+            // same stamps the single restore checks (the per-row
+            // watermark scope, iterated instead of first-match).
+            let mut inverses = Vec::new();
+            for image in images {
+                match image {
+                    PreImage::Habit {
+                        id,
+                        before: Some(_),
+                        ..
+                    } => {
+                        let entity = JournalEntity::Habit(*id);
+                        let Some(EntityStamps::Habit(clocks)) = watermark.0.get(&entity) else {
+                            return Err(refuse(entity, UndoField::Title));
+                        };
+                        let Some(current) = app.habits.habits.get(id) else {
+                            return Err(refuse(entity, UndoField::Title));
+                        };
+                        if current.deleted {
+                            return Err(refuse(entity, UndoField::Deleted));
+                        }
+                        let content = [
+                            (clocks.title, current.clocks.title, UndoField::Title),
+                            (clocks.target, current.clocks.target, UndoField::HabitTarget),
+                            (clocks.order, current.clocks.order, UndoField::Order),
+                        ];
+                        for (recorded, now_clock, field) in content {
+                            if recorded != now_clock {
+                                return Err(refuse(entity, field));
+                            }
+                        }
+                        inverses.push(StateCommand::DeleteHabit { habit: *id });
+                    }
+                    PreImage::Label {
+                        id,
+                        before: Some(_),
+                        ..
+                    } => {
+                        let entity = JournalEntity::Label(*id);
+                        let Some(EntityStamps::Label(clocks)) = watermark.0.get(&entity) else {
+                            return Err(refuse(entity, UndoField::Title));
+                        };
+                        let Some(current) = app.labels.get(id) else {
+                            return Err(refuse(entity, UndoField::Title));
+                        };
+                        if current.deleted {
+                            return Err(refuse(entity, UndoField::Deleted));
+                        }
+                        if current.clocks.title != clocks.title {
+                            return Err(refuse(entity, UndoField::Title));
+                        }
+                        if current.clocks.color != clocks.color {
+                            return Err(refuse(entity, UndoField::Color));
+                        }
+                        inverses.push(StateCommand::DeleteLabel { id: *id });
+                    }
+                    _ => {}
+                }
+            }
+            if inverses.is_empty() {
+                return Err(CommandError::NothingToUndo);
+            }
+            Ok(inverses)
         }
         InverseClass::RestoredTimeEntry => {
             // Undoing a restore re-deletes the entry through the
