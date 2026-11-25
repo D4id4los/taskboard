@@ -172,7 +172,42 @@ hung_note() { # the #1110 hung-holder wait line (branch/started from the record)
   echo "run-quality-gates: held by a likely-hung pid ${holder_pid_now:-?} (branch $(holder_field branch), started $(holder_field started); no CPU time in ~$((hung_polls * poll))s — triage that lane)" >&2
 }
 
+# The #1413 watcher-liveness probe (failure path 2 of 3): every gate
+# run on this box double-checks that the dead-man's switch itself is
+# alive — one cheap `gh run list` for lane-watch.yml's newest
+# scheduled run; older than 8 days (one missed weekly cycle) is a
+# printed, NON-FATAL warning (report-only: it must never block a gate).
+# Skipped silently when gh is missing/unauthenticated (local
+# sandboxes); lane-watch.yml does not exist until its PR merges, and
+# the resulting API miss is treated the same as stale (the watcher is
+# not demonstrably alive).
+probe_lane_watch_liveness() {
+  command -v gh >/dev/null 2>&1 || return 0
+  gh auth status >/dev/null 2>&1 || return 0
+  local last
+  last=$(gh run list --workflow lane-watch.yml --limit 20 \
+          --json event,conclusion,createdAt 2>/dev/null \
+    | python3 -c '
+import json, sys
+from datetime import datetime, timezone
+try:
+    runs = [r for r in json.load(sys.stdin)
+            if r.get("event") == "schedule" and r.get("conclusion") == "success"]
+except Exception:
+    runs = []
+if runs:
+    newest = max(datetime.fromisoformat(r["createdAt"].replace("Z", "+00:00")) for r in runs)
+    age_days = (datetime.now(timezone.utc) - newest).days
+    print(age_days)
+else:
+    print("none")' 2>/dev/null) || return 0
+  if [[ $last == none || ${last:-0} -ge 8 ]]; then
+    echo "run-quality-gates: WARNING — the #1413 dead-man's switch looks dead: no successful lane-watch.yml scheduled run in the last ${last:-8+} days (this probe is non-fatal; run scripts/lane-watch.sh --dry-run to triage)" >&2
+  fi
+}
+
 preflight_mem_floor # before the lock is touched — both the full-suite and the command path
+probe_lane_watch_liveness
 
 exec 9>>"$lock_file" # creates if missing; this fd carries the lock
 start_ts="$(date +%s)"

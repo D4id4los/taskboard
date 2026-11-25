@@ -1,0 +1,101 @@
+name: Lane Watch
+
+# The dead-man's switch for the weekly scheduled lanes (#1413): three
+# lanes sat dead 5-6 weeks before anyone noticed (#1401/#1402/#1403).
+# Runs Mondays 06:00 UTC — after all three Monday crons (miri 03:00,
+# kani 04:00, mutation-testing 04:00) have run to completion or cap —
+# plus workflow_dispatch for testing.
+#
+# Classification lives entirely in scripts/lane-watch.sh (runnable
+# locally, --self-test over synthetic fixtures). This wrapper only
+# renders and reports:
+#   - exit 0: every lane green, nothing posted.
+#   - exit 1: at least one lane red — the workflow run FAILS (a red
+#     week is loud) AND each red lane gets a search-first comment on
+#     its open issue, else a fresh `backlog:` issue.
+#   - exit 2: gh/API failure — the run fails; "could not check" must
+#     never read green.
+#
+# Its own failure path (#1413 law — never a second silent lane):
+#   1. It watches itself: lane-watch.yml is in the script's watch list;
+#      two dead watcher weeks are reported by the next live run.
+#   2. scripts/run-quality-gates.sh carries a staleness probe: every
+#      quality-gate run on the dev box double-checks this watcher's
+#      liveness (non-fatal warning).
+#   3. A red/failing run triggers GitHub's default failure notification
+#      to the triggering user — a backstop, not relied on alone.
+#
+# Manual workflow_dispatch runs use --dry-run (report, never comment)
+# as the first-dispatch guard.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lane-watch:
+    name: lane-watch (dead-man's switch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Classify the scheduled lanes
+        id: watch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          args=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            args="--dry-run"
+          fi
+          scripts/lane-watch.sh $args | tee lanes.txt
+          code=${PIPESTATUS[0]}
+          echo "exit=$code" >> "$GITHUB_OUTPUT"
+          grep ' red ' lanes.txt > red.txt || true
+          exit "$code"
+
+      - name: Report red lanes (search-first comments)
+        # Runs on BOTH the red (exit 1) and the could-not-check (exit 2)
+        # failure of the step above; only red.txt rows are commentable,
+        # an exit 2 leaves red.txt empty and just keeps the run failed.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          while read -r wf verdict reason; do
+            body="lane-watch verdict: \`$wf $verdict $reason\` (run ${{ github.run_id }}).
+
+          <details><summary>Full verdict table</summary>
+
+          \`\`\`
+          $(cat lanes.txt)
+          \`\`\`
+          </details>"
+            # Search-first (AGENTS §7): comment on the lane's open issue
+            # if one exists, else open a fresh backlog issue. The search
+            # uses the workflow stem (e.g. "miri", not "miri.yml") — the
+            # open lane issues (#1401/#1402/#1403) title the workflow by
+            # name, not by file suffix, so a .yml query would miss them
+            # and open a duplicate every red week.
+            stem="${wf%.yml}"
+            number="$(gh issue list --state open --search "$stem in:title" --json number --jq '.[0].number // empty')"
+            if [ -n "$number" ]; then
+              gh issue comment "$number" --body "$body"
+            else
+              gh issue create \
+                --title "backlog: scheduled lane $wf red ($reason)" \
+                --body "$body"
+            fi
+          done < red.txt
