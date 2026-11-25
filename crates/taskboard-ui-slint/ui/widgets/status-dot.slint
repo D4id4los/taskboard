@@ -7,10 +7,23 @@ import { Semantic, Tone } from "../theme.slint";
 export component StatusDot inherits Rectangle {
     in property <Tone> tone: Tone.neutral;
     in property <string> label;
+    // The ceremony's busy state (#1352, the settings-view BusyDot
+    // absorption): busy overrides the tone with `sync-active` and
+    // pulses — the pulse is purely decorative and never asserted (the
+    // mock-clock tests assert the flag timeline, not pixels).
+    in property <bool> busy: false;
 
     width: root.height;
     border-radius: root.width / 2;
-    background: Semantic.tone-color(root.tone);
+    background: root.busy ? Semantic.sync-active
+        : Semantic.tone-color(root.tone);
+    opacity: 1.0;
+    states [
+        pulse when root.busy: {
+            opacity: 0.45;
+            in { animate opacity { duration: 600ms; iteration-count: -1; } }
+        }
+    ]
 
     accessible-role: AccessibleRole.text;
     accessible-label: root.label;
