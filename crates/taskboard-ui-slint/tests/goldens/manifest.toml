@@ -156,9 +156,9 @@ axes = { scale = 3.0, width = 1500, height = 900 }
 
 [[golden]]
 name = "icon-probe-1.0-396"
-fixture = "icon_probe.slint composition (19 vendored assets)"
+fixture = "icon_probe.slint composition (25 vendored assets)"
 state = "icon probe window; kinds wall + tone ladder + button box"
-axes = { scale = 1.0, width = 392, height = 372 }
+axes = { scale = 1.0, width = 392, height = 420 }
 
 [[golden]]
 name = "plan-next-day-1.0-1000"
@@ -201,3 +201,93 @@ name = "alarm-window-1.0-1000"
 fixture = "golden_state_enriched_at + add_alarm/deliver_alarm"
 state = "alarm window; awaiting rows with elapsed phrases"
 axes = { scale = 1.0, width = 351, height = 64 }
+
+[[golden]]
+name = "task-view-overdue-banner-1.0-1000"
+fixture = "today_overdue_enriched_at(PINNED_NOW)"
+state = "task detail over an overdue task; status-bar overdue banner rows"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "labels-overlay-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "labels overlay open over the task detail; the detail's label chips beneath"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "due-editor-datepicker-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "due editor with the date-picker grid open over the task detail"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "icon-probe-0.5-396"
+fixture = "icon_probe.slint composition, wall-edge = 0.5x"
+state = "icon probe window; kinds wall at the scale icon edge"
+axes = { scale = 0.5, width = 392, height = 420 }
+
+[[golden]]
+name = "icon-probe-3.0-396"
+fixture = "icon_probe.slint composition, wall-edge = 3x"
+state = "icon probe window; kinds wall at the scale icon edge"
+axes = { scale = 3.0, width = 392, height = 420 }
+
+[[golden]]
+name = "board-empty-1.0-1000"
+fixture = "empty_board_state()"
+state = "board view; zero stacks, the EmptyState alignment"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "confirm-strip-success-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "board view; the armed reconcile ceremony strip (success tone) with merge counts"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "today-empty-1.0-1000"
+fixture = "empty_board_state()"
+state = "today view; zero rows, the no-tasks posture"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "search-palette-empty-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "search palette open; typed query with zero hits"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "today-habits-1.0-1000"
+fixture = "golden_state_enriched_at + two daily habits (one at quota)"
+state = "today view; habit rows + streak chips, desktop affordances enabled"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "confirm-strip-danger-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "board view; the armed reset ceremony strip (danger tone)"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "board-drag-indicator-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "board view; the move flow armed, insertion indicator at the aimed gap"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "recur-editor-modal-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "recur editor modal over the daily series task; closed pattern picker"
+axes = { scale = 1.0, width = 1000, height = 900 }
+
+[[golden]]
+name = "today-habits-kiosk-0.5-1000"
+fixture = "golden_state_enriched_at + two daily habits (one at quota)"
+state = "kiosk rotation today mode; habit rows with the gated (disabled) affordances"
+axes = { scale = 0.5, width = 1000, height = 900 }
+
+[[golden]]
+name = "recur-editor-detach-armed-1.0-1000"
+fixture = "golden_state_enriched_at(PINNED_NOW)"
+state = "recur editor modal; the stop-repeating consequence strip armed"
+axes = { scale = 1.0, width = 1000, height = 900 }

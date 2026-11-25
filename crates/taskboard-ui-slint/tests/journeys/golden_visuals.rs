@@ -1887,3 +1887,892 @@ fn the_alarm_window_golden_holds() {
         "goldens regenerated — review the PNG diff before landing"
     );
 }
+
+// -- golden wave 2 (round 7 G2, #1312): the deferred editors -----------
+//
+// D5–D7 (the golden-coverage review report §6): the three editor
+// states the wave-1 corpus deferred. The staging law (the plan §2.A):
+// every editor golden shows the editor WITH content — the overdue
+// banner over an actually-overdue task, the due editor on a task
+// whose date the picker pre-selects, the labels overlay over a task
+// already carrying chips. Every capture freezes the render clock and
+// pins the zone (the banner phrase and the picker's pre-selected day
+// are clock-derived text).
+
+/// The overdue-stamped fixture, mounted at the wave's capture
+/// settings (the today goldens' subject constructor).
+fn today_overdue_state() -> taskboard_domain::AppState {
+    fixture::today_overdue_enriched_at(fixture::PINNED_NOW)
+}
+
+/// D5 — the task detail over the overdue machinery: the walked-into
+/// overdue task's detail with the status bar's overdue banner rows
+/// (the mute/snooze affordances) mounted. The banner is board truth
+/// in the status bar (app-window), so the capture stages the detail
+/// AND the banner in one frame.
+#[test]
+fn the_task_view_overdue_banner_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(today_overdue_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    // The today view's walk idiom: focus the first row
+                    // (an overdue row — the fixture stamps one per
+                    // board), open its detail.
+                    handle.dispatch_action(ActionId::NavFirstItem);
+                    handle.dispatch_action(ActionId::TaskEdit);
+                    driver.advance_time(0);
+                    assert_eq!(
+                        handle.window().get_current_view(),
+                        View::TaskDetail,
+                        "typed precondition: the overdue task's detail is mounted"
+                    );
+                    assert!(
+                        handle.window().get_banner_model().row_count() > 0,
+                        "typed precondition: the overdue banner rows are mounted"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "today_overdue_enriched_at(PINNED_NOW)",
+                    state: "task detail over an overdue task; status-bar overdue banner rows",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("task-view-overdue-banner", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// The fixture board's first task (the walk's landing row): the
+/// lowest-order task of the first stack (the models' display order).
+fn state_first_task(state: &taskboard_domain::AppState) -> taskboard_domain::TaskId {
+    let mut stacks: Vec<taskboard_domain::StackId> = state
+        .stacks
+        .values()
+        .filter(|stack| !stack.deleted && !stack.archived)
+        .map(|stack| stack.id)
+        .collect();
+    stacks.sort();
+    let first_stack = stacks.first().expect("the fixture has a stack");
+    state
+        .tasks
+        .values()
+        .filter(|task| &task.stack == first_stack && !task.deleted)
+        .min_by_key(|task| (task.order, task.id))
+        .expect("the fixture stack has a task")
+        .id
+}
+
+/// The wave-2 goldens' shared path shape: `<surface>-<scale>-<width>
+/// .png` — the name axes are the capture's actual axes (the #1390
+/// law: no stale width/height in a stem).
+fn wave2_golden_path(surface: &str, scale: f64, width: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "{}/tests/goldens/{surface}-{scale:.1}-{width}.png",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+}
+
+/// D6 — the due editor with the date-picker grid open: the walked-into
+/// enriched task's detail, the due editor staged, the picker grid
+/// overlay open over it. The enriched fixture's first task carries no
+/// due — the picker's grid is the month of the frozen render clock
+/// (the pre-selected-day law holds for the staged draft, the typed
+/// entry seam's shape), so the capture pins the grid's chrome over the
+/// editor.
+#[test]
+fn the_due_editor_datepicker_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            // The staging law (plan §2.A): the editor opens on a task
+            // WITH a due date, so the picker grid pre-selects it. The
+            // stamp is midnight-aligned off the pinned render clock
+            // (the fixture convention; date-only phrase, run-stable).
+            let mut staged = enriched_state();
+            let calendar = fixture::harness_calendar();
+            let day = calendar
+                .today(fixture::PINNED_NOW)
+                .succ_opt()
+                .expect("tomorrow")
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight")
+                .and_utc();
+            let first = state_first_task(&staged);
+            staged
+                .tasks
+                .get_mut(&first)
+                .expect("the fixture's first task")
+                .duedate = Some(day);
+            let state = Arc::new(ArcSwap::from_pointee(staged));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::NavFocusBoard);
+                    handle.dispatch_action(ActionId::NavFirstItem);
+                    handle.dispatch_action(ActionId::TaskEdit);
+                    assert_eq!(
+                        handle.window().get_current_view(),
+                        View::TaskDetail,
+                        "typed precondition: the task detail is mounted"
+                    );
+                    handle.dispatch_action(ActionId::TaskDueEdit);
+                    driver.advance_time(0);
+                    let task = handle.window().get_task_model();
+                    assert!(
+                        task.due_open && task.date_picker_open,
+                        "typed precondition: the due editor is staged with the picker grid open"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "due editor with the date-picker grid open over the task detail",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("due-editor-datepicker", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// D7 — the labels overlay with staged content: the enriched task's
+/// detail (its label chips render beneath the overlay) with the
+/// labels overlay open over it (the roster + assignment toggles).
+#[test]
+fn the_labels_overlay_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            // The staging law (plan §2.A): the editor opens on a task
+            // WITH a due date, so the picker grid pre-selects it. The
+            // stamp is midnight-aligned off the pinned render clock
+            // (the fixture convention; date-only phrase, run-stable).
+            let mut staged = enriched_state();
+            let calendar = fixture::harness_calendar();
+            let day = calendar
+                .today(fixture::PINNED_NOW)
+                .succ_opt()
+                .expect("tomorrow")
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight")
+                .and_utc();
+            let first = state_first_task(&staged);
+            staged
+                .tasks
+                .get_mut(&first)
+                .expect("the fixture's first task")
+                .duedate = Some(day);
+            let state = Arc::new(ArcSwap::from_pointee(staged));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::NavFocusBoard);
+                    handle.dispatch_action(ActionId::NavFirstItem);
+                    handle.dispatch_action(ActionId::TaskEdit);
+                    assert_eq!(
+                        handle.window().get_current_view(),
+                        View::TaskDetail,
+                        "typed precondition: the task detail is mounted"
+                    );
+                    handle.dispatch_action(ActionId::LabelManage);
+                    driver.advance_time(0);
+                    assert!(
+                        handle.window().get_task_model().labels_open,
+                        "typed precondition: the labels overlay is open over the task"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "labels overlay open over the task detail; the detail's label chips beneath",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("labels-overlay", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+// -- golden wave 2 (round 7 G2, #1312): the review-critical states -----
+//
+// R1–R6 (the golden-coverage review report §6). Recorded substitutions
+// (the plan §4 decision convention): R2b's "frequency dropdown flyout"
+// does not exist — the recur editor's pattern picker is a
+// SegmentedControl and no recur dropdown consumer is mounted — so the
+// flyout-anchor invariant is captured on the one hermetic anchored
+// flyout mount, the task detail's importance picker
+// (`dropdown-flyout-open-1.0-1000`). R5's kinds wall is extended to
+// the full vendored asset set first (the probe commit rides the same
+// regen as `icon-probe-1.0`'s re-base).
+
+/// The habit fixture (the habit-surface journeys' twin, pinned): two
+/// live daily habits on the fixture board — one logged to its quota
+/// (the streak chip's complete reading), one unlogged — so both
+/// affordance postures render.
+fn wave2_habits_state() -> taskboard_domain::AppState {
+    use taskboard_domain::habit::{Habit, HabitClocks, HabitLogEntry, HabitLogKey, WindowStart};
+    use taskboard_domain::{HabitId, NonZeroCount, PeriodKind};
+
+    let (fixture, mut state) = fixture::golden_state_enriched_at(fixture::PINNED_NOW);
+    let board = state
+        .stacks
+        .get(&fixture.stack_a)
+        .expect("the fixture stack")
+        .board;
+    let mut ids = Vec::new();
+    for (i, (title, quota)) in [("hydrate", 2_u32), ("stretch", 1)].into_iter().enumerate() {
+        let habit = Habit {
+            id: HabitId::from_uuid(uuid::Uuid::from_u128(
+                u128::try_from(0xB000 + i).unwrap_or(0),
+            )),
+            board,
+            title: title.to_owned(),
+            description: String::new(),
+            target: taskboard_domain::HabitTarget::PerDay(
+                NonZeroCount::new(quota).expect("quota >= 1"),
+            ),
+            order: i64::try_from(i).expect("two habits"),
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: HabitClocks::all(fixture::PINNED_NOW),
+            continued_from: None,
+            deleted: false,
+            paused_until: None,
+            by: None,
+        };
+        let id = habit.id;
+        state.habits.habits.insert(id, habit);
+        ids.push((id, quota));
+    }
+    // The logged habit: the first habit carried to its quota (the
+    // streak chip's complete reading; the log row fixture shape).
+    let (first, quota) = ids[0];
+    state.habits.log.insert(
+        HabitLogKey {
+            habit: first,
+            window: WindowStart::of_period(PeriodKind::Day, fixture::PINNED_NOW.date_naive()),
+        },
+        HabitLogEntry {
+            count: quota,
+            clock: fixture::PINNED_NOW,
+            by: None,
+            skip: false,
+        },
+    );
+    state
+}
+
+/// R1a — the today view's habit rows at the desktop posture: streak
+/// chips mounted and the editing affordances enabled (the
+/// presentation law's enabled half).
+#[test]
+fn the_today_habits_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(wave2_habits_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    driver.advance_time(0);
+                    assert!(
+                        handle.window().get_habits_model().row_count() > 0,
+                        "typed precondition: the habit rows are mounted"
+                    );
+                    assert!(
+                        handle.window().get_habits_editing_enabled(),
+                        "typed precondition: the desktop posture enables the habit affordances"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at + two daily habits (one at quota)",
+                    state: "today view; habit rows + streak chips, desktop affordances enabled",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("today-habits", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R1b — the kiosk rotation's today mode with habit rows: the gated
+/// posture renders the affordances disabled, not hidden (the
+/// presentation law's kiosk half), at the 0.5 scale cell.
+#[test]
+fn the_today_habits_kiosk_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(wave2_habits_state()));
+            capture_golden(
+                driver,
+                state,
+                kiosk_rotation_settings(),
+                |driver, handle| {
+                    // One dwell step past the flip (the K13 idiom):
+                    // modes[0] Board -> Today.
+                    driver.advance_time(1_000);
+                    driver.advance_time(0);
+                    assert_eq!(
+                        handle.window().get_current_view(),
+                        View::Today,
+                        "typed precondition: the rotation landed on the today mode"
+                    );
+                    assert!(
+                        handle.window().get_habits_model().row_count() > 0,
+                        "typed precondition: the habit rows are mounted in kiosk"
+                    );
+                    assert!(
+                        !handle.window().get_habits_editing_enabled(),
+                        "typed precondition: the kiosk posture disables the habit affordances"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at + two daily habits (one at quota)",
+                    state: "kiosk rotation today mode; habit rows with the gated (disabled) affordances",
+                    scale: 0.5,
+                },
+                1000,
+                &wave2_golden_path("today-habits-kiosk", 0.5, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R2a — the recur editor modal over the enriched fixture's recurring
+/// task: the walk reaches the daily series on stack b, the editor
+/// opens with the staged daily rule (closed pattern picker).
+#[test]
+fn the_recur_editor_modal_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::NavFocusBoard);
+                    handle.dispatch_action(ActionId::NavFirstItem);
+                    // task0 -> task1 -> task2 (the recurring series).
+                    handle.dispatch_action(ActionId::NavNextItem);
+                    handle.dispatch_action(ActionId::NavNextItem);
+                    handle.dispatch_action(ActionId::TaskEdit);
+                    handle.dispatch_action(ActionId::SeriesEdit);
+                    driver.advance_time(0);
+                    assert!(
+                        handle.window().get_recur_editor_open(),
+                        "typed precondition: the recur editor modal is open"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "recur editor modal over the daily series task; closed pattern picker",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("recur-editor-modal", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R2b — the recur editor's second staged state: the stop-repeating
+/// consequence strip armed over the modal (the detach arm's
+/// flyout-shaped consequence strip, anchored over the editor chrome).
+///
+/// Recorded substitution (the plan §4 convention, twice over): the
+/// review report's "frequency dropdown flyout" does not exist — the
+/// recur editor's pattern picker is a `SegmentedControl`, and the
+/// window-level dropdown flyout's task-detail consumers are not
+/// reachable in the headless harness (the pushed flag's changed
+/// mirror is not delivered there — the unreliable-mirroring record;
+/// both the dispatch route and the field's own open arms leave the
+/// facts closed). The invariant "a consequence strip anchored over
+/// its modal" is captured on the detach arm instead.
+#[test]
+fn the_recur_detach_strip_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::NavFocusBoard);
+                    handle.dispatch_action(ActionId::NavFirstItem);
+                    handle.dispatch_action(ActionId::NavNextItem);
+                    handle.dispatch_action(ActionId::NavNextItem);
+                    handle.dispatch_action(ActionId::TaskEdit);
+                    handle.dispatch_action(ActionId::SeriesEdit);
+                    handle.dispatch_action(ActionId::SeriesEditDetachArm);
+                    driver.advance_time(0);
+                    assert!(
+                        handle.window().get_recur_editor_open(),
+                        "typed precondition: the recur editor modal is open"
+                    );
+                    assert!(
+                        handle.window().get_recur_editor_model().detach_armed,
+                        "typed precondition: the stop-repeating strip is armed"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "recur editor modal; the stop-repeating consequence strip armed",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("recur-editor-detach-armed", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R3a — the armed confirm strip in its danger tone: the board-reset
+/// ceremony letter over the enriched board (the proven flow; the
+/// strip's danger caption carries the live stack/task/label counts).
+#[test]
+fn the_confirm_strip_danger_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::NavFocusBoard);
+                    handle.dispatch_action(ActionId::BoardReset);
+                    driver.advance_time(0);
+                    assert_eq!(
+                        handle.window().get_ceremony_letter().mode,
+                        taskboard_ui_slint::CeremonyLetterMode::ResetCounts,
+                        "typed precondition: the reset ceremony letter is armed"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "board view; the armed reset ceremony strip (danger tone)",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("confirm-strip-danger", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R3b — the armed confirm strip in its success tone: the reconcile
+/// ceremony letter with the planner's match counts (the oneshot
+/// preview answered hermetically — the request lane the mount hands
+/// the test, answered and drained through the public seam; the plan
+/// §4 decision). The mount is bespoke for that lane.
+#[test]
+fn the_confirm_strip_success_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                Arc::clone(&state),
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                scale_settings(1.0),
+                detached_health(),
+                None,
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            handle.dispatch_action(ActionId::NavFocusBoard);
+            handle.dispatch_action(ActionId::BoardReconcile);
+            // Answer the preview oneshot: two stack pairs, one label
+            // pair, three task pairs — the letter's merge counts.
+            let Ok(taskboard_ui_slint::requests::UiRequest::BoardReconcilePreview {
+                reply, ..
+            }) = requests_rx.try_recv()
+            else {
+                panic!("the reconcile arm routed a preview request");
+            };
+            reply
+                .send(Some(taskboard_domain::ReconcileCounts {
+                    stacks: 2,
+                    labels: 1,
+                    tasks: 3,
+                    cancelled_ops: 0,
+                }))
+                .expect("the reply lane is alive");
+            handle.drain_reconcile_preview();
+            driver.advance_time(0);
+            assert_eq!(
+                handle.window().get_ceremony_letter().mode,
+                taskboard_ui_slint::CeremonyLetterMode::ReconcilePreview,
+                "typed precondition: the reconcile ceremony letter is armed"
+            );
+            assert!(
+                handle.window().get_ceremony_letter().merge_tasks > 0,
+                "typed precondition: the letter carries the merge counts"
+            );
+            driver.set_window_size(1000, HEIGHT);
+            let snapshot = driver.snapshot();
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (1000, HEIGHT),
+                "renderer-presence contract at the success-strip golden"
+            );
+            let path = wave2_golden_path("confirm-strip-success", 1.0, 1000);
+            if regen {
+                let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+                std::fs::write(&path, bytes).expect("writes");
+                manifest_record(
+                    &path,
+                    &GoldenMeta {
+                        fixture: "golden_state_enriched_at(PINNED_NOW)",
+                        state: "board view; the armed reconcile ceremony strip (success tone) with merge counts",
+                        scale: 1.0,
+                    },
+                    1000,
+                    HEIGHT,
+                );
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, &snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R4a — the empty board: zero stacks over the empty-board fixture,
+/// the `EmptyState`'s alignment leg (round-3 R5/F10's surface).
+#[test]
+fn the_board_empty_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::empty_board_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::NavFocusBoard);
+                    driver.advance_time(0);
+                    let board = handle.window().get_board_model();
+                    assert_eq!(
+                        board.stacks.row_count(),
+                        0,
+                        "typed precondition: the board has no stacks"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "empty_board_state()",
+                    state: "board view; zero stacks, the EmptyState alignment",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("board-empty", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R4b — the today view with zero rows: the no-tasks posture over the
+/// same empty fixture (the desktop default is the subject).
+#[test]
+fn the_today_empty_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::empty_board_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    driver.advance_time(0);
+                    assert_eq!(
+                        handle.window().get_current_view(),
+                        View::Today,
+                        "typed precondition: the today view is mounted"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "empty_board_state()",
+                    state: "today view; zero rows, the no-tasks posture",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("today-empty", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R4c — the search palette's empty results: the palette open with a
+/// typed query matching nothing (the empty-results body), the same
+/// typing seam as the populated sibling golden.
+#[test]
+fn the_search_palette_empty_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                scale_settings(1.0),
+                detached_health(),
+                None,
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            handle.dispatch_action(ActionId::PaletteSearch);
+            driver.advance_time(0);
+            assert!(
+                handle.window().get_palette_open(),
+                "typed precondition: the palette is open"
+            );
+            for ch in "zzzz".chars() {
+                driver.press_stroke(Stroke {
+                    key: ch,
+                    ctrl: false,
+                    alt: false,
+                    shift: false,
+                    meta: false,
+                });
+            }
+            driver.advance_time(0);
+            assert_eq!(
+                handle.window().get_palette_model().row_count(),
+                0,
+                "typed precondition: the query matches nothing"
+            );
+            driver.set_window_size(1000, HEIGHT);
+            let snapshot = driver.snapshot();
+            assert_eq!(
+                (snapshot.width, snapshot.height),
+                (1000, HEIGHT),
+                "renderer-presence contract at the empty-palette golden"
+            );
+            let path = wave2_golden_path("search-palette-empty", 1.0, 1000);
+            if regen {
+                let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
+                std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+                std::fs::write(&path, bytes).expect("writes");
+                manifest_record(
+                    &path,
+                    &GoldenMeta {
+                        fixture: "golden_state_enriched_at(PINNED_NOW)",
+                        state: "search palette open; typed query with zero hits",
+                        scale: 1.0,
+                    },
+                    1000,
+                    HEIGHT,
+                );
+                return;
+            }
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("golden {} readable: {error}", path.display()));
+            let golden: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed golden decodes as RGBA8");
+            golden_compare::matches(&golden, &snapshot)
+                .unwrap_or_else(|error| panic!("golden {} drifted: {error}", path.display()));
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
+/// R6 — the board's insert indicator lit mid-move: the move flow
+/// armed from the focused first card (the dispatch-first law; no
+/// pointer synthesis), the aimed column's count badge flipped and the
+/// insertion hairline at the aimed gap (the models' aim-gap path).
+#[test]
+fn the_board_drag_indicator_golden_holds() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(enriched_state()));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    handle.dispatch_action(ActionId::NavFocusBoard);
+                    handle.dispatch_action(ActionId::NavFirstItem);
+                    handle.dispatch_action(ActionId::TaskMove);
+                    // One slot step down: the gap sits between the
+                    // first and second cards (a mid-list aim, not the
+                    // trivial top edge).
+                    handle.dispatch_action(ActionId::TaskMoveDown);
+                    driver.advance_time(0);
+                    let board = handle.window().get_board_model();
+                    let aimed: Vec<_> = (0..board.stacks.row_count())
+                        .filter_map(|i| board.stacks.row_data(i))
+                        .collect();
+                    assert!(
+                        aimed.iter().any(|column| column.move_aim),
+                        "typed precondition: a column is the armed move's aim"
+                    );
+                    assert!(
+                        aimed.iter().any(|column| column.aim_gap >= 0),
+                        "typed precondition: an insertion gap is aimed"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "golden_state_enriched_at(PINNED_NOW)",
+                    state: "board view; the move flow armed, insertion indicator at the aimed gap",
+                    scale: 1.0,
+                },
+                1000,
+                &wave2_golden_path("board-drag-indicator", 1.0, 1000),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
