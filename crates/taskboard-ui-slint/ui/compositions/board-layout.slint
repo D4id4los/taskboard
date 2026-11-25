@@ -312,7 +312,21 @@ export component BoardLayout inherits Rectangle {
         // The columns row (r2 D35): the board-background strip is
         // painted by this padding — left/right/bottom frame the card
         // row; top stays 0, the bar's baseline defines the top edge.
-        HorizontalLayout {
+        //
+        // The horizontal scroll container (#1365, D-1365b): the row is
+        // a Flickable — in the overflow regime (the resolved widths'
+        // sum exceeds the row width, decision 6's recorded fallback)
+        // the clipped columns stay reachable by pointer and keyboard
+        // instead of painting off-edge forever; in the fitting regime
+        // the layout's intrinsic width equals the viewport and no dead
+        // scroll range exists. The width resolver's oracle input is
+        // UNCHANGED (D-1365a): it reads the viewport width app-side,
+        // and this Flickable's viewport IS that row. No hand-rolled
+        // scrollbar: the centralized scrollbar widget is #1359's
+        // subject; the native pan affordance carries the regime until
+        // it lands.
+        columns-row := Flickable {
+            columns := HorizontalLayout {
             spacing: Theme.space-3;
             padding-left: Theme.space-3;
             padding-right: Theme.space-3;
@@ -334,6 +348,45 @@ export component BoardLayout inherits Rectangle {
                 dropped(event) => {
                     root.board-card-dropped(column-index);
                     return event.proposed-action;
+                }
+                // The focus-into-view consumption's horizontal half
+                // (#1365, the #1302 law at the clipped row): this
+                // column seeks into view when the hint targets it
+                // (`target-a` = the column index). The cards' own
+                // ListViews keep their vertical consumption (the same
+                // nonce fires both — seeking the column into view on
+                // any of its rows' landings is exactly the law); the
+                // nonce edge-trigger covers identical re-lands, and
+                // the seek is structural (absolute geometry against
+                // the columns layout's, never pixel/text).
+                property <int> column-seek-nonce: FocusScrollHint.target-a == column-index
+                    ? FocusScrollHint.nonce
+                    : -1;
+                changed column-seek-nonce => {
+                    if (self.column-seek-nonce >= 0) {
+                        // The seek (#1365, the today seek-page
+                        // precedent, A5a D-3): the minimal content-x
+                        // shift that puts this column inside the
+                        // visible window, clamped to the content —
+                        // declared here (the conditional leg's scope;
+                        // the ids are invisible at the component root).
+                        let left = self.absolute-position.x - columns.absolute-position.x;
+                        let view = columns-row.width;
+                        let max-shift = view - columns.width;
+                        if (left < 0) {
+                            columns-row.content-x = Math.clamp(
+                                columns-row.content-x - left,
+                                max-shift,
+                                0,
+                            );
+                        } else if (left + self.width > view) {
+                            columns-row.content-x = Math.clamp(
+                                columns-row.content-x - (left + self.width - view),
+                                max-shift,
+                                0,
+                            );
+                        }
+                    }
                 }
                 // The layout constraints live on the DropArea (the
                 // row's child); the card fills it. The explicit width
@@ -756,6 +809,7 @@ export component BoardLayout inherits Rectangle {
                 description: "Adds a new stack to this board.";
                 hint-keys: root.stack-create-hint;
                 invoked => { root.new-stack-activated(); }
+            }
             }
         }
 
