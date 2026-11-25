@@ -641,6 +641,25 @@ export component TodayView inherits FocusScope {
                         }
                     }
                 }
+                // The layout sink (#1334): the Flickable viewport
+                // requires the content to fill the page when the day is
+                // short, so the constraint solver MUST place the
+                // surplus somewhere. Before the declarative clip
+                // heights (#1310/#1304) the empty sections' unassigned
+                // clip heights were free variables that absorbed it
+                // invisibly; once every clip height became a bound
+                // min(extent, cap), the solver spilled the surplus into
+                // the visible stretch-0 children instead — the section
+                // headers and the tracked summary each grew by a share
+                // of the slack (the kiosk-today golden's ~one-row
+                // spacing offset, at every scale). This zero-preferred
+                // flexible element is the designated sink: the day's
+                // rows stay at their intrinsic spacing and the leftover
+                // stays empty at the page's end, the pre-fix shape.
+                Rectangle {
+                    vertical-stretch: 1;
+                    min-height: 0;
+                }
             }
         }
     }

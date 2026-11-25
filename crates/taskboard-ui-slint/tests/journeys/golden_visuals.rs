@@ -156,6 +156,33 @@ fn today_clip_facts(handle: &taskboard_ui_slint::UiHandle) -> [f32; 8] {
     ]
 }
 
+/// The today sections' extent-report settle loop (the golden's and
+/// the extent-law pin's shared oracle driver): advance on the mock
+/// clock until the facts tuple holds unchanged across four
+/// consecutive passes (two proved too tight under load, where an
+/// in-flight report lands one pass later) or a 32-pass deadline.
+fn settle_today_facts(driver: &mut SlintDriver, handle: &taskboard_ui_slint::UiHandle) {
+    let mut previous = today_clip_facts(handle);
+    let mut stable = 0;
+    for _ in 0..32 {
+        driver.advance_time(0);
+        let current = today_clip_facts(handle);
+        // Exact comparison is the point: the facts change only when a
+        // report or a push lands, never by float noise (the quiescence
+        // contract — a changed bit means work is still in flight).
+        #[allow(clippy::float_cmp)]
+        if current == previous {
+            stable += 1;
+        } else {
+            stable = 0;
+        }
+        previous = current;
+        if stable >= 4 {
+            break;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // each capture-site parameter is load-bearing
 fn capture_golden(
     driver: &mut SlintDriver,
@@ -191,30 +218,7 @@ fn capture_golden(
     // deadline on the mock clock; the today view's facts global is
     // the oracle (no-op for non-Today captures: no populated
     // sections trivially settles).
-    // Quiescence, not just the settled predicate: a report can be in
-    // flight when the predicate first holds (the clip lags its rows
-    // by one pass), so the loop ends only after the facts tuple is
-    // unchanged across four consecutive passes (two proved too tight
-    // under load, where an in-flight report lands one pass later).
-    let mut previous = today_clip_facts(&handle);
-    let mut stable = 0;
-    for _ in 0..32 {
-        driver.advance_time(0);
-        let current = today_clip_facts(&handle);
-        // Exact comparison is the point: the facts change only when a
-        // report or a push lands, never by float noise (the quiescence
-        // contract — a changed bit means work is still in flight).
-        #[allow(clippy::float_cmp)]
-        if current == previous {
-            stable += 1;
-        } else {
-            stable = 0;
-        }
-        previous = current;
-        if stable >= 4 {
-            break;
-        }
-    }
+    settle_today_facts(driver, &handle);
 
     // The renderer-presence assertion FIRST (§10/stress §3.5's
     // silent-fallback warning): the snapshot must exist and match the
@@ -503,6 +507,75 @@ fn capture_today(driver: &mut SlintDriver, scale: f64, width: u32, regen: bool) 
         width,
         &today_golden_path(scale, width),
         regen,
+    );
+}
+
+// D-1334d (#1334): the extent channel's coverage/mirroring law,
+// pinned at the non-1.0 scale — no image diffing; the facts global is
+// the typed oracle (the golden stays the visual evidence). The
+// stage-2 diagnosis disproved the issue's unit-mismatch hypothesis:
+// the row-extent reports and the clip heights are consistent logical
+// lengths at every scale; the golden offset was layout slack (the
+// constraint solver's surplus distribution, fixed by the content's
+// layout sink). What stays pinned here is the pipeline law that the
+// diagnosis rests on: every live row's report covers its section's
+// extent, the clip mirrors the extent (the cap never binds on this
+// fixture), and empty sections settle to zero.
+#[test]
+fn the_today_extent_channel_covers_its_live_rows_at_half_scale() {
+    pin_utc_zone();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(
+                fixture::today_overdue_state_at(fixture::PINNED_NOW).1,
+            ));
+            let (commands, _engine) = support::fake_engine::FakeEngine::channel(Arc::clone(&state));
+            let (requests_tx, _requests_rx) = tokio::sync::mpsc::channel(16);
+            let handle = taskboard_ui_slint::mount(
+                state,
+                dummy_signals(),
+                dummy_system(),
+                commands,
+                requests_tx,
+                scale_settings(0.5),
+                detached_health(),
+                None,
+            )
+            .expect("mount succeeds on the testing backend");
+            driver.bind(&handle);
+            driver.set_window_size(1000, HEIGHT);
+            driver.advance_time(0); // instantiate conditionals
+            settle_today_facts(driver, &handle);
+            let facts = today_clip_facts(&handle);
+            let (e0, h0, e1, h1, e2, h2, e3, h3) = (
+                facts[0], facts[1], facts[2], facts[3], facts[4], facts[5], facts[6], facts[7],
+            );
+            // The fixture's today view carries two live Overdue rows
+            // (section 0) and nothing in scheduled/due-today/done. The
+            // extent channel must have received EVERY live row's
+            // report: the section's extent is the settled sum of its
+            // rows' realized heights, strictly positive.
+            assert!(
+                e0 > 0.0,
+                "the overdue extent must cover its live rows (e0 = {e0})"
+            );
+            // Empty sections settle to zero, and their clips mirror it
+            // (the collapse is exact, not a free layout variable — the
+            // free-variable shape was the #1334 offset's fuel).
+            #[allow(clippy::float_cmp)]
+            {
+                assert_eq!(h0, e0, "the overdue clip mirrors its extent");
+                assert_eq!(
+                    (e1, e2, e3),
+                    (0.0, 0.0, 0.0),
+                    "empty sections settle to zero"
+                );
+                assert_eq!((h1, h2, h3), (0.0, 0.0, 0.0), "empty clips mirror zero");
+            }
+        },
     );
 }
 
