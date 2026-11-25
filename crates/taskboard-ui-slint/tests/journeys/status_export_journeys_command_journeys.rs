@@ -61,19 +61,25 @@ fn run(body: impl FnOnce(AppState) + Send + 'static) {
 /// Folds the wedged (draining) posture into the mounted panel: the
 /// sidecar shape — a holder pid beside a held lock, no serving
 /// daemon.
-/// Drains every queued mount/open `StatusQuery` (the open dispatches
-/// through both fronts — the route arm and the window seam, the OP3
-/// convergence), answering each so the lane stays clean; the folded
-/// facts afterwards are the test's to mint.
+/// The exact-count pin (#1281): a mount's open dispatches EXACTLY ONE
+/// `StatusQuery` — the route arm is the sole dispatcher, the doubled
+/// init seam retired — and nothing else rides the lane. The one
+/// reply is answered so the lane stays clean; the folded facts
+/// afterwards are the test's to mint.
 fn drain_open_queries(
     requests: &mut tokio::sync::mpsc::Receiver<taskboard_ui_slint::requests::UiRequest>,
 ) {
-    while let Ok(request) = requests.try_recv() {
-        let taskboard_ui_slint::requests::UiRequest::StatusQuery { reply } = request else {
-            panic!("only StatusQueries ride the lane at this point");
-        };
-        let _ = reply.send(StatusSnapshot::default());
-    }
+    let request = requests
+        .try_recv()
+        .expect("a mount dispatches exactly one StatusQuery");
+    let taskboard_ui_slint::requests::UiRequest::StatusQuery { reply } = request else {
+        panic!("only StatusQueries ride the lane at this point");
+    };
+    let _ = reply.send(StatusSnapshot::default());
+    assert!(
+        requests.try_recv().is_err(),
+        "the open dispatches exactly one query — a second is the retired doubled seam (#1281)"
+    );
 }
 
 fn fold_wedged(window: &taskboard_ui_slint::AppWindow, holder_pid: i32) {

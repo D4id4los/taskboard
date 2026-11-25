@@ -33,10 +33,10 @@ const SEAM_INVENTORY: &[&str] = &[
     // The priority pickers' seams (UX R-3 D-1, #788): the row
     // openers route the landed actions; the slot commit and the
     // dismissal are the picker's own seams.
-    // The status panel's seams (OP3 W-1): the mount's snapshot-on-open
-    // dispatch and the Refresh control's re-query — the fold/failure
+    // The status panel's seam (OP3 W-1): the Refresh control's
+    // re-query — the mount's snapshot-on-open dispatch retired with
+    // #1281 (the route arm is the sole dispatcher); the fold/failure
     // directions are invokes (Rust → slint), not installs.
-    "status_panel_open",
     "status_panel_refresh",
     // The status panel's remediation lane (the D2 command plan
     // W-1..W-4/W-6): the rows' arm moments, the armed strip's

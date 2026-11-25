@@ -88,15 +88,11 @@ export global StatusPanelFacts {
 // `window.on_` shape); the composition forwards its own moments:
 export component StatusPanel inherits Rectangle {
     background: Theme.surface;
-    // The mount's snapshot-on-open dispatch (D-3): one query per
-    // mount, never a timer — forwarded to the window root seam.
-    init => {
-        root.status-panel-open-requested();
-    }
-    // slint: status-panel-open-requested — the mount's snapshot-on-open
-    // moment (US-1/S1); the window root forwards it to the
-    // `status-panel-open` seam.
-    callback status-panel-open-requested();
+    // #1281: the mount no longer dispatches — the open action's
+    // route arm is the snapshot query's SOLE dispatcher (one query
+    // per mount, OP3 D-3); the doubled init seam retired. The
+    // Refresh control's re-query is the panel's own remaining
+    // moment:
     // slint: status-panel-refresh — the Refresh control's re-query
     // (US-1/S4): keyboard-reachable (the TextButton grammar), never a
     // timer; forwarded to the window root seam.
