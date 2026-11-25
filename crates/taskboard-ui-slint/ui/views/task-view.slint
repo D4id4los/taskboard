@@ -527,9 +527,16 @@ export component TaskView inherits FocusScope {
                         hint-keys: root.nav-back-hint;
                         clicked => root.habit-editor-cancelled();
                     }
-                    TextField {
+                    // The habit editor's rows mount the task
+                    // variant's shared editor-row anatomy (#1298):
+                    // TippedField for the title, the shared
+                    // multi-line editor for the description — the
+                    // habit callbacks and flow grammar are untouched
+                    // (row anatomy only).
+                    TippedField {
                         horizontal-stretch: 1;
                         label: "Title";
+                        help: "The habit's name as it appears on the board and lists.";
                         text: root.habit.title;
                         edited(text) => { root.habit-title-edited(text); }
                     }
@@ -538,9 +545,12 @@ export component TaskView inherits FocusScope {
                         clicked => { root.habit-history-clicked(); }
                     }
                 }
-                TextField {
+                MultiLineEditor {
+                    editing: true;
                     label: "Description";
-                    text: root.habit.description;
+                    placeholder: "Describe the habit";
+                    initial-text: root.habit.description;
+                    autofocus: false;
                     edited(text) => { root.habit-description-edited(text); }
                 }
                 HorizontalLayout {
