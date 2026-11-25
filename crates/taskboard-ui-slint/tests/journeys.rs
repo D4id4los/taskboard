@@ -12938,6 +12938,56 @@ fn us9_s3_the_create_form_commits_the_exact_break_rule() {
     });
 }
 
+/// #1335: on the board-free Today view the break-rule create draft
+/// mints into the FIRST live board in canonical order (the D-4 law's
+/// default — Today has no selected board to inherit; the picker is
+/// #1314's territory).
+#[test]
+fn us9_s5_the_break_rule_create_defaults_to_the_first_live_board() {
+    let (_fixture, mut state) = fixture::golden_state();
+    let fixture_board = *state.boards.keys().next().expect("the fixture board");
+    // A second live board whose id sorts BEFORE the fixture board's —
+    // the canonical-first pick must win over every other live board.
+    let earlier = taskboard_domain::BoardId::from_uuid(uuid::Uuid::from_u128(1));
+    assert!(earlier < fixture_board, "the crafted id sorts first");
+    state.boards.insert(earlier, fixture::board(earlier));
+    let expected = earlier;
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::ViewToday);
+        harness.driver.click_by_label("Add break rule");
+        harness.driver.advance_time(0);
+        harness
+            .handle
+            .window()
+            .invoke_timers_break_threshold_edited("90m".into());
+        let element = harness
+            .driver
+            .find_by_label("Break rule label")
+            .unwrap_or_else(|| panic!("the label field is present"));
+        let (x, y) = support::driver::centre(&element);
+        harness.driver.click_at(x, y);
+        harness.type_text("Tea break");
+        let element = harness
+            .driver
+            .find_by_label("Work threshold (e.g. 90m or 1h30m)")
+            .unwrap_or_else(|| panic!("the threshold field is present"));
+        let (x, y) = support::driver::centre(&element);
+        harness.driver.click_at(x, y);
+        harness.type_text("90m");
+        harness.stroke(parse("Return").expect("Return"));
+        match harness.engine.drain().as_slice() {
+            [StateCommand::CreateBreakRule { board, .. }] => {
+                assert_eq!(
+                    *board,
+                    Some(expected),
+                    "the draft roams the canonical-first live board"
+                );
+            }
+            other => panic!("the create reached the boundary, got {other:?}"),
+        }
+    });
+}
+
 /// US-9/S4 (T-14, #797): the staged remove — the arm stroke dispatches
 /// nothing (the strip is the only verb that routes) and the strip's
 /// Confirm dispatches the exact `DeleteBreakRule` over the armed

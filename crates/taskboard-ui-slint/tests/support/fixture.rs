@@ -88,7 +88,7 @@ fn stack(id: StackId, board: BoardId, title: &str, order: i64) -> Stack {
     }
 }
 
-fn board(id: BoardId) -> Board {
+pub(crate) fn board(id: BoardId) -> Board {
     Board {
         id,
         remote: None,
