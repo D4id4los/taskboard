@@ -6,24 +6,70 @@
 // info/neutral tone flip) and every click reports its index through
 // `picked` — the model push is the single writer, exactly like the
 // CheckBox's state-less grammar.
+//
+// The labelled posture (#1430, US-12/S1–S3, W-17): `labelled` renders
+// each option's name as a visible label beside its toggle (the bare
+// checkmark-row grammar's replacement — the a11y label stops being
+// hover-only), `icons` swaps a slot's check glyph for a semantically
+// fitting vendored icon (mode selectors, not state toggles), and
+// `descriptions` arms every slot's tooltip + accessible description.
+// All three default to the founding icon-only posture, so existing
+// call sites are unchanged.
 
-import { Theme, Tone } from "../theme.slint";
+import { Theme, Tone, Typography } from "../theme.slint";
 import { IconButton, IconKind } from "icon-button.slint";
+import { RoleText } from "../theme.slint";
 
 export component ToggleStrip inherits HorizontalLayout {
-    // The slot labels in order (the a11y names — the hover tips).
+    // The slot labels in order (the a11y names — and, in the labelled
+    // posture, the visible labels).
     in property <[string]> options;
     // The model-pushed checked bits, positionally aligned with
     // `options`.
     in property <[bool]> checked-mask;
+    // The per-slot glyphs, positionally aligned with `options` (the
+    // mode-selector grammar, #1430/US-12/S3). A slot past the array's
+    // end falls to the founding check glyph — the state-toggle
+    // posture stays the default.
+    in property <[IconKind]> icons;
+    // The visible-label posture (US-12/S1): each slot renders its
+    // option name beside the toggle.
+    in property <bool> labelled: false;
+    // The per-slot tooltip + accessible description, positionally
+    // aligned with `options` (US-12/S4's name/role/value pass).
+    in property <[string]> descriptions;
     // The intent: the clicked slot's index.
     callback picked(int);
 
+    // The slot's glyph: the caller's icon where one is pushed, the
+    // founding check glyph otherwise (the pure function the probe
+    // reads — the icon-kind oracle is a typed enum value, never a
+    // pixel).
+    public pure function slot-icon(index: int) -> IconKind {
+        return root.icons.length > index ? root.icons[index] : IconKind.check;
+    }
+
+    // The slot's description: the caller's text where one is pushed,
+    // empty otherwise (no description renders, the founding posture).
+    public pure function slot-description(index: int) -> string {
+        return root.descriptions.length > index ? root.descriptions[index] : "";
+    }
+
     spacing: Theme.space-1;
-    for label[i] in root.options: IconButton {
-        icon: IconKind.check;
-        tone: root.checked-mask[i] ? Tone.info : Tone.neutral;
-        label: label;
-        clicked => { root.picked(i); }
+    for label[i] in root.options: HorizontalLayout {
+        spacing: Theme.space-1;
+        IconButton {
+            icon: root.slot-icon(i);
+            tone: root.checked-mask[i] ? Tone.info : Tone.neutral;
+            label: label;
+            description: root.slot-description(i);
+            clicked => { root.picked(i); }
+        }
+        if root.labelled: slot-label := RoleText {
+            role: Typography.caption;
+            text: label;
+            text-color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
     }
 }

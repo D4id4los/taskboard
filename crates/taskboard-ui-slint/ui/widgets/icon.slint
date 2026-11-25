@@ -74,6 +74,14 @@ export enum IconKind {
     // US-7, #834): the archive box — hover-independent, the
     // icon-button glyph vocabulary.
     archive,
+    // The nudge-day affordance (#1430, US-12/S3): calendar-days —
+    // the period's day-marked grid (the calendar-day/sun/moon/alarm
+    // family the issue's icon inventory scopes first; the vendored
+    // Lucide rev spells that family member `calendar-days`).
+    calendar-days,
+    // The period-start affordance (#1430, US-12/S3): the alarm clock —
+    // the period's start-of-day fire semantics (the alarm family).
+    alarm-clock,
     // The slot-collapse sentinel (round-9 W6): no asset of its own —
     // MenuRow's leading-glyph `none` collapses its slot before any
     // Icon mounts; the mapping arm pins the loud warn asset so the
@@ -119,6 +127,8 @@ export component Icon inherits Image {
         : kind == IconKind.history              ? @image-url("../assets/icons/history.svg")
         : kind == IconKind.trash                ? @image-url("../assets/icons/trash-2.svg")
         : kind == IconKind.archive              ? @image-url("../assets/icons/archive.svg")
+        : kind == IconKind.calendar-days        ? @image-url("../assets/icons/calendar-days.svg")
+        : kind == IconKind.alarm-clock          ? @image-url("../assets/icons/alarm-clock.svg")
         // The `none` sentinel's loud arm: never mounted by MenuRow
         // (the slot collapses), so a hit here is a caller bug — shout.
         : kind == IconKind.none                 ? @image-url("../assets/icons/triangle-alert.svg")

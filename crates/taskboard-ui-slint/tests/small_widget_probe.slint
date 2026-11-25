@@ -8,6 +8,7 @@
 
 import { Theme, Semantic, Tone, Typography } from "../ui/theme.slint";
 import { IconButton, IconKind } from "../ui/widgets/icon-button.slint";
+import { ToggleStrip } from "../ui/widgets/toggle-strip.slint";
 import { StatusNotice, NoticeShape } from "../ui/widgets/status-notice.slint";
 import { ConfirmStrip } from "../ui/widgets/confirm-strip.slint";
 import { ActionChip } from "../ui/widgets/action-chip.slint";
@@ -52,6 +53,9 @@ export component SmallWidgetProbe inherits Window {
     // The theme mirror (the colour-forwarding evidence reads equality
     // against the token, not a pin of the token's value).
     out property <color> theme-text-secondary: Theme.text-secondary;
+    out property <IconKind> mode-icon-nudge: mode-strip.slot-icon(0);
+    out property <IconKind> mode-icon-period: mode-strip.slot-icon(1);
+    out property <IconKind> fallback-icon: plain-strip.slot-icon(2);
     out property <color> theme-text-primary: Theme.text-primary;
     out property <color> theme-surface-raised: Theme.surface-raised;
     out property <length> theme-focus-ring-width: Theme.focus-ring-width;
@@ -281,6 +285,20 @@ export component SmallWidgetProbe inherits Window {
                 description: "Adds a new stack to this board.";
                 invoked => { root.column-ghost-count += 1; }
             }
+        }
+
+        // The mode-strip fixture (#1430, US-12/S3): the habit editor's
+        // Nudge day / Period start grammar pushed with its icons —
+        // the typed icon-kind oracle reads the strip's own
+        // `slot-icon` function (enum equality, never pixels).
+        mode-strip := ToggleStrip {
+            options: ["Nudge day", "Period start"];
+            icons: [IconKind.calendar-days, IconKind.alarm-clock];
+            checked-mask: [true, false];
+        }
+        plain-strip := ToggleStrip {
+            options: ["Mon", "Tue", "Wed"];
+            checked-mask: [false, false, false];
         }
     }
 }

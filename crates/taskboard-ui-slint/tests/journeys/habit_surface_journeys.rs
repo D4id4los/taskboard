@@ -1632,3 +1632,347 @@ fn edit_habit_subjectless_dispatch_mounts_nothing_currently_pins_refusal() {
         );
     });
 }
+
+// -- US-12: the repeat editor speaks (#1430, W-17) --------------------
+//
+// The labelled-control grammar: presentation-only over the landed
+// draft/save wiring — every leg below dispatches nothing new; the one
+// behavior-bearing leg (S7) pins the unregression. Labels are
+// addresses, geometry and typed enums are the oracles (AGENTS §5).
+
+/// The journeys' weekly habit fixture: a `PerWeek` target anchored on
+/// Wednesday with no scheduled-days mask (the anchor strip + the
+/// schedule picker both mount).
+fn state_habit_weekly(state: &mut AppState, board: taskboard_domain::BoardId) -> HabitId {
+    let habit = taskboard_domain::habit::Habit {
+        id: HabitId::from_uuid(uuid::Uuid::now_v7()),
+        board,
+        title: "stretch".to_owned(),
+        description: String::new(),
+        target: taskboard_domain::HabitTarget::PerWeek(NonZeroCount::new(1).unwrap()),
+        order: 1,
+        anchor_time: Some(chrono::NaiveTime::from_hms_opt(7, 0, 0).expect("07:00 parses")),
+        anchor_day: Some(taskboard_domain::habit::AnchorDay::Weekday(
+            chrono::Weekday::Wed,
+        )),
+        scheduled_days: None,
+        reminder: None,
+        clocks: HabitClocks::all(fixture::PINNED_NOW),
+        continued_from: None,
+        deleted: false,
+        paused_until: None,
+        by: None,
+    };
+    let id = habit.id;
+    state.habits.habits.insert(habit.id, habit);
+    id
+}
+
+fn weekly_editor_journey(job: impl FnOnce(&mut Harness) + Send + 'static) {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit_weekly(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        job(harness);
+    });
+}
+
+/// US-12/S1 (W-17, #1430): every `PerWeek` day option renders its
+/// visible weekday label beside the toggle — the strip mounts one
+/// visible label element per day slot, each with real geometry (the
+/// bare-checkmark-row grammar is gone; the label text itself is the
+/// address, never an assertion oracle).
+#[test]
+fn us12_s1_day_options_carry_visible_labels() {
+    weekly_editor_journey(move |harness| {
+        let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        for name in days {
+            let toggle = harness
+                .driver
+                .find_by_label(name)
+                .unwrap_or_else(|| panic!("the {name} toggle is present"));
+            assert!(
+                toggle.is_accessible_button(),
+                "the {name} day option is an accessible button"
+            );
+        }
+        let labels = harness.driver.find_all_by_id("ToggleStrip::slot-label");
+        assert!(
+            labels.len() >= 7,
+            "every day slot renders a visible label element"
+        );
+        for name in days {
+            let toggle = harness
+                .driver
+                .find_by_label(name)
+                .unwrap_or_else(|| panic!("the {name} toggle is present"));
+            let beside = labels.iter().any(|label| {
+                (label.absolute_position().y - toggle.absolute_position().y).abs() < 2.0
+                    && label.absolute_position().x > toggle.absolute_position().x
+                    && label.size().width > 0.0
+            });
+            assert!(
+                beside,
+                "the {name} toggle carries its visible weekday label beside it"
+            );
+        }
+    });
+}
+
+/// US-12/S2 (W-17, #1430): the two day grammars are titled and
+/// distinguished — the weekday-anchor strip and the scheduled-days
+/// mask each carry their own section caption element, and they render
+/// as distinct rows (the anchor strip above, the mask below).
+#[test]
+fn us12_s2_day_grammars_titled_and_distinguished() {
+    weekly_editor_journey(move |harness| {
+        for caption in [
+            "TaskView::anchor-caption",
+            "TaskView::scheduled-caption",
+            "TaskView::override-caption",
+        ] {
+            let found = harness.driver.find_all_by_id(caption);
+            assert_eq!(found.len(), 1, "section caption {caption} mounts once");
+            assert!(
+                found[0].size().width > 0.0,
+                "the caption renders visible geometry"
+            );
+        }
+        // Distinct rows: the mask's Monday checkbox sits below the
+        // anchor strip's Monday toggle.
+        let anchor_toggle = harness
+            .driver
+            .find_by_label("Mon")
+            .expect("the anchor strip's Monday toggle");
+        let mask_box = harness
+            .driver
+            .find_by_label("Add Mon")
+            .expect("the scheduled-days mask's Monday checkbox");
+        assert!(
+            mask_box.absolute_position().y > anchor_toggle.absolute_position().y,
+            "the scheduled-days mask is a distinct row below the anchor strip"
+        );
+    });
+}
+
+/// US-12/S3 (W-17, #1430): the mode selector is addressed by its
+/// visible names and the pick routes the landed override mint — no
+/// new callback, the draft mirror flips (the icon-kind oracle is the
+/// probe's typed enum leg in `small_widget_probe_tests.rs`).
+#[test]
+fn us12_s3_mode_selector_icons_not_checkmarks() {
+    weekly_editor_journey(move |harness| {
+        let window = harness.handle.window();
+        harness.driver.click_by_label("Period start");
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_habit_model().reminder_base,
+            1,
+            "the Period start pick routes the landed draft seam"
+        );
+        harness.driver.click_by_label("Nudge day");
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_habit_model().reminder_base,
+            0,
+            "the Nudge day pick routes the landed draft seam"
+        );
+    });
+}
+
+/// US-12/S4 (W-17, #1430): the name/role/value inventory — every
+/// interactive control in the repeat section is reachable by its
+/// accessible name (labels are addresses), the buttons and the
+/// text fields carry their distinct roles, and the fields expose
+/// their values (SC 4.1.2's resolvable triple, structurally).
+#[test]
+fn us12_s4_every_control_named_role_value() {
+    weekly_editor_journey(move |harness| {
+        // The repeat section's buttons: addressable and button-roled.
+        for name in [
+            "Mon",
+            "Tue",
+            "Wed",
+            "Thu",
+            "Fri",
+            "Sat",
+            "Sun",
+            "Clear anchor time",
+            "Clear override",
+        ] {
+            let element = harness
+                .driver
+                .find_by_label(name)
+                .unwrap_or_else(|| panic!("the control {name:?} is addressable"));
+            assert!(
+                element.is_accessible_button(),
+                "the control {name:?} exposes the button role"
+            );
+        }
+        // The mask's checkboxes: addressable (the toggle-action verb
+        // pair names the day).
+        assert!(
+            harness.driver.find_by_label("Add Mon").is_some(),
+            "the mask's Monday checkbox is addressable"
+        );
+        // The fields: addressable, non-button, value-bearing.
+        for name in [
+            "Quota (completions per period)",
+            "Anchor time (arms the reminder nudge)",
+            "Offset days",
+            "Time (blank: anchor only)",
+            "Snooze",
+        ] {
+            let field = harness
+                .driver
+                .find_by_label(name)
+                .unwrap_or_else(|| panic!("the field {name:?} is addressable"));
+            assert!(
+                !field.is_accessible_button(),
+                "the field {name:?} is not button-roled"
+            );
+            assert!(
+                field.value().is_some(),
+                "the field {name:?} exposes its value"
+            );
+        }
+    });
+}
+
+/// US-12/S5 (W-17, #1430, ruling R-8): the add-repeat arm is
+/// structurally absent for the habit subject — no add-repeat element
+/// mounts in the habit editor by any path. The task subject's own arm
+/// is unregressed by the detail-focus journeys' add-repeat legs (the
+/// one-behavior-one-test law).
+#[test]
+fn us12_s5_add_repeat_absent_for_habits() {
+    weekly_editor_journey(move |harness| {
+        assert!(
+            harness
+                .driver
+                .find_by_label("Add repeat: the task joins a recurring series")
+                .is_none(),
+            "the habit editor mounts no add-repeat affordance"
+        );
+    });
+}
+
+/// US-12/S6 (W-17, #1430): the compact fold — each repeat-section
+/// caption rides the SAME row as its control (caption and control
+/// share their top edge, caption left of the control). No labelled
+/// control is removed in the fold (S1/S4 still hold).
+#[test]
+fn us12_s6_repeat_section_compact() {
+    weekly_editor_journey(move |harness| {
+        let pairs = [
+            ("TaskView::anchor-caption", "Mon"),
+            ("TaskView::scheduled-caption", "Add Mon"),
+            ("TaskView::override-caption", "Nudge day"),
+        ];
+        for (caption_id, control_label) in pairs {
+            let caption = harness.driver.find_all_by_id(caption_id);
+            assert_eq!(caption.len(), 1, "{caption_id} mounts once");
+            let control = harness
+                .driver
+                .find_by_label(control_label)
+                .unwrap_or_else(|| panic!("the control {control_label:?} is present"));
+            let caption = &caption[0];
+            let same_row =
+                (caption.absolute_position().y - control.absolute_position().y).abs() < 2.0;
+            assert!(
+                same_row,
+                "the {caption_id} caption folds inline with its control"
+            );
+            assert!(
+                caption.absolute_position().x < control.absolute_position().x,
+                "the {caption_id} caption leads its control"
+            );
+        }
+    });
+}
+
+/// US-12/S7 (W-17, #1430, the behavior-bearing leg): the redesigned
+/// controls write the same typed draft the landed grammar wrote — the
+/// labelled strip's weekday pick and the mask's toggle route the
+/// landed `UpdateHabit` fields, and reopening renders the saved state.
+#[test]
+fn us12_s7_save_reopen_unregressed() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit_weekly(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        // The labelled grammar's addresses: the strip's Thursday
+        // toggle and the mask's Tuesday checkbox.
+        harness.driver.click_by_label("Thu");
+        harness.driver.advance_time(0);
+        harness.driver.click_by_label("Add Tue");
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                assert_eq!(
+                    changes.anchor_day,
+                    Some(Some(taskboard_domain::habit::AnchorDay::Weekday(
+                        chrono::Weekday::Thu
+                    ))),
+                    "the labelled strip's pick mints the landed anchor-day change"
+                );
+                assert_eq!(
+                    changes.scheduled_days,
+                    Some(
+                        taskboard_domain::habit::WeekdaySet::new([chrono::Weekday::Tue])
+                            .expect("one day")
+                    ),
+                    "the mask's toggle mints the landed scheduled-days change"
+                );
+            }
+            other => panic!("the save routes the update, got {other:?}"),
+        }
+        // Reopen: the editor re-seeds its draft from the stored state
+        // (the fake engine is a command boundary, not an applier —
+        // the stored anchor is still Wednesday), and a re-save over
+        // the untouched strip mints a SPARSE changeset — the anchored
+        // draft mirror is unregressed (the habits_journey US-6/S3
+        // reopen precedent's grammar, over the labelled controls).
+        window.invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        let model = window.get_habit_model();
+        assert_eq!(
+            model.weekday, 2,
+            "the reopened editor seeds the stored Wednesday anchor"
+        );
+        harness.driver.click_by_label("Add Tue");
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [StateCommand::UpdateHabit { changes, .. }] => {
+                assert_eq!(
+                    changes.anchor_day, None,
+                    "the untouched strip mints no anchor-day change on reopen"
+                );
+                assert_eq!(
+                    changes.scheduled_days,
+                    Some(
+                        taskboard_domain::habit::WeekdaySet::new([chrono::Weekday::Tue])
+                            .expect("one day")
+                    ),
+                    "the reopened mask's toggle mints the scheduled-days change"
+                );
+            }
+            other => panic!("the reopen save routes the sparse changeset, got {other:?}"),
+        }
+    });
+}
