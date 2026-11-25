@@ -99,7 +99,7 @@ if [[ "${1:-}" == "--status" ]]; then
     status_pid=$(gate_holder_pid "$lock_file" 2>/dev/null) || status_pid=""
     status_cpu_prev=""
     if [[ -n $status_pid ]]; then
-      status_cpu_prev=$(gate_holder_cpu "$status_pid" 2>/dev/null) || status_cpu_prev=""
+      status_cpu_prev=$(gate_holder_tree_cpu "$status_pid" 2>/dev/null) || status_cpu_prev=""
     fi
     sleep 1
     case $(gate_holder_liveness "$lock_file" "$status_cpu_prev" 2>/dev/null || echo unknown) in
@@ -158,7 +158,7 @@ liveness_tick() {
   holder_pid_now=$(gate_holder_pid "$lock_file" 2>/dev/null) || holder_pid_now=""
   local cur_cpu=""
   if [[ -n $holder_pid_now ]]; then
-    cur_cpu=$(gate_holder_cpu "$holder_pid_now" 2>/dev/null) || cur_cpu=""
+    cur_cpu=$(gate_holder_tree_cpu "$holder_pid_now" 2>/dev/null) || cur_cpu=""
   fi
   holder_class=$(gate_holder_liveness "$lock_file" "${prev_cpu:-}" 2>/dev/null || true)
   if [[ $holder_class == likely-hung ]]; then

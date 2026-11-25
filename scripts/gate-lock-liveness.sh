@@ -8,10 +8,12 @@
 # sourced by both gates and classifies a lock holder from the record
 # the gates already write (`pid=… branch=… worktree=… started=…`):
 #
-#   alive       the holder's cumulative CPU time (utime+stime,
-#               /proc/<pid>/stat fields 14+15) advanced since the
-#               caller's previous sample
-#   likely-hung zero CPU-time delta across the caller's poll window
+#   alive       the holder's PROCESS-TREE cumulative CPU time
+#               (utime+stime, /proc/<pid>/stat fields 14+15, summed
+#               over the holder and its live descendants — #1333)
+#               advanced since the caller's previous sample
+#   likely-hung zero tree CPU-time delta across the caller's poll
+#               window
 #   gone        the pid no longer exists (the kernel releases the
 #               lock; purely informational)
 #
@@ -62,13 +64,54 @@ gate_holder_cpu() { # gate_holder_cpu <pid> -> jiffies | rc 1
   printf '%s\n' "$(( f[11] + f[12] ))"
 }
 
-gate_holder_liveness() { # gate_holder_liveness <lock_file> [<prev_cpu>]
+# The holder's PROCESS-TREE CPU (#1333): the holder's jiffies plus
+# every live descendant's, walked BFS over the /proc ppid links
+# (depth 4). The single-pid delta false-positived on a coverage
+# trio: the flock-holding bash parent sits in `wait` at zero CPU for
+# minutes while its cargo-nextest/rustc children burn CPU — the tree
+# delta sees the work the parent only awaits.
+gate_holder_tree_cpu() { # gate_holder_tree_cpu <pid> -> jiffies | rc 1
+  local pid=$1 stat rest proc child_pid child_ppid child_cpu edge p
+  local -a f=() edges=() frontier=("$pid") next=()
+  local total depth=0
+  total=$(gate_holder_cpu "$pid") || return 1
+  for proc in /proc/[0-9]*/stat; do
+    [[ -r $proc ]] || continue
+    child_pid=${proc#/proc/}
+    child_pid=${child_pid%/stat}
+    IFS= read -r stat <"$proc" 2>/dev/null || continue
+    rest=${stat##*) }
+    read -ra f <<<"$rest" 2>/dev/null || continue
+    (( ${#f[@]} >= 13 )) || continue
+    child_ppid=${f[1]}
+    child_cpu=$(( f[11] + f[12] ))
+    edges+=("$child_ppid:$child_pid:$child_cpu")
+  done
+  while (( depth < 4 )) && (( ${#frontier[@]} )); do
+    next=()
+    for p in "${frontier[@]}"; do
+      for edge in "${edges[@]}"; do
+        [[ ${edge%%:*} == "$p" ]] || continue
+        rest=${edge#*:}
+        child_pid=${rest%%:*}
+        child_cpu=${rest##*:}
+        total=$(( total + child_cpu ))
+        next+=("$child_pid")
+      done
+    done
+    frontier=("${next[@]}")
+    depth=$(( depth + 1 ))
+  done
+  printf '%s\n' "$total"
+}
+
+gate_holder_liveness() { # gate_holder_liveness <lock_file> [<prev_tree_cpu>]
   local lock_file=$1 prev=${2:-} pid cur
   pid=$(gate_holder_pid "$lock_file") || {
     echo unknown
     return 0
   }
-  if ! cur=$(gate_holder_cpu "$pid"); then
+  if ! cur=$(gate_holder_tree_cpu "$pid"); then
     echo gone
     return 0
   fi
@@ -100,12 +143,31 @@ self_test() {
   sleep 300 & pid_idle=$!
   printf 'pid=%d branch=self-test worktree=/tmp started=%s\n' \
     "$pid_idle" "$(date -Is)" >"$tmp/idle.lock"
-  prev=$(gate_holder_cpu "$pid_idle")
-  cur=$(gate_holder_cpu "$pid_idle")
+  prev=$(gate_holder_tree_cpu "$pid_idle")
+  cur=$(gate_holder_tree_cpu "$pid_idle")
   if [[ $(gate_holder_liveness "$tmp/idle.lock" "$prev") == likely-hung ]]; then
     echo "self-test 1 (idle sleep holder classifies likely-hung on zero delta): PASS"
   else
     echo "self-test 1 (idle sleep holder classifies likely-hung on zero delta): FAIL"
+    rc=1
+  fi
+  kill "$pid_idle" 2>/dev/null || true
+  wait "$pid_idle" 2>/dev/null || true
+
+  # 1b. The #1333 false-positive: an IDLE holder (zero own CPU — the
+  #     coverage trio's bash-in-wait shape) with a WORKING descendant.
+  #     The tree delta advances — must classify alive.
+  bash -c 'sleep 0.05; while :; do :; done' & pid_idle=$!
+  printf 'pid=%d branch=self-test worktree=/tmp started=%s\n' \
+    "$pid_idle" "$(date -Is)" >"$tmp/idle-tree.lock"
+  prev=$(gate_holder_tree_cpu "$pid_idle")
+  sleep 0.4
+  cur=$(gate_holder_tree_cpu "$pid_idle")
+  if [[ -n $prev && -n $cur ]] && (( cur > prev )) \
+     && [[ $(gate_holder_liveness "$tmp/idle-tree.lock" "$prev") == alive ]]; then
+    echo "self-test 1b (idle holder with a working descendant classifies alive): PASS"
+  else
+    echo "self-test 1b (idle holder with a working descendant classifies alive): FAIL (prev=$prev cur=$cur)"
     rc=1
   fi
   kill "$pid_idle" 2>/dev/null || true
@@ -116,9 +178,9 @@ self_test() {
   (while :; do :; done) & pid_spin=$!
   printf 'pid=%d branch=self-test worktree=/tmp started=%s\n' \
     "$pid_spin" "$(date -Is)" >"$tmp/spin.lock"
-  prev=$(gate_holder_cpu "$pid_spin")
+  prev=$(gate_holder_tree_cpu "$pid_spin")
   sleep 0.2
-  cur=$(gate_holder_cpu "$pid_spin")
+  cur=$(gate_holder_tree_cpu "$pid_spin")
   if [[ -n $prev && -n $cur ]] && (( cur > prev )) \
      && [[ $(gate_holder_liveness "$tmp/spin.lock" "$prev") == alive ]]; then
     echo "self-test 2 (spinning holder accumulates CPU and classifies alive): PASS"
