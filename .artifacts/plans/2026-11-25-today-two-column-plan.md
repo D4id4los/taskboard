@@ -81,10 +81,57 @@ arrangement; layout override toggle (R-3). New findings →
 ~150–300 lines: theme token, today-view layout arm, walk-order
 derivation, goldens + journey tests. No domain/engine changes.
 
-## 8. Stage-2 completion checklist (fill at gate clearance)
+## 8. Stage-2 completion checklist (filled 2026-11-26, C3a stage-2)
 
-- [ ] Breakpoint value + source constant cited
-- [ ] Grid arm line cites + geometry-channel verification note
-- [ ] Walk successor mapping site cited; empty-section skip verified
-- [ ] Golden wide variants enumerated (widths used)
-- [ ] Full local hook/nextest evidence recorded
+- [x] Breakpoint value + source constant cited: `Theme.layout-
+  today-two-column-min-width` = **1440px** (ui/theme.slint), pinned
+  equal to `EXPANSIVE_MIN_WIDTH` (src/responsive.rs) by
+  `the_today_two_column_token_shares_the_expansive_threshold`; the
+  arm's measurement input is the window's logical width pushed
+  through `TodayLayoutFacts.viewport-width` (assigned imperatively —
+  the declarative width→arm spellings are binding loops, recorded at
+  the global's header comment), i.e. the same width domain the
+  board's breakpoint vocabulary reads.
+- [x] Grid arm line cites + geometry-channel verification note:
+  `today-view.slint` wide arm = `if (TodayLayoutFacts.grid-arm)` —
+  band (TimersBlock + TrackedTodaySection) above, then
+  `grid := HorizontalLayout` with two fixed 50/50 columns
+  (`root.grid-column-width` from the severed width channel). The
+  #1310/#1304 geometry channel composes: the journey pin
+  `us17_s1_wide_viewport_mounts_the_two_column_grid` asserts the
+  overdue extent covers its live rows AND the clip mirrors the
+  extent under the grid arm (settle loop on `TodayClipFacts`).
+- [x] Walk successor mapping site cited; empty-section skip
+  verified: NO successor re-derivation was needed (the 2026-11-25
+  dispatch ruling on the journey plan) — `ViewState::today_rows`
+  (src/view_state.rs: tasks in section display order → aggregated
+  habits → break-rule roster) already reads column-major left→right;
+  the empty-section skip is the existing walk law
+  (`step_today_rows` positions into the filtered row vec).
+  `us18_s1`/`us18_s2` pin the wrap and the mirror + a row chord.
+- [x] Golden wide variants enumerated: `today-two-column-1.0-1600`
+  (new evidence row, wave-2 naming law); the matrix's expansive
+  1500-px cells (`today-0.5-1500`, `today-3.0-1500`) re-recorded —
+  they cross the shared breakpoint; the 600/1000 cells and the
+  habits/kiosk/empty goldens are byte-identical (US-17 AC-2).
+- [x] Full local hook/nextest evidence recorded: three pre-commit
+  hook passes (fmt + slint token lint + memory-gated clippy
+  workspace -D warnings) on the three code commits; targeted
+  journey suite 13/13 (two-column + today corpus, compare pass);
+  ux-coverage `--gate` green (14 FOUND, 3 BOUND, 0 MISSING/
+  AMBIGUOUS); the flock-wrapped full `cargo nextest run
+  --workspace` evidence is the dispatcher's hand-off record.
+
+### Deviations from the outline (each evidence-carried)
+
+- D-1 amendment (dispatch ruling, recorded on the journey plan): the
+  left column carries ALL FOUR task sections (the plan named only
+  the two in #1436's title); the walk order therefore needs no
+  change at all.
+- US-19 superseded by the 2026-11-25 operator amendment (kiosk not
+  special-cased; the width test alone rules).
+- The walk-order derivation step (outline §3.3) is a no-op by the
+  ruling; the journey tests pin the existing order as the contract.
+- `TodayLayoutFacts` is an assigned-input global (not the
+  callback-witness shape the first draft used): both declarative
+  spellings were compiler-rejected binding loops.

@@ -168,7 +168,7 @@ const ITEM_WALK_HOSTS: &[ItemWalkHost] = &[
         walk_test: "board_compact_item_walk_visits_every_card",
     },
     ItemWalkHost {
-        delegate: "TodayView::today-row",
+        delegate: "TodaySectionBlock::today-row",
         touches: &["TaskCard::touch", "CheckBox::check-touch"],
         walk_test: "today_item_walk_visits_every_row",
     },
@@ -1519,7 +1519,7 @@ fn today_has_no_pointer_only_controls() {
         // heights converge over report -> refresh -> push passes;
         // poll to a deadline on the mock clock, never fixed counts).
         for _ in 0..16 {
-            if visible_delegates(&root_item(&mounted.handle), "TodayView::today-row").len()
+            if visible_delegates(&root_item(&mounted.handle), "TodaySectionBlock::today-row").len()
                 == today_rows(&mounted.handle).len()
             {
                 break;
@@ -1529,7 +1529,7 @@ fn today_has_no_pointer_only_controls() {
         let root = root_item(&mounted.handle);
         assert_visible_count(
             &root,
-            "TodayView::today-row",
+            "TodaySectionBlock::today-row",
             today_rows(&mounted.handle).len(),
         );
         assert_no_findings(&scan(&root, EXEMPT), "today");
