@@ -2255,20 +2255,26 @@ pub struct BreakRuleRow {
 /// drift. The `board` parameter scopes the BOARD-bound surfaces'
 /// reads; the Today surface passes `None` since round-6 A1 D-3
 /// (2026-11-24, #1301) — the today view is board-free, so its roster
-/// aggregates over all boards (map membership is rule liveness: the
-/// only verbs are create and delete, a removed rule leaves the map).
-/// The create form's dispatch still targets the selected board (the
-/// target-board default is #1314's territory).
+/// aggregates over the LIVE boards (`live_boards`, #1343 — the same
+/// law the habits fold pins: an archived/deleted board contributes
+/// nothing to the board-free roster). The create form's dispatch
+/// targets `first_live_board` (#1335).
 #[must_use]
 pub fn break_rule_rows(
     state: &AppState,
     board: Option<taskboard_domain::BoardId>,
 ) -> Vec<BreakRuleRow> {
+    let live: std::collections::HashSet<taskboard_domain::BoardId> =
+        live_boards(state).into_iter().map(|b| b.id).collect();
     let mut rows: Vec<BreakRuleRow> = state
         .reminders
         .break_rules
         .values()
-        .filter(|rule| board.is_none_or(|b| rule.board == b))
+        .filter(|rule| match board {
+            Some(b) => rule.board == b,
+            // The board-free aggregate: live boards only (#1343).
+            None => live.contains(&rule.board),
+        })
         .map(|rule| BreakRuleRow {
             rule: rule.id,
             label: rule.label.clone(),
@@ -4342,19 +4348,22 @@ mod tests {
     /// canonical `(threshold, id)` order, carries the rung and the
     /// roaming board's title verbatim, and filters to the scope board
     /// (`None` = every board).
-    #[test]
-    fn break_rule_rows_order_canonically_and_project_the_row_facts() {
-        let mut state = AppState::default();
-        let board_a = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
-        let board_b = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+    /// The break-rule fixtures' board row (the projection's shape; a
+    /// mutable variant for the archive flips).
+    fn insert_test_board(
+        id: taskboard_domain::BoardId,
+        title: &str,
+        archived: bool,
+        state: &mut AppState,
+    ) {
         state.boards.insert(
-            board_a,
+            id,
             taskboard_domain::Board {
-                id: board_a,
+                id,
                 remote: None,
-                title: "home".to_owned(),
+                title: title.to_owned(),
                 color: taskboard_domain::Color::new(""),
-                archived: false,
+                archived,
                 deleted: false,
                 clocks: taskboard_domain::BoardClocks {
                     title: taskboard_domain::BoardClocks::epoch(),
@@ -4366,6 +4375,15 @@ mod tests {
                 remote_seen: None,
             },
         );
+    }
+
+    #[test]
+    fn break_rule_rows_order_canonically_and_project_the_row_facts() {
+        let mut state = AppState::default();
+        let board_a = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        let board_b = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        insert_test_board(board_a, "home", false, &mut state);
+        insert_test_board(board_b, "archived-home", true, &mut state);
         let slow = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
         let fast = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
         let foreign = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
@@ -4412,10 +4430,60 @@ mod tests {
             vec!["5m", "1h30m"],
             "the threshold phrase is the mint's canonical text form"
         );
+        // The board-free aggregate rides `live_boards` (#1343 — the
+        // habits fold's law): the archived board's rule contributes
+        // nothing; unarchiving it brings the rule back.
+        assert_eq!(
+            break_rule_rows(&state, None).len(),
+            2,
+            "the board-free roster aggregates over the LIVE boards only"
+        );
+        let board_b_row = state.boards.get_mut(&board_b).expect("the board row");
+        board_b_row.archived = false;
         assert_eq!(
             break_rule_rows(&state, None).len(),
             3,
-            "an unscoped derivation sees every board's rules"
+            "unarchiving the board returns its rule to the aggregate"
+        );
+    }
+
+    /// The #1343 pin mirrored on the habits-fold law: archiving the
+    /// board holding a break rule removes the rule from the board-free
+    /// Today roster (it stays on the board-scoped read — that scope
+    /// names the board explicitly).
+    #[test]
+    fn an_archived_board_exits_the_board_free_break_rule_roster() {
+        let mut state = AppState::default();
+        let board = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+        state.boards.insert(
+            board,
+            taskboard_domain::Board {
+                id: board,
+                remote: None,
+                title: "home".to_owned(),
+                color: taskboard_domain::Color::new(""),
+                archived: false,
+                deleted: false,
+                clocks: taskboard_domain::BoardClocks {
+                    title: taskboard_domain::BoardClocks::epoch(),
+                    color: taskboard_domain::BoardClocks::epoch(),
+                    archived: taskboard_domain::BoardClocks::epoch(),
+                    deleted: taskboard_domain::BoardClocks::epoch(),
+                },
+                authors: taskboard_domain::entities::BoardAuthors::default(),
+                remote_seen: None,
+            },
+        );
+        let rule_id = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
+        state.reminders.break_rules.insert(
+            rule_id,
+            break_rule(rule_id, board, "stretch", TimeDelta::minutes(30)),
+        );
+        assert_eq!(break_rule_rows(&state, None).len(), 1);
+        state.boards.get_mut(&board).expect("the board").archived = true;
+        assert!(
+            break_rule_rows(&state, None).is_empty(),
+            "the archived board's rule leaves the board-free roster"
         );
     }
 
