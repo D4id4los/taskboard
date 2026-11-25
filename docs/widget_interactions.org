@@ -292,6 +292,73 @@ StepperField (no consumer beyond icon pairs), Tabs (SegmentedControl
 Toast (the notification surface exists), a color-picker dialog (the
 swatch row suffices until asked).
 
+* The clip-focus law (#1419, operator ruling 2026-11-25)
+
+Ruling: `https://github.com/D4id4los/taskboard/issues/1419#issuecomment-7172599685`
+(option A of the plan at
+=.artifacts/plans/2026-11-25-clip-sentinel-law-plan.md= §4). The law,
+in force from 2026-11-25:
+
+** Option A — clipped focus auto-scrolls the nearest scrollable ancestor
+
+Focusing an element inside a clipped container is legal and the
+container owes the user visibility: the nearest scrollable ancestor
+seeks so the focused element enters the viewport (the A5a
+=seek-page= hint-consumer precedent, commit 83e5f7af, generalized;
+the board columns row's Flickable wrap + per-column seek consumption
+is the application — fead35c2).
+
+The refresh-synchronous focus drop inside a clipped subtree is a
+*synthetic unmount echo, not a dismissal*: a model push pass can
+unmount/remount the focused text field (a rebuild does what the bare
+layout diffed away), and the teardown fires =text_flow_focus_lost=.
+The absorb seam (=adapter.rs= =on_text_flow_focus_lost=, the
+=refresh_push_in_progress= echo window armed at every push pass and
+=apply_outcomes=) absorbs the echo — the FIRST focus-lost of a window
+is that push's echo (a field that lost its mount cannot lose focus
+twice), absorbed and disarmed in one step; every later focus-lost is
+a genuine settle. The flag also disarms on any user-intent seam (the
+seam macro arms) — a genuine interaction un-arms before its own
+focus move can be mis-absorbed. The remount half: the adapter bumps
+=EditingFacts.refocus-nonce= after each push and from the absorb
+branch; a TextField left focusless by the rebuild re-grabs
+(=widgets/text-field.slint=, the =has-focus=-guarded consumer).
+
+- *Enforcement seam*: two pins together — (1) the clip-focus
+  regression (=view_component_tests::editing_dispatches_nothing_and_exits_via_escape=,
+  the "mid-edit refresh keeps the flow open" case) must pass *with*
+  the Flickable wrap present; (2) the seek probe
+  (=columns_seek_probe_tests.rs= — a landing in a clipped column
+  moves the columns element's window x negative, clamped to the
+  content; the fitting regime stays at rest).
+- *Walk-ladder interaction*: a focus walk that crosses into a clipped
+  subtree continues through it — the seek is the walk's
+  responsibility, so the ladder never silently strands focus in an
+  unreachable region.
+- *What the user sees*: the focused element is always visible;
+  clipped columns are reachable by keyboard focus and pointer alike.
+
+** Implementation status (2026-11-26, round 8 L1 stage 2)
+
+The absorb seam and the refocus-nonce plumbing are LANDED. The
+Flickable wrap is WITHDRAWN a second time (fead35c2 → f0afe0e6, then
+this chunk's re-land → withdrawal): the wrap's model-push rebuild
+defeats the TextField init focus grab — the old instance's deferred
+focus release lands after the new instance's init focus, leaving the
+window with no focus item, and the rebuilt vi-insert flow dead-ends
+the keyboard (Escape included). Every in-scope restoration mechanism
+tried (EditingFacts-count-guarded refocus, changed-width
+mount-settle re-grab, the refocus nonce with and without the
+has-focus guard) leaves
+=keymap_adapter_tests::insert_intent_opens_the_create_row_and_escape_returns=
+red; per AGENTS §5 the wrap is withdrawn with the failing pin rather
+than weakened. The full diagnosis and fix prompt ride the follow-up
+backlog issue filed from chunk L1; the wrap re-lands on top of the
+landed absorb seam once that refocus defect is solved. Until then
+the board keeps decision 6's recorded clip fallback, and the B-board
+C1 signatures stay accept-as-legacy with this section as the
+recorded rationale.
+
 * Sizing defaults
 
 All values are Theme token expressions (=Npx * base-scale=, the

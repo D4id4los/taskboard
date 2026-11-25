@@ -509,6 +509,18 @@ export component TaskView inherits FocusScope {
 
         VerticalLayout {
             spacing: Theme.space-3;
+            // The detail-editor severing inset (the C1 fix-now class,
+            // round 8 L1 — the E-editor/E-recur signature): the
+            // shared editor/track composition previously ran its rows
+            // flush to the canvas edges on both sides, painting
+            // surface past the window frame at every scale (the
+            // analyzer's 17/25/31 px flush runs across the
+            // due-editor, focus-cell, track-entries, labels-overlay
+            // and recur-editor goldens). One inset here heals the
+            // whole family — the composition is shared, so one fix
+            // covers every mount.
+            padding-left: Theme.space-2;
+            padding-right: Theme.space-2;
 
             // The habit editor (H4 D1/D5/D6): the shared surface's
             // habit variant — the task-only body hides behind the

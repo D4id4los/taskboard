@@ -380,6 +380,15 @@ pub(crate) struct Adapter {
     /// nested confirm is mounted; a stage change or the dismissal
     /// clears it.
     walk_abort_armed: bool,
+    /// The clip-focus law's absorb seam (#1419, operator ruling
+    /// 2026-11-25, issue comment 7172599685): `true` from a push pass
+    /// (or an `apply_outcomes` model write) until the first
+    /// focus-lost or the first user-intent seam. The push's deferred
+    /// `text_flow_focus_lost` echo is the synthetic unmount echo, not
+    /// a user dismissal; the seam reads this flag and absorbs the
+    /// echo. A `Cell` because the non-mut seam arms share the
+    /// disarm.
+    refresh_push_in_progress: std::cell::Cell<bool>,
     /// The last [`Self::apply_outcomes`] pass's flow liveness (the
     /// flowless enum variant replaces a bool — clippy's
     /// excessive-bools wall). The D15 focus hand-off (and the r4 D20
@@ -2582,6 +2591,17 @@ impl Adapter {
     fn apply_outcomes(&mut self, window: &AppWindow, outcomes: &[FlowOutcome]) {
         let mut mode_changed = false;
         self.applying_outcomes = true;
+        // The clip-focus law's echo window for the OUTCOME pushes
+        // (#1419 option A): applying outcomes writes the slint models
+        // exactly like a refresh push (a flow opening here rebuilds
+        // the field subtrees), so its deferred focus-lost echo is the
+        // synthetic unmount echo too. Arm the flag unless a push pass
+        // already holds it; like the pass arm, it disarms on the
+        // first focus-lost or the first user-intent seam — never on
+        // this function's exit.
+        if !self.refresh_push_in_progress.get() {
+            self.refresh_push_in_progress.set(true);
+        }
         let flow_ended =
             self.flow_open == FlowLiveness::Open && matches!(self.view_state.flow(), Flow::None);
         for outcome in outcomes {
@@ -2961,6 +2981,15 @@ impl Adapter {
     /// calls this directly (the plan §5 audit's forced set).
     #[allow(clippy::too_many_lines)] // the pass is one linear pipeline
     pub(crate) fn refresh_forced(&mut self, window: &AppWindow) {
+        // The clip-focus law's absorb seam arm (#1419, operator
+        // ruling 2026-11-25, issue comment 7172599685): the pass
+        // below re-derives and pushes the slint models, and a model
+        // push can unmount/remount the focused text field — the
+        // unmount fires `text_flow_focus_lost` as a synthetic unmount
+        // echo, not a user dismissal. The flag arms the seam's absorb
+        // for the echo's delivery window (it extends past this body —
+        // see the disarm note at the tail).
+        self.refresh_push_in_progress.set(true);
         // The create-focus handoff's consumption (UX-R8 chunk-5 D-7,
         // US-5/AC-1): the stack's live ids diffed against the commit-
         // time snapshot — exactly one new id moves the focus (the
@@ -3539,6 +3568,23 @@ impl Adapter {
         // fires here, over the freshly pushed models, so the origin's
         // row is on the page the fact names.
         self.sync_focus_origin(window);
+        // The mount-settle refocus bump (the clip-focus law's remount
+        // half, #1419): pushed AFTER the models, so a rebuilt text
+        // flow field sees the change and re-grabs if the rebuild
+        // dropped its focus; the slint-side has-focus guard makes the
+        // bump a no-op for every field that holds or deliberately
+        // lacks focus.
+        {
+            let facts = window.global::<crate::EditingFacts>();
+            facts.set_refocus_nonce(facts.get_refocus_nonce() + 1);
+        }
+        // NOTE: the echo flag is intentionally NOT disarmed here. The
+        // deferred focus-lost echo of this push lands after the
+        // dispatch's synchronous processing ends, so a tail disarm
+        // always precedes it. The flag disarms on the FIRST focus-lost
+        // (the seam's absorb-and-disarm) or on any user-intent seam
+        // (the macro arms) — a genuine interaction un-arms before its
+        // own focus move can be mis-absorbed.
     }
 
     /// Recomposes the setter's grammar text + fire instant from the
@@ -12213,6 +12259,12 @@ macro_rules! install_seam {
                 return;
             };
             let mut $a = seam_adapter.borrow_mut();
+            // The echo-window disarm (the clip-focus law, #1419): a
+            // user-intent seam's entry proves real interaction — the
+            // push's deferred echo either already arrived (the
+            // focus-lost seam absorbed it) or never will; the next
+            // focus-lost is genuine and must settle.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12229,6 +12281,8 @@ macro_rules! install_seam {
                 return;
             };
             let $a = seam_adapter.borrow_mut();
+            // The echo-window disarm — see the default arm.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12241,6 +12295,8 @@ macro_rules! install_seam {
                 return $guard_return;
             };
             let mut $a = seam_adapter.borrow_mut();
+            // The echo-window disarm — see the default arm.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12249,6 +12305,8 @@ macro_rules! install_seam {
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         $window.$on(move |$($arg)*| {
             let mut $a = seam_adapter.borrow_mut();
+            // The echo-window disarm — see the default arm.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12257,6 +12315,8 @@ macro_rules! install_seam {
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         $window.$on(move |$($arg)*| {
             let $a = seam_adapter.borrow();
+            // The echo-window disarm — see the default arm.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12437,6 +12497,7 @@ pub(crate) fn install(
         label_delete_armed: None,
         effort_editor: None,
         walk_abort_armed: false,
+        refresh_push_in_progress: std::cell::Cell::new(false),
         habit_convert_armed: None,
         habit_remove_armed: None,
         habit_restore_armed: None,
@@ -15832,7 +15893,27 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // can never mask a legitimate settle (a genuine focus move
     // happens outside any borrow, where the borrow succeeds).
     install_seam!(window: window.on_text_flow_focus_lost, adapter: adapter; [try]
-    bind mut (a, window), args (), {        let state = a.state.load_full();
+    bind mut (a, window), args (), {        // The clip-focus law's absorb (#1419, operator ruling
+        // 2026-11-25, issue comment 7172599685): a focus-lost that
+        // fires while an echo window is open is the synthetic unmount
+        // echo of the focused field's rebuild — not a user dismissal
+        // — and is absorbed; a field that lost its mount cannot lose
+        // focus twice, so the FIRST focus-lost of a window is the
+        // echo: absorbed and disarmed in one step. Every later
+        // focus-lost is a genuine settle. Deliberate leniency
+        // (recorded): a genuine blur arriving as the very first
+        // event of a window is absorbed once — the flow stays armed
+        // and the next focus cycle settles it; Return-commit is
+        // unaffected. The remount half: bump the refocus nonce so a
+        // field left focusless by the rebuild re-grabs (the slint
+        // has-focus guard decides; see text-field.slint).
+        if a.refresh_push_in_progress.get() {
+            a.refresh_push_in_progress.set(false);
+            let facts = window.global::<crate::EditingFacts>();
+            facts.set_refocus_nonce(facts.get_refocus_nonce() + 1);
+            return;
+        }
+        let state = a.state.load_full();
     a.settle_flow(&window, &state);
 
     });
