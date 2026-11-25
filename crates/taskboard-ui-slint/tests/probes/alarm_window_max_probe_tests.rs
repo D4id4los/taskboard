@@ -36,6 +36,36 @@ fn run_probe(job: impl FnOnce(&AlarmWindowMaxProbe) + Send + 'static) {
     );
 }
 
+/// The at-rest grip cue (#1353, D-1353a): the instantiated strip
+/// carries the three-dot row — the typed structural facts (count,
+/// size, position inside the strip's space-2 height) over the probe
+/// mount's element tree; no screenshot, no text. The binding's token
+/// transition (rest `Theme.border` -> pressed `Theme.surface-raised`,
+/// never transparent) is pinned in the alarm structural fold's
+/// source assertion (the #1308 module's own precedent for markup
+/// folds the element API cannot read).
+#[test]
+fn alarm_window_carries_the_grip_dot_cue() {
+    run_probe(|window| {
+        support::driver::advance_probe_clock(0);
+        let dots = support::driver::find_all_by_id_on(window, "AlarmWindow::grip-dot");
+        assert_eq!(dots.len(), 3, "the grip cue is the three-dot row");
+        for dot in &dots {
+            let size = dot.size();
+            assert!(
+                size.width > 0.0 && size.height > 0.0,
+                "a grip dot paints at a positive size ({size:?})"
+            );
+            assert!(
+                size.height <= 8.0,
+                "the dots are painted children, not layout mass ({size:?})"
+            );
+        }
+        let grips = support::driver::find_all_by_id_on(window, "AlarmWindow::grip");
+        assert_eq!(grips.len(), 1, "the dot row is the strip's single cue");
+    });
+}
+
 /// The invariant (the 1276151a twin): after the window mounts and the
 /// runtime's materialization pass has walked the tree, the root's
 /// horizontal layout max stays effectively unbounded. The pre-fix
