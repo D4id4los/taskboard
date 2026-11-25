@@ -54,7 +54,7 @@ use taskboard_domain::messages::SyncReport;
 use taskboard_domain::ownership::BoardOwnershipMap;
 use taskboard_domain::persistence::PersistedState;
 
-use taskboard_domain::push::{EntityTables, PushTarget, plan_pushes};
+use taskboard_domain::push::{EntityTables, PushTarget, TargetRowPresence, plan_pushes};
 use taskboard_domain::remote::{FilesBoardSnapshot, PushOutcome, PushResult};
 use taskboard_sync_files::board_chunk::BoardChunk;
 use taskboard_sync_files::board_fold::{fold_board, fold_sections};
@@ -1083,36 +1083,41 @@ async fn drain_board<T: FilesTransport>(
                 // repair): no Deck actor ever serves a files-bound
                 // board again, so the collapse artifact's deletion
                 // relays as this tier's tombstone.
-                match task_tombstone(&card_ref, &persisted.tasks, ctx.clock.now()) {
-                    Some(tombstone) => {
-                        ref_tombstone_tasks.push(tombstone);
-                        chunk_ops.push(group.primary);
-                        chunk_ops.extend(group.subsumed.iter().copied());
-                        continue;
-                    }
-                    None => {
-                        tracing::warn!(
-                            board = ?board,
-                            "a deck-tagged ref-delete with no local row stays queued"
-                        );
-                    }
+                if let Some(tombstone) =
+                    task_tombstone(&card_ref, &persisted.tasks, ctx.clock.now())
+                {
+                    ref_tombstone_tasks.push(tombstone);
+                    chunk_ops.push(group.primary);
+                    chunk_ops.extend(group.subsumed.iter().copied());
+                    continue;
                 }
+                // The unresolved ref stays queued (the #1329 honesty
+                // law): the op contributes no wire entry, so its id must
+                // NOT ride `chunk_ops` — a pre-emptive Applied is data
+                // loss. It retries next cycle.
+                tracing::warn!(
+                    board = ?board,
+                    "a deck-tagged ref-delete with no local row stays queued"
+                );
+                continue;
             }
             PushTarget::RemoteStack(stack_ref) => {
-                match stack_tombstone(&stack_ref, &persisted.stacks, ctx.clock.now()) {
-                    Some(tombstone) => {
-                        ref_tombstone_stacks.push(tombstone);
-                        chunk_ops.push(group.primary);
-                        chunk_ops.extend(group.subsumed.iter().copied());
-                        continue;
-                    }
-                    None => {
-                        tracing::warn!(
-                            board = ?board,
-                            "a deck-tagged ref-delete with no local row stays queued"
-                        );
-                    }
+                if let Some(tombstone) =
+                    stack_tombstone(&stack_ref, &persisted.stacks, ctx.clock.now())
+                {
+                    ref_tombstone_stacks.push(tombstone);
+                    chunk_ops.push(group.primary);
+                    chunk_ops.extend(group.subsumed.iter().copied());
+                    continue;
                 }
+                // Same posture as the unresolved card ref: the op stays
+                // queued and retries next cycle; only ops whose group
+                // contributed a wire entry land in `chunk_ops`.
+                tracing::warn!(
+                    board = ?board,
+                    "a deck-tagged ref-delete with no local row stays queued"
+                );
+                continue;
             }
             PushTarget::Document(_) => {
                 // The planner cannot produce a Document group for a
@@ -1173,14 +1178,11 @@ async fn drain_board<T: FilesTransport>(
     if entries.is_empty() {
         let synthetic: Vec<OpId> = groups
             .iter()
-            .filter(|group| match group.target {
-                PushTarget::Task(id) => !tables.tasks.contains_key(&id),
-                PushTarget::Stack(id) => !tables.stacks.contains_key(&id),
-                PushTarget::Label(id) => !tables.labels.contains_key(&id),
-                PushTarget::Board(id) => !tables.boards.contains_key(&id),
-                PushTarget::RemoteCard(_)
-                | PushTarget::RemoteStack(_)
-                | PushTarget::Document(_) => false,
+            .filter(|group| match group.target.row_presence(&tables) {
+                TargetRowPresence::Wiped => true,
+                // An unresolved ref-delete (and any still-present row)
+                // is not synthetic — it stays queued.
+                TargetRowPresence::Present | TargetRowPresence::Remote => false,
             })
             .flat_map(|group| std::iter::once(group.primary).chain(group.subsumed.iter().copied()))
             .collect();
@@ -1277,12 +1279,15 @@ async fn drain_board<T: FilesTransport>(
 /// report path (`Failed { board: None }` — the same accounting shape
 /// the Deck connector's standalone drain uses; no board exists to
 /// attribute a `Completed` to, and a fabricated identity would mint a
-/// phantom board row). A group that would need a lane — a
-/// materialized entity write or a ref-tombstone relay, both of which
-/// publish only as chunk entries — has no destination here and stays
-/// queued loudly until a board binds (mechanism, not semantics: the
-/// Deck connector drains the wire-shaped orphans; this tier drains
-/// everything publishable without a board, every cycle).
+/// phantom board row). A group whose target row is still present — a
+/// materialized entity write that publishes only as a chunk entry — has
+/// no destination here and stays queued loudly until a board binds. A
+/// group whose target row is wiped completes synthetically, and so does
+/// a ref-delete orphan: its target has no local row by construction and
+/// no board subtree exists to relay a tombstone into, so the op accounts
+/// and drains rather than stranding forever (the #1150 law) — mechanism,
+/// not semantics: the Deck connector drains the wire-shaped orphans;
+/// this tier drains everything publishable without a board, every cycle.
 async fn drain_orphans_only(
     ctx: &SyncContext,
     persisted: &PersistedState,
@@ -1301,24 +1306,18 @@ async fn drain_orphans_only(
     let ownership = BoardOwnershipMap::from_boards(&persisted.boards);
     let mut completions: Vec<OpId> = Vec::new();
     for group in plan_pushes(orphan_ops, tables, &ownership) {
-        let row_present = match group.target {
-            PushTarget::Task(id) => tables.tasks.contains_key(&id),
-            PushTarget::Stack(id) => tables.stacks.contains_key(&id),
-            PushTarget::Label(id) => tables.labels.contains_key(&id),
-            PushTarget::Board(id) => tables.boards.contains_key(&id),
-            // No board subtree exists to relay a ref-tombstone into,
-            // and the flush needs a board's sidecar lane: these targets
-            // are never publishable without a board.
-            PushTarget::RemoteCard(_) | PushTarget::RemoteStack(_) | PushTarget::Document(_) => {
-                false
+        match group.target.row_presence(&tables) {
+            TargetRowPresence::Present => {
+                tracing::warn!(
+                    connector = %ctx.connector,
+                    "an orphan group needs a board lane; op stays queued until a board binds"
+                );
+                continue;
             }
-        };
-        if row_present {
-            tracing::warn!(
-                connector = %ctx.connector,
-                "an orphan group needs a board lane; op stays queued until a board binds"
-            );
-            continue;
+            // Wiped rows complete synthetically. Remote targets complete
+            // too: no board subtree exists to relay a ref-tombstone into,
+            // so the group accounts alone rather than stranding forever.
+            TargetRowPresence::Wiped | TargetRowPresence::Remote => {}
         }
         completions.push(group.primary);
         completions.extend(group.subsumed.iter().copied());
@@ -2216,6 +2215,260 @@ mod tests {
             1,
         ));
         assert!(fake.file(&ops_path).is_none(), "nothing published");
+    }
+
+    /// Deck-tagged refs the files tier cannot resolve (the #1329
+    /// fixtures): a card ref and a stack ref over Deck-namespace ids
+    /// with no local row.
+    fn deck_ref_delete_card(op_raw: u128) -> PendingOp {
+        PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(op_raw)),
+            op: LocalOp::DeleteRemoteCard {
+                board: board(),
+                card: taskboard_domain::ids::RemoteCardRef {
+                    board: RemoteBoardId::deck(42),
+                    stack: taskboard_domain::ids::RemoteStackId::deck(7),
+                    card: taskboard_domain::ids::RemoteCardId::deck(9),
+                },
+            },
+            queued_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        }
+    }
+
+    fn deck_ref_delete_stack(op_raw: u128) -> PendingOp {
+        PendingOp {
+            op_id: taskboard_domain::OpId(uuid::Uuid::from_u128(op_raw)),
+            op: LocalOp::DeleteRemoteStack {
+                board: board(),
+                stack: taskboard_domain::ids::RemoteStackRef {
+                    board: RemoteBoardId::deck(42),
+                    stack: taskboard_domain::ids::RemoteStackId::deck(7),
+                },
+            },
+            queued_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        }
+    }
+
+    fn applied_ids(report: &SyncReport) -> std::collections::HashSet<taskboard_domain::OpId> {
+        match report {
+            SyncReport::Completed { pushes, .. } | SyncReport::Failed { pushes, .. } => {
+                pushes.iter().map(|outcome| outcome.op).collect()
+            }
+            SyncReport::BoardMoved { .. } => std::collections::HashSet::new(),
+        }
+    }
+
+    fn drain_reports(rx: &mut mpsc::Receiver<SyncReport>) -> Vec<SyncReport> {
+        let mut reports = Vec::new();
+        while let Ok(report) = rx.try_recv() {
+            reports.push(report);
+        }
+        reports
+    }
+
+    /// The unresolved mixed-chunk pin (the #1329 bug): a drain whose
+    /// chunk publishes a dirty task alongside two unresolved ref-deletes
+    /// stamps ONLY the task's op — the never-materialized ref-delete ids
+    /// must not ride the mixed chunk's drain report.
+    #[tokio::test]
+    async fn an_unresolved_ref_delete_in_a_mixed_chunk_reports_only_the_published_ops() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let outbox = vec![
+            queued_update(0xE1, TaskId::from_uuid(TASK_UUID)),
+            deck_ref_delete_card(0xE4),
+            deck_ref_delete_stack(0xE5),
+        ];
+        let state = Arc::new(FixedState(state_with(outbox)));
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(Arc::clone(&state), board_tx);
+        let mut lanes = Lanes::default();
+        let _ = run_board_lanes(&fake, &context, &mut lanes).await;
+
+        let reports = drain_reports(&mut board_rx);
+        assert!(reports.len() >= 2, "the pull and drain reports fly");
+        let stamped: std::collections::HashSet<_> = reports.iter().flat_map(applied_ids).collect();
+        let task_op = taskboard_domain::OpId(uuid::Uuid::from_u128(0xE1));
+        let card_op = taskboard_domain::OpId(uuid::Uuid::from_u128(0xE4));
+        let stack_op = taskboard_domain::OpId(uuid::Uuid::from_u128(0xE5));
+        assert!(
+            stamped.contains(&task_op),
+            "the co-published task still reports Applied"
+        );
+        assert!(
+            !stamped.contains(&card_op) && !stamped.contains(&stack_op),
+            "the unresolved ref-deletes report nothing"
+        );
+        // The chunk itself flew: only the task's entity went on the wire.
+        let ops_path = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            device(),
+            1,
+        ));
+        let bytes = last_put_body(&fake, &ops_path);
+        let chunk: BoardChunk = serde_json::from_slice(&bytes).expect("a valid chunk");
+        assert_eq!(chunk.entities.len(), 1, "only the task's entity published");
+    }
+
+    /// The published leg of the matrix (the healthy path is unchanged):
+    /// a *resolved* deck-tagged ref-delete (a local row bound to the
+    /// ref) plus a dirty task — the report stamps both ops and the
+    /// chunk carries the tombstone.
+    #[tokio::test]
+    async fn a_resolved_ref_delete_in_a_mixed_chunk_reports_both_ops() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let mut bound_task = task();
+        bound_task.remote = Some(taskboard_domain::ids::RemoteCardRef {
+            board: RemoteBoardId::deck(42),
+            stack: taskboard_domain::ids::RemoteStackId::deck(7),
+            card: taskboard_domain::ids::RemoteCardId::deck(9),
+        });
+        let mut state = state_with(vec![
+            queued_update(0xE1, TaskId::from_uuid(TASK_UUID)),
+            deck_ref_delete_card(0xE3),
+        ]);
+        state.tasks.insert(TaskId::from_uuid(TASK_UUID), bound_task);
+        let state = Arc::new(FixedState(state));
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(Arc::clone(&state), board_tx);
+        let mut lanes = Lanes::default();
+        let _ = run_board_lanes(&fake, &context, &mut lanes).await;
+
+        let reports = drain_reports(&mut board_rx);
+        let stamped: std::collections::HashSet<_> = reports.iter().flat_map(applied_ids).collect();
+        assert_eq!(
+            stamped,
+            std::collections::HashSet::from([
+                taskboard_domain::OpId(uuid::Uuid::from_u128(0xE1)),
+                taskboard_domain::OpId(uuid::Uuid::from_u128(0xE3)),
+            ]),
+            "both the task and the resolved ref-delete report Applied"
+        );
+        let ops_path = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            device(),
+            2,
+        ));
+        let bytes = last_put_body(&fake, &ops_path);
+        let chunk: BoardChunk = serde_json::from_slice(&bytes).expect("a valid chunk");
+        let task_rows = chunk
+            .entities
+            .iter()
+            .filter_map(|entry| match entry {
+                EntityEntry::Modeled(entity)
+                    if entity.kind == EntityKind::Task && entity.id == TASK_UUID =>
+                {
+                    entity.to_task()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            task_rows.iter().any(|row| row.deleted),
+            "the tombstone rides the chunk alongside the task's update"
+        );
+    }
+
+    /// The unpublished leg of the matrix: with the PUT rejected (a
+    /// foreign chunk already occupies the create-once slot), no drain
+    /// report flies at all — the fix is not "unresolved ops are
+    /// silently accounted on failure paths".
+    #[tokio::test]
+    async fn a_rejected_put_in_a_mixed_chunk_reports_nothing() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        // A foreign chunk occupies this device's next create-once slot:
+        // the PUT 412s and the reconcile finds it is not ours.
+        let peer: DeviceId =
+            DeviceId::parse("0193a1b2-c3d4-7cc9-8a2e-5f1e2d3c4b6b").expect("parses");
+        let ops_path = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            device(),
+            1,
+        ));
+        let written_at = {
+            use chrono::TimeZone as _;
+            chrono::Utc
+                .timestamp_opt(1_000_000, 0)
+                .single()
+                .expect("ts")
+        };
+        let foreign = BoardChunk {
+            format_version: BOARD_CHUNK_FORMAT,
+            device_id: peer,
+            first_seq: 1,
+            last_seq: 1,
+            written_at,
+            entities: vec![],
+            sections: None,
+            unknown: BTreeMap::new(),
+        };
+        let foreign_bytes = serde_json::to_vec(&foreign).expect("chunk serializes");
+        fake.seed_file(&ops_path, foreign_bytes.clone());
+
+        let outbox = vec![
+            queued_update(0xE1, TaskId::from_uuid(TASK_UUID)),
+            deck_ref_delete_card(0xE4),
+            deck_ref_delete_stack(0xE5),
+        ];
+        let state = Arc::new(FixedState(state_with(outbox)));
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(Arc::clone(&state), board_tx);
+        let mut lanes = Lanes::default();
+        let _ = run_board_lanes(&fake, &context, &mut lanes).await;
+
+        let reports = drain_reports(&mut board_rx);
+        assert!(
+            reports.iter().all(|report| applied_ids(report).is_empty()),
+            "no op reports anything when the PUT never succeeded"
+        );
+        // The slot still holds the foreign chunk: the PUT was rejected.
+        assert_eq!(
+            fake.file(&ops_path).expect("the foreign chunk survives"),
+            foreign_bytes,
+            "the rejected chunk never landed"
+        );
+    }
+
+    /// The retry leg of the matrix: after the unresolved mixed drain,
+    /// the next cycle attempts the still-queued ref-deletes again —
+    /// the report shape repeats (only the co-published op stamps) and
+    /// the chunk sequence advances.
+    #[tokio::test]
+    async fn the_next_cycle_retries_the_unresolved_ref_deletes() {
+        let fake = FakeFilesTransport::new();
+        fake.seed_dirs(&["taskboard"]);
+        let outbox = vec![
+            queued_update(0xE1, TaskId::from_uuid(TASK_UUID)),
+            deck_ref_delete_card(0xE4),
+            deck_ref_delete_stack(0xE5),
+        ];
+        let state = Arc::new(FixedState(state_with(outbox)));
+        let (board_tx, mut board_rx) = mpsc::channel(8);
+        let context = ctx(Arc::clone(&state), board_tx);
+        let mut lanes = Lanes::default();
+        let task_op = taskboard_domain::OpId(uuid::Uuid::from_u128(0xE1));
+        for cycle in 1..=2 {
+            let _ = run_board_lanes(&fake, &context, &mut lanes).await;
+            let reports = drain_reports(&mut board_rx);
+            let stamped: std::collections::HashSet<_> =
+                reports.iter().flat_map(applied_ids).collect();
+            assert_eq!(
+                stamped,
+                std::collections::HashSet::from([task_op]),
+                "cycle {cycle} stamps only the co-published task, never the unresolved refs"
+            );
+        }
+        let second_ops_path = crate::cycle::rooted(&taskboard_sync_files::layout::board_ops_path(
+            board(),
+            device(),
+            2,
+        ));
+        assert!(
+            fake.file(&second_ops_path).is_some(),
+            "the second cycle advanced the chunk sequence"
+        );
     }
 
     /// Fold-first discovery: a pre-existing subtree (identity 412)
