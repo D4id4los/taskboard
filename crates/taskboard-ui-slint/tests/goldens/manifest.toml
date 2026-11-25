@@ -375,3 +375,9 @@ name = "action-menu-1.0-1500"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
 state = "action menu; root panel + invoked group page"
 axes = { scale = 1.0, width = 1500, height = 900 }
+
+[[golden]]
+name = "today-two-column-1.0-1600"
+fixture = "today_overdue_enriched_at(PINNED_NOW)"
+state = "today view; the two-column grid arm at 1600 (band above, sections left, habits/review right)"
+axes = { scale = 1.0, width = 1600, height = 900 }

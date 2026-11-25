@@ -95,18 +95,35 @@ export global TodayClipFacts {
     in-out property <length> h3;
 }
 
-// The layout arm's #1023 root seam (#1436, the TodayClipFacts
-// pattern): the grid-arm predicate is a pure width expression at the
-// TodayView root — no state mutation, no command — and the callback
-// witness mirrors it out for the tests (Slint suppresses
-// first-layout `changed` fires, so a declarative callback binding is
-// the report's driver; the Rust handler idempotently mirrors the
-// returned bool into `grid-arm`). Display state only.
+// The layout arm's width channel (#1436): the app window ASSIGNS the
+// window's logical width here (the TodayViewport height precedent,
+// #1310/#1304 — an imperative assignment, not a binding chain). The
+// naive declarative spelling (`grid-arm: root.width >= token` at the
+// view root, arms reading it) is a binding loop the compiler traces
+// root.layoutinfo-h -> width -> grid-arm -> grid-arm-report ->
+// content.layoutinfo-h -> ... -> root.layoutinfo-h — deprecated and
+// runtime-panic-class. The assignment severs the edge: `grid-arm`
+// derives declaratively from the assigned input (every read stays a
+// binding), the write leaves the layout graph. The app window
+// assigns on init AND on every width change (Slint suppresses
+// first-layout `changed` fires; init covers the first frame). The
+// window's logical width is the arm's measurement domain — the same
+// domain the board layout's breakpoint vocabulary reads
+// (src/responsive.rs), so the shared breakpoint governs the same
+// width on every mount (the amendment: no kiosk branch). Display
+// state only; the tests' typed oracle is `grid-arm`.
 // slint: today-layout-facts
 export global TodayLayoutFacts {
+    // The window's logical width, assigned by the app window; the
+    // default only covers a first frame ahead of the init
+    // assignment — never read as a semantic value. The zero is
+    // spelled token-side (the token-lint law: no literal spacing
+    // dimensions in markup) and reads as "no measurement yet" —
+    // below every breakpoint, the single column.
+    in-out property <length> viewport-width:
+        0 * Theme.layout-today-two-column-min-width;
     // slint: today-layout-facts-grid-arm
-    pure callback grid-arm-witness(bool) -> bool;
-    in-out property <bool> grid-arm: false;
+    in-out property <bool> grid-arm: viewport-width >= Theme.layout-today-two-column-min-width;
 }
 
 export struct TodayRowModel {
@@ -145,14 +162,11 @@ export struct TodayModel {
 // refactor: the inner structure (header, page cap, clip height
 // binding, ListView, row delegates) is byte-identical to the
 // pre-extraction delegate; only the parent layout differs per arm.
-// Mount law per arm: the wide arm's left column MOUNTS its blocks
-// fresh; the narrow arm's section delegates stay MOUNTED but
-// layout-collapsed under the wide arm (`visible: false` — the
-// delegate cannot carry a bare conditional, and the pass-through
-// wrapper's own `visible` is the collapse law's mechanism), so their
-// layout contribution is exactly one arm's while the twin
-// virtualizers remain instantiated (the #1464 class; filed as
-// backlog for the sweep).
+// Mount law per arm: exactly one arm mounts its blocks — the narrow
+// arm is one conditional wrapper (a repeater delegate cannot carry a
+// bare conditional, and a per-delegate `visible: false` collapse
+// kept the twins mounted and leaking full-width rows in the first
+// wide golden), so the whole arm unmounts across the breakpoint.
 component TodaySectionBlock inherits VerticalLayout {
     vertical-stretch: 0;
     // Empty sections collapse (D7): the header and rows render only
@@ -557,16 +571,18 @@ export component TodayView inherits FocusScope {
     accessible-label: "Today";
     init => self.focus();
 
-    // The wide arm's predicate (#1436, journey plan D-2): the view's
-    // own width (the view host fills the window's logical width —
-    // the toolbar spans above, there is no side chrome) against the
-    // shared breakpoint token. The same width test rules every mount
-    // — no kiosk branch (the 2026-11-25 operator amendment). The
-    // #1023 witness mirror (the TodayClipFacts pattern) rides a
-    // declarative callback binding so the report sees the first
-    // real geometry.
-    property <bool> grid-arm: self.width >= Theme.layout-today-two-column-min-width;
-    property <bool> grid-arm-report: TodayLayoutFacts.grid-arm-witness(root.grid-arm);
+    // The wide arm's predicate (#1436, journey plan D-2) lives in
+    // `TodayLayoutFacts.grid-arm` (the global above): the arms read
+    // the fact, never the view's own width — the declarative
+    // width→arm spelling at the root is the binding loop recorded in
+    // the global's header comment.
+    // The wide grid's fixed column width (#1436): half the page's
+    // inner width — window width minus the content padding's two
+    // sides and the grid's one inter-column spacing — derived from
+    // the severed width channel, never from a layout-derived width
+    // (the binding loop recorded at the grid's column comment).
+    property <length> grid-column-width:
+        (TodayLayoutFacts.viewport-width - 3 * Theme.space-3) / 2;
     // The habits block's mount gate (round-7 D-7.2), hoisted so both
     // arms read one expression (the fold law: exactly one arm).
     property <bool> habits-block-mounted: root.habits.length > 0
@@ -625,19 +641,75 @@ export component TodayView inherits FocusScope {
                 }
 
                 // ---- the wide arm (#1436, journey plan D-1/D-4):
-                // the full-width band above the grid, then the
-                // two-column grid. One scroll container (the page
-                // Flickable) scrolls both columns together; the
-                // columns top-align and unequal heights leave the
-                // shorter column's space below empty (no nested
-                // scroll region — the #1310 convergence-transient
-                // class is not reopened).
-                if (root.grid-arm): HorizontalLayout {
+                // the full-width band above the grid (timers first on
+                // the page — D-P18), then the two-column grid. One
+                // scroll container (the page Flickable) scrolls both
+                // columns together; the columns top-align and unequal
+                // heights leave the shorter column's space below
+                // empty (no nested scroll region — the #1310
+                // convergence-transient class is not reopened).
+                if (TodayLayoutFacts.grid-arm
+                    && (root.timers-visible || root.timers-absence-hint)): TimersBlock {
+                    timers: root.timers;
+                    timers-awaiting: root.timers-awaiting;
+                    absence-hint: root.timers-absence-hint;
+                    cancel-clicked(r) => root.timers-cancel-clicked(r);
+                    create-accepted(label, when, alarm) => {
+                        root.timers-create-accepted(label, when, alarm)
+                    }
+                    // The validity half (r4 D27, chunk 9's mount fix):
+                    // the form's per-keystroke grammar probe rides the
+                    // same forwards the task-view twin wires.
+                    when-edited(t) => root.timers-when-edited(t);
+                    setter-opened() => root.timers-setter-opened();
+                    when-validity: root.timer-when-validity;
+                    when-error-hint: root.timer-when-error-hint;
+                    // The break-rule subsection (T-14, #797): the
+                    // roster, the staged remove, and the create form.
+                    break-rules: root.break-rules;
+                    break-create-open: root.break-create-open;
+                    break-create-toggled() => root.timers-break-create-toggled();
+                    break-create-accepted(label, threshold, alarm) => {
+                        root.timers-break-create-accepted(label, threshold, alarm)
+                    }
+                    break-threshold-edited(t) => root.timers-break-threshold-edited(t);
+                    break_remove_clicked(r) => root.timers_break_remove_clicked(r);
+                    break_remove_confirmed(r) => root.timers_break_remove_confirmed(r);
+                    break_remove_cancelled() => root.timers_break_remove_cancelled();
+                    break-threshold-validity: root.break-threshold-validity;
+                    break-threshold-error-hint: root.break-threshold-error-hint;
+                    seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
+                }
+                // The "Tracked" day summary (#490): the D-1 band's
+                // second half — full-width above the grid in the wide
+                // arm (a separate composition, not a fifth section
+                // model; the row shape differs). Empty collapses.
+                if (TodayLayoutFacts.grid-arm
+                    && root.today.tracked-today.length > 0): TrackedTodaySection {
+                    vertical-stretch: 0;
+                    rows: root.today.tracked-today;
+                    day-total: root.today.tracked-day-total;
+                    row-activated(i) => root.tracked-activated(i);
+                }
+                if (TodayLayoutFacts.grid-arm): grid := HorizontalLayout {
                     vertical-stretch: 0;
                     spacing: Theme.space-3;
+                    // Fixed 50/50 columns (journey plan D-1): the
+                    // explicit width keeps the columns out of the
+                    // conditionally-empty layout-info class (a
+                    // repeater-hosting column otherwise inherits
+                    // max = min = 0 and collapses — the layout
+                    // severing law's own mechanism, observed in the
+                    // first wide golden). The width reads the SEVERED
+                    // width channel (TodayLayoutFacts.viewport-width,
+                    // assigned by the app window): a content-derived
+                    // spelling (grid.width) is a layout-info binding
+                    // loop — the compiler traces column-width ->
+                    // grid.layoutinfo-h -> content.width -> grid.width.
                     // The left column (D-1): the task sections,
                     // urgency first — the model's display order.
                     VerticalLayout {
+                        width: root.grid-column-width;
                         spacing: Theme.space-3;
                         if (root.today.empty): EmptyState {
                             text: "Nothing due today";
@@ -666,6 +738,7 @@ export component TodayView inherits FocusScope {
                     }
                     // The right column (D-1): the meta sections.
                     VerticalLayout {
+                        width: root.grid-column-width;
                         spacing: Theme.space-3;
                         if (root.habits-block-mounted): HabitsBlock {
                             habits: root.habits;
@@ -716,165 +789,114 @@ export component TodayView inherits FocusScope {
                     }
                 }
 
-                // The full-width band (D-1): timers first on the page
-                // (D-P18) — the wide arm renders it above the grid,
-                // the narrow arm in the existing slot; both below.
-                if (root.grid-arm
-                    && (root.timers-visible || root.timers-absence-hint)): TimersBlock {
-                    timers: root.timers;
-                    timers-awaiting: root.timers-awaiting;
-                    absence-hint: root.timers-absence-hint;
-                    cancel-clicked(r) => root.timers-cancel-clicked(r);
-                    create-accepted(label, when, alarm) => {
-                        root.timers-create-accepted(label, when, alarm)
-                    }
-                    // The validity half (r4 D27, chunk 9's mount fix):
-                    // the form's per-keystroke grammar probe rides the
-                    // same forwards the task-view twin wires.
-                    when-edited(t) => root.timers-when-edited(t);
-                    setter-opened() => root.timers-setter-opened();
-                    when-validity: root.timer-when-validity;
-                    when-error-hint: root.timer-when-error-hint;
-                    // The break-rule subsection (T-14, #797): the
-                    // roster, the staged remove, and the create form.
-                    break-rules: root.break-rules;
-                    break-create-open: root.break-create-open;
-                    break-create-toggled() => root.timers-break-create-toggled();
-                    break-create-accepted(label, threshold, alarm) => {
-                        root.timers-break-create-accepted(label, threshold, alarm)
-                    }
-                    break-threshold-edited(t) => root.timers-break-threshold-edited(t);
-                    break_remove_clicked(r) => root.timers_break_remove_clicked(r);
-                    break_remove_confirmed(r) => root.timers_break_remove_confirmed(r);
-                    break_remove_cancelled() => root.timers_break_remove_cancelled();
-                    break-threshold-validity: root.break-threshold-validity;
-                    break-threshold-error-hint: root.break-threshold-error-hint;
-                    seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
-                }
-                // The "Tracked" day summary (#490): the D-1 band's
-                // second half — full-width above the grid in the wide
-                // arm (a separate composition, not a fifth section
-                // model; the row shape differs). Empty collapses.
-                if (root.grid-arm
-                    && root.today.tracked-today.length > 0): TrackedTodaySection {
-                    vertical-stretch: 0;
-                    rows: root.today.tracked-today;
-                    day-total: root.today.tracked-day-total;
-                    row-activated(i) => root.tracked-activated(i);
-                }
-
                 // ---- the narrow arm: the single column, the exact
                 // pre-#1436 order (timers → habits → review card →
-                // empty state → tracked → sections → sink). Below the
-                // breakpoint this arm is byte-identical to the
+                // empty state → tracked → sections → sink) inside one
+                // conditional wrapper — a repeater delegate cannot
+                // carry a bare conditional, and a per-delegate
+                // `visible: false` collapse keeps the twins mounted
+                // (observed leaking full-width rows in the first wide
+                // golden), so the whole arm unmounts instead. Below
+                // the breakpoint this arm is byte-identical to the
                 // pre-grid page (US-17 AC-2).
-                if (!root.grid-arm
-                    && (root.timers-visible || root.timers-absence-hint)): TimersBlock {
-                    timers: root.timers;
-                    timers-awaiting: root.timers-awaiting;
-                    absence-hint: root.timers-absence-hint;
-                    cancel-clicked(r) => root.timers-cancel-clicked(r);
-                    create-accepted(label, when, alarm) => {
-                        root.timers-create-accepted(label, when, alarm)
+                if (!TodayLayoutFacts.grid-arm): VerticalLayout {
+                    vertical-stretch: 1;
+                    spacing: Theme.space-3;
+                    if (root.timers-visible || root.timers-absence-hint): TimersBlock {
+                        timers: root.timers;
+                        timers-awaiting: root.timers-awaiting;
+                        absence-hint: root.timers-absence-hint;
+                        cancel-clicked(r) => root.timers-cancel-clicked(r);
+                        create-accepted(label, when, alarm) => {
+                            root.timers-create-accepted(label, when, alarm)
+                        }
+                        when-edited(t) => root.timers-when-edited(t);
+                        setter-opened() => root.timers-setter-opened();
+                        when-validity: root.timer-when-validity;
+                        when-error-hint: root.timer-when-error-hint;
+                        break-rules: root.break-rules;
+                        break-create-open: root.break-create-open;
+                        break-create-toggled() => root.timers-break-create-toggled();
+                        break-create-accepted(label, threshold, alarm) => {
+                            root.timers-break-create-accepted(label, threshold, alarm)
+                        }
+                        break-threshold-edited(t) => root.timers-break-threshold-edited(t);
+                        break_remove_clicked(r) => root.timers_break_remove_clicked(r);
+                        break_remove_confirmed(r) => root.timers_break_remove_confirmed(r);
+                        break_remove_cancelled() => root.timers_break_remove_cancelled();
+                        break-threshold-validity: root.break-threshold-validity;
+                        break-threshold-error-hint: root.break-threshold-error-hint;
+                        seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
                     }
-                    when-edited(t) => root.timers-when-edited(t);
-                    setter-opened() => root.timers-setter-opened();
-                    when-validity: root.timer-when-validity;
-                    when-error-hint: root.timer-when-error-hint;
-                    break-rules: root.break-rules;
-                    break-create-open: root.break-create-open;
-                    break-create-toggled() => root.timers-break-create-toggled();
-                    break-create-accepted(label, threshold, alarm) => {
-                        root.timers-break-create-accepted(label, threshold, alarm)
+                    // The habits section (D-P18): timers, then habits,
+                    // then the task sections. Mounts with rows OR
+                    // while a create can happen (round-7 D-7.2:
+                    // desktop + active board — the header-only
+                    // section is how the first habit gets made; kiosk
+                    // and board-less days keep the old rows-only gate
+                    // model-side).
+                    if (root.habits-block-mounted): HabitsBlock {
+                        habits: root.habits;
+                        editing-enabled: root.habits-editing-enabled;
+                        row-activated(r) => root.habits-row-activated(r);
+                        edit-asked(r) => root.habits-edit-asked(r);
+                        log-clicked(r) => root.habits-log-clicked(r);
+                        undo-log-clicked(r) => root.habits-undo-log-clicked(r);
+                        quota-edit-asked(r) => root.habits-quota-edit-asked(r);
+                        repair-clicked(r) => root.habits-repair-clicked(r);
+                        context-requested(r, x, y) => root.habits-context-requested(r, x, y);
+                        drop-asked(r, g) => root.habits-drop-asked(r, g);
+                        track-asked(r) => root.habits-track-asked(r);
+                        skip-asked(r) => root.habits-skip-asked(r);
+                        pause-asked(r) => root.habits-pause-asked(r);
+                        resume-asked(r) => root.habits-resume-asked(r);
+                        pause-until-picked(s) => root.habits-pause-until-picked(s);
+                        pause-cancelled() => root.habits-pause-cancelled();
+                        pause-open: root.habits-pause-open;
+                        pause-mountable: root.habits-pause-mountable;
+                        create-open: root.habits-create-open;
+                        quota-validity: root.habits-quota-validity;
+                        quota-error-hint: root.habits-quota-error-hint;
+                        create-asked() => root.habits-create-asked();
+                        create-confirmed(t, q, i) => root.habits-create-confirmed(t, q, i);
+                        create-cancelled() => root.habits-create-cancelled();
+                        create-quota-edited(s) => root.habits-create-quota-edited(s);
+                        deleted-rows: root.habits-deleted-rows;
+                        has-deleted: root.habits-has-deleted;
+                        restore-armed-index: root.habits-restore-armed-index;
+                        restore-all-armed: root.habits-restore-all-armed;
+                        habit-restore-requested(r) => root.habits-habit-restore-requested(r);
+                        habit-restore-cancelled() => root.habits-habit-restore-cancelled();
+                        habit-restore-all-requested() => root.habits-habit-restore-all-requested();
+                        habit-restore-all-cancelled() => root.habits-habit-restore-all-cancelled();
+                        seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
                     }
-                    break-threshold-edited(t) => root.timers-break-threshold-edited(t);
-                    break_remove_clicked(r) => root.timers_break_remove_clicked(r);
-                    break_remove_confirmed(r) => root.timers_break_remove_confirmed(r);
-                    break_remove_cancelled() => root.timers_break_remove_cancelled();
-                    break-threshold-validity: root.break-threshold-validity;
-                    break-threshold-error-hint: root.break-threshold-error-hint;
-                    seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
-                }
-                // The habits section (D-P18): timers, then habits,
-                // then the task sections. Mounts with rows OR while a
-                // create can happen (round-7 D-7.2: desktop + active
-                // board — the header-only section is how the first
-                // habit gets made; kiosk and board-less days keep the
-                // old rows-only gate model-side).
-                if (!root.grid-arm && root.habits-block-mounted): HabitsBlock {
-                    habits: root.habits;
-                    editing-enabled: root.habits-editing-enabled;
-                    row-activated(r) => root.habits-row-activated(r);
-                    edit-asked(r) => root.habits-edit-asked(r);
-                    log-clicked(r) => root.habits-log-clicked(r);
-                    undo-log-clicked(r) => root.habits-undo-log-clicked(r);
-                    quota-edit-asked(r) => root.habits-quota-edit-asked(r);
-                    repair-clicked(r) => root.habits-repair-clicked(r);
-                    context-requested(r, x, y) => root.habits-context-requested(r, x, y);
-                    drop-asked(r, g) => root.habits-drop-asked(r, g);
-                    track-asked(r) => root.habits-track-asked(r);
-                    skip-asked(r) => root.habits-skip-asked(r);
-                    pause-asked(r) => root.habits-pause-asked(r);
-                    resume-asked(r) => root.habits-resume-asked(r);
-                    pause-until-picked(s) => root.habits-pause-until-picked(s);
-                    pause-cancelled() => root.habits-pause-cancelled();
-                    pause-open: root.habits-pause-open;
-                    pause-mountable: root.habits-pause-mountable;
-                    create-open: root.habits-create-open;
-                    quota-validity: root.habits-quota-validity;
-                    quota-error-hint: root.habits-quota-error-hint;
-                    create-asked() => root.habits-create-asked();
-                    create-confirmed(t, q, i) => root.habits-create-confirmed(t, q, i);
-                    create-cancelled() => root.habits-create-cancelled();
-                    create-quota-edited(s) => root.habits-create-quota-edited(s);
-                    deleted-rows: root.habits-deleted-rows;
-                    has-deleted: root.habits-has-deleted;
-                    restore-armed-index: root.habits-restore-armed-index;
-                    restore-all-armed: root.habits-restore-all-armed;
-                    habit-restore-requested(r) => root.habits-habit-restore-requested(r);
-                    habit-restore-cancelled() => root.habits-habit-restore-cancelled();
-                    habit-restore-all-requested() => root.habits-habit-restore-all-requested();
-                    habit-restore-all-cancelled() => root.habits-habit-restore-all-cancelled();
-                    seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
-                }
-                // The surfacing card (DR-7 D-J10): the header slot,
-                // above the sections — outside every `ListView` (the
-                // #592 anchor keys on list rows; the card is not one).
-                if (!root.grid-arm && root.review-card-visible): ReviewCardBlock {
-                    card-title-text: root.review-card-title;
-                    card-body-text: root.review-card-body;
-                    card-action-text: root.review-card-action;
-                    card-clicked() => root.review-card-clicked();
-                }
-                if (!root.grid-arm && root.today.empty): EmptyState {
-                    text: "Nothing due today";
-                    hint: "Capture a thought from anywhere — it lands in the inbox.";
-                }
-                // The "Tracked" day summary (#490): the day-summary
-                // footer after the four task sections — a separate
-                // composition, not a fifth section model (the row
-                // shape differs; the timers/habits precedent). Empty
-                // collapses.
-                if (!root.grid-arm
-                    && root.today.tracked-today.length > 0): TrackedTodaySection {
-                    vertical-stretch: 0;
-                    rows: root.today.tracked-today;
-                    day-total: root.today.tracked-day-total;
-                    row-activated(i) => root.tracked-activated(i);
-                }
-                for section[sindex] in root.today.sections: narrow-section := VerticalLayout {
-                    // The conditional arm element (a repeater
-                    // delegate cannot carry a bare `if`): the
-                    // pass-through wrapper contributes the block's
-                    // own layout info unchanged (one child, no
-                    // spacing). `visible: false` removes the wrapper
-                    // from the layout entirely (no space, no spacing
-                    // slot) but keeps the delegate mounted — the
-                    // recorded trade-off is in TodaySectionBlock's
-                    // header comment.
-                    visible: !root.grid-arm;
-                    vertical-stretch: 0;
-                    TodaySectionBlock {
+                    // The surfacing card (DR-7 D-J10): the header
+                    // slot, above the sections — outside every
+                    // `ListView` (the #592 anchor keys on list rows;
+                    // the card is not one).
+                    if (root.review-card-visible): ReviewCardBlock {
+                        card-title-text: root.review-card-title;
+                        card-body-text: root.review-card-body;
+                        card-action-text: root.review-card-action;
+                        card-clicked() => root.review-card-clicked();
+                    }
+                    if (root.today.empty): EmptyState {
+                        text: "Nothing due today";
+                        hint: "Capture a thought from anywhere — it lands in the inbox.";
+                    }
+                    // The "Tracked" day summary (#490): the
+                    // day-summary footer after the four task sections —
+                    // a separate composition, not a fifth section
+                    // model (the row shape differs; the timers/habits
+                    // precedent). Empty collapses.
+                    if (root.today.tracked-today.length > 0): TrackedTodaySection {
+                        vertical-stretch: 0;
+                        rows: root.today.tracked-today;
+                        day-total: root.today.tracked-day-total;
+                        row-activated(i) => root.tracked-activated(i);
+                    }
+                    for section[sindex] in root.today.sections: TodaySectionBlock {
                         sec: section;
                         sindex: sindex;
                         viewport-height: root.viewport-height;
@@ -886,26 +908,19 @@ export component TodayView inherits FocusScope {
                         row-track-toggled(s, r) => root.row-track-toggled(s, r);
                         seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
                     }
-                }
-                // The layout sink (#1334): the Flickable viewport
-                // requires the content to fill the page when the day is
-                // short, so the constraint solver MUST place the
-                // surplus somewhere. Before the declarative clip
-                // heights (#1310/#1304) the empty sections' unassigned
-                // clip heights were free variables that absorbed it
-                // invisibly; once every clip height became a bound
-                // min(extent, cap), the solver spilled the surplus into
-                // the visible stretch-0 children instead — the section
-                // headers and the tracked summary each grew by a share
-                // of the slack (the kiosk-today golden's ~one-row
-                // spacing offset, at every scale). This zero-preferred
-                // flexible element is the designated sink: the day's
-                // rows stay at their intrinsic spacing and the leftover
-                // stays empty at the page's end, the pre-fix shape.
-                // (The wide arm's columns carry their own sinks above.)
-                if (!root.grid-arm): Rectangle {
-                    vertical-stretch: 1;
-                    min-height: 0;
+                    // The layout sink (#1334): the Flickable viewport
+                    // requires the content to fill the page when the
+                    // day is short, so the constraint solver MUST
+                    // place the surplus somewhere. This zero-preferred
+                    // flexible element is the designated sink: the
+                    // day's rows stay at their intrinsic spacing and
+                    // the leftover stays empty at the page's end, the
+                    // pre-fix shape. (The wide arm's columns carry
+                    // their own sinks above.)
+                    Rectangle {
+                        vertical-stretch: 1;
+                        min-height: 0;
+                    }
                 }
             }
         }
