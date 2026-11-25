@@ -732,6 +732,14 @@ pub struct ViewState {
     /// the detail (the same one-subject law the task subject's
     /// death pass speaks).
     subject_habit: Option<taskboard_domain::HabitId>,
+    /// The habit editor's origin root (#1303, the D7 entry-snapshot
+    /// law): `open_habit_editor` mounts by a ROOT SWAP — the origin
+    /// view is destroyed, not pushed — so the entry snapshot is the
+    /// only memory of where the editor came from. The exit seams
+    /// ([`Self::close_habit_editor`]) restore it; never a hard route.
+    /// Adapter-owned presentation state — never synced, never
+    /// journaled.
+    habit_editor_origin: Option<ViewId>,
     /// The history dialog's one-shot subject (HF3 W-8, US-7/S1): set
     /// by [`Self::open_habit_history`], consumed by the adapter's
     /// projection pass, cleared on close (the one-shot grammar). The
@@ -877,6 +885,7 @@ impl ViewState {
             subject_stack: None,
             subject_task: None,
             subject_habit: None,
+            habit_editor_origin: None,
             habit_history_target: None,
             habit_history_month: None,
             focused_task: None,
@@ -1618,8 +1627,27 @@ impl ViewState {
     /// subject (the mount discriminator decides the variant). No flow
     /// arms; the escape discipline is the surface's own.
     pub fn open_habit_editor(&mut self, habit: taskboard_domain::HabitId) -> Vec<FlowOutcome> {
+        // The origin snapshot (#1303, D7's entry-snapshot law — the
+        // `TaskDetail` subject's exact shape): the mount is a root
+        // swap that destroys the origin view, so the exit seams'
+        // return-to-origin reads THIS record, never a hard route.
+        self.habit_editor_origin = Some(self.view());
         self.replace_root(ViewId::TaskDetail);
         self.subject_habit = Some(habit);
+        vec![FlowOutcome::RefreshNow]
+    }
+
+    /// The habit editor's exit (#1303): the recorded origin root
+    /// restores — Today stays Today, Board stays Board; a root swap
+    /// to the same view is the typed no-op it always was. An
+    /// unrecorded origin (a mounted variant that slipped past the
+    /// opener — the kiosk belt's restored-snapshot posture) falls
+    /// back to the board root, the D7 board-repair rule. The
+    /// `replace_root` landing clears the habit subject (the
+    /// mount-fact law); the origin record is consumed here.
+    pub fn close_habit_editor(&mut self) -> Vec<FlowOutcome> {
+        let origin = self.habit_editor_origin.take().unwrap_or(ViewId::Board);
+        self.replace_root(origin);
         vec![FlowOutcome::RefreshNow]
     }
 
@@ -6645,6 +6673,39 @@ mod tests {
         assert_eq!(vs.kiosk_habit_belt(false), Vec::new());
         assert_eq!(vs.view(), ViewId::TaskDetail, "desktop keeps the mount");
         assert_eq!(vs.subject_habit(), Some(habit));
+    }
+
+    /// #1303 (the origin-snapshot law): `open_habit_editor` records
+    /// the root it mounts over, and `close_habit_editor` restores it
+    /// — the Today round-trip and the Board round-trip both return
+    /// to where the editor came from, never the board hard-route.
+    #[test]
+    fn the_habit_editor_round_trips_to_the_recorded_origin_root() {
+        let (state, _b1, _, _, _) = two_board_fixture();
+        let mut vs = ViewState::new();
+        vs.reconcile(&state);
+        let habit = taskboard_domain::HabitId::from_uuid(uuid::Uuid::now_v7());
+        // The Today origin: open by root swap, close restores Today.
+        vs.set_view(ViewId::Today);
+        let _ = vs.open_habit_editor(habit);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        assert_eq!(vs.subject_habit(), Some(habit), "the mount carries");
+        let outcomes = vs.close_habit_editor();
+        assert!(matches!(outcomes[..], [FlowOutcome::RefreshNow]));
+        assert_eq!(vs.view(), ViewId::Today, "Today stays Today");
+        assert_eq!(vs.subject_habit(), None, "the mount fact cleared");
+        // The Board origin: the same round-trip stays on Board.
+        vs.set_view(ViewId::Board);
+        let _ = vs.open_habit_editor(habit);
+        assert_eq!(vs.view(), ViewId::TaskDetail);
+        let _ = vs.close_habit_editor();
+        assert_eq!(vs.view(), ViewId::Board, "Board stays Board");
+        // The unrecorded-origin fallback (the kiosk belt's
+        // restored-snapshot posture): the board repair rule.
+        let _ = vs.open_habit_editor(habit);
+        vs.set_view(ViewId::Status); // a foreign landing retires the record
+        let _ = vs.close_habit_editor();
+        assert_eq!(vs.view(), ViewId::Board, "no record falls back to Board");
     }
 
     pub(super) fn two_board_fixture() -> (AppState, BoardId, BoardId, [StackId; 3], [TaskId; 4]) {
