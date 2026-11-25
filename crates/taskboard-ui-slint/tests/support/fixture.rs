@@ -850,6 +850,47 @@ pub fn today_overdue_state_at(
     (fixture, state, [board_one_task, board_two_task])
 }
 
+/// The today view's **enriched** fixture (#1239's re-base): the
+/// enriched golden fixture ([`golden_state_enriched_at`]) with the
+/// today matrix's overdue layer applied — the inherited tracked task
+/// (the 12-minute chip entry) and the dev board's long-titled task,
+/// one overdue row per board, stamped at the parameter's
+/// yesterday-midnight (the [`today_overdue_state_at`] convention: a
+/// date-only due phrase, stable across runs). The review-card pin
+/// (#638) is inherited from [`golden_state_at`], so no reflection
+/// seeding happens here (unlike [`today_overdue_state_at`], whose
+/// two-board base lacks the pin). Only the state is returned: the
+/// today captures consume the mount, not the walk ids.
+#[must_use]
+pub fn today_overdue_enriched_at(now: chrono::DateTime<chrono::Utc>) -> AppState {
+    let (_, mut state) = golden_state_enriched_at(now);
+    let calendar = harness_calendar();
+    let overdue_stamp = calendar
+        .today(now)
+        .pred_opt()
+        .expect("yesterday exists")
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight")
+        .and_utc();
+    // Board one: the tracked task — the overdue row carries the
+    // running badge (the today_overdue_state_at shape).
+    let tracked = state
+        .tracking
+        .entries
+        .values()
+        .next()
+        .map(|entry| entry.task)
+        .expect("the inherited chip entry");
+    // Board two: the dev board's long-titled task (its minting id is
+    // fixed inside `golden_state_enriched_at`).
+    let dev_task = TaskId::from_uuid(uuid::Uuid::from_u128(0x7001));
+    for id in [tracked, dev_task] {
+        let task = state.tasks.get_mut(&id).expect("enriched fixture task");
+        task.duedate = Some(overdue_stamp);
+    }
+    state
+}
+
 /// The triage fixture (chunk 10 D12): the global Inbox board ("Inbox",
 /// one stack, one open task) plus the two-board journey state's board
 /// two as the move target.
