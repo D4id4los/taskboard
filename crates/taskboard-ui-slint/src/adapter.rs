@@ -16239,9 +16239,9 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
 
     });
     // The bulk row (#1245): first activation arms (the strip mounts),
-    // the Confirm dispatches one `RestoreHabit` per roster row — the
-    // per-habit journal facts stay honest (each restore is its own
-    // undo step, the #1187 law per row).
+    // the Confirm dispatches ONE `RestoreHabitsBulk` (#1345) — the
+    // pre-image bundle makes the whole roster one undoable journal
+    // fact (one `Undo` walks it back), not N per-row facts.
     install_seam!(window: window.on_habits_habit_restore_all_requested, adapter: adapter;
     bind mut (a, window), args (), {        if a.habit_restore_all_armed {
             a.habit_restore_all_armed = false;
@@ -16249,15 +16249,15 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
             let state = a.state.load_full();
             let ids: Vec<_> = state.roster.tombstoned_habits.iter().map(|row| row.id).collect();
             drop(state);
-            for id in ids {
-                if a
-                    .commands
-                    .try_send(StateCommand::RestoreHabit { id })
-                    .is_err()
-                {
-                    tracing::warn!("habit bulk restore dropped: command channel full or closed");
-                    break;
-                }
+            // #1345: ONE `RestoreHabitsBulk` fact — the pre-image
+            // bundle makes the bulk one undo step (the per-row
+            // `RestoreHabit` stays the single-row verb).
+            if a
+                .commands
+                .try_send(StateCommand::RestoreHabitsBulk { ids })
+                .is_err()
+            {
+                tracing::warn!("habit bulk restore dropped: command channel full or closed");
             }
         } else {
             a.habit_restore_armed = None;
@@ -16300,15 +16300,13 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
                 .map(|row| row.id)
                 .collect();
             drop(state);
-            for id in ids {
-                if a
-                    .commands
-                    .try_send(StateCommand::RestoreLabel { id })
-                    .is_err()
-                {
-                    tracing::warn!("label bulk restore dropped: command channel full or closed");
-                    break;
-                }
+            // #1345: ONE `RestoreLabelsBulk` fact — the labels twin.
+            if a
+                .commands
+                .try_send(StateCommand::RestoreLabelsBulk { ids })
+                .is_err()
+            {
+                tracing::warn!("label bulk restore dropped: command channel full or closed");
             }
         } else {
             a.label_restore_armed = None;

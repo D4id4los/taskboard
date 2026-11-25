@@ -557,6 +557,8 @@ pub fn command_label(command: &StateCommand) -> String {
         StateCommand::RestoreTimeEntry { .. }
         | StateCommand::RestoreTimeEntryFromJournal { .. } => "Restore time entry".into(),
         StateCommand::RestoreHabit { .. } => "Restore habit".into(),
+        StateCommand::RestoreHabitsBulk { .. } => "Restore habits (bulk)".into(),
+        StateCommand::RestoreLabelsBulk { .. } => "Restore labels (bulk)".into(),
         StateCommand::PauseSeries { .. } => "Pause series".into(),
         StateCommand::ConvertSeriesToHabit { .. } => "Convert series to habit".into(),
         StateCommand::ConvertHabitToSeries { .. } => "Convert habit to series".into(),

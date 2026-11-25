@@ -1,0 +1,377 @@
+---
+source: crates/taskboard-state/tests/snapshots.rs
+expression: "&persisted"
+---
+boards:
+  00000000-0000-0000-0000-000000000001:
+    id: 00000000-0000-0000-0000-000000000001
+    remote: ~
+    title: kiosk
+    color: 0000ff
+    archived: false
+    deleted: false
+    clocks:
+      title: "0001-01-01T00:00:00Z"
+      color: "0001-01-01T00:00:00Z"
+      archived: "0001-01-01T00:00:00Z"
+      deleted: "0001-01-01T00:00:00Z"
+    authors:
+      title: ~
+      color: ~
+      archived: ~
+      deleted: ~
+    remote_seen: ~
+stacks: {}
+tasks: {}
+labels: {}
+outbox:
+  - op_id: 00000000-0000-0000-0000-000000000002
+    op:
+      FlushBoardAppData: 00000000-0000-0000-0000-000000000001
+    queued_at: "1970-01-01T10:01:00Z"
+  - op_id: 00000000-0000-0000-0000-000000000005
+    op:
+      FlushBoardAppData: 00000000-0000-0000-0000-000000000001
+    queued_at: "1970-01-01T10:02:00Z"
+  - op_id: 00000000-0000-0000-0000-000000000007
+    op:
+      FlushBoardAppData: 00000000-0000-0000-0000-000000000001
+    queued_at: "1970-01-01T10:03:00Z"
+  - op_id: 00000000-0000-0000-0000-000000000009
+    op:
+      FlushBoardAppData: 00000000-0000-0000-0000-000000000001
+    queued_at: "1970-01-01T10:04:00Z"
+validators: {}
+sync:
+  00000000-0000-0000-0000-000000000001:
+    phase: Idle
+    last_success: ~
+    pending_ops: 4
+    counters:
+      cycles: 0
+      pushes: 0
+      pulls: 0
+      failures: 0
+      offline_episodes: 0
+      last_cycle: ~
+    sidecar: Healthy
+    features:
+      card_startdate: false
+reminders:
+  rules: {}
+  deliveries: []
+  dismissals: []
+  snoozes: {}
+  muted: []
+  alarms: {}
+  break_rules: {}
+tracking:
+  entries: {}
+habits:
+  habits:
+    00000000-0000-0000-0000-000000000001:
+      id: 00000000-0000-0000-0000-000000000001
+      board: 00000000-0000-0000-0000-000000000001
+      title: meditate
+      description: ""
+      target:
+        PerDay: 1
+      order: 0
+      anchor_time: ~
+      clocks:
+        title: "1970-01-01T10:01:00Z"
+        target: "1970-01-01T10:01:00Z"
+        order: "1970-01-01T10:01:00Z"
+        anchor_time: "1970-01-01T10:01:00Z"
+        description: "1970-01-01T10:01:00Z"
+        anchor_day: "1970-01-01T10:01:00Z"
+        paused_until: "1970-01-01T10:01:00Z"
+        scheduled_days: "1970-01-01T10:01:00Z"
+        reminder: "1970-01-01T10:01:00Z"
+        deleted: "1970-01-01T10:06:00Z"
+      continued_from: ~
+      deleted: true
+    00000000-0000-0000-0000-000000000004:
+      id: 00000000-0000-0000-0000-000000000004
+      board: 00000000-0000-0000-0000-000000000001
+      title: stretch
+      description: ""
+      target:
+        PerDay: 1
+      order: 1
+      anchor_time: ~
+      clocks:
+        title: "1970-01-01T10:02:00Z"
+        target: "1970-01-01T10:02:00Z"
+        order: "1970-01-01T10:02:00Z"
+        anchor_time: "1970-01-01T10:02:00Z"
+        description: "1970-01-01T10:02:00Z"
+        anchor_day: "1970-01-01T10:02:00Z"
+        paused_until: "1970-01-01T10:02:00Z"
+        scheduled_days: "1970-01-01T10:02:00Z"
+        reminder: "1970-01-01T10:02:00Z"
+        deleted: "1970-01-01T10:06:00Z"
+      continued_from: ~
+      deleted: true
+  log: {}
+  day_log: {}
+  time_log: {}
+reflection:
+  entries: {}
+roaming: {}
+journal:
+  entries:
+    - id: 00000000-0000-0000-0000-000000000003
+      parent: ~
+      command:
+        CreateHabit:
+          board: 00000000-0000-0000-0000-000000000001
+          title: meditate
+          target:
+            PerDay: 1
+      facts:
+        PreImages:
+          images:
+            - Habit:
+                id: 00000000-0000-0000-0000-000000000001
+                before: ~
+          watermark:
+            - - Habit: 00000000-0000-0000-0000-000000000001
+              - Habit:
+                  title: "1970-01-01T10:01:00Z"
+                  target: "1970-01-01T10:01:00Z"
+                  order: "1970-01-01T10:01:00Z"
+                  anchor_time: "1970-01-01T10:01:00Z"
+                  description: "1970-01-01T10:01:00Z"
+                  anchor_day: "1970-01-01T10:01:00Z"
+                  paused_until: "1970-01-01T10:01:00Z"
+                  scheduled_days: "1970-01-01T10:01:00Z"
+                  reminder: "1970-01-01T10:01:00Z"
+                  deleted: "1970-01-01T10:01:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000002
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:01:00Z"
+    - id: 00000000-0000-0000-0000-000000000006
+      parent: 00000000-0000-0000-0000-000000000003
+      command:
+        CreateHabit:
+          board: 00000000-0000-0000-0000-000000000001
+          title: stretch
+          target:
+            PerDay: 1
+      facts:
+        PreImages:
+          images:
+            - Habit:
+                id: 00000000-0000-0000-0000-000000000004
+                before: ~
+          watermark:
+            - - Habit: 00000000-0000-0000-0000-000000000004
+              - Habit:
+                  title: "1970-01-01T10:02:00Z"
+                  target: "1970-01-01T10:02:00Z"
+                  order: "1970-01-01T10:02:00Z"
+                  anchor_time: "1970-01-01T10:02:00Z"
+                  description: "1970-01-01T10:02:00Z"
+                  anchor_day: "1970-01-01T10:02:00Z"
+                  paused_until: "1970-01-01T10:02:00Z"
+                  scheduled_days: "1970-01-01T10:02:00Z"
+                  reminder: "1970-01-01T10:02:00Z"
+                  deleted: "1970-01-01T10:02:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000005
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:02:00Z"
+    - id: 00000000-0000-0000-0000-000000000008
+      parent: 00000000-0000-0000-0000-000000000006
+      command:
+        DeleteHabit:
+          habit: 00000000-0000-0000-0000-000000000001
+      facts:
+        PreImages:
+          images:
+            - Habit:
+                id: 00000000-0000-0000-0000-000000000001
+                before:
+                  id: 00000000-0000-0000-0000-000000000001
+                  board: 00000000-0000-0000-0000-000000000001
+                  title: meditate
+                  description: ""
+                  target:
+                    PerDay: 1
+                  order: 0
+                  anchor_time: ~
+                  clocks:
+                    title: "1970-01-01T10:01:00Z"
+                    target: "1970-01-01T10:01:00Z"
+                    order: "1970-01-01T10:01:00Z"
+                    anchor_time: "1970-01-01T10:01:00Z"
+                    description: "1970-01-01T10:01:00Z"
+                    anchor_day: "1970-01-01T10:01:00Z"
+                    paused_until: "1970-01-01T10:01:00Z"
+                    scheduled_days: "1970-01-01T10:01:00Z"
+                    reminder: "1970-01-01T10:01:00Z"
+                    deleted: "1970-01-01T10:01:00Z"
+                  continued_from: ~
+                  deleted: false
+          watermark:
+            - - Habit: 00000000-0000-0000-0000-000000000001
+              - Habit:
+                  title: "1970-01-01T10:01:00Z"
+                  target: "1970-01-01T10:01:00Z"
+                  order: "1970-01-01T10:01:00Z"
+                  anchor_time: "1970-01-01T10:01:00Z"
+                  description: "1970-01-01T10:01:00Z"
+                  anchor_day: "1970-01-01T10:01:00Z"
+                  paused_until: "1970-01-01T10:01:00Z"
+                  scheduled_days: "1970-01-01T10:01:00Z"
+                  reminder: "1970-01-01T10:01:00Z"
+                  deleted: "1970-01-01T10:03:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000007
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:03:00Z"
+    - id: 00000000-0000-0000-0000-00000000000a
+      parent: 00000000-0000-0000-0000-000000000008
+      command:
+        DeleteHabit:
+          habit: 00000000-0000-0000-0000-000000000004
+      facts:
+        PreImages:
+          images:
+            - Habit:
+                id: 00000000-0000-0000-0000-000000000004
+                before:
+                  id: 00000000-0000-0000-0000-000000000004
+                  board: 00000000-0000-0000-0000-000000000001
+                  title: stretch
+                  description: ""
+                  target:
+                    PerDay: 1
+                  order: 1
+                  anchor_time: ~
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    target: "1970-01-01T10:02:00Z"
+                    order: "1970-01-01T10:02:00Z"
+                    anchor_time: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:02:00Z"
+                    anchor_day: "1970-01-01T10:02:00Z"
+                    paused_until: "1970-01-01T10:02:00Z"
+                    scheduled_days: "1970-01-01T10:02:00Z"
+                    reminder: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:02:00Z"
+                  continued_from: ~
+                  deleted: false
+          watermark:
+            - - Habit: 00000000-0000-0000-0000-000000000004
+              - Habit:
+                  title: "1970-01-01T10:02:00Z"
+                  target: "1970-01-01T10:02:00Z"
+                  order: "1970-01-01T10:02:00Z"
+                  anchor_time: "1970-01-01T10:02:00Z"
+                  description: "1970-01-01T10:02:00Z"
+                  anchor_day: "1970-01-01T10:02:00Z"
+                  paused_until: "1970-01-01T10:02:00Z"
+                  scheduled_days: "1970-01-01T10:02:00Z"
+                  reminder: "1970-01-01T10:02:00Z"
+                  deleted: "1970-01-01T10:04:00Z"
+      ops:
+        - 00000000-0000-0000-0000-000000000009
+      pushed: false
+      board: 00000000-0000-0000-0000-000000000001
+      created_at: "1970-01-01T10:04:00Z"
+    - id: 00000000-0000-0000-0000-00000000000d
+      parent: 00000000-0000-0000-0000-00000000000a
+      command:
+        RestoreHabitsBulk:
+          ids:
+            - 00000000-0000-0000-0000-000000000001
+            - 00000000-0000-0000-0000-000000000004
+      facts:
+        PreImages:
+          images:
+            - Habit:
+                id: 00000000-0000-0000-0000-000000000001
+                before:
+                  id: 00000000-0000-0000-0000-000000000001
+                  board: 00000000-0000-0000-0000-000000000001
+                  title: meditate
+                  description: ""
+                  target:
+                    PerDay: 1
+                  order: 0
+                  anchor_time: ~
+                  clocks:
+                    title: "1970-01-01T10:01:00Z"
+                    target: "1970-01-01T10:01:00Z"
+                    order: "1970-01-01T10:01:00Z"
+                    anchor_time: "1970-01-01T10:01:00Z"
+                    description: "1970-01-01T10:01:00Z"
+                    anchor_day: "1970-01-01T10:01:00Z"
+                    paused_until: "1970-01-01T10:01:00Z"
+                    scheduled_days: "1970-01-01T10:01:00Z"
+                    reminder: "1970-01-01T10:01:00Z"
+                    deleted: "1970-01-01T10:03:00Z"
+                  continued_from: ~
+                  deleted: true
+            - Habit:
+                id: 00000000-0000-0000-0000-000000000004
+                before:
+                  id: 00000000-0000-0000-0000-000000000004
+                  board: 00000000-0000-0000-0000-000000000001
+                  title: stretch
+                  description: ""
+                  target:
+                    PerDay: 1
+                  order: 1
+                  anchor_time: ~
+                  clocks:
+                    title: "1970-01-01T10:02:00Z"
+                    target: "1970-01-01T10:02:00Z"
+                    order: "1970-01-01T10:02:00Z"
+                    anchor_time: "1970-01-01T10:02:00Z"
+                    description: "1970-01-01T10:02:00Z"
+                    anchor_day: "1970-01-01T10:02:00Z"
+                    paused_until: "1970-01-01T10:02:00Z"
+                    scheduled_days: "1970-01-01T10:02:00Z"
+                    reminder: "1970-01-01T10:02:00Z"
+                    deleted: "1970-01-01T10:04:00Z"
+                  continued_from: ~
+                  deleted: true
+          watermark:
+            - - Habit: 00000000-0000-0000-0000-000000000001
+              - Habit:
+                  title: "1970-01-01T10:01:00Z"
+                  target: "1970-01-01T10:01:00Z"
+                  order: "1970-01-01T10:01:00Z"
+                  anchor_time: "1970-01-01T10:01:00Z"
+                  description: "1970-01-01T10:01:00Z"
+                  anchor_day: "1970-01-01T10:01:00Z"
+                  paused_until: "1970-01-01T10:01:00Z"
+                  scheduled_days: "1970-01-01T10:01:00Z"
+                  reminder: "1970-01-01T10:01:00Z"
+                  deleted: "1970-01-01T10:05:00Z"
+            - - Habit: 00000000-0000-0000-0000-000000000004
+              - Habit:
+                  title: "1970-01-01T10:02:00Z"
+                  target: "1970-01-01T10:02:00Z"
+                  order: "1970-01-01T10:02:00Z"
+                  anchor_time: "1970-01-01T10:02:00Z"
+                  description: "1970-01-01T10:02:00Z"
+                  anchor_day: "1970-01-01T10:02:00Z"
+                  paused_until: "1970-01-01T10:02:00Z"
+                  scheduled_days: "1970-01-01T10:02:00Z"
+                  reminder: "1970-01-01T10:02:00Z"
+                  deleted: "1970-01-01T10:05:00Z"
+      ops:
+        - 00000000-0000-0000-0000-00000000000b
+        - 00000000-0000-0000-0000-00000000000c
+      pushed: false
+      board: ~
+      created_at: "1970-01-01T10:05:00Z"
+  head: 00000000-0000-0000-0000-00000000000a
