@@ -143,6 +143,20 @@ export global Theme {
     out property <length> dialog-max-width: 560px * base-scale;
     out property <length> menu-min-width: 200px * base-scale;
     out property <length> menu-max-width: 360px * base-scale;
+
+    // The overlay panel-width families (#1361 §5.3): the raw
+    // `panel-preferred-width` values clustered by value+role — ≥2
+    // sites per value became a named token. The 560 family adopts the
+    // existing dialog-max-width, the 360 family the existing
+    // menu-max-width (the hosts' own width laws); genuine one-offs
+    // stay raw and are recorded in the sweep commit.
+    out property <length> panel-width: 420px * base-scale;
+    out property <length> panel-width-narrow: 300px * base-scale;
+    out property <length> panel-width-slim: 280px * base-scale;
+    // The journal editor's field-width family (review-view's ledger
+    // editor cells): the two ≥2 value clusters.
+    out property <length> journal-field-width: 160px * base-scale;
+    out property <length> journal-field-narrow: 140px * base-scale;
 }
 
 // The closed text-role table (§3.2): adding a role is a theme-level
