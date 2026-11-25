@@ -37,6 +37,22 @@ inline-code spans) per the #1181 residue class.
   R-11-style "no keymap" ruling class retired). The habit-surface
   chord sweep below (§1a, W-16) was added under that law in the same
   acceptance; D3a may chunk from this plan as accepted.
+
+> **AMENDMENT 2026-11-25 (dated note; history not rewritten)** —
+> issue **#1430** (round 8, chunk J-B3) adds the habit
+> repeat/frequency editor redesign to this journey's scope as
+> **US-12 (P1)**: label every control, replace the checkmark-row
+> grammar with the labelled control set the a11y findings demand
+> (the layout review's label/accessible-name inventory,
+> .artifacts/reports/2026-11-25-layout-review-analyzer-findings.md,
+> plus #1430's own accessibility label). The amendment is strictly
+> additive: new §2 matrix row, new §4 US-12 journey, §6 row W-17,
+> §7 delta rows, §8 test names, §9 items, and the amendment appendix
+> at the bottom of this file. Status stays ACCEPTED for US-1..US-11;
+> **US-12 is DRAFT — GATE-PAUSED on operator acceptance** (the B3
+> chunk plan .artifacts/plans/2026-11-25-habit-repeat-editor-plan.md
+> opens GATE CLEARED only once the operator accepts the amendment).
+
 - **Surfaces touched**: ui/compositions/habits.slint,
   ui/widgets/task-card.slint, ui/views/task-view.slint (habit
   variant), ui/views/habit-history-view.slint,
@@ -159,6 +175,7 @@ absent. Platform qualification inside cells. -->
 | habit.progress_display | — | — | D (US-1/S4) | — | — | — | D (landed) |
 | habit.perday_heatmap | — | D (US-8) | — | — | — | — | — |
 | habit.kiosk_gate | — | X→gated (US-11) | — | — | — | — | — |
+| habit.repeat_editor.controls (AMENDMENT 2026-11-25, #1430) | — | E (US-12) | — | — | — | — | — |
 
 **Rulings** (every deliberate absence):
 
@@ -170,6 +187,8 @@ absent. Platform qualification inside cells. -->
 | R-4 | habit.log gains a chord but stays out of the root quick page menu group | the O-8/G6 curation budget: the row affordance remains the primary path; the chord routes over the focused row | US-3; #1202 |
 | R-5 | The R-11 section-scope ruling (ActionId::HabitLog / HabitUndoLog: "row affordance is the only invocation, no keymap") is superseded 2026-11-22 for the Log chord only, by this plan under operator acceptance | #1202's ask is keyboard parity; the HabitQuotaEdit key (routes over the focused row) is the landed precedent for a section-scoped id gaining a focused-row chord | this plan's US-3; census diff recorded here |
 | R-6 | habit.search_tombstone_history rides the Capture/search surface, not the restore surfaces | independent of D1i sequencing (#1146); the US-7 resolver already resolves tombstones; a restore-surface affordance stays a P2 home on #1146 if it lands first | US-7; #1218 |
+| R-7 (AMENDMENT 2026-11-25) | habit.repeat_editor.controls has no CLI cell | the labelled-control grammar is a GUI presentation fix; the CLI's set-habit flags are already explicitly named by their own grammar — nothing to relabel | US-12; #1430 |
+| R-8 (AMENDMENT 2026-11-25) | the add-repeat affordance is structurally absent for habits, not hidden | #1430's disposition, the #1294 R-5 precedent: a repetition affordance in the habit context is a grammar violation, so the widget arm is removed for the habit subject, not display-gated | US-12/S5; #1430, #1294 |
 
 ## 3. User stories
 
@@ -521,6 +540,22 @@ absent. Platform qualification inside cells. -->
 | US-11/S1 | kiosk reconcile pass (system guarantee) | none — the push pass runs | — no user dispatch | a mounted habit editor subject steps the view back (the dead-subject pass's twin); the editor closes | the dispatch-time gates (landed) remain the first line; the belt is the second |
 | US-11/S2 | desktop reconcile pass | none | — no user dispatch | nothing steps back; the editor behaves as landed | — |
 
+### US-12 — The repeat editor speaks: every control labelled, no bare checkmarks (AMENDMENT 2026-11-25, P1, #1430)
+
+<!-- AMENDMENT 2026-11-25 (J-B3): #1430's redesign story. Normative:
+the issue. The checkmark-row grammar goes; the labelled control set
+replaces it. -->
+
+| Step | Surface & affordance | User action | Dispatches | System response | Escape / failure |
+|---|---|---|---|---|---|
+| US-12/S1 | habit editor PerWeek day strip (task-view.slint habit variant) | inspect, then toggle a day | — display change over the landed draft; toggling rides the landed UpdateHabit save path | every day option renders its visible weekday label beside the toggle, carries an accessible-label and a tooltip ("schedules the habit on Monday") — no bare checkmark glyphs | an unlabeled or unexplained control anywhere in the repeat section is a defect of this step, not a styling nit |
+| US-12/S2 | the two day-selection grammars (the weekly-anchor strip vs the Scheduled days mask) | read the section, then edit either | — display change; edits ride the landed save path | the two grammars carry distinct section titles and one-line purpose captions ("Weekday anchor" vs "Scheduled days" — merged or titled-and-distinguished per #1430; the duplication the user reported is gone) | if the titles alone still leave the difference ambiguous, the walkthrough fails this step (recognition over recall, SC 3.3.2) |
+| US-12/S3 | the Nudge Day / Period start mode selector under Reminder override | change the mode | — display change over the draft; the choice rides the landed override mint | the checkmark glyphs are replaced by semantically fitting Lucide icons (calendar-day / sun / moon / alarm family first per #1430's icon inventory; a second icon set only if nothing fits) and each option carries its name as a visible label + tooltip | hand-drawn one-off icons are out of bounds (#1430); an unlabelled mode option is this step's failure |
+| US-12/S4 | the whole repeat/frequency section — a11y inventory pass | tab the section; screen-reader name/role/value | — display change only | every interactive control carries accessible-label + accessible-description; name/role/value resolvable per SC 4.1.2 (the layout-review accessible-name inventory is the audit oracle) | a control reachable by tab without a name is an open defect of this story |
+| US-12/S5 | the add-repeat affordance slot in the habit editor | inspect the editor for a habit subject | — structural removal (R-8; the #1294 clear-all precedent) | the add-repeat arm is absent for habits — not hidden, removed from the habit editor's widget tree; repetition stays a task-subject affordance only | a habit editor that can reach a repeat-add affordance by any path fails this step |
+| US-12/S6 | the labels section and repeat rows — vertical space | open the habit editor in edit view | — display change only | the labels/add-repeat rows' wasted vertical space is cut per #1430's screenshots; the editor folds to the compact labelled grammar | compaction must not remove a labelled control (US-12/S1/S4 still hold) |
+| US-12/S7 | editor save/cancel — regression | set a schedule; save; reopen | the landed UpdateHabit save path (unchanged) | the redesigned controls write the same typed draft the landed grammar wrote; reopen renders the saved state | save/cancel semantics unregressed — this story is presentation-only; a behavior change here is a defect |
+
 ## 5. Interaction flows
 
 ```mermaid
@@ -591,6 +626,7 @@ A row with — in Commands says why in Journey steps. -->
 | W-14 | src/requests.rs (Flow) + adapter.rs + ui/views/task-view.slint | Flow::EditTitle / Flow::EditDescription widened to RowSubject::Task | — | adapter.rs (the title/description push arms read the variant's draft) | — | — | flow-enum widening; the landed flows' dispatches unchanged — reason per journey steps US-10/S1 | US-10/S1, US-10/S2, US-10/S3 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us10_s1_habit_variant_mounts_shared_editors, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us10_s2_habit_description_flow_mounts_shared_surface, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us10_s3_task_flows_unregressed |
 | W-16 | src/keymap/presets.rs | HabitEdit preset row — Return at Today (all three preset tables; the TaskEdit parity twin; makes US-3/S2's activation an explicit chorded row per the keyboard-first law) | — | src/router.rs (ActionId::HabitEdit already routes; the chord is keymap-only) | ActionId::HabitEdit | — | keymap-only row; no callback — reason per journey steps US-3/S2 | US-3/S2 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us3_s2_enter_activates_habit_editor |
 | W-15 | src/adapter.rs | push-side kiosk belt (reconcile: kiosk and a mounted habit subject steps the view back) | — | adapter.rs (the push pass; the dead-subject twin) | — | — | system guarantee; no user affordance — reason per journey steps US-11/S1 | US-11/S1, US-11/S2 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us11_s1_kiosk_push_steps_view_back, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us11_s2_desktop_push_unregressed |
+| W-17 (AMENDMENT 2026-11-25) | ui/views/task-view.slint (habit variant) + ui/widgets (the ToggleStrip labelled variant) + ui/assets/icons | labelled repeat-editor control set — visible per-day labels, section titles/captions for the two day grammars, Lucide icons on the Nudge Day / Period start selector, accessible-label/description on every control, the habit-subject add-repeat arm structurally removed | — | adapter.rs habit editor seams unchanged (the redesign re-skins the landed grammar; toggles ride the landed draft/save wiring) | — | — | widget-shape change; no new callback or command (the landed save path is the dispatch; reason per journey steps US-12/S1..S7) | US-12/S1, US-12/S2, US-12/S3, US-12/S4, US-12/S5, US-12/S6, US-12/S7 | crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us12_s1_day_options_carry_visible_labels, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us12_s2_day_grammars_titled_and_distinguished, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us12_s3_mode_selector_icons_not_checkmarks, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us12_s4_every_control_named_role_value, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us12_s5_add_repeat_absent_for_habits, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us12_s6_repeat_section_compact, crates/taskboard-ui-slint/tests/journeys/habit_surface_journeys.rs::us12_s7_save_reopen_unregressed |
 
 **Callback existence notes** (the gate greps the callback cells as
 bare tokens against the .slint spelling — kebab, per the repo's
@@ -621,6 +657,7 @@ and US-8's additive per-day overlay fact. -->
 | UiRequest (changed) | Flow::EditTitle / Flow::EditDescription | the task payload widens to RowSubject::Task — Habit: the habit variant mounts the shared surfaces and drops its mirrors | US-10/S1, US-10/S2 |
 | StateCommand | (none new) | LogHabit, AdjustHabitLog, UpdateHabit, PauseHabit all exist; the journeys dispatch only landed commands — the editor/history opens are view intents (UiEffect::HabitEdit / HabitHistoryOpen), not engine commands | US-1..US-11 |
 | ActionId | (none new) | HabitLog gains Ctrl+Shift+l (W-5) and HabitEdit gains Return at Today (W-16) — both ids exist; HabitHistory gains a dispatch arm (W-10) | US-2, US-3, US-7 |
+| Widget shape (changed, AMENDMENT 2026-11-25) | habit repeat-editor control set (W-17) | no command/UiRequest/ActionId delta — labels, tooltips, accessible-labels, section captions, icon swaps and the structural add-repeat removal are presentation-only over the landed UpdateHabit draft/save grammar (US-12/S7 pins the unregression) | US-12/S1..US-12/S7 |
 
 ## 8. Verification plan
 
@@ -661,7 +698,14 @@ and US-8's additive per-day overlay fact. -->
   us10_s2_habit_description_flow_mounts_shared_surface,
   us10_s3_task_flows_unregressed,
   us11_s1_kiosk_push_steps_view_back,
-  us11_s2_desktop_push_unregressed.
+  us11_s2_desktop_push_unregressed,
+  us12_s1_day_options_carry_visible_labels,
+  us12_s2_day_grammars_titled_and_distinguished,
+  us12_s3_mode_selector_icons_not_checkmarks,
+  us12_s4_every_control_named_role_value,
+  us12_s5_add_repeat_absent_for_habits,
+  us12_s6_repeat_section_compact,
+  us12_s7_save_reopen_unregressed.
 - **Seam tests**: the quota seed computation (US-5/S1–S2); the
   override mint (US-6/S1–S2, US-6/S4 fold); the stats projection's
   window-canonical oracle (US-8/S2); the keymap contract suite
@@ -677,6 +721,13 @@ and US-8's additive per-day overlay fact. -->
 - **Manual**: the walkthrough judges the moved buttons' recognizability
   (US-1), the placeholder/doc phrasing (US-6/S5) and the preview's
   phrasing (US-9) — labels cited at review, never text-asserted.
+- **AMENDMENT 2026-11-25 additions**: the US-12 journey tests above
+  (presentation-only — the save/reopen unregression is the one
+  behavior-bearing leg, US-12/S7); the a11y inventory leg (US-12/S4)
+  is audit-oracle'd against the layout-review accessible-name
+  inventory, judged at walkthrough, never text-asserted; the icon-fit
+  judgement (US-12/S3) is walkthrough protocol work per #1430's icon
+  inventory note.
 
 ## 9. Definition of done
 
@@ -693,3 +744,55 @@ and US-8's additive per-day overlay fact. -->
       after A1 or rebase)
 - [ ] The ruled #1212 semantics land as specified (the 09:00 mint
       retired; the placeholder/doc change meaning)
+
+## 10. Amendment appendix — 2026-11-25, #1430 (J-B3): the habit repeat editor redesign
+
+<!-- Dated note per docs/agent_dispatch.org round-8 law (a): the
+amendment is an addition, never a rewrite of the accepted US-1..US-11
+history above. Normative source: issue #1430. -->
+
+- **Motivation**: #1430 (user report + screenshots, `accessibility`
+  label) — the habit editor's frequency/day-selection area renders
+  bare checkmark rows with no labels (PerWeek ToggleStrip day
+  options; a duplicate "Scheduled days" checkbox group beside them),
+  the "Nudge Day" / "Period start" mode selector renders as bare
+  checkmark glyphs, and the edit view wastes vertical space while
+  showing an add-repeat affordance that makes no sense for habits.
+  The a11y framing is backed by the layout review's label inventory
+  (.artifacts/reports/2026-11-25-layout-review-analyzer-findings.md —
+  accessible-role/label counts against TouchArea/FocusScope/IconButton
+  use; SC 3.3.2 labels-or-instructions, SC 4.1.2 name/role/value,
+  recognition over recall) and round 8's scope report chunk B3.
+- **The story**: US-12 (P1) — label every control; replace the
+  checkmark-row grammar with the labelled control set. Concretely:
+  visible weekday labels + accessible-labels + tooltips on the day
+  strip (S1); the two day-selection grammars titled and distinguished
+  or merged (S2); semantically fitting Lucide icons in place of
+  checkmarks on the mode selector (S3; the icon inventory law —
+  Lucide's calendar-day/sun/moon/alarm family first, a second set
+  only with licensing + @image-url compatibility research, never
+  hand-drawn one-offs); a name/role/value pass over every control
+  (S4); the add-repeat arm structurally absent for habits (S5, R-8,
+  the #1294 clear-all precedent); the wasted vertical space cut
+  (S6); the landed save/reopen grammar unregressed (S7).
+- **Scope of the change**: presentation-only. No command, UiRequest
+  or ActionId delta (§7); the toggles ride the landed
+  UpdateHabit draft/save wiring (W-17). Surfaces:
+  ui/views/task-view.slint (habit variant, the #1430 line refs
+  583–644), the ToggleStrip widget variant it mounts, and
+  ui/assets/icons/ (the vendored Lucide set).
+- **Status**: DRAFT — GATE-PAUSED on operator acceptance of this
+  amendment. Implementation chunks from
+  .artifacts/plans/2026-11-25-habit-repeat-editor-plan.md (branch
+  fix/habit-repeat-editor) only after acceptance; its stage-2 agent
+  opens "GATE CLEARED" once the operator accepts.
+- **Non-goals of the amendment**, each with a home: any behavior
+  change to the schedule/override semantics themselves (US-6's ruled
+  semantics is untouched — a semantics defect found during the
+  redesign gets its own issue); icon-set generalization beyond the
+  mode selector (#1430 scopes only the repeat editor; an app-wide
+  icon audit is new backlog if the walkthrough raises it); the
+  "Scheduled days" mask's *domain* semantics (anchor vs mask) — the
+  redesign may only title/distinguish or merge the presentation; a
+  semantic merge of the two grammars is out of scope unless the
+  operator rules for it at acceptance.
