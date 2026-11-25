@@ -155,7 +155,7 @@ state = "today view; overdue rows per board, tracked-time chip, enriched base"
 axes = { scale = 3.0, width = 1500, height = 900 }
 
 [[golden]]
-name = "icon-probe-1.0-396"
+name = "icon-probe-1.0-392"
 fixture = "icon_probe.slint composition (25 vendored assets)"
 state = "icon probe window; kinds wall + tone ladder + button box"
 axes = { scale = 1.0, width = 392, height = 420 }
@@ -197,7 +197,7 @@ state = "action menu; root panel + invoked group page"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
-name = "alarm-window-1.0-1000"
+name = "alarm-window-1.0-351"
 fixture = "golden_state_enriched_at + add_alarm/deliver_alarm"
 state = "alarm window; awaiting rows with elapsed phrases"
 axes = { scale = 1.0, width = 351, height = 64 }
@@ -221,13 +221,13 @@ state = "due editor with the date-picker grid open over the task detail"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
-name = "icon-probe-0.5-396"
+name = "icon-probe-0.5-392"
 fixture = "icon_probe.slint composition, wall-edge = 0.5x"
 state = "icon probe window; kinds wall at the scale icon edge"
 axes = { scale = 0.5, width = 392, height = 420 }
 
 [[golden]]
-name = "icon-probe-3.0-396"
+name = "icon-probe-3.0-392"
 fixture = "icon_probe.slint composition, wall-edge = 3x"
 state = "icon probe window; kinds wall at the scale icon edge"
 axes = { scale = 3.0, width = 392, height = 420 }

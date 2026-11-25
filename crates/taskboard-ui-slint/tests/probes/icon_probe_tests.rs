@@ -5,7 +5,7 @@
 //! SVG, on the software renderer. Every cell must contain glyph
 //! pixels — a blank cell means decode or colorize failed, and the
 //! migration does not proceed. A committed probe golden
-//! (`tests/goldens/icon-probe-1.0-396.png`) pins byte-stable
+//! (`tests/goldens/icon-probe-1.0-392.png`) pins byte-stable
 //! determinism and is the review artefact. Pixel assertions are
 //! floors only ("glyph present", "full-tint cores exist at 3.0") —
 //! never ceilings.
@@ -129,7 +129,7 @@ fn exact_tint_pixels(image: &Rgba8Image, rect: (u32, u32, u32, u32), tint: [u8; 
 
 fn probe_golden_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!(
-        "{}/tests/goldens/icon-probe-1.0-396.png",
+        "{}/tests/goldens/icon-probe-1.0-392.png",
         env!("CARGO_MANIFEST_DIR")
     ))
 }
@@ -271,7 +271,7 @@ fn p5_the_probe_golden_holds() {
             // The manifest entry (wave plan §4): the probe's golden is
             // part of the checked-in corpus, so its regen upserts too.
             support::golden_manifest::record(&support::golden_manifest::GoldenEntry {
-                name: "icon-probe-1.0-396".to_owned(),
+                name: "icon-probe-1.0-392".to_owned(),
                 fixture: "icon_probe.slint composition (25 vendored assets)".to_owned(),
                 state: "icon probe window; kinds wall + tone ladder + button box".to_owned(),
                 scale: 1.0,
@@ -298,7 +298,8 @@ fn p5_the_probe_golden_holds() {
 /// vendored asset set (the 1.0 golden's siblings). The edge stages
 /// through the window's `wall-edge` property before show; the window
 /// size is unchanged, so the stem keeps the actual window width
-/// (392 → the `-396` family stem, #1390's law).
+/// (392 → the `-392` stem, #1390's law: the name axes are the
+/// capture's actual axes; no stale width in a stem).
 fn probe_edge_golden(scale: f64, name: &'static str) {
     let regen = std::env::var_os("TASKBOARD_REGEN_GOLDENS").is_some_and(|v| v == "1");
     run_probe_with(
@@ -364,12 +365,12 @@ fn probe_edge_golden(scale: f64, name: &'static str) {
 /// sub-pixel extreme) across the whole vendored set.
 #[test]
 fn r5a_the_kinds_wall_holds_at_the_half_icon_edge() {
-    probe_edge_golden(0.5, "icon-probe-0.5-396");
+    probe_edge_golden(0.5, "icon-probe-0.5-392");
 }
 
 /// R5b — the kinds wall at the 3.0 icon edge (the expansive
 /// extreme) across the whole vendored set.
 #[test]
 fn r5b_the_kinds_wall_holds_at_the_triple_icon_edge() {
-    probe_edge_golden(3.0, "icon-probe-3.0-396");
+    probe_edge_golden(3.0, "icon-probe-3.0-392");
 }
