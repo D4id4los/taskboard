@@ -170,15 +170,107 @@ impl NotificationSink for LogSink {
 /// the delivered-mark is intentionally unconditional on the sink
 /// outcome (the mark is the local receipt guarding the in-app row,
 /// the always-on fallback surface). Cross-ref: #474.
-#[derive(Default)]
 pub struct DesktopSink {
     /// The fire-time toast handles keyed by `(reminder, occurrence)` —
     /// exactly the identity a `Withdraw` message carries.
-    recent: std::sync::Mutex<HashMap<ToastKey, notify_rust::NotificationHandle>>,
+    recent: std::sync::Mutex<HashMap<ToastKey, ToastHandle>>,
+    /// The OS boundary (the [`ToastBackend`] seam): every
+    /// platform-touching call routes here, so tests substitute a
+    /// recording fake instead of a session bus.
+    backend: Arc<dyn ToastBackend>,
+}
+
+impl Default for DesktopSink {
+    fn default() -> Self {
+        Self {
+            recent: std::sync::Mutex::default(),
+            backend: Arc::new(NotifyRustBackend),
+        }
+    }
+}
+
+impl DesktopSink {
+    /// The test seam constructor: the sink logic over any backend.
+    #[cfg(test)]
+    fn with_backend(backend: Arc<dyn ToastBackend>) -> Self {
+        Self {
+            recent: std::sync::Mutex::default(),
+            backend,
+        }
+    }
 }
 
 /// The tracked-toast key: the `(reminder, occurrence)` pair.
 type ToastKey = (ReminderRef, chrono::DateTime<chrono::Utc>);
+
+/// The withdrawal permit a [`ToastBackend`] mints per delivered toast.
+/// The platform handle rides inside; fakes mint the empty shape (the
+/// close is then a no-op the fake records).
+#[derive(Debug)]
+pub(crate) struct ToastHandle {
+    platform: Option<notify_rust::NotificationHandle>,
+}
+
+/// The OS toast boundary (`#1369`'s seam): the only code that touches
+/// the platform notification service. The sink logic above it —
+/// payload mapping, handle tracking, cap eviction, the best-effort
+/// withdraw contract — is testable against a recording fake.
+trait ToastBackend: Send + Sync + std::fmt::Debug {
+    /// Shows one toast from the mapped payload; the error is the
+    /// platform's refusal (the sink logs the cause and surfaces the
+    /// port's [`NotifyError`]).
+    fn show<'a>(
+        &'a self,
+        payload: &'a ToastPayload,
+    ) -> Pin<Box<dyn Future<Output = Result<ToastHandle, NotifyError>> + Send + 'a>>;
+
+    /// Closes a delivered toast (the withdraw path). Best-effort by
+    /// the port's contract — the sink ignores the outcome.
+    fn close<'a>(&'a self, handle: ToastHandle) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
+/// The production backend: the only `notify-rust` call sites in the
+/// workspace's delivery paths.
+#[derive(Debug, Default)]
+struct NotifyRustBackend;
+
+impl ToastBackend for NotifyRustBackend {
+    fn show<'a>(
+        &'a self,
+        payload: &'a ToastPayload,
+    ) -> Pin<Box<dyn Future<Output = Result<ToastHandle, NotifyError>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut toast = notify_rust::Notification::new();
+            toast
+                .appname(payload.appname)
+                .summary(&payload.summary)
+                .body(&payload.body);
+            if payload.critical {
+                // D-I9.1: the value expression is per-target (notify-rust
+                // carries the three platform `urgency()` overloads).
+                #[cfg(target_os = "macos")]
+                toast.urgency(notify_rust::InterruptionLevel::Critical);
+                #[cfg(not(target_os = "macos"))]
+                toast.urgency(notify_rust::Urgency::Critical);
+            }
+            toast
+                .show_async()
+                .await
+                .map(|handle| ToastHandle {
+                    platform: Some(handle),
+                })
+                .map_err(|_| NotifyError)
+        })
+    }
+
+    fn close<'a>(&'a self, handle: ToastHandle) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(platform) = &handle.platform {
+                platform.close_async().await;
+            }
+        })
+    }
+}
 
 impl std::fmt::Debug for DesktopSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -200,23 +292,10 @@ impl NotificationSink for DesktopSink {
     ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
         Box::pin(async move {
             let payload = toast_payload(notification, Utc::now());
-            let mut toast = notify_rust::Notification::new();
-            toast
-                .appname(payload.appname)
-                .summary(&payload.summary)
-                .body(&payload.body);
-            if payload.critical {
-                // D-I9.1: the value expression is per-target (notify-rust
-                // carries the three platform `urgency()` overloads).
-                #[cfg(target_os = "macos")]
-                toast.urgency(notify_rust::InterruptionLevel::Critical);
-                #[cfg(not(target_os = "macos"))]
-                toast.urgency(notify_rust::Urgency::Critical);
-            }
             // The anchor rides in the payload (the `Notification`
             // already carries it) and is rendered nowhere — ready for
             // #203's click-through.
-            match toast.show_async().await {
+            match self.backend.show(&payload).await {
                 // The handle is the withdrawal permit (the platform
                 // matrix above); drop it silently where the OS cannot
                 // close toasts (fire-and-forget targets).
@@ -258,7 +337,7 @@ impl NotificationSink for DesktopSink {
                 .ok()
                 .and_then(|mut recent| recent.remove(&(*reminder, *occurrence)));
             if let Some(handle) = handle {
-                handle.close_async().await;
+                self.backend.close(handle).await;
             }
             Ok(())
         })
@@ -572,6 +651,16 @@ impl FocusBoundarySink for LogBoundaries {
 /// are logged and dropped, never propagated.
 pub(crate) struct DesktopBoundaries {
     chime: Arc<dyn ChimeSink>,
+    backend: Arc<dyn ToastBackend>,
+}
+
+impl DesktopBoundaries {
+    /// The test seam constructor (`#1369`): the boundary logic over a
+    /// recording backend.
+    #[cfg(test)]
+    fn with_backend(chime: Arc<dyn ChimeSink>, backend: Arc<dyn ToastBackend>) -> Self {
+        Self { chime, backend }
+    }
 }
 
 impl std::fmt::Debug for DesktopBoundaries {
@@ -605,13 +694,13 @@ impl FocusBoundarySink for DesktopBoundaries {
             let (summary, body) = boundary_phrases(event);
             // Fire-and-forget: no urgency, no handle tracking, nothing
             // to withdraw — the platform's default timeout.
-            let err = notify_rust::Notification::new()
-                .appname("taskboard")
-                .summary(summary)
-                .body(body)
-                .show_async()
-                .await;
-            if let Err(err) = err {
+            let payload = ToastPayload {
+                summary: summary.to_owned(),
+                body: body.to_owned(),
+                appname: "taskboard",
+                critical: false,
+            };
+            if let Err(err) = self.backend.show(&payload).await {
                 tracing::warn!(error = %err, ?event, "focus boundary toast failed");
             }
             if let Err(err) = self.chime.chime(crate::focus::FOCUS_CHIME_VOLUME) {
@@ -636,7 +725,10 @@ pub(crate) fn mount_focus_boundaries(
     match resolve_boundary_surface(notify, kind) {
         BoundarySurface::Disabled => Arc::new(DisabledBoundaries),
         BoundarySurface::Log => Arc::new(LogBoundaries),
-        BoundarySurface::Desktop => Arc::new(DesktopBoundaries { chime }),
+        BoundarySurface::Desktop => Arc::new(DesktopBoundaries {
+            chime,
+            backend: Arc::new(NotifyRustBackend),
+        }),
     }
 }
 
@@ -1167,5 +1259,300 @@ mod tests {
         // The seam's optionality: the default observer swallows the
         // stream without effect.
         NoopObserver.on_event(expected(attempted, 17));
+    }
+
+    // -- the ToastBackend seam suite (#1369) --------------------------
+
+    /// One shown toast, as the OS boundary received it (the mapped
+    /// payload fields — the fake's exact observable).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct RecordedToast {
+        summary: String,
+        body: String,
+        appname: &'static str,
+        critical: bool,
+    }
+
+    /// The handwritten fake (`#1369` D4.2): records every shown
+    /// payload, counts closes, hands out opaque handles, and carries a
+    /// toggleable failure mode for the `NotifyError` path. No bus, no
+    /// `DBus`, no platform code.
+    #[derive(Default)]
+    struct RecordingBackend {
+        fails: std::sync::atomic::AtomicBool,
+        shown: std::sync::Mutex<Vec<RecordedToast>>,
+        closes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl std::fmt::Debug for RecordingBackend {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("RecordingBackend")
+        }
+    }
+
+    impl RecordingBackend {
+        fn shown(&self) -> Vec<RecordedToast> {
+            self.shown.lock().expect("fake lock").clone()
+        }
+
+        fn closes(&self) -> usize {
+            self.closes.load(Ordering::SeqCst)
+        }
+    }
+
+    impl ToastBackend for RecordingBackend {
+        fn show<'a>(
+            &'a self,
+            payload: &'a ToastPayload,
+        ) -> Pin<Box<dyn Future<Output = Result<ToastHandle, NotifyError>> + Send + 'a>> {
+            Box::pin(async move {
+                if self.fails.load(Ordering::SeqCst) {
+                    return Err(NotifyError);
+                }
+                self.shown.lock().expect("fake lock").push(RecordedToast {
+                    summary: payload.summary.clone(),
+                    body: payload.body.clone(),
+                    appname: payload.appname,
+                    critical: payload.critical,
+                });
+                Ok(ToastHandle { platform: None })
+            })
+        }
+
+        fn close<'a>(
+            &'a self,
+            _handle: ToastHandle,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async move {
+                self.closes.fetch_add(1, Ordering::SeqCst);
+            })
+        }
+    }
+
+    /// The recording chime fake (the escalation suite's
+    /// `RecordingChime` pattern, local to this module's boundary tests).
+    #[derive(Default)]
+    struct RecordingChime {
+        chimed: std::sync::atomic::AtomicUsize,
+    }
+
+    impl std::fmt::Debug for RecordingChime {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("RecordingChime")
+        }
+    }
+
+    impl ChimeSink for RecordingChime {
+        fn chime(&self, _: f32) -> Result<(), crate::escalation::AudioError> {
+            self.chimed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// Kills: the `payload.critical` inversion and the tracking-insert
+    /// drop. Normal insistence shows the default posture; Alarm
+    /// insistence shows the critical one; the minted handle is tracked
+    /// under `(reminder, occurrence)` — the withdraw of exactly that
+    /// key closes it.
+    #[tokio::test]
+    async fn deliver_maps_insistence_to_the_critical_posture_and_tracks_the_handle() {
+        let backend = Arc::new(RecordingBackend::default());
+        let sink = DesktopSink::with_backend(Arc::clone(&backend) as Arc<dyn ToastBackend>);
+
+        sink.deliver(&notification(ReminderAnchor::Task(TaskId::from_uuid(
+            uuid::Uuid::from_u128(21),
+        ))))
+        .await
+        .expect("the normal delivery lands");
+        let mut alarm = notification(ReminderAnchor::Alarm(AdhocAlarmId::from_uuid(
+            uuid::Uuid::from_u128(22),
+        )));
+        alarm.insistence = taskboard_domain::Insistence::Alarm;
+        sink.deliver(&alarm)
+            .await
+            .expect("the alarm delivery lands");
+
+        let shown = backend.shown();
+        assert_eq!(shown.len(), 2, "both toasts reached the backend");
+        assert!(!shown[0].critical, "Normal stays the default posture");
+        assert!(shown[1].critical, "Alarm insistence maps critical (D-I9.1)");
+        assert_eq!(backend.closes(), 0, "nothing withdrawn yet");
+
+        let alarm_key_occurrence = alarm.occurrence;
+        sink.withdraw(&alarm.reminder, &alarm_key_occurrence)
+            .await
+            .expect("the tracked toast withdraws");
+        assert_eq!(
+            backend.closes(),
+            1,
+            "the tracked handle was closed exactly once"
+        );
+    }
+
+    /// Kills: the map-removal drop (a second withdraw would close
+    /// twice) and the best-effort contract (an unknown key answers Ok
+    /// and closes nothing).
+    #[tokio::test]
+    async fn withdraw_removes_the_tracked_handle_and_unknown_keys_are_ok() {
+        let backend = Arc::new(RecordingBackend::default());
+        let sink = DesktopSink::with_backend(Arc::clone(&backend) as Arc<dyn ToastBackend>);
+        let note = notification(ReminderAnchor::Task(TaskId::from_uuid(
+            uuid::Uuid::from_u128(23),
+        )));
+        sink.deliver(&note).await.expect("delivery lands");
+
+        sink.withdraw(&note.reminder, &note.occurrence)
+            .await
+            .expect("the tracked toast withdraws");
+        sink.withdraw(&note.reminder, &note.occurrence)
+            .await
+            .expect("the repeat withdraw is still Ok (best-effort contract)");
+        sink.withdraw(
+            &ReminderRef::Default(TaskId::from_uuid(uuid::Uuid::from_u128(99))),
+            &note.occurrence,
+        )
+        .await
+        .expect("the unknown key is Ok too");
+        assert_eq!(
+            backend.closes(),
+            1,
+            "one close total: the removal made the repeat a no-op"
+        );
+    }
+
+    /// Kills: the `len() >= TRACK_CAP` arithmetic (`>` vs `>=`, the
+    /// off-by-one). The 257th deliver clears the tracked set — so the
+    /// first toast's key withdraws to no close, while the 257th's own
+    /// key (re-inserted after the clear) still withdraws to one close.
+    #[tokio::test]
+    async fn deliver_past_the_track_cap_clears_the_tracked_set() {
+        let backend = Arc::new(RecordingBackend::default());
+        let sink = DesktopSink::with_backend(Arc::clone(&backend) as Arc<dyn ToastBackend>);
+        let mut notes = Vec::new();
+        for (u, secs) in (0..=256usize).zip(0i64..) {
+            let mut note = notification(ReminderAnchor::Task(TaskId::from_uuid(
+                uuid::Uuid::from_u128(1_000 + u as u128),
+            )));
+            // Distinct occurrences: the key is the (reminder,
+            // occurrence) pair, so each fire tracks independently.
+            note.occurrence = FIRED_AT + chrono::Duration::seconds(secs);
+            sink.deliver(&note).await.expect("delivery lands");
+            notes.push(note);
+        }
+        sink.withdraw(&notes[0].reminder, &notes[0].occurrence)
+            .await
+            .expect("evicted key withdraws Ok");
+        assert_eq!(
+            backend.closes(),
+            0,
+            "the cap cleared the tracked set: toast 1's handle is fire-and-forget"
+        );
+        let last = notes.last().expect("the 257th toast");
+        sink.withdraw(&last.reminder, &last.occurrence)
+            .await
+            .expect("the re-tracked toast withdraws");
+        assert_eq!(
+            backend.closes(),
+            1,
+            "the 257th deliver tracked its handle after the clear"
+        );
+    }
+
+    /// Kills: swallowing the typed error (the port must surface
+    /// `NotifyError`) and tracking a handle for a failed show.
+    #[tokio::test]
+    async fn a_failing_backend_surfaces_notifyerror_and_does_not_track() {
+        let backend = Arc::new(RecordingBackend::default());
+        backend.fails.store(true, Ordering::SeqCst);
+        let sink = DesktopSink::with_backend(Arc::clone(&backend) as Arc<dyn ToastBackend>);
+        let note = notification(ReminderAnchor::Task(TaskId::from_uuid(
+            uuid::Uuid::from_u128(24),
+        )));
+        let outcome = sink.deliver(&note).await;
+        assert!(
+            matches!(outcome, Err(NotifyError)),
+            "the typed delivery failure surfaces: {outcome:?}"
+        );
+        sink.withdraw(&note.reminder, &note.occurrence)
+            .await
+            .expect("the failed delivery never tracked — withdraw stays Ok");
+        assert_eq!(
+            backend.closes(),
+            0,
+            "no handle was tracked for a failed show"
+        );
+    }
+
+    /// The pure phrase table (`#1369` D4.3-5): each `FocusBoundary`
+    /// variant maps to its typed pair; the pairs are the artifact under
+    /// test (the toast's human rendering, pinned like the
+    /// `toast_payload` title pins — a swap breaks the table).
+    #[test]
+    fn boundary_phrases_map_each_focus_boundary_variant() {
+        let long = boundary_phrases(&FocusBoundary::BreakBegan { long: true });
+        let short = boundary_phrases(&FocusBoundary::BreakBegan { long: false });
+        let resumed = boundary_phrases(&FocusBoundary::FocusResumed);
+        let idle = boundary_phrases(&FocusBoundary::SessionIdle);
+        assert_eq!(
+            long,
+            ("Focus block complete", "Time for a long break."),
+            "the long-break pair"
+        );
+        assert_eq!(
+            short,
+            ("Focus block complete", "Time for a short break."),
+            "the short-break pair (same summary, distinct body)"
+        );
+        assert_eq!(
+            resumed,
+            ("Break over", "The next focus block has started."),
+            "the resume pair"
+        );
+        assert_eq!(
+            idle,
+            ("Break over", "The focus session is idle."),
+            "the idle pair (same summary, distinct body)"
+        );
+        assert_ne!(long, short, "the break length is distinguishable");
+        assert_ne!(resumed, idle, "resume and idle are distinguishable");
+    }
+
+    /// Kills: dropping the chime call, skipping the toast on backend
+    /// failure (the logged-and-dropped contract, D-R13), and a
+    /// propagating panic. One boundary event = one toast + one chime
+    /// through the shared sink; a failing backend still chimes.
+    #[tokio::test]
+    async fn desktop_boundaries_toasts_once_and_chimes_through_the_shared_sink() {
+        let backend = Arc::new(RecordingBackend::default());
+        let chime = Arc::new(RecordingChime::default());
+        let boundaries = DesktopBoundaries::with_backend(
+            Arc::clone(&chime) as Arc<dyn ChimeSink>,
+            Arc::clone(&backend) as Arc<dyn ToastBackend>,
+        );
+
+        boundaries.boundary(&FocusBoundary::FocusResumed).await;
+        let shown = backend.shown();
+        assert_eq!(shown.len(), 1, "exactly one toast per boundary event");
+        assert!(!shown[0].critical, "the boundary toast is passive (P12)");
+        assert_eq!(
+            chime.chimed.load(Ordering::SeqCst),
+            1,
+            "exactly one chime per boundary event"
+        );
+
+        // The failure leg: the toast refusal is logged-and-dropped and
+        // never skips the chime.
+        backend.fails.store(true, Ordering::SeqCst);
+        boundaries.boundary(&FocusBoundary::SessionIdle).await;
+        assert_eq!(
+            chime.chimed.load(Ordering::SeqCst),
+            2,
+            "the chime survives a backend refusal"
+        );
+        assert_eq!(
+            backend.shown().len(),
+            1,
+            "the failed show added no toast record"
+        );
     }
 }
