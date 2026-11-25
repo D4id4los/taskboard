@@ -1,0 +1,27 @@
+[
+  {
+    "id": 7,
+    "title": "To do",
+    "boardId": 42,
+    "order": 0,
+    "deletedAt": 0,
+    "cards": [
+      {
+        "id": 11,
+        "title": "first",
+        "stackId": 7,
+        "type": "plain",
+        "order": 0,
+        "attachments": []
+      },
+      {
+        "id": 12,
+        "title": "second",
+        "stackId": 7,
+        "type": "plain",
+        "order": 3,
+        "attachments": []
+      }
+    ]
+  }
+]

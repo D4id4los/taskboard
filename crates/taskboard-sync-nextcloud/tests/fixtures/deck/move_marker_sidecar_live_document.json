@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "board": 42,
+  "sections": {
+    "tasks": {
+      "21": { "live_note": "keep me" }
+    }
+  },
+  "live_lane_key": { "kept": true },
+  "moved_to_files": {
+    "files_board": "0f0e0d0c-0b0a-0908-0706-050403020100",
+    "committed_at": "2026-01-01T00:00:00+00:00"
+  }
+}

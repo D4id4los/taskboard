@@ -1,0 +1,36 @@
+[
+  {
+    "id": 7,
+    "title": "To do",
+    "boardId": 42,
+    "order": 0,
+    "deletedAt": 0,
+    "cards": [
+      {
+        "id": 20,
+        "title": "[taskboard] app-data",
+        "stackId": 7,
+        "type": "plain",
+        "order": 5,
+        "attachments": []
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "title": "Done",
+    "boardId": 42,
+    "order": 1,
+    "deletedAt": 0,
+    "cards": [
+      {
+        "id": 21,
+        "title": "regular",
+        "stackId": 8,
+        "type": "plain",
+        "order": 0,
+        "attachments": []
+      }
+    ]
+  }
+]
