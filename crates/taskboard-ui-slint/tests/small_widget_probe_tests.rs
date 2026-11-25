@@ -345,3 +345,30 @@ fn the_ghosts_invoke_on_the_first_physical_click() {
         assert_eq!(window.get_column_ghost_count(), 1);
     });
 }
+
+/// The mode-selector's icon grammar (#1430, US-12/S3): the habit
+/// editor's Nudge day / Period start strip resolves its pushed
+/// per-slot icons — calendar-days for the nudge day, alarm-clock for
+/// the period start (the issue's Lucide family) — and a slot past the
+/// pushed icons still falls to the founding check glyph. The oracle
+/// is the typed enum, never a pixel.
+#[test]
+fn the_mode_strip_resolves_its_pushed_icons() {
+    run_probe(|window| {
+        assert_eq!(
+            window.get_mode_icon_nudge(),
+            IconKind::CalendarDays,
+            "the Nudge day slot carries the calendar-days glyph"
+        );
+        assert_eq!(
+            window.get_mode_icon_period(),
+            IconKind::AlarmClock,
+            "the Period start slot carries the alarm-clock glyph"
+        );
+        assert_eq!(
+            window.get_fallback_icon(),
+            IconKind::Check,
+            "a slot past the pushed icons falls to the check glyph"
+        );
+    });
+}

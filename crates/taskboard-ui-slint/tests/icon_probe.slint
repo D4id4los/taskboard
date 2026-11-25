@@ -11,7 +11,7 @@
 // eyeball). The cell grid
 // is absolutely positioned; `icon_probe_tests.rs` mirrors the same
 // grid in base-px constants (CELL 44, PITCH 48, ORIGIN 8, rows at
-// y 8/60/112, the button box at (8, 172), the wall rows at y 224..368 — `Theme` is at its
+// y 8/60/112, the button box at (8, 172), the wall rows at y 224..416 — `Theme` is at its
 // base-scale default of 1.0 in the probe window, so token arithmetic
 // equals those base-px values). Keep the two in step. This pre-swap
 // copy inlines the post-swap rendering (an `Image` + `colorize`)
@@ -63,7 +63,7 @@ component ButtonBoxCell inherits Rectangle {
 
 export component IconProbeWindow inherits Window {
     width: Theme.space-7 * 8 + Theme.space-2;
-    height: Theme.space-7 * 8 + Theme.space-5 + Theme.space-3;
+    height: Theme.space-7 * 9 + Theme.space-5 + Theme.space-3;
     background: Theme.background;
 
     // The kinds wall's icon edge (G2 R5, #1312): the wall captures
@@ -137,4 +137,10 @@ export component IconProbeWindow inherits Window {
     ProbeCell { x: Theme.space-2 + Theme.space-7 * 3; y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/history.svg"); }
     ProbeCell { x: Theme.space-2 + Theme.space-7 * 4; y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/trash-2.svg"); }
     ProbeCell { x: Theme.space-2 + Theme.space-7 * 5; y: Theme.space-7 * 7 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/archive.svg"); }
+
+    // The wall's seventh row (#1430, US-12/S3): the repeat-editor
+    // mode-selector icons — calendar-days + alarm-clock, the new
+    // family members' decode + tint evidence.
+    ProbeCell { x: Theme.space-2;                   y: Theme.space-7 * 8 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/calendar-days.svg"); }
+    ProbeCell { x: Theme.space-2 + Theme.space-7;   y: Theme.space-7 * 8 + Theme.space-2 * 4; cell-bg: Theme.background; tint: Theme.text-secondary; edge: root.wall-edge; source: @image-url("../ui/assets/icons/alarm-clock.svg"); }
 }

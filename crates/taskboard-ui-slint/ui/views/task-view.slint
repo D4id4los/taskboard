@@ -565,6 +565,7 @@ export component TaskView inherits FocusScope {
                         horizontal-stretch: 1;
                         placeholder: "1";
                         label: "Quota (completions per period)";
+                        description: "how many completions the habit needs each period";
                         text: root.habit.quota-count;
                         validity: root.habit.quota-valid ? FieldValidity.valid : FieldValidity.invalid;
                         edited(text) => { root.habit-quota-count-edited(text); }
@@ -576,6 +577,7 @@ export component TaskView inherits FocusScope {
                         horizontal-stretch: 1;
                         placeholder: "HH:MM";
                         label: "Anchor time (arms the reminder nudge)";
+                        description: "the time of day the habit's nudge arms at";
                         text: root.habit.time-text;
                         validity: root.habit.time-valid ? FieldValidity.valid : FieldValidity.invalid;
                         edited(text) => { root.habit-time-edited(text); }
@@ -584,33 +586,61 @@ export component TaskView inherits FocusScope {
                         icon: IconKind.remove;
                         tone: Tone.neutral;
                         label: "Clear anchor time";
+                        description: "removes the habit's anchor time; the nudge disarms";
                         clicked => { root.habit-time-cleared(); }
                     }
                 }
                 // The anchor-day row (D5's variant gating): PerWeek
                 // mounts the 7-slot picker, PerMonth the 1..=31 field,
                 // PerDay none — the UI never mints a mismatched day.
-                if (root.habit.kind == 1): ToggleStrip {
+                // The labelled grammar (#1430, US-12/S1/S2/S6): the
+                // section rides ONE row — its title + purpose caption
+                // inline before the strip (the compact fold), every
+                // day toggle carrying its visible weekday label beside
+                // the glyph, a tooltip and an accessible description.
+                // The caption distinguishes this grammar (the weekday
+                // ANCHOR) from the scheduled-days MASK below (S2).
+                if (root.habit.kind == 1): HorizontalLayout {
+                    spacing: Theme.space-2;
+                    anchor-caption := RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Weekday anchor — the weekday the period counts from";
+                        vertical-alignment: center;
+                    }
                     // The anchor-day strip (D5's variant gating; the
                     // W4 D-4 ruling): the recur editor's retired
                     // pre-W3 grammar re-expressed over the ToggleStrip
                     // primitive — single-select-over-multi is the same
                     // mask mechanism (one true slot).
-                    options: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-                    checked-mask: [
-                        root.habit.weekday == 0,
-                        root.habit.weekday == 1,
-                        root.habit.weekday == 2,
-                        root.habit.weekday == 3,
-                        root.habit.weekday == 4,
-                        root.habit.weekday == 5,
-                        root.habit.weekday == 6,
-                    ];
-                    picked(index) => { root.habit-weekday-picked(index); }
+                    weekday-strip := ToggleStrip {
+                        labelled: true;
+                        options: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+                        descriptions: [
+                            "schedules the habit on Monday",
+                            "schedules the habit on Tuesday",
+                            "schedules the habit on Wednesday",
+                            "schedules the habit on Thursday",
+                            "schedules the habit on Friday",
+                            "schedules the habit on Saturday",
+                            "schedules the habit on Sunday",
+                        ];
+                        checked-mask: [
+                            root.habit.weekday == 0,
+                            root.habit.weekday == 1,
+                            root.habit.weekday == 2,
+                            root.habit.weekday == 3,
+                            root.habit.weekday == 4,
+                            root.habit.weekday == 5,
+                            root.habit.weekday == 6,
+                        ];
+                        picked(index) => { root.habit-weekday-picked(index); }
+                    }
                 }
                 if (root.habit.kind == 2): TextField {
                     placeholder: "1-31";
                     label: "Anchor day of month";
+                    description: "the day of the month the habit's period counts from";
                     text: root.habit.month-day;
                     validity: root.habit.month-valid ? FieldValidity.valid : FieldValidity.invalid;
                     edited(text) => { root.habit-month-day-edited(text); }
@@ -620,12 +650,18 @@ export component TaskView inherits FocusScope {
                 // daily habit happens every day). Multi-select over
                 // the CheckBox primitives; the commit mints the set at
                 // the adapter (an edited-but-empty selection greys the
-                // save — the typed invalid draft).
+                // save — the typed invalid draft). The caption carries
+                // the section's title + purpose (US-12/S2): the days
+                // MASK — distinct from the weekday anchor above — and
+                // each checkbox gained its tooltip + accessible
+                // description (US-12/S4).
                 if (root.habit.schedule-visible): HorizontalLayout {
                     spacing: Theme.space-2;
-                    RoleText {
+                    scheduled-caption := RoleText {
                         role: Typography.caption;
-                        text: "Scheduled days";
+                        text-color: Theme.text-secondary;
+                        text: "Scheduled days — the extra days the habit is due on";
+                        vertical-alignment: center;
                     }
                     for slot in [0, 1, 2, 3, 4, 5, 6]: CheckBox {
                         checked: root.habit.schedule_days[slot];
@@ -634,6 +670,7 @@ export component TaskView inherits FocusScope {
                         // action, so both states name THIS slot's day).
                         checked-label: ["Remove Mon", "Remove Tue", "Remove Wed", "Remove Thu", "Remove Fri", "Remove Sat", "Remove Sun"][slot];
                         unchecked-label: ["Add Mon", "Add Tue", "Add Wed", "Add Thu", "Add Fri", "Add Sat", "Add Sun"][slot];
+                        description: ["toggles the scheduled Monday", "toggles the scheduled Tuesday", "toggles the scheduled Wednesday", "toggles the scheduled Thursday", "toggles the scheduled Friday", "toggles the scheduled Saturday", "toggles the scheduled Sunday"][slot];
                         toggled => { root.habit_schedule_day_toggled(slot, !root.habit.schedule_days[slot]); }
                     }
                 }
@@ -641,18 +678,38 @@ export component TaskView inherits FocusScope {
                 // section — base (R-8: nudge-day default, period-start
                 // explicit), offset days, fallback time-of-day
                 // (US-6 AC-4), snooze in hours/days (O-1), and the
-                // clear leg back to the plain O-1 default.
-                RoleText {
-                    role: Typography.caption;
-                    text: "Reminder override";
-                }
-                ToggleStrip {
-                    options: ["Nudge day", "Period start"];
-                    checked-mask: [
-                        root.habit.reminder-base == 0,
-                        root.habit.reminder-base == 1,
-                    ];
-                    picked(index) => { root.habit_reminder_base_picked(index); }
+                // clear leg back to the plain O-1 default. The
+                // labelled mode grammar (#1430, US-12/S3/S6): the
+                // caption folds inline with the selector, the
+                // checkmark glyphs give way to the mode's Lucide
+                // icons (calendar-days / alarm-clock — the issue's
+                // icon-inventory family) and each option carries its
+                // visible name, tooltip and accessible description.
+                HorizontalLayout {
+                    spacing: Theme.space-2;
+                    override-caption := RoleText {
+                        role: Typography.caption;
+                        text-color: Theme.text-secondary;
+                        text: "Reminder override — the nudge's schedule, per habit";
+                        vertical-alignment: center;
+                    }
+                    mode-strip := ToggleStrip {
+                        labelled: true;
+                        icons: [
+                            IconKind.calendar-days,
+                            IconKind.alarm-clock,
+                        ];
+                        options: ["Nudge day", "Period start"];
+                        descriptions: [
+                            "the reminder fires on the period's nudge day",
+                            "the reminder fires at the period's start",
+                        ];
+                        checked-mask: [
+                            root.habit.reminder-base == 0,
+                            root.habit.reminder-base == 1,
+                        ];
+                        picked(index) => { root.habit_reminder_base_picked(index); }
+                    }
                 }
                 HorizontalLayout {
                     spacing: Theme.space-2;
@@ -660,6 +717,7 @@ export component TaskView inherits FocusScope {
                         horizontal-stretch: 1;
                         placeholder: "0";
                         label: "Offset days";
+                        description: "days added to the nudge day before the reminder fires";
                         text: root.habit.reminder-offset;
                         edited(text) => { root.habit_reminder_offset_edited(text); }
                     }
@@ -673,6 +731,7 @@ export component TaskView inherits FocusScope {
                         // meaning, never a different example.
                         placeholder: "blank = anchor time";
                         label: "Time (blank: anchor only)";
+                        description: "the override's clock time; blank keeps the anchor-time-only posture";
                         text: root.habit.reminder-time;
                         edited(text) => { root.habit_reminder_time_edited(text); }
                     }
@@ -680,6 +739,7 @@ export component TaskView inherits FocusScope {
                         horizontal-stretch: 1;
                         placeholder: "2h / 1d";
                         label: "Snooze";
+                        description: "how long a fired nudge waits before re-firing";
                         text: root.habit.reminder-snooze;
                         validity: root.habit.reminder-valid ? FieldValidity.valid : FieldValidity.invalid;
                         edited(text) => { root.habit_reminder_snooze_edited(text); }
@@ -688,6 +748,7 @@ export component TaskView inherits FocusScope {
                         icon: IconKind.remove;
                         tone: Tone.neutral;
                         label: "Clear override";
+                        description: "removes the reminder override; the default nudge schedule returns";
                         clicked => { root.habit_reminder_clear_clicked(); }
                     }
                 }
@@ -709,6 +770,7 @@ export component TaskView inherits FocusScope {
                         icon: IconKind.check;
                         tone: Tone.success;
                         label: "Save habit";
+                        description: "commits the drafted schedule to the habit";
                         enabled: root.habit.can-save;
                         clicked => { root.habit_save_clicked(); }
                     }
@@ -1154,8 +1216,13 @@ export component TaskView inherits FocusScope {
             // The add-repeat affordance (round-7 D-7.1): rule-less
             // open tasks only — the recur row owns the edit side. The
             // timer icon keeps the recur family's identity; the label
-            // is the hover tip.
-            if (!root.task.recur-visible && root.task.series-edit-visible): add-repeat-button := IconButton {
+            // is the hover tip. The habit subject is spelled out of
+            // the ARM (R-8, #1430's US-12/S5, the #1294 clear-all
+            // precedent): repetition is a task-subject affordance, so
+            // the widget arm does not instantiate for a habit — no
+            // visibility bit, the element simply never exists in the
+            // habit editor's tree.
+            if (!root.task.is-habit && !root.task.recur-visible && root.task.series-edit-visible): add-repeat-button := IconButton {
                 icon: IconKind.timer;
                 tone: Tone.neutral;
                 label: "Add repeat: the task joins a recurring series";

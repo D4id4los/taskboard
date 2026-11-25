@@ -25,7 +25,7 @@ const CELL: u32 = 44;
 const PITCH: u32 = 48;
 const ORIGIN: u32 = 8;
 const WINDOW_WIDTH: u32 = 392;
-const WINDOW_HEIGHT: u32 = 420;
+const WINDOW_HEIGHT: u32 = 468;
 
 // The probe's expected tints and backgrounds — the theme palette
 // values `tests/icon_probe.slint` names (the tone map's outputs in
@@ -236,8 +236,8 @@ fn p4_the_button_box_interior_carries_the_glyph() {
 #[test]
 fn p6_every_vendored_asset_renders_glyph_pixels() {
     run_probe(|_window, snapshot| {
-        let wall_rows: [u32; 4] = [224, 272, 320, 368];
-        let counts_per_row = [8usize, 8, 3, 6];
+        let wall_rows: [u32; 5] = [224, 272, 320, 368, 416];
+        let counts_per_row = [8usize, 8, 3, 6, 2];
         let mut index = 0usize;
         for (row, y) in wall_rows.iter().enumerate() {
             for column in 0..counts_per_row[row] {
@@ -252,7 +252,7 @@ fn p6_every_vendored_asset_renders_glyph_pixels() {
                 index += 1;
             }
         }
-        assert_eq!(index, 25, "the wall covers the whole vendored set");
+        assert_eq!(index, 27, "the wall covers the whole vendored set");
     });
 }
 
@@ -315,9 +315,9 @@ fn probe_edge_golden(scale: f64, name: &'static str) {
                 "renderer-presence contract at the {name} edge golden"
             );
             // Ink floor over the whole wall region: every cell of the
-            // four wall rows carries glyph ink at this edge (a
+            // five wall rows carries glyph ink at this edge (a
             // floor — never a ceiling).
-            let wall_rows: [(u32, u32); 4] = [(224, 8), (272, 8), (320, 3), (368, 6)];
+            let wall_rows: [(u32, u32); 5] = [(224, 8), (272, 8), (320, 3), (368, 6), (416, 2)];
             for (y, cells) in wall_rows {
                 for column in 0..cells {
                     let (cx, cy, cw, ch) = cell_rect(column, y);

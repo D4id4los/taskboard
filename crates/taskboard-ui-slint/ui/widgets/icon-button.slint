@@ -65,6 +65,11 @@ export component IconButton inherits Rectangle {
         focus-on-tab-navigation: true;
         accessible-role: AccessibleRole.button;
         accessible-label: root.label;
+        // The name/role/value pass's description half (#1430,
+        // US-12/S4): the tooltip's `description` is the same text the
+        // accessible tree carries — the tooltip never says anything
+        // the AT tree doesn't, in both directions.
+        accessible-description: root.description;
         enabled: root.enabled;
         // The AT/keyboard activation lands on the same callback the
         // TouchArea's click hits (§7.1's equivalence, D15).
