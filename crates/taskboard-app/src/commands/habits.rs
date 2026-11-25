@@ -132,6 +132,12 @@ pub enum HabitsInvocation {
         reminder: Option<Option<taskboard_domain::habit::HabitReminderOverride>>,
         /// The absolute manual-order slot (routes `MoveHabit`).
         order: Option<i64>,
+        /// The `--before` neighbour selector (routes `HabitReorder`,
+        /// #1356).
+        before: Option<String>,
+        /// The `--after` neighbour selector (routes `HabitReorder`,
+        /// #1356).
+        after: Option<String>,
         /// The seam's edit.
         continued_from: Option<SeamEdit>,
     },
@@ -230,6 +236,8 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             reminder,
             reminder_clear,
             order,
+            before,
+            after,
             continued_from,
         } => HabitsInvocation::Update {
             habit,
@@ -241,6 +249,8 @@ pub fn collapse(cmd: HabitsCmd) -> HabitsInvocation {
             days,
             reminder: reminder.map(Some).or(reminder_clear.then_some(None)),
             order,
+            before,
+            after,
             continued_from,
         },
         HabitsCmd::Rm { habit } => HabitsInvocation::Rm { habit },
@@ -413,6 +423,8 @@ pub async fn run_on(
             days,
             reminder,
             order,
+            before,
+            after,
             continued_from,
         } => {
             if let Some(pick) = target {
@@ -428,6 +440,8 @@ pub async fn run_on(
                     description,
                     day,
                     order,
+                    before,
+                    after,
                     continued_from,
                     days,
                     reminder,
@@ -645,6 +659,91 @@ pub async fn adjust_on(
     }
 }
 
+/// The update verb's move leg (#1356): `--before/--after <habit>`
+/// mints the gap index the landed `HabitReorder` grammar consumes —
+/// the deterministic relative address over a densely ordered section
+/// (the absolute `--order` tie resolves by id luck). The neighbour
+/// must live on the habit's board: the reorder grammar is per
+/// section. Yields whether a move leg executed (the receipt's
+/// `moved` disjunct).
+async fn apply_habit_move(
+    app: &crate::App,
+    id: taskboard_domain::HabitId,
+    order: Option<i64>,
+    before: Option<String>,
+    after: Option<String>,
+) -> Result<bool, CommandError> {
+    if before.is_some() && after.is_some() {
+        return Err(CommandError::MoveNeighbourMismatch {
+            selector: "--before and --after are one mode".to_owned(),
+        });
+    }
+    let after_mode = after.is_some();
+    match before.or(after) {
+        Some(neighbour_sel) => {
+            let state = app.engine.shared_state().load_full();
+            let neighbour = resolve_habit(&state, &neighbour_sel)?;
+            let board = state.habits.habits.get(&id).map(|row| row.board).ok_or(
+                CommandError::UnknownHabit {
+                    selector: neighbour_sel.clone(),
+                },
+            )?;
+            let neighbour_row = state
+                .habits
+                .habits
+                .get(&neighbour)
+                .filter(|row| row.is_live())
+                .ok_or(CommandError::UnknownHabit {
+                    selector: neighbour_sel.clone(),
+                })?;
+            if neighbour_row.board != board {
+                return Err(CommandError::MoveNeighbourMismatch {
+                    selector: neighbour_sel,
+                });
+            }
+            let mut rows: Vec<&taskboard_domain::habit::Habit> = state
+                .habits
+                .habits
+                .values()
+                .filter(|row| row.is_live() && row.board == board)
+                .collect();
+            rows.sort_by_key(|row| (row.order, row.id));
+            let index = rows.iter().position(|row| row.id == neighbour).ok_or(
+                CommandError::UnknownHabit {
+                    selector: neighbour_sel.clone(),
+                },
+            )?;
+            // The engine's gap semantics (`habit_reorder_plan`):
+            // `--before` targets the neighbour's gap, `--after` the
+            // gap past it — landing on the mover's own edges is the
+            // accepted in-place no-op.
+            let target = index + usize::from(after_mode);
+            drop(state);
+            match app
+                .engine
+                .execute(StateCommand::HabitReorder { habit: id, target })
+                .await?
+            {
+                CommandOutcome::Applied => Ok(true),
+                CommandOutcome::NoOp => Ok(false),
+                _ => Err(outcome_mismatch()),
+            }
+        }
+        None => match order {
+            Some(order) => match app
+                .engine
+                .execute(StateCommand::MoveHabit { habit: id, order })
+                .await?
+            {
+                CommandOutcome::Applied => Ok(true),
+                CommandOutcome::NoOp => Ok(false),
+                _ => Err(outcome_mismatch()),
+            },
+            None => Ok(false),
+        },
+    }
+}
+
 /// The `habits update` steps: build the change mask, execute it, then
 /// `--order`'s `MoveHabit` when the mask names a reorder. A zero-flag
 /// mask (and an unchanged one) is the planner's typed no-op — the
@@ -663,6 +762,8 @@ pub async fn update_on(
     description: Option<String>,
     day: Option<DayEdit>,
     order: Option<i64>,
+    before: Option<String>,
+    after: Option<String>,
     continued_from: Option<SeamEdit>,
     days_mask: Option<taskboard_domain::habit::WeekdaySet>,
     reminder_mask: Option<Option<taskboard_domain::habit::HabitReminderOverride>>,
@@ -694,18 +795,7 @@ pub async fn update_on(
         CommandOutcome::NoOp => {}
         _ => return Err(outcome_mismatch()),
     }
-    let mut moved = false;
-    if let Some(order) = order {
-        match app
-            .engine
-            .execute(StateCommand::MoveHabit { habit: id, order })
-            .await?
-        {
-            CommandOutcome::Applied => moved = true,
-            CommandOutcome::NoOp => {}
-            _ => return Err(outcome_mismatch()),
-        }
-    }
+    let moved = apply_habit_move(app, id, order, before, after).await?;
     let state = app.engine.shared_state().load_full();
     let habit = state.habits.habits.get(&id).cloned();
     Ok(HabitUpdateReceipt {
@@ -1921,6 +2011,8 @@ mod engine_seam_tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .await
         .expect("the update lands");
@@ -1935,6 +2027,8 @@ mod engine_seam_tests {
             None,
             None,
             Some(3),
+            None,
+            None,
             None,
             None,
             None,
@@ -1955,11 +2049,97 @@ mod engine_seam_tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .await
         .expect("the vacuous edit is accepted");
         assert!(!vacuous.changed, "the identical edit is the typed no-op");
         let _ = id;
+        let _ = fixture.app.shutdown().await;
+    }
+
+    /// The #1356 twin pin: on a densely ordered section, `--after
+    /// <adjacent>` places the habit immediately after the neighbour
+    /// deterministically — the adjacency asserted from the canonical
+    /// `(order, id)` sequence, and a cross-board neighbour refuses
+    /// typed (`MoveNeighbourMismatch`).
+    #[tokio::test]
+    async fn update_after_adjacent_is_deterministic_on_a_dense_section() {
+        let fixture = standalone_boot_fixture("pred-habit-after").await;
+        let board = minted_board(&fixture).await;
+        for title in ["a", "b", "c"] {
+            let _ = add_on(&fixture.app, title, daily(), Some(board), None, None, None)
+                .await
+                .expect("dense habit add");
+        }
+        let receipt = update_on(
+            &fixture.app,
+            "a",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("b".to_owned()),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the dense adjacent move");
+        assert!(receipt.changed, "the reorder flips moved");
+        let state = fixture.app.engine.shared_state().load_full();
+        let mut rows: Vec<&taskboard_domain::habit::Habit> = state
+            .habits
+            .habits
+            .values()
+            .filter(|row| row.is_live() && row.board == board)
+            .collect();
+        rows.sort_by_key(|row| (row.order, row.id));
+        let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(titles, ["b", "a", "c"], "a lands directly after b");
+        drop(state);
+
+        // A neighbour on another board refuses typed.
+        let other = {
+            let CommandOutcome::CreatedBoard(id) = fixture
+                .app
+                .engine
+                .execute(StateCommand::CreateBoard {
+                    title: "other".to_owned(),
+                    color: taskboard_domain::Color::new("0082c9"),
+                })
+                .await
+                .expect("board mints")
+            else {
+                panic!("CreateBoard always mints");
+            };
+            id
+        };
+        let _ = add_on(&fixture.app, "x", daily(), Some(other), None, None, None)
+            .await
+            .expect("the other board's habit");
+        let err = update_on(
+            &fixture.app,
+            "a",
+            None,                 // title
+            None,                 // target
+            None,                 // at
+            None,                 // description
+            None,                 // day
+            None,                 // order
+            None,                 // before
+            Some("x".to_owned()), // after
+            None,                 // continued_from
+            None,                 // days
+            None,                 // reminder
+        )
+        .await
+        .expect_err("the cross-board neighbour refuses");
+        assert!(matches!(err, CommandError::MoveNeighbourMismatch { .. }));
         let _ = fixture.app.shutdown().await;
     }
 

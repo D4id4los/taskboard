@@ -185,6 +185,8 @@ async fn tasks_move_routes_a_failed_credential_load_to_exit_one() {
                 stack: None,
                 board: None,
                 order: None,
+                before: None,
+                after: None,
             },
         },
         ctx(dir.path(), &mut out, &mut err),
@@ -657,6 +659,8 @@ async fn one_shot_core_verbs_route_success_end_to_end() {
             stack: Some("Todo".to_owned()),
             board: None,
             order: Some(0),
+            before: None,
+            after: None,
         },
     });
     run!(Command::Tasks {

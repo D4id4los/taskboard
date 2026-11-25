@@ -1032,6 +1032,8 @@ async fn r12_session_arms_route_success_end_to_end() {
                         stack: Some("Todo".to_owned()),
                         board: None,
                         order: Some(0),
+                        before: None,
+                        after: None,
                     },
                 },
                 &mut io,

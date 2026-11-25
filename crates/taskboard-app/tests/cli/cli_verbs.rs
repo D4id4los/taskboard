@@ -200,6 +200,8 @@ async fn v4_move_appends_and_honors_explicit_order() {
         Some("col2"),
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("move to col2");
@@ -218,13 +220,15 @@ async fn v4_move_appends_and_honors_explicit_order() {
         Some("col2"),
         None,
         Some(0),
+        None,
+        None,
     )
     .await
     .expect("explicit order");
     assert_eq!(moved.order, 0);
 
     // Append after the adopted remote card in col1 (order 0) → 1.
-    let t2_moved = tasks::move_(config, store, &t2.id, Some("col1"), None, None)
+    let t2_moved = tasks::move_(config, store, &t2.id, Some("col1"), None, None, None, None)
         .await
         .expect("append move");
     assert_eq!(t2_moved.stack_title, "col1");
@@ -699,6 +703,8 @@ async fn v14_done_and_move_reject_unknown_task_selectors() {
         Arc::clone(&store),
         &missing,
         Some("col"),
+        None,
+        None,
         None,
         None,
     )

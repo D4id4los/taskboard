@@ -310,6 +310,7 @@ pub(crate) async fn done_on(
 /// # Errors
 ///
 /// [`CommandError`] — typed, see the variant docs.
+#[allow(clippy::too_many_arguments)] // the selector composition IS the verb's shape
 pub async fn move_(
     config: AppConfig,
     store: Arc<dyn CredentialStore>,
@@ -317,14 +318,65 @@ pub async fn move_(
     stack: Option<&str>,
     board: Option<&str>,
     order: Option<i64>,
+    before: Option<&str>,
+    after: Option<&str>,
 ) -> Result<MutationReceipt, CommandError> {
     let task = task.to_owned();
     let stack = stack.map(str::to_owned);
     let board = board.map(str::to_owned);
+    let before = before.map(str::to_owned);
+    let after = after.map(str::to_owned);
     with_core(config, store, async |app| {
-        move_on(app, &task, stack.as_deref(), board.as_deref(), order).await
+        move_on(
+            app,
+            &task,
+            stack.as_deref(),
+            board.as_deref(),
+            order,
+            before.as_deref(),
+            after.as_deref(),
+        )
+        .await
     })
     .await
+}
+
+/// The `--before/--after <task>` neighbour's gap index over the
+/// stack's canonical `(order, id)` sequence (the engine's
+/// `task_reorder_plan` semantics): `--before` targets the neighbour's
+/// gap (the mover lands directly ahead of it), `--after` the gap past
+/// it (directly behind) — indices run over the WITH-mover sequence,
+/// and landing on the mover's own edges is the engine's accepted
+/// in-place no-op. The neighbour must be a live row of the target
+/// stack — a miss or a foreign-stack row refuses typed (#1356).
+fn neighbour_gap_target(
+    state: &AppState,
+    stack: StackId,
+    neighbour_sel: &str,
+    after_mode: bool,
+) -> Result<usize, CommandError> {
+    let neighbour = resolve_task(state, neighbour_sel)?;
+    let neighbour = state
+        .tasks
+        .get(&neighbour)
+        .filter(|t| t.is_live())
+        .ok_or_else(|| CommandError::UnknownTask(neighbour_sel.to_owned()))?;
+    if neighbour.stack != stack {
+        return Err(CommandError::MoveNeighbourMismatch {
+            selector: neighbour_sel.to_owned(),
+        });
+    }
+    let mut rows: Vec<&taskboard_domain::Task> = state
+        .tasks
+        .values()
+        .filter(|t| t.is_live() && t.stack == stack)
+        .collect();
+    rows.sort_by_key(|t| (t.order, t.id));
+    let index = rows
+        .iter()
+        .position(|t| t.id == neighbour.id)
+        .ok_or_else(|| CommandError::UnknownTask(neighbour_sel.to_owned()))?;
+    Ok(index + usize::from(after_mode))
 }
 
 /// The `tasks move` steps on a booted core (the REPL/session seam).
@@ -334,6 +386,8 @@ pub(crate) async fn move_on(
     stack: Option<&str>,
     board: Option<&str>,
     order: Option<i64>,
+    before: Option<&str>,
+    after: Option<&str>,
 ) -> Result<MutationReceipt, CommandError> {
     let state = app.engine.shared_state().load_full();
     let task_id = resolve_task(&state, task)?;
@@ -385,15 +439,50 @@ pub(crate) async fn move_on(
             return Err(CommandError::AmbiguousStack { candidates: vec![] });
         }
     };
+    // The relative-addressing leg (#1356): `--before/--after <task>`
+    // resolve the neighbour through the selector grammar and mint the
+    // gap index the landed `TaskReorder` grammar consumes — a dense
+    // adjacent pair moves deterministically (the absolute `--order`
+    // mint can only name an occupied order, which the canonical
+    // `(order, id)` sort resolves by uuid luck). The neighbour must
+    // live in the target stack: the reorder grammar is same-stack.
+    if before.is_some() && after.is_some() {
+        // clap refuses the pair at the CLI; the REPL's direct line
+        // refuses typed here.
+        return Err(CommandError::MoveNeighbourMismatch {
+            selector: "--before and --after are one mode".to_owned(),
+        });
+    }
+    let target_gap = match before.or(after) {
+        Some(neighbour_sel) => {
+            let after_mode = after.is_some();
+            Some(neighbour_gap_target(
+                &state,
+                stack,
+                neighbour_sel,
+                after_mode,
+            )?)
+        }
+        None => None,
+    };
     let order = order.unwrap_or_else(|| append_order(&state, stack));
     drop(state);
-    app.engine
-        .execute(StateCommand::MoveTask {
-            id: task_id,
-            stack,
-            order,
-        })
-        .await?;
+    if let Some(target) = target_gap {
+        app.engine
+            .execute(StateCommand::TaskReorder {
+                id: task_id,
+                target,
+            })
+            .await?;
+    } else {
+        app.engine
+            .execute(StateCommand::MoveTask {
+                id: task_id,
+                stack,
+                order,
+            })
+            .await?;
+    }
     let state = app.engine.shared_state().load_full();
     let task = state
         .tasks
@@ -1497,6 +1586,108 @@ mod engine_seam_tests {
         let _ = fixture.app.shutdown().await;
     }
 
+    /// The #1356 pin: on a densely ordered stack, `--after <adjacent>`
+    /// places the row immediately after the neighbour deterministically
+    /// — the adjacency asserted from the canonical `(order, id)`
+    /// sequence (not uuid luck), the orders renumbered dense. The
+    /// cross-stack neighbour is the typed `MoveNeighbourMismatch`.
+    #[tokio::test]
+    async fn move_after_adjacent_is_deterministic_on_a_dense_stack() {
+        let fixture = standalone_boot_fixture("pred-move-after").await;
+        let CommandOutcome::CreatedBoard(board) = fixture
+            .app
+            .engine
+            .execute(StateCommand::CreateBoard {
+                title: "b".to_owned(),
+                color: taskboard_domain::Color::new("0082c9"),
+            })
+            .await
+            .expect("board mints")
+        else {
+            panic!("CreateBoard always mints");
+        };
+        let CommandOutcome::CreatedStack(stack) = fixture
+            .app
+            .engine
+            .execute(StateCommand::CreateStack {
+                board,
+                title: "Inbox".to_owned(),
+                order: 0,
+            })
+            .await
+            .expect("stack mints")
+        else {
+            panic!("CreateStack always mints");
+        };
+        let stack_sel = stack.as_uuid().to_string();
+        // The creation mint is `last + 1` — the dense regime the
+        // absolute-order mint wedges on.
+        for title in ["a", "b", "c"] {
+            let _ = add_on(&fixture.app, title.to_owned(), Some(&stack_sel))
+                .await
+                .expect("dense add");
+        }
+        // Move `a` after its adjacent neighbour `b` — an occupied
+        // absolute order, deterministically resolved through the gap
+        // grammar.
+        let _ = move_on(
+            &fixture.app,
+            "a",
+            Some(&stack_sel),
+            None,
+            None,
+            None,
+            Some("b"),
+        )
+        .await
+        .expect("the dense adjacent move");
+        let state = fixture.app.engine.shared_state().load_full();
+        let mut rows: Vec<&taskboard_domain::Task> = state
+            .tasks
+            .values()
+            .filter(|t| t.is_live() && t.stack == stack)
+            .collect();
+        rows.sort_by_key(|t| (t.order, t.id));
+        let titles: Vec<&str> = rows.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["b", "a", "c"], "a lands directly after b");
+        let orders: Vec<i64> = rows.iter().map(|t| t.order).collect();
+        assert_eq!(orders, [0, 1, 2], "the stack renumbers dense");
+        drop(state);
+
+        // A neighbour on another stack refuses typed — the reorder
+        // grammar is same-stack, never a cross-stack guess.
+        let CommandOutcome::CreatedStack(other) = fixture
+            .app
+            .engine
+            .execute(StateCommand::CreateStack {
+                board,
+                title: "Second".to_owned(),
+                order: 1,
+            })
+            .await
+            .expect("second stack mints")
+        else {
+            panic!("CreateStack always mints");
+        };
+        let other_sel = other.as_uuid().to_string();
+        let _ = add_on(&fixture.app, "x".to_owned(), Some(&other_sel))
+            .await
+            .expect("the second stack's row");
+        let err = move_on(
+            &fixture.app,
+            "a",
+            Some(&stack_sel),
+            None,
+            None,
+            None,
+            Some("x"),
+        )
+        .await
+        .expect_err("the cross-stack neighbour refuses");
+        assert!(matches!(err, CommandError::MoveNeighbourMismatch { .. }));
+        let _ = fixture.app.shutdown().await;
+    }
+
     /// The scoped move triage (plan §3 #9): colliding stack titles
     /// resolve through `--board`; a uuid outside the named board is the
     /// typed unknown; intra-board duplicate titles stay ambiguous; and
@@ -1561,6 +1752,8 @@ mod engine_seam_tests {
             Some("Inbox"),
             Some(&b.as_uuid().to_string()),
             None,
+            None,
+            None,
         )
         .await
         .expect("scoped resolve");
@@ -1580,6 +1773,8 @@ mod engine_seam_tests {
             Some(&a_inbox.as_uuid().to_string()),
             Some(&b.as_uuid().to_string()),
             None,
+            None,
+            None,
         )
         .await
         .expect_err("out of scope");
@@ -1591,6 +1786,8 @@ mod engine_seam_tests {
             "mover",
             None,
             Some(&b.as_uuid().to_string()),
+            None,
+            None,
             None,
         )
         .await
@@ -1645,6 +1842,8 @@ mod engine_seam_tests {
             "mover",
             Some("Inbox"),
             Some(&c.as_uuid().to_string()),
+            None,
+            None,
             None,
         )
         .await

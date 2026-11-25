@@ -322,6 +322,7 @@ fn o3_error_kinds_cover_every_variant() {
                 _ => "engine",
             },
             CommandError::AnchorTaskReserved => "anchor-task-reserved",
+            CommandError::MoveNeighbourMismatch { .. } => "move-neighbour-mismatch",
             CommandError::TaskDone { .. } => "task-done",
             CommandError::InvalidCredentials => "invalid-credentials",
             CommandError::Unreachable => "unreachable",

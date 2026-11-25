@@ -597,7 +597,10 @@ impl std::fmt::Display for LineRefusal {
 pub(crate) enum LineAction {
     /// Route the parsed command against the session core; the bool is
     /// the line's JSON flag (line `--json` OR the session default).
-    Execute(Command, bool),
+    /// Boxed: `Command` grew past the `large_enum_variant` budget when
+    /// the #1356 move selectors joined the grammar — the enum is
+    /// produced per line, the box keeps the loop's stack shape.
+    Execute(Box<Command>, bool),
     /// A REPL-level refusal — print the guidance, keep the session.
     Refuse(LineRefusal),
     /// A clap parse failure — clap prints it (help/version to stdout,
@@ -677,14 +680,15 @@ fn resolve_words_impl(words: &[String], json_default: bool, config_relay: bool) 
                 crate::cli::ConfigCmd::Set { .. }
                 | crate::cli::ConfigCmd::Unset { .. }
                 | crate::cli::ConfigCmd::Reload,
-        }) if config_relay => {
-            LineAction::Execute(command_from_config_relay(parsed), cli.json || json_default)
-        }
+        }) if config_relay => LineAction::Execute(
+            Box::new(command_from_config_relay(parsed)),
+            cli.json || json_default,
+        ),
         Some(Command::Config { .. }) => LineAction::Refuse(LineRefusal::ConfigCommand),
         // `connect`/`login`/`logout` parse with their flags intact: the
         // session loop runs them as ceremonies (ADR 0014); the daemon
         // IPC server refuses them as terminal-bound before dispatch.
-        Some(command) => LineAction::Execute(command, cli.json || json_default),
+        Some(command) => LineAction::Execute(Box::new(command), cli.json || json_default),
     }
 }
 
@@ -950,7 +954,7 @@ pub async fn repl_loop(
                 // The one-shot alias's deprecation notice, on stderr UX
                 // only — never asserted. Emitted before the line's
                 // writers borrow the streams.
-                if matches!(command, Command::Login { .. }) {
+                if matches!(command.as_ref(), Command::Login { .. }) {
                     let _ = writeln!(
                         io.err,
                         "warning: `login` is a deprecated alias of `connect`"
@@ -971,7 +975,7 @@ pub async fn repl_loop(
                 // cancellation is reported like any failed line, and a
                 // termination drops the line silently.
                 let dispatch = async {
-                    match command {
+                    match *command {
                         Command::Connect {
                             server,
                             user,
@@ -1594,7 +1598,7 @@ mod tests {
 
         // Quoted titles survive the split as one argument.
         let execute = |action: LineAction| match action {
-            LineAction::Execute(command, json) => (command, json),
+            LineAction::Execute(command, json) => (*command, json),
             _ => panic!("expected Execute"),
         };
         let (command, json) = execute(resolve_line("tasks add \"two words\" --json", false));
@@ -1931,7 +1935,7 @@ mod argv_tests {
     #[test]
     fn argv_words_parse_like_lines_and_exit_is_a_usage_error() {
         let execute = |action: LineAction| match action {
-            LineAction::Execute(command, json) => (command, json),
+            LineAction::Execute(command, json) => (*command, json),
             other => panic!("expected Execute, got {other:?}"),
         };
         // Core argv parses and routes.
@@ -2003,15 +2007,15 @@ mod argv_tests {
             .map(str::to_owned)
             .collect();
         match resolve_words_with_config_relay(&words, false) {
-            LineAction::Execute(
+            LineAction::Execute(command, json) => match *command {
                 Command::Config {
                     cmd: ConfigCmd::Set { pairs },
-                },
-                json,
-            ) => {
-                assert_eq!(pairs, vec!["focus.work_mins".to_owned(), "50".to_owned()]);
-                assert!(!json, "no default json over the relay");
-            }
+                } => {
+                    assert_eq!(pairs, vec!["focus.work_mins".to_owned(), "50".to_owned()]);
+                    assert!(!json, "no default json over the relay");
+                }
+                other => panic!("the relay parses config set, got {other:?}"),
+            },
             other => panic!("the relay parses config set, got {other:?}"),
         }
         let words: Vec<String> = "config unset focus.work_mins"
@@ -2019,12 +2023,12 @@ mod argv_tests {
             .map(str::to_owned)
             .collect();
         match resolve_words_with_config_relay(&words, false) {
-            LineAction::Execute(
+            LineAction::Execute(command, _) => match *command {
                 Command::Config {
                     cmd: ConfigCmd::Unset { keys },
-                },
-                _,
-            ) => assert_eq!(keys, vec!["focus.work_mins".to_owned()]),
+                } => assert_eq!(keys, vec!["focus.work_mins".to_owned()]),
+                other => panic!("the relay parses config unset, got {other:?}"),
+            },
             other => panic!("the relay parses config unset, got {other:?}"),
         }
         for line in ["config print", "config path", "config set k 1"] {
@@ -2056,12 +2060,12 @@ mod argv_tests {
         use crate::repl::{LineRefusal, resolve_words_with_config_relay};
         let words: Vec<String> = "config reload".split(' ').map(str::to_owned).collect();
         match resolve_words_with_config_relay(&words, false) {
-            LineAction::Execute(
+            LineAction::Execute(command, _) => match *command {
                 Command::Config {
                     cmd: ConfigCmd::Reload,
-                },
-                _,
-            ) => {}
+                } => {}
+                other => panic!("the relay parses config reload, got {other:?}"),
+            },
             other => panic!("the relay parses config reload, got {other:?}"),
         }
         // The plain (REPL-local) resolver: reload refuses with the
