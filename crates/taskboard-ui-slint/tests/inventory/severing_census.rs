@@ -74,18 +74,11 @@ struct Exemption {
     reason: &'static str,
 }
 
-const EXEMPTIONS: &[Exemption] = &[
-    Exemption {
-        file: "review-walk-overlay.slint",
-        component: "ReviewWalkOverlay",
-        reason: "a hosted dialog body: the sizing law lives in ModalDialogHost (the host owns the scrim, the absorbing panel root, and the sizing law — the file's own header); its embedded PlanNextDayView mount is itself a severed census root",
-    },
-    Exemption {
-        file: "review-walk-overlay.slint",
-        component: "VerbButton",
-        reason: "a private widget kept `export` only because the walk probe mounts it for the B-1 gate — out of boundary like every widget",
-    },
-];
+const EXEMPTIONS: &[Exemption] = &[Exemption {
+    file: "review-walk-overlay.slint",
+    component: "ReviewWalkOverlay",
+    reason: "a hosted dialog body: the sizing law lives in ModalDialogHost (the host owns the scrim, the absorbing panel root, and the sizing law — the file's own header); its embedded PlanNextDayView mount is itself a severed census root",
+}];
 
 /// build.rs twin entries whose severed root lives outside the
 /// `ui/views/` census boundary, each witnessed by an existing
@@ -377,10 +370,10 @@ fn a_stale_exemption_fails_the_honesty_rule() {
         .collect();
     assert_eq!(
         stale.len(),
-        2,
-        "both exemption entries go stale: {violations:?}"
+        1,
+        "the exemption entry goes stale: {violations:?}"
     );
-    assert!(stale.contains(&"ReviewWalkOverlay") && stale.contains(&"VerbButton"));
+    assert!(stale.contains(&"ReviewWalkOverlay"));
 }
 
 #[test]

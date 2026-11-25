@@ -114,24 +114,9 @@ component StripRow inherits VerticalLayout {
     }
 }
 
-// The walk's verb row (W3, #950): the compact TextButton variant —
-// the surface bg, the hover/pressed lift, the always-on border and
-// the caption typography all live in the primitive now, and B-1
-// (plan §5, the sanctioned behavior change) rides it: the verb row
-// gains the FocusScope tab stop + Return/Space it was the only F-1
-// copy to lack (inventory Q-A; the walk probe's b1 test pins it).
-// `export` stays: the walk probe mounts it for the B-1 gate.
-export component VerbButton inherits Rectangle {
-    in property <string> label;
-    callback clicked();
-    vertical-stretch: 0;
-    btn := TextButton {
-        size: TextButtonSize.compact;
-        label: root.label;
-        clicked => { root.clicked(); }
-    }
-}
-
+// The walk's verb row (W3, #950): the compact TextButton variant — the
+// primitive absorbed the wrapper (#1350); the sites mount TextButton
+// (compact) directly.
 export component ReviewWalkOverlay inherits Rectangle {
     in property <ReviewWalkModel> model;
     // The prompts' one-shot answer seeds (the mount-transition push).
@@ -283,11 +268,15 @@ export component ReviewWalkOverlay inherits Rectangle {
         if (root.model.stage-kind == 0 && !root.model.filing): HorizontalLayout {
             vertical-stretch: 0;
             spacing: Theme.space-2;
-            VerbButton {
+            TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                 label: root.model.file-label;
                 clicked => root.file-clicked();
             }
-            VerbButton {
+            TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                 label: root.model.keep-label;
                 clicked => root.keep-clicked();
             }
@@ -322,15 +311,21 @@ export component ReviewWalkOverlay inherits Rectangle {
             HorizontalLayout {
                 vertical-stretch: 0;
                 spacing: Theme.space-2;
-                VerbButton {
+                TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                     label: "<";
                     clicked => root.file-prev-clicked();
                 }
-                VerbButton {
+                TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                     label: ">";
                     clicked => root.file-next-clicked();
                 }
-                VerbButton {
+                TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                     label: root.model.file-label;
                     clicked => root.file-commit-clicked();
                 }
@@ -343,19 +338,27 @@ export component ReviewWalkOverlay inherits Rectangle {
             && root.model.rows.length > 0): HorizontalLayout {
             vertical-stretch: 0;
             spacing: Theme.space-2;
-            VerbButton {
+            TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                 label: root.model.tomorrow-label;
                 clicked => root.tomorrow-clicked();
             }
-            VerbButton {
+            TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                 label: root.model.pick-label;
                 clicked => root.pick-clicked();
             }
-            VerbButton {
+            TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                 label: root.model.leave-label;
                 clicked => root.leave-clicked();
             }
-            VerbButton {
+            TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                 label: root.model.plan-label;
                 clicked => root.plan-clicked();
             }
@@ -374,7 +377,9 @@ export component ReviewWalkOverlay inherits Rectangle {
             HorizontalLayout {
                 vertical-stretch: 0;
                 spacing: Theme.space-2;
-                VerbButton {
+                TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                     label: root.model.pick-label;
                     clicked => root.date-commit-clicked();
                 }
@@ -385,11 +390,15 @@ export component ReviewWalkOverlay inherits Rectangle {
         if (root.model.stage-kind == 2): HorizontalLayout {
             vertical-stretch: 0;
             spacing: Theme.space-2;
-            VerbButton {
+            TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                 label: root.model.record-label;
                 clicked => root.record-clicked();
             }
-            VerbButton {
+            TextButton {
+                size: TextButtonSize.compact;
+                vertical-stretch: 0;
                 label: root.model.finish-label;
                 clicked => root.finish-clicked();
             }
