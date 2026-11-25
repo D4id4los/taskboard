@@ -467,44 +467,31 @@ async fn daemon_stop_command(config_path: Option<std::path::PathBuf>, json: bool
     }
 }
 
-/// The remediation lane's workspace over this machine's database (the
-/// GUI panel's exact shape: the desktop posture is the authorized one
-/// — `may_control_processes: true`; the effects are the production
-/// seams verbatim, so the terminal gets the same typed semantics the
-/// panel renders — #1249's whole point).
+/// The remediation lane's workspace over this machine's database
+/// (#1348: the lib's shared builder — the REPL's in-session arm uses
+/// the same one): the desktop posture, the production seams.
 fn remediation_workspace(
     config: &AppConfig,
 ) -> taskboard_app::status_remediation::RemediationWorkspace {
-    let db_path = Some(config.db_path().to_path_buf());
-    taskboard_app::status_remediation::RemediationWorkspace {
-        db_path: db_path.clone(),
-        may_control_processes: true,
-        effects: taskboard_app::status_remediation::RemediationEffects::real(db_path),
-    }
+    taskboard_app::status_remediation::real_workspace(config.db_path().to_path_buf())
 }
 
-/// The typed outcome's terminal fold (#1249): one fact line on stdout
-/// (the JSON spelling under `--json`), exit 0 executed / 1 refused —
-/// the refusal's *kind* is the payload, never message text (the
-/// typed-outcomes round law).
+/// The typed outcome's terminal fold (#1249, hoisted to the lib by
+/// #1348): one fact line on stdout (the JSON spelling under `--json`),
+/// exit 0 executed / 1 refused — the refusal's *kind* is the payload,
+/// never message text (the typed-outcomes round law).
 fn remediation_exit(
     json: bool,
     outcome: &taskboard_ui_slint::requests::StatusRemediationOutcome,
 ) -> u8 {
-    use taskboard_ui_slint::requests::StatusRemediationOutcome as O;
+    use taskboard_app::status_remediation::{outcome_exit_code, outcome_line};
     if json {
         let rendered = serde_json::to_string(outcome).expect("outcome serializes");
         println!("{rendered}");
     } else {
-        let line = match outcome {
-            O::LockReleased => "lock sidecar removed".to_owned(),
-            O::HolderSignalled => "lock holder signalled".to_owned(),
-            O::DaemonRestarted { pid } => format!("daemon restarted (pid {pid})"),
-            O::Refused(kind) => format!("refused: {kind:?}"),
-        };
-        println!("{line}");
+        println!("{}", outcome_line(outcome));
     }
-    u8::from(matches!(outcome, O::Refused(_)))
+    outcome_exit_code(outcome)
 }
 
 /// `taskboard unlock` (#1249): the executor's `ForceUnlock` verb —

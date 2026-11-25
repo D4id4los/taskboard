@@ -2098,22 +2098,22 @@ pub async fn dispatch_line(
             // the corrupting act the executor exists to refuse). The
             // session's own db path addresses the sidecar (never a
             // fresh config load — the session's binding is the truth).
-            let db_path = app.config.db_path().to_path_buf();
-            let workspace = crate::status_remediation::RemediationWorkspace {
-                db_path: Some(db_path.clone()),
-                may_control_processes: true,
-                effects: crate::status_remediation::RemediationEffects::real(Some(db_path)),
-            };
+            // #1348: the workspace builder and the outcome fold are the
+            // lib's shared ones — this arm renders the terminal fold,
+            // never the Debug spelling.
+            let workspace =
+                crate::status_remediation::real_workspace(app.config.db_path().to_path_buf());
             let outcome = crate::status_remediation::run_remediation(
                 &workspace,
                 taskboard_ui_slint::requests::StatusRemediationAction::ForceUnlock,
             )
             .await;
-            emit_to(io, &outcome, &format!("{outcome:?}"));
-            u8::from(matches!(
-                outcome,
-                taskboard_ui_slint::requests::StatusRemediationOutcome::Refused(_)
-            ))
+            emit_to(
+                io,
+                &outcome,
+                &crate::status_remediation::outcome_line(&outcome),
+            );
+            crate::status_remediation::outcome_exit_code(&outcome)
         }
         Command::Status => {
             // The session *is* the core holder; the honest client-side

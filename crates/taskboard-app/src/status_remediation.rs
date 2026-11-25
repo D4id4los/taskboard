@@ -253,3 +253,99 @@ async fn restart_daemon(workspace: &RemediationWorkspace) -> StatusRemediationOu
         Err(_) => StatusRemediationOutcome::Refused(Refusal::SpawnFailed),
     }
 }
+
+/// The desktop-terminal workspace over this machine's database (the
+/// shared builder of both fronts — `taskboard unlock`/`daemon
+/// restart` and the REPL's in-session unlock arm; #1348's hoist):
+/// the desktop posture is the authorized one
+/// (`may_control_processes: true`) and the effects are the production
+/// seams verbatim, so every front gets the same typed semantics the
+/// panel renders.
+#[must_use]
+pub fn real_workspace(db_path: std::path::PathBuf) -> RemediationWorkspace {
+    RemediationWorkspace {
+        db_path: Some(db_path.clone()),
+        may_control_processes: true,
+        effects: RemediationEffects::real(Some(db_path)),
+    }
+}
+
+/// The typed outcome's terminal fold line (#1348): the human-readable
+/// spelling both fronts print — one semantics, one renderer. The
+/// refusal's kind is the payload (`{kind:?}` — the variant name, the
+/// typed-outcomes law); the JSON spelling stays `serde_json` over the
+/// outcome itself (see each front's emit path).
+#[must_use]
+pub fn outcome_line(outcome: &StatusRemediationOutcome) -> String {
+    match outcome {
+        StatusRemediationOutcome::LockReleased => "lock sidecar removed".to_owned(),
+        StatusRemediationOutcome::HolderSignalled => "lock holder signalled".to_owned(),
+        StatusRemediationOutcome::DaemonRestarted { pid } => {
+            format!("daemon restarted (pid {pid})")
+        }
+        StatusRemediationOutcome::Refused(kind) => format!("refused: {kind:?}"),
+    }
+}
+
+/// The fold's exit code: 0 executed / 1 refused — the refusal's kind
+/// is the payload, never message text.
+#[must_use]
+pub fn outcome_exit_code(outcome: &StatusRemediationOutcome) -> u8 {
+    u8::from(matches!(outcome, StatusRemediationOutcome::Refused(_)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use insta::assert_snapshot;
+
+    /// The shared fold's snapshot (#1348): every outcome variant's
+    /// terminal line, over the exact `StatusRemediationOutcome` data —
+    /// both fronts (`taskboard unlock`, the in-session arm) render
+    /// this, so the snapshot pins the one semantics. Exit codes are
+    /// asserted as typed facts beside it, never as text.
+    #[test]
+    fn the_outcome_fold_lines_snap_both_fronts_to_one_semantics() {
+        let outcomes = [
+            StatusRemediationOutcome::LockReleased,
+            StatusRemediationOutcome::HolderSignalled,
+            StatusRemediationOutcome::DaemonRestarted { pid: 4242 },
+            StatusRemediationOutcome::Refused(Refusal::SelfPid),
+            StatusRemediationOutcome::Refused(Refusal::HolderAlive),
+        ];
+        let mut rendered = String::new();
+        for outcome in &outcomes {
+            rendered += &outcome_line(outcome);
+            rendered += "\texit=";
+            rendered += &outcome_exit_code(outcome).to_string();
+            rendered += "\n";
+        }
+        assert_snapshot!(rendered);
+    }
+
+    /// The refusal kind is the payload: every refusal exits 1, every
+    /// executed verb exits 0 — typed facts, no text assertions.
+    #[test]
+    fn the_exit_code_folds_refusals_to_one() {
+        for outcome in [
+            StatusRemediationOutcome::LockReleased,
+            StatusRemediationOutcome::HolderSignalled,
+            StatusRemediationOutcome::DaemonRestarted { pid: 1 },
+        ] {
+            assert_eq!(outcome_exit_code(&outcome), 0, "executed verbs exit 0");
+        }
+        for kind in [
+            Refusal::HolderNotAlive,
+            Refusal::HolderAlive,
+            Refusal::SelfPid,
+            Refusal::SpawnFailed,
+            Refusal::IpcUnavailable,
+        ] {
+            assert_eq!(
+                outcome_exit_code(&StatusRemediationOutcome::Refused(kind)),
+                1,
+                "refusals exit 1"
+            );
+        }
+    }
+}
