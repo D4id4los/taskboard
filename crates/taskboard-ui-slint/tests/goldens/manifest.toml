@@ -156,9 +156,9 @@ axes = { scale = 3.0, width = 1500, height = 900 }
 
 [[golden]]
 name = "icon-probe-1.0-392"
-fixture = "icon_probe.slint composition (25 vendored assets)"
+fixture = "icon_probe.slint composition (27 vendored assets)"
 state = "icon probe window; kinds wall + tone ladder + button box"
-axes = { scale = 1.0, width = 392, height = 420 }
+axes = { scale = 1.0, width = 392, height = 468 }
 
 [[golden]]
 name = "plan-next-day-1.0-1000"
@@ -224,13 +224,13 @@ axes = { scale = 1.0, width = 1000, height = 900 }
 name = "icon-probe-0.5-392"
 fixture = "icon_probe.slint composition, wall-edge = 0.5x"
 state = "icon probe window; kinds wall at the scale icon edge"
-axes = { scale = 0.5, width = 392, height = 420 }
+axes = { scale = 0.5, width = 392, height = 468 }
 
 [[golden]]
 name = "icon-probe-3.0-392"
 fixture = "icon_probe.slint composition, wall-edge = 3x"
 state = "icon probe window; kinds wall at the scale icon edge"
-axes = { scale = 3.0, width = 392, height = 420 }
+axes = { scale = 3.0, width = 392, height = 468 }
 
 [[golden]]
 name = "board-empty-1.0-1000"
