@@ -20,6 +20,7 @@ import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { Tone } from "../theme.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
 import { LabeledValueRow } from "../widgets/labeled-value-row.slint";
+import { ActionChip } from "../widgets/action-chip.slint";
 
 export struct ReviewWindowModel {
     estimated: string,
@@ -154,38 +155,47 @@ component StatCell inherits VerticalLayout {
 
 // One window's aggregate section: the caption row over the four stat
 // cells. The skeleton is fixed — only the values collapse.
-component AggregateSection inherits VerticalLayout {
+// The window sections' shared skeleton (#1359): the caption row over
+// the section body, one copy for the six window sections. The heading
+// stays this view's Typography.heading role deliberately — the
+// SectionHeader primitive is the caption-role chrome header (timers/
+// habits), a different hierarchy tier; adopting it here would shrink
+// the review headings (golden-visible, outside the round's recorded
+// deltas).
+component SectionShell inherits VerticalLayout {
     in property <string> caption;
+    spacing: Theme.space-1;
+    vertical-stretch: 0;
+    RoleText {
+        role: Typography.heading;
+        text: root.caption;
+    }
+    @children
+}
+
+component AggregateSection inherits SectionShell {
     in property <ReviewWindowModel> model;
-    VerticalLayout {
-        spacing: Theme.space-1;
-        vertical-stretch: 0;
-        RoleText {
-            role: Typography.heading;
-            text: root.caption;
+    HorizontalLayout {
+        spacing: Theme.space-4;
+        StatCell {
+            label: "Estimated";
+            value: root.model.estimated;
+            collapsed: root.model.empty;
         }
-        HorizontalLayout {
-            spacing: Theme.space-4;
-            StatCell {
-                label: "Estimated";
-                value: root.model.estimated;
-                collapsed: root.model.empty;
-            }
-            StatCell {
-                label: "Actual";
-                value: root.model.actual;
-                collapsed: root.model.empty;
-            }
-            StatCell {
-                label: "Gap";
-                value: root.model.gap;
-                collapsed: root.model.empty;
-            }
-            StatCell {
-                label: "Compared";
-                value: root.model.compared;
-                collapsed: root.model.empty;
-            }
+        StatCell {
+            label: "Actual";
+            value: root.model.actual;
+            collapsed: root.model.empty;
+        }
+        StatCell {
+            label: "Gap";
+            value: root.model.gap;
+            collapsed: root.model.empty;
+        }
+        StatCell {
+            label: "Compared";
+            value: root.model.compared;
+            collapsed: root.model.empty;
         }
     }
 }
@@ -196,37 +206,28 @@ component AggregateSection inherits VerticalLayout {
 // carries no activation. The skeleton is fixed — only the values
 // collapse (D-9 tier 2: an empty window renders dashes and baseline
 // ticks, never a vanished section).
-component TrackingSection inherits VerticalLayout {
-    in property <string> caption;
+component TrackingSection inherits SectionShell {
     in property <TrackingSectionModel> model;
-    VerticalLayout {
-        spacing: Theme.space-1;
-        vertical-stretch: 0;
-        RoleText {
-            role: Typography.heading;
-            text: root.caption;
+    HorizontalLayout {
+        spacing: Theme.space-4;
+        StatCell {
+            label: "Work";
+            value: root.model.work;
+            collapsed: root.model.empty;
         }
-        HorizontalLayout {
-            spacing: Theme.space-4;
-            StatCell {
-                label: "Work";
-                value: root.model.work;
-                collapsed: root.model.empty;
-            }
-            StatCell {
-                label: "Respite";
-                value: root.model.respite;
-                collapsed: root.model.empty;
-            }
-            StatCell {
-                label: "Work blocks";
-                value: root.model.blocks;
-                collapsed: root.model.empty;
-            }
+        StatCell {
+            label: "Respite";
+            value: root.model.respite;
+            collapsed: root.model.empty;
         }
-        StatBars {
-            bars: root.model.bars;
+        StatCell {
+            label: "Work blocks";
+            value: root.model.blocks;
+            collapsed: root.model.empty;
         }
+    }
+    StatBars {
+        bars: root.model.bars;
     }
 }
 
@@ -236,47 +237,38 @@ component TrackingSection inherits VerticalLayout {
 // here. The skeleton is fixed — only the values collapse (D-9 tier 2:
 // an empty window renders dashes and baseline ticks, never a vanished
 // section).
-component ReflectionSection inherits VerticalLayout {
-    in property <string> caption;
+component ReflectionSection inherits SectionShell {
     in property <ReflectionSectionModel> model;
-    VerticalLayout {
-        spacing: Theme.space-1;
+    HorizontalLayout {
+        spacing: Theme.space-4;
+        StatCell {
+            label: "Mood";
+            value: root.model.mood;
+            collapsed: root.model.empty;
+        }
+        StatCell {
+            label: "Energy";
+            value: root.model.energy;
+            collapsed: root.model.empty;
+        }
+        StatCell {
+            label: "Flags";
+            value: root.model.flags;
+            collapsed: root.model.empty;
+        }
+    }
+    if (!root.model.empty && root.model.per-flag != ""): RoleText {
+        role: Typography.caption;
+        text-color: Theme.text-secondary;
+        text: root.model.per-flag;
+        wrap: no-wrap;
+        overflow: elide;
         vertical-stretch: 0;
-        RoleText {
-            role: Typography.heading;
-            text: root.caption;
-        }
-        HorizontalLayout {
-            spacing: Theme.space-4;
-            StatCell {
-                label: "Mood";
-                value: root.model.mood;
-                collapsed: root.model.empty;
-            }
-            StatCell {
-                label: "Energy";
-                value: root.model.energy;
-                collapsed: root.model.empty;
-            }
-            StatCell {
-                label: "Flags";
-                value: root.model.flags;
-                collapsed: root.model.empty;
-            }
-        }
-        if (!root.model.empty && root.model.per-flag != ""): RoleText {
-            role: Typography.caption;
-            text-color: Theme.text-secondary;
-            text: root.model.per-flag;
-            wrap: no-wrap;
-            overflow: elide;
-            vertical-stretch: 0;
-        }
-        StatBars {
-            bars: root.model.bars;
-            base-color: Semantic.sync-active;
-            stack-color: Semantic.success;
-        }
+    }
+    StatBars {
+        bars: root.model.bars;
+        base-color: Semantic.sync-active;
+        stack-color: Semantic.success;
     }
 }
 
@@ -482,7 +474,7 @@ export component ReviewView inherits FocusScope {
                                 RoleText {
                                     role: Typography.caption;
                                     text-color: Theme.text-secondary;
-                                    width: 160px * Theme.base-scale;
+                                    width: Theme.journal-field-width;
                                     text: row.flags;
                                     overflow: elide;
                                     vertical-alignment: center;
@@ -579,31 +571,23 @@ export component ReviewView inherits FocusScope {
                         }
                         HorizontalLayout {
                             spacing: Theme.space-2;
-                            for chip[cindex] in root.reflection-editor-flags: Rectangle {
-                                border-radius: Theme.radius-small;
-                                border-width: chip.member
-                                    ? Theme.focus-ring-width
-                                    : Theme.hairline-width;
-                                border-color: chip.member ? Theme.focus-ring : Theme.border;
-                                background: chip.member ? Theme.surface-hover : transparent;
-                                horizontal-stretch: 0;
-                                min-width: 60px * Theme.base-scale;
+                            // The clickable-chip grammar (#1350): the
+                            // ActionChip's raw-scope posture (button
+                            // a11y, the guarded key half, the touch
+                            // after the scope) over the flag toggle;
+                            // membership rides the border/background
+                            // knobs.
+                            for chip[cindex] in root.reflection-editor-flags: flag-chip := ActionChip {
+                                text: chip.label;
+                                interactive: true;
+                                keyboard-activatable: true;
+                                use-stop: false;
+                                bordered: chip.member;
+                                chip-background: chip.member ? Theme.surface-hover : transparent;
+                                chip-min-width: 60px * Theme.base-scale;
                                 height: 26px * Theme.base-scale;
-                                accessible-role: AccessibleRole.button;
-                                accessible-label: chip.label;
-                                HorizontalLayout {
-                                    padding-left: Theme.space-1;
-                                    padding-right: Theme.space-1;
-                                    alignment: center;
-                                    RoleText {
-                                        role: Typography.caption;
-                                        text: chip.label;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                                touch := TouchArea {
-                                    clicked => { root.reflection-editor-flag-toggled(cindex); }
-                                }
+                                a11y-label: chip.label;
+                                invoked => { root.reflection-editor-flag-toggled(cindex); }
                             }
                         }
                         HorizontalLayout {
@@ -677,21 +661,21 @@ export component ReviewView inherits FocusScope {
                                 RoleText {
                                     role: Typography.caption;
                                     text-color: Theme.text-secondary;
-                                    width: 140px * Theme.base-scale;
+                                    width: Theme.journal-field-narrow;
                                     text: "est " + (row.estimate == "" ? "—" : row.estimate);
                                     vertical-alignment: center;
                                 }
                                 RoleText {
                                     role: Typography.caption;
                                     text-color: Theme.text-secondary;
-                                    width: 140px * Theme.base-scale;
+                                    width: Theme.journal-field-narrow;
                                     text: "act " + (row.actual == "" ? "—" : row.actual);
                                     vertical-alignment: center;
                                 }
                                 RoleText {
                                     role: Typography.caption;
                                     text-color: row.gap == "" ? Theme.text-secondary : Semantic.danger;
-                                    width: 160px * Theme.base-scale;
+                                    width: Theme.journal-field-width;
                                     text: row.gap == "" ? "no comparison" : row.gap;
                                     vertical-alignment: center;
                                 }

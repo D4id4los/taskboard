@@ -6,6 +6,7 @@
 
 import { Theme, Typography, Semantic, RoleText, Tone, SyncPhaseUi } from "../theme.slint";
 import { Badge } from "../widgets/badge.slint";
+import { SidecarChip } from "../widgets/sidecar-chip.slint";
 import { StatusDot } from "../widgets/status-dot.slint";
 import { ListRow } from "../widgets/list-row.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
@@ -367,25 +368,18 @@ export component StatusBar inherits Rectangle {
             // fold decides the costume (Ok neutral, no badge; the
             // warnings warning; fork danger).
             // slint: files-sync-tone (pre-framework seam, #782)
-            if (root.files-sync-visible): HorizontalLayout {
-                spacing: Theme.space-2;
-                RoleText {
-                    role: Typography.caption;
-                    text-color: root.files-sync-tone == FilesSyncChipTone.danger
-                        ? Semantic.danger
-                        : root.files-sync-tone == FilesSyncChipTone.warning
-                            ? Semantic.warning
-                            : Theme.text-secondary;
-                    text: root.files-sync-text;
-                    vertical-alignment: center;
-                }
+            if (root.files-sync-visible): SidecarChip {
+                text: root.files-sync-text;
+                text-color: root.files-sync-tone == FilesSyncChipTone.danger
+                    ? Semantic.danger
+                    : root.files-sync-tone == FilesSyncChipTone.warning
+                        ? Semantic.warning
+                        : Theme.text-secondary;
                 // slint: files-sync-flagged (pre-framework seam, #782)
-                if (root.files-sync-flagged): Badge {
-                    text: "!";
-                    tone: root.files-sync-tone == FilesSyncChipTone.danger
-                        ? Tone.danger
-                        : Tone.warning;
-                }
+                flagged: root.files-sync-flagged;
+                badge-tone: root.files-sync-tone == FilesSyncChipTone.danger
+                    ? Tone.danger
+                    : Tone.warning;
             }
 
             // The degraded-boot badge (W-7, R-5): undo history
@@ -393,32 +387,18 @@ export component StatusBar inherits Rectangle {
             // the badge is the honest terminal state (no dismiss, no
             // action rows).
             // slint: journal-degraded-badge
-            if (root.journal-degraded-visible): HorizontalLayout {
-                spacing: Theme.space-2;
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Semantic.warning;
-                    text: "Undo history truncated — tasks intact";
-                    vertical-alignment: center;
-                }
-                Badge {
-                    text: "!";
-                    tone: Tone.warning;
-                }
+            if (root.journal-degraded-visible): SidecarChip {
+                text: "Undo history truncated — tasks intact";
+                text-color: Semantic.warning;
+                flagged: true;
+                badge-tone: Tone.warning;
             }
 
-            if (root.delivery-chip-visible): HorizontalLayout {
-                spacing: Theme.space-2;
-                RoleText {
-                    role: Typography.caption;
-                    text-color: Semantic.warning;
-                    text: root.delivery-chip;
-                    vertical-alignment: center;
-                }
-                Badge {
-                    text: "!";
-                    tone: Tone.warning;
-                }
+            if (root.delivery-chip-visible): SidecarChip {
+                text: root.delivery-chip;
+                text-color: Semantic.warning;
+                flagged: true;
+                badge-tone: Tone.warning;
             }
 
             if (root.tracking-chip-visible && root.tracking-chip-action-visible): stop-touch := TouchArea {

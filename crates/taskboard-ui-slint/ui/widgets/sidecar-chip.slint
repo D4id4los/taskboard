@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The passive sidecar chip (#1359): the status bar's caption + "!"
+// badge warning shape — display-only, no click target. One copy for
+// the three named consumers (files-sync, degraded-boot, delivery);
+// `ActionChip` stays clickable-only by design.
+//
+// The colour is a mount parameter (Rule A: the site passes a
+// `Semantic.*` tone colour; this widget names no palette entry).
+
+import { Theme, Typography, RoleText, Tone } from "../theme.slint";
+import { Badge } from "badge.slint";
+
+export component SidecarChip inherits HorizontalLayout {
+    in property <string> text;
+    in property <color> text-color: Theme.text-secondary;
+    // The "!" badge: tone-gated at the mount (warning / danger).
+    in property <bool> flagged: false;
+    in property <Tone> badge-tone: Tone.warning;
+
+    spacing: Theme.space-2;
+    RoleText {
+        role: Typography.caption;
+        text-color: root.text-color;
+        text: root.text;
+        vertical-alignment: center;
+    }
+    if (root.flagged): Badge {
+        text: "!";
+        tone: root.badge-tone;
+    }
+}
