@@ -36,6 +36,18 @@
 //! census core was implemented — the fixtures ran against an empty
 //! stub first and every one failed).
 //!
+//! Golden-census note (#1334, dated 2026-11-25): the today goldens'
+//! post-#1310/#1304 vertical spacing offset was a REGRESSION, not
+//! acceptable re-spacing — the content layout's constraint solver
+//! spilled the Flickable viewport's surplus into the visible
+//! stretch-0 children once the empty sections' clip heights became
+//! bound (the pre-fix free variables absorbed it invisibly). Fixed by
+//! the content layout sink (today-view.slint); the kiosk-today and
+//! today-0.5 goldens were re-recorded evidence-carried (byte-stable
+//! across two regens), the comparator tolerance untouched. The
+//! manifest schema keeps no note field, so this header carries the
+//! verdict (the issue's census-note ask).
+//!
 //! No textual assertions anywhere: the verdict is the empty
 //! `Vec<SeveringViolation>`; each fixture asserts its exact typed
 //! variant via `matches!`.
