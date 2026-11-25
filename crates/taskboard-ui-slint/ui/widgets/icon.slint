@@ -60,6 +60,8 @@ export enum IconKind {
     link-off,
     // The dropdown affordance (chunk 11's shared dropdown).
     chevron-down,
+    // The plan-box move-earlier affordance (#1350): an up chevron.
+    chevron-up,
     // The edit affordance (chunks 5/6): a pencil.
     pencil,
     // The time-entries affordance (r4 chunk 10, D-TS8): a history
@@ -112,6 +114,7 @@ export component Icon inherits Image {
         : kind == IconKind.link                 ? @image-url("../assets/icons/link.svg")
         : kind == IconKind.link-off             ? @image-url("../assets/icons/unlink.svg")
         : kind == IconKind.chevron-down         ? @image-url("../assets/icons/chevron-down.svg")
+        : kind == IconKind.chevron-up           ? @image-url("../assets/icons/chevron-up.svg")
         : kind == IconKind.pencil               ? @image-url("../assets/icons/pencil.svg")
         : kind == IconKind.history              ? @image-url("../assets/icons/history.svg")
         : kind == IconKind.trash                ? @image-url("../assets/icons/trash-2.svg")

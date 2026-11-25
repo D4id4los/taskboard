@@ -103,7 +103,11 @@ export component FocusOverlay inherits Rectangle {
             // verb, never a second path.
             // A tab stop since #665 (the IconButton grammar): the
             // constant outline stays the unfocused border, the ring
-            // colour marks focus.
+            // colour marks focus. The #1350 disposition: the hand
+            // block STAYS — TextButton's compact ladder paints the
+            // always-on focus-ring border, this site's at-rest border
+            // is text-secondary (the D-T16 letter-deviation class:
+            // the migration would be a visible chrome change).
             stop-button := Rectangle {
                 width: stop-label.preferred-width + 2 * Theme.space-2;
                 height: Theme.space-5;

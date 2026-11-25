@@ -14,6 +14,8 @@ import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
 import { TaskCard, TaskCardModel } from "../widgets/task-card.slint";
 import { EmptyState } from "../widgets/empty-state.slint";
 import { TextField } from "../widgets/text-field.slint";
+import { PressableRow } from "../widgets/pressable-row.slint";
+import { IconButton, IconKind } from "../widgets/icon-button.slint";
 
 export struct PlanRowModel {
     card: TaskCardModel,
@@ -109,33 +111,19 @@ export component PlanNextDayView inherits FocusScope {
                         vertical-stretch: 0;
                         spacing: Theme.space-2;
 
-                        box-activate := FocusScope {
-                            width: box-row-card.preferred-width;
-                            height: box-row-card.preferred-height;
-                            accessible-role: AccessibleRole.button;
-                            accessible-label: "Box " + box.card.title;
-                            accessible-action-default => { root.box-activated(bindex); }
-                            key-pressed(event) => {
-                                if (event.text == Key.Return || event.text == " ") {
-                                    root.box-activated(bindex);
-                                    accept
-                                } else {
-                                    reject
-                                }
-                            }
-                            box-touch := TouchArea {
-                                clicked => { root.box-activated(bindex); }
-                                box-row-card := Rectangle {
-                                    // The K4 walk cursor's armed styling
-                                    // (US-15, #1041): the tint is the
-                                    // wrapper's background — the card
-                                    // keeps its own decoration on top.
-                                    background: box.cursor ? Theme.surface-hover : transparent;
-                                    border-radius: Theme.radius-small;
-                                    TaskCard {
-                                        model: box.card;
-                                    }
-                                }
+                        // The centralized pressable-row grammar
+                        // (#1350): the a11y triple + the guarded
+                        // Return/Space + the focus ring ride the
+                        // widget; the K4 armed cursor tint stays the
+                        // wrapper's background (`tint`).
+                        box-activate := PressableRow {
+                            label: "Box " + box.card.title;
+                            tint: box.cursor ? Theme.surface-hover : transparent;
+                            hover-tint: false;
+                            pointer-cursor: false;
+                            activated => { root.box-activated(bindex); }
+                            box-row-card := TaskCard {
+                                model: box.card;
                             }
                         }
                         VerticalLayout {
@@ -166,110 +154,24 @@ export component PlanNextDayView inherits FocusScope {
                             spacing: Theme.space-1;
                             alignment: end;
 
-                            earlier-hit := FocusScope {
-                                width: Theme.space-5;
-                                height: Theme.space-5;
-                                focus-on-tab-navigation: true;
-                                accessible-role: AccessibleRole.button;
-                                accessible-label: "Move box earlier";
-                                accessible-action-default => { root.box-earlier(bindex); }
-                                key-pressed(event) => {
-                                    if (event.text == Key.Return || event.text == " ") {
-                                        root.box-earlier(bindex);
-                                        accept
-                                    } else {
-                                        reject
-                                    }
-                                }
-                                box-earlier-touch := TouchArea {
-                                    mouse-cursor: MouseCursor.pointer;
-                                    clicked => { root.box-earlier(bindex); }
-                                    Rectangle {
-                                        width: 100%;
-                                        height: 100%;
-                                        border-radius: Theme.radius-small;
-                                        border-width: earlier-hit.has-focus ? Theme.focus-ring-width : 0;
-                                        border-color: Semantic.focus-ring;
-                                        background: box-earlier-touch.has-hover
-                                            ? Theme.surface-hover
-                                            : transparent;
-                                        RoleText {
-                                            text: "\u{2191}";
-                                            vertical-alignment: center;
-                                            horizontal-alignment: center;
-                                        }
-                                    }
-                                }
+                            // The shared icon-button grammar
+                            // (#1350): the canonical square, the
+                            // drawn glyph, the guarded key half, the
+                            // hover lift — the hand-rolled twin dies.
+                            earlier-hit := IconButton {
+                                icon: IconKind.chevron-up;
+                                label: "Move box earlier";
+                                clicked => { root.box-earlier(bindex); }
                             }
-                            later-hit := FocusScope {
-                                width: Theme.space-5;
-                                height: Theme.space-5;
-                                focus-on-tab-navigation: true;
-                                accessible-role: AccessibleRole.button;
-                                accessible-label: "Move box later";
-                                accessible-action-default => { root.box-later(bindex); }
-                                key-pressed(event) => {
-                                    if (event.text == Key.Return || event.text == " ") {
-                                        root.box-later(bindex);
-                                        accept
-                                    } else {
-                                        reject
-                                    }
-                                }
-                                box-later-touch := TouchArea {
-                                    mouse-cursor: MouseCursor.pointer;
-                                    clicked => { root.box-later(bindex); }
-                                    Rectangle {
-                                        width: 100%;
-                                        height: 100%;
-                                        border-radius: Theme.radius-small;
-                                        border-width: later-hit.has-focus ? Theme.focus-ring-width : 0;
-                                        border-color: Semantic.focus-ring;
-                                        background: box-later-touch.has-hover
-                                            ? Theme.surface-hover
-                                            : transparent;
-                                        RoleText {
-                                            text: "\u{2193}";
-                                            vertical-alignment: center;
-                                            horizontal-alignment: center;
-                                        }
-                                    }
-                                }
+                            later-hit := IconButton {
+                                icon: IconKind.chevron-down;
+                                label: "Move box later";
+                                clicked => { root.box-later(bindex); }
                             }
-                            remove-hit := FocusScope {
-                                width: Theme.space-5;
-                                height: Theme.space-5;
-                                focus-on-tab-navigation: true;
-                                accessible-role: AccessibleRole.button;
-                                accessible-label: "Remove box";
-                                accessible-action-default => { root.box-remove(bindex); }
-                                key-pressed(event) => {
-                                    if (event.text == Key.Return || event.text == " ") {
-                                        root.box-remove(bindex);
-                                        accept
-                                    } else {
-                                        reject
-                                    }
-                                }
-                                box-remove-touch := TouchArea {
-                                    mouse-cursor: MouseCursor.pointer;
-                                    clicked => { root.box-remove(bindex); }
-                                    Rectangle {
-                                        width: 100%;
-                                        height: 100%;
-                                        border-radius: Theme.radius-small;
-                                        border-width: remove-hit.has-focus ? Theme.focus-ring-width : 0;
-                                        border-color: Semantic.focus-ring;
-                                        background: box-remove-touch.has-hover
-                                            ? Theme.surface-hover
-                                            : transparent;
-                                        RoleText {
-                                            text: "\u{2715}";
-                                            vertical-alignment: center;
-                                            horizontal-alignment: center;
-                                        }
-                                    }
-                                }
+                            remove-hit := IconButton {
+                                icon: IconKind.remove;
+                                label: "Remove box";
+                                clicked => { root.box-remove(bindex); }
                             }
                         }
                     }
@@ -313,26 +215,14 @@ export component PlanNextDayView inherits FocusScope {
                             background: pool-row.cursor ? Semantic.focus-ring : transparent;
                             border-radius: Theme.radius-small;
                         }
-                        pool-hit := FocusScope {
-                            width: pool-card.preferred-width;
-                            height: pool-card.preferred-height;
-                            accessible-role: AccessibleRole.button;
-                            accessible-label: "Place " + pool-row.card.title;
-                            accessible-action-default => { root.pool-activated(pindex); }
-                            key-pressed(event) => {
-                                if (event.text == Key.Return || event.text == " ") {
-                                    root.pool-activated(pindex);
-                                    accept
-                                } else {
-                                    reject
-                                }
-                            }
-                            pool-touch := TouchArea {
-                                mouse-cursor: MouseCursor.pointer;
-                                clicked => { root.pool-activated(pindex); }
-                                pool-card := TaskCard {
-                                    model: pool-row.card;
-                                }
+                        // The centralized pressable-row grammar
+                        // (#1350) over the pool card.
+                        pool-hit := PressableRow {
+                            label: "Place " + pool-row.card.title;
+                            hover-tint: false;
+                            activated => { root.pool-activated(pindex); }
+                            pool-card := TaskCard {
+                                model: pool-row.card;
                             }
                         }
                     }
