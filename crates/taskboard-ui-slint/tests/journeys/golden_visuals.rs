@@ -238,6 +238,39 @@ fn capture_golden(
 /// exactly one manifest entry and vice versa, and the width/height
 /// axes match the decoded PNG dimensions (the scale axis is capture
 /// metadata, not PNG-derivable — recorded, not PNG-verified).
+/// The encoder contract's corpus half (chunk G1, #1241): every
+/// committed PNG re-encodes byte-identically through the harness
+/// encoder. A regen over unchanged pixels can never produce different
+/// bytes than committed — so an encoder-graph drift (`png`/`flate2`/
+/// `miniz_oxide`/`fdeflate` version bump) fails here and forces a
+/// deliberate whole-corpus re-encode commit (the drift law on
+/// `golden_compare::encode_png`). Decode+encode only: no renderer, no
+/// clock, fully deterministic.
+#[test]
+fn the_committed_corpus_reencodes_byte_identical() {
+    let dir = PathBuf::from(format!("{}/tests/goldens", env!("CARGO_MANIFEST_DIR")));
+    let mut checked = 0;
+    for file in std::fs::read_dir(&dir).expect("the goldens dir is readable") {
+        let path = file.expect("a dir entry").path();
+        if path.extension().is_some_and(|extension| extension == "png") {
+            let bytes = std::fs::read(&path).expect("the PNG is readable");
+            let image: Rgba8Image =
+                golden_compare::decode_png(&bytes).expect("the committed PNG decodes");
+            let reencoded = golden_compare::encode_png(&image).expect("re-encodes");
+            assert_eq!(
+                reencoded,
+                bytes,
+                "{} re-encodes to different bytes — the encoder graph \
+                 moved; run a whole-corpus regen (TASKBOARD_REGEN_GOLDENS=1) \
+                 in its own commit",
+                path.display()
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "the corpus is nonempty");
+}
+
 #[test]
 fn the_manifest_bijects_with_the_golden_corpus() {
     let entries = support::golden_manifest::read_entries().expect("the manifest parses");
