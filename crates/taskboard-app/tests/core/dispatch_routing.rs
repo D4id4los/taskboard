@@ -857,3 +857,435 @@ async fn boards_use_one_shot_refuses_session_only() {
         serde_json::from_slice(&err).expect("the error envelope is JSON");
     assert_eq!(envelope["error"]["kind"], "session-only");
 }
+
+// -- D2 supplement (#1370): the missing success-routing rows -----------
+
+use common::{forbidden_store, standalone_config};
+use taskboard_app::commands::boards;
+use taskboard_app::commands::output::JournalReceipt;
+use taskboard_app::commands::stacks;
+use taskboard_app::commands::tasks;
+
+/// A json-off context twin (the `--json`-fold rows need the flag to
+/// ride the subcommand, not the session).
+fn ctx_plain<'a>(
+    dir: &std::path::Path,
+    out: &'a mut Vec<u8>,
+    err: &'a mut Vec<u8>,
+) -> CommandCtx<'a> {
+    CommandCtx {
+        config_path: Some(dir.join("taskboard.toml")),
+        io: CommandIo {
+            out,
+            err,
+            json: false,
+        },
+    }
+}
+
+/// Parses one `taskboard …` argv through the real clap surface and
+/// hands the minted `Command` to the one-shot dispatcher.
+async fn dispatch_argv(
+    argv: &[&str],
+    dir: &std::path::Path,
+    out: &mut Vec<u8>,
+    err: &mut Vec<u8>,
+) -> u8 {
+    let mut cmdline = vec!["taskboard"];
+    cmdline.extend_from_slice(argv);
+    let cli: taskboard_app::cli::Cli =
+        clap::Parser::try_parse_from(&cmdline).expect("the argv parses");
+    dispatch(cli.command.expect("a subcommand"), ctx(dir, out, err)).await
+}
+
+/// The last stdout line's JSON payload (one receipt per invocation).
+fn last_json(out: &[u8]) -> serde_json::Value {
+    let text = String::from_utf8_lossy(out);
+    let line = text
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .expect("a receipt line");
+    serde_json::from_str(line).expect("the receipt is one JSON payload")
+}
+
+/// The last stderr line's error envelope.
+fn last_error(err: &[u8]) -> serde_json::Value {
+    let text = String::from_utf8_lossy(err);
+    let line = text
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .expect("an error envelope line");
+    serde_json::from_str(line).expect("the envelope is one JSON payload")
+}
+
+/// Kills: the boards-family one-shot closures (rows 1–5 of the #1370
+/// arm table). Each row's real argv goes through the clap surface into
+/// `dispatch`, and the terminal state is asserted typed — via the
+/// capture-surface discriminator (an archived board refuses capture),
+/// the destructive receipts' counts, and the follow-up refusals (a
+/// deleted board resolves to `unknown-board`; an unbound board stays
+/// resolvable — idempotent unbind).
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // one verb chain, one row per arm
+async fn dispatch_routes_the_boards_family_success_rows() {
+    // The dispatch tier composes the ambient env over the seeded file
+    // (#984): the lock makes the composed input deterministic.
+    let _env = common::taskboard_env_lock();
+    let dir = tempdir();
+    common::write_test_config(&dir.path().join("taskboard.toml"), None, None).expect("config");
+
+    // Seeding: direct handlers over the same db (the cli_undo
+    // seeded_config pattern); each is one full boot.
+    let cfg = standalone_config(dir.path(), "taskboard.db");
+    boards::create(cfg.clone(), forbidden_store(), "target", None)
+        .await
+        .expect("board create boots");
+    stacks::add(cfg.clone(), forbidden_store(), None, "col", None)
+        .await
+        .expect("stack add boots");
+    tasks::add(cfg.clone(), forbidden_store(), "card", Some("col"))
+        .await
+        .expect("task add boots");
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    // The confirm-refusal legs: the refusal fires ONLY without
+    // --confirm (the flag riding through is part of the kill surface).
+    for argv in [
+        vec!["boards", "delete"],
+        vec!["boards", "reset"],
+        vec!["boards", "unbind"],
+    ] {
+        out.clear();
+        err.clear();
+        let code = dispatch_argv(&argv, dir.path(), &mut out, &mut err).await;
+        assert_eq!(code, 1, "{argv:?} refuses without --confirm");
+        let kind = last_error(&err)["error"]["kind"]
+            .as_str()
+            .expect("a typed kind")
+            .to_owned();
+        assert!(
+            kind == "confirmation-required" || kind == "unbind-confirmation-required",
+            "{argv:?} refused typed: {kind}"
+        );
+    }
+
+    // Archive: exit 0, and the archived board refuses capture typed.
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["boards", "archive"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(
+        &["tasks", "add", "post-archive"],
+        dir.path(),
+        &mut out,
+        &mut err,
+    )
+    .await;
+    assert_eq!(code, 1, "the archived board leaves the capture surface");
+    assert_eq!(
+        last_error(&err)["error"]["kind"],
+        "ambiguous-board",
+        "zero live boards: the typed capture refusal"
+    );
+
+    // Unarchive: capture works again (the flag flipped back).
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["boards", "unarchive"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["tasks", "add", "back"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+
+    // Reset: typed refusal first (above), then the landed receipt with
+    // the affected counts — and the content is gone off a fresh boot.
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(
+        &["boards", "reset", "--confirm"],
+        dir.path(),
+        &mut out,
+        &mut err,
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipt = last_json(&out);
+    assert_eq!(receipt["verb"], "reset");
+    assert!(
+        receipt["stacks"].as_u64().expect("stacks count") >= 1,
+        "the seeded stack was reset"
+    );
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["tasks", "list"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0);
+    assert_eq!(
+        last_json(&out)["stacks"]
+            .as_array()
+            .expect("stack groups")
+            .len(),
+        0,
+        "reset cleared the board's stacks"
+    );
+
+    // Unbind (an unbound board): the idempotent no-op success — twice —
+    // and the board stays resolvable afterwards.
+    for _ in 0..2 {
+        out.clear();
+        err.clear();
+        let code = dispatch_argv(
+            &["boards", "unbind", "--confirm"],
+            dir.path(),
+            &mut out,
+            &mut err,
+        )
+        .await;
+        assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    }
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["boards", "archive"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0, "the unbind kept the board resolvable");
+    out.clear();
+    err.clear();
+    let _ = dispatch_argv(&["boards", "unarchive"], dir.path(), &mut out, &mut err).await;
+
+    // Delete: recreate one stack (reset cleared the content), land the
+    // delete receipt with the tombstone counts, then the board is gone
+    // — the follow-up archive resolves to unknown-board.
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["stacks", "add", "col2"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(
+        &["boards", "delete", "--confirm"],
+        dir.path(),
+        &mut out,
+        &mut err,
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipt = last_json(&out);
+    assert_eq!(receipt["verb"], "delete");
+    assert_eq!(
+        receipt["stacks"].as_u64(),
+        Some(1),
+        "the seeded stack was tombstoned"
+    );
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["boards", "archive"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 1, "the deleted board resolves to nothing");
+    let envelope = last_error(&err);
+    let kind = envelope["error"]["kind"]
+        .as_str()
+        .expect("typed")
+        .to_owned();
+    assert!(
+        kind == "ambiguous-board" || kind == "unknown-board",
+        "the deleted board is typed-gone: {kind}"
+    );
+}
+
+/// Kills: the labels restore routing closure (row 6) and the `Find`
+/// `run_core` arm (row 12 — including the `render_text_list` closure
+/// swap). The restore resurrects the tombstoned label by uuid prefix
+/// (the listing shows it live again); find returns the typed row set
+/// for a title match.
+#[tokio::test]
+async fn dispatch_routes_labels_restore_and_find_success() {
+    use taskboard_app::commands::labels;
+
+    let _env = common::taskboard_env_lock();
+    let dir = tempdir();
+    common::write_test_config(&dir.path().join("taskboard.toml"), None, None).expect("config");
+    let cfg = standalone_config(dir.path(), "taskboard.db");
+    boards::create(cfg.clone(), forbidden_store(), "labeled", None)
+        .await
+        .expect("board create boots");
+    stacks::add(cfg.clone(), forbidden_store(), None, "col", None)
+        .await
+        .expect("stack add boots");
+    tasks::add(cfg.clone(), forbidden_store(), "findable card", Some("col"))
+        .await
+        .expect("task add boots");
+    let receipt = labels::add(cfg.clone(), forbidden_store(), None, "urgent", None)
+        .await
+        .expect("label add boots");
+    let label_id = receipt.id;
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    // Delete the label, then restore it by uuid prefix through the
+    // real argv — the listing shows it live again.
+    let code = dispatch_argv(
+        &["labels", "delete", "urgent"],
+        dir.path(),
+        &mut out,
+        &mut err,
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let prefix: String = label_id.chars().take(8).collect();
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(
+        &["labels", "restore", &prefix],
+        dir.path(),
+        &mut out,
+        &mut err,
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let restored = labels::list(cfg.clone(), forbidden_store(), None)
+        .await
+        .expect("list boots");
+    assert!(
+        restored.iter().any(|row| row.id == label_id),
+        "the restored label is live again: {restored:?}"
+    );
+
+    // Find: the typed row set for a title match.
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["find", "findable"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let rows = last_json(&out);
+    let rows = rows.as_array().expect("the find receipt is a row array");
+    assert!(
+        rows.iter()
+            .any(|row| row["kind"] == "task" && row["title"] == "findable card"),
+        "the task row matched: {rows:?}"
+    );
+}
+
+/// Kills: the tasks undo-family routing closures (rows 7–10) and the
+/// history `--json` fold (row 11 — the `io.json |= json` composition).
+/// Every row parses through the real clap surface; the receipts are
+/// the typed `JournalReceipt`s; the jump rows resolve an 8-char prefix
+/// of a durable entry id.
+#[tokio::test]
+async fn dispatch_routes_the_undo_family_and_history_success_rows() {
+    use taskboard_domain::TaskChanges;
+
+    let _env = common::taskboard_env_lock();
+    let dir = tempdir();
+    common::write_test_config(&dir.path().join("taskboard.toml"), None, None).expect("config");
+    let cfg = standalone_config(dir.path(), "taskboard.db");
+    boards::create(cfg.clone(), forbidden_store(), "journaled", None)
+        .await
+        .expect("board create boots");
+    stacks::add(cfg.clone(), forbidden_store(), None, "col", None)
+        .await
+        .expect("stack add boots");
+    tasks::add(cfg.clone(), forbidden_store(), "seed task", Some("col"))
+        .await
+        .expect("task add boots");
+    // A second journal entry so the jump forms have an ancestor.
+    tasks::edit(
+        cfg.clone(),
+        forbidden_store(),
+        "seed task",
+        TaskChanges {
+            title: Some("renamed".to_owned()),
+            ..TaskChanges::default()
+        },
+    )
+    .await
+    .expect("edit boots");
+
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+
+    // Bare undo (row 7), then bare redo (row 9).
+    let code = dispatch_argv(&["tasks", "undo"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipt: JournalReceipt = serde_json::from_value(last_json(&out)).expect("typed receipt");
+    assert_eq!(
+        receipt.verb,
+        taskboard_app::commands::output::JournalVerb::Undo
+    );
+    let head_id = receipt.entry.clone();
+    assert!(uuid::Uuid::parse_str(&head_id).is_ok(), "durable uuid");
+
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(&["tasks", "redo"], dir.path(), &mut out, &mut err).await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipt: JournalReceipt = serde_json::from_value(last_json(&out)).expect("typed receipt");
+    assert_eq!(
+        receipt.verb,
+        taskboard_app::commands::output::JournalVerb::Redo
+    );
+
+    // The jump forms (rows 8 and 10): undo to / redo to an 8-char
+    // prefix of the durable entry id.
+    // The full durable id: v7 uuids minted in the same millisecond
+    // share a prefix, so the bounded-prefix resolution would be
+    // ambiguous for the short form.
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(
+        &["tasks", "undo", "to", &head_id],
+        dir.path(),
+        &mut out,
+        &mut err,
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipt: JournalReceipt = serde_json::from_value(last_json(&out)).expect("typed receipt");
+    assert_eq!(receipt.entry, head_id, "the jump landed on the named row");
+
+    out.clear();
+    err.clear();
+    let code = dispatch_argv(
+        &["tasks", "redo", "to", &head_id],
+        dir.path(),
+        &mut out,
+        &mut err,
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let receipt: JournalReceipt = serde_json::from_value(last_json(&out)).expect("typed receipt");
+    assert_eq!(
+        receipt.verb,
+        taskboard_app::commands::output::JournalVerb::Redo
+    );
+
+    // History (row 11): the subcommand's own --json folds into the
+    // machine lane even though the session's flag is off — the payload
+    // is the typed UndoView projection.
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let cli: taskboard_app::cli::Cli =
+        clap::Parser::try_parse_from(["taskboard", "tasks", "history", "--json"])
+            .expect("the argv parses");
+    let code = dispatch(
+        cli.command.expect("a subcommand"),
+        ctx_plain(dir.path(), &mut out, &mut err),
+    )
+    .await;
+    assert_eq!(code, 0, "stderr: {}", String::from_utf8_lossy(&err));
+    let view = last_json(&out);
+    assert_eq!(view["can_undo"], serde_json::Value::Bool(true));
+    let recent = view["recent"].as_array().expect("the recent window");
+    assert!(
+        recent.len() >= 2,
+        "the seeded entries are in the window: {} rows",
+        recent.len()
+    );
+    assert!(
+        recent
+            .iter()
+            .any(|row| uuid::Uuid::parse_str(row["id"].as_str().unwrap_or("")).is_ok()),
+        "window rows carry durable uuids"
+    );
+}
