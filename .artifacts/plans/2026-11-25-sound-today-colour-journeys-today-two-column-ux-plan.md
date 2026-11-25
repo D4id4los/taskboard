@@ -12,7 +12,38 @@ comment STAYS in the copy; only <...> placeholders go unfilled.
   contract for the Today view's two-column large-width layout (#1436).
   No implementation decisions beyond the command contract.
 - **Origin**: round-8 scope report §C-C3 (2026-11-25-backlog-reduction-round8-scope-report.md); issue #1436 (normative body); the A1 aggregation contract (plan `2026-11-24-today-geometry-aggregation-plan.md` §2/D-3 — the Today row sources are the all-live-boards aggregates `presentation.rs::today_habit_rows` and the aggregated task sets); the severing guard (`Theme.layout-severing-max-width` at the Today root) and the board layout's width-breakpoint machinery (the study target #1436 names).
-- **Status**: DRAFT — operator acceptance pending (GATE-PAUSED)
+- **Status**: ACCEPTED with amendments (2026-11-25 — see the
+  amendment log below; unblocked C3a)
+
+## 0. Amendment log (dated, binding)
+
+- **2026-11-25 — operator acceptance with amendment** (recorded on
+  issue #1436,
+  https://github.com/D4id4los/taskboard/issues/1436#issuecomment-7172600684):
+  the kiosk mount is **NOT** special-cased — kiosk renders
+  two-column too, whenever space allows; the same breakpoint rules
+  apply on every mount and the layout logic carries **no
+  kiosk/non-kiosk branch**. This SUPERSEDES US-19 ("kiosk stays
+  single-column"), step US-19/S1, ruling R-2, and the "Kiosk
+  two-column" non-goal. US-19-as-amended pins the amended semantics:
+  a kiosk-mode window at/above the D-2 breakpoint mounts the grid
+  arm; below it, the single column — the width test alone decides.
+- **2026-11-25 — dispatch ruling (stage-2 clarification, operator
+  answered via the dispatch channel)**: the Today model renders
+  **four** task sections (Overdue, Scheduled, Due today, Done) while
+  D-1 names only the two the issue titled. Ruled: the left column
+  carries **all four task sections** in display order (D-1's "the
+  task sections, urgency first" vs "the meta sections" is a
+  grouping-by-kind), the right column Habits + Day Review; D-1's
+  "exactly four sections" reads as the issue's four *named* surfaces
+  (Overdue, Scheduled, Habits, Day Review) joining the grid
+  explicitly, with the remaining task sections joining their kind
+  group. D-3's column-major walk then needs **no successor
+  reordering at all**: the existing walk domain (task sections in
+  display order → aggregated habits → break-rule roster) already
+  reads left-column-then-right-column; the column wrap is
+  Done-last → Habits-first, and the break-rule roster keeps its
+  existing walk position (the full-width band is not a column).
 - **Surfaces touched**: `crates/taskboard-ui-slint/ui/views/today-view.slint` (layout arm only); its goldens (`tests/journeys/golden_visuals.rs` wide variants); no adapters, no commands.
 - **Platform scope**: desktop (the two-column arm); kiosk (single column, unchanged — per story)
 

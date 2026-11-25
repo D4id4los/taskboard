@@ -623,6 +623,59 @@ fn the_kiosk_capture_settings_carry_the_kiosk_scale_cell() {
     );
 }
 
+// -- #1436: the today two-column wide arm's golden variant ---------------
+
+/// The today two-column wide arm's golden (#1436, journey plan W-4):
+/// the enriched today fixture at a width above the shared breakpoint
+/// (`Theme.layout-today-two-column-min-width`) — the grid arm's
+/// recorded evidence row. The typed grid fact is asserted before the
+/// snapshot (the capture must be the arm it claims), and the wave-2
+/// naming law applies (`<surface>-<scale>-<width>`, the capture's
+/// actual axes).
+#[test]
+fn the_today_two_column_wide_golden_variant_exists() {
+    pin_utc_zone();
+    let regen = regen_requested();
+    support::driver::run(
+        DriverOptions {
+            headless_renderer: true,
+        },
+        move |driver| {
+            let state = Arc::new(ArcSwap::from_pointee(fixture::today_overdue_enriched_at(
+                fixture::PINNED_NOW,
+            )));
+            capture_golden(
+                driver,
+                state,
+                scale_settings(1.0),
+                |driver, handle| {
+                    driver.set_window_size(1600, HEIGHT);
+                    driver.advance_time(0);
+                    assert!(
+                        handle
+                            .window()
+                            .global::<taskboard_ui_slint::TodayLayoutFacts>()
+                            .get_grid_arm(),
+                        "typed precondition: the wide capture mounts the grid arm"
+                    );
+                },
+                &GoldenMeta {
+                    fixture: "today_overdue_enriched_at(PINNED_NOW)",
+                    state: "today view; the two-column grid arm at 1600 (band above, sections left, habits/review right)",
+                    scale: 1.0,
+                },
+                1600,
+                &wave2_golden_path("today-two-column", 1.0, 1600),
+                regen,
+            );
+        },
+    );
+    assert!(
+        !regen,
+        "goldens regenerated — review the PNG diff before landing"
+    );
+}
+
 /// The one matrix cell each kiosk golden captures (the mid
 /// breakpoint, a scale from the existing matrix).
 const KIOSK_SCALE: f64 = 0.5;

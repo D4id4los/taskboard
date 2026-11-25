@@ -14620,6 +14620,25 @@ fn install_today_row_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         );
     }
 
+    // #1436 (2026-11-25): the layout arm's #1023 root seam (the
+    // TodayClipFacts pattern) — the view's declarative grid-arm
+    // witness binding mirrors the pure width predicate into the
+    // `TodayLayoutFacts` display global. Display state only; no
+    // refresh rides it (the callback returns the witness's bool).
+    {
+        let seam_weak = window.as_weak();
+        window
+            .global::<crate::TodayLayoutFacts>()
+            .on_grid_arm_witness(move |wide: bool| {
+                if let Some(window) = seam_weak.upgrade() {
+                    window
+                        .global::<crate::TodayLayoutFacts>()
+                        .set_grid_arm(wide);
+                }
+                wide
+            });
+    }
+
     install_seam!(window: window.on_today_row_activated, adapter: adapter;
     bind mut (a, window), args (section, row), {        settle_pointer_conflict(&mut a, &window);
     if focus_today_row(&mut a, &window, section, row).is_some() {
