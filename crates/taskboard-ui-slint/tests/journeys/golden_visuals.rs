@@ -2042,11 +2042,11 @@ fn capture_alarm_window(driver: &mut SlintDriver, width: u32, regen: bool) {
                      (renderer-presence contract)",
     );
     let snapshot = Rgba8Image::new(buffer.width(), buffer.height(), buffer.as_bytes().to_vec());
-    let path = if width == 1000 {
-        gap_golden_path("alarm-window", 1000)
-    } else {
-        gap_golden_path("alarm-window", snapshot.width)
-    };
+    // The stem carries the *rendered* PNG width, not the capture
+    // window parameter: at the mid breakpoint the window opens at its
+    // default (content-sized) width — 351px realized, not the 1000
+    // axis the sibling breakpoints set (the #1390 law).
+    let path = gap_golden_path("alarm-window", snapshot.width);
     if regen {
         let bytes = golden_compare::encode_png(&snapshot).expect("encodes");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("dir");
