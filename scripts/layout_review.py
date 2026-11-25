@@ -154,11 +154,6 @@ def load_golden(goldens_dir: Path, name: str) -> np.ndarray:
     return np.asarray(Image.open(path).convert("RGB"), dtype=np.int16)
 
 
-def luma(rgb: np.ndarray) -> np.ndarray:
-    # Integer Rec. 601 luma, mirroring the #1139 comparator's channel method.
-    return (rgb[..., 0] * 299 + rgb[..., 1] * 587 + rgb[..., 2] * 114) // 1000
-
-
 def content_mask(rgb: np.ndarray) -> np.ndarray:
     """Background-keyed content: deviation from the corner-sampled modal
     background above CONTENT_FLOOR on any channel."""
@@ -195,7 +190,7 @@ def bands(row_counts: np.ndarray, floor: int) -> list[tuple[int, int]]:
 # physical px, metric, threshold strings).
 
 
-def detect_c1(rgb: np.ndarray, mask: np.ndarray, scale: float) -> list[dict]:
+def detect_c1(mask: np.ndarray) -> list[dict]:
     """INV-C1 clip sentinel: content runs touching a canvas edge that are
     neither structural (spanning a large fraction of the edge — side
     rails, window-chrome bands) nor anti-aliasing noise."""
@@ -484,9 +479,9 @@ def grade_for(finding: dict) -> str:
 
 
 def analyze_golden(rgb: np.ndarray, scale: float) -> tuple[list[dict], list[str]]:
-    mask, bg = content_mask(rgb)
+    mask, _ = content_mask(rgb)
     findings: list[dict] = []
-    findings += detect_c1(rgb, mask, scale)
+    findings += detect_c1(mask)
     findings += detect_m1(mask, scale)
     findings += detect_a1(mask, scale)
     findings += detect_a2(mask, scale)
@@ -701,7 +696,7 @@ def self_test() -> bool:
         rgb = np.asarray(im, dtype=np.int16)
         mask, _ = content_mask(rgb)
         out = []
-        out += detect_c1(rgb, mask, scale)
+        out += detect_c1(mask)
         out += detect_m1(mask, scale)
         out += detect_a1(mask, scale)
         out += detect_a2(mask, scale)
