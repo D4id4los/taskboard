@@ -2043,6 +2043,50 @@ mod tests {
         assert!(fake.file(&ops_path).is_none(), "nothing published");
     }
 
+    /// Kills: the `Failed((&err).into())` lane-decision wiring
+    /// (`board_cycle.rs`) and each per-variant projection swap. One
+    /// scripted wire status per row: the lane's drain PUT fails, and
+    /// the lane's typed outcome on the status surface is the projected
+    /// `LaneFailure` — a failing lane must never read neutral Ok
+    /// (#941), and the fake's Deck status table (`test_support`
+    /// `status_error`) decides which `TransportError` each raw status
+    /// becomes (403/400/500 are `Server(n)`; 503 is `Unavailable`).
+    #[tokio::test]
+    async fn scripted_wire_errors_project_into_typed_lane_failures() {
+        use crate::status::LaneFailure;
+        let rows: [(u16, LaneFailure); 6] = [
+            (404, LaneFailure::NotFound),
+            (429, LaneFailure::RateLimited),
+            (503, LaneFailure::Unavailable),
+            (403, LaneFailure::Server(403)),
+            (400, LaneFailure::Server(400)),
+            (500, LaneFailure::Server(500)),
+        ];
+        for (status, expected) in rows {
+            let fake = FakeFilesTransport::new();
+            fake.seed_dirs(&["taskboard"]);
+            // The attach ladder + pull listings pass through; the
+            // drain's chunk PUT eats the scripted verdict (the same
+            // staging shape `a_failing_put_reports_nothing` pins).
+            for _ in 0..9 {
+                fake.stage(crate::test_support::Effect::Pass);
+            }
+            fake.stage(crate::test_support::Effect::Status(status));
+            let state = Arc::new(FixedState(state_with(vec![queued_update(
+                0xE3,
+                TaskId::from_uuid(TASK_UUID),
+            )])));
+            let context = ctx(Arc::clone(&state), mpsc::channel(8).0);
+            let mut lanes = Lanes::default();
+            let _ = run_board_lanes(&fake, &context, &mut lanes).await;
+            assert_eq!(
+                lanes.outcomes.get(&BOARD_UUID),
+                Some(&crate::status::LaneOutcome::Failed(expected)),
+                "status {status} projected onto the lane outcome"
+            );
+        }
+    }
+
     /// The incident scenario (#941): a fresh device adopting a former
     /// install's subtree (the identity PUT answers 412) — the old tree
     /// has no `ops/` under this device, yet the first tick's drain
