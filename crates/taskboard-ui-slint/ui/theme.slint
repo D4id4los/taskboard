@@ -79,6 +79,21 @@ export global Theme {
     // meta-constant, the icon-size precedent.
     out property <length> layout-severing-max-width: 99999px;
 
+    // The today view's two-column arm's width floor (#1436, journey
+    // plan 2026-11-25 D-2): at/above this logical-px viewport width
+    // the Today page reflows into the two-column grid (task sections
+    // left, habits + day review right). Deliberately unscaled (the
+    // breakpoint vocabulary's law — src/responsive.rs: scale and
+    // responsiveness compose instead of fighting) and deliberately
+    // EQUAL to the board layout's expansive breakpoint
+    // (`EXPANSIVE_MIN_WIDTH`, src/responsive.rs) — one shared value,
+    // not a second number to keep in sync; the pairing is pinned by
+    // `responsive.rs::the_today_two_column_token_shares_the_
+    // expansive_threshold`. The width test alone decides the arm on
+    // every mount — no kiosk branch (the 2026-11-25 operator
+    // amendment, issue #1436).
+    out property <length> layout-today-two-column-min-width: 1440px;
+
     // The column resize handle's hit-target width (round-1 D17; the
     // builtin tableview's 10 px pattern, one theme home).
     out property <length> resize-handle-width: 10px * base-scale;

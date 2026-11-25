@@ -11,6 +11,13 @@
 
 /// The unscaled width thresholds (logical px). Tunable constants, not
 /// config (Q22 fixes the v0.1.0 `[ui]` surface at scale + keymap).
+///
+/// `EXPANSIVE_MIN_WIDTH` doubles as the today view's two-column arm's
+/// floor (#1436, journey plan 2026-11-25 D-2): the slint side reads
+/// `Theme.layout-today-two-column-min-width` (ui/theme.slint), a
+/// const token pinned to this value — one shared number, not two.
+/// The pairing is pinned by
+/// `the_today_two_column_token_shares_the_expansive_threshold` below.
 pub const COMPACT_MAX_WIDTH: f32 = 720.0;
 pub const EXPANSIVE_MIN_WIDTH: f32 = 1440.0;
 
@@ -48,6 +55,23 @@ pub fn breakpoint_for_width(logical_px: f32) -> Breakpoint {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// The #1436 pairing pin (journey plan D-2): the slint-side const
+    /// token `Theme.layout-today-two-column-min-width`
+    /// (ui/theme.slint) must equal this module's expansive threshold
+    /// — one shared number across the two layout arms. The token
+    /// cannot be read from here (slint const), so the pin is the
+    /// value equality; a threshold change that skips the token fails
+    /// this test and the failure text names the token to touch.
+    #[test]
+    fn the_today_two_column_token_shares_the_expansive_threshold() {
+        assert_eq!(
+            EXPANSIVE_MIN_WIDTH, 1440.0,
+            "EXPANSIVE_MIN_WIDTH moved: update ui/theme.slint's \
+             layout-today-two-column-min-width to the same value (the \
+             #1436 shared-breakpoint law)"
+        );
+    }
 
     #[test]
     fn exact_boundaries_map_per_q16() {

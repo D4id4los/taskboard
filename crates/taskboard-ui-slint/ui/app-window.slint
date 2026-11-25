@@ -44,7 +44,7 @@ import { HabitCardModel, HabitQuotaEditor } from "compositions/habits.slint";
 import { BoardView, BoardModel } from "views/board-view.slint";
 import { BoardBarModel, BoardSegmentModel, BoardBarFacts } from "compositions/board-bar.slint";
 import { StackView, StackDetailModel } from "views/stack-view.slint";
-import { TodayView, TodayModel, TodayViewport, TodayClipFacts } from "views/today-view.slint";
+import { TodayView, TodayModel, TodayViewport, TodayClipFacts, TodayLayoutFacts } from "views/today-view.slint";
 import { PlanNextDayView, PlanModel } from "views/plan-next-day-view.slint";
 import { TaskView, TaskDetailModel, HabitDetailModel } from "views/task-view.slint";
 import { ReviewView, ReviewModel, ReflectionFlagChip } from "views/review-view.slint";
@@ -93,7 +93,7 @@ export { AlarmWindow, AlarmRowModel }
 
 // Re-export the globals so the generated Rust module exposes them
 // (mount/adapter read/write them through the generated accessors).
-export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, StatusPanelData, StatusPanelPosture, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts, HabitPauseFacts, HabitQuotaFacts, TodayViewport, TodayClipFacts }
+export { Theme, Typography, Semantic, Responsive, TooltipState, MenuPanelFacts, StatusPanelFacts, StatusPanelData, StatusPanelPosture, SettingsScrollFacts, SettingsBoardFacts, DragState, FocusScrollHint, FocusFacts, MaskWalkFacts, ScrollPageHint, EditingFacts, EditorScope, TaskViewWalkFacts, TrackPanelFacts, TrackPanelWalkFacts, DropdownConsumer, DropdownFacts, DropdownLadder, TimeFieldFacts, TodayAnchorFacts, TimerSetterFacts, HabitPauseFacts, HabitQuotaFacts, TodayViewport, TodayClipFacts, TodayLayoutFacts }
 export { ReviewWalkModel, DialogButtonModel, DialogButtonRole }
 export { BoardBarModel, BoardSegmentModel, BoardBarFacts }
 export { SettingsBoardCopy }

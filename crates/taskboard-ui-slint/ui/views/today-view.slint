@@ -12,6 +12,18 @@
 // (isolated in tests/virtualisation_probe.slint's InnerList shape) —
 // reading the model from the delegate's own row data is the board
 // legs' proven shape.
+//
+// The two-column wide arm (#1436, journey plan 2026-11-25 D-1..D-5,
+// as amended 2026-11-25): at/above `Theme.layout-today-two-column-min-
+// width` the page reflows into a grid — the full-width band (timers,
+// tracked-day summary) above, the task sections in the left column,
+// habits + the day-review card in the right. Placement only: every
+// section keeps its A1-aggregated row set, its collapse law, and its
+// seek/extent wiring; the walk's successor order (tasks → habits →
+// roster) already reads column-major left→right, so no walk
+// re-derivation is needed (the 2026-11-25 dispatch ruling on the
+// journey plan). The same width test rules every mount — no kiosk
+// branch (the 2026-11-25 operator amendment, issue #1436).
 
 import { Theme, Semantic, RoleText, Typography } from "../theme.slint";
 import { FocusScrollHint } from "../focus-scroll.slint";
@@ -83,6 +95,20 @@ export global TodayClipFacts {
     in-out property <length> h3;
 }
 
+// The layout arm's #1023 root seam (#1436, the TodayClipFacts
+// pattern): the grid-arm predicate is a pure width expression at the
+// TodayView root — no state mutation, no command — and the callback
+// witness mirrors it out for the tests (Slint suppresses
+// first-layout `changed` fires, so a declarative callback binding is
+// the report's driver; the Rust handler idempotently mirrors the
+// returned bool into `grid-arm`). Display state only.
+// slint: today-layout-facts
+export global TodayLayoutFacts {
+    // slint: today-layout-facts-grid-arm
+    pure callback grid-arm-witness(bool) -> bool;
+    in-out property <bool> grid-arm: false;
+}
+
 export struct TodayRowModel {
     // The row's stable task key (#592): the extent cache and the
     // anchor facts address rows by task id, never by position (the
@@ -113,9 +139,291 @@ export struct TodayModel {
     tracked-day-total: string,
 }
 
+// One task section of the today page (#1436): the #373 inlined
+// delegate body, extracted verbatim so the single-column arm and the
+// wide arm's left column mount the SAME block. Placement-only
+// refactor: the inner structure (header, page cap, clip height
+// binding, ListView, row delegates) is byte-identical to the
+// pre-extraction delegate; only the parent layout differs per arm.
+// Mount law per arm: the wide arm's left column MOUNTS its blocks
+// fresh; the narrow arm's section delegates stay MOUNTED but
+// layout-collapsed under the wide arm (`visible: false` — the
+// delegate cannot carry a bare conditional, and the pass-through
+// wrapper's own `visible` is the collapse law's mechanism), so their
+// layout contribution is exactly one arm's while the twin
+// virtualizers remain instantiated (the #1464 class; filed as
+// backlog for the sweep).
+component TodaySectionBlock inherits VerticalLayout {
+    vertical-stretch: 0;
+    // Empty sections collapse (D7): the header and rows render only
+    // when the group has rows.
+    visible: sec.count > 0;
+    spacing: Theme.space-1;
+    in property <TodaySectionModel> sec;
+    in property <int> sindex;
+    // The window's logical height, pushed through the view root
+    // (the #373 D-7 section bound's base — never a content-derived
+    // height; see TodayView.viewport-height).
+    in property <length> viewport-height;
+    callback row-activated(int, int);
+    callback row-extent(string, length);
+    callback row-clicked(int, int);
+    callback row-context(int, int, float, float);
+    callback row-done-toggled(int, int);
+    callback row-track-toggled(int, int);
+    // slint: today-page-seek (A5a D-3): the outer page's
+    // focus-into-view seek, evaluated by the view root where the
+    // page viewport lives — the block reports its window-absolute
+    // top edge and height (structural geometry, never a hard-coded
+    // offset).
+    callback seek-from-window(length, length);
+
+    // slint: today-page-seek-sections (A5a D-3, #1302): the task
+    // sections' page seek — the outer half of the composition with
+    // the section's own ListView consumption below (the
+    // walk-past-the-fold fix).
+    property <int> seek-nonce: FocusScrollHint.target-a == sindex ? FocusScrollHint.nonce : -1;
+    changed seek-nonce => {
+        if (self.seek-nonce >= 0) {
+            root.seek-from-window(self.absolute-position.y, self.height);
+        }
+    }
+
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        RoleText {
+            role: Typography.caption;
+            text: sec.label;
+            vertical-alignment: center;
+        }
+        RoleText {
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: sec.count;
+            vertical-alignment: center;
+        }
+    }
+
+    // The window cap (#373 D-7, #1310/#1304): the section viewport's
+    // ceiling — window height minus the page's side padding. One
+    // property so the reads below cannot drift.
+    property <length> page-cap: Math.max(viewport-height - 2 * Theme.space-3, 0);
+    // The section's row viewport: content-sized below the page cap,
+    // capped above it. Declarative from the first frame
+    // (#1310/#1304, 2026-11-24): the height BINDS to the section's
+    // measured content extent (the model's `content-extent`, summed
+    // adapter-side from the #592 row-extent reports) — never to the
+    // ListView's content-height. The direct min(content-height, cap)
+    // spelling is a binding loop the compiler traces through the
+    // layout-info chain
+    // (clip.height -> section-block.layoutinfo-v -> ... ->
+    // window-height -> viewport-height -> cap -> row-viewport.height
+    // -> content-height), and the former `changed`-assigned escape
+    // missed the first frame and could stop re-firing (the
+    // convergence trap). The extent channel is the recorded
+    // decoupling (round-6 A1 plan D-1b): the data leaves the layout
+    // graph entirely, so the binding always re-evaluates when a
+    // report lands — first materialization included — and a fitting
+    // section is content-sized while an overflowing one caps and
+    // scrolls internally.
+    row-viewport-clip := Rectangle {
+        clip: true;
+        // The content-derived min, computed by (and reported
+        // through) the TodayClipFacts seam's callback — the height
+        // binding's eager evaluation is the report's driver, and its
+        // extent argument is a global-property dependency the
+        // adapter's pass invalidates.
+        height: TodayClipFacts.section-height(
+            sindex,
+            sindex == 0 ? TodayClipFacts.e0
+            : sindex == 1 ? TodayClipFacts.e1
+            : sindex == 2 ? TodayClipFacts.e2
+            : TodayClipFacts.e3,
+            page-cap,
+        );
+        row-viewport := ListView {
+            // `height: 100%` (the clip) is safe again: the height
+            // binding above reads the facts channel, never the
+            // ListView's content-height, so the old
+            // height -> content-height cycle does not exist. The
+            // virtualizer's live-row window stays `visible-height`
+            // (the cap — the pre-fix semantics): in the capped
+            // regime cap IS the painted viewport, and in the fitting
+            // regime the surplus window is clipped away by
+            // `clip: true`.
+            height: 100%;
+            visible-height: page-cap;
+            request-row: FocusScrollHint.target-a == sindex
+            ? FocusScrollHint.target-b
+            : -1;
+        request-nonce: FocusScrollHint.target-a == sindex
+            ? FocusScrollHint.nonce
+            : 0;
+        // Family 2 (round-3 D26): the focused task's section pages,
+        // independently.
+        page-request: ScrollPageHint.family == 2
+            && ScrollPageHint.index == sindex
+            ? ScrollPageHint.page
+            : 0;
+        page-nonce: ScrollPageHint.family == 2
+            && ScrollPageHint.index == sindex
+            ? ScrollPageHint.nonce
+            : -1;
+        total-rows: sec.rows.length;
+        // #592: the today sections opt into the row-anchored mode;
+        // the facts are this section's payload only (the
+        // FocusScrollHint filter pattern).
+        row-anchored: true;
+        anchor-first-change: TodayAnchorFacts.section == sindex
+            ? TodayAnchorFacts.first-change
+            : -1;
+        anchor-row-delta: TodayAnchorFacts.section == sindex
+            ? TodayAnchorFacts.row-delta
+            : 0;
+        anchor-extent: TodayAnchorFacts.section == sindex
+            ? TodayAnchorFacts.extent
+            : 0px;
+        anchor-nonce: TodayAnchorFacts.section == sindex
+            ? TodayAnchorFacts.nonce
+            : -1;
+        for row[rindex] in sec.rows: today-row := VerticalLayout {
+            // The extent report rides `changed height`, gated to a
+            // real change: an ungated report crosses into Rust on
+            // every layout pass, while the last-report gate makes
+            // the steady-state body a no-op comparison and a fresh
+            // height (a rebind under the rebind cascade, a
+            // context-line flip) reports exactly once. The paired
+            // A/B bench (stage-3 re-measurement, recorded in the
+            // #592 stage-2 report §5) shows no draw-lane delta
+            // against the report's before runs.
+            property <length> last-extent: -1px;
+            changed height => {
+                if (Math.abs(self.height - self.last-extent) > 0.5px) {
+                    self.last-extent = self.height;
+                    root.row-extent(row.id, self.height);
+                }
+            }
+            spacing: Theme.space-1;
+            vertical-stretch: 0;
+            // The explicit height carries the card's preferred plus
+            // the conditional context line (the board delegate's
+            // pattern): the repeater's implicit preferred-height
+            // binding under-solves the wrapped card.
+            height: row-card.preferred-height
+                + (context-line.visible
+                    ? Theme.space-1 + context-line.preferred-height
+                    : 0);
+            row-card := TaskCard {
+                model: row.card;
+                hint-keys: [];
+                activated => {
+                    root.row-activated(sindex, rindex);
+                }
+                clicked => {
+                    root.row-clicked(sindex, rindex);
+                }
+                context-requested(x, y) => {
+                    root.row-context(sindex, rindex, x, y);
+                }
+                done-toggled => {
+                    root.row-done-toggled(sindex, rindex);
+                }
+                // slint: track-toggled
+                track-toggled => {
+                    root.row-track-toggled(sindex, rindex);
+                }
+            }
+            // The context line (D-V3): the stack, or "board › stack"
+            // on a multi-board desktop.
+            context-line := RoleText {
+                role: Typography.caption;
+                text-color: Theme.text-secondary;
+                text: row.context;
+                visible: row.context != "";
+            }
+        }
+        }
+    }
+}
+
+// The timers block (#1436 extraction): the TimersSection composition
+// plus its page-seek wiring (slot 5), shared verbatim by both arms.
+component TimersBlock inherits TimersSection {
+    vertical-stretch: 0;
+    callback seek-from-window(length, length);
+    // slint: today-page-seek-timers (A5a D-3/D-2): the break-rules
+    // roster's page slot (5) — the roster lives in this block, which
+    // is content-sized (no inner scroll), so the page seek is the
+    // whole fix.
+    property <int> seek-nonce: FocusScrollHint.target-a == 5 ? FocusScrollHint.nonce : -1;
+    changed seek-nonce => {
+        if (self.seek-nonce >= 0) {
+            root.seek-from-window(self.absolute-position.y, self.height);
+        }
+    }
+}
+
+// The habits block (#1436 extraction): the HabitsSection composition
+// plus its page-seek wiring (slot 4), shared verbatim by both arms.
+component HabitsBlock inherits HabitsSection {
+    vertical-stretch: 0;
+    callback seek-from-window(length, length);
+    // slint: today-page-seek-habits (A5a D-3/D-2): the habits
+    // section's page slot (4) — content-sized, no inner scroll; the
+    // page seek is the whole fix.
+    property <int> seek-nonce: FocusScrollHint.target-a == 4 ? FocusScrollHint.nonce : -1;
+    changed seek-nonce => {
+        if (self.seek-nonce >= 0) {
+            root.seek-from-window(self.absolute-position.y, self.height);
+        }
+    }
+}
+
+// The surfacing card (DR-7 D-J10, #1436 extraction): the header
+// slot's card, shared verbatim by both arms.
+component ReviewCardBlock inherits Rectangle {
+    vertical-stretch: 0;
+    in property <string> card-title-text;
+    in property <string> card-body-text;
+    in property <string> card-action-text;
+    callback card-clicked();
+
+    background: Theme.surface;
+    border-radius: Theme.radius-medium;
+    border-width: Theme.focus-ring-width;
+    border-color: Semantic.focus-ring;
+    min-height: card-title.preferred-height + card-body.preferred-height
+        + 2 * Theme.space-2;
+    VerticalLayout {
+        padding: Theme.space-2;
+        spacing: Theme.space-1;
+        card-title := RoleText {
+            vertical-stretch: 0;
+            role: Typography.caption;
+            text: root.card-title-text;
+        }
+        card-body := RoleText {
+            vertical-stretch: 0;
+            role: Typography.caption;
+            text-color: Theme.text-secondary;
+            text: root.card-body-text;
+        }
+    }
+    TouchArea {
+        clicked => root.card-clicked();
+    }
+    accessible-role: AccessibleRole.button;
+    accessible-label: root.card-action-text;
+    accessible-action-default => { root.card-clicked(); }
+}
+
 export component TodayView inherits FocusScope {
     // The severing cap (J4 US-3 AC-2; the task-view precedent): the
     // root's layout merge must never bound the OS window's max width.
+    // The #1436 grid arm composes INSIDE this cap (journey plan D-5):
+    // the grid activates between the shared breakpoint and the cap;
+    // above the cap the centred capped width carries the same grid —
+    // the E1 severing census covers the grid arm through this root.
     max-width: Theme.layout-severing-max-width;
     in property <TodayModel> today;
     // The window's logical height, pushed from the app window (the
@@ -249,6 +557,23 @@ export component TodayView inherits FocusScope {
     accessible-label: "Today";
     init => self.focus();
 
+    // The wide arm's predicate (#1436, journey plan D-2): the view's
+    // own width (the view host fills the window's logical width —
+    // the toolbar spans above, there is no side chrome) against the
+    // shared breakpoint token. The same width test rules every mount
+    // — no kiosk branch (the 2026-11-25 operator amendment). The
+    // #1023 witness mirror (the TodayClipFacts pattern) rides a
+    // declarative callback binding so the report sees the first
+    // real geometry.
+    property <bool> grid-arm: self.width >= Theme.layout-today-two-column-min-width;
+    property <bool> grid-arm-report: TodayLayoutFacts.grid-arm-witness(root.grid-arm);
+    // The habits block's mount gate (round-7 D-7.2), hoisted so both
+    // arms read one expression (the fold law: exactly one arm).
+    property <bool> habits-block-mounted: root.habits.length > 0
+        || root.habits-has-deleted
+        || root.habits-create-mountable
+        || root.habits-pause-mountable;
+
     // slint: today-page-seek (A5a D-3, #1302): the outer page's
     // focus-into-view seek. `top` is the target block's live top edge
     // within the page viewport (absolute-position arithmetic —
@@ -298,24 +623,104 @@ export component TodayView inherits FocusScope {
                         page.height - self.height,
                     ));
                 }
-                // The timers section (D-P18): first on the page — the
-                // status-bar chip's click target lands here visibly.
-                if (root.timers-visible || root.timers-absence-hint): TimersSection {
+
+                // ---- the wide arm (#1436, journey plan D-1/D-4):
+                // the full-width band above the grid, then the
+                // two-column grid. One scroll container (the page
+                // Flickable) scrolls both columns together; the
+                // columns top-align and unequal heights leave the
+                // shorter column's space below empty (no nested
+                // scroll region — the #1310 convergence-transient
+                // class is not reopened).
+                if (root.grid-arm): HorizontalLayout {
                     vertical-stretch: 0;
-                    // slint: today-page-seek-timers (A5a D-3/D-2): the
-                    // break-rules roster's page slot (5) — the roster
-                    // lives in this block, which is content-sized (no
-                    // inner scroll), so the page seek is the whole
-                    // fix.
-                    property <int> seek-nonce: FocusScrollHint.target-a == 5 ? FocusScrollHint.nonce : -1;
-                    changed seek-nonce => {
-                        if (self.seek-nonce >= 0) {
-                            root.seek-page(
-                                self.absolute-position.y - page.absolute-position.y,
-                                self.height,
-                            );
+                    spacing: Theme.space-3;
+                    // The left column (D-1): the task sections,
+                    // urgency first — the model's display order.
+                    VerticalLayout {
+                        spacing: Theme.space-3;
+                        if (root.today.empty): EmptyState {
+                            text: "Nothing due today";
+                            hint: "Capture a thought from anywhere — it lands in the inbox.";
+                        }
+                        for section[sindex] in root.today.sections: TodaySectionBlock {
+                            sec: section;
+                            sindex: sindex;
+                            viewport-height: root.viewport-height;
+                            row-activated(s, r) => root.row-activated(s, r);
+                            row-extent(id, h) => root.row-extent(id, h);
+                            row-clicked(s, r) => root.row-clicked(s, r);
+                            row-context(s, r, x, y) => root.row-context(s, r, x, y);
+                            row-done-toggled(s, r) => root.row-done-toggled(s, r);
+                            row-track-toggled(s, r) => root.row-track-toggled(s, r);
+                            seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
+                        }
+                        // The column's layout sink (the #1334 law):
+                        // each arm carries its own designated surplus
+                        // absorber so the constraint solver never
+                        // spills the slack into the visible children.
+                        Rectangle {
+                            vertical-stretch: 1;
+                            min-height: 0;
                         }
                     }
+                    // The right column (D-1): the meta sections.
+                    VerticalLayout {
+                        spacing: Theme.space-3;
+                        if (root.habits-block-mounted): HabitsBlock {
+                            habits: root.habits;
+                            editing-enabled: root.habits-editing-enabled;
+                            row-activated(r) => root.habits-row-activated(r);
+                            edit-asked(r) => root.habits-edit-asked(r);
+                            log-clicked(r) => root.habits-log-clicked(r);
+                            undo-log-clicked(r) => root.habits-undo-log-clicked(r);
+                            quota-edit-asked(r) => root.habits-quota-edit-asked(r);
+                            repair-clicked(r) => root.habits-repair-clicked(r);
+                            context-requested(r, x, y) => root.habits-context-requested(r, x, y);
+                            drop-asked(r, g) => root.habits-drop-asked(r, g);
+                            track-asked(r) => root.habits-track-asked(r);
+                            skip-asked(r) => root.habits-skip-asked(r);
+                            pause-asked(r) => root.habits-pause-asked(r);
+                            resume-asked(r) => root.habits-resume-asked(r);
+                            pause-until-picked(s) => root.habits-pause-until-picked(s);
+                            pause-cancelled() => root.habits-pause-cancelled();
+                            pause-open: root.habits-pause-open;
+                            pause-mountable: root.habits-pause-mountable;
+                            create-open: root.habits-create-open;
+                            quota-validity: root.habits-quota-validity;
+                            quota-error-hint: root.habits-quota-error-hint;
+                            create-asked() => root.habits-create-asked();
+                            create-confirmed(t, q, i) => root.habits-create-confirmed(t, q, i);
+                            create-cancelled() => root.habits-create-cancelled();
+                            create-quota-edited(s) => root.habits-create-quota-edited(s);
+                            deleted-rows: root.habits-deleted-rows;
+                            has-deleted: root.habits-has-deleted;
+                            restore-armed-index: root.habits-restore-armed-index;
+                            restore-all-armed: root.habits-restore-all-armed;
+                            habit-restore-requested(r) => root.habits-habit-restore-requested(r);
+                            habit-restore-cancelled() => root.habits-habit-restore-cancelled();
+                            habit-restore-all-requested() => root.habits-habit-restore-all-requested();
+                            habit-restore-all-cancelled() => root.habits-habit-restore-all-cancelled();
+                            seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
+                        }
+                        if (root.review-card-visible): ReviewCardBlock {
+                            card-title-text: root.review-card-title;
+                            card-body-text: root.review-card-body;
+                            card-action-text: root.review-card-action;
+                            card-clicked() => root.review-card-clicked();
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            min-height: 0;
+                        }
+                    }
+                }
+
+                // The full-width band (D-1): timers first on the page
+                // (D-P18) — the wide arm renders it above the grid,
+                // the narrow arm in the existing slot; both below.
+                if (root.grid-arm
+                    && (root.timers-visible || root.timers-absence-hint)): TimersBlock {
                     timers: root.timers;
                     timers-awaiting: root.timers-awaiting;
                     absence-hint: root.timers-absence-hint;
@@ -344,30 +749,59 @@ export component TodayView inherits FocusScope {
                     break_remove_cancelled() => root.timers_break_remove_cancelled();
                     break-threshold-validity: root.break-threshold-validity;
                     break-threshold-error-hint: root.break-threshold-error-hint;
+                    seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
                 }
-                // The habits section (D-P18): timers, then habits, then
-                // the task sections. Mounts with rows OR while a
+                // The "Tracked" day summary (#490): the D-1 band's
+                // second half — full-width above the grid in the wide
+                // arm (a separate composition, not a fifth section
+                // model; the row shape differs). Empty collapses.
+                if (root.grid-arm
+                    && root.today.tracked-today.length > 0): TrackedTodaySection {
+                    vertical-stretch: 0;
+                    rows: root.today.tracked-today;
+                    day-total: root.today.tracked-day-total;
+                    row-activated(i) => root.tracked-activated(i);
+                }
+
+                // ---- the narrow arm: the single column, the exact
+                // pre-#1436 order (timers → habits → review card →
+                // empty state → tracked → sections → sink). Below the
+                // breakpoint this arm is byte-identical to the
+                // pre-grid page (US-17 AC-2).
+                if (!root.grid-arm
+                    && (root.timers-visible || root.timers-absence-hint)): TimersBlock {
+                    timers: root.timers;
+                    timers-awaiting: root.timers-awaiting;
+                    absence-hint: root.timers-absence-hint;
+                    cancel-clicked(r) => root.timers-cancel-clicked(r);
+                    create-accepted(label, when, alarm) => {
+                        root.timers-create-accepted(label, when, alarm)
+                    }
+                    when-edited(t) => root.timers-when-edited(t);
+                    setter-opened() => root.timers-setter-opened();
+                    when-validity: root.timer-when-validity;
+                    when-error-hint: root.timer-when-error-hint;
+                    break-rules: root.break-rules;
+                    break-create-open: root.break-create-open;
+                    break-create-toggled() => root.timers-break-create-toggled();
+                    break-create-accepted(label, threshold, alarm) => {
+                        root.timers-break-create-accepted(label, threshold, alarm)
+                    }
+                    break-threshold-edited(t) => root.timers-break-threshold-edited(t);
+                    break_remove_clicked(r) => root.timers_break_remove_clicked(r);
+                    break_remove_confirmed(r) => root.timers_break_remove_confirmed(r);
+                    break_remove_cancelled() => root.timers_break_remove_cancelled();
+                    break-threshold-validity: root.break-threshold-validity;
+                    break-threshold-error-hint: root.break-threshold-error-hint;
+                    seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
+                }
+                // The habits section (D-P18): timers, then habits,
+                // then the task sections. Mounts with rows OR while a
                 // create can happen (round-7 D-7.2: desktop + active
                 // board — the header-only section is how the first
                 // habit gets made; kiosk and board-less days keep the
                 // old rows-only gate model-side).
-                if (root.habits.length > 0
-                    || root.habits-has-deleted
-                    || root.habits-create-mountable
-                    || root.habits-pause-mountable): HabitsSection {
-                    vertical-stretch: 0;
-                    // slint: today-page-seek-habits (A5a D-3/D-2): the
-                    // habits section's page slot (4) — content-sized,
-                    // no inner scroll; the page seek is the whole fix.
-                    property <int> seek-nonce: FocusScrollHint.target-a == 4 ? FocusScrollHint.nonce : -1;
-                    changed seek-nonce => {
-                        if (self.seek-nonce >= 0) {
-                            root.seek-page(
-                                self.absolute-position.y - page.absolute-position.y,
-                                self.height,
-                            );
-                        }
-                    }
+                if (!root.grid-arm && root.habits-block-mounted): HabitsBlock {
                     habits: root.habits;
                     editing-enabled: root.habits-editing-enabled;
                     row-activated(r) => root.habits-row-activated(r);
@@ -401,41 +835,18 @@ export component TodayView inherits FocusScope {
                     habit-restore-cancelled() => root.habits-habit-restore-cancelled();
                     habit-restore-all-requested() => root.habits-habit-restore-all-requested();
                     habit-restore-all-cancelled() => root.habits-habit-restore-all-cancelled();
+                    seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
                 }
                 // The surfacing card (DR-7 D-J10): the header slot,
                 // above the sections — outside every `ListView` (the
                 // #592 anchor keys on list rows; the card is not one).
-                if (root.review-card-visible): Rectangle {
-                    vertical-stretch: 0;
-                    background: Theme.surface;
-                    border-radius: Theme.radius-medium;
-                    border-width: Theme.focus-ring-width;
-                    border-color: Semantic.focus-ring;
-                    min-height: card-title.preferred-height + card-body.preferred-height
-                        + 2 * Theme.space-2;
-                    VerticalLayout {
-                        padding: Theme.space-2;
-                        spacing: Theme.space-1;
-                        card-title := RoleText {
-                            vertical-stretch: 0;
-                            role: Typography.caption;
-                            text: root.review-card-title;
-                        }
-                        card-body := RoleText {
-                            vertical-stretch: 0;
-                            role: Typography.caption;
-                            text-color: Theme.text-secondary;
-                            text: root.review-card-body;
-                        }
-                    }
-                    TouchArea {
-                        clicked => root.review-card-clicked();
-                    }
-                    accessible-role: AccessibleRole.button;
-                    accessible-label: root.review-card-action;
-                    accessible-action-default => { root.review-card-clicked(); }
+                if (!root.grid-arm && root.review-card-visible): ReviewCardBlock {
+                    card-title-text: root.review-card-title;
+                    card-body-text: root.review-card-body;
+                    card-action-text: root.review-card-action;
+                    card-clicked() => root.review-card-clicked();
                 }
-                if (root.today.empty): EmptyState {
+                if (!root.grid-arm && root.today.empty): EmptyState {
                     text: "Nothing due today";
                     hint: "Capture a thought from anywhere — it lands in the inbox.";
                 }
@@ -444,201 +855,36 @@ export component TodayView inherits FocusScope {
                 // composition, not a fifth section model (the row
                 // shape differs; the timers/habits precedent). Empty
                 // collapses.
-                if (root.today.tracked-today.length > 0): TrackedTodaySection {
+                if (!root.grid-arm
+                    && root.today.tracked-today.length > 0): TrackedTodaySection {
                     vertical-stretch: 0;
                     rows: root.today.tracked-today;
                     day-total: root.today.tracked-day-total;
                     row-activated(i) => root.tracked-activated(i);
                 }
-                for section[sindex] in root.today.sections: section-block := VerticalLayout {
-                    // Content-sized: the walk never stretches a section
-                    // into leftover window space.
+                for section[sindex] in root.today.sections: narrow-section := VerticalLayout {
+                    // The conditional arm element (a repeater
+                    // delegate cannot carry a bare `if`): the
+                    // pass-through wrapper contributes the block's
+                    // own layout info unchanged (one child, no
+                    // spacing). `visible: false` removes the wrapper
+                    // from the layout entirely (no space, no spacing
+                    // slot) but keeps the delegate mounted — the
+                    // recorded trade-off is in TodaySectionBlock's
+                    // header comment.
+                    visible: !root.grid-arm;
                     vertical-stretch: 0;
-                    // Empty sections collapse (D7): the header and rows
-                    // render only when the group has rows.
-                    visible: section.count > 0;
-                    spacing: Theme.space-1;
-                    // slint: today-page-seek-sections (A5a D-3, #1302):
-                    // the task sections' page seek — the outer half of
-                    // the composition with the section's own ListView
-                    // consumption below (the walk-past-the-fold fix).
-                    property <int> seek-nonce: FocusScrollHint.target-a == sindex ? FocusScrollHint.nonce : -1;
-                    changed seek-nonce => {
-                        if (self.seek-nonce >= 0) {
-                            root.seek-page(
-                                self.absolute-position.y - page.absolute-position.y,
-                                self.height,
-                            );
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: Theme.space-2;
-                        RoleText {
-                            role: Typography.caption;
-                            text: section.label;
-                            vertical-alignment: center;
-                        }
-                        RoleText {
-                            role: Typography.caption;
-                            text-color: Theme.text-secondary;
-                            text: section.count;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    // The window cap (#373 D-7, #1310/#1304): the section
-                    // viewport's ceiling — window height minus the page's
-                    // side padding. One property so the reads below
-                    // cannot drift.
-                    property <length> page-cap: Math.max(root.viewport-height - 2 * Theme.space-3, 0);
-                    // The section's row viewport: content-sized below
-                    // the page cap, capped above it. Declarative from
-                    // the first frame (#1310/#1304, 2026-11-24): the
-                    // height BINDS to the section's measured content
-                    // extent (the model's `content-extent`, summed
-                    // adapter-side from the #592 row-extent reports) —
-                    // never to the ListView's content-height. The
-                    // direct min(content-height, cap) spelling is a
-                    // binding loop the compiler traces through the
-                    // layout-info chain
-                    // (clip.height -> section-block.layoutinfo-v -> ...
-                    // -> window-height -> viewport-height -> cap ->
-                    // row-viewport.height -> content-height), and the
-                    // former `changed`-assigned escape missed the
-                    // first frame and could stop re-firing
-                    // (the convergence trap). The extent channel is
-                    // the recorded decoupling (round-6 A1 plan D-1b):
-                    // the data leaves the layout graph entirely, so
-                    // the binding always re-evaluates when a report
-                    // lands — first materialization included — and a
-                    // fitting section is content-sized while an
-                    // overflowing one caps and scrolls internally.
-                    row-viewport-clip := Rectangle {
-                        clip: true;
-                        // The content-derived min, computed by (and
-                        // reported through) the TodayClipFacts seam's
-                        // callback — the height binding's eager
-                        // evaluation is the report's driver, and its
-                        // extent argument is a global-property
-                        // dependency the adapter's pass invalidates.
-                        height: TodayClipFacts.section-height(
-                            sindex,
-                            sindex == 0 ? TodayClipFacts.e0
-                            : sindex == 1 ? TodayClipFacts.e1
-                            : sindex == 2 ? TodayClipFacts.e2
-                            : TodayClipFacts.e3,
-                            page-cap,
-                        );
-                        row-viewport := ListView {
-                            // `height: 100%` (the clip) is safe again:
-                            // the height binding above reads the
-                            // facts channel, never the ListView's
-                            // content-height, so the old
-                            // height -> content-height cycle does not
-                            // exist. The virtualizer's live-row window
-                            // stays `visible-height` (the cap — the
-                            // pre-fix semantics): in the capped regime
-                            // cap IS the painted viewport, and in the
-                            // fitting regime the surplus window is
-                            // clipped away by `clip: true`.
-                            height: 100%;
-                            visible-height: page-cap;
-                            request-row: FocusScrollHint.target-a == sindex
-                            ? FocusScrollHint.target-b
-                            : -1;
-                        request-nonce: FocusScrollHint.target-a == sindex
-                            ? FocusScrollHint.nonce
-                            : 0;
-                        // Family 2 (round-3 D26): the focused task's
-                        // section pages, independently.
-                        page-request: ScrollPageHint.family == 2
-                            && ScrollPageHint.index == sindex
-                            ? ScrollPageHint.page
-                            : 0;
-                        page-nonce: ScrollPageHint.family == 2
-                            && ScrollPageHint.index == sindex
-                            ? ScrollPageHint.nonce
-                            : -1;
-                        total-rows: section.rows.length;
-                        // #592: the today sections opt into the
-                        // row-anchored mode; the facts are this
-                        // section's payload only (the FocusScrollHint
-                        // filter pattern).
-                        row-anchored: true;
-                        anchor-first-change: TodayAnchorFacts.section == sindex
-                            ? TodayAnchorFacts.first-change
-                            : -1;
-                        anchor-row-delta: TodayAnchorFacts.section == sindex
-                            ? TodayAnchorFacts.row-delta
-                            : 0;
-                        anchor-extent: TodayAnchorFacts.section == sindex
-                            ? TodayAnchorFacts.extent
-                            : 0px;
-                        anchor-nonce: TodayAnchorFacts.section == sindex
-                            ? TodayAnchorFacts.nonce
-                            : -1;
-                        for row[rindex] in section.rows: today-row := VerticalLayout {
-                            // The extent report rides `changed height`,
-                            // gated to a real change: an ungated report
-                            // crosses into Rust on every layout pass,
-                            // while the last-report gate makes the
-                            // steady-state body a no-op comparison and
-                            // a fresh height (a rebind under the
-                            // rebind cascade, a context-line flip)
-                            // reports exactly once. The paired A/B
-                            // bench (stage-3 re-measurement, recorded
-                            // in the #592 stage-2 report §5) shows no
-                            // draw-lane delta against the report's
-                            // before runs.
-                            property <length> last-extent: -1px;
-                            changed height => {
-                                if (Math.abs(self.height - self.last-extent) > 0.5px) {
-                                    self.last-extent = self.height;
-                                    root.row-extent(row.id, self.height);
-                                }
-                            }
-                            spacing: Theme.space-1;
-                            vertical-stretch: 0;
-                            // The explicit height carries the card's
-                            // preferred plus the conditional context line
-                            // (the board delegate's pattern): the
-                            // repeater's implicit preferred-height binding
-                            // under-solves the wrapped card.
-                            height: row-card.preferred-height
-                                + (context-line.visible
-                                    ? Theme.space-1 + context-line.preferred-height
-                                    : 0);
-                            row-card := TaskCard {
-                                model: row.card;
-                                hint-keys: [];
-                                activated => {
-                                    root.row-activated(sindex, rindex);
-                                }
-                                clicked => {
-                                    root.row-clicked(sindex, rindex);
-                                }
-                                context-requested(x, y) => {
-                                    root.row-context(sindex, rindex, x, y);
-                                }
-                                done-toggled => {
-                                    root.row-done-toggled(sindex, rindex);
-                                }
-                                // slint: track-toggled
-                                track-toggled => {
-                                    root.row-track-toggled(sindex, rindex);
-                                }
-                            }
-                            // The context line (D-V3): the stack, or
-                            // "board › stack" on a multi-board desktop.
-                            context-line := RoleText {
-                                role: Typography.caption;
-                                text-color: Theme.text-secondary;
-                                text: row.context;
-                                visible: row.context != "";
-                            }
-                        }
-                        }
+                    TodaySectionBlock {
+                        sec: section;
+                        sindex: sindex;
+                        viewport-height: root.viewport-height;
+                        row-activated(s, r) => root.row-activated(s, r);
+                        row-extent(id, h) => root.row-extent(id, h);
+                        row-clicked(s, r) => root.row-clicked(s, r);
+                        row-context(s, r, x, y) => root.row-context(s, r, x, y);
+                        row-done-toggled(s, r) => root.row-done-toggled(s, r);
+                        row-track-toggled(s, r) => root.row-track-toggled(s, r);
+                        seek-from-window(y, h) => root.seek-page(y - page.absolute-position.y, h);
                     }
                 }
                 // The layout sink (#1334): the Flickable viewport
@@ -656,7 +902,8 @@ export component TodayView inherits FocusScope {
                 // flexible element is the designated sink: the day's
                 // rows stay at their intrinsic spacing and the leftover
                 // stays empty at the page's end, the pre-fix shape.
-                Rectangle {
+                // (The wide arm's columns carry their own sinks above.)
+                if (!root.grid-arm): Rectangle {
                     vertical-stretch: 1;
                     min-height: 0;
                 }

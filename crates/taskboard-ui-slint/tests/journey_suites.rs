@@ -59,6 +59,8 @@ mod status_export_journeys_preview_journeys;
 mod status_export_journeys_support;
 #[path = "journeys/status_surface_journeys.rs"]
 mod status_surface_journeys;
+#[path = "journeys/today_two_column_journeys.rs"]
+mod today_two_column_journeys;
 #[path = "journeys/tracker_journeys.rs"]
 mod tracker_journeys;
 #[path = "journeys/undo_family_browse_parity_journeys.rs"]
