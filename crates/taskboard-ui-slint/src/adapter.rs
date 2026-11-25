@@ -5417,22 +5417,58 @@ impl Adapter {
             // notice lane — the T-19 twin).
             (_, UiEffect::HabitEdit) if self.kiosk => Vec::new(),
             (Flow::None, UiEffect::HabitEdit) => {
-                if let Some(habit) = self.habit_edit_subject() {
-                    // The draft seeds from the stored row (the editor
-                    // opens showing the habit as it is); it dies with
-                    // the editor (cancel/escape/close — no draft
-                    // persistence, D1).
-                    self.habit_edit_draft = self
-                        .state
+                // The subject resolution (#1303): the menu rows'
+                // close-leg mint (the one-shot `habit_target` — the
+                // row's own subject captured BEFORE the disarm law
+                // cleared the opener's focus facts) resolves first;
+                // the chain (the walk cursor, the row seams' mints)
+                // follows. The mint is liveness-filtered here: a dead
+                // target falls through to the chain, never answers.
+                let subject = self
+                    .habit_target
+                    .take()
+                    .filter(|habit| {
+                        self.state
+                            .load()
+                            .habits
+                            .habits
+                            .get(habit)
+                            .is_some_and(taskboard_domain::habit::Habit::is_live)
+                    })
+                    .or_else(|| self.habit_edit_subject());
+                // The draft-before-mount law (#1303 §1.3): the draft
+                // seeds from the stored row FIRST (the editor opens
+                // showing the habit as it is; it dies with the editor
+                // — cancel/escape/close, no draft persistence, D1),
+                // and the editor mounts ONLY over a `Some` draft — an
+                // unseedable subject lands in the same typed refusal
+                // as a subjectless one. No `open_habit_editor` call
+                // exists without a `Some` draft afterwards.
+                let draft = subject.as_ref().and_then(|habit| {
+                    self.state
                         .load()
                         .habits
                         .habits
-                        .get(&habit)
-                        .map(crate::router::HabitEditDraft::from_habit);
+                        .get(habit)
+                        .map(crate::router::HabitEditDraft::from_habit)
+                });
+                if let Some(draft) = draft {
+                    let habit = draft.habit;
+                    self.habit_edit_draft = Some(draft);
                     let outcomes = self.view_state.open_habit_editor(habit);
                     self.apply_outcomes(window, &outcomes);
                     self.finish_mutation(window);
-                } else if !self.kiosk && self.view_state.focused_task().is_some() {
+                } else if
+                // Only a SUBJECTLESS dispatch falls through to the
+                // walk cursor's task landing. A resolved-but-unseedable
+                // subject is unrepresentable — the liveness filter and
+                // the seed read the same state load — and must not
+                // reach the task landing either, so the guard excludes
+                // it (a silent no-op, never the task editor).
+                subject.is_none()
+                    && !self.kiosk
+                    && self.view_state.focused_task().is_some()
+                {
                     // The walk cursor's fall-through (D3a W-16, #1202):
                     // the Return row at Today is the habit editor's —
                     // over a TASK walk landing the same stroke belongs
@@ -7253,8 +7289,13 @@ impl Adapter {
                         // The ladder's close leg (#1115): the root's
                         // MenuBack is the full close — the habit
                         // staging disarms with it (this path does not
-                        // funnel through `apply_close_menu`).
+                        // funnel through `apply_close_menu`). The
+                        // one-shot hygiene joins it (#1303): the
+                        // opener's focus facts die with the menu, the
+                        // same law the shared close leg applies.
                         self.disarm_habit_confirm_staging();
+                        self.focused_habit = None;
+                        self.menu_row_subject = None;
                     }
                 }
             }
@@ -7580,6 +7621,18 @@ impl Adapter {
         self.menu_anchor = MenuAnchor::Hamburger;
         self.menu_kind = MenuKind::Main;
         self.menu_subject = MenuSubject::None;
+        // The one-shot hygiene (#1303's disarm law): the opener's
+        // focus facts die with the menu — a surviving
+        // `focused_habit`/`menu_row_subject` would answer a later,
+        // unrelated dispatch with a stale habit (the wrong-subject
+        // editor). The menu-row route re-arms them for the ONE
+        // dispatch (`route_menu_action`); a plain close keeps them
+        // dead. The engine-sync re-derivation reads
+        // `menu_row_subject` only while the menu is OPEN (the
+        // main-menu page rebuild) — a close fires on a closed menu,
+        // so the clear is safe there.
+        self.focused_habit = None;
+        self.menu_row_subject = None;
         self.quick_bar_entries.clear();
         // One rule (#1115): a menu close disarms every habit confirm
         // staging — the armed one-shot must not survive a hidden menu
@@ -7676,8 +7729,7 @@ impl Adapter {
             self.push_notice(window);
             return;
         }
-        self.apply_close_menu(window);
-        self.route(window, action);
+        self.route_menu_action(window, action);
     }
 
     /// The refused-commit flag's push (#1221): the field and the
@@ -8158,8 +8210,58 @@ impl Adapter {
         let Some(action) = action else {
             return;
         };
+        self.route_menu_action(window, action);
+    }
+
+    /// A menu leaf row's close-then-route (the `invoke_entry` /
+    /// `invoke_root_entry` tails' shared body, #1303): the close leg
+    /// disarms the opener's focus one-shots (the disarm law), and
+    /// the row's ONE route re-arms them from the open-time capture —
+    /// nothing survives the dispatch. The Edit habit row mints its
+    /// subject into the one-shot `habit_target` INSTEAD: the habit
+    /// context menu's row resolves the menu's own armed subject, the
+    /// main menu's row resolves the current view context ONLY (the
+    /// walk cursor) — a one-shot minted by a different surface's
+    /// menu never answers with the wrong-subject editor (#1303's
+    /// filed defect).
+    fn route_menu_action(&mut self, window: &AppWindow, action: ActionId) {
+        let focus = self.focused_habit;
+        let row_subject = self.menu_row_subject;
+        if action == ActionId::HabitEdit && !self.kiosk && self.habit_target.is_none() {
+            let subject = match row_subject {
+                Some(crate::presentation::RowSubject::Habit(habit)) => Some(habit),
+                _ => self.view_state.walk_subject().and_then(|walk| match walk {
+                    crate::presentation::RowSubject::Habit(habit) => Some(habit),
+                    crate::presentation::RowSubject::Task(_) => None,
+                }),
+            };
+            if let Some(habit) = subject.filter(|habit| {
+                self.state
+                    .load()
+                    .habits
+                    .habits
+                    .get(habit)
+                    .is_some_and(taskboard_domain::habit::Habit::is_live)
+            }) {
+                self.habit_target = Some(habit);
+            }
+        }
         self.apply_close_menu(window);
+        if action != ActionId::HabitEdit {
+            self.focused_habit = focus;
+            self.menu_row_subject = row_subject;
+        }
         self.route(window, action);
+        // The dispatch-scoped disarm (#1303): the re-armed facts die
+        // with the dispatch — every habit-subject consumer reads them
+        // at route/arm time. The quota opener is the ONE exception:
+        // its arm mints `focused_habit` for the popover's later
+        // commit leg (the commit resolves fresh through the chain),
+        // so that mint must survive the route.
+        self.menu_row_subject = None;
+        if action != ActionId::HabitQuotaEdit {
+            self.focused_habit = None;
+        }
     }
 }
 

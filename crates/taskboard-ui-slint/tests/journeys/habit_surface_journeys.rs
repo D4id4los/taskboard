@@ -1333,3 +1333,302 @@ fn kiosk_gates_the_redesigned_card() {
         );
     });
 }
+
+// -- #1303: the Edit Habit entry trio --------------------------------
+//
+// The three entry paths (the habit row's context menu, the main
+// menu's Task-group row, the direct dispatch) must mount the editor
+// over the row's OWN habit, the toolbar title must be the habit's
+// stored title while the variant mounts, and both exit seams must
+// return to the recorded origin root. The menu pins go through the
+// real menu open -> invoke path; no test-armed focus stands in.
+
+/// The main menu's Task-group Edit habit row, id-addressed (the
+/// action string is the dispatch address, never a text oracle).
+/// Walks the submenu-parent rows in root order until the group page
+/// carrying the row mounts — the group declaration order is a
+/// projection fact the pin must not hard-code.
+fn main_menu_habit_edit_row(harness: &mut Harness) -> usize {
+    let window = harness.handle.window();
+    window.invoke_toolbar_menu_clicked();
+    harness.driver.advance_time(0);
+    let parents: Vec<usize> = {
+        let entries = keyboard(harness).get_menu_entries();
+        (0..entries.row_count())
+            .filter(|i| entries.row_data(*i).is_some_and(|row| row.submenu))
+            .collect()
+    };
+    assert!(
+        !parents.is_empty(),
+        "the main menu carries submenu-parent rows"
+    );
+    for parent in parents {
+        window.invoke_menu_entry_invoked(i32::try_from(parent).expect("small index"));
+        harness.driver.advance_time(0);
+        let page = keyboard(harness).get_menu_submenu_entries();
+        if let Some(index) = (0..page.row_count()).position(|i| {
+            page.row_data(i)
+                .is_some_and(|row| row.action == "habit.edit")
+        }) {
+            return index;
+        }
+    }
+    panic!("the Edit habit row renders in a main-menu group page");
+}
+
+/// The habit context menu's Edit habit row (the row menu over the
+/// walked habit — the `us3_s5` open shape), id-addressed.
+fn context_menu_habit_edit_row(harness: &mut Harness) -> usize {
+    harness.driver.advance_time(0);
+    harness.handle.dispatch_action(ActionId::NavLastItem);
+    harness.driver.advance_time(0);
+    harness.handle.dispatch_action(ActionId::RowMenu);
+    harness.driver.advance_time(0);
+    let entries = keyboard(harness).get_menu_entries();
+    (0..entries.row_count())
+        .position(|i| {
+            entries
+                .row_data(i)
+                .is_some_and(|row| row.action == "habit.edit")
+        })
+        .expect("the habit menu carries the Edit habit row")
+}
+
+/// The editor's mounted surface mirrors the STORED row (the seed,
+/// pre-editing state): the title and the quota count are the
+/// fixture's own inputs, the view is the shared detail root.
+fn assert_populated_editor(harness: &Harness, title: &str, quota: u32) {
+    let window = harness.handle.window();
+    assert_eq!(
+        window.get_current_view(),
+        View::TaskDetail,
+        "the habit variant mounts over the shared detail root"
+    );
+    let model = window.get_habit_model();
+    assert_eq!(
+        model.title.to_string(),
+        title,
+        "the editor seeds the stored title, pre-editing"
+    );
+    assert_eq!(
+        model.quota_count.to_string(),
+        quota.to_string(),
+        "the editor seeds the stored quota, pre-editing"
+    );
+}
+
+/// #1303 pin 1a (the entry-trio's regression guard): the context
+/// menu's row mounts the populated editor.
+#[test]
+fn edit_habit_context_menu_row_mounts_the_populated_editor() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        let index = context_menu_habit_edit_row(harness);
+        harness
+            .handle
+            .window()
+            .invoke_menu_entry_invoked(i32::try_from(index).expect("small index"));
+        harness.driver.advance_time(0);
+        assert_populated_editor(harness, "water", 2);
+    });
+}
+
+/// #1303 pin 1b: the main menu's Task-group row mounts the populated
+/// editor over the CURRENT VIEW CONTEXT's habit — the walk cursor is
+/// seated through the real keyboard entry (never an adapter one-shot
+/// or a test-armed focus fact; the walk row IS the section's
+/// addressed habit). Passes pre-fix too (the chain's walk fallback
+/// already resolved); kept as the populated-editor guard for the
+/// entry the disarm law now scopes to the walk context.
+#[test]
+fn edit_habit_main_menu_row_mounts_the_populated_editor() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        // The real user path: the walk lands on the habit row, the
+        // main menu opens over Today, the Task-group row resolves
+        // the walk's habit.
+        harness.handle.dispatch_action(ActionId::NavLastItem);
+        harness.driver.advance_time(0);
+        let index = main_menu_habit_edit_row(harness);
+        harness
+            .handle
+            .window()
+            .invoke_menu_submenu_entry_invoked(i32::try_from(index).expect("small index"));
+        harness.driver.advance_time(0);
+        assert_populated_editor(harness, "water", 2);
+    });
+}
+
+/// #1303 pin 1c (the direct dispatch's twin): the chord over the
+/// walk landing mounts the populated editor.
+#[test]
+fn edit_habit_direct_dispatch_mounts_the_populated_editor() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        assert_populated_editor(harness, "water", 2);
+    });
+}
+
+/// #1303 pin 2 (the right-subject law): with a second live habit in
+/// the fixture, a one-shot armed by an earlier surface's menu never
+/// answers — the row resolves the WALK cursor's habit. The stale
+/// subject is armed the only real way (the context menu over habit
+/// 0), dismissed (the disarm law clears it), the walk moves to
+/// habit 1, and the main-menu entry must open habit 1.
+#[test]
+fn edit_habit_main_menu_row_opens_the_walks_habit_not_a_stale_one() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit_at(&mut state, board, 0, "tea", 1);
+    state_habit_at(&mut state, board, 1, "water", 2);
+    run(state, false, move |harness| {
+        // Arm the stale subject the real way: the context menu over
+        // habit 0 (the row click seats the walk, the menu open mints
+        // the adapter one-shot), then dismiss WITHOUT invoking.
+        harness.handle.window().invoke_habits_row_activated(0);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::RowMenu);
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::MenuDismiss);
+        harness.driver.advance_time(0);
+        // The walk moves to habit 1 (the keyboard landing — no
+        // pointer seam re-arms the adapter one-shot).
+        harness.handle.dispatch_action(ActionId::NavNextItem);
+        harness.driver.advance_time(0);
+        let index = main_menu_habit_edit_row(harness);
+        harness
+            .handle
+            .window()
+            .invoke_menu_submenu_entry_invoked(i32::try_from(index).expect("small index"));
+        harness.driver.advance_time(0);
+        assert_populated_editor(harness, "water", 2);
+    });
+}
+
+/// #1303 pin 3 (the title law, structural): while the habit variant
+/// mounts, the toolbar title is the habit's STORED title — never the
+/// board's. The fixture board's title is renamed so the two oracles
+/// cannot collide.
+#[test]
+fn edit_habit_mount_shows_the_habit_title_not_the_board_title() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    if let Some(row) = state.boards.get_mut(&board) {
+        row.title = "Fixture Board".to_owned();
+    }
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        assert_eq!(
+            harness.handle.window().get_toolbar_title(),
+            "water",
+            "the toolbar title is the stored habit title while the variant mounts"
+        );
+    });
+}
+
+/// #1303 pin 4a (the N-3 cancel law): the editor opened from Today
+/// cancels BACK to Today — never the board hard-route.
+#[test]
+fn edit_habit_cancel_returns_to_the_origin_view() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        let index = context_menu_habit_edit_row(harness);
+        harness
+            .handle
+            .window()
+            .invoke_menu_entry_invoked(i32::try_from(index).expect("small index"));
+        harness.driver.advance_time(0);
+        assert_eq!(
+            harness.handle.window().get_current_view(),
+            View::TaskDetail,
+            "the editor mounted"
+        );
+        harness.handle.window().invoke_habit_editor_cancelled();
+        harness.driver.advance_time(0);
+        assert_eq!(
+            harness.handle.window().get_current_view(),
+            View::Today,
+            "cancel restores the recorded origin root"
+        );
+    });
+}
+
+/// #1303 pin 4b (the N-3 save law): the save commit's tail returns
+/// to the recorded origin root the same way, and the update still
+/// routes.
+#[test]
+fn edit_habit_save_returns_to_the_origin_view() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    let habit = state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        let index = context_menu_habit_edit_row(harness);
+        harness
+            .handle
+            .window()
+            .invoke_menu_entry_invoked(i32::try_from(index).expect("small index"));
+        harness.driver.advance_time(0);
+        // The reminder edits arm the draft's changeset (the `us6_s1`
+        // shape: base, offset, snooze — the save gate opens).
+        let window = harness.handle.window();
+        window.invoke_habit_reminder_base_picked(1);
+        window.invoke_habit_reminder_offset_edited("1".into());
+        window.invoke_habit_reminder_snooze_edited("2h".into());
+        harness.driver.advance_time(0);
+        window.invoke_habit_save_clicked();
+        harness.driver.advance_time(0);
+        match harness.engine.drain().as_slice() {
+            [
+                StateCommand::UpdateHabit {
+                    habit: edited,
+                    changes,
+                },
+            ] => {
+                assert_eq!(*edited, habit);
+                assert!(
+                    changes.reminder.is_some(),
+                    "the reminder override committed"
+                );
+            }
+            other => panic!("the save routes the update, got {other:?}"),
+        }
+        assert_eq!(
+            harness.handle.window().get_current_view(),
+            View::Today,
+            "save restores the recorded origin root"
+        );
+    });
+}
+
+/// #1303 pin 5 (the empty-editor regression guard — passes pre-fix
+/// too; kept as the guard the structural law must not break): a
+/// subjectless dispatch mounts nothing — the view stays, nothing
+/// routes, the typed refusal arms.
+#[test]
+fn edit_habit_subjectless_dispatch_mounts_nothing_currently_pins_refusal() {
+    let (_fixture, state) = fixture::journey_state();
+    run(state, false, move |harness| {
+        harness.driver.advance_time(0);
+        harness.handle.dispatch_action(ActionId::HabitEdit);
+        harness.driver.advance_time(0);
+        assert_ne!(
+            harness.handle.window().get_current_view(),
+            View::TaskDetail,
+            "no editor mounts without a subject"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the refusal dispatches nothing"
+        );
+    });
+}

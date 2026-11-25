@@ -1325,6 +1325,7 @@ pub fn push(
         state,
         kiosk,
         board,
+        habit,
         keymap,
         chain,
         models,
@@ -1850,6 +1851,9 @@ fn push_chrome(
     state: &AppState,
     kiosk: bool,
     board: Option<&taskboard_domain::Board>,
+    // The habit editor's draft (#1303): `Some` exactly while the
+    // habit variant mounts — the toolbar title's habit arm reads it.
+    habit: Option<&crate::router::HabitEditDraft>,
     keymap: &Keymap,
     chain: &[ContextId],
     models: &mut PushModels,
@@ -1866,10 +1870,20 @@ fn push_chrome(
     });
     // The Today view renders its own caption (chunk 10 D9): a fixed
     // presentation label; the board views keep the selected board's
-    // title.
-    window.set_toolbar_title(SharedString::from(match view {
-        crate::view_state::ViewId::Today => "Today".to_string(),
-        _ => board.map_or(String::new(), |b| b.title.clone()),
+    // title. The habit editor's arm (#1303): while the habit variant
+    // mounts, the title is the habit's STORED title — the editor
+    // mounts by a root swap over the `TaskDetail` root, and the
+    // board's title never answers for it.
+    window.set_toolbar_title(SharedString::from(match habit {
+        Some(draft) => state
+            .habits
+            .habits
+            .get(&draft.habit)
+            .map_or(String::new(), |row| row.title.clone()),
+        None => match view {
+            crate::view_state::ViewId::Today => "Today".to_string(),
+            _ => board.map_or(String::new(), |b| b.title.clone()),
+        },
     }));
     let rows = |action| -> Vec<SharedString> {
         keymap
