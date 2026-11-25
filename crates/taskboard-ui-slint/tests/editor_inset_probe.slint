@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The detail-editor inset probe (round 8 L1, the E-editor/E-recur C1
+// class): the real `TaskView` mounted with an open subject — the
+// regression host for the shared editor composition's full-bleed
+// rows (the editor/track rows previously ran flush to both canvas
+// edges; the severing inset bounds them off the frame). The
+// assertion reads the row geometry from Rust
+// (`probes/editor_inset_probe_tests.rs`); the probe only carries the
+// mount.
+
+import { TaskView, TaskDetailModel } from "../ui/views/task-view.slint";
+
+export component EditorInsetProbe inherits Window {
+    in property <TaskDetailModel> task;
+
+    TaskView {
+        width: 100%;
+        height: 100%;
+        task: root.task;
+    }
+}

@@ -248,15 +248,28 @@ export component BoardLayout inherits Rectangle {
             text: "No stacks yet";
             hint: "Create the first stack with the button below";
         }
-        TextButton {
-            emphasis: TextButtonEmphasis.cta;
-            label: "New stack";
-            clicked => root.new-stack-activated();
+        HorizontalLayout {
+            alignment: center;
+            new-stack-cta := TextButton {
+                emphasis: TextButtonEmphasis.cta;
+                // The severing bound (the C1 fix-now class, round 8
+                // L1 — the B-empty signature): the CTAs previously
+                // filled the window width and their borders painted
+                // flush to both canvas edges. The dialog-min-width
+                // token bounds them centered, off the frame.
+                max-width: Theme.dialog-min-width;
+                label: "New stack";
+                clicked => root.new-stack-activated();
+            }
         }
-        TextButton {
-            emphasis: TextButtonEmphasis.cta;
-            label: "Create Default Kanban Setup";
-            clicked => root.board-default-preset-clicked();
+        HorizontalLayout {
+            alignment: center;
+            default-preset-cta := TextButton {
+                emphasis: TextButtonEmphasis.cta;
+                max-width: Theme.dialog-min-width;
+                label: "Create Default Kanban Setup";
+                clicked => root.board-default-preset-clicked();
+            }
         }
         // The stack-create flow's field on the empty board (round-3
         // R5/F10): `begin_create_stack` arms the flow regardless of

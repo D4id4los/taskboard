@@ -32,4 +32,14 @@ export global EditingFacts {
     // that sees a newer generation re-baselines its latch instead of
     // paying a stale decrement into the fresh counts.
     in-out property <int> generation: 0;
+    // The mount-settle refocus nonce (the clip-focus law's remount
+    // half, #1419 option A, 2026-11-25): the adapter bumps it once
+    // per push pass, AFTER the models are written, and again from
+    // the focus-lost absorb seam. A TextField whose subtree was
+    // rebuilt by a push re-grabs on the bump when it holds no focus
+    // (the wrap's viewport rebuild can drop the init focus grab);
+    // a field that holds focus no-ops. Bumped after the write, so a
+    // freshly created instance's binding evaluates the OLD value and
+    // still sees the bump as a change.
+    in-out property <int> refocus-nonce: 0;
 }

@@ -38,10 +38,14 @@ mod app_window_max_probe_tests;
 mod armed_ring_probe_tests;
 #[path = "probes/board_bar_probe_tests.rs"]
 mod board_bar_probe_tests;
+#[path = "probes/board_empty_stub_probe_tests.rs"]
+mod board_empty_stub_probe_tests;
 #[path = "probes/board_window_max_probe_tests.rs"]
 mod board_window_max_probe_tests;
 #[path = "probes/dropdown_probe_tests.rs"]
 mod dropdown_probe_tests;
+#[path = "probes/editor_inset_probe_tests.rs"]
+mod editor_inset_probe_tests;
 #[path = "probes/editor_viewport_probe_tests.rs"]
 mod editor_viewport_probe_tests;
 #[path = "probes/focus_seam_probe_tests.rs"]

@@ -206,6 +206,24 @@ export component TextField inherits Rectangle {
         accepted() => root.accepted(input.text);
     }
 
+    // The mount-settle refocus (the clip-focus law's remount half,
+    // #1419 option A, 2026-11-25): a model push can rebuild the
+    // field's subtree, and a rebuild can drop the init focus grab.
+    // The adapter bumps EditingFacts.refocus-nonce once per push pass
+    // (and from the focus-lost absorb seam); a field that ends the
+    // bump without slint focus re-grabs, keeping the armed flow's
+    // keyboard alive. The has-focus guard makes the bump a no-op for
+    // every field that holds or deliberately lacks focus; a genuine
+    // blur settles the flow and unmounts the field before any later
+    // bump, so the guard cannot steal focus back from a deliberate
+    // move. Non-autofocus fields never participate.
+    property <int> refocus-nonce: EditingFacts.refocus-nonce;
+    changed refocus-nonce => {
+        if (root.autofocus && !input.has-focus) {
+            input.focus();
+        }
+    }
+
     // The eye affordance (round-3 D16): the rightmost slot of a
     // secret field. TouchArea-only (the recorded Slint negative — a
     // TouchArea click never moves focus — is the feature here:
