@@ -2155,12 +2155,10 @@ fn wave2_golden_path(surface: &str, scale: f64, width: u32) -> PathBuf {
 }
 
 /// D6 — the due editor with the date-picker grid open: the walked-into
-/// enriched task's detail, the due editor staged, the picker grid
-/// overlay open over it. The enriched fixture's first task carries no
-/// due — the picker's grid is the month of the frozen render clock
-/// (the pre-selected-day law holds for the staged draft, the typed
-/// entry seam's shape), so the capture pins the grid's chrome over the
-/// editor.
+/// enriched task's detail with a staged due date (tomorrow off the
+/// frozen render clock), the due editor staged, the picker grid
+/// overlay open over it with that day pre-selected (the staging law:
+/// the grid pre-selects, never an empty mount).
 #[test]
 fn the_due_editor_datepicker_golden_holds() {
     pin_utc_zone();
@@ -2240,10 +2238,10 @@ fn the_labels_overlay_golden_holds() {
             headless_renderer: true,
         },
         move |driver| {
-            // The staging law (plan §2.A): the editor opens on a task
-            // WITH a due date, so the picker grid pre-selects it. The
+            // The staged due date: the detail's due row renders, and
+            // the labels overlay opens over a populated detail. The
             // stamp is midnight-aligned off the pinned render clock
-            // (the fixture convention; date-only phrase, run-stable).
+            // (the fixture convention; date-only, run-stable).
             let mut staged = enriched_state();
             let calendar = fixture::harness_calendar();
             let day = calendar
