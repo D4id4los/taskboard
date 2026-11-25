@@ -103,6 +103,25 @@ export component AlarmWindow inherits Window {
             border-radius: Theme.radius-small;
             background: strip-ta.pressed ? Theme.surface : transparent;
 
+            // The at-rest grip cue (#1353, D-1353a): a centered dot
+            // row — the recognition half the grab cursor alone never
+            // gave a first-time user. The dots dim on press into the
+            // surface-raised tint (the pressed state stays; the two
+            // cues do not stack). Zero layout-mass change: the dots
+            // are painted children inside the strip's existing
+            // space-2 height, from the Theme ladder (never raw
+            // colors — the B2 token law; D-1353b).
+            grip := HorizontalLayout {
+                alignment: center;
+                spacing: Theme.space-1;
+                for _dot in 3: grip-dot := Rectangle {
+                    width: Theme.focus-ring-width;
+                    height: Theme.focus-ring-width;
+                    border-radius: Theme.focus-ring-width / 2;
+                    background: strip-ta.pressed ? Theme.surface-raised : Theme.border;
+                }
+            }
+
             property <length> last-x;
             property <length> last-y;
 

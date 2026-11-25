@@ -10,6 +10,28 @@
 //! state would never become visible.
 
 const ALARM_WINDOW_SOURCE: &str = include_str!("../../ui/alarm-window.slint");
+
+/// #1353 (D-1353a/D-1353b): the drag strip's at-rest grip cue — a
+/// three-dot row whose binding states the token transition (rest
+/// `Theme.border`, pressed `Theme.surface-raised`; never transparent,
+/// never a raw color). The markup fold the element API cannot read
+/// (a background color is not an accessible property) rides the
+/// module's source-assertion precedent; the instantiated cue's
+/// count/size facts are the probe mount's
+/// (`alarm_window_max_probe_tests::alarm_window_carries_the_grip_dot_
+/// cue`).
+#[test]
+fn the_alarm_drag_strip_carries_the_grip_cue_binding() {
+    assert!(
+        ALARM_WINDOW_SOURCE
+            .contains("background: strip-ta.pressed ? Theme.surface-raised : Theme.border;"),
+        "the grip dots state the pressed-state token transition"
+    );
+    assert!(
+        ALARM_WINDOW_SOURCE.contains("for _dot in 3: grip-dot := Rectangle {"),
+        "the cue is the three-dot row"
+    );
+}
 const LIB_SOURCE: &str = include_str!("../../src/lib.rs");
 
 /// US-3/S1 (W-3): the alarm window mounts its own `TooltipPanel` —
