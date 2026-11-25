@@ -8,8 +8,14 @@
 # not exist (a new-file-only first commit).
 #
 # Verdict:
-#   preflight — NO staged path is Rust-relevant (docs-only commits).
-#               Clippy recompiles nothing (warm incremental cache ⇒ a
+#   preflight — NO staged path is Rust-relevant (docs-only commits) AND
+#               this worktree's build cache is warm (a non-empty
+#               worktree-local target/debug/.fingerprint). BOTH
+#               premises must hold (#1424): the warm-cache premise was
+#               implicit until a fresh worktree's docs-only commit ran
+#               a cold `cargo clippy --workspace --all-targets`
+#               un-gated and pushed MemAvailable through the floor.
+#               On a warm cache clippy recompiles nothing (a
 #               cache-validating walk in seconds), so it admits via
 #               `scripts/memory-gate.sh --preflight`: the MemAvailable
 #               floor is still enforced (fail closed), but the commit
@@ -20,8 +26,10 @@
 #               command and never skips the floor check.
 #   gated     — at least one staged path is Rust-relevant (*.rs,
 #               Cargo.toml, Cargo.lock, .cargo/*.toml), OR the staged
-#               set could not be determined (conservative default:
-#               never weaken the gate by accident).
+#               set could not be determined, OR the cache-warmth check
+#               fails (fresh worktree, wiped target/, unreadable dir —
+#               conservative default: never weaken the gate by
+#               accident).
 #
 # Usage: scripts/commit-clippy-mode.sh   (inside a git repository)
 # Exit: 0 with the verdict on stdout; 1 = not a git repository.
@@ -49,6 +57,18 @@ if [[ -z $paths ]]; then
 fi
 
 if grep -Eq '(^|/)\.cargo/[^/]*\.toml$|(^|/)Cargo\.(toml|lock)$|\.rs$' <<<"$paths"; then
+  echo "gated"
+  exit 0
+fi
+
+# Cache-warmth premise (#1424): preflight clippy is only cheap when this
+# worktree has actually built before. The fingerprint dir is
+# worktree-local (each worktree has its own target/), so a fresh
+# worktree — or one whose target/ was wiped — fails this check and
+# gates. "Non-empty" means at least one entry beyond . and ..; an
+# unreadable or missing dir is undeterminable ⇒ gated.
+fingerprint_dir="$(git rev-parse --show-toplevel)/target/debug/.fingerprint"
+if [[ ! -d $fingerprint_dir ]] || ! [[ -n $(ls -A "$fingerprint_dir" 2>/dev/null) ]]; then
   echo "gated"
 else
   echo "preflight"
