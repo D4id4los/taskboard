@@ -103,8 +103,9 @@ fn contrast_ratio(a: &str, b: &str) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// WCAG role classes (§9.1): body text ≥ 4.5, large display ≥ 3.0,
-/// non-text UI ≥ 3.0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// non-text UI ≥ 3.0. (`PartialEq` only: the waived variant carries
+/// the recorded `f64` floor, which is not `Eq`.)
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum MinRatio {
     /// Body-size text: ≥ 4.5:1.
     Body,
@@ -112,6 +113,43 @@ enum MinRatio {
     Large,
     /// Non-text UI (borders, focus rings, indicators): ≥ 3.0:1.
     NonText,
+    /// An explicitly-named debt pair (#1450): the *measured* ratio sits
+    /// below the class floor today, and the remediation is a design
+    /// call out of the landing chunk's scope. The entry asserts the
+    /// recorded measured floor — a further regression fails, and the
+    /// waiver is deleted (the real class minimum flips on) once #1450
+    /// lands. Never a lowered threshold: the class the pair owes stays
+    /// `owed`, named here so the debt is legible at the table.
+    Waived {
+        issue: &'static str,
+        /// The measured ratio rounded down — the pin floor.
+        recorded_floor: f64,
+        /// The WCAG class the pair owes when the waiver is lifted.
+        owed: Owed,
+    },
+}
+
+/// The WCAG class a waived pair owes once its remediation lands (the
+/// minimum the waiver flips to).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Owed {
+    Body,
+    NonText,
+}
+
+impl Owed {
+    const fn minimum(self) -> f64 {
+        match self {
+            Self::Body => 4.5,
+            Self::NonText => 3.0,
+        }
+    }
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Body => "Body",
+            Self::NonText => "NonText",
+        }
+    }
 }
 
 impl MinRatio {
@@ -120,6 +158,7 @@ impl MinRatio {
             Self::Body => 4.5,
             // Large display text and non-text UI share the 3.0 floor.
             Self::Large | Self::NonText => 3.0,
+            Self::Waived { recorded_floor, .. } => recorded_floor,
         }
     }
     const fn label(self) -> &'static str {
@@ -127,6 +166,25 @@ impl MinRatio {
             Self::Body => "Body",
             Self::Large => "Large",
             Self::NonText => "NonText",
+            Self::Waived { .. } => "Waived",
+        }
+    }
+    /// The issue that owns the remediation of a waived pair (empty for
+    /// the real class floors).
+    const fn debt_issue(self) -> &'static str {
+        match self {
+            Self::Waived { issue, .. } => issue,
+            _ => "",
+        }
+    }
+    /// The class the pair owes when the waiver lifts (the real floors
+    /// owe themselves).
+    const fn owed_minimum(self) -> f64 {
+        match self {
+            Self::Waived { owed, .. } => owed.minimum(),
+            Self::Body => 4.5,
+            // Large display text and non-text UI share the 3.0 floor.
+            Self::Large | Self::NonText => 3.0,
         }
     }
 }
@@ -158,12 +216,32 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
     (("Theme", "text-secondary"), SURFACE_HOVER, MinRatio::Body),
     (("Semantic", "success"), BACKGROUND, MinRatio::Body),
     (("Semantic", "success"), SURFACE, MinRatio::Body),
+    // The raised/hover legs (#1414): state colours lift onto cards and
+    // hovered rows, so every surface they can render on is paired.
+    (("Semantic", "success"), SURFACE_RAISED, MinRatio::Body),
+    (("Semantic", "success"), SURFACE_HOVER, MinRatio::Body),
     (("Semantic", "warning"), BACKGROUND, MinRatio::Body),
     (("Semantic", "warning"), SURFACE, MinRatio::Body),
+    (("Semantic", "warning"), SURFACE_RAISED, MinRatio::Body),
+    (("Semantic", "warning"), SURFACE_HOVER, MinRatio::Body),
     (("Semantic", "danger"), BACKGROUND, MinRatio::Body),
     (("Semantic", "danger"), SURFACE, MinRatio::Body),
+    (("Semantic", "danger"), SURFACE_RAISED, MinRatio::Body),
+    // Measured 4.19:1 today — below the 4.5 body floor (status-bar.slint:375,
+    // review-view.slint:693). Waived debt; #1450 owns the remediation.
+    (
+        ("Semantic", "danger"),
+        SURFACE_HOVER,
+        MinRatio::Waived {
+            issue: "#1450",
+            recorded_floor: 4.18,
+            owed: Owed::Body,
+        },
+    ),
     (("Semantic", "overdue"), BACKGROUND, MinRatio::Body),
     (("Semantic", "overdue"), SURFACE, MinRatio::Body),
+    (("Semantic", "overdue"), SURFACE_RAISED, MinRatio::Body),
+    (("Semantic", "overdue"), SURFACE_HOVER, MinRatio::Body),
     // Offline status text maps to text-secondary; it is text-bearing.
     (("Semantic", "offline"), BACKGROUND, MinRatio::Body),
     (("Semantic", "offline"), SURFACE, MinRatio::Body),
@@ -174,6 +252,30 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
     (("Semantic", "focus-ring"), SURFACE, MinRatio::NonText),
     (("Theme", "border"), BACKGROUND, MinRatio::NonText),
     (("Theme", "border"), SURFACE, MinRatio::NonText),
+    // The raised/hover legs (#1414): the border renders around cards
+    // and lifted controls. Measured 2.75:1 on raised and 2.34:1 on
+    // hover today — below the 3.0 non-text floor (tooltip.slint:134
+    // et al. mark up these pairs). Waived debt; #1450 owns the
+    // remediation (raise the border luminance or split a
+    // control-boundary token).
+    (
+        ("Theme", "border"),
+        SURFACE_RAISED,
+        MinRatio::Waived {
+            issue: "#1450",
+            recorded_floor: 2.74,
+            owed: Owed::NonText,
+        },
+    ),
+    (
+        ("Theme", "border"),
+        SURFACE_HOVER,
+        MinRatio::Waived {
+            issue: "#1450",
+            recorded_floor: 2.33,
+            owed: Owed::NonText,
+        },
+    ),
     (("Semantic", "sync-active"), BACKGROUND, MinRatio::NonText),
     (("Semantic", "sync-active"), SURFACE, MinRatio::NonText),
 ];
@@ -344,9 +446,57 @@ fn every_pair_meets_its_role_class_minimum() {
         let ratio = contrast_ratio(&fg, &bg);
         assert!(
             ratio >= class.minimum(),
-            "{foreground:?} on {surface:?} is {ratio:.2}:1, below the {:?} minimum {}:1",
+            "{foreground:?} on {surface:?} is {ratio:.2}:1, below the {:?} minimum {}:1{}",
             class.label(),
-            class.minimum()
+            class.minimum(),
+            if class.debt_issue().is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " (waived debt pinned at {:.2}:1, owes {:?} {}:1 when {} lands)",
+                    class.minimum(),
+                    match class {
+                        MinRatio::Waived { owed, .. } => owed.label(),
+                        _ => "",
+                    },
+                    class.owed_minimum(),
+                    class.debt_issue()
+                )
+            }
+        );
+    }
+}
+
+/// The waiver pins are honest: every waived pair must still be below
+/// the class it owes — a waiver that passes its real minimum is dead
+/// debt and must be deleted (the entry flips to the real floor).
+#[test]
+fn every_waived_pair_is_still_below_its_owed_minimum() {
+    let tokens = extract_colors(THEME_SOURCE);
+    let lookup = |name: TokenName| -> String {
+        tokens
+            .iter()
+            .find(|(g, n, _)| g == name.0 && n == name.1)
+            .map(|(_, _, hex)| hex.clone())
+            .unwrap_or_default()
+    };
+    for (foreground, surface, class) in PAIRS {
+        let MinRatio::Waived { issue, owed, .. } = class else {
+            continue;
+        };
+        let fg = lookup(*foreground);
+        let bg = lookup(*surface);
+        assert!(
+            !fg.is_empty() && !bg.is_empty(),
+            "undeclared token pair: {foreground:?} × {surface:?}"
+        );
+        let ratio = contrast_ratio(&fg, &bg);
+        assert!(
+            ratio < owed.minimum(),
+            "{foreground:?} on {surface:?} now measures {ratio:.2}:1, at or above the owed {:?} minimum {}:1 — the {} waiver is dead debt: delete it and flip the entry to the real floor",
+            owed.label(),
+            owed.minimum(),
+            issue
         );
     }
 }
