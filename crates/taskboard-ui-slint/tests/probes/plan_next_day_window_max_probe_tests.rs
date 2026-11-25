@@ -11,7 +11,10 @@ use crate::support;
 
 use slint::ComponentHandle as _;
 
-include!(concat!(env!("OUT_DIR"), "/plan_window_max_probe.rs"));
+include!(concat!(
+    env!("OUT_DIR"),
+    "/plan_next_day_window_max_probe.rs"
+));
 
 fn run_probe(job: impl FnOnce(&WindowMaxProbe) + Send + 'static) {
     support::driver::run(

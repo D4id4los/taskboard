@@ -118,18 +118,6 @@ fn expected_probe(file: &str) -> String {
     format!("{}_window_max_probe", stem.replace('-', "_"))
 }
 
-/// Twin names that predate their file's final name, witnessed by the
-/// chunk plan's inventory table: an alias keeps the derivation law
-/// honest without renaming landed probes.
-const TWIN_ALIASES: &[(&str, &str)] = &[("plan-next-day-view.slint", "plan_window_max_probe")];
-
-fn expected_probe_for(file: &str) -> String {
-    if let Some((_, probe)) = TWIN_ALIASES.iter().find(|(f, _)| *f == file) {
-        return (*probe).to_owned();
-    }
-    expected_probe(file)
-}
-
 /// Whether the root component's property block (depth 1 inside the
 /// component body — a descendant's binding does not satisfy the
 /// census, which is the #1197 semantics) states
@@ -229,7 +217,7 @@ fn census(
         if !sever_present(&src, root) {
             violations.push(SeveringViolation::MissingSever { file: file.clone() });
         }
-        let probe = expected_probe_for(file);
+        let probe = expected_probe(file);
         // The twin halves under the derived registry (#1362): the
         // probe `.slint` exists on disk (the registry IS the disk
         // enumeration, and the derivation compiles it verbatim) and
