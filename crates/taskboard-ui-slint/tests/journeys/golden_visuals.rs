@@ -597,12 +597,30 @@ fn kiosk_rotation_settings() -> UiSettings {
             )
             .expect("two distinct modes mint"),
         ),
-        // The render pass's content clock frozen at the binary's pin
-        // (`docs/testing_strategy.org` §6.2) — same capture class as
-        // `scale_settings`; cadence stays on the mock clock.
-        clock: Some(fixture::PINNED_NOW),
-        ..UiSettings::default()
+        // The kiosk cells are matrix cells on the scale axis (#1392):
+        // the goldens claim the KIOSK_SCALE cell, so the capture must
+        // actually render at that scale — layer the kiosk fields on
+        // the same base the desktop matrix legs use (which already
+        // pins the content clock at the binary's pin, §6.2).
+        ..scale_settings(KIOSK_SCALE)
     }
+}
+
+/// The pin for the #1392 fix: the kiosk capture settings carry the
+/// `KIOSK_SCALE` cell (the goldens' names and manifest rows claim it;
+/// the pixels must be rendered at it).
+#[test]
+fn the_kiosk_capture_settings_carry_the_kiosk_scale_cell() {
+    let settings = kiosk_rotation_settings();
+    assert_eq!(
+        f64::from(settings.scale.get_f32()),
+        KIOSK_SCALE,
+        "the kiosk capture renders at the claimed scale cell"
+    );
+    assert!(
+        settings.kiosk,
+        "the kiosk capture stays in the kiosk posture"
+    );
 }
 
 /// The one matrix cell each kiosk golden captures (the mid
