@@ -15033,7 +15033,11 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
                     });
                 }
                 a.habit_edit_draft = None;
-                a.route(&window, ActionId::NavFocusBoard);
+                // The origin return (#1303): the recorded entry
+                // snapshot restores — never the `NavFocusBoard`
+                // hard-route (Today stays Today, Board stays Board).
+                let outcomes = a.view_state.close_habit_editor();
+                a.apply_outcomes(&window, &outcomes);
                 a.finish_mutation(&window);
             }
         }
@@ -15046,7 +15050,11 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
         // US-10: an armed shared flow stages nothing on cancel (the
         // landed staging law) — the buffer dies with the flow.
         a.view_state.discard_edit();
-        a.route(&window, ActionId::NavFocusBoard);
+        // The origin return (#1303): the recorded entry snapshot
+        // restores — never the `NavFocusBoard` hard-route (Today
+        // stays Today, Board stays Board).
+        let outcomes = a.view_state.close_habit_editor();
+        a.apply_outcomes(&window, &outcomes);
         a.finish_mutation(&window);
     });
 }

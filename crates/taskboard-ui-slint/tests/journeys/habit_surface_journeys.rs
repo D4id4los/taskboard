@@ -1005,7 +1005,10 @@ fn us11_s2_desktop_push_unregressed() {
         );
         window.invoke_habit_editor_cancelled();
         harness.driver.advance_time(0);
-        assert_eq!(window.get_current_view(), View::Board);
+        // #1303: cancel restores the RECORDED origin root — the editor
+        // was opened over the Today habit rows, so Today it is (the
+        // retired hard-route to Board was the N-3 violation itself).
+        assert_eq!(window.get_current_view(), View::Today);
         assert!(
             harness.engine.drain().is_empty(),
             "the open/cancel round trip writes nothing"

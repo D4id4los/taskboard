@@ -946,8 +946,8 @@ fn us5_s1_habit_editor_opens_and_cancel_discards() {
         harness.driver.advance_time(0);
         assert_eq!(
             window.get_current_view(),
-            View::Board,
-            "cancel steps the view back (the nav-back grammar)"
+            View::Today, // #1303: cancel restores the recorded origin root
+            "cancel steps the view back (the origin-return grammar)"
         );
         assert!(
             harness.engine.drain().is_empty(),
@@ -1011,8 +1011,8 @@ fn us5_s2_habit_editor_round_trips_time_and_day() {
         }
         assert_eq!(
             window.get_current_view(),
-            View::Board,
-            "the editor closes on save (the back grammar)"
+            View::Today, // #1303: save restores the recorded origin root
+            "the editor closes on save (the origin-return grammar)"
         );
     });
 }
@@ -1283,8 +1283,8 @@ fn us5_s2_schedule_save_routes_the_exact_command() {
         }
         assert_eq!(
             window.get_current_view(),
-            View::Board,
-            "the editor closes on save (the back grammar)"
+            View::Today, // #1303: save restores the recorded origin root
+            "the editor closes on save (the origin-return grammar)"
         );
     });
 }
@@ -1317,7 +1317,9 @@ fn us5_s3_empty_schedule_selection_blocks_the_save() {
         // Cancel discards (the escape rung).
         window.invoke_habit_editor_cancelled();
         harness.driver.advance_time(0);
-        assert_eq!(window.get_current_view(), View::Board);
+        // #1303: cancel restores the recorded origin root (Today — the
+        // editor was opened over the Today habit rows).
+        assert_eq!(window.get_current_view(), View::Today);
     });
 }
 
@@ -1393,7 +1395,8 @@ fn us6_s2_override_save_routes_the_exact_command_and_s3_clears() {
             }
             other => panic!("the clear leg routes the sparse changeset, got {other:?}"),
         }
-        assert_eq!(window.get_current_view(), View::Board);
+        // #1303: save restores the recorded origin root (Today).
+        assert_eq!(window.get_current_view(), View::Today);
     });
 }
 
