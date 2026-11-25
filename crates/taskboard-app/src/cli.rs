@@ -1780,8 +1780,21 @@ pub enum HabitsCmd {
         #[arg(long, conflicts_with = "reminder")]
         reminder_clear: bool,
         /// Absolute manual-order slot (the `MoveHabit` semantics).
-        #[arg(long)]
+        /// Dense-section caveat (#1356): on a densely ordered section
+        /// an absolute order can only name an occupied slot and the
+        /// tie resolves by id order — prefer `--before/--after`.
+        #[arg(long, conflicts_with_all = ["before", "after"])]
         order: Option<i64>,
+        /// Place the habit immediately BEFORE this neighbour (a habit
+        /// selector) in its board section's sequence (#1356) — the
+        /// deterministic relative address. The neighbour must live on
+        /// the habit's board.
+        #[arg(long, conflicts_with = "after")]
+        before: Option<String>,
+        /// Place the habit immediately AFTER this neighbour (a habit
+        /// selector) in its board section's sequence (#1356).
+        #[arg(long)]
+        after: Option<String>,
         /// Link the §4.7 conversion seam (series uuid), or `none` to
         /// unlink. The read-side streak/history views union the link.
         #[arg(long, value_parser = parse_seam_edit)]
@@ -2230,9 +2243,21 @@ pub enum TasksCmd {
         #[arg(long)]
         board: Option<String>,
         /// Explicit sort order; default appends to the end of the target
-        /// stack.
-        #[arg(long)]
+        /// stack. Dense-stacks caveat (#1356): on a densely ordered
+        /// stack an absolute order can only name an occupied slot and
+        /// the tie resolves by id order — prefer `--before/--after`.
+        #[arg(long, conflicts_with_all = ["before", "after"])]
         order: Option<i64>,
+        /// Place the task immediately BEFORE this neighbour (a task
+        /// selector) in the target stack's sequence (#1356) — the
+        /// deterministic relative address over a densely ordered
+        /// stack. The neighbour must live in the target stack.
+        #[arg(long, conflicts_with = "after")]
+        before: Option<String>,
+        /// Place the task immediately AFTER this neighbour (a task
+        /// selector) in the target stack's sequence (#1356).
+        #[arg(long)]
+        after: Option<String>,
     },
     /// Edit task fields (at least one flag required).
     Edit {

@@ -626,7 +626,7 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
             // parse-refusal era (code 2); the guidance text is
             // server-local UX, never asserted.
             if matches!(
-                command,
+                *command,
                 crate::cli::Command::Connect { .. }
                     | crate::cli::Command::Login { .. }
                     | crate::cli::Command::Logout
@@ -644,7 +644,7 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
             // wire refuses it in the same usage class — before any
             // dispatch.
             if matches!(
-                command,
+                *command,
                 crate::cli::Command::Boards {
                     cmd: crate::cli::BoardsCmd::Use { .. }
                 }
@@ -664,7 +664,7 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
                 err: &mut err,
                 json,
             };
-            let code = if let crate::cli::Command::Config { cmd } = &command {
+            let code = if let crate::cli::Command::Config { cmd } = command.as_ref() {
                 // The daemon's config arm (journey W-2, #845): the
                 // relayed set/unset applies live against this core's
                 // engine — guard, prove-gate write, `UpdateSettings` —
@@ -677,7 +677,7 @@ async fn run_argv(app: &App, session: &BasicSession, argv: &[String]) -> (u8, St
                 )
                 .await
             } else {
-                dispatch_line(session, app, command, &mut io).await
+                dispatch_line(session, app, *command, &mut io).await
             };
             // Buffer writers are UTF-8 by construction: lossless.
             (

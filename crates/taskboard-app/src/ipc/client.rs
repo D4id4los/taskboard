@@ -433,7 +433,7 @@ mod tests {
         let parse = |argv: &str| -> Command {
             let words: Vec<String> = argv.split_whitespace().map(str::to_owned).collect();
             match crate::repl::resolve_words(&words, false) {
-                crate::repl::LineAction::Execute(command, _) => command,
+                crate::repl::LineAction::Execute(command, _) => *command,
                 other => panic!("{argv} parses to a command, got {other:?}"),
             }
         };

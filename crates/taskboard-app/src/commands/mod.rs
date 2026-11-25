@@ -222,6 +222,16 @@ pub enum CommandError {
     /// No stack matches the selector.
     #[error("no such stack")]
     UnknownStack(String),
+    /// The `--before/--after` move neighbour does not address the
+    /// mover's target stack (#1356): the reorder grammar is
+    /// same-stack — the neighbour is either not live or lives on
+    /// another stack, and the verb refuses typed instead of
+    /// cross-stack guessing.
+    #[error("move neighbour {selector:?} is not a live row of the mover's target stack")]
+    MoveNeighbourMismatch {
+        /// The refused neighbour selector, verbatim.
+        selector: String,
+    },
     /// No label matches the selector.
     #[error("no such label")]
     UnknownLabel(String),
@@ -634,6 +644,7 @@ impl CommandError {
             Self::UnknownTask(_) => "unknown-task",
             Self::AmbiguousTask { .. } => "ambiguous-task",
             Self::UnknownStack(_) => "unknown-stack",
+            Self::MoveNeighbourMismatch { .. } => "move-neighbour-mismatch",
             Self::AmbiguousStack { .. } => "ambiguous-stack",
             Self::UnknownLabel(_) => "unknown-label",
             Self::AmbiguousLabel { .. } => "ambiguous-label",
@@ -1504,14 +1515,25 @@ pub async fn dispatch(command: Command, mut ctx: CommandCtx<'_>) -> u8 {
                 stack,
                 board,
                 order,
+                before,
+                after,
             },
         } => {
             run_mutation(
                 &mut ctx.io,
                 ctx.config_path.clone(),
                 move |config, store| async move {
-                    tasks::move_(config, store, &task, stack.as_deref(), board.as_deref(), order)
-                        .await
+                    tasks::move_(
+                        config,
+                        store,
+                        &task,
+                        stack.as_deref(),
+                        board.as_deref(),
+                        order,
+                        before.as_deref(),
+                        after.as_deref(),
+                    )
+                    .await
                 },
             )
             .await
@@ -2532,9 +2554,20 @@ async fn tasks_line(
             stack,
             board,
             order,
+            before,
+            after,
         } => emit_result(
             io,
-            tasks::move_on(app, &task, stack.as_deref(), board.as_deref(), order).await,
+            tasks::move_on(
+                app,
+                &task,
+                stack.as_deref(),
+                board.as_deref(),
+                order,
+                before.as_deref(),
+                after.as_deref(),
+            )
+            .await,
             tasks::render_text_receipt,
         ),
         TasksCmd::Edit { task, flags } => {
