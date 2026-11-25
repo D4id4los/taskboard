@@ -44,6 +44,14 @@ export component TrackedTodaySection inherits Rectangle {
         // The header row: the caption + the day total (the tip names
         // the window and the work-only rule structurally — the
         // description rides the hover machinery).
+        // The #1359 disposition: the LabeledValueRow adoption STAYS
+        // reverted — the display grammar centers/preferred-widths its
+        // value and top-aligns beside-axis captions, while this row's
+        // mono total right-aligns under a hover-tip band with a
+        // centered caption; the migration would be a visible chrome
+        // change outside the round's recorded deltas, so the hand row
+        // remains (this comment is the anti-ad-hoc rule's carve-out
+        // record, not an oversight).
         HorizontalLayout {
             spacing: Theme.space-2;
             RoleText {
