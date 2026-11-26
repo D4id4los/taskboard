@@ -541,3 +541,32 @@ each carries evidence, never a fix.
   token rows for the walk/planner journeys and their story-coverage
   cascade (the matrix cells citing US-2..US-8). No wiring row
   MISSING, no plan defect surfaced.
+
+## 12. Amendment (2026-11-26) — the Prompts stage collects the ratings (#1431)
+
+The original walk plan's D-W9 deferral ("the walk records text only;
+attributes stay the CLI's … a future walk extension needs its own copy
+ruling", `.artifacts/plans/2026-11-06-review-walk-plan.md` §D-W9) is
+**superseded** by the round-8 dispatch plan's ruling
+(`.artifacts/plans/2026-11-25-backlog-reduction-round8-dispatch-plan.md`
+§B-B2): the day-review walk collects the mood/energy ratings itself.
+
+- **Where**: the Prompts stage (stage-kind 2) only — after the prompt
+  editors, a two-field rating row using the T-15 inline journal
+  editor's grammar verbatim (`review-view.slint`'s mood/energy
+  `TextField`s): labels "Mood (1-5, empty clears)" / "Energy (1-5,
+  empty clears)", placeholder "1..=5 · empty = clear", the tri-state
+  validity flavours.
+- **Semantics**: the ratings are *optional* — blank is the neutral
+  unrated and the text-only record stays legal; a valid `1..=5` draft
+  mints at `RecordReflection` (the trust boundary stays the engine's,
+  the payload carries the raw byte); an invalid draft refuses the
+  record (nothing dispatches, the walk stays on the Prompts stage,
+  the `Invalid` flavour renders) — the T-15 law: an invalid draft
+  never dispatches.
+- **Lifecycle**: the drafts share the answers' lifecycle (the walk
+  level's death is the clear; no stage-back loss).
+- **Implementation**: `fix/dayreview-quota-bugs` (chunk B2 of round 8,
+  stage-2 plan
+  `.artifacts/plans/2026-11-25-dayreview-quota-bugs-plan.md` §1).
+- Kiosk posture unchanged: the walk is desktop-only and stays so.
