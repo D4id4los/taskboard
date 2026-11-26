@@ -14,12 +14,18 @@ Usage:
     layout_review.py --emit-md <findings.toml> <report.md>
     layout_review.py --self-test
 
-Invariant catalogue (plan §3):
+Invariant catalogue (plan §3, tier-2 additions per the analyzer-invariant-tier2 plan):
     A1  alignment grid       — singleton left edges off the shared grid
     A2  uniform gaps         — per-section inter-band gap outliers
     T1  font-size ladder     — text-line sizes off the Theme TextRole ladder
+                                 (tier-2: connected-component glyph-line estimator)
     M1  margin conformance   — outer margins off the space-* ladder
     C1  clip sentinel        — content runs touching a canvas edge
+    Q1  text contrast floor  — pixel-measured ink/background WCAG 2.x ratio
+                                 vs the role-class floor (tier 2, #1410)
+    I1  icon-size conformance— icon bounding boxes vs Theme.icon-size
+                                 12 logical px ±2 (tier 2, #1409; scope:
+                                 icon-probe-* goldens only)
 """
 
 from __future__ import annotations
@@ -91,7 +97,7 @@ GAP_TOL_FLOOR_PX = 2.0
 # (plan §3 A2: median membership ≥ 3 bands).
 MIN_SECTION_GAPS = 3
 
-# T1: a text-line row-run must be at least this many physical px tall to
+# T1: a text-line component must be at least this many physical px tall to
 # be a line candidate (drops 1-px hairline noise).
 MIN_LINE_RUN_PX = 3
 
@@ -103,18 +109,104 @@ T1_MIN_LINES = 5
 # (x-height-to-cap span ≈ 0.70 em; plan §3 T1).
 EM_FRACTION = 0.70
 
-# T1: candidate lines with a larger estimated em are blocks/images, not
-# text (calibration: non-text bands — chips, icon walls, captures —
-# produced em estimates up to 1806 logical px and drowned the signal).
-# Above the display rung's tolerance ceiling the run is excluded from the
-# line population entirely.
-MAX_LINE_EM_LOGICAL = 30.0 * 1.15
+# T1 (tier-2 glyph classification): a connected component taller than this
+# logical height is a block/icon/thumbnail, not a glyph cluster. Named
+# constant sits just below the display rung's tolerance ceiling
+# (30 × 1.15 = 34.5). Calibration: the old row-run method measured em
+# estimates up to 1806 logical px on non-text bands (chips, icon walls,
+# captures); the component-level classification removes that garbage at
+# the source instead of excluding it after the estimate.
+GLYPH_MAX_HEIGHT_LOGICAL = 34.0
+
+# T1 (tier-2 glyph classification): a glyph cluster wider than this logical
+# width is a rule/divider or a connected icon run, not text ink. Calibration:
+# icons in the kinds wall are ≤ 12 logical px wide and dividers are
+# wide-and-thin; ~3 em of the display rung caps the honest glyph-cluster width.
+GLYPH_MAX_WIDTH_LOGICAL = 40.0
+
+# T1 (tier-2 line grouping): components whose vertical centres differ by at
+# most this fraction of the taller component's height AND whose horizontal
+# gap is at most LINE_X_GAP_LOGICAL merge into one text line. Calibration:
+# 0.35 keeps ascender/descender-split glyphs of one line together while
+# separating a 21-px title line from an 8-px caption line (centre delta
+# ~14.5 px > 0.35 × 21 = 7.35 px) — the mixed-band case the row-run method
+# reported as one ~41-px union.
+LINE_CENTRE_TOL_FRACTION = 0.35
+
+# T1 (tier-2 line grouping): word/letter-spacing slop — components with at
+# most this many logical px of horizontal gap join the same line.
+LINE_X_GAP_LOGICAL = 6.0
 
 # T1: tolerance when mapping a measured em to the TextRole ladder.
 # Calibration: rung separation is ≥ 12% (12.5→14); ±15% absorbs the
 # antialiasing slop measured in the calibration run (≤ 1 physical px on
 # line heights at every corpus scale) without overlapping rungs.
 TEXT_TOL_FRACTION = 0.15
+
+# Q1 (WCAG role-class floors, #1410; method per token_tests.rs): body-size
+# text ≥ 4.5:1, large text ≥ 3.0:1. The large-text class applies at
+# em ≥ LARGE_TEXT_EM_LOGICAL (the title/display rungs); the NonText class
+# has no pixel analogue in Q1 (icons are I1's subject).
+BODY_MIN_RATIO = 4.5
+LARGE_MIN_RATIO = 3.0
+LARGE_TEXT_EM_LOGICAL = 20.0
+
+# Q1 sampling: the line bounding box is padded this many physical px before
+# ink/background sampling (catches antialiased line edges without leaking
+# neighbouring content).
+Q1_BOX_PAD_PX = 2
+
+# Q1 sampling: ink is the modal colour of the extreme tail of content
+# pixels by channel deviation from the local background. Calibration
+# (2026-11-25 corpus run): the first implementation kept the extreme 25%
+# and the measured ink modes landed on antialiasing half-blends (e.g.
+# (79,83,95) — a ~30% blend of text-primary into the (29,32,40) canvas),
+# sagging known-compliant text-secondary (7.1:1 declared) to a measured
+# median of 2.6:1 — a flood of 1168 findings, the sampler bug the plan's
+# stage-3 trap §5.3 names, not 63 goldens' worth of accessibility debt.
+# The extreme 5% tail isolates core glyph pixels (fully-inked stems) on
+# every corpus scale ≥ 1.0.
+Q1_INK_EXTREME_PERCENTILE = 95.0
+
+# Q1 sampling: lines shorter than this many physical px are skipped —
+# below it a rendered glyph carries no core ink pixels (at scale 0.5 a
+# 14-px-em body line is ~7 phys px tall and every pixel is a blend), so
+# the measured ratio would report rasterization, not the token pair.
+# Calibration: all sub-8-px lines measured sub-floor with modal inks at
+# 30–60% blends; known-compliant text at scale ≥ 1.0 measures ≥ 8 px.
+Q1_MIN_LINE_HEIGHT_PX = 8
+
+# Q1 grading (calibration, 2026-11-25 corpus run): the overlay goldens
+# (search-palette, capture-overlay, review-walk, recur-editor-modal,
+# labels-overlay) render the backdrop content under the modal scrim
+# (scrim #0b0d12 at 50% alpha, theme.slint:135) — the measured ink modes
+# there sit exactly on the 50% blend of the text tokens (text-primary
+# #e8eaf0 → (121,123,129); text-secondary #a6abbd → (88,91,103)), while
+# the dimmest unscrimmed text token (text-secondary) measures ≥ 166 on
+# its max channel. The 140 ceiling (mid-gap) classifies scrim-blend ink:
+# those lines are deliberate modal de-emphasis, not a token defect — the
+# rubric absorbs that legacy noise (accept-as-legacy) and the detector
+# still reports every line.
+SCRIM_INK_MAX_CHANNEL = 140
+
+# I1 (#1409): icon components must measure this many logical px, within
+# ICON_TOL_LOGICAL of it (Theme.icon-size, ui/theme.slint:92).
+# Calibration (2026-11-25 corpus run): the fully-scaling kinds-wall icons
+# measured exactly 12×12 phys at scale 1.0, 6×6 phys at scale 0.5 and
+# 34×34 phys at scale 3.0 (11.3 logical) — inside ±2 logical everywhere;
+# the off-token class measured 10×7 phys at identical coordinates in all
+# three probe goldens — icon ink that does not scale with base-scale
+# (3.3 logical px at scale 3.0), a real conformance gap per #1409.
+ICON_SIZE_LOGICAL = 12.0
+ICON_TOL_LOGICAL = 2.0
+# I1: tolerance never drops below this many physical px (the GAP_TOL_FLOOR_PX
+# lesson: at scale 0.5 one physical px of raster quantization is 2 logical px).
+ICON_TOL_FLOOR_PX = 2.0
+# I1: square-ish guard — aspect ratio w/h must fall inside this band, and a
+# component shorter than this many physical px is an antialiasing speck.
+ICON_ASPECT_MIN = 0.6
+ICON_ASPECT_MAX = 1.67
+ICON_MIN_HEIGHT_PX = 6
 
 # M1: outer margin must sit within this logical distance of a space-*
 # rung (plan §3 M1: ±1.5 px × scale).
@@ -185,6 +277,109 @@ def bands(row_counts: np.ndarray, floor: int) -> list[tuple[int, int]]:
     return out
 
 
+def connected_components(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """8-connectivity connected components over a boolean mask, as
+    (x0, y0, x1, y1) inclusive bounding boxes (tier-2 primitive, #1417).
+
+    Two-pass row-run union-find: per-row runs of True are labelled and
+    unioned with the previous row's overlapping runs (±1 px for the
+    diagonal of the 8-connectivity). Components touching canvas edges are
+    passed through unchanged — C1 owns edge semantics.
+    """
+    h, _w = mask.shape
+    parent: list[int] = []
+    boxes: list[list[int]] = []  # per root: [x0, y0, x1, y1]
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if ra > rb:
+            ra, rb = rb, ra
+        parent[rb] = ra
+        boxes[ra] = [
+            min(boxes[ra][0], boxes[rb][0]),
+            min(boxes[ra][1], boxes[rb][1]),
+            max(boxes[ra][2], boxes[rb][2]),
+            max(boxes[ra][3], boxes[rb][3]),
+        ]
+
+    prev_runs: list[tuple[int, int, int]] = []  # (x0, x1, label)
+    for y in range(h):
+        xs = np.flatnonzero(mask[y])
+        cur: list[tuple[int, int, int]] = []
+        if xs.size:
+            splits = np.flatnonzero(np.diff(xs) > 1)
+            starts = np.concatenate(([0], splits + 1))
+            ends = np.concatenate((splits, [xs.size - 1]))
+            for s, e in zip(starts, ends):
+                x0, x1 = int(xs[s]), int(xs[e])
+                lbl = None
+                for px0, px1, pl in prev_runs:
+                    if px0 <= x1 + 1 and px1 >= x0 - 1:
+                        if lbl is None:
+                            lbl = pl
+                        else:
+                            union(lbl, pl)
+                if lbl is None:
+                    lbl = len(parent)
+                    parent.append(lbl)
+                    boxes.append([x0, y, x1, y])
+                else:
+                    r = find(lbl)
+                    b = boxes[r]
+                    b[0] = min(b[0], x0)
+                    b[1] = min(b[1], y)
+                    b[2] = max(b[2], x1)
+                    b[3] = max(b[3], y)
+                cur.append((x0, x1, lbl))
+        prev_runs = cur
+    return [
+        (b[0], b[1], b[2], b[3])
+        for i, b in enumerate(boxes)
+        if find(i) == i
+    ]
+
+
+# ---------------------------------------------------------------------------
+# WCAG 2.x colour math (Q1, #1410): transcribed byte-for-byte from
+# crates/taskboard-ui-slint/src/token_tests.rs relative_luminance /
+# contrast_ratio — the token test suite is the single definition of the
+# formula in this repo. The Rust helpers index hex-string slices at
+# 0/2/4 (R, G, B — two hex digits per channel); here the tuple order is
+# (r, g, b) with the same 0.2126/0.7152/0.0722 weight order. The
+# 0.03928 linear arm, the 12.92 divisor, the 2.4 gamma and the 0.05 lift
+# match token_tests.rs exactly; the known-answer pins (21.0, 1.0) mirror
+# its wcag_math_is_sanity_anchored test.
+
+
+def relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def channel(c: int) -> float:
+        c = c / 255.0
+        if c <= 0.03928:
+            return c / 12.92
+        return ((c + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+
+
+def contrast_ratio(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    la, lb = relative_luminance(a), relative_luminance(b)
+    hi, lo = (la, lb) if la >= lb else (lb, la)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _modal_colour(pixels: np.ndarray) -> tuple[int, int, int]:
+    vals, counts = np.unique(pixels, axis=0, return_counts=True)
+    return tuple(int(v) for v in vals[int(np.argmax(counts))])
+
+
 # ---------------------------------------------------------------------------
 # Detectors. Each returns a list of raw finding dicts (invariant, region in
 # physical px, metric, threshold strings).
@@ -234,6 +429,7 @@ def detect_c1(mask: np.ndarray) -> list[dict]:
             findings.append(
                 {
                     "invariant": "C1",
+                    "extent": run_len,
                     "region": region,
                     "metric": f"content run touches the {name} edge "
                     f"(extent {run_len} px along the edge)",
@@ -344,6 +540,7 @@ def detect_a1(mask: np.ndarray, scale: float) -> list[dict]:
         findings.append(
             {
                 "invariant": "A1",
+                "grid_delta": abs(left - near) if near is not None else None,
                 "region": (left, y0, width, y1 - y0 + 1),
                 "metric": f"left edge at {left} px; "
                 + (
@@ -400,6 +597,7 @@ def detect_a2(mask: np.ndarray, scale: float) -> list[dict]:
                 findings.append(
                     {
                         "invariant": "A2",
+                        "gap_delta": abs(g - med),
                         "region": (0, y0, w, max(1, y1 - y0 + 1)),
                         "metric": f"gap {g} px vs section median {med} px "
                         f"(delta {abs(g - med)} px)",
@@ -412,32 +610,84 @@ def detect_a2(mask: np.ndarray, scale: float) -> list[dict]:
     return findings
 
 
-def detect_t1(mask: np.ndarray, scale: float) -> tuple[list[dict], str | None]:
-    """INV-T1 font-size ladder: text-line em estimates vs TextRole sizes.
+def classify_glyphs(components: list[tuple[int, int, int, int]], scale: float) -> list:
+    """Tier-2 text-ness classification: a component is a glyph candidate
+    when its height is at least MIN_LINE_RUN_PX and within
+    GLYPH_MAX_HEIGHT_LOGICAL / GLYPH_MAX_WIDTH_LOGICAL (× scale) — the
+    component-level replacement for the deleted MAX_LINE_EM_LOGICAL cap
+    (blocks, icons, thumbnails and divider rules classify out here, where
+    the row-run method could not see the split)."""
+    glyphs = []
+    for x0, y0, x1, y1 in components:
+        cw, ch = x1 - x0 + 1, y1 - y0 + 1
+        if ch < MIN_LINE_RUN_PX:
+            continue
+        if ch > GLYPH_MAX_HEIGHT_LOGICAL * scale:
+            continue
+        if cw > GLYPH_MAX_WIDTH_LOGICAL * scale:
+            continue
+        glyphs.append((x0, y0, x1, y1))
+    return glyphs
 
-    Returns (findings, skip_note). The estimator needs population; below
-    T1_MIN_LINES lines it suppresses with an explicit, recorded note (an
-    honest skip — never silent).
+
+def group_lines(glyphs: list[tuple[int, int, int, int]], scale: float) -> list:
+    """Merge glyph clusters into text lines: vertical centres within
+    LINE_CENTRE_TOL_FRACTION of the taller member's height AND horizontal
+    gap within LINE_X_GAP_LOGICAL (× scale). Returns one box per line:
+    (x0, y0, x1, y1, member_count)."""
+    xgap = LINE_X_GAP_LOGICAL * scale
+    lines: list[list[tuple[int, int, int, int]]] = []
+    for g in sorted(glyphs, key=lambda c: (c[1], c[0])):
+        merged = False
+        for line in lines:
+            ly0 = min(c[1] for c in line)
+            ly1 = max(c[3] for c in line)
+            lx0 = min(c[0] for c in line)
+            lx1 = max(c[2] for c in line)
+            taller = max(g[3] - g[1] + 1, ly1 - ly0 + 1)
+            centres = abs((g[1] + g[3]) / 2 - (ly0 + ly1) / 2)
+            gap = max(g[0] - lx1, lx0 - g[2], 0)
+            if centres <= LINE_CENTRE_TOL_FRACTION * taller and gap <= xgap:
+                line.append(g)
+                merged = True
+                break
+        if not merged:
+            lines.append([g])
+    return [
+        (
+            min(c[0] for c in line),
+            min(c[1] for c in line),
+            max(c[2] for c in line),
+            max(c[3] for c in line),
+            len(line),
+        )
+        for line in lines
+    ]
+
+
+def detect_t1(
+    mask: np.ndarray, scale: float, components: list[tuple[int, int, int, int]] | None = None
+) -> tuple[list[dict], str | None, list]:
+    """INV-T1 font-size ladder (tier-2 connected-component estimator).
+
+    Glyph-ness is a classification of connected components (never an
+    exclusion cap); components group into lines; each line's em is
+    height / EM_FRACTION ÷ scale. Returns (findings, skip_note, lines) —
+    the lines feed Q1 regardless of the ladder population (suppression
+    covers the ladder judgment's honesty only, never the lines
+    themselves). Below T1_MIN_LINES lines the ladder judgment suppresses
+    with an explicit, recorded note (an honest skip — never silent).
     """
-    h, w = mask.shape
-    row = mask.sum(axis=1).astype(np.int64)
-    floor = max(1, int(BAND_FLOOR_FRACTION * w))
-    lines: list[tuple[int, int]] = []  # (y0, y1) per text line
-    for b0, b1 in bands(row, floor):
-        sub = row[b0 : b1 + 1]
-        lfloor = max(1, int(BAND_FLOOR_FRACTION * w * 0.5))
-        for y0, y1 in bands(sub, lfloor):
-            if y1 - y0 + 1 >= MIN_LINE_RUN_PX:
-                lines.append((b0 + y0, b0 + y1))
+    if components is None:
+        components = connected_components(mask)
+    lines = group_lines(classify_glyphs(components, scale), scale)
     if len(lines) < T1_MIN_LINES:
-        return [], f"T1: skipped (n={len(lines)} lines; needs ≥ {T1_MIN_LINES})"
+        return [], f"T1: skipped (n={len(lines)} lines; needs ≥ {T1_MIN_LINES})", lines
 
     findings = []
-    for y0, y1 in lines:
+    for x0, y0, x1, y1, ncomp in lines:
         height = y1 - y0 + 1
         em = height / EM_FRACTION / scale  # logical em estimate
-        if em > MAX_LINE_EM_LOGICAL:
-            continue  # a block/image band, not a text line (excluded)
         hit = None
         for rung in TEXT_LADDER:
             if abs(em - rung) <= rung * TEXT_TOL_FRACTION:
@@ -448,14 +698,128 @@ def detect_t1(mask: np.ndarray, scale: float) -> tuple[list[dict], str | None]:
             findings.append(
                 {
                     "invariant": "T1",
-                    "region": (0, y0, w, height),
-                    "metric": f"text line height {height} px → em ≈ {em:.1f} logical px; "
+                    "em": em,
+                    "region": (x0, y0, x1 - x0 + 1, height),
+                    "metric": f"text line height {height} px ({ncomp} component"
+                    f"{'s' if ncomp != 1 else ''}) → em ≈ {em:.1f} logical px; "
                     f"nearest ladder rung {nearest} px",
                     "threshold": f"em within {TEXT_TOL_FRACTION:.0%} of a TextRole rung "
-                    f"{TEXT_LADDER}; em = run height / {EM_FRACTION} ÷ scale {scale}",
+                    f"{TEXT_LADDER}; em = line height / {EM_FRACTION} ÷ scale {scale} "
+                    "(connected-component glyph-line estimator)",
                 }
             )
-    return findings, None
+    return findings, None, lines
+
+
+def detect_q1(
+    mask: np.ndarray,
+    lines: list,
+    scale: float,
+    rgb: np.ndarray,
+    global_bg: np.ndarray,
+) -> list[dict]:
+    """INV-Q1 text contrast floor (#1410): per T1 text line, sample ink vs
+    local background and judge the WCAG 2.x contrast ratio against the
+    role-class floor (Body 4.5:1, Large 3.0:1 at em ≥ 20). Ink is the
+    modal colour of the extreme tail of content pixels by channel
+    deviation (core glyph pixels, not antialiased edges — see the
+    Q1_INK_EXTREME_PERCENTILE calibration note); the local background is
+    the modal colour of non-content pixels in the padded line box
+    (fallback: the global corner-sampled background)."""
+    h, w = mask.shape
+    findings = []
+    for x0, y0, x1, y1, _ncomp in lines:
+        if y1 - y0 + 1 < Q1_MIN_LINE_HEIGHT_PX:
+            continue  # no core ink pixels at this raster size (calibrated skip)
+        px0, py0 = max(0, x0 - Q1_BOX_PAD_PX), max(0, y0 - Q1_BOX_PAD_PX)
+        px1, py1 = min(w - 1, x1 + Q1_BOX_PAD_PX), min(h - 1, y1 + Q1_BOX_PAD_PX)
+        box = rgb[py0 : py1 + 1, px0 : px1 + 1].reshape(-1, 3)
+        boxmask = mask[py0 : py1 + 1, px0 : px1 + 1].reshape(-1)
+        content = box[boxmask]
+        if content.size == 0:
+            continue
+        noncontent = box[~boxmask]
+        bg = (
+            _modal_colour(noncontent)
+            if noncontent.size
+            else tuple(int(v) for v in global_bg)
+        )
+        dev = np.abs(content.astype(np.int64) - np.array(bg)).max(axis=1)
+        extreme = content[dev >= np.percentile(dev, Q1_INK_EXTREME_PERCENTILE)]
+        ink = _modal_colour(extreme)
+        ratio = contrast_ratio(ink, bg)
+        em = (y1 - y0 + 1) / EM_FRACTION / scale
+        large = em >= LARGE_TEXT_EM_LOGICAL
+        floor = LARGE_MIN_RATIO if large else BODY_MIN_RATIO
+        if ratio < floor:
+            scrim = max(ink) <= SCRIM_INK_MAX_CHANNEL
+            findings.append(
+                {
+                    "invariant": "Q1",
+                    "region": (px0, py0, px1 - px0 + 1, py1 - py0 + 1),
+                    "metric": f"ink RGB {ink} on background RGB {bg} → contrast "
+                    f"{ratio:.1f}:1; role class {'Large' if large else 'Body'}"
+                    + ("; scrim-blend ink" if scrim else ""),
+                    "threshold": f"WCAG 2.x: Body ≥ {BODY_MIN_RATIO}:1 (em < "
+                    f"{LARGE_TEXT_EM_LOGICAL}), Large ≥ {LARGE_MIN_RATIO}:1 (em ≥ "
+                    f"{LARGE_TEXT_EM_LOGICAL}); method per token_tests.rs",
+                    "scrim": scrim,
+                }
+            )
+    return findings
+
+
+def detect_i1(
+    components: list[tuple[int, int, int, int]],
+    scale: float,
+    name: str,
+    lines: list | None = None,
+) -> list[dict]:
+    """INV-I1 icon-size conformance (#1409): icon components (square-ish,
+    ≥ ICON_MIN_HEIGHT_PX physical px tall, not claimed by a T1 glyph
+    line — icons are non-text, so text-line members classify out) must
+    measure ICON_SIZE_LOGICAL ± ICON_TOL_LOGICAL logical px.
+    Scope guard: icon-probe-* goldens only — elsewhere glyph-sized chips
+    are not icon tokens and would drown the signal."""
+    if not name.startswith("icon-probe-"):
+        return []
+    tol_phys = max(ICON_TOL_LOGICAL * scale, ICON_TOL_FLOOR_PX)
+    findings = []
+    for x0, y0, x1, y1 in components:
+        # A line claim only bites for multi-component lines (real grouped
+        # text ink): a single-component "line" is the icon component
+        # itself — glyph-height ≠ text, and claiming it here would make
+        # I1 dead code on every sparse probe golden.
+        claimed = False
+        for lx0, ly0, lx1, ly1, n in lines or []:
+            if n > 1 and x0 >= lx0 and y0 >= ly0 and x1 <= lx1 and y1 <= ly1:
+                claimed = True
+                break
+        if claimed:
+            continue
+        cw, ch = x1 - x0 + 1, y1 - y0 + 1
+        if ch < ICON_MIN_HEIGHT_PX:
+            continue
+        aspect = cw / ch
+        if not (ICON_ASPECT_MIN <= aspect <= ICON_ASPECT_MAX):
+            continue
+        logical_w, logical_h = cw / scale, ch / scale
+        if abs(logical_w - ICON_SIZE_LOGICAL) > tol_phys / scale or abs(
+            logical_h - ICON_SIZE_LOGICAL
+        ) > tol_phys / scale:
+            findings.append(
+                {
+                    "invariant": "I1",
+                    "region": (x0, y0, cw, ch),
+                    "metric": f"icon bounding box {cw} × {ch} phys px → "
+                    f"{logical_w:.1f} × {logical_h:.1f} logical px",
+                    "threshold": f"icon-size {ICON_SIZE_LOGICAL} logical px × base-scale "
+                    f"within ±{ICON_TOL_LOGICAL} logical px (tolerance floor "
+                    f"{ICON_TOL_FLOOR_PX} phys px; aspect band "
+                    f"{ICON_ASPECT_MIN}–{ICON_ASPECT_MAX}); scope: icon-probe goldens only",
+                }
+            )
+    return findings
 
 
 # ---------------------------------------------------------------------------
@@ -472,24 +836,52 @@ def logical(region: tuple[int, int, int, int], scale: float) -> dict:
 
 
 def grade_for(finding: dict) -> str:
-    """Deterministic rubric defaults (D5): C1 is the probable-bug class →
-    fix-now; style-drift classes → fix-later. accept-as-legacy grades are
-    hand-applied to findings.toml after the run (recorded in the report)."""
-    return "fix-now" if finding["invariant"] == "C1" else "fix-later"
+    """Deterministic grading rules (D5, recorded verbatim in the emitted
+    report — the rubric absorbs legacy noise, never the detector):
+    C1 extent ≥ 12 px → fix-now, shorter → accept-as-legacy; A1 grid
+    delta ≤ 6 px → fix-later, larger → accept-as-legacy; A2 gap delta
+    ≤ 8 px → fix-later, larger → accept-as-legacy; T1 em ≥ 20 →
+    fix-later, smaller → accept-as-legacy; Q1 sub-floor → fix-now
+    (except the scrim-blend ink class → accept-as-legacy, calibration
+    evidence in the constant's comment); I1 → fix-later."""
+    inv = finding["invariant"]
+    if inv == "C1":
+        return "fix-now" if finding["extent"] >= 12 else "accept-as-legacy"
+    if inv == "A1":
+        d = finding["grid_delta"]
+        return "fix-later" if d is not None and d <= 6 else "accept-as-legacy"
+    if inv == "A2":
+        return "fix-later" if finding["gap_delta"] <= 8 else "accept-as-legacy"
+    if inv == "T1":
+        return "fix-later" if finding["em"] >= 20.0 else "accept-as-legacy"
+    if inv == "Q1":
+        return "accept-as-legacy" if finding.get("scrim") else "fix-now"
+    return "fix-later"  # I1, M1 (M1 scope grades applied per golden in run)
 
 
-def analyze_golden(rgb: np.ndarray, scale: float) -> tuple[list[dict], list[str]]:
-    mask, _ = content_mask(rgb)
+def analyze_golden(
+    rgb: np.ndarray, scale: float, name: str = ""
+) -> tuple[list[dict], list[str]]:
+    mask, bg = content_mask(rgb)
+    components = connected_components(mask)  # one pass feeds T1, Q1, I1
     findings: list[dict] = []
     findings += detect_c1(mask)
     findings += detect_m1(mask, scale)
     findings += detect_a1(mask, scale)
     findings += detect_a2(mask, scale)
-    t1, skip = detect_t1(mask, scale)
+    t1, skip, lines = detect_t1(mask, scale, components)
     findings += t1
+    findings += detect_q1(mask, lines, scale, rgb, bg)
+    findings += detect_i1(components, scale, name, lines)
     skips = [skip] if skip else []
     for f in findings:
         f["grade"] = grade_for(f)
+        if f["invariant"] == "M1" and (
+            name.startswith("icon-probe") or name.startswith("board-drag-indicator")
+        ):
+            # recorded rubric: the manifest's state note explains the margins
+            # (deliberate kind-wall padding / mostly-empty drag canvas)
+            f["grade"] = "accept-as-legacy"
     return findings, skips
 
 
@@ -501,7 +893,7 @@ def run(goldens_dir: Path, out: Path | None) -> tuple[list[dict], list[dict]]:
         name = entry["name"]
         scale = float(entry["axes"]["scale"])
         rgb = load_golden(goldens_dir, name)
-        fs, sk = analyze_golden(rgb, scale)
+        fs, sk = analyze_golden(rgb, scale, name)
         for f in fs:
             all_findings.append(
                 {
@@ -558,16 +950,21 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
         data = tomllib.load(f)
     findings = data.get("finding", [])
     skips = data.get("skip", [])
-    invariants = ["A1", "A2", "T1", "M1", "C1"]
+    invariants = ["A1", "A2", "T1", "M1", "C1", "Q1", "I1"]
     grades = ["accept-as-legacy", "fix-now", "fix-later"]
     by: dict[tuple[str, str], int] = {}
     for fnd in findings:
         by[(fnd["invariant"], fnd["grade"])] = by.get((fnd["invariant"], fnd["grade"]), 0) + 1
 
     out = []
-    out.append("# Layout Review Analyzer — Findings (round 7, chunk G3, #1313)")
+    out.append("# Layout Review Analyzer — Findings (round 8, chunk L2, tier 2)")
     out.append("")
     out.append("- **Date**: 2026-11-25")
+    out.append("- **Tier 2 additions** (analyzer-invariant-tier2 plan): Q1 WCAG"
+    " contrast floor (#1410), I1 icon-size conformance (#1409), and the"
+    " T1 connected-component glyph-line estimator upgrade (#1417 — the"
+    " row-run band method and its MAX_LINE_EM_LOGICAL exclusion cap are"
+    " replaced by component-level glyph classification).")
     out.append("- **Posture**: advisory-first (binding, plan D6). This report is data,"
     " not a gate — the analyzer reports; it never gates. No CI wiring, no"
     " nextest test, no pre-commit hook references this tool.")
@@ -575,9 +972,7 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
     out.append("")
     out.append("  ```sh")
     out.append(f"  scripts/layout_review.py {goldens_dir} \\")
-    out.append(
-        "      --out .artifacts/reports/2026-11-25-layout-review-analyzer-findings.toml"
-    )
+    out.append(f"      --out .artifacts/reports/{findings_path.name}")
     out.append("  ```")
     out.append("")
     out.append(
@@ -585,7 +980,8 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
         " generated from it by `--emit-md`. Metric/region fields reproduce"
         " byte-identically on re-run (the corpus is byte-deterministic per G1);"
         " `grade` fields are hand-applied per the D5 rubric after the run"
-        " (rubric defaults: C1 → fix-now, others → fix-later) and the"
+        " (grades applied deterministically per the recorded grading rules"
+        " below) and the"
         " accept-as-legacy grades name explained debt — the grade never"
         " silences the detector."
     )
@@ -629,8 +1025,20 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
     " #1334 one-row-offset class); larger → accept-as-legacy (deliberate"
     " section breaks and spacers).")
     out.append("- T1: em ≥ 20 logical px → fix-later (genuine off-ladder text between"
-    " the title and display rungs); em < 20 → accept-as-legacy (hairline rules"
-    " and divider rows, not text ink).")
+    " the title and display rungs); em < 20 → accept-as-legacy (genuinely small"
+    " off-ladder text — the tier-2 connected-component estimator classifies"
+    " hairline rules and divider rows out at the component level, so the old"
+    " hairline class no longer reaches the findings).")
+    out.append("- Q1: a sub-floor contrast ratio is fix-now — the accessibility defect"
+    " class (a floor is binary: 4.5 ≤ ratio is clean, below it is fix-now;"
+    " there is no fix-later band inside a floor) — except the scrim-blend ink"
+    " class → accept-as-legacy: overlay goldens render backdrop content under"
+    " the modal scrim (measured ink modes sit on the 50% blend of the text"
+    " tokens, max channel ≤ 140 vs ≥ 166 for unscrimmed text), which is"
+    " deliberate de-emphasis, not a token defect.")
+    out.append("- I1: fix-later (a drift from the Theme.icon-size token with no open"
+    " issue; the finding is the intake record. Scope: icon-probe goldens only"
+    " — the threshold string on every finding carries the guard).")
     out.append("- M1: icon-probe and board-drag-indicator margins → accept-as-legacy"
     " (the manifest's state note: deliberate kind-wall padding / mostly-empty"
     " drag canvas); the rest → fix-later.")
@@ -692,16 +1100,21 @@ def self_test() -> bool:
             failures.append(label)
             print(f"self-test FAIL: {label}")
 
-    def findings_of(im: Image.Image, scale: float = 1.0) -> list[dict]:
+    def findings_of(im: Image.Image, scale: float = 1.0, name: str = "") -> list[dict]:
         rgb = np.asarray(im, dtype=np.int16)
-        mask, _ = content_mask(rgb)
+        mask, bg = content_mask(rgb)
+        components = connected_components(mask)
         out = []
         out += detect_c1(mask)
         out += detect_m1(mask, scale)
         out += detect_a1(mask, scale)
         out += detect_a2(mask, scale)
-        t1, _ = detect_t1(mask, scale)
+        t1, _, lines = detect_t1(mask, scale, components)
         out += t1
+        out += detect_q1(mask, lines, scale, rgb, bg)
+        out += detect_i1(components, scale, name, lines)
+        for f in out:
+            f["grade"] = grade_for(f)
         return out
 
     # --- A1 alignment grid -------------------------------------------------
@@ -750,14 +1163,19 @@ def self_test() -> bool:
     fs = [f for f in findings_of(a2_fixture([24])) if f["invariant"] == "A2"]
     check("A2 membership pin (two bands) → no A2 finding", not fs)
 
-    # --- T1 font-size ladder -------------------------------------------------
-    def t1_fixture(em: float, n: int = 6) -> Image.Image:
-        im = _canvas(300, 200)
-        h_line = max(3, round(em * EM_FRACTION))
-        y = 20
+    # --- T1 font-size ladder (tier-2 connected-component estimator) ---------
+    def t1_fixture(em: float, n: int = 6, s: int = 1) -> Image.Image:
+        # Each line is drawn as three glyph-cluster segments (width 40·s,
+        # gaps 4·s ≤ LINE_X_GAP_LOGICAL·s) that merge into one line; the
+        # cluster width stays within GLYPH_MAX_WIDTH_LOGICAL per segment.
+        im = _canvas(300 * s, 200 * n)
+        h_line = max(3, round(em * EM_FRACTION)) * s
+        y = 20 * s
         for _ in range(n):
-            _rect(im, 20, y, 279, y + h_line - 1)
-            y += h_line + 6
+            for k in range(3):
+                x0 = (20 + k * 44) * s
+                _rect(im, x0, y, x0 + 40 * s - 1, y + h_line - 1)
+            y += h_line + 6 * s
         return im
 
     fs = [f for f in findings_of(t1_fixture(14)) if f["invariant"] == "T1"]
@@ -767,15 +1185,134 @@ def self_test() -> bool:
     fs = [f for f in findings_of(t1_fixture(24)) if f["invariant"] == "T1"]
     check("T1 off-ladder (24-px em; between rungs 20 and 30) → six findings", len(fs) == 6)
 
+    # mixed band (the estimator's reason to exist): a 30-px-em line stacked
+    # directly against an 11-px-em line — the row-run method measured one
+    # ~41-px union; the component lines resolve separately, each on-rung.
+    def t1_mixed_fixture(top_em: float) -> Image.Image:
+        im = _canvas(300, 220)
+        h_top = max(3, round(top_em * EM_FRACTION))
+        h_bot = max(3, round(11 * EM_FRACTION))
+        _rect(im, 20, 20, 59, 20 + h_top - 1)
+        _rect(im, 20, 21 + h_top, 59, 21 + h_top + h_bot - 1)  # 1 empty row between
+        # four on-rung filler lines at a disjoint x range (gap 41 px > the
+        # 6-px line-group slop) so the ladder population judges the pair
+        for k in range(4):
+            y = 80 + k * 20
+            _rect(im, 120, y, 159, y + 9)
+        return im
+
+    fs = [f for f in findings_of(t1_mixed_fixture(30)) if f["invariant"] == "T1"]
+    check(
+        "T1 mixed band (30-px em against 11-px em) → both on-rung, no finding",
+        not fs,
+    )
+    fs = [f for f in findings_of(t1_mixed_fixture(24)) if f["invariant"] == "T1"]
+    check(
+        "T1 mixed band off-ladder (24-px em against 11-px em) → exactly one finding",
+        len(fs) == 1 and fs[0]["region"][3] == round(24 * EM_FRACTION),
+    )
+
+    # non-text classified out at the component level (no reliance on the
+    # deleted MAX_LINE_EM_LOGICAL cap)
+    t1_nonext = _canvas(300, 120)
+    _rect(t1_nonext, 20, 20, 79, 79)  # 60×60 solid block
+    _rect(t1_nonext, 100, 30, 111, 41)  # a 12×12 icon beside it
+    fs = [f for f in findings_of(t1_nonext) if f["invariant"] == "T1"]
+    check(
+        "T1 non-text classified out (60×60 block + 12-px icon) → no T1 finding",
+        not fs and "MAX_LINE_EM_LOGICAL" not in globals(),
+    )
+
     # suppression: two lines only → explicit skip note
     rgb = np.asarray(t1_fixture(14, n=2), dtype=np.int16)
     mask, _ = content_mask(rgb)
-    _, skip = detect_t1(mask, 1.0)
-    fs, _ = detect_t1(mask, 1.0)
+    _, skip, _lines = detect_t1(mask, 1.0)
+    fs, _, _ = detect_t1(mask, 1.0)
     check(
         "T1 suppression pin (n=2) → no findings and a recorded skip note",
         not fs and skip is not None and "n=2" in skip,
     )
+
+    # scale pin: the compliant fixture drawn at 2× physical geometry,
+    # judged at scale 2.0 → same logical ems, no finding
+    fs = [f for f in findings_of(t1_fixture(14, s=2), 2.0) if f["invariant"] == "T1"]
+    check("T1 scale pin (compliant fixture at scale 2.0) → no T1 finding", not fs)
+
+    # --- Q1 WCAG contrast floor ---------------------------------------------
+    # known-answer pins (mirror token_tests.rs wcag_math_is_sanity_anchored)
+    check(
+        "Q1 known-answer (black/white → 21.0)",
+        abs(contrast_ratio((0, 0, 0), (255, 255, 255)) - 21.0) < 1e-9,
+    )
+    check(
+        "Q1 known-answer (equal colours → 1.0)",
+        abs(contrast_ratio((123, 45, 67), (123, 45, 67)) - 1.0) < 1e-9,
+    )
+
+    def q1_fixture(ink: tuple, em: float, n: int = 2) -> Image.Image:
+        im = _canvas(300, 140)
+        h_line = max(3, round(em * EM_FRACTION))
+        y = 20
+        for _ in range(n):
+            _rect(im, 20, y, 59, y + h_line - 1, color=ink)
+            y += h_line + 6
+        return im
+
+    # body sub-floor: unscrimmed dim ink (max channel > SCRIM_INK_MAX_CHANNEL)
+    # at ~3.4:1 on the (29,32,40) canvas, em 14 (< 20 → Body class, floor
+    # 4.5) — the plan's (150,150,150) grey computes ≈ 5.5:1, compliant on
+    # this dark canvas; a near-neutral grey below the floor would fall in
+    # the scrim-blend band, so the constructed case is danger-toned like the
+    # corpus's real fix-now finding (#1450's danger debt).
+    r_sub = contrast_ratio((170, 90, 90), (29, 32, 40))
+    fs = [f for f in findings_of(q1_fixture((170, 90, 90), 14)) if f["invariant"] == "Q1"]
+    check(
+        "Q1 sub-floor body text → one finding per line, grade fix-now",
+        len(fs) == 2
+        and all(f["grade"] == "fix-now" for f in fs)
+        and r_sub < 4.5,
+    )
+    # scrim-blend ink class: a near-neutral sub-floor ink whose max channel
+    # sits in the scrim band grades accept-as-legacy (the calibration class)
+    fs = [f for f in findings_of(q1_fixture((120, 120, 120), 14)) if f["invariant"] == "Q1"]
+    check(
+        "Q1 scrim-blend ink (max channel ≤ 140) → findings graded accept-as-legacy",
+        len(fs) == 2 and all(f["grade"] == "accept-as-legacy" for f in fs),
+    )
+    r = contrast_ratio((230, 230, 235), (29, 32, 40))
+    fs = [f for f in findings_of(q1_fixture((230, 230, 235), 14)) if f["invariant"] == "Q1"]
+    check(
+        "Q1 compliant body text (ratio > 4.5 asserted) → no Q1 finding",
+        not fs and r > 4.5,
+    )
+    r_large = contrast_ratio((110, 110, 110), (29, 32, 40))
+    fs = [f for f in findings_of(q1_fixture((110, 110, 110), 30, n=1)) if f["invariant"] == "Q1"]
+    check(
+        "Q1 large-text floor pin (ratio ∈ [3.0, 4.5), em 30 → Large 3.0) → no finding",
+        not fs and 3.0 <= r_large < 4.5,
+    )
+
+    # --- I1 icon-size conformance ---------------------------------------------
+    def i1_fixture(w: int, h: int) -> Image.Image:
+        im = _canvas(200, 120)
+        _rect(im, 40, 40, 40 + w - 1, 40 + h - 1)
+        return im
+
+    fs = [f for f in findings_of(i1_fixture(12, 12), 1.0, "icon-probe-1.0-396") if f["invariant"] == "I1"]
+    check("I1 compliant (12×12, icon-probe scope) → no I1 finding", not fs)
+    fs = [f for f in findings_of(i1_fixture(14, 14), 1.0, "icon-probe-1.0-396") if f["invariant"] == "I1"]
+    check("I1 tolerance pin (14×14, within ±2) → no I1 finding", not fs)
+    fs = [f for f in findings_of(i1_fixture(17, 17), 1.0, "icon-probe-1.0-396") if f["invariant"] == "I1"]
+    check(
+        "I1 off-token (17×17, icon-probe scope) → exactly one I1 finding",
+        len(fs) == 1 and fs[0]["region"] == (40, 40, 17, 17),
+    )
+    fs = [f for f in findings_of(i1_fixture(12, 40), 1.0, "icon-probe-1.0-396") if f["invariant"] == "I1"]
+    check("I1 aspect guard (12×40 bar, not square-ish) → no I1 finding", not fs)
+    fs = [f for f in findings_of(i1_fixture(17, 17), 1.0, "kinds-1.0-396") if f["invariant"] == "I1"]
+    check("I1 scope guard (17×17 off the probe scope) → no I1 finding", not fs)
+    fs = [f for f in findings_of(i1_fixture(24, 24), 2.0, "icon-probe-2.0-396") if f["invariant"] == "I1"]
+    check("I1 scale pin (24×24 phys at scale 2.0 = 12 logical) → no I1 finding", not fs)
 
     # --- M1 margin conformance -------------------------------------------------
     m1_ok = _canvas(200, 300)
@@ -862,7 +1399,7 @@ def main(argv: list[str]) -> int:
     for f in findings:
         counts[f["invariant"]] = counts.get(f["invariant"], 0) + 1
     print(f"analyzed {len(read_manifest(d))} goldens: {len(findings)} findings")
-    for inv in ("A1", "A2", "T1", "M1", "C1"):
+    for inv in ("A1", "A2", "T1", "M1", "C1", "Q1", "I1"):
         if counts.get(inv):
             print(f"  {inv}: {counts[inv]}")
     for s in skips:
