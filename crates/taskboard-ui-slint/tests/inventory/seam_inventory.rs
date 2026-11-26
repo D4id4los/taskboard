@@ -64,6 +64,11 @@ const SEAM_INVENTORY: &[&str] = &[
     "labels_overlay_title_edited",
     "labels_overlay_colour_edited",
     "labels_overlay_swatch_clicked",
+    // The colour picker's draft-write pair (journey plan
+    // `…-schedule-colour-ux-plan.md` W-3/W-7, US-28): the drag /
+    // keyboard gestures rewrite the overlay draft, no command.
+    "labels_overlay_hue_picked",
+    "labels_overlay_sat_val_picked",
     "labels_overlay_form_commit_requested",
     "labels_overlay_form_cancelled",
     "labels_overlay_delete_clicked",

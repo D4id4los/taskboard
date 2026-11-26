@@ -47,6 +47,20 @@ export global Theme {
     out property <color> text-secondary: #a6abbd;
     out property <color> border: #646c85;
     out property <color> focus-ring: #7aa2f7;
+    // The colour picker's const colour DATA (schedule-colour-ux
+    // journey plan D-4, #1440): the hue strip's six pure ramp stops,
+    // the SV square's white→saturation / black→value overlay pair and
+    // the thumb ring. These are the projected colour space's own
+    // constants (the projection grammar's axes), not semantic state —
+    // the theme file is their home by the §3.4 token law.
+    out property <color> picker-hue-red: #ff0000;
+    out property <color> picker-hue-yellow: #ffff00;
+    out property <color> picker-hue-green: #00ff00;
+    out property <color> picker-hue-cyan: #00ffff;
+    out property <color> picker-hue-blue: #0000ff;
+    out property <color> picker-hue-magenta: #ff00ff;
+    out property <color> picker-sv-white: #ffffff;
+    out property <color> picker-sv-black: #000000;
 
     // ---- Spacing scale (4/8/12/16/24/32/48/64 px × base-scale) ------
     out property <length> space-1: 4px * base-scale;

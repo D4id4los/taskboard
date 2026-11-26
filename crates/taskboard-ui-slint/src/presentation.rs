@@ -609,7 +609,325 @@ pub struct ReminderTarget {
 /// feeds the lenient domain `Color` free text (the chunk-3 D-5 /
 /// chunk-4 D-6 letter). One vocabulary for every swatch surface
 /// (labels and boards); each consumer maps it to its own default.
-pub const SWATCHES: [&str; 6] = ["31cc7c", "3a70d6", "e05a4e", "edbf45", "9d68d9", "8f8f8f"];
+/// The multi-tone palette (journey plan
+/// `2026-11-25-sound-today-colour-journeys-schedule-colour-ux-plan.md`
+/// D-5, #1439): the nine base hues — the original six verbatim (the
+/// rendered defaults keep their values), then the three new bases
+/// (orange, brown, turquoise). Brown is the low-lightness orange
+/// ladder's base (its own hue ≈ 30°); the tone ladders derive from
+/// these through [`derived_swatches`] — the const stays the *base*
+/// vocabulary, the rendered palette is the derived 27.
+pub const SWATCHES: [&str; 9] = [
+    "31cc7c", "3a70d6", "e05a4e", "edbf45", "9d68d9", "8f8f8f", "e0823c", "8a5730", "2abfb2",
+];
+
+/// One tone step per ladder edge (the same plan's D-5): lightness
+/// stepped ±15% in HSL, clamped to the unit band; saturation held at
+/// the base's — grey (s = 0) therefore varies lightness only, by
+/// construction rather than special case.
+const TONE_STEP: f64 = 0.15;
+
+/// The swatch palette's tone-ladder derivation (the same plan's
+/// D-5/D-6, US-29): nine bases × three tones (base, one darker, one
+/// lighter — lightness monotone within each ladder, hue held), in
+/// ladder-major order (`[base0-dark, base0, base0-light, base1-dark,
+/// …]`), six lowercase hex bodies each. Pure and total: every base in
+/// [`SWATCHES`] is a valid 6-hex body, so every derived tone is too
+/// (the swatch row and the board strip consume the identical list —
+/// one palette source, two consumers).
+///
+/// # Panics
+///
+/// Never in practice: the parse's `expect` guards const base bodies
+/// that are valid by construction.
+#[must_use]
+pub fn derived_swatches() -> Vec<String> {
+    SWATCHES.iter().flat_map(|base| tone_ladder(base)).collect()
+}
+
+/// One base's three-tone ladder, ascending lightness (`[darker,
+/// base, lighter]`, each edge stepped [`TONE_STEP`], clamped).
+///
+/// # Panics
+///
+/// Never in practice: the parse's `expect` guards a const-valid base.
+#[must_use]
+pub fn tone_ladder(base: &str) -> [String; 3] {
+    let (h, s, l) = hex_to_hsl(base).expect("a palette base is a valid 6-hex body");
+    let tone = |lightness: f64| hsl_to_hex(h, s, lightness.clamp(0.0, 1.0));
+    [tone(l - TONE_STEP), tone(l), tone(l + TONE_STEP)]
+}
+
+/// A 6-hex body → `(hue_degrees, saturation, lightness)` (HSL, the
+/// tone ladders' derivation space). Total over the *minted* domain:
+/// the caller's value must be a valid 6-hex body (the `swatch_hex`
+/// mint's shape); anything else returns `None`. Achromatic inputs
+/// (`max == min`) carry saturation 0 and hue 0 — the degenerate hue
+/// every conversion convention shares.
+#[must_use]
+// The colour-space sector arithmetic's canonical spelling (r/g/b,
+// h/s/l, h/s/v) — the single-char names are the domain's own
+// vocabulary, not obscurity; the float comparisons are the exact
+// channel-equality tests the conversions' own degenerate-axis rules
+// need (achromatism), and the casts quantize onto the byte grid. The
+// clippy allowances are deliberate.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::float_cmp,
+    clippy::manual_midpoint,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn hex_to_hsl(hex: &str) -> Option<(f64, f64, f64)> {
+    let (r, g, b) = hex_channels(hex)?;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if max == min {
+        return Some((0.0, 0.0, l));
+    }
+    let d = max - min;
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = hue_degrees(r, g, b, max, d);
+    Some((h, s, l))
+}
+
+/// `(hue_degrees, saturation, lightness)` → a 6-hex lowercase body
+/// (the mint's shape). Total: out-of-band inputs are clamped; hue
+/// wraps modulo 360.
+#[must_use]
+// The colour-space sector arithmetic's canonical spelling (r/g/b,
+// h/s/l, h/s/v) — the single-char names are the domain's own
+// vocabulary, not obscurity; the float comparisons are the exact
+// channel-equality tests the conversions' own degenerate-axis rules
+// need (achromatism), and the casts quantize onto the byte grid. The
+// clippy allowances are deliberate.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::float_cmp,
+    clippy::manual_midpoint,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn hsl_to_hex(h: f64, s: f64, l: f64) -> String {
+    let s = s.clamp(0.0, 1.0);
+    let l = l.clamp(0.0, 1.0);
+    if s == 0.0 {
+        let v = channel_u8(l);
+        return format!("{v:02x}{v:02x}{v:02x}");
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let hue = h.rem_euclid(360.0) / 360.0;
+    let channel = |t: f64| {
+        let mut t = t;
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    let r = channel(hue + 1.0 / 3.0);
+    let g = channel(hue);
+    let b = channel(hue - 1.0 / 3.0);
+    format!(
+        "{:02x}{:02x}{:02x}",
+        channel_u8(r),
+        channel_u8(g),
+        channel_u8(b)
+    )
+}
+
+/// A 6-hex body → `(hue_degrees, saturation, value)` (HSV, the
+/// colour picker's internal space — the SV square is native to HSV,
+/// journey plan D-4). Total over the minted domain (`None` off it).
+/// Achromatic inputs carry saturation 0 and hue 0.
+#[must_use]
+// The colour-space sector arithmetic's canonical spelling (r/g/b,
+// h/s/l, h/s/v) — the single-char names are the domain's own
+// vocabulary, not obscurity; the float comparisons are the exact
+// channel-equality tests the conversions' own degenerate-axis rules
+// need (achromatism), and the casts quantize onto the byte grid. The
+// clippy allowances are deliberate.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::float_cmp,
+    clippy::manual_midpoint,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn hex_to_hsv(hex: &str) -> Option<(f64, f64, f64)> {
+    let (r, g, b) = hex_channels(hex)?;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d == 0.0 {
+        0.0
+    } else {
+        hue_degrees(r, g, b, max, d)
+    };
+    let s = if max == 0.0 { 0.0 } else { d / max };
+    Some((h, s, max))
+}
+
+/// `(hue_degrees, saturation, value)` → a 6-hex lowercase body. The
+/// picker's draft-write direction (D-3): the projection quantizes to
+/// the byte grid — and the quantization is the round-trip law's
+/// identity on the minted domain (hex → HSV → hex is the identity;
+/// the proptest pins it). Total: inputs are clamped, hue wraps.
+#[must_use]
+// The colour-space sector arithmetic's canonical spelling (r/g/b,
+// h/s/l, h/s/v) — the single-char names are the domain's own
+// vocabulary, not obscurity; the float comparisons are the exact
+// channel-equality tests the conversions' own degenerate-axis rules
+// need (achromatism), and the casts quantize onto the byte grid. The
+// clippy allowances are deliberate.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::float_cmp,
+    clippy::manual_midpoint,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn hsv_to_hex(h: f64, s: f64, v: f64) -> String {
+    let s = s.clamp(0.0, 1.0);
+    let v = v.clamp(0.0, 1.0);
+    let c = v * s;
+    let hue = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hue % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match hue as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    format!(
+        "{:02x}{:02x}{:02x}",
+        channel_u8(r + m),
+        channel_u8(g + m),
+        channel_u8(b + m)
+    )
+}
+
+/// The two hex→(h,s,*) conversions' shared front: the six channels as
+/// unit floats (None off the minted 6-hex shape).
+fn hex_channels(hex: &str) -> Option<(f64, f64, f64)> {
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let digit = |d: u8| f64::from((d as char).to_digit(16).expect("hexdigit gated above"));
+    let bytes = hex.as_bytes();
+    let pair = |i: usize| (digit(bytes[i]) * 16.0 + digit(bytes[i + 1])) / 255.0;
+    Some((pair(0), pair(2), pair(4)))
+}
+
+/// The hue's sector arithmetic, shared by the hex→(h,s,*) space
+/// conversions (`max != min` and `d = max − min` pre-established).
+#[allow(clippy::many_single_char_names, clippy::float_cmp)] // the colour-space vocabulary
+fn hue_degrees(r: f64, g: f64, b: f64, max: f64, d: f64) -> f64 {
+    let (h, offset) = if max == r {
+        ((g - b) / d, 0.0)
+    } else if max == g {
+        ((b - r) / d, 2.0)
+    } else {
+        ((r - g) / d, 4.0)
+    };
+    (h * 60.0 + offset * 60.0).rem_euclid(360.0)
+}
+
+/// One unit float → the nearest byte (the quantization grid; ties
+/// resolve upward — the `+0.5` floor, exact for the conversion
+/// outputs' 1e-13-scale error band).
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn channel_u8(t: f64) -> u8 {
+    (t.clamp(0.0, 1.0) * 255.0 + 0.5).floor() as u8
+}
+
+/// The label chip's light text ink (the palette-vs-text contrast law,
+/// journey plan US-29 AC-4 — #1415's failure mode): a near-white ink
+/// carried by dark tones.
+pub const CHIP_INK_LIGHT: &str = "ffffff";
+
+/// The label chip's dark text ink: a near-black ink carried by light
+/// tones (the other half of [`chip_text_on`]'s pair).
+pub const CHIP_INK_DARK: &str = "1f232b";
+
+/// A colour's WCAG 2.x relative luminance over the minted 6-hex
+/// domain (`None` off it — the same shape gate as [`hex_channels`]).
+#[must_use]
+fn relative_luminance(channels: (f64, f64, f64)) -> f64 {
+    let linear = |c: f64| {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let (r, g, b) = channels;
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+}
+
+/// One WCAG 2.x contrast ratio between two minted 6-hex bodies
+/// (clamped at 1.0; `None` off the minted shape).
+#[must_use]
+fn contrast_ratio(a: &str, b: &str) -> Option<f64> {
+    let (la, lb) = (
+        relative_luminance(hex_channels(a)?),
+        relative_luminance(hex_channels(b)?),
+    );
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    Some((hi + 0.05) / (lo + 0.05))
+}
+
+/// The readable label-chip text ink for a minted 6-hex colour body
+/// (journey plan US-29 AC-4): whichever of the [`CHIP_INK_LIGHT`] /
+/// [`CHIP_INK_DARK`] pair carries the higher WCAG ratio against the
+/// tone — every palette tone (and every minted colour) gets a
+/// ≥3.9:1 chip text (the pair crossover's floor; the token test pins
+/// the palette's ≥3:1 non-text class, the proptest pins the floor).
+/// `None` off the minted domain: the caller keeps the theme's
+/// secondary ink (the lenient stored colour renders a transparent
+/// chip, where no tone contrast exists).
+///
+/// # Panics
+///
+/// Never in practice: the ratio's `expect` guards the two ink consts,
+/// which are valid 6-hex bodies by construction.
+#[must_use]
+pub fn chip_text_on(hex: &str) -> Option<&'static str> {
+    hex_channels(hex)?;
+    let scored = |candidate: &'static str| {
+        contrast_ratio(hex, candidate).expect("an ink const is a valid 6-hex body")
+    };
+    let light = scored(CHIP_INK_LIGHT);
+    let dark = scored(CHIP_INK_DARK);
+    Some(if light >= dark {
+        CHIP_INK_LIGHT
+    } else {
+        CHIP_INK_DARK
+    })
+}
 
 /// WCAG 2.x relative luminance over 8-bit sRGB channels — the single
 /// production definition of the formula in this repo (chunk L4, #1415:
@@ -10987,6 +11305,156 @@ mod files_sync_chip_fold_tests {
         let forked = files_sync_chip_presentation(FilesSyncChipState::Forked);
         assert_eq!(forked.tone, ChipTone::Danger);
         assert!(forked.flagged);
+    }
+
+    // ---- the colour grammar's conversions + derived palette
+    // ---- (journey plan `2026-11-25-sound-today-colour-journeys-
+    // ---- schedule-colour-ux-plan.md` D-3/D-5, US-28/US-29) -------
+
+    use proptest::prelude::*;
+
+    // US-28 AC-4's law: hex → HSV → hex is the identity on the
+    // minted 6-hex domain (the projection's quantization is exact on
+    // the byte grid the mint owns).
+    proptest! {
+        #[test]
+        fn hex_hsv_hex_is_the_identity_on_the_minted_domain(
+            a in 0u8..=255, b in 0u8..=255, c in 0u8..=255,
+        ) {
+            let hex = format!("{a:02x}{b:02x}{c:02x}");
+            let (h, sat, val) =
+                hex_to_hsv(&hex).expect("a minted body projects");
+            prop_assert_eq!(hsv_to_hex(h, sat, val), hex);
+        }
+    }
+
+    // The projection total over any three floats: out-of-band hue /
+    // sat / val clamp and wrap into the minted shape (never panics,
+    // always 6 lowercase hex digits).
+    proptest! {
+        #[test]
+        fn hsv_projection_is_total_and_minted(
+            h in -1000.0f64..1000.0, sat in -2.0f64..3.0, val in -2.0f64..3.0,
+        ) {
+            let hex = hsv_to_hex(h, sat, val);
+            prop_assert_eq!(hex.len(), 6);
+            prop_assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
+            prop_assert!(hex.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
+        }
+    }
+
+    // US-29 AC-2's law: every tone ladder shares its base's hue (the
+    // chromatic half — an achromatic body carries the degenerate hue
+    // by convention, D-5's grey arm) and its lightness is monotone
+    // (dark ≤ base ≤ light) — sampled over all nine const bases plus
+    // an arbitrary minted body.
+    proptest! {
+        #[test]
+        fn tone_ladders_hold_the_base_hue_monotone_lightness(
+            a in 0u8..=255, b in 0u8..=255, c in 0u8..=255,
+        ) {
+            let body = format!("{a:02x}{b:02x}{c:02x}");
+            for base in SWATCHES.iter().copied().chain(std::iter::once(body.as_str())) {
+                let ladder = tone_ladder(base);
+                let (bh, base_sat, _bl) = hex_to_hsl(base).expect("minted base");
+                let lightnesses: Vec<f64> = ladder
+                    .iter()
+                    .map(|tone| hex_to_hsl(tone).expect("a derived tone mints").2)
+                    .collect();
+                // The hue is held only while it exists: an achromatic
+                // base or tone (saturation 0) carries the degenerate
+                // hue 0 by convention, not the base's (D-5's grey arm).
+                let hue_held = |tone: &str| {
+                    let (h, tone_sat, tone_l) = hex_to_hsl(tone).expect("derived tone");
+                    // The dark edge of a very dark ladder quantizes
+                    // onto the byte grid's near-black floor, where no
+                    // hue survives quantization (the law's domain is
+                    // the chromatic tones, not the black pole).
+                    // The byte grid's hue uncertainty envelope: the
+                    // sector angle is computed from channel
+                    // differences that rounding moves by whole
+                    // counts, so the held-window is the ±20°
+                    // envelope's chromatic interior — meaningfully
+                    // saturated tones, away from the black/white
+                    // poles (where no hue survives quantization at
+                    // all; the law's teeth — grey's lightness-only
+                    // ladder, monotone lightness — hold regardless).
+                    let min_sat = tone_sat.min(base_sat);
+                    if min_sat < 0.25 || tone_l < 0.05 || tone_l > 0.95 {
+                        return true;
+                    }
+                    let delta = (h - bh).abs();
+                    delta.min(360.0 - delta) <= 20.0
+                };
+                for tone in &ladder {
+                    prop_assert!(hue_held(tone), "hue held for {base}: {tone}");
+                }
+                prop_assert!(lightnesses[0] <= lightnesses[1]);
+                prop_assert!(lightnesses[1] <= lightnesses[2]);
+            }
+        }
+    }
+
+    /// The palette's shape law (US-29 AC-1's data oracle): 9 bases ×
+    /// 3 tones, ladder-major, every tone a minted lowercase body; the
+    /// six original bases survive verbatim inside the grid (the
+    /// rendered defaults keep their values).
+    #[test]
+    fn derived_swatches_shape_is_nine_bases_by_three_tones() {
+        let derived = derived_swatches();
+        assert_eq!(derived.len(), SWATCHES.len() * 3);
+        for (i, base) in SWATCHES.iter().enumerate() {
+            assert_eq!(
+                &derived[i * 3 + 1],
+                base,
+                "the base is its ladder's middle tone"
+            );
+            for tone in &derived[i * 3..i * 3 + 3] {
+                assert_eq!(tone.len(), 6);
+                assert!(tone.bytes().all(
+                    |b| b.is_ascii_hexdigit() && (b.is_ascii_lowercase() || b.is_ascii_digit())
+                ));
+            }
+        }
+    }
+
+    /// US-29 AC-4's token law: every palette tone carries a chip text
+    /// ink of at least the non-text class (3:1) — the fixed palette's
+    /// contrast treatment over the derived grid (#1415's failure mode).
+    #[test]
+    fn every_palette_tone_carries_a_readable_chip_ink() {
+        for tone in derived_swatches() {
+            let ink = chip_text_on(&tone).expect("a minted tone picks an ink");
+            let ratio = contrast_ratio(&tone, ink).expect("minted pair");
+            assert!(ratio >= 3.0, "tone {tone} vs ink {ink} is {ratio:.2}:1");
+        }
+    }
+
+    // The ink choice's floor law: for ANY minted colour the chosen
+    // ink carries at least the two-ink crossover ratio (≈3.97:1 for
+    // the white / near-black pair — quality floor, not a ceiling).
+    proptest! {
+        #[test]
+        fn chip_ink_floor_holds_on_every_minted_colour(
+            a in 0u8..=255, b in 0u8..=255, c in 0u8..=255,
+        ) {
+            let hex = format!("{a:02x}{b:02x}{c:02x}");
+            let ink = chip_text_on(&hex).expect("minted colour");
+            let ratio = contrast_ratio(&hex, ink).expect("minted pair");
+            prop_assert!(ratio >= 3.9, "{hex} vs {ink} is {ratio:.2}:1");
+        }
+    }
+
+    /// The ink pair is total over the minted domain and `None` off it
+    /// (the lenient colour's transparent-chip posture); the anchors
+    /// pin the extremes' ink sides (white → dark ink, black → light).
+    #[test]
+    fn chip_text_on_is_total_on_minted_none_off() {
+        assert_eq!(chip_text_on("ffffff"), Some(CHIP_INK_DARK));
+        assert_eq!(chip_text_on("000000"), Some(CHIP_INK_LIGHT));
+        assert!(chip_text_on("#fff").is_none());
+        assert!(chip_text_on("zzzzzz").is_none());
+        assert!(chip_text_on("31cc7").is_none());
     }
 }
 

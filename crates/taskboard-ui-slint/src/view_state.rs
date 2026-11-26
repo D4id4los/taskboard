@@ -4645,7 +4645,7 @@ impl ViewState {
     /// the flow. The verb is `NotUndoable(BoardCeremony)`, so the
     /// picker's own re-openability is the mis-pick recovery — the
     /// recorded reason no armed-confirm stage applies.
-    pub fn commit_board_color(&mut self, swatch: &'static str) -> Vec<FlowOutcome> {
+    pub fn commit_board_color(&mut self, swatch: &str) -> Vec<FlowOutcome> {
         let Flow::BoardColorPick { board } = self.flow().clone() else {
             return Vec::new();
         };

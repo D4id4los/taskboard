@@ -2265,10 +2265,7 @@ fn push_board(
         flow,
         Flow::BoardColorPick { board } if Some(board) == vs.board()
     ));
-    let board_swatches: Vec<slint::Color> = presentation::SWATCHES
-        .iter()
-        .map(|hex| swatch_hex(&taskboard_domain::Color::new(*hex)))
-        .collect();
+    let board_swatches = derived_swatch_colors();
     window.set_board_color_swatches(ModelRc::new(slint::VecModel::from(board_swatches)));
     let armed_board = match flow {
         Flow::BoardColorPick { board } => state.boards.get(&board),
@@ -2277,9 +2274,9 @@ fn push_board(
     window.set_board_color_strip_selected(
         armed_board
             .and_then(|b| {
-                presentation::SWATCHES
+                presentation::derived_swatches()
                     .iter()
-                    .position(|hex| *hex == b.color.as_str())
+                    .position(|hex| hex == b.color.as_str())
             })
             .map_or(-1, |p| i32::try_from(p).unwrap_or(i32::MAX)),
     );
@@ -3206,10 +3203,7 @@ fn push_task_detail(
     // The form surface's pushed halves (UX R-3 D-2): the armed
     // swatch rides the palette's index; the title seed is the
     // field's mount-only read.
-    let swatches: Vec<slint::Color> = presentation::SWATCHES
-        .iter()
-        .map(|hex| swatch_hex(&taskboard_domain::Color::new(*hex)))
-        .collect();
+    let swatches = derived_swatch_colors();
     window.set_label_overlay_swatches(ModelRc::new(slint::VecModel::from(swatches)));
     window.set_label_overlay_form_open(label_form.as_ref().is_some());
     window.set_label_overlay_form_title(SharedString::from(
@@ -3238,11 +3232,34 @@ fn push_task_detail(
                 swatch_hex(&taskboard_domain::Color::new(f.color.clone()))
             }),
     );
+    // The picker's projection (journey plan `…-schedule-colour-ux-plan.md`
+    // D-3, US-28): the draft string is the single truth — the picker
+    // is a projection of the LAST VALID draft, so an invalid
+    // intermediate hex leaves the pushed projection untouched (no
+    // clobber): the push happens only when the draft mints.
+    if let Some(f) = label_form.as_ref()
+        && let Some((hue, sat, val)) = presentation::hex_to_hsv(&f.color)
+    {
+        // The slint projection properties are `float` (f32); the
+        // picker's nudges re-mint through the f64 seams, so the
+        // one-way 1e-7-scale narrowing is invisible at the byte grid.
+        #[allow(clippy::cast_possible_truncation)] // see the note above
+        let narrow = |v: f64| v as f32;
+        window.set_label_overlay_picker_hue(narrow(hue));
+        window.set_label_overlay_picker_sat(narrow(sat));
+        window.set_label_overlay_picker_val(narrow(val));
+        // The SV square's base fill: the pure hue colour (s = v = 1),
+        // computed through the same conversion the draft write uses.
+        let pure_hue = presentation::hsv_to_hex(hue, 1.0, 1.0);
+        window.set_label_overlay_picker_hue_colour(swatch_hex(&taskboard_domain::Color::new(
+            &pure_hue,
+        )));
+    }
     window.set_label_overlay_swatch_selected(
         label_form
             .as_ref()
             .and_then(|f| {
-                presentation::SWATCHES
+                presentation::derived_swatches()
                     .iter()
                     .position(|hex| *hex == f.color)
             })
@@ -3345,10 +3362,7 @@ pub(crate) fn task_card_label_chips(
         .map(|label| crate::TaskLabelChipModel {
             title: SharedString::from(label.title.clone()),
             color: swatch_hex(&label.color),
-            // The chip-ink rule (chunk L4, #1415): the ink is derived
-            // from the fill's WCAG luminance at this sole producer
-            // site; the `chips-row` RoleText is its one render site.
-            ink: crate::presentation::chip_ink(label.color.as_str()).color(),
+            text_color: chip_text_colour(&label.color),
         })
         .collect();
     let hidden = chips
@@ -3356,6 +3370,17 @@ pub(crate) fn task_card_label_chips(
         .saturating_sub(crate::presentation::LABEL_CHIP_CAP);
     chips.truncate(crate::presentation::LABEL_CHIP_CAP);
     (chips, i32::try_from(hidden).unwrap_or(i32::MAX))
+}
+
+/// The chip text ink for a label colour (US-29 AC-4): the minted
+/// tone's readable ink through `presentation::chip_text_on` (best of
+/// the light/dark pair, ≥3:1 on every palette tone); a lenient stored
+/// colour renders no minted background, so the model carries
+/// transparent and the chip falls back to the theme's secondary.
+fn chip_text_colour(color: &taskboard_domain::Color) -> slint::Color {
+    crate::presentation::chip_text_on(color.as_str()).map_or(slint::Color::default(), |ink| {
+        swatch_hex(&taskboard_domain::Color::new(ink))
+    })
 }
 
 /// The swatch echo of a lenient domain `Color`: six-hex bodies mint
@@ -3371,6 +3396,17 @@ pub(crate) fn swatch_hex(color: &taskboard_domain::Color) -> slint::Color {
     } else {
         slint::Color::from_argb_u8(0, 0, 0, 0)
     }
+}
+
+/// The derived palette's rendered half (journey plan D-5/D-6): the
+/// 27 tone bodies pushed as swatch colors — one palette source
+/// ([`presentation::derived_swatches`]), two consumers (the labels
+/// overlay's swatch row and the board colour strip).
+fn derived_swatch_colors() -> Vec<slint::Color> {
+    presentation::derived_swatches()
+        .iter()
+        .map(|hex| swatch_hex(&taskboard_domain::Color::new(hex.as_str())))
+        .collect()
 }
 
 /// One two-hex-digit byte (the swatch's own six-hex vocabulary;
