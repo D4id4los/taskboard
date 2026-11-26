@@ -2228,7 +2228,7 @@ fn the_task_view_overdue_banner_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "today_overdue_enriched_at(PINNED_NOW)",
-                    state: "task detail over an overdue task; status-bar overdue banner rows; 2026-11-26 #1435 vertical space-2 editor inset)",
+                    state: "task detail over an overdue task; status-bar overdue banner rows (2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
@@ -2355,7 +2355,7 @@ fn the_due_editor_datepicker_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "golden_state_enriched_at(PINNED_NOW)",
-                    state: "due editor with the date-picker grid open over the task detail; 2026-11-26 #1435 vertical space-2 editor inset)",
+                    state: "due editor with the date-picker grid open over the task detail (2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
@@ -2424,7 +2424,7 @@ fn the_labels_overlay_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "golden_state_enriched_at(PINNED_NOW)",
-                    state: "labels overlay open over the task detail; the detail's label chips beneath; 2026-11-26 #1435 vertical space-2 editor inset)",
+                    state: "labels overlay open over the task detail; the detail's label chips beneath (2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
@@ -2651,7 +2651,7 @@ fn the_recur_editor_modal_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "golden_state_enriched_at(PINNED_NOW)",
-                    state: "recur editor modal over the daily series task; closed pattern picker; 2026-11-26 #1435 vertical space-2 editor inset)",
+                    state: "recur editor modal over the daily series task; closed pattern picker (2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
@@ -2715,7 +2715,7 @@ fn the_recur_detach_strip_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "golden_state_enriched_at(PINNED_NOW)",
-                    state: "recur editor modal; the stop-repeating consequence strip armed; 2026-11-26 #1435 vertical space-2 editor inset)",
+                    state: "recur editor modal; the stop-repeating consequence strip armed (2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
