@@ -21,6 +21,8 @@ mod config;
 mod daemon_signals;
 #[path = "core/dispatch_routing.rs"]
 mod dispatch_routing;
+#[path = "core/find.rs"]
+mod find;
 #[path = "core/lockfile.rs"]
 mod lockfile;
 #[path = "core/repl.rs"]
