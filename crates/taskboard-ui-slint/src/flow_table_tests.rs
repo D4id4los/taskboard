@@ -5489,7 +5489,9 @@ fn the_board_color_strip_dispatches_the_exact_setboardcolor_and_disarms_clean() 
         adapter.borrow_mut().refresh_forced(rig.handle.window());
         assert!(rig.handle.window().get_board_color_strip_open());
         // A swatch click: the exact command + the strip closes.
-        rig.handle.window().invoke_board_color_picked(1);
+        // The derived palette's blue base (D-5): derived index 4 (base
+        // row 1 of the ladder-major 9x3 grid).
+        rig.handle.window().invoke_board_color_picked(4);
         adapter.borrow_mut().refresh_forced(rig.handle.window());
         assert_eq!(
             rig.drain_commands(),
