@@ -15,6 +15,12 @@ use crate::client::{AttachmentUpload, DeckClient, NewCard};
 use crate::error::DeckError;
 use crate::model::StackFilter;
 
+/// How many read→write→recheck rounds the sidecar update path attempts
+/// before giving up: enough to absorb a burst of concurrent sidecar
+/// writers (each retry re-merges into a freshly re-read document), few
+/// enough that a pathological peer cannot spin the writer forever.
+const MAX_MERGE_ATTEMPTS: usize = 3;
+
 /// Why the marker could not be written.
 #[derive(Debug, thiserror::Error)]
 pub enum MoveMarkerError {
@@ -23,6 +29,24 @@ pub enum MoveMarkerError {
     /// Rewriting a document this build cannot read would destroy it.
     #[error("the board's sidecar document is unreadable")]
     UnreadableDocument,
+    /// The sidecar was clobbered by a concurrent writer on every
+    /// attempt within the bounded retry budget (the attachment route
+    /// serves no `ETag`/`If-Match` validators, so contention is
+    /// detected by recheck, not refused by the server).
+    #[error("the sidecar document kept changing under the marker write")]
+    Contended,
+}
+
+/// Inserts the marker into the document's envelope (foreign `unknown`
+/// keys and sections pass through untouched — the merge starts from
+/// the downloaded document).
+fn merge_marker(document: AppDataDocument, marker: &MovedToFilesMarker) -> AppDataDocument {
+    let mut document = document;
+    document.unknown.insert(
+        MOVED_TO_FILES_KEY.to_owned(),
+        serde_json::to_value(marker).expect("the marker serializes"),
+    );
+    document
 }
 
 /// Merges the marker into the board's sidecar, creating the anchor card
@@ -79,43 +103,70 @@ pub async fn write_move_marker(
         .await?
         .into_iter()
         .find(|item| item.deleted_at == 0 && stored_file_name(item) == ANCHOR_ATTACHMENT_FILENAME);
-    let mut document = match &existing {
-        Some(attachment) => {
-            let bytes = client
-                .download_attachment(deck_board, stack, card, attachment.id)
-                .await?;
-            match build_evidence(&bytes, RemoteBoardId::deck(deck_board)) {
-                AppDataEvidence::Document(document) => *document,
-                _ => return Err(MoveMarkerError::UnreadableDocument),
-            }
-        }
-        None => AppDataDocument {
-            format: APPDATA_FORMAT,
-            board: RemoteBoardId::deck(deck_board),
-            sections: AppDataSections::default(),
-            unknown: std::collections::BTreeMap::new(),
-        },
+    let Some(attachment) = existing else {
+        // Known limit (#1385): the fresh-document upload is a create,
+        // not a read-modify-write — two devices racing create-vs-create
+        // on an anchorless board produce two additive attachments. This
+        // path is neither retried nor rechecked.
+        let document = merge_marker(
+            AppDataDocument {
+                format: APPDATA_FORMAT,
+                board: RemoteBoardId::deck(deck_board),
+                sections: AppDataSections::default(),
+                unknown: std::collections::BTreeMap::new(),
+            },
+            &marker,
+        );
+        let upload = AttachmentUpload {
+            file_name: ANCHOR_ATTACHMENT_FILENAME.to_owned(),
+            mime_type: ANCHOR_ATTACHMENT_MIME.to_owned(),
+            content: serde_json::to_vec(&document).expect("the document serializes"),
+        };
+        client
+            .upload_attachment(deck_board, stack, card, &upload)
+            .await?;
+        return Ok(());
     };
-    document.unknown.insert(
-        MOVED_TO_FILES_KEY.to_owned(),
-        serde_json::to_value(marker).expect("the marker serializes"),
-    );
-    let upload = AttachmentUpload {
-        file_name: ANCHOR_ATTACHMENT_FILENAME.to_owned(),
-        mime_type: ANCHOR_ATTACHMENT_MIME.to_owned(),
-        content: serde_json::to_vec(&document).expect("the document serializes"),
+    let mut document = {
+        let bytes = client
+            .download_attachment(deck_board, stack, card, attachment.id)
+            .await?;
+        match build_evidence(&bytes, RemoteBoardId::deck(deck_board)) {
+            AppDataEvidence::Document(document) => *document,
+            _ => return Err(MoveMarkerError::UnreadableDocument),
+        }
     };
-    match existing {
-        Some(attachment) => {
-            client
-                .update_attachment_content(deck_board, card, attachment.id, &upload)
-                .await?;
+    // Bounded retry-with-recheck: the attachment content route serves no
+    // `ETag`/`Last-Modified` and accepts no conditional-write preconditions,
+    // so a concurrent writer's PUT can silently clobber ours (last write
+    // wins). Each round writes the marker merged into the freshest known
+    // document, then re-downloads and applies the structural oracle: the
+    // write is settled iff the server document equals its own merge with
+    // the marker (the marker key is present with our value, so no
+    // concurrent PUT landed after ours). On mismatch, the fresh document
+    // becomes the next merge base. The re-merge is convergent: once every
+    // concurrent writer has run, the next recheck observes its own output.
+    for _ in 0..MAX_MERGE_ATTEMPTS {
+        let merged = merge_marker(document.clone(), &marker);
+        let upload = AttachmentUpload {
+            file_name: ANCHOR_ATTACHMENT_FILENAME.to_owned(),
+            mime_type: ANCHOR_ATTACHMENT_MIME.to_owned(),
+            content: serde_json::to_vec(&merged).expect("the document serializes"),
+        };
+        client
+            .update_attachment_content(deck_board, card, attachment.id, &upload)
+            .await?;
+        let bytes = client
+            .download_attachment(deck_board, stack, card, attachment.id)
+            .await?;
+        let fresh = match build_evidence(&bytes, RemoteBoardId::deck(deck_board)) {
+            AppDataEvidence::Document(document) => *document,
+            _ => return Err(MoveMarkerError::UnreadableDocument),
+        };
+        if fresh == merge_marker(fresh.clone(), &marker) {
+            return Ok(());
         }
-        None => {
-            client
-                .upload_attachment(deck_board, stack, card, &upload)
-                .await?;
-        }
+        document = fresh;
     }
-    Ok(())
+    Err(MoveMarkerError::Contended)
 }
