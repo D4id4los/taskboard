@@ -3103,6 +3103,13 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         // #1032) — the same anchor-or-modal class.
         | UiEffect::RowMenuRequested
         | UiEffect::CloseMenu
+        // #1328: the MenuBack root-close leg funnels through
+        // `apply_close_menu`, so the close dismissal rides the shared
+        // helper exactly like `CloseMenu` (the Survive row pinned the
+        // old bypass shape). The step-down and picker/notification
+        // Escape arms keep their spare semantics; this classification
+        // walks the closed-menu close leg.
+        | UiEffect::MenuBack
         | UiEffect::BeginCreate { .. }
         | UiEffect::BeginCreateStack
         | UiEffect::OpenPalette
@@ -3154,7 +3161,6 @@ fn dismiss_class(effect: &UiEffect) -> DismissClass {
         | UiEffect::ExportDialogOpen
         | UiEffect::ExportDialogClose => DismissClass::AnchorOrModal,
         UiEffect::Exit
-        | UiEffect::MenuBack
         | UiEffect::MenuNext
         | UiEffect::MenuPrevious
         | UiEffect::SetMode(_)
@@ -3317,6 +3323,13 @@ fn walk_effects(fx: &Fixture, second: BoardId) -> Vec<UiEffect> {
         // AnchorOrModal
         UiEffect::OpenMenu,
         UiEffect::CloseMenu,
+        // #1328: the MenuBack root-close leg funnels through
+        // `apply_close_menu`, so the close dismissal rides the shared
+        // helper exactly like `CloseMenu` (the Survive row pinned the
+        // old bypass shape). The step-down and picker/notification
+        // Escape arms keep their spare semantics; this partition row
+        // walks the closed-menu close leg.
+        UiEffect::MenuBack,
         UiEffect::BeginCreate { target: None },
         UiEffect::BeginCreate {
             target: Some(fx.stacks[1]),
@@ -3326,7 +3339,6 @@ fn walk_effects(fx: &Fixture, second: BoardId) -> Vec<UiEffect> {
         UiEffect::BeginCapture,
         // Survive
         UiEffect::Exit,
-        UiEffect::MenuBack,
         UiEffect::MenuNext,
         UiEffect::MenuPrevious,
         UiEffect::SetMode(Mode::Normal),
@@ -3444,8 +3456,8 @@ fn every_view_swapping_effect_dismisses_the_tooltip_and_every_preserving_effect_
         // section (the settings opener's row — the mounted-view swap).
         let sections = [
             (0, 13, DismissClass::IdentitySwap),
-            (13, 20, DismissClass::AnchorOrModal),
-            (20, effects.len(), DismissClass::Survive),
+            (13, 21, DismissClass::AnchorOrModal),
+            (21, effects.len(), DismissClass::Survive),
         ];
         for (start, end, class) in sections {
             for effect in &effects[start..end] {
