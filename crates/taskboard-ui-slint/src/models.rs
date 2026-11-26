@@ -1050,6 +1050,8 @@ fn push_habits(
     now: DateTime<Utc>,
     calendar: taskboard_domain::DayCalendar,
     kiosk: bool,
+    keymap: &Keymap,
+    chain: &[ContextId],
     tables: &mut IdTables,
     models: &mut PushModels,
 ) -> usize {
@@ -1058,6 +1060,20 @@ fn push_habits(
     // gone from the habit path.
     let rows: Vec<presentation::HabitRow> = presentation::today_habit_rows(state, now, calendar);
     tables.habits = rows.iter().map(|row| row.habit).collect();
+    // #1315: the row card's tooltip hint-keys — the task-card grammar's
+    // keymap projection (the row's edit verb's first binding over the
+    // visible chain, shown only when a binding exists). One projection
+    // per pass, one shared model handle across the rows (the handle
+    // keeps the #1017 row-equality rule intact).
+    let hint_keys = string_model(
+        &keymap
+            .first_binding_display(ActionId::HabitEdit, chain)
+            .unwrap_or_default()
+            .iter()
+            .map(String::as_str)
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>(),
+    );
     let shown: Vec<HabitCardModel> = rows
         .iter()
         .map(|row| {
@@ -1095,6 +1111,9 @@ fn push_habits(
                         .map_or_else(String::new, |until| until.to_string()),
                 ),
                 progress_phrase: SharedString::from(presentation::habit_progress_phrase(row)),
+                // #1315: the projected first-binding rows (the card
+                // tooltip's hint-keys; the task-card grammar).
+                hint_keys: hint_keys.clone(),
             }
         })
         .collect();
@@ -1447,7 +1466,18 @@ pub fn push(
         &mut tables,
         models,
     );
-    mutations += push_habits(window, state, vs, now, calendar, kiosk, &mut tables, models);
+    mutations += push_habits(
+        window,
+        state,
+        vs,
+        now,
+        calendar,
+        kiosk,
+        keymap,
+        chain,
+        &mut tables,
+        models,
+    );
     mutations += push_habit_history(window, state, vs, now, calendar);
     push_focus_overlay(window, state, vs, focus, now, models);
     push_review_walk(window, state, vs, day, calendar, kiosk, models);
@@ -1884,6 +1914,14 @@ fn push_chrome(
             .map_or(String::new(), |row| row.title.clone()),
         None => match view {
             crate::view_state::ViewId::Today => "Today".to_string(),
+            // #1449: the task variant titles the OPEN TASK with its
+            // stored title — the habit arm's shape one arm over (the
+            // entry-snapshot subject, D7); the board's title never
+            // answers for the detail root.
+            crate::view_state::ViewId::TaskDetail => vs
+                .subject_task()
+                .and_then(|task| state.tasks.get(&task))
+                .map_or_else(String::new, |task| task.title.clone()),
             _ => board.map_or(String::new(), |b| b.title.clone()),
         },
     }));
