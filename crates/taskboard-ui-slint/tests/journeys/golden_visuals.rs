@@ -419,7 +419,7 @@ fn the_focused_cell_golden_pins_the_ring() {
                     &path,
                     &GoldenMeta {
                         fixture: "golden_state_enriched_at(PINNED_NOW)",
-                        state: "task detail; the D18 focus ring on the due row (enriched base)",
+                        state: "task detail; the D18 focus ring on the due row (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)",
                         scale: 1.0,
                     },
                     TASK_VIEW_WIDTH,
@@ -936,7 +936,7 @@ fn capture_task_view(driver: &mut SlintDriver, scale: f64, height: u32, regen: b
             &path,
             &GoldenMeta {
                 fixture: "golden_state_enriched_at(PINNED_NOW)",
-                state: "task detail; header/summary/description regions (enriched base)",
+                state: "task detail; header/summary/description regions (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)",
                 scale,
             },
             TASK_VIEW_WIDTH,
@@ -2355,7 +2355,7 @@ fn the_due_editor_datepicker_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "golden_state_enriched_at(PINNED_NOW)",
-                    state: "due editor with the date-picker grid open over the task detail",
+                    state: "due editor with the date-picker grid open over the task detail; 2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
@@ -2424,7 +2424,7 @@ fn the_labels_overlay_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "golden_state_enriched_at(PINNED_NOW)",
-                    state: "labels overlay open over the task detail; the detail's label chips beneath",
+                    state: "labels overlay open over the task detail; the detail's label chips beneath; 2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,

@@ -1222,18 +1222,24 @@ def emit_md(
     " (the manifest's state note: deliberate kind-wall padding / mostly-empty"
     " drag canvas); the rest → fix-later.")
     out.append("")
-    out.append("Residual C1 fix-now explanation (round 8 L1, 2026-11-26): the eight"
-    " remaining C1 fix-now findings are the recorded, explained residue of the"
-    " clip-focus law chunk. The four board-columns signatures"
-    " (`board-0.5-600`, `board-3.0-600`) are the #1365 overflow regime —"
-    " their fix is the #1419 option-A Flickable wrap, withdrawn twice on the"
-    " remount-refocus defect (#1490 carries the diagnosis and the fix prompt);"
-    " the law records them as accepted legacy pending #1490"
-    " (docs/widget_interactions.org, the clip-focus law's status section) —"
-    " the rubric keeps their fix-now grade so the debt stays visible. The"
-    " four N-today signatures (`notification-3.0-1000`, `today-3.0-1000`,"
-    " the timers-editor row overflow at kiosk scale) are a separate surface,"
-    " filed as #1491.")
+    out.append("Residual C1 fix-now explanation (round 8 L1, 2026-11-26; amended"
+    " round 8 B4, 2026-11-26): the ten remaining C1 fix-now findings are the"
+    " recorded, explained residue of the clip-focus law chunk. The four"
+    " board-columns signatures (`board-0.5-600`, `board-3.0-600`) are the"
+    " #1365 overflow regime — their fix is the #1419 option-A Flickable wrap,"
+    " withdrawn twice on the remount-refocus defect (#1490 carries the"
+    " diagnosis and the fix prompt); the law records them as accepted legacy"
+    " pending #1490 (docs/widget_interactions.org, the clip-focus law's"
+    " status section) — the rubric keeps their fix-now grade so the debt"
+    " stays visible. The four N-today signatures (`notification-3.0-1000`,"
+    " `today-3.0-1000`, the timers-editor row overflow at kiosk scale) are a"
+    " separate surface, filed as #1491. The two `task-view-1.5-900`"
+    " bottom-edge signatures join with round 8 B4's #1435 vertical editor"
+    " inset: the inset shrank the flexible description section's leftover"
+    " height, so the section's own Flickable viewport (MultiLineEditor view"
+    " branch, widgets/multi-line-editor.slint) now clips its below-the-fold"
+    " content at the window's bottom edge — scroll viewport geometry, not a"
+    " severed widget; the tight fit is filed as its own backlog issue.")
     out.append("")
     out.append("## Findings by golden")
     out.append("")
