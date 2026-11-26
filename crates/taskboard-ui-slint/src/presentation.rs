@@ -10989,3 +10989,105 @@ mod files_sync_chip_fold_tests {
         assert!(forked.flagged);
     }
 }
+
+// The chip-ink rule's pins (chunk L4, #1415) — unit tests live at the
+// rule's own layer; the model-output pin rides `models.rs` (the one
+// producer site), the render site is the `chips-row` RoleText.
+#[cfg(test)]
+mod chip_ink_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// The threshold const equals the closed-form L★ = sqrt(0.05 ×
+    /// 1.05) − 0.05 (the const carries the exact value because
+    /// `f64::sqrt` is not const-stable — this is the pin that keeps
+    /// the transcription honest).
+    #[test]
+    fn l4_the_threshold_const_is_the_closed_form_lstar() {
+        let l_star = (0.05_f64 * 1.05).sqrt() - 0.05;
+        assert_eq!(CHIP_INK_THRESHOLD, l_star);
+    }
+
+    /// Constructed cases both ways: the palette's darkest fill takes
+    /// white ink and clears the floor through it; the brightest takes
+    /// black. (Typed outcomes — no floats in the assertions.)
+    #[test]
+    fn l4_constructed_fills_decide_both_ways() {
+        assert_eq!(chip_ink("3a70d6"), ChipInk::Light);
+        assert!(contrast_ratio("3a70d6", ChipInk::Light.body()) >= 4.5);
+        assert_eq!(chip_ink("edbf45"), ChipInk::Dark);
+        assert!(contrast_ratio("edbf45", ChipInk::Dark.body()) >= 4.5);
+    }
+
+    /// Boundary both ways: two constructed fills straddling L★ — the
+    /// below arm picks white, the above arm picks black. The luminance
+    /// straddle is asserted structurally (the fills' measured
+    /// luminances sit either side of the const), not by float luck.
+    #[test]
+    fn l4_boundary_fills_around_lstar_decide_both_ways() {
+        let below = "757575";
+        let above = "767676";
+        assert!(relative_luminance(below) < CHIP_INK_THRESHOLD);
+        assert!(relative_luminance(above) >= CHIP_INK_THRESHOLD);
+        assert_eq!(chip_ink(below), ChipInk::Light);
+        assert_eq!(chip_ink(above), ChipInk::Dark);
+    }
+
+    /// Minimax over the palette: every swatch's chosen ink beats the
+    /// rejected arm and clears the SC 1.4.3 floor through the chosen
+    /// arm (the floor is the guarantee — never widened, never a
+    /// ceiling).
+    #[test]
+    fn l4_every_swatch_takes_the_better_ink_and_clears_the_floor() {
+        for swatch in SWATCHES {
+            let ink = chip_ink(swatch);
+            let chosen = contrast_ratio(swatch, ink.body());
+            let rejected = match ink {
+                ChipInk::Light => contrast_ratio(swatch, "000000"),
+                ChipInk::Dark => contrast_ratio(swatch, "ffffff"),
+            };
+            assert!(
+                chosen >= rejected,
+                "fill {swatch}: chosen arm is the better one"
+            );
+            assert!(chosen >= 4.5, "fill {swatch}: the SC 1.4.3 floor holds");
+        }
+    }
+
+    /// The documented leniency arm: a non-hex body never reaches the
+    /// chip fill (`swatch_hex` renders it transparent on the light
+    /// card surface), and minting the dark arm is the safe posture
+    /// there — typed outcome, no panic.
+    #[test]
+    fn l4_a_lenient_body_mints_the_safe_dark_arm() {
+        assert_eq!(chip_ink("fff nope"), ChipInk::Dark);
+        assert_eq!(chip_ink(""), ChipInk::Dark);
+        assert_eq!(chip_ink("31cc7"), ChipInk::Dark);
+    }
+
+    // The guarantee (the rule's licence): for **any** opaque fill, the
+    // chosen ink clears WCAG 2.2 SC 1.4.3's 4.5:1, the chosen arm is
+    // never worse than the rejected one, and `max(black, white)` clears
+    // the floor too — the rule exploits the minimax property, it does
+    // not merely assume it.
+    proptest! {
+        #[test]
+        fn l4_any_opaque_fill_clears_the_sc_143_floor(
+            r in any::<u8>(),
+            g in any::<u8>(),
+            b in any::<u8>(),
+        ) {
+            let body = format!("{r:02x}{g:02x}{b:02x}");
+            let ink = chip_ink(&body);
+            let chosen = contrast_ratio(&body, ink.body());
+            prop_assert!(chosen >= 4.5, "fill {body}: floor holds through the chosen arm");
+            let rejected = match ink {
+                ChipInk::Light => contrast_ratio(&body, "000000"),
+                ChipInk::Dark => contrast_ratio(&body, "ffffff"),
+            };
+            prop_assert!(chosen >= rejected, "fill {body}: chosen arm is the better one");
+            let best = contrast_ratio(&body, "ffffff").max(contrast_ratio(&body, "000000"));
+            prop_assert!(best >= 4.5, "fill {body}: max(black, white) clears the floor");
+        }
+    }
+}
