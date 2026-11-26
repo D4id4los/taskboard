@@ -19,7 +19,7 @@ axes = { scale = 1.0, width = 1000, height = 900 }
 [[golden]]
 name = "task-view-focus-cell-1.0-900"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "task detail; the D18 focus ring on the due row (enriched base)"
+state = "task detail; the D18 focus ring on the due row (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
@@ -43,7 +43,7 @@ axes = { scale = 1.0, width = 1000, height = 900 }
 [[golden]]
 name = "task-view-0.5-900"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "task detail; header/summary/description regions (enriched base)"
+state = "task detail; header/summary/description regions (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 0.5, width = 1000, height = 900 }
 
 [[golden]]
@@ -79,7 +79,7 @@ axes = { scale = 1.0, width = 1000, height = 900 }
 [[golden]]
 name = "task-view-0.5-500"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "task detail; header/summary/description regions (enriched base)"
+state = "task detail; header/summary/description regions (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 0.5, width = 1000, height = 500 }
 
 [[golden]]
@@ -97,7 +97,7 @@ axes = { scale = 0.5, width = 1500, height = 900 }
 [[golden]]
 name = "task-view-1.5-900"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "task detail; header/summary/description regions (enriched base)"
+state = "task detail; header/summary/description regions (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.5, width = 1000, height = 900 }
 
 [[golden]]
@@ -115,7 +115,7 @@ axes = { scale = 3.0, width = 600, height = 900 }
 [[golden]]
 name = "task-view-1.5-500"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "task detail; header/summary/description regions (enriched base)"
+state = "task detail; header/summary/description regions (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.5, width = 1000, height = 500 }
 
 [[golden]]
@@ -133,7 +133,7 @@ axes = { scale = 3.0, width = 1000, height = 900 }
 [[golden]]
 name = "task-view-3.0-900"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "task detail; header/summary/description regions (enriched base)"
+state = "task detail; header/summary/description regions (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 3.0, width = 1000, height = 900 }
 
 [[golden]]
@@ -145,7 +145,7 @@ axes = { scale = 3.0, width = 1500, height = 900 }
 [[golden]]
 name = "task-view-3.0-500"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "task detail; header/summary/description regions (enriched base)"
+state = "task detail; header/summary/description regions (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 3.0, width = 1000, height = 500 }
 
 [[golden]]
@@ -211,13 +211,13 @@ axes = { scale = 1.0, width = 1000, height = 900 }
 [[golden]]
 name = "labels-overlay-1.0-1000"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "labels overlay open over the task detail; the detail's label chips beneath"
+state = "labels overlay open over the task detail; the detail's label chips beneath; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
 name = "due-editor-datepicker-1.0-1000"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "due editor with the date-picker grid open over the task detail"
+state = "due editor with the date-picker grid open over the task detail; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
