@@ -5275,12 +5275,15 @@ fn the_labels_overlay_opens_and_the_dismissal_closes() {
     });
 }
 
-/// UX-R8 chunk-5 D-3 (US-1/S2) — the day-law parity twin: the
-/// adapter's per-dispatch `tomorrow_window_end` is exactly
-/// `days::next_day_window(now, day_start).1` for the adapter's own
-/// `now` (single-read capture; no `+24h` arithmetic anywhere).
+/// UX-R8 chunk-5 D-3 (US-1/S2) as amended by the schedule pair-write
+/// (#1428, journey plan D-1/D-2) — the day-law parity twin: the
+/// adapter's tomorrow route commits exactly the next day window's
+/// covered pair, `scheduled = days::next_day_window(…).0` and
+/// `duedate = last_covered_instant(next_day_window(…).1)` (the raw
+/// exclusive end retired), for the adapter's own `now` (single-read
+/// capture; no `+24h` arithmetic anywhere).
 #[test]
-fn tomorrow_window_end_is_the_next_day_window_end() {
+fn tomorrow_route_commits_the_next_day_window_covered_pair() {
     use crate::actions::ActionId;
     // The mount touches the Slint thread's testing platform (the walk's
     // rule): the backend exists only on that thread, headless CI
@@ -5303,7 +5306,11 @@ fn tomorrow_window_end_is_the_next_day_window_end() {
                 taskboard_domain::SettingsSnapshot::default().day_start_time,
                 crate::UiSettings::default().boot_offset,
             );
-            expected = taskboard_domain::days::next_day_window(now, day_start.0, day_start.1).1;
+            let window = taskboard_domain::days::next_day_window(now, day_start.0, day_start.1);
+            expected = (
+                window.0,
+                taskboard_domain::days::last_covered_instant(window.1),
+            );
             a.route(rig.handle.window(), ActionId::TaskScheduleTomorrow);
         }
         let commands = rig.drain_commands();
@@ -5312,11 +5319,12 @@ fn tomorrow_window_end_is_the_next_day_window_end() {
             vec![StateCommand::UpdateTask {
                 id: *fx.tasks.first().expect("task"),
                 changes: taskboard_domain::TaskChanges {
-                    scheduled: Some(Some(expected)),
+                    scheduled: Some(Some(expected.0)),
+                    duedate: Some(Some(expected.1)),
                     ..taskboard_domain::TaskChanges::default()
                 },
             }],
-            "tomorrow commits exactly the next day window's end"
+            "tomorrow commits exactly the next day window's covered pair"
         );
     });
 }
