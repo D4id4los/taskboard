@@ -99,13 +99,20 @@ fn main() -> color_eyre::Result<()> {
 /// diagnostic, exactly like `bootstrap`'s own `InstanceLocked`) instead
 /// of booting into a lock another instance holds.
 fn exit_blocked_fallback(json: bool, db_path: &std::path::Path) -> ! {
-    let err = CommandError::Bootstrap(Box::new(
+    let err = blocked_fallback_error(db_path);
+    std::process::exit(i32::from(report(json, &err)));
+}
+
+/// The fallback's typed error, extracted for a hermetic pin (#1374):
+/// the same `InstanceLocked` verdict `bootstrap` itself would have
+/// produced, over the sidecar's best-effort recorded holder pid.
+fn blocked_fallback_error(db_path: &std::path::Path) -> CommandError {
+    CommandError::Bootstrap(Box::new(
         taskboard_app::bootstrap::BootstrapError::InstanceLocked {
             db: db_path.to_path_buf(),
             holder_pid: taskboard_app::lockfile::holder_pid(db_path),
         },
-    ));
-    std::process::exit(i32::from(report(json, &err)));
+    ))
 }
 
 #[allow(clippy::too_many_lines)] // one arm per subcommand, kept flat for review
@@ -1085,6 +1092,79 @@ async fn run_kiosk(
             drain_and_shutdown(app, server, web.take(), &mut signals).await?;
             run_result?;
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--no-ipc` is a presence: the flag unconditionally overwrites the
+    /// file key (flag > file); the flag absent returns the config
+    /// byte-identical. Fails-when-broken: a flag-precedence regression
+    /// (file wins, or the flag mutating something else) flips a row.
+    #[test]
+    fn no_ipc_flag_overrides_the_config_key_only_when_present() {
+        let mut config = AppConfig::default();
+        config.ipc.enabled = true;
+        let overridden = apply_no_ipc_override(config.clone(), true);
+        assert!(!overridden.ipc.enabled);
+        assert!(config.ipc.enabled, "the input config is untouched");
+        // The override changes exactly the ipc flag (structural value
+        // equality — `AppConfig` carries no `PartialEq`).
+        let mut expected = config.clone();
+        expected.ipc.enabled = false;
+        assert_eq!(
+            serde_json::to_value(&overridden).expect("serialize"),
+            serde_json::to_value(&expected).expect("serialize")
+        );
+
+        let untouched = apply_no_ipc_override(config.clone(), false);
+        assert_eq!(
+            serde_json::to_value(&untouched).expect("serialize"),
+            serde_json::to_value(&config).expect("serialize"),
+            "no flag: the config passes through untouched"
+        );
+    }
+
+    /// The #886 drain-window fallback's typed error: the extracted
+    /// construction carries `InstanceLocked` over the locked db path
+    /// and the sidecar's recorded holder pid. Fails-when-broken: a
+    /// holder-pid read regression or a variant mis-wiring changes the
+    /// typed shape.
+    #[test]
+    fn blocked_fallback_error_carries_instance_locked_with_the_holder_pid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("board.sqlite");
+        std::fs::write(
+            taskboard_app::lockfile::lock_sidecar_path(&db),
+            "pid=4242\n",
+        )
+        .expect("seed sidecar");
+
+        match blocked_fallback_error(&db) {
+            CommandError::Bootstrap(inner) => match *inner {
+                taskboard_app::bootstrap::BootstrapError::InstanceLocked { db, holder_pid } => {
+                    assert_eq!(db, dir.path().join("board.sqlite"));
+                    assert_eq!(holder_pid, Some(4242));
+                }
+                other => panic!("expected InstanceLocked, got {other:?}"),
+            },
+            other => panic!("expected Bootstrap, got {other:?}"),
+        }
+
+        // No sidecar: the pid leg degrades to `None` (best-effort,
+        // diagnostic only) — the verdict stays `InstanceLocked`.
+        let bare = dir.path().join("bare.sqlite");
+        match blocked_fallback_error(&bare) {
+            CommandError::Bootstrap(inner) => match *inner {
+                taskboard_app::bootstrap::BootstrapError::InstanceLocked { holder_pid, .. } => {
+                    assert_eq!(holder_pid, None);
+                }
+                other => panic!("expected InstanceLocked, got {other:?}"),
+            },
+            other => panic!("expected Bootstrap, got {other:?}"),
         }
     }
 }

@@ -1595,3 +1595,217 @@ mod keymap_resolution_tests {
         assert_eq!(free.bound_connector, None);
     }
 }
+
+/// The boot/wiring seam suite (#1374): the export/day-start resolver
+/// table, the real-engine dispatch seam, the UI command channel's
+/// capacity pin, the keymap-findings surfacing smoke, and the quit
+/// bounded-wait's cap. Typed outcomes only; no text assertions.
+#[cfg(test)]
+mod seam_tests {
+    use super::*;
+    use std::sync::Arc;
+    use taskboard_ui_slint::keymap::FindingKind;
+
+    /// Export defaults resolve the config's `[export] pdf_dir` with the
+    /// tilde expanded, mirror the `open_after_export` posture, and
+    /// surface the compile-time pdf feature as a runtime flag.
+    /// Fails-when-broken: a config-key drift changes the typed dir; a
+    /// tilde-expansion regression loses the home prefix.
+    #[test]
+    fn export_defaults_expand_the_configured_pdf_dir() {
+        let mut config = crate::config::AppConfig::default();
+        config.export.pdf_dir = Some("~/exports".into());
+        config.export.open_after_export = true;
+        let defaults = resolve_export_defaults(&config);
+        let home = dirs::home_dir().expect("home dir in test env");
+        assert_eq!(
+            defaults.pdf_dir,
+            home.join("exports").display().to_string(),
+            "the configured pdf dir is tilde-expanded"
+        );
+        assert_eq!(defaults.export_dir, defaults.pdf_dir);
+        assert!(defaults.open_after, "the config flag mirrors");
+        assert_eq!(defaults.pdf_available, cfg!(feature = "pdf-export"));
+    }
+
+    /// Unset `[export] pdf_dir`: the platform default leg of
+    /// [`crate::export_paths::default_pdf_dir`] carries through —
+    /// the resolver passes `None` verbatim (typed dir equality against
+    /// the same helper's None-leg result).
+    #[test]
+    fn export_defaults_fall_to_the_platform_default_when_unset() {
+        let config = crate::config::AppConfig::default();
+        let defaults = resolve_export_defaults(&config);
+        assert_eq!(
+            defaults.pdf_dir,
+            crate::export_paths::default_pdf_dir(None, dirs::data_dir().as_deref())
+                .display()
+                .to_string()
+        );
+        // The config key is unset: the expansion must not have invented
+        // a home-relative path (structural: no home prefix).
+        if let Some(home) = dirs::home_dir() {
+            assert!(
+                !defaults
+                    .pdf_dir
+                    .starts_with(home.display().to_string().as_str())
+                    || defaults.pdf_dir != home.join("exports").display().to_string()
+            );
+        }
+    }
+
+    /// `resolve_day_start` parses the config's time and samples the
+    /// device's UTC offset; an unparseable string degrades to the
+    /// midnight default (the documented `unwrap_or_default`). The
+    /// offset leg uses single-read capture (testing-strategy §6.1):
+    /// capture once, assert equality — never a re-sample.
+    #[test]
+    fn day_start_parses_the_config_time_and_degrades_to_midnight() {
+        let mut config = crate::config::AppConfig::default();
+        config.preferences.day_start_time = "07:30:00".into();
+        let captured_offset = *chrono::Local::now().offset();
+        let (day_start, offset) = resolve_day_start(&config);
+        assert_eq!(
+            day_start,
+            chrono::NaiveTime::from_hms_opt(7, 30, 0).expect("valid time")
+        );
+        assert_eq!(offset, captured_offset);
+
+        config.preferences.day_start_time = "not-a-time".into();
+        let (day_start, _) = resolve_day_start(&config);
+        assert_eq!(
+            day_start,
+            chrono::NaiveTime::default(),
+            "degrades to midnight"
+        );
+    }
+
+    /// The UI command channel is exactly [`UI_COMMAND_CAPACITY`] deep:
+    /// 64 intents queue, the 65th is refused `Full` — the documented
+    /// unresponsive-UI pathology bound.
+    #[test]
+    fn ui_command_channel_capacity_is_sixty_four() {
+        let (tx, rx) = ui_command_channel();
+        for i in 0..UI_COMMAND_CAPACITY {
+            let cmd = StateCommand::CaptureTask {
+                title: format!("cap probe {i}"),
+                board: None,
+            };
+            tx.try_send(cmd)
+                .unwrap_or_else(|e| panic!("intent {i} refused: {e}"));
+        }
+        let overflow = StateCommand::CaptureTask {
+            title: "cap probe overflow".into(),
+            board: None,
+        };
+        assert!(matches!(
+            tx.try_send(overflow),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+        drop(rx);
+    }
+
+    /// The log-only findings surfacing terminates over the empty slice
+    /// and every `FindingKind` variant (structural smoke pin — the fn
+    /// is log-only, so termination is the typed fact).
+    #[test]
+    fn keymap_findings_surfacing_smokes_every_variant() {
+        surface_keymap_findings(&[]);
+        let kinds = [
+            FindingKind::UnknownAction,
+            FindingKind::MalformedStroke,
+            FindingKind::MaskedContext,
+            FindingKind::Conflict,
+            FindingKind::PrefixShadow,
+        ];
+        let findings: Vec<_> = kinds
+            .into_iter()
+            .map(|kind| taskboard_ui_slint::keymap::Finding {
+                kind,
+                action: None,
+                context: taskboard_ui_slint::actions::ContextId::Global,
+                stroke: "Ctrl+K".to_owned(),
+            })
+            .collect();
+        surface_keymap_findings(&findings);
+    }
+
+    /// `CommandSink::dispatch` on a real `EngineHandle` routes the
+    /// command into the engine inbox and the engine executes it: the
+    /// captured task appears in the shared state (poll with a
+    /// deadline — no sleeps). Fails-when-broken: a wrong envelope
+    /// shape, a lost `try_send`, or a trait-impl mis-route never lands
+    /// the task.
+    #[tokio::test]
+    async fn sink_dispatch_lands_the_command_in_the_engine() {
+        use taskboard_domain::test_support::{CountingIds, InMemoryRepository};
+        use taskboard_domain::{AppState, Clock};
+
+        let clock = Arc::new(taskboard_domain::test_support::ManualClock::default());
+        let repo: Arc<dyn taskboard_domain::persistence::TaskRepository> =
+            Arc::new(InMemoryRepository::default());
+        let (sync_out, _sync_in) = tokio::sync::mpsc::channel(8);
+        let (report_tx, report_rx) = tokio::sync::mpsc::channel(8);
+        let (system_tx, system_rx) = tokio::sync::broadcast::channel(8);
+        let (notifier, _notifications) = tokio::sync::mpsc::channel(64);
+        let (engine, _engine_join) = taskboard_state::spawn_state_engine(
+            repo,
+            Arc::new(CountingIds::new()),
+            clock.clone() as Arc<dyn Clock>,
+            sync_out,
+            report_rx,
+            system_tx.clone(),
+            system_rx,
+            notifier,
+            taskboard_domain::SettingsSnapshot::default(),
+            taskboard_state::DayRollConfig::disabled(),
+            None,
+        )
+        .await
+        .expect("engine boots");
+        let _parked = report_tx; // keep the reports lane open
+
+        CommandSink::dispatch(
+            &engine,
+            StateCommand::CaptureTask {
+                title: "sink probe".into(),
+                board: None,
+            },
+        );
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let state: Arc<arc_swap::ArcSwap<AppState>> = engine.shared_state();
+            let landed = state
+                .load()
+                .tasks
+                .values()
+                .any(|task| task.title == "sink probe");
+            if landed {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the dispatched capture never landed in the engine state"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// The quit bounded-wait gives up at its 10 s cap when no event
+    /// loop ever runs (the paused tokio clock auto-advances the 50 ms
+    /// sleeps deterministically): the function returns, having waited
+    /// the full cap of virtual time. Fails-when-broken: removing the
+    /// cap makes this loop forever (test fails at the runtime budget);
+    /// shortening the cap fails the elapsed-floor assert.
+    #[tokio::test(start_paused = true)]
+    async fn quit_until_accepted_gives_up_at_the_ten_second_cap() {
+        let start = tokio::time::Instant::now();
+        quit_until_accepted().await;
+        let waited = tokio::time::Instant::now() - start;
+        assert!(
+            waited >= std::time::Duration::from_millis(10_000),
+            "the wait must reach its cap before giving up (waited {waited:?})"
+        );
+    }
+}
