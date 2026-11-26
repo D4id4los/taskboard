@@ -18001,6 +18001,49 @@ fn recording_an_unrated_walk_keeps_the_ratings_none() {
     });
 }
 
+/// #1431's refusal half: an out-of-range rating draft refuses the
+/// record — nothing dispatches, the walk stays on the Prompts stage,
+/// the flavour renders `Invalid` (the T-15 law, typed).
+#[test]
+fn recording_with_an_invalid_rating_refuses_and_stays_on_prompts() {
+    let (_fixture, state, _stack, _inbox_ids) = walk_fixture_state();
+    support::harness::run_journey(state, move |harness| {
+        harness.press(ActionId::ViewToday);
+        harness.driver.advance_time(0);
+        open_walk(&mut *harness);
+        for _ in 0..3 {
+            harness.handle.dispatch_action(ActionId::ReviewWalkAdvance);
+            harness.driver.advance_time(0);
+        }
+        harness.stroke(parse("Escape").expect("Escape"));
+        harness.driver.advance_time(0);
+        assert_eq!(walk_stage(&*harness), 2);
+        harness
+            .handle
+            .window()
+            .invoke_walk_answer_edited(0, "shipped the walk".into());
+        harness
+            .handle
+            .window()
+            .invoke_walk_rating_edited(0, "9".into());
+        harness.handle.dispatch_action(ActionId::ReviewRecord);
+        harness.driver.advance_time(0);
+        assert!(
+            harness.engine.drain().is_empty(),
+            "an invalid draft never dispatches"
+        );
+        assert_eq!(walk_stage(&*harness), 2, "the walk stays on Prompts");
+        assert_eq!(
+            harness.handle.window().get_walk_mood_validity(),
+            taskboard_ui_slint::FieldValidity::Invalid
+        );
+        assert_eq!(
+            harness.handle.window().get_walk_energy_validity(),
+            taskboard_ui_slint::FieldValidity::Neutral
+        );
+    });
+}
+
 /// J15 re-based (J4 D-1/D-8) — an all-blank Record and `Finish without
 /// recording` both land on the completion summary gently: no command,
 /// `recorded: no`, the walk stays open for the honest summary.
