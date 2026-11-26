@@ -5325,7 +5325,7 @@ impl Adapter {
                 // Round-6 A1 D-4 (2026-11-24, #1301): the today view is
                 // board-free — the gate is "any live board exists"; the
                 // commit mints into the first live board.
-                if !crate::presentation::live_boards(&state).is_empty() {
+                if !taskboard_domain::order::live_boards(&state).is_empty() {
                     self.habit_create_open = !self.habit_create_open;
                     if !self.habit_create_open {
                         self.habit_create_draft = None;
@@ -13561,7 +13561,7 @@ fn install_habit_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     // board-free — the target is the FIRST live board (canonical
     // order, the seed law's default); the picker is #1314's territory.
     let state = a.state.load();
-    let Some(board) = crate::presentation::live_boards(&state)
+    let Some(board) = taskboard_domain::order::live_boards(&state)
         .first()
         .map(|board| board.id)
     else {
@@ -17820,7 +17820,7 @@ fn install_timer_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         // retired board-scoping's leftover. The picker is #1314's
         // territory.
         let state = a.state.load();
-        let Some(board) = crate::presentation::live_boards(&state)
+        let Some(board) = taskboard_domain::order::live_boards(&state)
             .first()
             .map(|board| board.id)
         else {

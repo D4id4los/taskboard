@@ -1104,7 +1104,9 @@ fn push_habits(
     // — the commit mints into the first live board (canonical order).
     // Kiosk and zero-live-board days keep the rows-only posture
     // (D-P13 untouched).
-    window.set_habits_create_mountable(!kiosk && !presentation::live_boards(state).is_empty());
+    window.set_habits_create_mountable(
+        !kiosk && !taskboard_domain::order::live_boards(state).is_empty(),
+    );
     push_rows(
         &mut models.habits,
         |rc| {
@@ -1252,7 +1254,7 @@ pub fn push(
     let sets = presentation::due_sets(state, now, due.horizon);
     let board = vs.board().and_then(|id| state.boards.get(&id));
     let stack_ids: Vec<StackId> = vs.stack_ids(state);
-    let live_boards = presentation::live_boards(state);
+    let live_boards = taskboard_domain::order::live_boards(state);
 
     // The board bar (design §3.8): one segment per live board,
     // selected index over the same pass's tables.
@@ -3686,7 +3688,7 @@ fn push_today(
     models: &mut PushModels,
 ) -> usize {
     let sections = taskboard_domain::days::today_sections(&state.tasks, day.now, day.window);
-    let multi_board = presentation::live_boards(state).len() > 1;
+    let multi_board = taskboard_domain::order::live_boards(state).len() > 1;
     let tracked_task = presentation::tracking_open_task(state);
     // The "Tracked" day summary (r4 chunk 10, D-TS7; re-recorded
     // 2026-11-24, round-6 A1 D-3, #1301): Work-only per-task sums over
