@@ -10,6 +10,7 @@
 //! verbatim).
 
 use crate::Task;
+use crate::entities::{Board, Stack};
 use crate::ids::{BoardId, StackId, TaskId};
 use crate::messages::StateCommand;
 use crate::state::AppState;
@@ -92,10 +93,9 @@ pub fn move_aim_command(
 /// live against the passed state is dropped and the sequence
 /// continues — no batch verb, no early abort.
 ///
-/// `ring` is the caller-supplied move ring — the presentation's flat
-/// cross-board stack candidate list (the UI builds it from
-/// `ViewState::move_ring`); it only orders the members' existing
-/// relative sequence, never the minted orders.
+/// `ring` is the caller-supplied move ring — the flat cross-board
+/// stack candidate list ([`move_ring`]); it only orders the members'
+/// existing relative sequence, never the minted orders.
 ///
 /// # Panics
 /// Never: the per-member index conversions saturate at `i64::MAX`
@@ -183,6 +183,64 @@ pub fn append_stack_order(state: &AppState, board: BoardId) -> i64 {
         .map(|s| s.order)
         .max()
         .map_or(0, |max| max + 1)
+}
+
+/// The board's live stacks in display order (D10): `(order, id)`
+/// ascending — the domain's own reading of the persisted sort position
+/// (the domain owns the concept and the write side; this is the
+/// canonical reader over it).
+#[must_use]
+pub fn stacks_in_board(state: &AppState, board: BoardId) -> Vec<&Stack> {
+    let mut stacks: Vec<&Stack> = state
+        .stacks
+        .values()
+        .filter(|s| !s.deleted && s.board == board)
+        .collect();
+    stacks.sort_by_key(|s| (s.order, s.id));
+    stacks
+}
+
+/// The live, non-archived boards in canonical order: `state.boards`
+/// `BTreeMap` iteration order — board-id ascending, the exact order
+/// the CLI's `boards list` renders. The board walk's domain and the
+/// seed rule's candidate list.
+#[must_use]
+pub fn live_boards(state: &AppState) -> Vec<&Board> {
+    state
+        .boards
+        .values()
+        .filter(|b| !b.deleted && !b.archived)
+        .collect()
+}
+
+/// The move ring (chunk 10 D6, the deliberate behavior change): the
+/// *flat cross-board* candidate list — every live board's stacks in
+/// `(order, id)` order, boards in canonical `BTreeMap` order —
+/// wrapping across the board edge. No Inbox special-casing: the Inbox
+/// board's stacks appear like any board's.
+#[must_use]
+pub fn move_ring(state: &AppState) -> Vec<StackId> {
+    live_boards(state)
+        .into_iter()
+        .flat_map(|board| stacks_in_board(state, board.id))
+        .map(|stack| stack.id)
+        .collect()
+}
+
+/// The flattened slot enumeration (UX-R8 D-1, US-1/AC-3): every live
+/// stack's insertion gaps — stacks in [`move_ring`] order, positions
+/// top→bottom within a stack, N+1 slots per stack (a single-task stack
+/// offers exactly two). Computed on demand from the live state, never
+/// stored — refresh-survival by re-derivation, the ring's existing law.
+#[must_use]
+pub fn move_slots(state: &AppState) -> Vec<(StackId, usize)> {
+    move_ring(state)
+        .into_iter()
+        .flat_map(|stack| {
+            let len = state.tasks_in_stack(stack).len();
+            (0..=len).map(move |gap| (stack, gap))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -632,5 +690,184 @@ mod tests {
         let empty_board = BoardId::from(uuid::Uuid::now_v7());
         assert_eq!(append_stack_order(&state, empty_board), 0);
         let _ = (s0, s1);
+    }
+
+    // -- the move-ring reader family (the #1399 re-home) ------------------
+
+    fn board(id: BoardId) -> Board {
+        Board {
+            id,
+            remote: None,
+            title: "board".to_owned(),
+            color: crate::Color::new(""),
+            archived: false,
+            deleted: false,
+            clocks: crate::entities::BoardClocks {
+                title: epoch(),
+                color: epoch(),
+                archived: epoch(),
+                deleted: epoch(),
+            },
+            authors: crate::entities::BoardAuthors::default(),
+            remote_seen: None,
+        }
+    }
+
+    #[test]
+    fn stacks_in_board_filters_and_orders() {
+        let b1 = BoardId::from_uuid(uuid::Uuid::from_u128(0x01));
+        let b2 = BoardId::from_uuid(uuid::Uuid::from_u128(0x02));
+        let mut state = AppState::default();
+        state.boards.insert(b1, board(b1));
+        // (order, id) order with a tie on order broken by id.
+        let s1_id = StackId::from_uuid(uuid::Uuid::from_u128(0x11));
+        let s2_id = StackId::from_uuid(uuid::Uuid::from_u128(0x12));
+        state.stacks.insert(s2_id, stack(0x12, b1, 1));
+        state.stacks.insert(s1_id, stack(0x11, b1, 1));
+        let s3 = stack(0x13, b2, 0);
+        state.stacks.insert(s3.id, s3);
+        let mut deleted = stack(0x13, b1, 2);
+        deleted.deleted = true;
+        state.stacks.insert(deleted.id, deleted);
+
+        let ordered: Vec<StackId> = stacks_in_board(&state, b1)
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        let mut expected = vec![s1_id, s2_id];
+        expected.sort();
+        assert_eq!(ordered, expected, "other boards and tombstones filtered");
+    }
+
+    #[test]
+    fn live_boards_filters_to_live_boards_in_canonical_order() {
+        // Deterministic ids: live low + live high, one deleted and one
+        // archived between them; the walk order is board-id ascending
+        // (the `boards list` order).
+        let low = BoardId::from_uuid(uuid::Uuid::from_u128(0x01));
+        let dead = BoardId::from_uuid(uuid::Uuid::from_u128(0x02));
+        let archived = BoardId::from_uuid(uuid::Uuid::from_u128(0x03));
+        let high = BoardId::from_uuid(uuid::Uuid::from_u128(0x04));
+        let mut state = AppState::default();
+        state.boards.insert(high, board(high));
+        state.boards.insert(archived, {
+            let mut b = board(archived);
+            b.archived = true;
+            b
+        });
+        state.boards.insert(dead, {
+            let mut b = board(dead);
+            b.deleted = true;
+            b
+        });
+        state.boards.insert(low, board(low));
+
+        let ids: Vec<BoardId> = live_boards(&state).into_iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![low, high]);
+    }
+
+    /// A state with two boards, the first carrying `first` and the
+    /// second `second` live stacks in canonical order; returns the
+    /// stack ids of each board in `(order, id)` order.
+    fn two_board_fixture(first: usize, second: usize) -> (AppState, Vec<StackId>, Vec<StackId>) {
+        fn seed(state: &mut AppState, count: usize, base: u128, board: BoardId) -> Vec<StackId> {
+            (0..count)
+                .map(|i| {
+                    let s = stack(
+                        base + u128::try_from(i).unwrap(),
+                        board,
+                        i64::try_from(i).unwrap(),
+                    );
+                    let id = s.id;
+                    state.stacks.insert(id, s);
+                    id
+                })
+                .collect()
+        }
+        let b0 = BoardId::from(uuid::Uuid::from_u128(0x01));
+        let b1 = BoardId::from(uuid::Uuid::from_u128(0x02));
+        let mut state = AppState::default();
+        state.boards.insert(b0, board(b0));
+        state.boards.insert(b1, board(b1));
+        let first_ids = seed(&mut state, first, 0x10, b0);
+        let second_ids = seed(&mut state, second, 0x20, b1);
+        (state, first_ids, second_ids)
+    }
+
+    #[test]
+    fn the_move_ring_is_the_flat_cross_board_candidate_list() {
+        let (state, first, second) = two_board_fixture(2, 2);
+        let [s0, s1] = first[..] else { unreachable!() };
+        let [t0, t1] = second[..] else { unreachable!() };
+        assert_eq!(
+            move_ring(&state),
+            vec![s0, s1, t0, t1],
+            "boards in canonical order, each board's stacks in (order, id)"
+        );
+    }
+
+    #[test]
+    fn a_single_task_stack_enumerates_exactly_two_slots() {
+        let (mut state, first, _) = two_board_fixture(2, 0);
+        let [s0, s1] = first[..] else { unreachable!() };
+        push_task(&mut state, 0x100, s1, 0);
+        let _ = s0;
+        let s1_slots: Vec<(StackId, usize)> = move_slots(&state)
+            .into_iter()
+            .filter(|(stack, _)| *stack == s1)
+            .collect();
+        assert_eq!(
+            s1_slots,
+            vec![(s1, 0), (s1, 1)],
+            "one task, two insertion points: before and after"
+        );
+    }
+
+    #[test]
+    fn the_slot_walk_order_is_stack_canonical_top_to_bottom() {
+        let (mut state, first, _) = two_board_fixture(2, 0);
+        let [s0, s1] = first[..] else { unreachable!() };
+        push_task(&mut state, 0x100, s0, 0);
+        push_task(&mut state, 0x101, s0, 1);
+        push_task(&mut state, 0x102, s1, 0);
+        assert_eq!(
+            move_slots(&state),
+            vec![(s0, 0), (s0, 1), (s0, 2), (s1, 0), (s1, 1),],
+            "stacks in ring order, gaps 0..=len within each"
+        );
+    }
+
+    proptest! {
+        /// `stacks_in_board` equals the reference `(order, id)` sort of
+        /// the board's live stacks (test-side model recomputation).
+        #[test]
+        fn stacks_in_board_matches_reference_sort(orders in prop::collection::vec(0i64..5, 1..6)) {
+            let b1 = BoardId::from_uuid(uuid::Uuid::from_u128(0x01));
+            let b2 = BoardId::from_uuid(uuid::Uuid::from_u128(0x02));
+            let mut state = AppState::default();
+            state.boards.insert(b1, board(b1));
+            let mut ids = Vec::new();
+            for (i, order) in orders.iter().enumerate() {
+                let s = stack(
+                    0x30 + u128::try_from(i).unwrap(),
+                    b1,
+                    *order,
+                );
+                ids.push((s.id, *order));
+                state.stacks.insert(s.id, s);
+                if i == 0 {
+                    let other = stack(0x20, b2, 0);
+                    state.stacks.insert(other.id, other);
+                }
+            }
+        let mut expected: Vec<(i64, StackId)> =
+            ids.into_iter().map(|(id, order)| (order, id)).collect();
+        expected.sort();
+        let got: Vec<(i64, StackId)> = stacks_in_board(&state, b1)
+            .into_iter()
+            .map(|s| (s.order, s.id))
+            .collect();
+        prop_assert_eq!(got, expected);
+        }
     }
 }
