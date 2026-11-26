@@ -182,6 +182,14 @@ impl Element {
         self.handle.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Button)
     }
 
+    /// Whether the element is an accessible text input — the label
+    /// field's role read (#1324's scoped-lookup guard): a label string
+    /// can echo on static `Text` nodes beside the editable it names.
+    #[must_use]
+    pub fn is_text_input(&self) -> bool {
+        self.handle.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::TextInput)
+    }
+
     /// Whether the element is an accessible radio button — the
     /// segmented-control pin's role read (r2 D26; `accessible-checked`
     /// has no backend read, so the checked-state contract pins on the

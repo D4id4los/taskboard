@@ -13159,42 +13159,82 @@ fn open_setter(harness: &mut Harness) {
     );
 }
 
+/// Which mounted surface a scoped click addresses. The
+/// ordered-fixture discipline (#1324): popovers mount **last** in the
+/// tree, so a popover-scoped lookup takes the *last* match and an
+/// inline-scoped lookup the *first*. The discipline lives here — the
+/// one shared address — not per-helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mount {
+    /// An already-mounted surface (the first match).
+    Inline,
+    /// A popover mounted over it (the last match).
+    Popover,
+}
+
+/// The scoped segment click: the radio-role element is the address (a
+/// label can echo on non-button elements whose default action is
+/// inert). Under `debug_assertions` a scoped lookup that still
+/// resolves to more matches than the known inline+popover pair panics
+/// with a structural message (role + count, never UI text) — future
+/// shared-label ambiguities surface at the click site instead of as a
+/// wrong-element mystery.
+fn click_segment_scoped(harness: &mut Harness, label: &str, mount: Mount) {
+    let mut matches: Vec<_> = harness
+        .driver
+        .find_all_by_label(label)
+        .into_iter()
+        .filter(support::driver::Element::is_radio_button)
+        .collect();
+    assert!(
+        !(cfg!(debug_assertions) && matches.len() > 2),
+        "ambiguous segment click: {} radio-button matches for {label:?} (the inline+popover pair is the most the ordered fixture allows)",
+        matches.len()
+    );
+    let element = match mount {
+        Mount::Inline => matches.into_iter().next(),
+        Mount::Popover => matches.pop(),
+    };
+    element
+        .unwrap_or_else(|| panic!("the {mount:?} {label} segment is present"))
+        .invoke_default_action();
+    harness.driver.advance_time(0);
+}
+
 /// The segment click (the toolbar journey's idiom): the radio-role
 /// element is the address — a label can echo on non-button elements
 /// whose default action is inert.
 fn click_segment(harness: &mut Harness, label: &str) {
-    harness
-        .driver
-        .find_all_by_label(label)
-        .into_iter()
-        .find(support::driver::Element::is_radio_button)
-        .unwrap_or_else(|| panic!("the {label} segment is present"))
-        .invoke_default_action();
-    harness.driver.advance_time(0);
+    click_segment_scoped(harness, label, Mount::Inline);
 }
 
 /// The popover's segment click: the "Alarm"/"Normal" labels are
 /// shared with the timers view's inline form, and the popover mounts
-/// last in the tree — so, like the label field below, the *last*
-/// radio match is the popover's (the ordered-fixture discipline).
+/// last in the tree — the ordered-fixture discipline
+/// (`click_segment_scoped`'s doc carries it).
 fn click_popover_segment(harness: &mut Harness, label: &str) {
-    harness
-        .driver
-        .find_all_by_label(label)
-        .into_iter()
-        .rev()
-        .find(support::driver::Element::is_radio_button)
-        .unwrap_or_else(|| panic!("the popover's {label} segment is present"))
-        .invoke_default_action();
-    harness.driver.advance_time(0);
+    click_segment_scoped(harness, label, Mount::Popover);
 }
 
 fn click_popover_label(harness: &mut Harness) {
-    let matches = harness.driver.find_all_by_label("Timer label");
-    let element = matches
-        .last()
-        .expect("the popover's label field is mounted");
-    let (x, y) = support::driver::centre(element);
+    // The addressed role is the editable (TextInput): the label string
+    // also echoes on static Text nodes, which are not the address.
+    let mut matches: Vec<_> = harness
+        .driver
+        .find_all_by_label("Timer label")
+        .into_iter()
+        .filter(support::driver::Element::is_text_input)
+        .collect();
+    // The known pair is the inline form's field + the popover's (the
+    // ordered fixture); a third editable match is ambiguity — surfaced
+    // structurally, debug-mode only (#1324).
+    assert!(
+        !(cfg!(debug_assertions) && matches.len() > 2),
+        "ambiguous popover label click: {} text-input matches for the label field (the inline+popover pair is the most the ordered fixture allows)",
+        matches.len()
+    );
+    let element = matches.pop().expect("the popover's label field is mounted");
+    let (x, y) = support::driver::centre(&element);
     harness.driver.click_at(x, y);
 }
 
