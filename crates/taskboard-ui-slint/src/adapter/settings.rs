@@ -15,7 +15,7 @@ use super::Adapter;
 use super::replies::{AutoListBackoff, ItemAddr, PendingKind, PendingReply};
 use super::settings_vm::{
     GeneralField, SettingsOutcome, SettingsVm, map_form_field, map_form_kind, preset_index,
-    request_scale_anchor,
+    request_scale_anchor, theme_index,
 };
 use crate::AppWindow;
 use crate::adapter::install_seam;
@@ -124,6 +124,29 @@ impl Adapter {
                     }
                     Ok(Err(err)) => {
                         landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
+                        true
+                    }
+                    Err(oneshot::error::TryRecvError::Empty) => false,
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        landed = Some((SettingsOutcome::Failed, None));
+                        true
+                    }
+                },
+                PendingReply::Theme(rx, chosen, previous) => match rx.try_recv() {
+                    Ok(Ok(())) => {
+                        // The reply, not the click, is the selection's
+                        // source (the preset contract): the echoed
+                        // index re-renders from the VM on the settle
+                        // push.
+                        self.settings.theme = *chosen;
+                        landed = Some((SettingsOutcome::Ok, None));
+                        true
+                    }
+                    Ok(Err(err)) => {
+                        landed = Some((SettingsVm::outcome_of(&err), Some(err.clone())));
+                        // The live-apply revert (D4's twin of the
+                        // scale revert): the palette pushes back.
+                        crate::palette::apply(window, previous.palette());
                         true
                     }
                     Err(oneshot::error::TryRecvError::Empty) => false,
@@ -852,6 +875,7 @@ impl Adapter {
             .collect();
         window.set_reflection_editor_flags_model(ModelRc::new(slint::VecModel::from(chips)));
         global.set_preset_index(preset_index(self.settings.preset));
+        global.set_theme_index(theme_index(self.settings.theme));
         global.set_status_text(SharedString::from(crate::settings_status::status_text(
             self.settings.outcome,
             self.settings.detail.as_ref(),
@@ -1833,6 +1857,48 @@ impl Adapter {
         );
     }
 
+    /// The theme pick seam (#1437 D3/D4): the optimistic live push
+    /// first (colour properties re-render every view — no restart),
+    /// then the persist over the lane; an `Err` reply reverts the
+    /// palette (the scale commit's twin). The keymap preset's
+    /// grammar: the segmented control commits on pick.
+    pub(crate) fn settings_theme_picked(&mut self, window: &AppWindow, index: usize) {
+        let Some(chosen) = crate::palette::ThemeName::from_index(index) else {
+            return;
+        };
+        let previous = self.settings.theme;
+        if self.settings.pending.is_some() {
+            self.set_settings_outcome(
+                window,
+                SettingsOutcome::Rejected,
+                Some(SettingsError::RequestPending),
+            );
+            return;
+        }
+        crate::palette::apply(window, chosen.palette());
+        let (reply, reply_rx) = oneshot::channel();
+        let request = UiRequest::SetTheme {
+            theme: chosen,
+            reply,
+        };
+        let sent = self.settings.send(
+            &self.requests,
+            request,
+            PendingKind::Theme,
+            PendingReply::Theme(reply_rx, chosen, previous),
+            "",
+        );
+        self.set_settings_outcome(
+            window,
+            if sent {
+                SettingsOutcome::Busy
+            } else {
+                SettingsOutcome::Failed
+            },
+            None,
+        );
+    }
+
     /// The scale commit core (r2 D29): live-apply first (the mount
     /// precedent), then persist over the lane; an `Err` reply reverts
     /// to `previous`. Both input paths (field Return, slider release)
@@ -2654,6 +2720,15 @@ pub(in crate::adapter) fn install_settings_seams(
                 return;
             };
             a.settings_preset_picked(&window, index);
+
+        });
+    }
+    {
+        install_seam!(window: window.on_settings_theme_picked, adapter: adapter;
+        bind mut (a, window), args (index), {            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            a.settings_theme_picked(&window, index);
 
         });
     }

@@ -1741,7 +1741,7 @@ fn set_scale(workspace: &ConnectionWorkspace, scale: f64) -> Result<(), Settings
 /// Persists the theme word (#1437 D5): the choice arrives typed (the
 /// closed-set `ThemeName` minted UI-side), so the persist is the
 /// whole lane — the `overlay_set_ui_scale` twin through the same
-/// toml_edit ceremony.
+/// `toml_edit` ceremony.
 fn set_theme(
     workspace: &ConnectionWorkspace,
     theme: taskboard_ui_slint::palette::ThemeName,

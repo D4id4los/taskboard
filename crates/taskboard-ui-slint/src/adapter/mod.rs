@@ -1036,6 +1036,7 @@ pub(crate) fn install(
     window: &AppWindow,
     keymap: Keymap,
     preset: crate::keymap::Preset,
+    theme: crate::palette::ThemeName,
     startup: StartupWarnings,
     commands: mpsc::Sender<StateCommand>,
     requests: mpsc::Sender<crate::requests::UiRequest>,
@@ -1217,6 +1218,9 @@ pub(crate) fn install(
             // rides the VM — the first refresh's `push_settings` is
             // the one write path.
             preset,
+            // The mount seed (#1437 D5): the theme row's initial
+            // selection rides the VM (the `preset` twin).
+            theme,
             // The general snapshot (the GUI settings editor): the
             // hand-over's typed values, env set included (the reply
             // contract preserves it).
@@ -1310,6 +1314,7 @@ pub(crate) fn install(
         global.set_help_app_password(status::HELP_APP_PASSWORD.into());
         global.set_help_scale(status::HELP_SCALE.into());
         global.set_help_keymap(status::HELP_KEYMAP.into());
+        global.set_help_theme(status::HELP_THEME.into());
         global.set_help_rows(status::HELP_ROWS.into());
         // The general fields' help constants (the GUI settings editor).
         global.set_help_day_start(status::HELP_DAY_START.into());

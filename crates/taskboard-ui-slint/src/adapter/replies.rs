@@ -36,6 +36,13 @@ pub(in crate::adapter) enum PendingReply {
     Keymap(oneshot::Receiver<Result<KeymapUpdate, SettingsError>>),
     /// `SetScale`, with the scale to revert to on an `Err` reply.
     Scale(oneshot::Receiver<Result<(), SettingsError>>, f64),
+    /// `SetTheme` (#1437 D4), with the choice and the previous theme
+    /// to revert to on an `Err` reply.
+    Theme(
+        oneshot::Receiver<Result<(), SettingsError>>,
+        crate::palette::ThemeName,
+        crate::palette::ThemeName,
+    ),
     /// One of the settings editor's general commits: the reply
     /// carries the fresh file-layer [`SettingsSnapshot`].
     Snapshot(oneshot::Receiver<Result<crate::requests::SettingsSnapshot, SettingsError>>),
@@ -69,6 +76,9 @@ pub(in crate::adapter) enum PendingKind {
     PublishFiles,
     Preset,
     Scale,
+    /// `SetTheme` (#1437 D3): the theme row's marker (attribution
+    /// only; no busy marker matches it).
+    Theme,
     /// One of the settings editor's commits (the GUI settings editor
     /// chunk), named by the lane field it edits — text commits and
     /// choice picks alike (the kind is attribution only; no busy
