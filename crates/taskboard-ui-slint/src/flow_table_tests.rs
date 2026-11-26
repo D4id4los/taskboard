@@ -5443,8 +5443,9 @@ fn the_label_create_commit_routes_createlabel_with_the_swatch_hex() {
         );
         assert_eq!(rig.drain(), 0);
         assert!(rig.handle.window().get_label_overlay_form_open());
-        // A swatch pick re-arms the color; the commit lands the hex.
-        rig.handle.window().invoke_labels_overlay_swatch_clicked(2);
+        // A swatch pick re-arms the color; the commit lands the hex
+        // (D-5's derived grid: the red base at derived index 7).
+        rig.handle.window().invoke_labels_overlay_swatch_clicked(7);
         rig.handle
             .window()
             .invoke_labels_overlay_title_edited(SharedString::from("urgent"));
