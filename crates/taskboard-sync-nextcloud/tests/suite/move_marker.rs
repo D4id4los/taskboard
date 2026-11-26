@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use chrono::TimeZone as _;
-use taskboard_domain::board_move::MovedToFilesMarker;
+use taskboard_domain::board_move::{MOVED_TO_FILES_KEY, MovedToFilesMarker};
 use taskboard_domain::{
     ANCHOR_CARD_TITLE, APPDATA_FORMAT, AppDataDocument, AppDataSections, RemoteBoardId, TaskEntry,
 };
@@ -202,6 +202,16 @@ fn plain_document() -> AppDataDocument {
     }
 }
 
+/// A document with the marker merged in — the settled sidecar the
+/// recheck oracle accepts.
+fn set_marker(mut document: AppDataDocument, marker: &MovedToFilesMarker) -> AppDataDocument {
+    document.unknown.insert(
+        MOVED_TO_FILES_KEY.to_owned(),
+        serde_json::to_value(marker).unwrap(),
+    );
+    document
+}
+
 // ---- S1: fresh board, no anchor card, non-empty first stack ----------
 
 #[tokio::test]
@@ -304,8 +314,14 @@ async fn s2_existing_anchor_updates_the_sidecar_instead_of_uploading() {
         .and(path(format!(
             "{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(document_bytes(&plain_document())))
-        .expect(1)
+        // The initial read and the post-write recheck; the recheck sees
+        // the settled document (the marker present), so one attempt ends
+        // the loop.
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(document_bytes(&set_marker(plain_document(), &marker()))),
+        )
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -323,7 +339,7 @@ async fn s2_existing_anchor_updates_the_sidecar_instead_of_uploading() {
         .expect("the marker write succeeds");
 
     let requests = requests_of(&server).await;
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
     assert_eq!(
         paths_of(&requests),
         [
@@ -331,8 +347,9 @@ async fn s2_existing_anchor_updates_the_sidecar_instead_of_uploading() {
             format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments"),
             format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"),
             update_route(20, 5),
+            format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"),
         ],
-        "the existing sidecar is updated, never re-uploaded"
+        "the existing sidecar is updated, never re-uploaded; one recheck read"
     );
 
     let document = written_document(&requests[3]);
@@ -374,7 +391,8 @@ async fn s3_rerun_writes_the_same_document_and_never_creates_a_card() {
             let bytes = stored_for_download.lock().unwrap().clone();
             ResponseTemplate::new(200).set_body_bytes(bytes)
         })
-        .expect(2)
+        // Two runs × (initial read + recheck).
+        .expect(4)
         .mount(&server)
         .await;
     let stored_for_update = stored.clone();
@@ -396,6 +414,7 @@ async fn s3_rerun_writes_the_same_document_and_never_creates_a_card() {
             }
             ResponseTemplate::new(200).set_body_string(fixture("attachment_create_response.json"))
         })
+        // Two runs × one update per run.
         .expect(2)
         .mount(&server)
         .await;
@@ -441,6 +460,14 @@ async fn s3_rerun_writes_the_same_document_and_never_creates_a_card() {
 #[tokio::test]
 async fn s4_merge_preserves_live_sections_and_foreign_keys_verbatim() {
     let server = MockServer::start().await;
+    // The scripted server: the stored sidecar bytes mutate only through
+    // recorded update requests, so the post-write recheck observes the
+    // merged document (live sections + foreign key + marker) and one
+    // attempt settles the loop.
+    let stored: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(
+        fixture("move_marker_sidecar_live_document.json").into_bytes(),
+    ));
+    let stored_for_download = stored.clone();
     Mock::given(method("GET"))
         .and(path(stacks_path()))
         .respond_with(
@@ -462,19 +489,32 @@ async fn s4_merge_preserves_live_sections_and_foreign_keys_verbatim() {
         .and(path(format!(
             "{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"
         )))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(fixture("move_marker_sidecar_live_document.json").into_bytes()),
-        )
-        .expect(1)
+        .respond_with(move |_: &Request| {
+            let bytes = stored_for_download.lock().unwrap().clone();
+            ResponseTemplate::new(200).set_body_bytes(bytes)
+        })
+        .expect(2)
         .mount(&server)
         .await;
+    let stored_for_update = stored.clone();
     Mock::given(method("POST"))
         .and(path(update_route(20, 5)))
         .and(query_param("boardId", DECK_BOARD.to_string()))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(fixture("attachment_create_response.json")),
-        )
+        .respond_with(move |req: &Request| {
+            let content_type = req
+                .headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            let file = parse_multipart(&content_type, &req.body)
+                .into_iter()
+                .find(|p| p.filename.as_deref() == Some(SIDECAR_FILENAME));
+            if let Some(file) = file {
+                *stored_for_update.lock().unwrap() = file.body;
+            }
+            ResponseTemplate::new(200).set_body_string(fixture("attachment_create_response.json"))
+        })
         .expect(1)
         .mount(&server)
         .await;
@@ -484,6 +524,7 @@ async fn s4_merge_preserves_live_sections_and_foreign_keys_verbatim() {
         .expect("the marker write succeeds");
 
     let requests = requests_of(&server).await;
+    assert_eq!(requests.len(), 5, "stacks + list + read + update + recheck");
     let document = written_document(&requests[3]);
 
     // The live lane's task entry survives verbatim.
@@ -719,4 +760,309 @@ async fn s10_empty_stack_list_is_a_typed_no_op() {
 
     assert!(matches!(result, Ok(())));
     assert_eq!(requests_of(&server).await.len(), 1);
+}
+
+// ---- #1385: the sidecar concurrency guard -----------------------------
+//
+// The attachment content route serves no `ETag`/`If-Match` validators,
+// so a concurrent sidecar writer's PUT silently clobbers the marker
+// write (last write wins). The guard is a bounded read→write→recheck
+// loop: after each update the sidecar is re-downloaded and the write is
+// settled iff the server document equals its own merge with the marker;
+// on mismatch the fresh document becomes the next merge base, bounded
+// at three attempts with a typed `Contended` exhaustion outcome.
+
+/// A sidecar document with one foreign envelope key.
+fn document_with_unknown(key: &str, value: serde_json::Value) -> AppDataDocument {
+    let mut document = plain_document();
+    document.unknown.insert(key.to_owned(), value);
+    document
+}
+
+/// Scripted download responses: each call pops the next body, so the
+/// interleaving is deterministic — no sleeps, no polling.
+fn scripted_downloads(
+    bodies: Vec<AppDataDocument>,
+) -> impl Fn(&Request) -> ResponseTemplate + 'static {
+    let bodies = Mutex::new(
+        bodies
+            .into_iter()
+            .map(|d| document_bytes(&d))
+            .collect::<std::collections::VecDeque<_>>(),
+    );
+    move |_: &Request| {
+        let mut queue = bodies.lock().unwrap();
+        let bytes = queue
+            .pop_front()
+            .expect("the download script is not exhausted");
+        ResponseTemplate::new(200).set_body_bytes(bytes)
+    }
+}
+
+/// P1 — the lost-update pin: a concurrent sidecar writer's PUT lands
+/// between our update and our recheck (the recheck sees a marker-less
+/// document with the peer's evolved keys), so the guard retries with the
+/// peer's document as the merge base; the settled write carries the
+/// marker AND both of the peer's keys.
+#[tokio::test]
+async fn p1_concurrent_sidecar_write_is_not_lost() {
+    let server = MockServer::start().await;
+    let peer_base = document_with_unknown("live_key_b", serde_json::json!(1));
+    // The concurrent writer's output: our first PUT was clobbered —
+    // the peer's keys evolved/new, and the marker is gone.
+    let peer_clobber = AppDataDocument {
+        unknown: BTreeMap::from([
+            ("live_key_b".to_owned(), serde_json::json!(2)),
+            ("live_key_c".to_owned(), serde_json::json!(true)),
+        ]),
+        ..plain_document()
+    };
+    let settled = set_marker(peer_clobber.clone(), &marker());
+
+    Mock::given(method("GET"))
+        .and(path(stacks_path()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(fixture("move_marker_stacks_with_anchor.json")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sidecar_attachment_json(5, 0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"
+        )))
+        .respond_with(scripted_downloads(vec![peer_base, peer_clobber, settled]))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let updates: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let updates_for_mock = Arc::clone(&updates);
+    Mock::given(method("POST"))
+        .and(path(update_route(20, 5)))
+        .and(query_param("boardId", DECK_BOARD.to_string()))
+        .respond_with(move |req: &Request| {
+            let content_type = req
+                .headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            let file = parse_multipart(&content_type, &req.body)
+                .into_iter()
+                .find(|p| p.filename.as_deref() == Some(SIDECAR_FILENAME));
+            if let Some(file) = file {
+                updates_for_mock.lock().unwrap().push(file.body);
+            }
+            ResponseTemplate::new(200).set_body_string(fixture("attachment_create_response.json"))
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let result = write_move_marker(&client_for(&server), DECK_BOARD, marker()).await;
+
+    assert!(
+        matches!(result, Ok(())),
+        "the guard retries through the clobber: {result:?}"
+    );
+    // The scripted wire: read → write → recheck → re-merge → write →
+    // recheck, nothing else.
+    assert_eq!(
+        paths_of(&requests_of(&server).await),
+        [
+            stacks_path(),
+            format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments"),
+            format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"),
+            update_route(20, 5),
+            format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"),
+            update_route(20, 5),
+            format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"),
+        ],
+    );
+    let updates = updates.lock().unwrap();
+    assert_eq!(updates.len(), 2, "exactly two updates, the retry included");
+    // The final captured multipart body: the marker merged into the
+    // peer's clobbering document — nothing lost in either direction.
+    let settled_write: AppDataDocument = serde_json::from_slice(&updates[1]).unwrap();
+    assert_eq!(settled_write.moved_to_files(), Some(marker()));
+    assert_eq!(
+        settled_write.unknown.get("live_key_b"),
+        Some(&serde_json::json!(2))
+    );
+    assert_eq!(
+        settled_write.unknown.get("live_key_c"),
+        Some(&serde_json::json!(true))
+    );
+    // The first attempt's write was based on the pre-clobber document.
+    let first_write: AppDataDocument = serde_json::from_slice(&updates[0]).unwrap();
+    assert_eq!(
+        first_write.unknown.get("live_key_b"),
+        Some(&serde_json::json!(1))
+    );
+    assert!(!first_write.unknown.contains_key("live_key_c"));
+}
+
+/// P2 — contention exhaustion: every recheck observes a marker-less
+/// document (the peer keeps winning), so the loop stops after exactly
+/// three attempts — exactly 3 updates and exactly 4 downloads (the
+/// initial read plus one recheck per attempt) — and reports the typed
+/// exhaustion outcome.
+#[tokio::test]
+async fn p2_contention_exhaustion_is_a_typed_error() {
+    let server = MockServer::start().await;
+    // The peer's document never carries the marker: the recheck oracle
+    // never settles.
+    let peer_document = document_with_unknown("live_key_b", serde_json::json!(7));
+    Mock::given(method("GET"))
+        .and(path(stacks_path()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(fixture("move_marker_stacks_with_anchor.json")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sidecar_attachment_json(5, 0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"
+        )))
+        .respond_with(scripted_downloads(vec![
+            peer_document.clone(),
+            peer_document.clone(),
+            peer_document.clone(),
+            peer_document,
+        ]))
+        .expect(4)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(update_route(20, 5)))
+        .and(query_param("boardId", DECK_BOARD.to_string()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(fixture("attachment_create_response.json")),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+
+    let result = write_move_marker(&client_for(&server), DECK_BOARD, marker()).await;
+
+    assert!(
+        matches!(result, Err(MoveMarkerError::Contended)),
+        "exhaustion is the typed outcome: {result:?}"
+    );
+    let paths = paths_of(&requests_of(&server).await);
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|p| p.ends_with("/attachments/5"))
+            .count(),
+        4,
+        "initial read + one recheck per attempt, no more"
+    );
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|p| p.as_str() == update_route(20, 5))
+            .count(),
+        3,
+        "bounded at three attempts"
+    );
+}
+
+/// P3 — the stable-sidecar regression guard: when no concurrent writer
+/// interferes, the recheck observes exactly what we wrote and the happy
+/// path costs one extra GET — one initial read, one update, one recheck
+/// — never a retry cycle.
+#[tokio::test]
+async fn p3_stable_sidecar_write_is_a_single_update() {
+    let server = MockServer::start().await;
+    // The scripted server: the stored bytes mutate only through the
+    // recorded update, so the recheck observes the written document.
+    let stored: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(document_bytes(&plain_document())));
+    let stored_for_download = stored.clone();
+    Mock::given(method("GET"))
+        .and(path(stacks_path()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(fixture("move_marker_stacks_with_anchor.json")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sidecar_attachment_json(5, 0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"
+        )))
+        .respond_with(move |_: &Request| {
+            let bytes = stored_for_download.lock().unwrap().clone();
+            ResponseTemplate::new(200).set_body_bytes(bytes)
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let stored_for_update = stored.clone();
+    Mock::given(method("POST"))
+        .and(path(update_route(20, 5)))
+        .and(query_param("boardId", DECK_BOARD.to_string()))
+        .respond_with(move |req: &Request| {
+            let content_type = req
+                .headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            let file = parse_multipart(&content_type, &req.body)
+                .into_iter()
+                .find(|p| p.filename.as_deref() == Some(SIDECAR_FILENAME));
+            if let Some(file) = file {
+                *stored_for_update.lock().unwrap() = file.body;
+            }
+            ResponseTemplate::new(200).set_body_string(fixture("attachment_create_response.json"))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let result = write_move_marker(&client_for(&server), DECK_BOARD, marker()).await;
+
+    assert!(matches!(result, Ok(())));
+    assert_eq!(
+        paths_of(&requests_of(&server).await),
+        [
+            stacks_path(),
+            format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments"),
+            format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"),
+            update_route(20, 5),
+            format!("{BOARDS_PATH}/{DECK_BOARD}/stacks/7/cards/20/attachments/5"),
+        ],
+        "one read, one update, one recheck — the happy path"
+    );
+    let settled: AppDataDocument = serde_json::from_slice(&stored.lock().unwrap().clone()).unwrap();
+    assert_eq!(settled.moved_to_files(), Some(marker()));
 }
