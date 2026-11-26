@@ -1439,6 +1439,10 @@ export component AppWindow inherits Window {
                 colour-preview: root.label-overlay-colour-preview;
                 swatches: root.label-overlay-swatches;
                 swatch-selected: root.label-overlay-swatch-selected;
+                picker-hue: root.label-overlay-picker-hue;
+                picker-sat: root.label-overlay-picker-sat;
+                picker-val: root.label-overlay-picker-val;
+                picker-hue-colour: root.label-overlay-picker-hue-colour;
                 armed-index: root.label-overlay-armed-index;
                 shows-assignment: root.label-overlay-shows-assignment;
                 row-toggled(index) => root.labels-overlay-row-toggled(index);
@@ -1448,6 +1452,8 @@ export component AppWindow inherits Window {
                 title-edited(t) => root.labels-overlay-title-edited(t);
                 colour-edited(c) => root.labels-overlay-colour-edited(c);
                 swatch-clicked(i) => root.labels-overlay-swatch-clicked(i);
+                hue-picked(h) => root.labels-overlay-hue-picked(h);
+                sat-val-picked(s, v) => root.labels-overlay-sat-val-picked(s, v);
                 form-commit-requested() => root.labels-overlay-form-commit-requested();
                 form-cancelled() => root.labels-overlay-form-cancelled();
                 delete-clicked(index) => root.labels-overlay-delete-clicked(index);
@@ -1493,6 +1499,10 @@ export component AppWindow inherits Window {
                 colour-preview: root.label-overlay-colour-preview;
                 swatches: root.label-overlay-swatches;
                 swatch-selected: root.label-overlay-swatch-selected;
+                picker-hue: root.label-overlay-picker-hue;
+                picker-sat: root.label-overlay-picker-sat;
+                picker-val: root.label-overlay-picker-val;
+                picker-hue-colour: root.label-overlay-picker-hue-colour;
                 armed-index: root.label-overlay-armed-index;
                 shows-assignment: root.label-overlay-shows-assignment;
                 row-toggled(index) => root.labels-overlay-row-toggled(index);
@@ -1502,6 +1512,8 @@ export component AppWindow inherits Window {
                 title-edited(t) => root.labels-overlay-title-edited(t);
                 colour-edited(c) => root.labels-overlay-colour-edited(c);
                 swatch-clicked(i) => root.labels-overlay-swatch-clicked(i);
+                hue-picked(h) => root.labels-overlay-hue-picked(h);
+                sat-val-picked(s, v) => root.labels-overlay-sat-val-picked(s, v);
                 form-commit-requested() => root.labels-overlay-form-commit-requested();
                 form-cancelled() => root.labels-overlay-form-cancelled();
                 delete-clicked(index) => root.labels-overlay-delete-clicked(index);
@@ -2792,6 +2804,14 @@ export component AppWindow inherits Window {
     in property <color> label-overlay-colour-preview;
     in property <[color]> label-overlay-swatches;
     in property <int> label-overlay-swatch-selected;
+    // The picker's pushed projection (journey plan
+    // `…-schedule-colour-ux-plan.md` D-3/D-4, US-28): the last-valid
+    // draft's HSV reading and the pure hue colour (the SV square's
+    // base fill).
+    in property <float> label-overlay-picker-hue;
+    in property <float> label-overlay-picker-sat;
+    in property <float> label-overlay-picker-val;
+    in property <color> label-overlay-picker-hue-colour;
     // The armed delete's pushed mirror (the track-entries armed-index
     // rule): the armed roster row, or -1.
     in property <int> label-overlay-armed-index;
@@ -2828,6 +2848,11 @@ export component AppWindow inherits Window {
     // slint: colour-edited (tag-color plan D-5).
     pure callback labels-overlay-colour-edited(string);
     pure callback labels-overlay-swatch-clicked(int);
+    // The picker's gestures (US-28/S1, S4).
+    // slint: hue-picked / sat-val-picked (adapter:
+    // labels_overlay_hue_picked / labels_overlay_sat_val_picked)
+    pure callback labels-overlay-hue-picked(float);
+    pure callback labels-overlay-sat-val-picked(float, float);
     pure callback labels-overlay-form-commit-requested() -> bool;
     pure callback labels-overlay-form-cancelled();
     pure callback track-entry-row-activated(int);

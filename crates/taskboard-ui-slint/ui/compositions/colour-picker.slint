@@ -1,0 +1,217 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The colour picker (journey plan
+// .artifacts/plans/2026-11-25-sound-today-colour-journeys-schedule-
+// colour-ux-plan.md, US-28/D-4): a hue strip + SV square, pure Slint
+// (TouchArea drag surfaces, no IO, no shaders beyond fills). The
+// picker holds NO truth of its own: `hue`/`sat`/`val` are the
+// projection of the overlay's last-valid draft hex (D-3 — the draft
+// string is the single source of truth), pushed adapter-side; every
+// gesture (drag, click, keyboard nudge) re-emits the projected value
+// through `hue-picked` / `sat-val-picked`, the seams rewrite the
+// draft, the refresh re-projects. Invalid drafts never reach here
+// (the projection push is gated on the mint adapter-side), so the
+// picker holds its last valid projection through them. Fully
+// keyboard-operable (the keyboard-first law): each part is a tab
+// stop; arrows nudge — the strip ±3° (wrap), the square ±5% sat/val
+// (clamped) — so every reachable-by-drag colour is reachable by
+// arrows.
+
+import { Theme, Semantic } from "../theme.slint";
+
+// The hue strip's fixed stops (pure hues every 60°, wrapping red) —
+// const fill data (Theme's picker block), the drag surface maps
+// pointer x onto the same ramp.
+component HueRamp inherits Rectangle {
+    background: @linear-gradient(
+        90deg,
+        Theme.picker-hue-red 0%,
+        Theme.picker-hue-yellow 16.667%,
+        Theme.picker-hue-green 33.333%,
+        Theme.picker-hue-cyan 50%,
+        Theme.picker-hue-blue 66.667%,
+        Theme.picker-hue-magenta 83.333%,
+        Theme.picker-hue-red 100%
+    );
+}
+
+export component ColourPicker inherits Rectangle {
+    // The pushed projection of the last-valid draft (D-3): hue in
+    // degrees [0, 360), sat/val unit clamped.
+    in property <float> hue: 0;
+    in property <float> sat: 0;
+    in property <float> val: 0;
+    // The current hue's pure colour (s = v = 1) — the SV square's
+    // base fill; computed adapter-side (UI purity: no colour math in
+    // slint).
+    in property <color> hue-colour: transparent;
+    // The gestures (§5.1): every drag move / click / keyboard nudge
+    // re-emits the projected value; the overlay draft seam owns the
+    // write. No command, no commit ceremony — the overlay's commit
+    // is the funnel (US-28/S3).
+    callback hue-picked(float);
+    callback sat-val-picked(float, float);
+
+    // The keyboard nudge steps: the strip wraps modulo 360; the
+    // square clamps to the unit band.
+    property <float> hue-step: 3.0;
+    property <float> sv-step: 0.05;
+
+    height: Theme.space-5 + Theme.space-4 + Theme.space-2;
+    HorizontalLayout {
+        spacing: Theme.space-2;
+        // The hue strip: a tab stop; drag / click / Left-Right.
+        hue-scope := FocusScope {
+            width: Theme.space-4;
+            focus-on-tab-navigation: true;
+            accessible-role: AccessibleRole.slider;
+            accessible-label: "Hue";
+            accessible-value: root.hue;
+            accessible-action-increment => { root.nudge-hue(root.hue-step); }
+            accessible-action-decrement => { root.nudge-hue(-root.hue-step); }
+            key-pressed(event) => {
+                if (event.text == Key.LeftArrow) {
+                    root.nudge-hue(-root.hue-step);
+                    accept
+                } else if (event.text == Key.RightArrow) {
+                    root.nudge-hue(root.hue-step);
+                    accept
+                } else {
+                    reject
+                }
+            }
+            strip-touch := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                mouse-cursor: MouseCursor.pointer;
+                changed pressed => {
+                    if (self.pressed) {
+                        hue-scope.focus();
+                        root.hue-picked(self.hue-at(self.mouse-x));
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.hue-picked(self.hue-at(self.mouse-x));
+                    }
+                }
+                public function hue-at(pos: length) -> float {
+                    return clamp(pos / max(0.0001px, self.width), 0.0, 0.9999)
+                        * 360.0;
+                }
+            }
+            HueRamp {
+                x: 0;
+                width: parent.width;
+                height: Theme.space-5;
+                y: (parent.height - self.height) / 2;
+                border-radius: Theme.radius-small;
+                border-width: hue-scope.has-focus ? Theme.focus-ring-width : 0;
+                border-color: Semantic.focus-ring;
+                // The thumb: the projection's ring.
+                Rectangle {
+                    x: parent.width * (root.hue / 360.0) - self.width / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: Theme.space-2;
+                    height: parent.height;
+                    border-radius: Theme.radius-small;
+                    border-width: Theme.focus-ring-width;
+                    border-color: Theme.picker-sv-white;
+                }
+            }
+        }
+        // The SV square: a tab stop; drag / click / arrows (Left-Right
+        // saturation, Up-Down value).
+        sv-scope := FocusScope {
+            width: Theme.space-4;
+            height: 100%;
+            focus-on-tab-navigation: true;
+            accessible-role: AccessibleRole.slider;
+            accessible-label: "Shade";
+            accessible-value: root.sat;
+            accessible-action-increment => { root.nudge-sat-val(root.sv-step, 0.0); }
+            accessible-action-decrement => { root.nudge-sat-val(-root.sv-step, 0.0); }
+            key-pressed(event) => {
+                if (event.text == Key.LeftArrow) {
+                    root.nudge-sat-val(-root.sv-step, 0.0);
+                    accept
+                } else if (event.text == Key.RightArrow) {
+                    root.nudge-sat-val(root.sv-step, 0.0);
+                    accept
+                } else if (event.text == Key.UpArrow) {
+                    root.nudge-sat-val(0.0, root.sv-step);
+                    accept
+                } else if (event.text == Key.DownArrow) {
+                    root.nudge-sat-val(0.0, -root.sv-step);
+                    accept
+                } else {
+                    reject
+                }
+            }
+            square-touch := TouchArea {
+                width: parent.width;
+                height: parent.height;
+                mouse-cursor: MouseCursor.pointer;
+                changed pressed => {
+                    if (self.pressed) {
+                        sv-scope.focus();
+                        root.sat-val-picked(self.sat-at(self.mouse-x), self.val-at(self.mouse-y));
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.sat-val-picked(self.sat-at(self.mouse-x), self.val-at(self.mouse-y));
+                    }
+                }
+                public function sat-at(pos: length) -> float {
+                    return clamp(pos / max(0.0001px, self.width), 0.0, 1.0);
+                }
+                public function val-at(pos: length) -> float {
+                    return 1.0 - clamp(pos / max(0.0001px, self.height), 0.0, 1.0);
+                }
+            }
+            Rectangle {
+                x: 0;
+                width: parent.width;
+                height: parent.height;
+                border-radius: Theme.radius-small;
+                border-width: sv-scope.has-focus ? Theme.focus-ring-width : 0;
+                border-color: Semantic.focus-ring;
+                // The SV square's two overlays: white → none across
+                // (saturation), none → black down (value) — the SV
+                // square is native to HSV (D-4).
+                background: root.hue-colour;
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: @linear-gradient(90deg, Theme.picker-sv-white, transparent);
+                }
+                Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: @linear-gradient(180deg, transparent, Theme.picker-sv-black);
+                }
+                // The thumb: the projection's ring.
+                Rectangle {
+                    x: parent.width * root.sat - self.width / 2;
+                    y: parent.height * (1.0 - root.val) - self.height / 2;
+                    width: Theme.space-2;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    border-width: Theme.focus-ring-width;
+                    border-color: Theme.picker-sv-white;
+                }
+            }
+        }
+    }
+
+    // One keyboard / AT nudge: re-emit the wrapped (strip) or clamped
+    // (square) projection — the same seams the drags ride.
+    public function nudge-hue(delta: float) -> bool {
+        root.hue-picked(Math.mod(root.hue + delta + 360.0, 360.0));
+        return true;
+    }
+    public function nudge-sat-val(sat-delta: float, val-delta: float) -> bool {
+        root.sat-val-picked(clamp(root.sat + sat-delta, 0.0, 1.0), clamp(root.val + val-delta, 0.0, 1.0));
+        return true;
+    }
+}

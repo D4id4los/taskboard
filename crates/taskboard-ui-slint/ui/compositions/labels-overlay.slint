@@ -13,6 +13,7 @@ import { Theme, Typography, RoleText, Tone, Semantic } from "../theme.slint";
 import { IconButton, IconKind } from "../widgets/icon-button.slint";
 import { TooltipState } from "../widgets/tooltip.slint";
 import { TextField, FieldValidity } from "../widgets/text-field.slint";
+import { ColourPicker } from "./colour-picker.slint";
 import { TextButton } from "../widgets/text-button.slint";
 import { MaskWalkFacts } from "../mask-walk-facts.slint";
 
@@ -47,6 +48,16 @@ export component LabelsPanel inherits Rectangle {
     in property <color> colour-preview;
     in property <[color]> swatches;
     in property <int> swatch-selected: -1;
+    // The picker's pushed projection (journey plan `…-schedule-colour-
+    // ux-plan.md` D-3/D-4, US-28): the last-valid draft's HSV reading
+    // plus the pure hue colour the SV square's base fill needs — the
+    // draft string is the single truth, these are its projection; an
+    // invalid intermediate never reaches them (the push is gated on
+    // the mint adapter-side).
+    in property <float> picker-hue: 0;
+    in property <float> picker-sat: 0;
+    in property <float> picker-val: 0;
+    in property <color> picker-hue-colour: transparent;
     // The armed delete's pushed mirror (the track-entries armed-index
     // rule): the armed roster row, or -1.
     in property <int> armed-index: -1;
@@ -72,6 +83,13 @@ export component LabelsPanel inherits Rectangle {
     // plan D-5; the `title-edited` twin, the SC-W-N2 naming — the
     // field's edits flow adapter-ward, never push-ward).
     callback colour-edited(string);
+    // The picker's gestures (US-28/S1, S4): every drag / nudge
+    // re-emits the projection; the adapter rewrites the draft — no
+    // command, the overlay's commit is the funnel.
+    // slint: hue-picked / sat-val-picked (adapter:
+    // labels_overlay_hue_picked / labels_overlay_sat_val_picked)
+    callback hue-picked(float);
+    callback sat-val-picked(float, float);
     callback swatch-clicked(int);
     callback form-commit-requested() -> bool;
     callback form-cancelled();
@@ -281,6 +299,17 @@ export component LabelsPanel inherits Rectangle {
                         border-width: Theme.hairline-width;
                         border-color: Theme.border;
                     }
+                }
+                // The picker's mount (US-28): beside the colour
+                // field's section, live only while the form is open.
+                ColourPicker {
+                    visible: root.form-open;
+                    hue: root.picker-hue;
+                    sat: root.picker-sat;
+                    val: root.picker-val;
+                    hue-colour: root.picker-hue-colour;
+                    hue-picked(h) => root.hue-picked(h);
+                    sat-val-picked(s, v) => root.sat-val-picked(s, v);
                 }
                 HorizontalLayout {
                     spacing: Theme.space-2;
