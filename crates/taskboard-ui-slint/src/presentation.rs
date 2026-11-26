@@ -864,86 +864,29 @@ fn channel_u8(t: f64) -> u8 {
     (t.clamp(0.0, 1.0) * 255.0 + 0.5).floor() as u8
 }
 
-/// The label chip's light text ink (the palette-vs-text contrast law,
-/// journey plan US-29 AC-4 — #1415's failure mode): a pure-white ink
-/// carried by dark tones.
-pub const CHIP_INK_LIGHT: &str = "ffffff";
-
-/// The label chip's dark text ink: a pure-black ink carried by light
-/// tones (the other half of [`chip_text_on`]'s pair).
-pub const CHIP_INK_DARK: &str = "000000";
-
-/// The chip-ink decision threshold: L★ = sqrt(0.05 × 1.05) − 0.05
-/// ≈ 0.17913 — the unique relative luminance at which black and white
-/// inks give *equal* contrast (4.58:1 each), so the two-way rule
-/// clears WCAG 2.2 SC 1.4.3's 4.5:1 for **any** opaque fill — a
-/// guarantee, not a heuristic (the minimax property; recorded as its
-/// exact value because `f64::sqrt` is not const-stable).
-///
-/// Composition boundary (stage-3 review ruling, chunk C3b × round-8
-/// L4 / #1501): this is the SAME decision core #1501's `chip_ink`
-/// carries — one rule, one threshold, one ink pair. This branch
-/// reached it first through a fallible wrapper ([`chip_text_on`]
-/// returns `None` off the minted domain instead of leniency-defaulting
-/// to the dark arm, because the transparent-chip fallback already
-/// covers the un-minted shape); whichever PR lands second collapses
-/// its wrapper onto the survivor. Earlier draft inks (a `1f232b`
-/// near-black scored best-of-pair) were retired here: their crossover
-/// floor was ≈3.97:1, strictly weaker than this core's provable
-/// ≥4.5:1 — the same rule serves both chip sites, so it unifies.
-pub(crate) const CHIP_INK_THRESHOLD: f64 = 0.179_128_784_747_792_04;
-
-/// A colour's WCAG 2.x relative luminance over the minted 6-hex
-/// domain (channel tuple in) — the chip-ink decision core's input
-/// ([`chip_text_on`] reads it against [`CHIP_INK_THRESHOLD`]; the
-/// contrast pins judge the floor against it).
-#[must_use]
-fn relative_luminance(channels: (f64, f64, f64)) -> f64 {
-    let linear = |c: f64| {
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let (r, g, b) = channels;
-    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
-}
-
-/// One WCAG 2.x contrast ratio between two minted 6-hex bodies
-/// (clamped at 1.0; `None` off the minted shape). Test-suite consumer
-/// only (the chip-ink floor pins) — the decision core no longer
-/// scores candidate inks, it compares luminance against
-/// [`CHIP_INK_THRESHOLD`]; the definition stays next to the
-/// luminance core it divides.
-#[cfg(test)]
-#[must_use]
-fn contrast_ratio(a: &str, b: &str) -> Option<f64> {
-    let (la, lb) = (
-        relative_luminance(hex_channels(a)?),
-        relative_luminance(hex_channels(b)?),
-    );
-    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
-    Some((hi + 0.05) / (lo + 0.05))
-}
-
 /// The readable label-chip text ink for a minted 6-hex colour body
-/// (journey plan US-29 AC-4; the L4 decision core — see
-/// [`CHIP_INK_THRESHOLD`]): the fill's luminance against L★ decides
-/// the arm, so every minted colour — every palette tone included —
-/// gets a ≥4.5:1 chip text (the proptest pins the floor; the token
-/// test additionally pins the palette's ≥3:1 non-text class).
-/// `None` off the minted domain: the caller keeps the theme's
-/// secondary ink (the lenient stored colour renders a transparent
-/// chip, where no tone contrast exists).
+/// (journey plan US-29 AC-4): a thin fallible layer over the shared
+/// decision core [`chip_ink`] — the fill's luminance against L★
+/// ([`CHIP_INK_THRESHOLD`]) decides the arm, so every minted colour —
+/// every palette tone included — gets a ≥4.5:1 chip text (the
+/// proptest pins the floor; the token test additionally pins the
+/// palette's ≥3:1 non-text class). `None` off the minted domain: the
+/// caller maps it to the transparent-chip fallback (the theme's
+/// secondary ink — no minted background renders, so no tone contrast
+/// exists to threshold).
+///
+/// Wrapper decision (stage-3 collapse ruling, chunk C3b × round-8 L4
+/// / #1501): the chip-ink consumer census found exactly one
+/// production site — the task-card chip model (`models.rs`) — and its
+/// inputs genuinely include lenient not-a-colour wire echoes, so the
+/// fallible shape survives as this thin Option layer over the core
+/// (which stays lenient-internal for direct callers): `None` names
+/// the surface actually underneath instead of thresholding a fill
+/// that never renders.
 #[must_use]
 pub fn chip_text_on(hex: &str) -> Option<&'static str> {
-    let channels = hex_channels(hex)?;
-    Some(if relative_luminance(channels) >= CHIP_INK_THRESHOLD {
-        CHIP_INK_DARK
-    } else {
-        CHIP_INK_LIGHT
-    })
+    hex_channels(hex)?;
+    Some(chip_ink(hex).body())
 }
 
 /// WCAG 2.x relative luminance over 8-bit sRGB channels — the single
@@ -984,6 +927,17 @@ pub(crate) fn contrast_ratio(a: &str, b: &str) -> f64 {
 /// pinned by the proptest below). Recorded as its exact value because
 /// `f64::sqrt` is not const-stable; the known-answer test pins it
 /// against the closed-form expression.
+///
+/// Composition boundary (stage-3 collapse ruling, chunk C3b × round-8
+/// L4 / #1501): this is the SAME decision core both PRs carried — one
+/// rule, one threshold, one ink pair; whichever landed second
+/// collapsed onto it (this tree, post-rebase). The fallible wrapper
+/// ([`chip_text_on`]) survives as a thin Option layer over this core
+/// because its consumer's inputs genuinely include lenient
+/// not-a-colour wire echoes; earlier draft inks (a `1f232b`
+/// near-black scored best-of-pair) were retired: their crossover
+/// floor was ≈3.97:1, strictly weaker than this core's provable
+/// ≥4.5:1.
 pub(crate) const CHIP_INK_THRESHOLD: f64 = 0.179_128_784_747_792_04;
 
 /// The text ink a label chip draws over a fill, decided so the
@@ -11442,7 +11396,7 @@ mod files_sync_chip_fold_tests {
     fn every_palette_tone_carries_a_readable_chip_ink() {
         for tone in derived_swatches() {
             let ink = chip_text_on(&tone).expect("a minted tone picks an ink");
-            let ratio = contrast_ratio(&tone, ink).expect("minted pair");
+            let ratio = contrast_ratio(&tone, ink);
             assert!(ratio >= 3.0, "tone {tone} vs ink {ink} is {ratio:.2}:1");
         }
     }
@@ -11458,7 +11412,7 @@ mod files_sync_chip_fold_tests {
         ) {
             let hex = format!("{a:02x}{b:02x}{c:02x}");
             let ink = chip_text_on(&hex).expect("minted colour");
-            let ratio = contrast_ratio(&hex, ink).expect("minted pair");
+            let ratio = contrast_ratio(&hex, ink);
             prop_assert!(ratio >= 4.5, "{hex} vs {ink} is {ratio:.2}:1");
         }
     }
@@ -11468,8 +11422,8 @@ mod files_sync_chip_fold_tests {
     /// pin the extremes' ink sides (white → dark ink, black → light).
     #[test]
     fn chip_text_on_is_total_on_minted_none_off() {
-        assert_eq!(chip_text_on("ffffff"), Some(CHIP_INK_DARK));
-        assert_eq!(chip_text_on("000000"), Some(CHIP_INK_LIGHT));
+        assert_eq!(chip_text_on("ffffff"), Some(ChipInk::Dark.body()));
+        assert_eq!(chip_text_on("000000"), Some(ChipInk::Light.body()));
         assert!(chip_text_on("#fff").is_none());
         assert!(chip_text_on("zzzzzz").is_none());
         assert!(chip_text_on("31cc7").is_none());
