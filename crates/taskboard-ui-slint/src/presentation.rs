@@ -5,7 +5,10 @@
 //! IO, no mutation (the extraction seam: a second Rust consumer lifts
 //! this module into its own crate unchanged; a non-Rust UI reuses the
 //! *domain* over IPC and re-implements the mapping natively — the
-//! concepts port, the module does not).
+//! concepts port, the module does not). One scoped exception (chunk L4,
+//! #1415): [`ChipInk::color`] wraps the pure ink decision in a
+//! `slint::Color` — the decision core itself (`chip_ink`) stays
+//! slint-free.
 //!
 //! Domain truth is never reinvented: due classification is
 //! set-membership over the domain's own `overdue_tasks`/`due_soon`
@@ -607,6 +610,103 @@ pub struct ReminderTarget {
 /// chunk-4 D-6 letter). One vocabulary for every swatch surface
 /// (labels and boards); each consumer maps it to its own default.
 pub const SWATCHES: [&str; 6] = ["31cc7c", "3a70d6", "e05a4e", "edbf45", "9d68d9", "8f8f8f"];
+
+/// WCAG 2.x relative luminance over 8-bit sRGB channels — the single
+/// production definition of the formula in this repo (chunk L4, #1415:
+/// hoisted from `token_tests.rs`, which now consumes it, keeping
+/// `scripts/layout_review.py`'s "single definition" pointer true).
+/// The Rust side indexes the six-hex body's slices at 0/2/4 (R, G, B —
+/// two hex digits per channel).
+pub(crate) fn relative_luminance(hex: &str) -> f64 {
+    let channel = |i: usize| -> f64 {
+        let c = f64::from(u8::from_str_radix(&hex[i..i + 2], 16).expect("validated hex")) / 255.0;
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
+}
+
+/// WCAG 2.x contrast ratio, ≥ 1.0 (single production definition; see
+/// [`relative_luminance`]). Currently a test-suite consumer only (the
+/// token pins and the chip-ink contrast pins), hence `#[cfg(test)]` —
+/// the definition stays next to the luminance core it divides.
+#[cfg(test)]
+pub(crate) fn contrast_ratio(a: &str, b: &str) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// The chip-ink decision threshold: L★ = sqrt(0.05 × 1.05) − 0.05
+/// ≈ 0.17913 — the unique relative luminance at which black and white
+/// inks give *equal* contrast (4.58:1 each), so the two-way rule
+/// clears WCAG 2.2 SC 1.4.3's 4.5:1 (normal text; the badge role is
+/// 11 px, so the large-text relaxation never applies) for **any**
+/// opaque fill — a guarantee, not a heuristic (the minimax property is
+/// pinned by the proptest below). Recorded as its exact value because
+/// `f64::sqrt` is not const-stable; the known-answer test pins it
+/// against the closed-form expression.
+pub(crate) const CHIP_INK_THRESHOLD: f64 = 0.179_128_784_747_792_04;
+
+/// The text ink a label chip draws over a fill, decided so the
+/// WCAG 2.2 SC 1.4.3 contrast floor holds for any opaque fill
+/// (issue #1415). Two variants by construction — there is no third
+/// ink, so no illegal state to carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipInk {
+    /// White ink (`#ffffff`) — the fill is darker than [`CHIP_INK_THRESHOLD`].
+    Light,
+    /// Black ink (`#000000`) — the fill is at/above [`CHIP_INK_THRESHOLD`].
+    Dark,
+}
+
+impl ChipInk {
+    /// The ink as its six-hex body (the [`SWATCHES`] vocabulary's own
+    /// form; consumed by the contrast pins).
+    #[must_use]
+    pub const fn body(self) -> &'static str {
+        match self {
+            ChipInk::Light => "ffffff",
+            ChipInk::Dark => "000000",
+        }
+    }
+
+    /// The ink as a slint colour. The one slint-typed accessor on this
+    /// module's chip-ink rule (the decision core [`chip_ink`] stays
+    /// pure); a second Rust consumer lifts the core unchanged and
+    /// re-derives this arm.
+    #[must_use]
+    pub fn color(self) -> slint::Color {
+        match self {
+            ChipInk::Light => slint::Color::from_rgb_u8(0xff, 0xff, 0xff),
+            ChipInk::Dark => slint::Color::from_rgb_u8(0x00, 0x00, 0x00),
+        }
+    }
+}
+
+/// The chip-ink rule (chunk L4, #1415): `L(fill) ≥ L★` → dark ink,
+/// `L(fill) < L★` → white. `fill_body` is a six-hex body in the
+/// [`SWATCHES`] vocabulary. *Documented leniency*: a lenient domain
+/// `Color` body that is not six-hex never reaches the chip fill
+/// (`swatch_hex` renders it transparent on the light card surface), so
+/// such a body minting [`ChipInk::Dark`] is the safe arm for the
+/// surface actually underneath — not validate-and-forget, the fallible
+/// shape lives one layer down in the swatch hygiene.
+#[must_use]
+pub fn chip_ink(fill_body: &str) -> ChipInk {
+    let valid = fill_body.len() == 6 && fill_body.bytes().all(|b| b.is_ascii_hexdigit());
+    if !valid {
+        return ChipInk::Dark;
+    }
+    if relative_luminance(fill_body) >= CHIP_INK_THRESHOLD {
+        ChipInk::Dark
+    } else {
+        ChipInk::Light
+    }
+}
 
 /// The card chips' cap (tag-color UX plan D-9, US-3): the decoration
 /// row's width budget at the narrow breakpoint; beyond it the chips

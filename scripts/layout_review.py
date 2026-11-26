@@ -389,14 +389,16 @@ def connected_components(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
 
 # ---------------------------------------------------------------------------
 # WCAG 2.x colour math (Q1, #1410): transcribed byte-for-byte from
-# crates/taskboard-ui-slint/src/token_tests.rs relative_luminance /
-# contrast_ratio — the token test suite is the single definition of the
-# formula in this repo. The Rust helpers index hex-string slices at
-# 0/2/4 (R, G, B — two hex digits per channel); here the tuple order is
-# (r, g, b) with the same 0.2126/0.7152/0.0722 weight order. The
-# 0.03928 linear arm, the 12.92 divisor, the 2.4 gamma and the 0.05 lift
-# match token_tests.rs exactly; the known-answer pins (21.0, 1.0) mirror
-# its wcag_math_is_sanity_anchored test.
+# crates/taskboard-ui-slint/src/presentation.rs relative_luminance /
+# contrast_ratio — presentation.rs is the single definition of the
+# formula in this repo (hoisted out of token_tests.rs by chunk L4,
+# #1415; the test suite consumes it). The Rust helpers index hex-string
+# slices at 0/2/4 (R, G, B — two hex digits per channel); here the
+# tuple order is (r, g, b) with the same 0.2126/0.7152/0.0722 weight
+# order. The 0.03928 linear arm, the 12.92 divisor, the 2.4 gamma and
+# the 0.05 lift match presentation.rs exactly; the known-answer pins
+# (21.0, 1.0) mirror its token_tests.rs wcag_math_is_sanity_anchored
+# test.
 
 
 def relative_luminance(rgb: tuple[int, int, int]) -> float:
