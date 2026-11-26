@@ -49,6 +49,8 @@ mod habits_journey;
 mod keymap_case_seam;
 #[path = "journeys/misc_gated_journeys.rs"]
 mod misc_gated_journeys;
+#[path = "journeys/schedule_colour_journeys.rs"]
+mod schedule_colour_journeys;
 #[path = "journeys/small_gated_journeys.rs"]
 mod small_gated_journeys;
 #[path = "journeys/status_export_journeys_command_journeys.rs"]

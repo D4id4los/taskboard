@@ -19634,7 +19634,10 @@ fn us15_s1_the_create_form_commits_createlabel() {
         window.invoke_labels_overlay_add_requested();
         harness.driver.advance_time(0);
         window.invoke_labels_overlay_title_edited(slint::SharedString::from("urgent"));
-        window.invoke_labels_overlay_swatch_clicked(1);
+        // The derived palette's blue base (D-5): the ladder is
+        // ladder-major [darker, base, lighter], so the base sits at
+        // derived index 4 (9x3 grid, base row 1).
+        window.invoke_labels_overlay_swatch_clicked(4);
         assert!(window.invoke_labels_overlay_form_commit_requested());
         harness.driver.advance_time(0);
         let drained = harness.engine.drain();
@@ -19749,7 +19752,9 @@ fn us1_ac1_the_form_commits_the_exact_parsed_colour() {
         window.invoke_labels_overlay_add_requested();
         harness.driver.advance_time(0);
         window.invoke_labels_overlay_title_edited(slint::SharedString::from("sw"));
-        window.invoke_labels_overlay_swatch_clicked(2);
+        // The derived palette's red base (D-5): derived index 7 (base
+        // row 2 of the ladder-major 9x3 grid).
+        window.invoke_labels_overlay_swatch_clicked(7);
         // AC-4: the field reflects the swatch's exact value.
         harness.driver.advance_time(0);
         assert_eq!(
@@ -19886,7 +19891,9 @@ fn us2_ac2_roster_only_commits_the_exact_label_commands() {
         window.invoke_labels_overlay_add_requested();
         harness.driver.advance_time(0);
         window.invoke_labels_overlay_title_edited(slint::SharedString::from("board-made"));
-        window.invoke_labels_overlay_swatch_clicked(3);
+        // The derived palette's yellow base (D-5): derived index 10
+        // (base row 3 of the ladder-major 9x3 grid).
+        window.invoke_labels_overlay_swatch_clicked(10);
         assert!(window.invoke_labels_overlay_form_commit_requested());
         harness.driver.advance_time(0);
         let drained = harness.engine.drain();
@@ -19996,7 +20003,9 @@ fn us12_s2_swatch_pick_commits_setboardcolor_and_closes() {
     let board = state.boards.values().next().expect("fixture board").id;
     support::harness::run_journey(state, move |harness| {
         harness.press(ActionId::BoardColorEdit);
-        harness.handle.window().invoke_board_color_picked(1);
+        // The derived palette's blue base (D-5): derived index 4 (base
+        // row 1 of the ladder-major 9x3 grid).
+        harness.handle.window().invoke_board_color_picked(4);
         harness.assert_commands(&[StateCommand::SetBoardColor {
             board,
             color: taskboard_domain::Color::new("3a70d6"),
@@ -22555,17 +22564,18 @@ fn us1_s1_schedule_today_commits_the_exact_mask() {
         // default hand-over) — the capture matches the oracle's
         // zone (the clock-discipline law's single-read capture).
         let today = chrono::Utc::now().with_timezone(&offset).date_naive();
-        // #893: the today verb commits the day's last covered
-        // instant, not the window's exclusive end.
-        let end = taskboard_domain::days::last_covered_instant(
-            taskboard_domain::days::day_window_end(today, day_start, offset),
-        );
+        // #1428 (journey plan D-1): the today verb commits the
+        // PAIR — the day's first covered instant (start) and its
+        // last covered instant (due, #893), one sparse mask.
+        let first = taskboard_domain::days::day_first_instant(today, day_start, offset);
+        let last = taskboard_domain::days::day_last_instant(today, day_start, offset);
         harness.driver.click_by_label("Schedule today");
         harness.driver.advance_time(0);
         harness.assert_commands(&[StateCommand::UpdateTask {
             id: fixture.task1,
             changes: taskboard_domain::TaskChanges {
-                scheduled: Some(Some(end)),
+                scheduled: Some(Some(first)),
+                duedate: Some(Some(last)),
                 ..taskboard_domain::TaskChanges::default()
             },
         }]);
@@ -22592,13 +22602,18 @@ fn us1_s2_schedule_tomorrow_commits_the_exact_mask() {
         harness.driver.advance_time(0);
 
         let now = chrono::Utc::now();
-        let (_, tomorrow_end) = taskboard_domain::days::next_day_window(now, day_start, offset);
+        let (tomorrow_first, tomorrow_end) =
+            taskboard_domain::days::next_day_window(now, day_start, offset);
+        // #1428/D-2: the pair-write; the due stamp is tomorrow's last
+        // covered instant (the raw exclusive end is retired).
+        let tomorrow_last = taskboard_domain::days::last_covered_instant(tomorrow_end);
         harness.driver.click_by_label("Schedule tomorrow");
         harness.driver.advance_time(0);
         harness.assert_commands(&[StateCommand::UpdateTask {
             id: fixture.task1,
             changes: taskboard_domain::TaskChanges {
-                scheduled: Some(Some(tomorrow_end)),
+                scheduled: Some(Some(tomorrow_first)),
+                duedate: Some(Some(tomorrow_last)),
                 ..taskboard_domain::TaskChanges::default()
             },
         }]);
@@ -22709,15 +22724,16 @@ fn us1_ac5_bar_key_and_click_route_identically() {
         // default hand-over) — the capture matches the oracle's
         // zone (the clock-discipline law's single-read capture).
         let today = chrono::Utc::now().with_timezone(&offset).date_naive();
-        // #893: the today verb commits the day's last covered
-        // instant, not the window's exclusive end.
-        let end = taskboard_domain::days::last_covered_instant(
-            taskboard_domain::days::day_window_end(today, day_start, offset),
-        );
+        // #1428 (journey plan D-1): the today verb commits the
+        // PAIR — the day's first covered instant and its last
+        // covered instant (#893), one sparse mask.
+        let first = taskboard_domain::days::day_first_instant(today, day_start, offset);
+        let last = taskboard_domain::days::day_last_instant(today, day_start, offset);
         let expect = || StateCommand::UpdateTask {
             id: fixture.task1,
             changes: taskboard_domain::TaskChanges {
-                scheduled: Some(Some(end)),
+                scheduled: Some(Some(first)),
+                duedate: Some(Some(last)),
                 ..taskboard_domain::TaskChanges::default()
             },
         };
