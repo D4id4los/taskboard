@@ -1089,6 +1089,41 @@ fn us9_s3_blank_time_preview_phrases_anchor() {
     });
 }
 
+// -- #1432: the quota-kind switch's own pass --------------------------
+
+/// #1432 pin (the dead-model regression guard): picking a quota kind
+/// re-derives the PUSHED model through the seam's own refresh pass —
+/// no harness `refresh()` here (that would repaint the model
+/// regardless and void the pin; the preview tests' refreshes are
+/// theirs, not this seam's).
+#[test]
+fn quota_kind_pick_repaints_the_pushed_model() {
+    let (_fixture, mut state) = fixture::journey_state();
+    let board = *state.boards.keys().next().expect("fixture board");
+    state_habit(&mut state, board);
+    run(state, false, move |harness| {
+        us6_open_editor(harness);
+        let window = harness.handle.window();
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_habit_model().quota_kind,
+            0,
+            "the fixture habit drafts as a Day-kind"
+        );
+        window.invoke_habit_quota_kind_picked(1);
+        harness.driver.advance_time(0);
+        assert_eq!(
+            window.get_habit_model().quota_kind,
+            1,
+            "the seam's own pass re-pushes the switched kind"
+        );
+        assert!(
+            harness.engine.drain().is_empty(),
+            "the kind pick is a draft mutation: no dispatch"
+        );
+    });
+}
+
 // -- US-8: the per-day heatmap cells (#1144, W-11/W-12) --------------
 
 /// Seeds a Week-kind habit plus per-day overlay facts (the pinned
