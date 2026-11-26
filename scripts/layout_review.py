@@ -839,7 +839,8 @@ def grade_for(finding: dict) -> str:
     """Deterministic grading rules (D5, recorded verbatim in the emitted
     report — the rubric absorbs legacy noise, never the detector):
     C1 extent ≥ 12 px → fix-now, shorter → accept-as-legacy; A1 grid
-    delta ≤ 6 px → fix-later, larger → accept-as-legacy; A2 gap delta
+    delta ≤ 6 px → fix-later, larger (or no shared column, delta None)
+    → accept-as-legacy; A2 gap delta
     ≤ 8 px → fix-later, larger → accept-as-legacy; T1 em ≥ 20 →
     fix-later, smaller → accept-as-legacy; Q1 sub-floor → fix-now
     (except the scrim-blend ink class → accept-as-legacy, calibration
@@ -942,7 +943,8 @@ def tomllib_escape(v) -> str:
 
 # ---------------------------------------------------------------------------
 # Markdown emission (D8): renders the committed findings.toml (the source of
-# truth, grades hand-applied per the D5 rubric after the run) into the report.
+# truth, grades applied by grade_for per the D5 rubric at run time) into the
+# report.
 
 
 def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
@@ -979,9 +981,9 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
         "  `findings.toml` beside this file is the source of truth; this report is"
         " generated from it by `--emit-md`. Metric/region fields reproduce"
         " byte-identically on re-run (the corpus is byte-deterministic per G1);"
-        " `grade` fields are hand-applied per the D5 rubric after the run"
-        " (grades applied deterministically per the recorded grading rules"
-        " below) and the"
+        " `grade` fields are applied deterministically per the recorded grading"
+        " rules below (grade_for — the toml grades re-derive from the metric"
+        " fields) and the"
         " accept-as-legacy grades name explained debt — the grade never"
         " silences the detector."
     )
@@ -1020,7 +1022,9 @@ def emit_md(findings_path: Path, md_path: Path, goldens_dir: str) -> None:
     " and window-chrome specks at 3 px — deliberate small flush elements).")
     out.append("- A1: delta to the nearest shared grid column ≤ 6 px → fix-later"
     " (near-miss drift); larger → accept-as-legacy (a distinct layout region,"
-    " not a near-miss of the grid).")
+    " not a near-miss of the grid); no shared column at all (a singleton"
+    " left edge) → accept-as-legacy (the grid judgment needs a neighbour to"
+    " be a near-miss of — a lone edge is recorded, not graded fixable).")
     out.append("- A2: |gap − median| ≤ 8 px → fix-later (token-adjacent drift, the"
     " #1334 one-row-offset class); larger → accept-as-legacy (deliberate"
     " section breaks and spacers).")
