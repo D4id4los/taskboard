@@ -14976,6 +14976,12 @@ fn install_habit_editor_seams(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>
                 };
             }
         }
+        // The draft moved outside the state Arc — the mirror pass
+        // re-derives (#1432, the reminder-seam precedent): without it
+        // the pushed `habit_model` (the segment's selected index, the
+        // kind-gated rows) keeps the previous kind until an unrelated
+        // pass happens to run.
+        a.refresh_forced(&window);
     });
     install_seam!(window: window.on_habit_quota_count_edited, adapter: adapter;
     bind mut (a, window), args (t), {
