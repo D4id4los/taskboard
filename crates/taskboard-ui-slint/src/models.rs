@@ -3345,6 +3345,10 @@ pub(crate) fn task_card_label_chips(
         .map(|label| crate::TaskLabelChipModel {
             title: SharedString::from(label.title.clone()),
             color: swatch_hex(&label.color),
+            // The chip-ink rule (chunk L4, #1415): the ink is derived
+            // from the fill's WCAG luminance at this sole producer
+            // site; the `chips-row` RoleText is its one render site.
+            ink: crate::presentation::chip_ink(label.color.as_str()).color(),
         })
         .collect();
     let hidden = chips
@@ -4842,6 +4846,62 @@ mod tests {
                 swatch_hex(&taskboard_domain::Color::new("#fff nope")),
                 "the lenient echo rides the same swatch hygiene"
             );
+        });
+    }
+
+    /// Chunk L4 (#1415): the ink a chip model actually carries clears
+    /// the WCAG 2.2 SC 1.4.3 floor over its fill for every palette
+    /// swatch, and equals the chip-ink rule's output (typed equality,
+    /// no reimplementation). Fails against the pre-fix deployed grey —
+    /// the deployed-ink pin.
+    #[test]
+    fn l4_every_chip_model_ink_clears_the_contrast_floor_over_its_fill() {
+        crate::test_platform::on_slint_thread(|| {
+            let board_id = taskboard_domain::BoardId::from_uuid(uuid::Uuid::now_v7());
+            let stack_id = StackId::from_uuid(uuid::Uuid::now_v7());
+            let mut state = AppState::default();
+            state.boards.insert(board_id, chips_board(board_id));
+            state
+                .stacks
+                .insert(stack_id, chips_stack(stack_id, board_id));
+            let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+            state.tasks.insert(id, chips_task(id, stack_id));
+            for (i, swatch) in crate::presentation::SWATCHES.iter().enumerate() {
+                let label_id = LabelId::from_uuid(uuid::Uuid::now_v7());
+                state.labels.insert(
+                    label_id,
+                    label(
+                        label_id,
+                        board_id,
+                        &format!("l{i}"),
+                        // The bare six-hex body: the `Color::parse`
+                        // vocabulary the GUI commits (a `#`-prefixed
+                        // wire echo is lenient — transparent fill,
+                        // and `chip_ink`'s documented dark arm).
+                        swatch,
+                        false,
+                    ),
+                );
+                if let Some(task) = state.tasks.get_mut(&id) {
+                    task.label_memberships.insert(
+                        label_id,
+                        taskboard_domain::entities::MembershipState::Added { at: epoch() },
+                    );
+                }
+                let (chips, _) = task_card_label_chips(&state, id);
+                let chip = chips.last().expect("one chip per swatch label");
+                let ink = crate::presentation::chip_ink(swatch);
+                assert_eq!(
+                    chip.ink,
+                    ink.color(),
+                    "the model carries the rule's ink, nothing else (fill {swatch})"
+                );
+                let ratio = crate::presentation::contrast_ratio(swatch, ink.body());
+                assert!(
+                    ratio >= 4.5,
+                    "the deployed ink clears 4.5:1 over fill {swatch} (measured {ratio})"
+                );
+            }
         });
     }
 

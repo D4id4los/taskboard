@@ -49,10 +49,14 @@ export struct TaskDecoration {
 // flags — no colours, no strings-as-bags.
 // One card label chip (tag-color UX plan D-9, US-3): the label's
 // title plus its `swatch_hex` echo (transparent for lenient stored
-// values — never re-derived).
+// values — never re-derived). The `ink` is the chip-ink rule's output
+// (issue #1415): derived presentation-side from the fill's WCAG
+// luminance — this struct + the `chips-row` RoleText below are the
+// rule's one render site; no per-consumer copies.
 export struct TaskLabelChipModel {
     title: string,
     color: color,
+    ink: color,
 }
 
 export struct TaskCardModel {
@@ -363,7 +367,7 @@ export component TaskCard inherits Rectangle {
                             padding-right: Theme.space-1;
                             RoleText {
                                 role: Typography.badge;
-                                text-color: Theme.text-secondary;
+                                text-color: chip.ink;
                                 text: chip.title;
                             }
                         }
