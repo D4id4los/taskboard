@@ -56,7 +56,12 @@ export struct TaskDecoration {
 export struct TaskLabelChipModel {
     title: string,
     color: color,
-    ink: color,
+    // The readable ink for this chip's tone (US-29 AC-4): chosen
+    // presentation-side (`presentation::chip_text_on` — best of the
+    // light/dark ink pair). Transparent = a lenient stored colour
+    // (the swatch echo mints transparent too): no minted background,
+    // so the text falls back to the theme's secondary.
+    text-color: color,
 }
 
 export struct TaskCardModel {
@@ -367,7 +372,12 @@ export component TaskCard inherits Rectangle {
                             padding-right: Theme.space-1;
                             RoleText {
                                 role: Typography.badge;
-                                text-color: chip.ink;
+                                // The per-tone ink (US-29 AC-4); the
+                                // transparent fallback covers the
+                                // lenient colour's transparent chip.
+                                text-color: chip.text-color == transparent
+                                    ? Theme.text-secondary
+                                    : chip.text-color;
                                 text: chip.title;
                             }
                         }
