@@ -62,6 +62,11 @@ export struct HabitCardModel {
     // clickable quota-edit affordance carries it (the same derivation
     // the card's decoration chip renders — one phrase, two mounts).
     progress-phrase: string,
+    // #1315: the row card's tooltip hint-keys — the task-card
+    // grammar's keymap projection (the row's edit verb's first
+    // binding over the visible chain; shown only when a binding
+    // exists).
+    hint-keys: [string],
 }
 
 export component HabitsSection inherits Rectangle {
@@ -370,7 +375,11 @@ export component HabitsSection inherits Rectangle {
                 }
                 habit-card := TaskCard {
                     model: row.card;
-                    hint-keys: [];
+                    // #1315: the projected hint-keys ride the row model
+                    // (the board cards' window-property grammar is the
+                    // task surface's; the habit rows carry theirs in
+                    // the card model).
+                    hint-keys: row.hint-keys;
                     // W-1 (#1305): the play control is LIVE — the dead
                     // affordance's repair is the issue's own ask (D-7).
                     // Kiosk greys it (the editing verb's gate), never

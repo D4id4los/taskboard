@@ -62,6 +62,9 @@ fn one_habit_row() -> ModelRc<HabitCardModel> {
         paused: false,
         paused_until: "".into(),
         progress_phrase: "0/2".into(),
+        // #1315: the card model's projected hint-keys — the height
+        // probe needs no bindings (an empty model renders nothing).
+        hint_keys: ModelRc::new(VecModel::from(std::vec::Vec::new())),
     }];
     ModelRc::new(VecModel::from(rows))
 }
