@@ -3568,16 +3568,6 @@ impl Adapter {
         // fires here, over the freshly pushed models, so the origin's
         // row is on the page the fact names.
         self.sync_focus_origin(window);
-        // The mount-settle refocus bump (the clip-focus law's remount
-        // half, #1419): pushed AFTER the models, so a rebuilt text
-        // flow field sees the change and re-grabs if the rebuild
-        // dropped its focus; the slint-side has-focus guard makes the
-        // bump a no-op for every field that holds or deliberately
-        // lacks focus.
-        {
-            let facts = window.global::<crate::EditingFacts>();
-            facts.set_refocus_nonce(facts.get_refocus_nonce() + 1);
-        }
         // NOTE: the echo flag is intentionally NOT disarmed here. The
         // deferred focus-lost echo of this push lands after the
         // dispatch's synchronous processing ends, so a tail disarm
@@ -15909,8 +15899,6 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         // has-focus guard decides; see text-field.slint).
         if a.refresh_push_in_progress.get() {
             a.refresh_push_in_progress.set(false);
-            let facts = window.global::<crate::EditingFacts>();
-            facts.set_refocus_nonce(facts.get_refocus_nonce() + 1);
             return;
         }
         let state = a.state.load_full();
