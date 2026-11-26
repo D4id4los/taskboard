@@ -2688,15 +2688,6 @@ impl Adapter {
                 window.invoke_refocus_view();
             }
         }
-        // The echo window closes with the push body. The rebuild's
-        // deferred focus-lost echo lands AFTER this — outside the
-        // window — and is NOT absorbed (see the seam's note): with
-        // today's deferred delivery the absorb can only cover
-        // synchronous echoes, and extending the window past the push
-        // was measured to swallow genuine pointer click-out settles
-        // (a_dead_zone_click_settles_the_create_flow) — raw pointer
-        // input has no adapter seam to un-arm the window.
-        self.refresh_push_in_progress.set(false);
         self.applying_outcomes = false;
     }
 
@@ -2992,10 +2983,12 @@ impl Adapter {
     pub(crate) fn refresh_forced(&mut self, window: &AppWindow) {
         // The clip-focus law's absorb seam arm (#1419, operator
         // ruling 2026-11-25, issue comment 7172599685): the pass
-        // below re-derives and pushes the slint models; a focus-lost
-        // firing SYNCHRONOUSLY inside the pass is the synthetic
-        // unmount echo and the seam absorbs it. The window closes
-        // with the pass body (the tail note).
+        // below re-derives and pushes the slint models, and a model
+        // push can unmount/remount the focused text field — the
+        // unmount fires `text_flow_focus_lost` as a synthetic unmount
+        // echo, not a user dismissal. The flag arms the seam's absorb
+        // for the echo's delivery window (it extends past this body —
+        // see the disarm note at the tail).
         self.refresh_push_in_progress.set(true);
         // The create-focus handoff's consumption (UX-R8 chunk-5 D-7,
         // US-5/AC-1): the stack's live ids diffed against the commit-
@@ -3574,9 +3567,14 @@ impl Adapter {
         // the site *after* this pass's entry funnel ran — the restore
         // fires here, over the freshly pushed models, so the origin's
         // row is on the page the fact names.
-        // The echo window closes with the pass body (see
-        // apply_outcomes' tail note for the deferred-echo boundary).
-        self.refresh_push_in_progress.set(false);
+        self.sync_focus_origin(window);
+        // NOTE: the echo flag is intentionally NOT disarmed here. The
+        // deferred focus-lost echo of this push lands after the
+        // dispatch's synchronous processing ends, so a tail disarm
+        // always precedes it. The flag disarms on the FIRST focus-lost
+        // (the seam's absorb-and-disarm) or on any user-intent seam
+        // (the macro arms) — a genuine interaction un-arms before its
+        // own focus move can be mis-absorbed.
     }
 
     /// Recomposes the setter's grammar text + fire instant from the
@@ -12251,6 +12249,12 @@ macro_rules! install_seam {
                 return;
             };
             let mut $a = seam_adapter.borrow_mut();
+            // The echo-window disarm (the clip-focus law, #1419): a
+            // user-intent seam's entry proves real interaction — the
+            // push's deferred echo either already arrived (the
+            // focus-lost seam absorbed it) or never will; the next
+            // focus-lost is genuine and must settle.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12267,6 +12271,8 @@ macro_rules! install_seam {
                 return;
             };
             let $a = seam_adapter.borrow_mut();
+            // The echo-window disarm — see the default arm.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12279,6 +12285,8 @@ macro_rules! install_seam {
                 return $guard_return;
             };
             let mut $a = seam_adapter.borrow_mut();
+            // The echo-window disarm — see the default arm.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12287,6 +12295,8 @@ macro_rules! install_seam {
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         $window.$on(move |$($arg)*| {
             let mut $a = seam_adapter.borrow_mut();
+            // The echo-window disarm — see the default arm.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -12295,6 +12305,8 @@ macro_rules! install_seam {
         let seam_adapter = ::std::rc::Rc::clone($adapter);
         $window.$on(move |$($arg)*| {
             let $a = seam_adapter.borrow();
+            // The echo-window disarm — see the default arm.
+            $a.refresh_push_in_progress.set(false);
             $body
         });
     }};
@@ -15873,21 +15885,28 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
     install_seam!(window: window.on_text_flow_focus_lost, adapter: adapter; [try]
     bind mut (a, window), args (), {        // The clip-focus law's absorb (#1419, operator ruling
         // 2026-11-25, issue comment 7172599685): a focus-lost that
-        // fires SYNCHRONOUSLY inside a push pass (the [try] borrow
-        // discipline's echo shape — a settle's unmount firing inside
-        // apply_outcomes' borrow is absorbed by the try, and a pass's
-        // own teardown echo) is the synthetic unmount echo, not a
-        // user dismissal, and is absorbed. The rebuild echo of the
-        // Flickable wrap lands DEFERRED — after the dispatch — and
-        // today falls OUTSIDE this window: extending the window past
-        // the push was measured to swallow genuine pointer click-out
-        // settles (a_dead_zone_click_settles_the_create_flow — raw
-        // pointer input has no adapter seam to un-arm the window).
-        // The wrap re-land therefore needs the upstream delivery fix
-        // (synchronous echo delivery, or a mount-generation signal on
-        // the field); see the follow-up backlog issue.
+        // fires while an echo window is open is the synthetic unmount
+        // echo of the focused field's rebuild — not a user dismissal
+        // — and is absorbed; a field that lost its mount cannot lose
+        // focus twice, so the FIRST focus-lost of a window is the
+        // echo: absorbed and disarmed in one step. Every later
+        // focus-lost is a genuine settle. Deliberate leniency
+        // (recorded): a genuine blur arriving as the very first
+        // event of a window is absorbed once — the flow stays armed
+        // and the next focus cycle settles it; Return-commit is
+        // unaffected. The remount half: bump the refocus nonce so a
+        // field left focusless by the rebuild re-grabs (the slint
+        // has-focus guard decides; see text-field.slint).
         if a.refresh_push_in_progress.get() {
-            return;
+            a.refresh_push_in_progress.set(false);
+            // Flow-aware classification (see the comment head): an
+            // armed flow's loss is a genuine dismissal and settles; a
+            // flowless loss is the reconcile's teardown echo — settle
+            // would only clear the selection and clobber the pass's
+            // focus-origin restore (us1_s2).
+            if matches!(a.view_state.flow(), crate::view_state::Flow::None) {
+                return;
+            }
         }
         let state = a.state.load_full();
     a.settle_flow(&window, &state);
