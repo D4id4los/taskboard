@@ -60,9 +60,7 @@ mod tests {
 
     #[test]
     fn constraint_violations_map_to_corrupted() {
-        let err = sqlx::Error::Database(Box::new(FakeDbError::new(
-            UniqueViolationKinds::unique_violation,
-        )));
+        let err = sqlx::Error::Database(Box::new(FakeDbError::new(ErrorKinds::unique_violation)));
         assert!(matches!(repo_error(&err), RepositoryError::Corrupted(_)));
     }
 
@@ -74,10 +72,10 @@ mod tests {
     #[test]
     fn every_constraint_kind_maps_to_the_corrupted_verdict() {
         for kind in [
-            UniqueViolationKinds::unique_violation,
-            UniqueViolationKinds::foreign_key_violation,
-            UniqueViolationKinds::not_null_violation,
-            UniqueViolationKinds::check_violation,
+            ErrorKinds::unique_violation,
+            ErrorKinds::foreign_key_violation,
+            ErrorKinds::not_null_violation,
+            ErrorKinds::check_violation,
         ] {
             let err = sqlx::Error::Database(Box::new(FakeDbError::new(kind)));
             match repo_error(&err) {
@@ -99,10 +97,7 @@ mod tests {
     /// transient `Unavailable`. (#1375)
     #[test]
     fn database_other_kind_maps_to_unavailable() {
-        for kind in [
-            UniqueViolationKinds::other,
-            UniqueViolationKinds::exclusion_violation,
-        ] {
+        for kind in [ErrorKinds::other, ErrorKinds::exclusion_violation] {
             let err = sqlx::Error::Database(Box::new(FakeDbError::new(kind)));
             assert_eq!(repo_error(&err), RepositoryError::Unavailable);
         }
@@ -135,9 +130,9 @@ mod tests {
     /// one and hand it back from `kind()` on a shared reference — a
     /// capturing-free constructor function pointer sidesteps that.
     #[allow(dead_code)]
-    struct UniqueViolationKinds;
+    struct ErrorKinds;
 
-    impl UniqueViolationKinds {
+    impl ErrorKinds {
         fn unique_violation() -> sqlx::error::ErrorKind {
             sqlx::error::ErrorKind::UniqueViolation
         }
