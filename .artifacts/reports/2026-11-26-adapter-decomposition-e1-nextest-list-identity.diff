@@ -1,0 +1,24 @@
+3816,3826c3816,3826
+< taskboard-ui-slint adapter::auto_list_backoff_tests::the_window_doubles_and_caps
+< taskboard-ui-slint adapter::auto_list_backoff_tests::us3_ac1_backoff_suppresses_the_auto_list
+< taskboard-ui-slint adapter::auto_list_backoff_tests::us3_ac3_failure_re_arms_and_success_clears
+< taskboard-ui-slint adapter::effort_parity_tests::us3_s3_the_effort_row_parse_agrees_with_the_walk_parse
+< taskboard-ui-slint adapter::menu_label_projection_tests::an_owned_label_projects_through_the_shell_model
+< taskboard-ui-slint adapter::ui_small_inventory_tests::a_refused_quota_route_clears_the_restored_focus
+< taskboard-ui-slint adapter::ui_small_inventory_tests::habit_context_at_a_stale_index_absorbs_silently
+< taskboard-ui-slint adapter::ui_small_inventory_tests::habit_context_seats_the_focus_and_opens_the_menu
+< taskboard-ui-slint adapter::ui_small_inventory_tests::the_habit_card_hint_keys_match_the_keymap_projection
+< taskboard-ui-slint adapter::ui_small_inventory_tests::the_menu_back_root_close_resets_the_page_models
+< taskboard-ui-slint adapter::ui_small_inventory_tests::the_task_variant_titles_the_open_task
+---
+> taskboard-ui-slint adapter::replies::auto_list_backoff_tests::the_window_doubles_and_caps
+> taskboard-ui-slint adapter::replies::auto_list_backoff_tests::us3_ac1_backoff_suppresses_the_auto_list
+> taskboard-ui-slint adapter::replies::auto_list_backoff_tests::us3_ac3_failure_re_arms_and_success_clears
+> taskboard-ui-slint adapter::tests::effort_parity_tests::us3_s3_the_effort_row_parse_agrees_with_the_walk_parse
+> taskboard-ui-slint adapter::tests::menu_label_projection_tests::an_owned_label_projects_through_the_shell_model
+> taskboard-ui-slint adapter::tests::ui_small_inventory_tests::a_refused_quota_route_clears_the_restored_focus
+> taskboard-ui-slint adapter::tests::ui_small_inventory_tests::habit_context_at_a_stale_index_absorbs_silently
+> taskboard-ui-slint adapter::tests::ui_small_inventory_tests::habit_context_seats_the_focus_and_opens_the_menu
+> taskboard-ui-slint adapter::tests::ui_small_inventory_tests::the_habit_card_hint_keys_match_the_keymap_projection
+> taskboard-ui-slint adapter::tests::ui_small_inventory_tests::the_menu_back_root_close_resets_the_page_models
+> taskboard-ui-slint adapter::tests::ui_small_inventory_tests::the_task_variant_titles_the_open_task
