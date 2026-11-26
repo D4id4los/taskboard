@@ -319,10 +319,15 @@ is that push's echo (a field that lost its mount cannot lose focus
 twice), absorbed and disarmed in one step; every later focus-lost is
 a genuine settle. The flag also disarms on any user-intent seam (the
 seam macro arms) — a genuine interaction un-arms before its own
-focus move can be mis-absorbed. The remount half: the adapter bumps
-=EditingFacts.refocus-nonce= after each push and from the absorb
-branch; a TextField left focusless by the rebuild re-grabs
-(=widgets/text-field.slint=, the =has-focus=-guarded consumer).
+focus move can be mis-absorbed. The law also has a *remount half* —
+a TextField left focusless by a push rebuild re-grabs (a
+refocus-nonce-class mechanism) — which is PART OF THE LAW but NOT
+YET LANDED: the first implementation (the =EditingFacts.refocus-nonce=
+bump) was withdrawn in stage 2 (it re-grabbed a visible-but-unfocused
+autofocus field mid-handover and raced the focus handover), and the
+remaining requirement rides the wrap re-land (#1490, which also
+carries the diagnosis of why the wrap's rebuild defeats every
+restoration mechanism tried so far).
 
 - *Enforcement seam*: two pins together — (1) the clip-focus
   regression (=view_component_tests::editing_dispatches_nothing_and_exits_via_escape=,
@@ -330,7 +335,9 @@ branch; a TextField left focusless by the rebuild re-grabs
   the Flickable wrap present; (2) the seek probe
   (=columns_seek_probe_tests.rs= — a landing in a clipped column
   moves the columns element's window x negative, clamped to the
-  content; the fitting regime stays at rest).
+  content; the fitting regime stays at rest). Both wrap-dependent
+  pins are WITHDRAWN with the wrap (see the status below); the pin
+  set re-lands with it.
 - *Walk-ladder interaction*: a focus walk that crosses into a clipped
   subtree continues through it — the seek is the walk's
   responsibility, so the ladder never silently strands focus in an
@@ -338,26 +345,35 @@ branch; a TextField left focusless by the rebuild re-grabs
 - *What the user sees*: the focused element is always visible;
   clipped columns are reachable by keyboard focus and pointer alike.
 
-** Implementation status (2026-11-26, round 8 L1 stage 2)
+** Implementation status (2026-11-26, round 8 L1 stage 2/3)
 
-The absorb seam and the refocus-nonce plumbing are LANDED. The
-Flickable wrap is WITHDRAWN a second time (fead35c2 → f0afe0e6, then
-this chunk's re-land → withdrawal): the wrap's model-push rebuild
-defeats the TextField init focus grab — the old instance's deferred
-focus release lands after the new instance's init focus, leaving the
-window with no focus item, and the rebuilt vi-insert flow dead-ends
-the keyboard (Escape included). Every in-scope restoration mechanism
-tried (EditingFacts-count-guarded refocus, changed-width
-mount-settle re-grab, the refocus nonce with and without the
-has-focus guard) leaves
+The absorb seam (the echo window + the flow-aware
+absorb-and-disarm) is LANDED. The refocus-nonce plumbing is NOT:
+its bumps re-grabbed a visible-but-unfocused autofocus field
+mid-handover on flowless pushes, so stage 2 dropped the mechanism
+entirely (consumer, bumps and the =EditingFacts= mirror); the
+remount half of the law stays open with the wrap re-land (#1490).
+The Flickable wrap is WITHDRAWN a second time (fead35c2 → f0afe0e6,
+then this chunk's re-land → withdrawal): the wrap's model-push
+rebuild defeats the TextField init focus grab — the old instance's
+deferred focus release lands after the new instance's init focus,
+leaving the window with no focus item, and the rebuilt vi-insert
+flow dead-ends the keyboard (Escape included). Every in-scope
+restoration mechanism tried (EditingFacts-count-guarded refocus,
+changed-width mount-settle re-grab, the refocus nonce with and
+without the has-focus guard) leaves
 =keymap_adapter_tests::insert_intent_opens_the_create_row_and_escape_returns=
 red; per AGENTS §5 the wrap is withdrawn with the failing pin rather
-than weakened. The full diagnosis and fix prompt ride the follow-up
-backlog issue filed from chunk L1; the wrap re-lands on top of the
-landed absorb seam once that refocus defect is solved. Until then
-the board keeps decision 6's recorded clip fallback, and the B-board
-C1 signatures stay accept-as-legacy with this section as the
-recorded rationale.
+than weakened — the pin itself is unweakened and passes with the
+wrap absent. The full diagnosis and fix prompt ride #1490; the wrap
+re-lands on top of the landed absorb seam once that refocus defect
+is solved. Until then the board keeps decision 6's recorded clip
+fallback, and the four B-board C1 signatures
+(=board-0.5-600=, =board-3.0-600=) keep the rubric's fix-now grade —
+the grade never silences the detector — recorded as accepted legacy
+pending #1490, with this section as the rationale; the four
+N-today signatures (the timers-editor row overflow at kiosk scale)
+are filed as #1491.
 
 * Sizing defaults
 

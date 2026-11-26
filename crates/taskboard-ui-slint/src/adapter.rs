@@ -2599,9 +2599,7 @@ impl Adapter {
         // already holds it; like the pass arm, it disarms on the
         // first focus-lost or the first user-intent seam — never on
         // this function's exit.
-        if !self.refresh_push_in_progress.get() {
-            self.refresh_push_in_progress.set(true);
-        }
+        self.refresh_push_in_progress.set(true);
         let flow_ended =
             self.flow_open == FlowLiveness::Open && matches!(self.view_state.flow(), Flow::None);
         for outcome in outcomes {
@@ -15894,9 +15892,9 @@ fn install_task_seam(window: &AppWindow, adapter: &Rc<RefCell<Adapter>>) {
         // (recorded): a genuine blur arriving as the very first
         // event of a window is absorbed once — the flow stays armed
         // and the next focus cycle settles it; Return-commit is
-        // unaffected. The remount half: bump the refocus nonce so a
-        // field left focusless by the rebuild re-grabs (the slint
-        // has-focus guard decides; see text-field.slint).
+        // unaffected. (The law's remount half — a rebuild-focusless
+        // field re-grabbing — is NOT implemented here; its first
+        // mechanism was withdrawn and the requirement rides #1490.)
         if a.refresh_push_in_progress.get() {
             a.refresh_push_in_progress.set(false);
             // Flow-aware classification (see the comment head): an

@@ -1220,6 +1220,19 @@ def emit_md(
     " (the manifest's state note: deliberate kind-wall padding / mostly-empty"
     " drag canvas); the rest → fix-later.")
     out.append("")
+    out.append("Residual C1 fix-now explanation (round 8 L1, 2026-11-26): the eight"
+    " remaining C1 fix-now findings are the recorded, explained residue of the"
+    " clip-focus law chunk. The four board-columns signatures"
+    " (`board-0.5-600`, `board-3.0-600`) are the #1365 overflow regime —"
+    " their fix is the #1419 option-A Flickable wrap, withdrawn twice on the"
+    " remount-refocus defect (#1490 carries the diagnosis and the fix prompt);"
+    " the law records them as accepted legacy pending #1490"
+    " (docs/widget_interactions.org, the clip-focus law's status section) —"
+    " the rubric keeps their fix-now grade so the debt stays visible. The"
+    " four N-today signatures (`notification-3.0-1000`, `today-3.0-1000`,"
+    " the timers-editor row overflow at kiosk scale) are a separate surface,"
+    " filed as #1491.")
+    out.append("")
     out.append("## Findings by golden")
     out.append("")
     if flips:
