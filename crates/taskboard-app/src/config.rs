@@ -621,6 +621,16 @@ pub struct UiSection {
     /// never a silent clamp).
     #[serde(default = "default_ui_scale")]
     pub scale: f64,
+    /// The theme choice (`dark` | `light`, #1437 D5): the palette the
+    /// UI pushes at construction and on switch. Raw string here (the
+    /// `scale` precedent — the raw serde shape stays decodable);
+    /// validated in `validate` against the UI crate's closed-set
+    /// `ThemeName` mint — anything else is the typed
+    /// [`ConfigError::InvalidTheme`], never a silent fallback. The
+    /// serde default is the migration: existing configs upgrade by
+    /// absence, dark stays the zero-config look.
+    #[serde(default = "default_ui_theme")]
+    pub theme: String,
     /// Keyboard map (Q22): preset + user override deltas.
     #[serde(default)]
     pub keymap: KeymapSection,
@@ -671,6 +681,7 @@ impl Default for UiSection {
     fn default() -> Self {
         Self {
             scale: default_ui_scale(),
+            theme: default_ui_theme(),
             keymap: KeymapSection::default(),
             stack_widths: BTreeMap::new(),
             due_soon_days: default_due_soon_days(),
@@ -685,6 +696,12 @@ fn default_due_soon_days() -> u32 {
 
 fn default_ui_scale() -> f64 {
     DEFAULT_UI_SCALE
+}
+
+/// The `[ui] theme` serde default (design D5): `"dark"` — the
+/// zero-config look stays the current one.
+fn default_ui_theme() -> String {
+    "dark".to_owned()
 }
 
 /// `[ui.keymap]`'s preset choice (Q22 keymap half). Unknown values
@@ -1040,6 +1057,13 @@ pub enum ConfigError {
         /// The dotted config key that is invalid.
         field: &'static str,
     },
+    /// `[ui] theme` is not one of the closed set's words
+    /// (`dark`/`light`, #1437 D5).
+    #[error("ui theme invalid")]
+    InvalidTheme {
+        /// The dotted config key that is invalid.
+        field: &'static str,
+    },
     /// The scalar sync representation (`sync.backend`) and the array
     /// representation (`sync.connectors`) are both present — any mix of
     /// the two shapes is rejected (figment decodes the mix silently,
@@ -1172,6 +1196,7 @@ impl ConfigError {
         match self {
             Self::InvalidDuration { field }
             | Self::InvalidScale { field }
+            | Self::InvalidTheme { field }
             | Self::InvalidKioskConfig { field }
             | Self::InvalidWebConfig { field }
             | Self::InvalidDayStartTime { field }
@@ -1202,6 +1227,7 @@ impl ConfigError {
             Self::InvalidDuration { .. } => "invalid-duration",
             Self::EmptyDbPath => "empty-db-path",
             Self::InvalidScale { .. } => "invalid-scale",
+            Self::InvalidTheme { .. } => "invalid-theme",
             Self::ConnectorShapeMixed => "connector-shape-mixed",
             Self::NextcloudTableWithConnectors => "nextcloud-table-with-connectors",
             Self::DuplicateConnectorName { .. } => "duplicate-connector-name",
@@ -1585,6 +1611,12 @@ impl AppConfig {
         // range comparisons (NaN compares false both ways).
         if taskboard_ui_slint::UiScale::new(self.ui.scale).is_err() {
             return Err(ConfigError::InvalidScale { field: "ui.scale" });
+        }
+        // `[ui] theme` (#1437 D5): the closed set's mint is the
+        // fail-fast validator (the `ui.scale` precedent — never a
+        // silent fallback to dark).
+        if taskboard_ui_slint::palette::ThemeName::new(&self.ui.theme).is_err() {
+            return Err(ConfigError::InvalidTheme { field: "ui.theme" });
         }
         // `[ui] due_soon_days`: 0 is legal (an empty soon set); the
         // ten-year ceiling is the fail-fast bound (the InvalidScale

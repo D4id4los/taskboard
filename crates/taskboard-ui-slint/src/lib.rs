@@ -31,6 +31,7 @@ pub mod keyscope;
 pub(crate) mod level_state;
 pub mod menu;
 pub mod models;
+pub mod palette;
 pub mod presentation;
 pub mod requests;
 pub mod resolver;
@@ -72,6 +73,10 @@ pub struct UiSettings {
     /// (§6.1), minted app-side ([`UiScale`]) — validated by
     /// construction.
     pub scale: UiScale,
+    /// The `[ui] theme` value (#1437 D5, default dark): the palette
+    /// pushed at window construction (`palette::apply`, the
+    /// `base-scale` push's twin) and the settings row's seeded echo.
+    pub theme: palette::ThemeName,
     /// The validated effective keymap (D14): preset ⊕ surviving
     /// overrides, built app-side — the crate receives typed values.
     pub keymap: keymap::Keymap,
@@ -146,6 +151,7 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             scale: UiScale::default(),
+            theme: palette::ThemeName::default(),
             keymap: keymap::Keymap::from_preset(keymap::Preset::Standard),
             startup: adapter::StartupWarnings::default(),
             kiosk: false,
@@ -289,6 +295,11 @@ pub fn mount(
     window
         .global::<Theme>()
         .set_base_scale(settings.scale.get_f32());
+    // The palette push (#1437 D2/D4): the 14 colour tokens join the
+    // scale multiplier as the window-construction theme state — the
+    // same one-line-per-construction convention (a future second
+    // window re-runs it).
+    palette::apply(&window, settings.theme.palette());
     // The kiosk window profile (Q5): fullscreen on the shared desktop
     // window. Slint 1.18.1 has no independent decoration control; on
     // the winit backend fullscreen suppresses decorations by

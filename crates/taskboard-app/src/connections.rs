@@ -352,6 +352,22 @@ pub fn overlay_set_ui_scale(
     crate::config::write_config_atomic(path, doc.to_string().as_str())
 }
 
+/// Overlays `ui.theme = theme` (the config word: `dark`/`light`,
+/// #1437 D5) — a bare `[ui]` subtree write preserving every other
+/// key (the `overlay_set_ui_scale` twin).
+///
+/// # Errors
+///
+/// [`std::io::Error`] — parse and write failures, typed.
+pub fn overlay_set_ui_theme(
+    path: &Path,
+    theme: taskboard_ui_slint::palette::ThemeName,
+) -> std::io::Result<()> {
+    let mut doc = crate::config::overlay_document(path)?;
+    ui_table(&mut doc)?["theme"] = toml_edit::value(theme.as_str());
+    crate::config::write_config_atomic(path, doc.to_string().as_str())
+}
+
 /// Overlays `ui.keymap.preset = preset` (the config word:
 /// `standard`/`emacs`/`vi`) into the config file; the `overrides`
 /// subtree and every comment are preserved by construction (plan D9).

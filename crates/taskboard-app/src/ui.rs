@@ -220,6 +220,11 @@ pub fn resolve_ui_settings(
     let settings = taskboard_ui_slint::UiSettings {
         scale: taskboard_ui_slint::UiScale::new(ui.scale)
             .expect("ui.scale validated by AppConfig::validate — call only on a validated config"),
+        // The `[ui] theme` choice (#1437 D5): validated by
+        // `AppConfig::validate` — the mint's expect-shape matches the
+        // scale hand-over's (call only on a validated config).
+        theme: taskboard_ui_slint::palette::ThemeName::new(&ui.theme)
+            .expect("ui.theme validated by AppConfig::validate — call only on a validated config"),
         startup: taskboard_ui_slint::adapter::StartupWarnings {
             keymap_findings: built.findings.len().try_into().unwrap_or(u32::MAX),
         },
@@ -1374,6 +1379,7 @@ mod keymap_resolution_tests {
         // conflict with the preset — plus one valid override.
         let ui = crate::config::UiSection {
             scale: 1.25,
+            theme: "dark".to_owned(),
             window_geometry: None,
             stack_widths: BTreeMap::new(),
             keymap: KeymapSection {
