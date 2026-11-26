@@ -4900,9 +4900,14 @@ mod tests {
             state
                 .stacks
                 .insert(stack_id, chips_stack(stack_id, board_id));
-            let id = TaskId::from_uuid(uuid::Uuid::now_v7());
-            state.tasks.insert(id, chips_task(id, stack_id));
             for (i, swatch) in crate::presentation::SWATCHES.iter().enumerate() {
+                // One task per swatch: the chip row caps at
+                // `LABEL_CHIP_CAP`, so a single shared task would
+                // truncate and `last()` would stop tracking the
+                // iteration's label (the cap's own test pins that
+                // arithmetic separately).
+                let id = TaskId::from_uuid(uuid::Uuid::now_v7());
+                state.tasks.insert(id, chips_task(id, stack_id));
                 let label_id = LabelId::from_uuid(uuid::Uuid::now_v7());
                 state.labels.insert(
                     label_id,
@@ -4928,7 +4933,7 @@ mod tests {
                 let chip = chips.last().expect("one chip per swatch label");
                 let ink = crate::presentation::chip_ink(swatch);
                 assert_eq!(
-                    chip.ink,
+                    chip.text_color,
                     ink.color(),
                     "the model carries the rule's ink, nothing else (fill {swatch})"
                 );
