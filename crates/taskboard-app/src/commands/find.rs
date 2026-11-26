@@ -53,7 +53,8 @@ pub async fn find(
 }
 
 /// The `find` steps on a booted core (the REPL/session seam).
-pub(crate) fn find_on(
+#[must_use]
+pub fn find_on(
     app: &crate::App,
     query: &str,
     kind: Option<FindType>,
@@ -66,7 +67,8 @@ pub(crate) fn find_on(
 /// Ranks, filters, truncates, and projects one snapshot. The domain
 /// owns matching and order; this only applies the caller's lenses
 /// (kind after rank, limit last) and resolves context lines.
-pub(crate) fn project(
+#[must_use]
+pub fn project(
     state: &AppState,
     query: &str,
     kind: Option<FindType>,
@@ -360,6 +362,66 @@ mod tests {
         assert_eq!(project(&state, "", None, None), Vec::new());
         assert_eq!(project(&state, "   ", None, None), Vec::new());
         assert_eq!(render_text_list(&[]), "no hits");
+    }
+
+    fn habit(n: u64, board: u64, title: &str) -> taskboard_domain::habit::Habit {
+        taskboard_domain::habit::Habit {
+            id: id(n),
+            board: id(board),
+            title: title.to_owned(),
+            description: String::new(),
+            target: taskboard_domain::habit::HabitTarget::PerDay(
+                <taskboard_domain::habit::NonZeroCount as TryFrom<u32>>::try_from(1)
+                    .expect("1 is non-zero"),
+            ),
+            order: 0,
+            anchor_time: None,
+            anchor_day: None,
+            scheduled_days: None,
+            reminder: None,
+            clocks: taskboard_domain::habit::HabitClocks::all(epoch()),
+            continued_from: None,
+            deleted: false,
+            by: None,
+            paused_until: None,
+        }
+    }
+
+    /// #1218's live leg: a live habit's row is kind `habit`, carries the
+    /// resolve family's id, and its context line is the owning board's
+    /// title. Fails-when-broken: the habit projection branch regresses.
+    #[test]
+    fn live_habit_rows_carry_the_board_title_context() {
+        let mut state = state();
+        let h = habit(30, 1, "morning stretch");
+        state.habits.habits.insert(h.id, h);
+        let rows = project(&state, "stretch", None, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0],
+            FindRow {
+                kind: "habit".to_owned(),
+                id: id::<taskboard_domain::HabitId>(30).as_uuid().to_string(),
+                title: "morning stretch".to_owned(),
+                context: Some("alpha".to_owned()),
+            }
+        );
+    }
+
+    /// #1218's tombstone leg: a tombstoned habit still matches (ids are
+    /// the resolve family's only leg) and its context names the
+    /// tombstone posture — structurally: present, and distinct from the
+    /// live spelling (no marker-word text assertion).
+    #[test]
+    fn tombstoned_habit_rows_match_with_a_distinct_context_line() {
+        let mut state = state();
+        let mut h = habit(31, 1, "evening walk");
+        h.deleted = true;
+        state.habits.habits.insert(h.id, h);
+        let rows = project(&state, "walk", None, None);
+        assert_eq!(rows.len(), 1, "tombstones match");
+        let context = rows[0].context.as_ref().expect("a tombstone context");
+        assert_ne!(context.as_str(), "alpha", "distinct from the live spelling");
     }
 
     #[test]
