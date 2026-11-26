@@ -1164,7 +1164,7 @@ fn the_track_entries_golden_holds() {
                     &path,
                     &GoldenMeta {
                         fixture: "golden_state_enriched_at + two closed fixed-instant entries",
-                        state: "time-entries overlay; closed rows + armed deletes (enriched base)",
+                        state: "time-entries overlay; closed rows + armed deletes (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)",
                         scale: 1.0,
                     },
                     1000,
@@ -2228,7 +2228,7 @@ fn the_task_view_overdue_banner_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "today_overdue_enriched_at(PINNED_NOW)",
-                    state: "task detail over an overdue task; status-bar overdue banner rows",
+                    state: "task detail over an overdue task; status-bar overdue banner rows; 2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
@@ -2651,7 +2651,7 @@ fn the_recur_editor_modal_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "golden_state_enriched_at(PINNED_NOW)",
-                    state: "recur editor modal over the daily series task; closed pattern picker",
+                    state: "recur editor modal over the daily series task; closed pattern picker; 2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
@@ -2715,7 +2715,7 @@ fn the_recur_detach_strip_golden_holds() {
                 },
                 &GoldenMeta {
                     fixture: "golden_state_enriched_at(PINNED_NOW)",
-                    state: "recur editor modal; the stop-repeating consequence strip armed",
+                    state: "recur editor modal; the stop-repeating consequence strip armed; 2026-11-26 #1435 vertical space-2 editor inset)",
                     scale: 1.0,
                 },
                 1000,
