@@ -7,10 +7,8 @@
 //! original body; visibility is widened to `pub(super)` exactly where
 //! a sibling or the module root calls it.
 
-use super::{
-    Adapter, FocusHandover, MenuAnchor, MenuKind, MenuSubject, install_settings_back_seam,
-    install_settings_seams, parse_effort_row,
-};
+use super::{Adapter, FocusHandover, MenuAnchor, MenuKind, MenuSubject, parse_effort_row};
+use crate::adapter::settings::{install_settings_back_seam, install_settings_seams};
 
 mod banner;
 mod board;

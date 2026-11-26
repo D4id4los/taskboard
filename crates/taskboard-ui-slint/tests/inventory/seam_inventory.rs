@@ -21,6 +21,10 @@
 // byte stream is identical to the former `adapter.rs`.
 const ADAPTER_MODULES: &[&str] = &[
     include_str!("../../src/adapter/mod.rs"),
+    include_str!("../../src/adapter/notices.rs"),
+    include_str!("../../src/adapter/replies.rs"),
+    include_str!("../../src/adapter/settings.rs"),
+    include_str!("../../src/adapter/settings_vm.rs"),
     include_str!("../../src/adapter/seams/export.rs"),
     include_str!("../../src/adapter/seams/recur.rs"),
     include_str!("../../src/adapter/seams/stack_width.rs"),
