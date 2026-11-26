@@ -349,3 +349,296 @@ mod tests {
         }
     }
 }
+
+/// The hermetic decision-table suite (#1373): the executor's typed
+/// decisions over fake effect seams — tier 1, the wiring stays with
+/// the E2E suite. Every row asserts the typed outcome plus the
+/// recorded-effect facts (what fired, in what order, addressed where);
+/// no message text anywhere.
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// One recorded process effect (the fake seams append here).
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    enum EffectCall {
+        Signal(u32),
+        Remove(PathBuf),
+        Stop,
+        Spawn,
+    }
+
+    type Log = Arc<Mutex<Vec<EffectCall>>>;
+
+    /// Fake effects over a shared recording log (fakes over mocks):
+    /// the liveness verdict, the signal/remove results, the stop leg,
+    /// and the spawn result are each fixed by the scenario.
+    #[allow(clippy::fn_params_excessive_bools)]
+    fn fake_effects(
+        alive: bool,
+        signal_ok: bool,
+        remove_ok: bool,
+        stop_leg: StopLeg,
+        spawn_ok: bool,
+    ) -> (RemediationEffects, Log) {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let signal_log = Arc::clone(&log);
+        let remove_log = Arc::clone(&log);
+        let halt_log = Arc::clone(&log);
+        let spawn_log = Arc::clone(&log);
+        let effects = RemediationEffects {
+            pid_alive: Arc::new(move |_| alive),
+            signal_term: Arc::new(move |pid| {
+                signal_log
+                    .lock()
+                    .expect("log")
+                    .push(EffectCall::Signal(pid));
+                if signal_ok {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other("signal refused"))
+                }
+            }),
+            remove_file: Arc::new(move |path| {
+                remove_log
+                    .lock()
+                    .expect("log")
+                    .push(EffectCall::Remove(path.to_path_buf()));
+                if remove_ok {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other("removal refused"))
+                }
+            }),
+            stop_daemon: Arc::new(move || {
+                halt_log.lock().expect("log").push(EffectCall::Stop);
+                Box::pin(async move { stop_leg })
+            }),
+            spawn_daemon: Arc::new(move || {
+                spawn_log.lock().expect("log").push(EffectCall::Spawn);
+                if spawn_ok {
+                    Ok(4321)
+                } else {
+                    Err(std::io::Error::other("spawn refused"))
+                }
+            }),
+        };
+        (effects, log)
+    }
+
+    fn recorded(log: &Log) -> Vec<EffectCall> {
+        log.lock().expect("log").clone()
+    }
+
+    /// A desktop-posture workspace over a tempdir database, the lock
+    /// sidecar seeded with the given recorded pid (`None` writes no
+    /// sidecar). Returns the dir so the sidecar outlives the call.
+    fn seeded_workspace(
+        sidecar_pid: Option<u32>,
+        effects: RemediationEffects,
+    ) -> (RemediationWorkspace, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("board.sqlite");
+        if let Some(pid) = sidecar_pid {
+            std::fs::write(
+                crate::lockfile::lock_sidecar_path(&db),
+                format!("pid={pid}\n"),
+            )
+            .expect("seed sidecar");
+        }
+        (
+            RemediationWorkspace {
+                db_path: Some(db),
+                may_control_processes: true,
+                effects,
+            },
+            dir,
+        )
+    }
+
+    fn refused_kind(outcome: &StatusRemediationOutcome) -> Option<Refusal> {
+        match outcome {
+            StatusRemediationOutcome::Refused(kind) => Some(*kind),
+            _ => None,
+        }
+    }
+
+    /// Trap-a: the kiosk posture refuses all three actions typed before
+    /// any effect runs — the effect log stays empty.
+    #[tokio::test]
+    async fn kiosk_posture_refuses_every_action_before_any_effect() {
+        for action in [
+            StatusRemediationAction::KillHolder,
+            StatusRemediationAction::ForceUnlock,
+            StatusRemediationAction::RestartDaemon,
+        ] {
+            let (effects, log) = fake_effects(true, true, true, StopLeg::Stopped, true);
+            let workspace = RemediationWorkspace {
+                db_path: None,
+                may_control_processes: false,
+                effects,
+            };
+            let outcome = run_remediation(&workspace, action).await;
+            assert_eq!(
+                refused_kind(&outcome),
+                Some(Refusal::IpcUnavailable),
+                "kiosk posture refuses {action:?}"
+            );
+            assert!(recorded(&log).is_empty(), "no effect fired for {action:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn kill_without_a_sidecar_pid_refuses_holder_not_alive() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::Stopped, true);
+        let (workspace, _dir) = seeded_workspace(None, effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::KillHolder).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::HolderNotAlive));
+        assert!(recorded(&log).is_empty(), "no signal without a pid");
+    }
+
+    #[tokio::test]
+    async fn kill_of_our_own_pid_refuses_self_pid() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::Stopped, true);
+        let (workspace, _dir) = seeded_workspace(Some(std::process::id()), effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::KillHolder).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::SelfPid));
+        assert!(recorded(&log).is_empty(), "no signal to self");
+    }
+
+    #[tokio::test]
+    async fn kill_of_a_stale_pid_refuses_holder_not_alive_without_signalling() {
+        let (effects, log) = fake_effects(false, true, true, StopLeg::Stopped, true);
+        let (workspace, _dir) = seeded_workspace(Some(999_999), effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::KillHolder).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::HolderNotAlive));
+        assert!(
+            recorded(&log).is_empty(),
+            "the liveness re-check authorizes"
+        );
+    }
+
+    #[tokio::test]
+    async fn kill_of_a_live_foreign_pid_signals_the_recorded_pid() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::Stopped, true);
+        let (workspace, _dir) = seeded_workspace(Some(4242), effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::KillHolder).await;
+        assert_eq!(outcome, StatusRemediationOutcome::HolderSignalled);
+        assert_eq!(recorded(&log), vec![EffectCall::Signal(4242)]);
+    }
+
+    #[tokio::test]
+    async fn kill_with_a_failing_signal_refuses_ipc_unavailable() {
+        let (effects, log) = fake_effects(true, false, true, StopLeg::Stopped, true);
+        let (workspace, _dir) = seeded_workspace(Some(4242), effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::KillHolder).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::IpcUnavailable));
+        assert_eq!(recorded(&log), vec![EffectCall::Signal(4242)]);
+    }
+
+    #[tokio::test]
+    async fn force_unlock_with_a_live_foreign_pid_refuses_and_keeps_the_sidecar() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::Stopped, true);
+        let (workspace, dir) = seeded_workspace(Some(4242), effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::ForceUnlock).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::HolderAlive));
+        assert!(recorded(&log).is_empty(), "no removal while a holder lives");
+        let db = dir.path().join("board.sqlite");
+        assert!(
+            crate::lockfile::lock_sidecar_path(&db).exists(),
+            "the sidecar is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_unlock_of_our_own_pid_refuses_self_pid() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::Stopped, true);
+        let (workspace, _dir) = seeded_workspace(Some(std::process::id()), effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::ForceUnlock).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::SelfPid));
+        assert_eq!(recorded(&log), []);
+    }
+
+    #[tokio::test]
+    async fn force_unlock_of_a_stale_pid_releases_the_lock_at_the_sidecar_address() {
+        let (effects, log) = fake_effects(false, true, true, StopLeg::Stopped, true);
+        let (workspace, dir) = seeded_workspace(Some(999_999), effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::ForceUnlock).await;
+        assert_eq!(outcome, StatusRemediationOutcome::LockReleased);
+        let db = dir.path().join("board.sqlite");
+        assert_eq!(
+            recorded(&log),
+            vec![EffectCall::Remove(crate::lockfile::lock_sidecar_path(&db))],
+            "the removal address is the lock sidecar's derived path"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_unlock_with_a_failing_removal_refuses_ipc_unavailable() {
+        let (effects, log) = fake_effects(false, true, false, StopLeg::Stopped, true);
+        let (workspace, _dir) = seeded_workspace(None, effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::ForceUnlock).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::IpcUnavailable));
+        assert_eq!(recorded(&log).len(), 1, "exactly the failed removal fired");
+    }
+
+    /// No database home (a platform without a data dir) degrades to the
+    /// typed `IpcUnavailable` refusal — nothing to remove, no address.
+    #[tokio::test]
+    async fn force_unlock_without_a_db_path_refuses_ipc_unavailable() {
+        let (effects, log) = fake_effects(false, true, true, StopLeg::Stopped, true);
+        let workspace = RemediationWorkspace {
+            db_path: None,
+            may_control_processes: true,
+            effects,
+        };
+        let outcome = run_remediation(&workspace, StatusRemediationAction::ForceUnlock).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::IpcUnavailable));
+        assert!(recorded(&log).is_empty(), "no removal address exists");
+    }
+
+    #[tokio::test]
+    async fn restart_with_an_unavailable_stop_leg_refuses_and_never_spawns() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::Unavailable, true);
+        let (workspace, _dir) = seeded_workspace(None, effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::RestartDaemon).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::IpcUnavailable));
+        assert_eq!(recorded(&log), vec![EffectCall::Stop], "spawn never called");
+    }
+
+    #[tokio::test]
+    async fn restart_after_a_stopped_leg_spawns_and_reports_the_pid() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::Stopped, true);
+        let (workspace, _dir) = seeded_workspace(None, effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::RestartDaemon).await;
+        assert_eq!(
+            outcome,
+            StatusRemediationOutcome::DaemonRestarted { pid: 4321 }
+        );
+        assert_eq!(recorded(&log), vec![EffectCall::Stop, EffectCall::Spawn]);
+    }
+
+    #[tokio::test]
+    async fn restart_with_no_daemon_serving_skips_the_stop_leg_and_spawns() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::NoDaemon, true);
+        let (workspace, _dir) = seeded_workspace(None, effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::RestartDaemon).await;
+        assert_eq!(
+            outcome,
+            StatusRemediationOutcome::DaemonRestarted { pid: 4321 },
+            "the stop skip is a fact, not a refusal"
+        );
+        assert_eq!(recorded(&log), vec![EffectCall::Stop, EffectCall::Spawn]);
+    }
+
+    #[tokio::test]
+    async fn restart_with_a_failing_spawn_refuses_spawn_failed() {
+        let (effects, log) = fake_effects(true, true, true, StopLeg::Stopped, false);
+        let (workspace, _dir) = seeded_workspace(None, effects);
+        let outcome = run_remediation(&workspace, StatusRemediationAction::RestartDaemon).await;
+        assert_eq!(refused_kind(&outcome), Some(Refusal::SpawnFailed));
+        assert_eq!(recorded(&log), vec![EffectCall::Stop, EffectCall::Spawn]);
+    }
+}
