@@ -13,7 +13,17 @@
 //! constructs them, so it keeps guarding every future chunk
 //! regardless of macro vs explicit wiring.
 
-const ADAPTER_SOURCE: &str = include_str!("../../src/adapter.rs");
+/// The adapter source, one `include_str!` per module of the
+/// decomposed `adapter/` tree (the former single `adapter.rs`; the
+/// decomposition is purely mechanical, so the census concatenates the
+/// modules back into the same byte stream it audited before).
+// The list grows as chunk E1 extracts modules; the concatenated
+// byte stream is identical to the former `adapter.rs`.
+const ADAPTER_MODULES: &[&str] = &[include_str!("../../src/adapter/mod.rs")];
+
+fn adapter_source() -> String {
+    ADAPTER_MODULES.concat()
+}
 
 /// The 175 installed window callbacks in `adapter.rs` as of the
 /// focus-settings-editor chunk (plan §2.1 census; the #275 close
@@ -551,7 +561,7 @@ fn install_counts() -> Vec<(String, usize)> {
             let needle = format!("window.on_{name}");
             (
                 (*name).to_owned(),
-                word_bounded_matches(ADAPTER_SOURCE, &needle),
+                word_bounded_matches(&adapter_source(), &needle),
             )
         })
         .collect()
@@ -564,7 +574,7 @@ fn every_listed_seam_is_installed_exactly_once() {
 
 #[test]
 fn no_unlisted_installs_exist() {
-    let total = ADAPTER_SOURCE.matches("window.on_").count();
+    let total = adapter_source().matches("window.on_").count();
     assert_eq!(
         total,
         SEAM_INVENTORY.len(),
@@ -627,7 +637,7 @@ fn invoke_counts() -> Vec<(String, usize)> {
             let needle = format!("invoke_{name}");
             (
                 (*name).to_owned(),
-                word_bounded_matches(ADAPTER_SOURCE, &needle),
+                word_bounded_matches(&adapter_source(), &needle),
             )
         })
         .collect()
@@ -642,9 +652,9 @@ fn every_listed_push_function_is_invoked_exactly_once() {
 fn no_unlisted_push_functions_exist() {
     let exempt = INVOKE_EXEMPT
         .iter()
-        .map(|name| ADAPTER_SOURCE.matches(name).count())
+        .map(|name| adapter_source().matches(name).count())
         .sum::<usize>();
-    let total = ADAPTER_SOURCE.matches("window.invoke_").count() - exempt;
+    let total = adapter_source().matches("window.invoke_").count() - exempt;
     assert_eq!(
         total,
         INVOKE_INVENTORY.len(),
