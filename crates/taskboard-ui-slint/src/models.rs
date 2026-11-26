@@ -3373,8 +3373,8 @@ pub(crate) fn task_card_label_chips(
 }
 
 /// The chip text ink for a label colour (US-29 AC-4): the minted
-/// tone's readable ink through `presentation::chip_text_on` (best of
-/// the light/dark pair, ≥3:1 on every palette tone); a lenient stored
+/// tone's readable ink through `presentation::chip_text_on` (the L★
+/// threshold law, ≥4.5:1 on every minted fill); a lenient stored
 /// colour renders no minted background, so the model carries
 /// transparent and the chip falls back to the theme's secondary.
 fn chip_text_colour(color: &taskboard_domain::Color) -> slint::Color {

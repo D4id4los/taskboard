@@ -57,10 +57,11 @@ export struct TaskLabelChipModel {
     title: string,
     color: color,
     // The readable ink for this chip's tone (US-29 AC-4): chosen
-    // presentation-side (`presentation::chip_text_on` — best of the
-    // light/dark ink pair). Transparent = a lenient stored colour
-    // (the swatch echo mints transparent too): no minted background,
-    // so the text falls back to the theme's secondary.
+    // presentation-side (`presentation::chip_text_on` — the L★
+    // threshold law, ≥4.5:1 on any minted fill). Transparent = a
+    // lenient stored colour (the swatch echo mints transparent too):
+    // no minted background, so the text falls back to the theme's
+    // secondary.
     text-color: color,
 }
 
