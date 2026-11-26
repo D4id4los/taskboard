@@ -4503,7 +4503,7 @@ mod view_component_tests {
                     assert_eq!(id, task.expect("focused task"));
                     let state = handle.state.load();
                     let board = state.boards.values().next().expect("board").id;
-                    let ordered: Vec<_> = crate::presentation::stacks_in_board(&state, board);
+                    let ordered: Vec<_> = taskboard_domain::order::stacks_in_board(&state, board);
                     assert_eq!(
                         stack, ordered[1].id,
                         "append to the retargeted stack (display order)"

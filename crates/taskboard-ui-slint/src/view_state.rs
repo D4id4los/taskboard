@@ -19,8 +19,9 @@ use taskboard_domain::{
 };
 
 use crate::actions::ContextId;
-use crate::presentation::{live_board, live_boards, stacks_in_board};
+use crate::presentation::live_board;
 use crate::router::Mode;
+use taskboard_domain::order::{live_boards, move_ring, move_slots, stacks_in_board};
 
 /// One row of the today walk's domain (chunk 8 D2, #934): the walk
 /// widens from tasks-only to the task sections **then** the active
@@ -838,8 +839,8 @@ static FLOW_NONE: Flow = Flow::None;
 // round 7 chunk B3): the ONE home for "where does an inserted row land"
 // is `taskboard_domain::order`, pure over `AppState`. The UI re-exports
 // it so the adapter/actions/router call sites read unchanged; the
-// multi-move's caller-supplied move ring comes from
-// [`ViewState::move_ring`].
+// multi-move's caller-supplied move ring comes from the domain's
+// `move_ring` (#1399's re-home).
 pub use taskboard_domain::order::{
     append_order, append_stack_order, move_aim_command, multi_move_commands, slot_order,
 };
@@ -4132,46 +4133,15 @@ impl ViewState {
         vec![FlowOutcome::RefreshNow]
     }
 
-    /// The move ring (chunk 10 D6, the deliberate behavior change):
-    /// the *flat cross-board* candidate list — every live board's
-    /// stacks in `(order, id)` order, boards in canonical `BTreeMap`
-    /// order — wrapping across the board edge. No Inbox special-casing:
-    /// the Inbox board's stacks appear like any board's.
-    #[must_use]
-    pub fn move_ring(state: &AppState) -> Vec<StackId> {
-        live_boards(state)
-            .into_iter()
-            .flat_map(|board| stacks_in_board(state, board.id))
-            .map(|stack| stack.id)
-            .collect()
-    }
-
-    /// The flattened slot enumeration (UX-R8 D-1, US-1/AC-3): every
-    /// live stack's insertion gaps — stacks in [`Self::move_ring`]
-    /// order, positions top→bottom within a stack, N+1 slots per
-    /// stack (a single-task stack offers exactly two). Computed on
-    /// demand from the live state, never stored — refresh-survival by
-    /// re-derivation, the ring's existing law.
-    #[must_use]
-    pub fn move_slots(state: &AppState) -> Vec<(StackId, usize)> {
-        Self::move_ring(state)
-            .into_iter()
-            .flat_map(|stack| {
-                let len = state.tasks_in_stack(stack).len();
-                (0..=len).map(move |gap| (stack, gap))
-            })
-            .collect()
-    }
-
     /// Focus next/prev during a move flow: advance one insertion slot
-    /// per stroke through the flattened [`Self::move_slots`] sequence
+    /// per stroke through the flattened [`move_slots`] sequence
     /// (wrap — UX-R8 D-1's walk; in compact this is exactly the
     /// switcher highlighting).
     pub fn cycle_move_target(&mut self, state: &AppState, direction: i32) -> Vec<FlowOutcome> {
         let Flow::Move { target, slot, .. } = self.flow().clone() else {
             return Vec::new();
         };
-        let slots = Self::move_slots(state);
+        let slots = move_slots(state);
         if slots.is_empty() {
             return Vec::new();
         }
@@ -4342,7 +4312,7 @@ impl ViewState {
             vec![task]
         };
         let commands: Vec<FlowOutcome> = if members.len() > 1 {
-            multi_move_commands(state, &members, target, gap, &ViewState::move_ring(state))
+            multi_move_commands(state, &members, target, gap, &move_ring(state))
                 .into_iter()
                 .map(FlowOutcome::Command)
                 .collect()
@@ -5390,19 +5360,6 @@ mod tests {
         (board, [t0, t1])
     }
 
-    // -- the move ring (chunk 10 D6) -------------------------------------
-
-    #[test]
-    fn the_move_ring_is_the_flat_cross_board_candidate_list() {
-        let (mut state, _, [s0, s1], _) = fixture();
-        let (_, [t0, t1]) = second_board(&mut state);
-        assert_eq!(
-            ViewState::move_ring(&state),
-            vec![s0, s1, t0, t1],
-            "boards in canonical order, each board's stacks in (order, id)"
-        );
-    }
-
     #[test]
     fn the_ring_wraps_across_the_board_edge() {
         let (mut state, _, [s0, s1], [a, ..]) = fixture();
@@ -5522,32 +5479,6 @@ mod tests {
         state.tasks.get_mut(&a).expect("task").deleted = true;
         vs.reconcile(&state);
         assert_eq!(*vs.flow(), Flow::None, "an empty snapshot disarms");
-    }
-
-    // -- the slot grammar (UX-R8 D-1, US-1/AC-3) --------------------------
-
-    #[test]
-    fn a_single_task_stack_enumerates_exactly_two_slots() {
-        let (state, _, [_s0, s1], _) = fixture();
-        let s1_slots: Vec<(StackId, usize)> = ViewState::move_slots(&state)
-            .into_iter()
-            .filter(|(stack, _)| *stack == s1)
-            .collect();
-        assert_eq!(
-            s1_slots,
-            vec![(s1, 0), (s1, 1)],
-            "one task, two insertion points: before and after"
-        );
-    }
-
-    #[test]
-    fn the_slot_walk_order_is_stack_canonical_top_to_bottom() {
-        let (state, _, [s0, s1], _) = fixture();
-        assert_eq!(
-            ViewState::move_slots(&state),
-            vec![(s0, 0), (s0, 1), (s0, 2), (s1, 0), (s1, 1),],
-            "stacks in ring order, gaps 0..=len within each"
-        );
     }
 
     // -- the pointer drag flow (r2 chunk-8, D-B/D-F) ----------------------

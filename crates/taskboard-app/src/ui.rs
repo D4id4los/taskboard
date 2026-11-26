@@ -710,7 +710,7 @@ pub fn resolve_connector_infos(
 pub fn resolve_board_infos_from_state(
     state: &taskboard_domain::AppState,
 ) -> Vec<taskboard_ui_slint::requests::BoardInfo> {
-    taskboard_ui_slint::presentation::live_boards(state)
+    taskboard_domain::order::live_boards(state)
         .into_iter()
         .map(|board| taskboard_ui_slint::requests::BoardInfo {
             id: board.id.as_uuid(),

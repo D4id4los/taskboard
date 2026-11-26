@@ -21,8 +21,11 @@ use chrono::{
 };
 use taskboard_domain::{
     AdhocAlarmId, AppState, Board, BoardId, Effort, ReminderRef, SidecarHealth, Stack, StackId,
-    SyncPhase, Task, TaskId, TimeEntryId, TimeEntryKind, focus::FocusTiming,
-    focus::focus_break_is_long, tracking::TimeEntry,
+    SyncPhase, Task, TaskId, TimeEntryId, TimeEntryKind,
+    focus::FocusTiming,
+    focus::focus_break_is_long,
+    order::{live_boards, stacks_in_board},
+    tracking::TimeEntry,
 };
 
 /// The due-soon window (design §4): a presentation constant, not
@@ -2660,34 +2663,6 @@ pub const fn awaiting_row_buttons(anchor: taskboard_domain::ReminderAnchor) -> A
     }
 }
 
-/// The board's live stacks in display order (D10): `(order, id)`
-/// ascending — presentation's own reading of the domain's persisted
-/// sort position (the domain owns the concept and the write side;
-/// this is the display-side reader).
-#[must_use]
-pub fn stacks_in_board(state: &AppState, board: BoardId) -> Vec<&Stack> {
-    let mut stacks: Vec<&Stack> = state
-        .stacks
-        .values()
-        .filter(|s| !s.deleted && s.board == board)
-        .collect();
-    stacks.sort_by_key(|s| (s.order, s.id));
-    stacks
-}
-
-/// The live, non-archived boards in canonical order: `state.boards`
-/// `BTreeMap` iteration order — board-id ascending, the exact order
-/// the CLI's `boards list` renders. The board walk's domain and the
-/// seed rule's candidate list.
-#[must_use]
-pub fn live_boards(state: &AppState) -> Vec<&Board> {
-    state
-        .boards
-        .values()
-        .filter(|b| !b.deleted && !b.archived)
-        .collect()
-}
-
 /// The archived, non-deleted boards in canonical order (UX R-1 D-1,
 /// issue #785): the archived-boards roster's row source — the bar's
 /// trailing indicator mounts exactly when this is non-empty. Same
@@ -3694,32 +3669,6 @@ mod tests {
     }
 
     #[test]
-    fn stacks_in_board_filters_and_orders() {
-        let b1 = BoardId::from_uuid(uuid::Uuid::now_v7());
-        let b2 = BoardId::from_uuid(uuid::Uuid::now_v7());
-        let s1 = StackId::from_uuid(uuid::Uuid::now_v7());
-        let s2 = StackId::from_uuid(uuid::Uuid::now_v7());
-        let s3 = StackId::from_uuid(uuid::Uuid::now_v7());
-        let mut state = AppState::default();
-        state.boards.insert(b1, board(b1));
-        // (order, id) order with a tie on order broken by id.
-        state.stacks.insert(s2, stack(s2, b1, 1));
-        state.stacks.insert(s1, stack(s1, b1, 1));
-        state.stacks.insert(s3, stack(s3, b2, 0));
-        let mut deleted = stack(s3, b1, 2);
-        deleted.deleted = true;
-        state.stacks.insert(s3, deleted);
-
-        let ordered: Vec<StackId> = stacks_in_board(&state, b1)
-            .into_iter()
-            .map(|s| s.id)
-            .collect();
-        let mut expected = vec![s1, s2];
-        expected.sort();
-        assert_eq!(ordered, expected, "other boards and tombstones filtered");
-    }
-
-    #[test]
     fn live_board_finds_the_single_live_board() {
         let b1 = BoardId::from_uuid(uuid::Uuid::now_v7());
         let b2 = BoardId::from_uuid(uuid::Uuid::now_v7());
@@ -3735,34 +3684,6 @@ mod tests {
         archived.archived = true;
         state.boards.insert(b2, archived);
         assert_eq!(live_board(&state), None, "deleted/archived boards skipped");
-    }
-
-    #[test]
-    fn live_boards_filters_to_live_boards_in_canonical_order() {
-        // Deterministic ids: live low + live high, one deleted and one
-        // archived between them; the walk order is board-id ascending
-        // (the `boards list` order) and `live_board` is its first.
-        let low = BoardId::from_uuid(uuid::Uuid::from_u128(0x01));
-        let dead = BoardId::from_uuid(uuid::Uuid::from_u128(0x02));
-        let archived = BoardId::from_uuid(uuid::Uuid::from_u128(0x03));
-        let high = BoardId::from_uuid(uuid::Uuid::from_u128(0x04));
-        let mut state = AppState::default();
-        state.boards.insert(high, board(high));
-        state.boards.insert(archived, {
-            let mut b = board(archived);
-            b.archived = true;
-            b
-        });
-        state.boards.insert(dead, {
-            let mut b = board(dead);
-            b.deleted = true;
-            b
-        });
-        state.boards.insert(low, board(low));
-
-        let ids: Vec<BoardId> = live_boards(&state).into_iter().map(|b| b.id).collect();
-        assert_eq!(ids, vec![low, high]);
-        assert_eq!(live_board(&state).map(|b| b.id), Some(low));
     }
 
     #[test]
@@ -5901,36 +5822,6 @@ mod tests {
                     }
                 }
             }
-        }
-
-        /// `stacks_in_board` equals the reference `(order, id)` sort of
-        /// the board's live stacks (test-side model recomputation).
-        #[test]
-        fn stacks_in_board_matches_reference_sort(
-            orders in prop::collection::vec(0i64..5, 1..6),
-        ) {
-            let b1 = BoardId::from_uuid(uuid::Uuid::now_v7());
-            let b2 = BoardId::from_uuid(uuid::Uuid::now_v7());
-            let mut state = AppState::default();
-            state.boards.insert(b1, board(b1));
-            let mut ids = Vec::new();
-            for (i, order) in orders.iter().enumerate() {
-                let id = StackId::from_uuid(uuid::Uuid::now_v7());
-                ids.push((id, *order));
-                state.stacks.insert(id, stack(id, b1, *order));
-                if i == 0 {
-                    let other = StackId::from_uuid(uuid::Uuid::now_v7());
-                    state.stacks.insert(other, stack(other, b2, 0));
-                }
-            }
-            let mut expected: Vec<(i64, StackId)> =
-                ids.into_iter().map(|(id, order)| (order, id)).collect();
-            expected.sort();
-            let got: Vec<(i64, StackId)> = stacks_in_board(&state, b1)
-                .into_iter()
-                .map(|s| (s.order, s.id))
-                .collect();
-            prop_assert_eq!(got, expected);
         }
     }
 
