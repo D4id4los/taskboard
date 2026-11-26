@@ -40,7 +40,7 @@ mod config_watcher;
 pub mod connections;
 mod connector_ceremonies;
 pub mod connectors;
-mod escalation;
+pub mod escalation;
 pub mod files_sync_surface;
 mod focus;
 pub mod ipc;
