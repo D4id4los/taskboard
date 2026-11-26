@@ -128,6 +128,41 @@ pub fn last_covered_instant(window_end: Timestamp) -> Timestamp {
     window_end - chrono::TimeDelta::try_milliseconds(1).expect("one millisecond is representable")
 }
 
+/// The first instant *covered by* `date`'s local day window: the
+/// window's opening instant — [`window_start`] under the
+/// `day_start_time`-aware calendar (the schedule quick verbs' start
+/// mint, journey plan `2026-11-25-sound-today-colour-journeys-
+/// schedule-colour-ux-plan.md` D-1: "the target day's first minute"
+/// = the window start, so a `05:30` night-owl start stamps 05:30
+/// local, never 00:00). A named alias at the verb site — the pure
+/// fact is [`window_start`]; this spelling documents the pair with
+/// [`day_last_instant`]. Pure, total, deterministic; time and offset
+/// are data (the crate's clock rule).
+#[must_use]
+pub fn day_first_instant(
+    date: LocalDate,
+    day_start_time: LocalTime,
+    offset: FixedOffset,
+) -> Timestamp {
+    window_start(date, day_start_time, offset)
+}
+
+/// The last instant *covered by* `date`'s local day window: the N-4
+/// law's stamp shape — [`last_covered_instant`] over
+/// [`day_window_end`] (the schedule quick verbs' due mint, the same
+/// journey plan's D-1/D-2: today and tomorrow commit the *same
+/// shapes*, the raw exclusive window end is retired). Pure, total,
+/// deterministic; the same domain of validity [`day_window_end`]
+/// carries.
+#[must_use]
+pub fn day_last_instant(
+    date: LocalDate,
+    day_start_time: LocalTime,
+    offset: FixedOffset,
+) -> Timestamp {
+    last_covered_instant(day_window_end(date, day_start_time, offset))
+}
+
 /// The half-open window covering the last `days` local day-windows
 /// *including the one `now` falls in*: `start` is the opening instant
 /// of local date `today − (days−1)`, `end` the opening instant of
@@ -631,6 +666,80 @@ mod tests {
         assert_eq!(
             calendar.day_end(date(2026, 11, 16)),
             day_window_end(date(2026, 11, 16), time(3, 0), offset_hours(2))
+        );
+    }
+
+    // ---- day_first_instant / day_last_instant (the schedule quick
+    // ---- verbs' pair mints, journey plan D-1/D-2) ------------------
+
+    /// D-1 unit 1 (the default arm): `day_first_instant(D)` is D's
+    /// local midnight under a `00:00` start — hand-computed local
+    /// 2026-06-15 00:00 +02:00 = 2026-06-14 22:00 UTC.
+    #[test]
+    fn day_first_instant_is_the_window_start_under_default_start() {
+        let first = day_first_instant(date(2026, 6, 15), time(0, 0), offset_hours(2));
+        assert_eq!(first, utc(1_781_474_400)); // 2026-06-14 22:00:00 UTC
+        assert_eq!(
+            first,
+            window_start(date(2026, 6, 15), time(0, 0), offset_hours(2)),
+            "the named alias composes the window-start fact verbatim"
+        );
+    }
+
+    /// D-1 unit 2 (the night-owl arm, AC-3's oracle): a `05:30` start
+    /// puts the first covered instant at 05:30 local on the named
+    /// date — the setting is honoured, never 00:00.
+    #[test]
+    fn day_first_instant_honours_the_day_start_time() {
+        let first = day_first_instant(date(2026, 11, 16), time(5, 30), offset_hours(2));
+        let local = first.with_timezone(&offset_hours(2));
+        assert_eq!(
+            (local.date_naive(), local.time()),
+            (date(2026, 11, 16), time(5, 30))
+        );
+    }
+
+    /// D-2 unit (the pair's shape law): for every sampled
+    /// `day_start_time`, `day_first_instant(D) <= day_last_instant(D)`
+    /// and both sit inside `[window_start(D), window_end(D))` — the
+    /// window-membership contract the pair-write stamps are judged by
+    /// (US-27 AC-1/2/3's oracle; deterministic sweep over the hour
+    /// band, no wall clock).
+    #[test]
+    fn day_pair_instants_stay_inside_the_day_window() {
+        for hour in [0u32, 3, 5, 12, 22] {
+            for minute in [0u32, 30] {
+                let start_time = time(hour, minute);
+                let start = day_first_instant(date(2026, 11, 16), start_time, offset_hours(2));
+                let last = day_last_instant(date(2026, 11, 16), start_time, offset_hours(2));
+                let end = day_window_end(date(2026, 11, 16), start_time, offset_hours(2));
+                assert!(start <= last, "first must not exceed last at {start_time}");
+                assert!(start < end, "first is the window's opening instant");
+                assert!(
+                    last < end,
+                    "the last covered instant stays below the exclusive end"
+                );
+            }
+        }
+    }
+
+    /// D-2 unit (the calendar face): the free pair matches the
+    /// `DayCalendar` methods over the same calendar — one derivation,
+    /// no second spelling.
+    #[test]
+    fn day_pair_matches_the_calendar_methods() {
+        let calendar = DayCalendar {
+            day_start_time: time(5, 30),
+            offset: offset_hours(2),
+        };
+        let d = date(2026, 11, 16);
+        assert_eq!(
+            day_first_instant(d, time(5, 30), offset_hours(2)),
+            calendar.instant(d, time(5, 30))
+        );
+        assert_eq!(
+            day_last_instant(d, time(5, 30), offset_hours(2)),
+            calendar.day_last_instant(d)
         );
     }
 
