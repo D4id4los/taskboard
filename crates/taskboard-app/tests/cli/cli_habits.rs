@@ -379,11 +379,30 @@ use taskboard_app::commands::output::{
     HabitHistoryView, HabitPauseReceipt, HabitSkipReceipt, HabitStatsView, HabitWindowStateView,
 };
 
+/// The fixture's day calendar: the same D-F6 convention production
+/// resolves every habit window with (`AppConfig::resolved_day_calendar`
+/// — midnight rollover on the device's fixed UTC offset), so seeded and
+/// asserted dates land on the calendar the verbs actually write
+/// (#1471/#1472: deriving dates on the UTC calendar raced the local
+/// rollover).
+fn day() -> taskboard_domain::DayCalendar {
+    taskboard_domain::DayCalendar {
+        day_start_time: chrono::NaiveTime::MIN,
+        offset: *chrono::Local::now().offset(),
+    }
+}
+
 /// The fixture's captured clock: every seeded window derives from this
 /// one capture (the relative-oracle rule, §6.1 — never a hard-coded
 /// calendar date; cf. #606/#680).
 fn anchor() -> chrono::DateTime<chrono::Utc> {
     chrono::Utc::now()
+}
+
+/// The running day on the production calendar — the offset-calendar
+/// date of the capture, never the UTC calendar.
+fn today(now: chrono::DateTime<chrono::Utc>) -> chrono::NaiveDate {
+    day().today(now)
 }
 
 /// Kills: the Skip routing closure (the `collapse` arm and `run_on`'s
@@ -402,7 +421,7 @@ async fn h06_skip_marks_the_current_window_and_misses_typed_on_an_unknown_select
     // A met yesterday (quota reached) gives the streak a run to
     // survive; R-4 says the typed planned skip keeps it alive.
     let now0 = anchor();
-    let yesterday = (now0 - chrono::Duration::hours(24)).date_naive();
+    let yesterday = today(now0) - chrono::Duration::days(1);
     let yesterday_text = yesterday.format("%Y-%m-%d").to_string();
     run_one(
         &config,
@@ -450,11 +469,7 @@ async fn h06_skip_marks_the_current_window_and_misses_typed_on_an_unknown_select
     assert!(uuid::Uuid::parse_str(&habit_id).is_ok(), "durable uuid");
     let now = anchor();
     assert!(
-        window.num_days_from_ce() == now.date_naive().num_days_from_ce()
-            || window.num_days_from_ce()
-                == (now - chrono::Duration::hours(24))
-                    .date_naive()
-                    .num_days_from_ce(),
+        window == today(now) || window == today(now) - chrono::Duration::days(1),
         "the marked window is the running day's window: {window}"
     );
     assert!(streak >= 1, "R-4: the planned skip survives the streak");
@@ -496,7 +511,7 @@ async fn h07_pause_covers_and_resume_clears_the_pause() {
         .expect("log");
 
     let now = anchor();
-    let until = (now + chrono::Duration::hours(48)).date_naive();
+    let until = today(now) + chrono::Duration::days(2);
     let until_text = until.format("%Y-%m-%d").to_string();
     let paused = run_one(
         &config,
@@ -546,7 +561,7 @@ async fn h07_pause_covers_and_resume_clears_the_pause() {
     );
 
     // A past through-date is the planner's typed refusal.
-    let past = (now - chrono::Duration::hours(24)).date_naive();
+    let past = today(now) - chrono::Duration::days(1);
     let past_text = past.format("%Y-%m-%d").to_string();
     let err = run_one(
         &config,
@@ -577,7 +592,7 @@ async fn h08_history_renders_the_grid_vocabulary_chronologically() {
         .await
         .expect("add water");
     // Met: the yesterday window reached its quota.
-    let met_window = (now - chrono::Duration::hours(24)).date_naive();
+    let met_window = today(now) - chrono::Duration::days(1);
     let met_text = met_window.format("%Y-%m-%d").to_string();
     run_one(
         &config,
@@ -590,7 +605,7 @@ async fn h08_history_renders_the_grid_vocabulary_chronologically() {
     // Missed: the day-before-yesterday window stayed empty and its
     // grace closed (any now inside today's UTC day is past its grace
     // end).
-    let missed_window = (now - chrono::Duration::hours(48)).date_naive();
+    let missed_window = today(now) - chrono::Duration::days(2);
     let missed_text = missed_window.format("%Y-%m-%d").to_string();
     run_one(
         &config,
@@ -627,7 +642,7 @@ async fn h08_history_renders_the_grid_vocabulary_chronologically() {
     run_one(&config, parse(&["habits", "log", "stretch"]))
         .await
         .expect("stretch row");
-    let until = (now + chrono::Duration::hours(96)).date_naive();
+    let until = today(now) + chrono::Duration::days(4);
     let until_text = until.format("%Y-%m-%d").to_string();
     run_one(
         &config,
@@ -646,7 +661,7 @@ async fn h08_history_renders_the_grid_vocabulary_chronologically() {
     run_one(&config, parse(&["habits", "log", "run"]))
         .await
         .expect("run row");
-    let tomorrow = (now + chrono::Duration::hours(24)).date_naive();
+    let tomorrow = today(now) + chrono::Duration::days(1);
     let day_name = match tomorrow.weekday() {
         chrono::Weekday::Mon => "mon",
         chrono::Weekday::Tue => "tue",
@@ -747,7 +762,7 @@ async fn h09_stats_projects_the_typed_view_on_a_seeded_series() {
     run_one(&config, parse(&["habits", "add", "water", "--daily", "1"]))
         .await
         .expect("add");
-    let met_window = (now - chrono::Duration::hours(24)).date_naive();
+    let met_window = today(now) - chrono::Duration::days(1);
     let met_text = met_window.format("%Y-%m-%d").to_string();
     run_one(
         &config,
