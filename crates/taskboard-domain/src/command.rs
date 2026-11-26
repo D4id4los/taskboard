@@ -861,14 +861,21 @@ fn task_reorder_plan(
 /// The successor's insertion order after `head` in its stack (D-E4): the
 /// least live order strictly above the head's decides — no candidate
 /// (head is last) appends at `head.order + 1`; an adjacent candidate
-/// (`gap == 1`) ties *the head only* (the canonical `(order, id)` sort
-/// plus `UUIDv7` minting resolve the tie; all orders strictly between two
-/// adjacent tasks' orders are free, so no third task can share it);
-/// otherwise the floor midpoint of the free interval. B3 (2026-11-24,
-/// #1247): this is a NEW-ROW insertion, not a crossing move — the
-/// adjacency tie here is a spawn landing level with its head, not the
-/// move geometry defect; every MOVE path now speaks gap-index
-/// reorders (`StateCommand::TaskReorder`) instead.
+/// (`gap == 1`) ties *the head only* — the tie law, as contract: the
+/// spawn lands level with its head (`successor.order == head.order`)
+/// and the canonical `(order, id)` sort breaks the tie, so the spawn
+/// deterministically renders below its head **provided the spawn's id
+/// is minted strictly after its head's** (the contract
+/// `completion_spawn` upholds: the successor's id is minted here, after
+/// the head's pre-existing id, and `UUIDv7` lexical order reads as mint
+/// order). Caveat: production `Uuid::now_v7()` mints with `NoContext`
+/// — same-millisecond ids are not order-guaranteed (#1488); all orders
+/// strictly between two adjacent tasks' orders are free, so no third
+/// task can share the tie slot. Otherwise the floor midpoint of the
+/// free interval. B3 (2026-11-24, #1247): this is a NEW-ROW insertion,
+/// not a crossing move — the adjacency tie here is a spawn landing
+/// level with its head, not the move geometry defect; every MOVE path
+/// now speaks gap-index reorders (`StateCommand::TaskReorder`) instead.
 fn insertion_order_after(app: &AppState, head: &Task) -> i64 {
     let next_order = app
         .tasks
@@ -14520,6 +14527,46 @@ mod series_tests {
         );
     }
 
+    /// The adjacency tie's visible reading, as contract (#1400): the
+    /// successor lands level with its head and the canonical
+    /// `(order, id)` sort renders it immediately below the head —
+    /// pinned over an injected ordered `IdGenerator` (`CountingIds`,
+    /// burned past the fixture ids), so the spawn's id mints strictly
+    /// after the head's and the id leg reads as mint order by
+    /// construction. No wall clock, no sleeps.
+    #[test]
+    fn the_adjacency_tie_renders_the_successor_immediately_below_its_head() {
+        let (mut app, outbox) = base_with(head_at_order(1));
+        let mut next = super::tests::task(2, super::tests::stack_id(), true);
+        next.order = 2;
+        app.tasks.insert(next.id, next);
+
+        let head = &app.tasks[&head_id()];
+        let successor = successor_of(&complete(&app, &outbox));
+        assert_eq!(
+            successor.order, head.order,
+            "the tie slot: level with the head"
+        );
+
+        // Apply the spawn, then walk the canonical (order, id) order:
+        // the successor sits at the head's index + 1.
+        let stack = super::tests::stack_id();
+        app.tasks.insert(successor.id, successor.clone());
+        let rows: Vec<TaskId> = app.tasks_in_stack(stack).iter().map(|t| t.id).collect();
+        let head_idx = rows
+            .iter()
+            .position(|id| *id == head_id())
+            .expect("head in the canonical walk");
+        assert_eq!(
+            rows.get(head_idx + 1),
+            Some(&successor.id),
+            "the successor renders immediately below its head"
+        );
+        // And the spawn's id minted strictly after the head's: the id
+        // leg of the tie key reads as mint order.
+        assert!(successor.id > head_id(), "mint order: spawn after head");
+    }
+
     // ---- 3: the Until bound and the terminal rule (D-E2) ---------------
 
     #[test]
@@ -14533,15 +14580,7 @@ mod series_tests {
         // A member past the until date: no successor; the head still
         // completes and the rule clears as the terminal transition.
         let (app, outbox) = base_with(recur_head(RecurBound::Until(date(2026, 6, 15))));
-        let head = &app.tasks[&head_id()];
-        eprintln!(
-            "DBG ref={:?} until={:?} rule={:?}",
-            series_reference_date(head, utc_midnight(), now()),
-            date(2026, 6, 15),
-            head.recur
-        );
         let plan = complete(&app, &outbox);
-        eprintln!("DBG actions={:?}", plan.actions);
         assert!(
             spawned_successor(&plan).is_none(),
             "no successor was spawned"
