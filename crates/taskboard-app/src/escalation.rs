@@ -4,25 +4,35 @@
 //! keeps an `alarm`-insistent awaiting occurrence in the user's face —
 //! re-toasts on a cadence through the existing [`crate::notifications::NotificationSink`]
 //! port, and a global owned chime through the [`ChimeSink`] seam —
-//! and fires a one-shot completion chime at the fire instant of a
-//! `Normal`-insistence *ad-hoc alarm* (a timer: [`ReminderRef::Adhoc`]
-//! ∧ [`Insistence::Normal`]). Break-anchored and tracker `Normal` notes
-//! stay toast-only (scheduled posture / display nudges — chiming them
-//! would be noise). The `Alarm` ladder is unchanged: its +1 min opener
-//! is escalation ("you have not reacted"); a timer's whole purpose is
-//! to speak at completion, so its chime is one-shot at t₀, not a
-//! cadence. Insistence still never influences *when* something fires —
-//! t₀ is the fire instant itself.
+//! and fires a one-shot chime at the fire instant t₀ of every
+//! `Normal`-insistence firing (#1438, journey D-1, 2026-11-25): ad-hoc
+//! timers (the #1307 completion chime), break-anchored notes, and
+//! tracker notes alike. The former "scheduled posture" exception
+//! (break/tracker `Normal` notes toast-only) is RETIRED by #1438: a
+//! single 0.6 s chime at t₀ is not noise, and the kind → sound
+//! contract is now complete — **once-on-firing for every
+//! `Insistence::Normal` firing, continuous-until-dismissed for
+//! [`Insistence::Alarm`]**. The `Alarm` ladder is unchanged: its +1 min
+//! opener is escalation ("you have not reacted"). Insistence still
+//! never influences *when* something fires — t₀ is the fire instant
+//! itself. Reminders share the timers' chime synthesis and volume
+//! (journey D-2 — one sound, no per-kind tonal vocabulary); the
+//! per-reminder mute (`ReminderState::muted`, task-shaped) gates the
+//! domain's own firing derivation, so a muted reminder produces no
+//! awaiting notification at all and therefore no chime; un-muting
+//! restores it at the next read.
 //!
 //! # The muted-environment contract (kiosk posture, D-9/D-6)
 //!
 //! Audio requires Desktop app mode AND a Desktop-resolved notification
 //! sink; `Auto` resolves Desktop only under Desktop mode, so daemon and
 //! kiosk deployments are structurally silent — the log trail is the
-//! designed channel. A machine without a usable default audio device
-//! (headless, no ALSA/Pulse) degrades to visual-only for the process
-//! lifetime, logged once at boot. Timers intended to sound must run
-//! under Desktop mode.
+//! designed channel, for alarms, timers, and every reminder chime
+//! alike (#1438's kiosk posture: [`mount_chime`] returns
+//! [`DisabledChime`] there; US-20 pins the mount). A machine without a
+//! usable default audio device (headless, no ALSA/Pulse) degrades to
+//! visual-only for the process lifetime, logged once at boot. Anything
+//! intended to sound must run under Desktop mode.
 //!
 //! Fences (dispatch §11.3, stage-1 plan §1): no engine change, no new
 //! channel topology, no `SystemEvent`/`EngineSignal` variant — the
@@ -53,19 +63,19 @@ pub(crate) const RE_TOAST_FIRST: TimeDelta = TimeDelta::minutes(1);
 /// The re-toast cadence after the opener: t₀+3m, t₀+5m, …
 pub(crate) const RE_TOAST_EVERY: TimeDelta = TimeDelta::minutes(2);
 /// The global chime's opener (earliest awaiting t₀ + 1 min).
-pub(crate) const CHIME_FIRST: TimeDelta = TimeDelta::minutes(1);
+pub const CHIME_FIRST: TimeDelta = TimeDelta::minutes(1);
 /// The chime cadence after the opener: every 30 s.
-pub(crate) const CHIME_EVERY: TimeDelta = TimeDelta::seconds(30);
+pub const CHIME_EVERY: TimeDelta = TimeDelta::seconds(30);
 /// The volume ramp's full-volume bound (earliest t₀ + 5 min).
-pub(crate) const CHIME_RAMP: TimeDelta = TimeDelta::minutes(5);
+pub const CHIME_RAMP: TimeDelta = TimeDelta::minutes(5);
 /// The ramp's floor volume.
-pub(crate) const CHIME_LO: f32 = 0.30;
+pub const CHIME_LO: f32 = 0.30;
 /// The ramp's ceiling (and the hard cap after the ramp).
-pub(crate) const CHIME_HI: f32 = 1.0;
-/// The one-shot completion chime's volume for a Normal ad-hoc timer
-/// (a timer speaks once at completion — no ramp, no cadence; never
-/// config, D-I9's recorded fence).
-pub(crate) const COMPLETION_CHIME_VOLUME: f32 = 0.5;
+pub const CHIME_HI: f32 = 1.0;
+/// The one-shot chime's volume for every `Normal`-insistence firing
+/// (a timer, a break note, a tracker note — one shared chime, journey
+/// D-2; no ramp, no cadence; never config, D-I9's recorded fence).
+pub const ONE_SHOT_CHIME_VOLUME: f32 = 0.5;
 
 // -- the audio seam (D-13's confinement) ------------------------------
 
@@ -76,7 +86,7 @@ pub(crate) const COMPLETION_CHIME_VOLUME: f32 = 0.5;
 /// construction under rodio 0.23's `Player::connect_new` + `append`
 /// path (no fallible step between), so the only failure is the open.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum AudioError {
+pub enum AudioError {
     /// The process's default audio sink could not be opened.
     #[error("the default audio sink could not be opened: {0}")]
     Open(String),
@@ -84,7 +94,7 @@ pub(crate) enum AudioError {
 
 /// The audio seam: one chime at a volume. The only rodio touchpoint in
 /// the workspace; a backend swap never touches surfaces or engine.
-pub(crate) trait ChimeSink: Send + Sync + std::fmt::Debug {
+pub trait ChimeSink: Send + Sync + std::fmt::Debug {
     /// A failed chime is logged-and-dropped by the caller (typed, never
     /// fatal).
     ///
@@ -98,7 +108,7 @@ pub(crate) trait ChimeSink: Send + Sync + std::fmt::Debug {
 /// audio path is unavailable (no Desktop sink, or a failed open). A
 /// no-op that cannot fail — the caller's "typed Ok-ish no-op".
 #[derive(Debug, Default)]
-pub(crate) struct DisabledChime;
+pub struct DisabledChime;
 
 impl ChimeSink for DisabledChime {
     fn chime(&self, _volume: f32) -> Result<(), AudioError> {
@@ -108,7 +118,8 @@ impl ChimeSink for DisabledChime {
 
 /// The disabled no-op sink. Construction is the process's one degrade
 /// decision; `chime` never fails afterwards.
-pub(crate) fn disabled_chime() -> Arc<dyn ChimeSink> {
+#[must_use]
+pub fn disabled_chime() -> Arc<dyn ChimeSink> {
     Arc::new(DisabledChime)
 }
 
@@ -196,18 +207,19 @@ impl ChimeSink for RodioChime {
 /// mode is Desktop **and** the resolved sink is Desktop; otherwise (or
 /// on a typed open failure, logged once) the disabled no-op — the
 /// degrade-to-visual-only path. `open` is the construction seam the
-/// tests inject into.
-pub(crate) fn mount_chime(
+/// tests inject into (the arc indirection keeps [`RodioChime`] — and
+/// rodio itself — out of this public signature).
+pub fn mount_chime(
     audio_allowed: bool,
     mode: AppMode,
     sink: SinkKind,
-    open: impl FnOnce() -> Result<RodioChime, AudioError>,
+    open: impl FnOnce() -> Result<Arc<dyn ChimeSink>, AudioError>,
 ) -> Arc<dyn ChimeSink> {
     if !audio_allowed {
         return disabled_chime();
     }
     match open() {
-        Ok(chime) => Arc::new(chime),
+        Ok(chime) => chime,
         Err(err) => {
             tracing::warn!(
                 %err,
@@ -304,15 +316,16 @@ pub(crate) fn awaiting_alarms(
     .collect()
 }
 
-/// Every `Normal`-insistence *ad-hoc alarm* (a timer) currently
-/// awaiting: the completion channel's derivation, beside
-/// [`awaiting_alarms`] (never a widening of that filter — dragging
-/// Normal notes into the re-toast cadence would be the wrong shape).
-/// Delivered and un-dismissed by the domain derivation; the Adhoc
-/// anchor is the timer boundary — break rows are scheduled posture and
-/// tracker rows are display nudges, both stay toast-only.
+/// Every `Normal`-insistence notification currently awaiting: the
+/// one-shot channel's derivation, beside [`awaiting_alarms`] (never a
+/// widening of that filter — dragging Normal notes into the re-toast
+/// cadence would be the wrong shape). Delivered and un-dismissed by
+/// the domain derivation; since #1438 (journey D-1, 2026-11-25) the
+/// anchor no longer bounds the channel — timers, break notes, and
+/// tracker notes all chime once at t₀ (the mute gate lives in the
+/// domain derivation itself: a muted task produces no notification).
 #[must_use]
-pub(crate) fn awaiting_completion_chimes(
+pub(crate) fn awaiting_one_shot_chimes(
     state: &AppState,
     offset: chrono::FixedOffset,
     now: DateTime<Utc>,
@@ -327,9 +340,7 @@ pub(crate) fn awaiting_completion_chimes(
         now,
     )
     .into_iter()
-    .filter(|note| {
-        note.insistence == Insistence::Normal && matches!(note.reminder, ReminderRef::Adhoc(_))
-    })
+    .filter(|note| note.insistence == Insistence::Normal)
     .collect()
 }
 
@@ -361,10 +372,10 @@ pub(crate) struct StepOutcome {
 pub(crate) struct LadderMemory {
     last_re_toast: HashMap<(ReminderRef, DateTime<Utc>), DateTime<Utc>>,
     last_chime: Option<DateTime<Utc>>,
-    /// The completed one-shot timers (exactly-once is guaranteed by
+    /// The served one-shot firings (exactly-once is guaranteed by
     /// this set, never by the sink). Evicts with the awaiting set
     /// (D-12), survives the Alarm channels' empty-set reset — a chimed
-    /// timer still awaiting must not re-chime.
+    /// firing still awaiting must not re-chime.
     chimed: std::collections::BTreeSet<(ReminderRef, DateTime<Utc>)>,
 }
 
@@ -379,9 +390,9 @@ impl LadderMemory {
         });
     }
 
-    /// The completion set's mirror eviction: a dismissed timer's
+    /// The one-shot set's mirror eviction: a dismissed firing's
     /// one-shot record dies with its membership.
-    fn evict_completions(&mut self, awaiting_normal: &[Notification]) {
+    fn evict_one_shots(&mut self, awaiting_normal: &[Notification]) {
         self.chimed.retain(|key| {
             awaiting_normal
                 .iter()
@@ -520,36 +531,33 @@ pub(crate) fn escalation_step(
     StepOutcome { actions, next_due }
 }
 
-/// One completion-channel step for the awaiting Normal timers: pure,
-/// `escalation_step`'s one-shot sibling. A timer whose fire instant t₀
-/// has passed chimes exactly once (at [`COMPLETION_CHIME_VOLUME`]) —
+/// One one-shot-channel step for the awaiting `Normal` firings: pure,
+/// `escalation_step`'s one-shot sibling. A firing whose fire instant
+/// t₀ has passed chimes exactly once (at [`ONE_SHOT_CHIME_VOLUME`]) —
 /// at the first step at/after t₀, never again; exactly-once rides the
-/// memory set, never the sink. A not-yet-due timer contributes only
-/// its t₀ to `next_due` (the driver arms on it — D-10). The timer
-/// boundary (Adhoc) is re-checked here: the completion channel is the
-/// one place that must never leak a break or tracker note into audio.
+/// memory set, never the sink. A not-yet-due firing contributes only
+/// its t₀ to `next_due` (the driver arms on it — D-10). Since #1438
+/// (journey D-1, 2026-11-25) the Adhoc timer boundary no longer bounds
+/// the channel: break and tracker `Normal` notes chime once like every
+/// other Normal firing, on the shared synthesis (journey D-2).
 ///
-/// Eviction runs here (D-12): a dismissed timer's one-shot record dies
-/// with its membership.
+/// Eviction runs here (D-12): a dismissed firing's one-shot record
+/// dies with its membership (and a muted one re-chimes on unmute —
+/// the muted gap evicted its record).
 #[must_use]
-pub(crate) fn completion_chimes(
+pub(crate) fn one_shot_chimes(
     awaiting_normal: &[Notification],
     memory: &mut LadderMemory,
     now: DateTime<Utc>,
 ) -> StepOutcome {
-    let timers: Vec<Notification> = awaiting_normal
-        .iter()
-        .filter(|note| matches!(note.reminder, ReminderRef::Adhoc(_)))
-        .cloned()
-        .collect();
-    memory.evict_completions(&timers);
+    memory.evict_one_shots(awaiting_normal);
     let mut actions = Vec::new();
     let mut next_due = None;
-    for note in &timers {
+    for note in awaiting_normal {
         if note.occurrence <= now {
             if memory.chimed.insert((note.reminder, note.occurrence)) {
                 actions.push(EscalationAction::Chime {
-                    volume: COMPLETION_CHIME_VOLUME,
+                    volume: ONE_SHOT_CHIME_VOLUME,
                 });
             }
         } else if next_due.is_none_or(|best| note.occurrence < best) {
@@ -592,13 +600,14 @@ async fn apply(sink: &dyn NotificationSink, chime: &dyn ChimeSink, action: Escal
 }
 
 /// Spawns the escalation driver: parks on the engine-signal broadcast
-/// with no armed timer while no `alarm`-insistent notification awaits;
+/// with no armed timer while no awaiting notification (alarm ladder or
+/// `Normal` one-shot) exists;
 /// wakes on state changes (or its own cadence timer, armed only while
 /// an alarm awaits) and steps the pure ladder. Exits when the engine's
 /// broadcast closes (D-10); `Lagged` counts as change (the UI's
 /// recorded semantics).
 #[must_use]
-pub(crate) fn spawn_escalation_driver(
+pub fn spawn_escalation_driver(
     state: Arc<arc_swap::ArcSwap<AppState>>,
     offset: chrono::FixedOffset,
     sink: Arc<dyn NotificationSink>,
@@ -616,8 +625,8 @@ pub(crate) fn spawn_escalation_driver(
             // `StateUpdated`, which this driver already selects on).
             let snapshot = state.load();
             let awaiting = awaiting_alarms(&snapshot, offset, now);
-            let completing = awaiting_completion_chimes(&snapshot, offset, now);
-            if awaiting.is_empty() && completing.is_empty() {
+            let one_shots = awaiting_one_shot_chimes(&snapshot, offset, now);
+            if awaiting.is_empty() && one_shots.is_empty() {
                 // Bookkeeping dies with the set (D-12); park on the
                 // signal lane with NO timer armed.
                 memory = LadderMemory::default();
@@ -636,20 +645,22 @@ pub(crate) fn spawn_escalation_driver(
                 actions = outcome.actions;
                 next_due = outcome.next_due;
             }
-            // The completion channel: one-shot chimes through the same
-            // audio owner (one `RodioChime`, D-4).
-            let completions = completion_chimes(&completing, &mut memory, now);
-            actions.extend(completions.actions);
-            if next_due.is_none_or(|best| completions.next_due.is_some_and(|due| due < best)) {
-                next_due = completions.next_due;
+            // The one-shot channel: one chime per Normal firing at its
+            // t₀ (timers, break notes, tracker notes — #1438), through
+            // the same audio owner (one `RodioChime`, D-4).
+            let one_shot_step = one_shot_chimes(&one_shots, &mut memory, now);
+            actions.extend(one_shot_step.actions);
+            if next_due.is_none_or(|best| one_shot_step.next_due.is_some_and(|due| due < best)) {
+                next_due = one_shot_step.next_due;
             }
             for action in actions {
                 apply(sink.as_ref(), chime.as_ref(), action).await;
             }
             // The Alarm ladder repeats forever while its set is
-            // non-empty (`Some` always); the completion channel parks
-            // once every timer has had its one-shot — the memory is
-            // retained so a later signal never re-chimes a served t₀.
+            // non-empty (`Some` always); the one-shot channel parks
+            // once every Normal firing has had its chime — the memory
+            // is retained so a later signal never re-chimes a served
+            // t₀.
             let Some(next_due) = next_due else {
                 match signals.recv().await {
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -955,15 +966,15 @@ mod tests {
         let mut memory = LadderMemory::default();
         // First step at/after t₀: the one-shot chime, at the named
         // constant volume.
-        let at = completion_chimes(&notes, &mut memory, T0);
+        let at = one_shot_chimes(&notes, &mut memory, T0);
         assert_eq!(at.actions.len(), 1);
         assert!(matches!(
             &at.actions[0],
-            EscalationAction::Chime { volume } if *volume == COMPLETION_CHIME_VOLUME
+            EscalationAction::Chime { volume } if *volume == ONE_SHOT_CHIME_VOLUME
         ));
         // A second step (and any later ones): never again.
         for delta in [1_i64, 30, 300] {
-            let later = completion_chimes(&notes, &mut memory, T0 + TimeDelta::seconds(delta));
+            let later = one_shot_chimes(&notes, &mut memory, T0 + TimeDelta::seconds(delta));
             assert!(
                 later.actions.is_empty(),
                 "the one-shot never repeats at +{delta}s"
@@ -976,7 +987,7 @@ mod tests {
     fn no_completion_chime_before_t0_but_the_driver_arms_on_it() {
         let notes = [normal_timer_note("tea done", T0)];
         let mut memory = LadderMemory::default();
-        let early = completion_chimes(&notes, &mut memory, T0 - TimeDelta::seconds(1));
+        let early = one_shot_chimes(&notes, &mut memory, T0 - TimeDelta::seconds(1));
         assert!(early.actions.is_empty(), "nothing before the fire instant");
         assert_eq!(early.next_due, Some(T0), "the t₀ arms the driver (D-10)");
     }
@@ -986,10 +997,10 @@ mod tests {
         let a = normal_timer_note("a", T0);
         let b = normal_timer_note("b", T0);
         let mut memory = LadderMemory::default();
-        let _ = completion_chimes(&[a.clone(), b.clone()], &mut memory, T0);
+        let _ = one_shot_chimes(&[a.clone(), b.clone()], &mut memory, T0);
         assert_eq!(memory.chimed.len(), 2);
         // Dismiss `a`: its one-shot record dies with its membership…
-        let _ = completion_chimes(
+        let _ = one_shot_chimes(
             std::slice::from_ref(&b),
             &mut memory,
             T0 + TimeDelta::seconds(1),
@@ -999,18 +1010,19 @@ mod tests {
         // it: `b` stays served across any number of `escalation_step`s.
         let _ = escalation_step(&[alarm_note("alarm", T0)], &mut memory, T0 + CHIME_FIRST);
         let _ = escalation_step(&[], &mut memory, T0 + CHIME_FIRST);
-        let again = completion_chimes(std::slice::from_ref(&b), &mut memory, T0 + CHIME_FIRST);
+        let again = one_shot_chimes(std::slice::from_ref(&b), &mut memory, T0 + CHIME_FIRST);
         assert!(again.actions.is_empty(), "a served timer never re-chimes");
         // The empty completion set (both dismissed) clears the set.
-        let _ = completion_chimes(&[], &mut memory, T0 + CHIME_FIRST);
+        let _ = one_shot_chimes(&[], &mut memory, T0 + CHIME_FIRST);
         assert_eq!(memory.chimed.len(), 0);
     }
 
     #[test]
-    fn non_adhoc_normal_notes_produce_no_completion_action() {
-        // Helper-level: the channel is the timer boundary (Adhoc), so a
-        // break- or tracker-anchored Normal note in the slice yields
-        // nothing at all.
+    fn a_break_anchored_normal_note_chimes_once_like_a_timer() {
+        // #1438 (journey D-1, 2026-11-25): the anchor no longer bounds
+        // the one-shot channel — a break-anchored Normal note rides the
+        // identical once-at-t₀ contract (the retired toast-only
+        // exception's replacement pin).
         let rule = taskboard_domain::BreakRuleId::from_uuid(uuid::Uuid::now_v7());
         let break_note = Notification {
             insistence: Insistence::Normal,
@@ -1020,18 +1032,29 @@ mod tests {
             occurrence: T0,
         };
         let mut memory = LadderMemory::default();
-        let step = completion_chimes(&[break_note], &mut memory, T0 + TimeDelta::minutes(5));
-        assert!(step.actions.is_empty(), "breaks stay toast-only");
-        assert_eq!(step.next_due, None);
+        let step = one_shot_chimes(
+            std::slice::from_ref(&break_note),
+            &mut memory,
+            T0 + TimeDelta::minutes(5),
+        );
+        assert_eq!(step.actions.len(), 1, "exactly the one-shot chime");
+        assert!(matches!(
+            &step.actions[0],
+            EscalationAction::Chime { volume } if *volume == ONE_SHOT_CHIME_VOLUME
+        ));
+        assert_eq!(step.next_due, None, "a served firing arms nothing");
+        // Never again, while it stays awaiting.
+        let later = one_shot_chimes(&[break_note], &mut memory, T0 + TimeDelta::minutes(6));
+        assert!(later.actions.is_empty(), "the one-shot never repeats");
     }
 
     #[test]
-    fn the_completion_volume_is_a_named_fraction() {
+    fn the_one_shot_volume_is_a_named_fraction() {
         assert!(
-            (0.0..=1.0).contains(&COMPLETION_CHIME_VOLUME),
+            (0.0..=1.0).contains(&ONE_SHOT_CHIME_VOLUME),
             "the constant must be a valid playback volume"
         );
-        assert_eq!(COMPLETION_CHIME_VOLUME, 0.5, "the plan-named value");
+        assert_eq!(ONE_SHOT_CHIME_VOLUME, 0.5, "the plan-named value");
     }
 
     // -- M3: synthesis (structural, no audio device) ------------------
@@ -1509,7 +1532,7 @@ mod tests {
 
         let calls = chime.calls.lock().expect("chime records").clone();
         assert_eq!(calls.len(), 1, "exactly one chime at t₀: {calls:?}");
-        assert_eq!(calls[0], COMPLETION_CHIME_VOLUME);
+        assert_eq!(calls[0], ONE_SHOT_CHIME_VOLUME);
         assert!(
             sink.records.lock().expect("records").is_empty(),
             "the completion channel is chime-only — no re-toast"
@@ -1573,7 +1596,7 @@ mod tests {
         tokio::task::yield_now().await;
         let calls = chime.calls.lock().expect("chime records").clone();
         assert_eq!(calls.len(), 1, "exactly the one-shot at t₀: {calls:?}");
-        assert_eq!(calls[0], COMPLETION_CHIME_VOLUME);
+        assert_eq!(calls[0], ONE_SHOT_CHIME_VOLUME);
         driver.abort();
         let _ = driver.await;
     }

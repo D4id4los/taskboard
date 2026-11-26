@@ -399,7 +399,7 @@ fn toast_payload(notification: &Notification, now: DateTime<Utc>) -> ToastPayloa
 
 /// The resolved sink kind — the typed result of the D-R13 matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SinkKind {
+pub enum SinkKind {
     Desktop,
     Log,
 }

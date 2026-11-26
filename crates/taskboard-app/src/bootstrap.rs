@@ -1479,7 +1479,10 @@ async fn bootstrap_with_modules(
         audio_allowed,
         config.app.mode,
         crate::notifications::resolve_sink(config.reminders.sink, config.app.mode),
-        crate::escalation::RodioChime::open,
+        || {
+            crate::escalation::RodioChime::open()
+                .map(|chime| Arc::new(chime) as Arc<dyn crate::escalation::ChimeSink>)
+        },
     );
     let escalation_join = crate::escalation::spawn_escalation_driver(
         engine.shared_state(),
