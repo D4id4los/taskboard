@@ -894,6 +894,15 @@ pub enum UiRequest {
         scale: f64,
         reply: oneshot::Sender<Result<(), SettingsError>>,
     },
+    /// Switches the theme (#1437 D3/D4): the choice is typed
+    /// (`ThemeName` — closed set, minted UI-side), so no app-side
+    /// validation exists to fail; the reply is persist-only. The
+    /// UI live-applies the palette first (D4 — the `SetScale`
+    /// live-push precedent) and reverts on an `Err` reply.
+    SetTheme {
+        theme: crate::palette::ThemeName,
+        reply: oneshot::Sender<Result<(), SettingsError>>,
+    },
     // -- the settings editor's general-field commits (one variant per
     //    editable field-group; a closed enum of typed intents is the
     //    secrets boundary: no variant's payload could carry a

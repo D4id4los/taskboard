@@ -2,8 +2,14 @@
 // The theme module: the *only* place colours, font attributes, and
 // base-dimension arithmetic live (design §3.1). Everything is defined
 // against `base-scale`, the root multiplier pushed from `[ui] scale` at
-// window construction. Dark-first (Q13): one compile-time dark theme,
-// no switching machinery (POST-1.0).
+// window construction. The 14 `in-out` colour literals below are the
+// DARK palette's pre-push boot defaults (#1437 D2): the authoritative
+// palette data lives in Rust (`src/palette.rs`, `Palette::DARK`
+// verbatim + `Palette::LIGHT`), pushed at window construction and
+// live on switch — the mirror-parity test
+// (`src/token_tests.rs::the_slint_defaults_mirror_the_dark_palette`)
+// pins these literals ≡ `Palette::DARK` field-by-field. The derived
+// `Semantic` entries stay `out`: references, not data.
 //
 // Naming (§3.3): function names (`text-secondary`, `surface-raised`),
 // never hue names; two layers only — palette (Theme) → semantic
@@ -35,18 +41,18 @@ export global Theme {
     // paint above `surface-raised` must stay distinct from
     // `surface-hover`'s guard below, which boxes the arithmetic (the
     // r2 visual-identity plan §2.1).
-    out property <color> background: #14161c;
-    out property <color> surface: #1d2028;
-    out property <color> surface-raised: #262a35;
+    in-out property <color> background: #14161c;
+    in-out property <color> surface: #1d2028;
+    in-out property <color> surface-raised: #262a35;
     // The hover surface (usability pass D1): always lighter than every
     // parent it can be painted over — the hover step is at least the
     // surface→surface-raised step against both parents (locked by the
     // token tests' distinctness guard).
-    out property <color> surface-hover: #303545;
-    out property <color> text-primary: #e8eaf0;
-    out property <color> text-secondary: #a6abbd;
-    out property <color> border: #646c85;
-    out property <color> focus-ring: #7aa2f7;
+    in-out property <color> surface-hover: #303545;
+    in-out property <color> text-primary: #e8eaf0;
+    in-out property <color> text-secondary: #a6abbd;
+    in-out property <color> border: #646c85;
+    in-out property <color> focus-ring: #7aa2f7;
     // The colour picker's const colour DATA (schedule-colour-ux
     // journey plan D-4, #1440): the hue strip's six pure ramp stops,
     // the SV square's white→saturation / black→value overlay pair and
@@ -161,7 +167,7 @@ export global Theme {
     // walkthrough). The 8-digit form stays invisible to the contrast
     // extractor (token_tests) — a translucent wash is not a text
     // carrier.
-    out property <color> scrim: #0b0d1280;
+    in-out property <color> scrim: #0b0d1280;
 
     // ---- Overlay sizing floors/caps (J2 R-6, D-W1-5; sourced from
     //      the widget inventory report §4's Qt/web defaults) ----------
@@ -226,13 +232,13 @@ export enum Tone {
 // State colours mapped onto palette entries (§3.1): nothing outside the
 // theme names palette colours. `offline` maps to text-secondary.
 export global Semantic {
-    out property <color> success: #6fd98b;
-    out property <color> warning: #e8c268;
-    out property <color> danger: #e8756f;
-    out property <color> overdue: #ff9e64;
-    out property <color> sync-active: #7aa2f7;
+    in-out property <color> success: #6fd98b;
+    in-out property <color> warning: #e8c268;
+    in-out property <color> danger: #e8756f;
+    in-out property <color> overdue: #ff9e64;
+    in-out property <color> sync-active: #7aa2f7;
     out property <color> offline: Theme.text-secondary;
-    out property <color> focus-ring: Theme.focus-ring;
+    in-out property <color> focus-ring: Theme.focus-ring;
 
     // The F-3 tone-ladder functions (#952, round-9 W5): the canonical
     // Tone→colour mapping in exactly one copy — every primitive's

@@ -45,10 +45,15 @@ fn extract_colors(source: &str) -> Vec<(String, String, String)> {
     result
 }
 
-/// Parses one `out property <color> name: #hex;` line (or a
-/// `Theme.<name>` reference, resolved to the referenced hex).
+/// Parses one `out`/`in-out` `property <color> name: #hex;` line (or
+/// a `Theme.<name>` reference, resolved to the referenced hex). The
+/// `in-out` form is the palette's (#1437 D2): the 14 palette
+/// properties are Rust-pushable, so both declaration spellings carry
+/// tokens.
 fn parse_color_property(line: &str) -> Option<(&str, &str)> {
-    let rest = line.strip_prefix("out property <color> ")?;
+    let rest = line
+        .strip_prefix("in-out property <color> ")
+        .or_else(|| line.strip_prefix("out property <color> "))?;
     let (name, value) = rest.split_once(':')?;
     let name = name.trim();
     let hex = value.trim().trim_end_matches(';').trim();
@@ -266,6 +271,83 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
     (("Semantic", "sync-active"), SURFACE, MinRatio::NonText),
 ];
 
+/// The palette under test (#1437 design §2.3): the `.slint` defaults
+/// are a real palette (dark — the boot-time pre-push fallback), and
+/// the Rust `Palette::LIGHT` mirror joins it — every declared pair ×
+/// both palettes must meet its role-class minimum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaletteTag {
+    /// The theme.slint literals (dark; the extractor's read).
+    SlintDefaults,
+    /// The Rust light palette (`crate::palette::Palette::LIGHT`).
+    Light,
+}
+
+impl PaletteTag {
+    /// The effective minimum a pair owes under this palette. The
+    /// waiver debt (#1450's pinned floors) is a *dark-measured*
+    /// record: the light palette carries no waivers — the floors are
+    /// the contract (the round law: fix or cite, never carry a dark
+    /// exemption forward to light), so a waived pair's effective
+    /// minimum under light is the class it owes.
+    const fn effective_minimum(self, class: &MinRatio) -> f64 {
+        match (self, class) {
+            (Self::Light, MinRatio::Waived { owed, .. }) => owed.minimum(),
+            (_, class) => class.minimum(),
+        }
+    }
+}
+
+/// The per-palette token lookup: `(global, name)` → 6-digit hex, the
+/// same token vocabulary the extractor reads from theme.slint. The
+/// light palette resolves the two derived `Semantic` entries the same
+/// way the slint does (`offline` → `text-secondary`, `focus-ring` →
+/// `Theme.focus-ring`) — the derivation is palette-independent
+/// (design D1). An unpaired name resolves empty and fails the tests
+/// loudly.
+fn light_lookup(name: TokenName) -> String {
+    use crate::palette::Palette;
+    let p = Palette::LIGHT;
+    let hex = |rgb: u32| format!("{rgb:06x}");
+    match (name.0, name.1) {
+        ("Theme", "background") => hex(p.background),
+        ("Theme", "surface") => hex(p.surface),
+        ("Theme", "surface-raised") => hex(p.surface_raised),
+        ("Theme", "surface-hover") => hex(p.surface_hover),
+        ("Theme", "text-primary") => hex(p.text_primary),
+        ("Theme", "text-secondary") | ("Semantic", "offline") => hex(p.text_secondary),
+        ("Theme", "border") => hex(p.border),
+        ("Semantic", "success") => hex(p.success),
+        ("Semantic", "warning") => hex(p.warning),
+        ("Semantic", "danger") => hex(p.danger),
+        ("Semantic", "overdue") => hex(p.overdue),
+        ("Semantic", "sync-active") => hex(p.sync_active),
+        ("Theme" | "Semantic", "focus-ring") => hex(p.focus_ring),
+        _ => String::new(),
+    }
+}
+
+/// The lookup for one palette under test.
+fn palette_lookup(tag: PaletteTag, name: TokenName) -> String {
+    match tag {
+        PaletteTag::SlintDefaults => slint_lookup()(name),
+        PaletteTag::Light => light_lookup(name),
+    }
+}
+
+/// The slint-extraction lookup (the dark palette's source), factored
+/// out of the tests so the parameterized loops share it.
+fn slint_lookup() -> impl Fn(TokenName) -> String {
+    let tokens = extract_colors(THEME_SOURCE);
+    move |name: TokenName| {
+        tokens
+            .iter()
+            .find(|(g, n, _)| g == name.0 && n == name.1)
+            .map(|(_, _, hex)| hex.clone())
+            .unwrap_or_default()
+    }
+}
+
 /// Colour tokens with no contrast duty of their own. Empty at seed —
 /// any entry must carry a reason comment (completeness rule 1).
 /// The picker tokens (schedule-colour-ux journey plan D-4): the hue
@@ -402,28 +484,29 @@ fn hover_token_is_distinct_from_its_parents() {
     // hover colour equalled the toolbar's surface) and against an
     // imperceptible step: the hover cue over either parent surface
     // must be at least as visible as the existing selection step.
-    let tokens = extract_colors(THEME_SOURCE);
-    let hex = |name: &str| -> String {
-        tokens
-            .iter()
-            .find(|(g, n, _)| g == "Theme" && n == name)
-            .map(|(_, _, hex)| hex.clone())
-            .unwrap_or_default()
-    };
-    let hover = hex("surface-hover");
-    assert!(!hover.is_empty(), "surface-hover is declared");
-    for parent in ["background", "surface", "surface-raised"] {
-        assert_ne!(hover, hex(parent), "hover must differ from {parent}");
+    // Parameterized over both palettes (#1437 design §2.3): the
+    // ladder's distinctness law holds per palette.
+    for tag in [PaletteTag::SlintDefaults, PaletteTag::Light] {
+        let theme = |name: &str| palette_lookup(tag, ("Theme", name));
+        let hover = theme("surface-hover");
+        assert!(!hover.is_empty(), "{tag:?}: surface-hover is declared");
+        for parent in ["background", "surface", "surface-raised"] {
+            assert_ne!(
+                hover,
+                theme(parent),
+                "{tag:?}: hover must differ from {parent}"
+            );
+        }
+        let raised_step = contrast_ratio(&theme("surface"), &theme("surface-raised"));
+        assert!(
+            contrast_ratio(&theme("surface"), &hover) >= raised_step,
+            "{tag:?}: the surface→hover step must be at least the surface→raised step"
+        );
+        assert!(
+            contrast_ratio(&theme("surface-raised"), &hover) >= raised_step,
+            "{tag:?}: the raised→hover step must be at least the surface→raised step"
+        );
     }
-    let raised_step = contrast_ratio(&hex("surface"), &hex("surface-raised"));
-    assert!(
-        contrast_ratio(&hex("surface"), &hover) >= raised_step,
-        "the surface→hover step must be at least the surface→raised step"
-    );
-    assert!(
-        contrast_ratio(&hex("surface-raised"), &hover) >= raised_step,
-        "the raised→hover step must be at least the surface→raised step"
-    );
 }
 
 #[test]
@@ -436,42 +519,38 @@ fn wcag_math_is_sanity_anchored() {
 
 #[test]
 fn every_pair_meets_its_role_class_minimum() {
-    let tokens = extract_colors(THEME_SOURCE);
-    let lookup = |name: TokenName| -> String {
-        tokens
-            .iter()
-            .find(|(g, n, _)| g == name.0 && n == name.1)
-            .map(|(_, _, hex)| hex.clone())
-            .unwrap_or_default()
-    };
-    for (foreground, surface, class) in PAIRS {
-        let fg = lookup(*foreground);
-        let bg = lookup(*surface);
-        assert!(
-            !fg.is_empty() && !bg.is_empty(),
-            "pair references an undeclared token: {foreground:?} × {surface:?} (completeness rule 3)"
-        );
-        let ratio = contrast_ratio(&fg, &bg);
-        assert!(
-            ratio >= class.minimum(),
-            "{foreground:?} on {surface:?} is {ratio:.2}:1, below the {:?} minimum {}:1{}",
-            class.label(),
-            class.minimum(),
-            if class.debt_issue().is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " (waived debt pinned at {:.2}:1, owes {:?} {}:1 when {} lands)",
-                    class.minimum(),
-                    match class {
-                        MinRatio::Waived { owed, .. } => owed.label(),
-                        _ => "",
-                    },
-                    class.owed_minimum(),
-                    class.debt_issue()
-                )
-            }
-        );
+    for tag in [PaletteTag::SlintDefaults, PaletteTag::Light] {
+        for (foreground, surface, class) in PAIRS {
+            let lookup = |name: TokenName| palette_lookup(tag, name);
+            let fg = lookup(*foreground);
+            let bg = lookup(*surface);
+            assert!(
+                !fg.is_empty() && !bg.is_empty(),
+                "{tag:?}: pair references an undeclared token: {foreground:?} × {surface:?} (completeness rule 3)"
+            );
+            let ratio = contrast_ratio(&fg, &bg);
+            let minimum = tag.effective_minimum(class);
+            assert!(
+                ratio >= minimum,
+                "{tag:?}: {foreground:?} on {surface:?} is {ratio:.2}:1, below the {:?} minimum {}:1{}",
+                class.label(),
+                minimum,
+                if class.debt_issue().is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " (waived debt pinned at {:.2}:1, owes {:?} {}:1 when {} lands)",
+                        class.minimum(),
+                        match class {
+                            MinRatio::Waived { owed, .. } => owed.label(),
+                            _ => "",
+                        },
+                        class.owed_minimum(),
+                        class.debt_issue()
+                    )
+                }
+            );
+        }
     }
 }
 
@@ -480,14 +559,12 @@ fn every_pair_meets_its_role_class_minimum() {
 /// debt and must be deleted (the entry flips to the real floor).
 #[test]
 fn every_waived_pair_is_still_below_its_owed_minimum() {
-    let tokens = extract_colors(THEME_SOURCE);
-    let lookup = |name: TokenName| -> String {
-        tokens
-            .iter()
-            .find(|(g, n, _)| g == name.0 && n == name.1)
-            .map(|(_, _, hex)| hex.clone())
-            .unwrap_or_default()
-    };
+    // The tripwire runs over the dark palette only (`SlintDefaults`):
+    // the waiver floors are dark-measured debt; the light palette
+    // carries no waivers (its `effective_minimum` is the owed class
+    // — asserted by the pair test above).
+    let tag = PaletteTag::SlintDefaults;
+    let lookup = |name: TokenName| palette_lookup(tag, name);
     for (foreground, surface, class) in PAIRS {
         let MinRatio::Waived { issue, owed, .. } = class else {
             continue;
@@ -505,6 +582,92 @@ fn every_waived_pair_is_still_below_its_owed_minimum() {
             owed.label(),
             owed.minimum(),
             issue
+        );
+    }
+}
+
+/// The mirror-parity pin (#1437 design D2): the theme.slint literals
+/// (the boot-time pre-push defaults) are byte-equal to
+/// `Palette::DARK` field-by-field — the deliberate duplication is
+/// held by the house mirror-parity pattern (drift breaks a test, the
+/// `settings_form` precedent). The 8-digit scrim (invisible to the
+/// extractor) is checked directly against the same literal grammar.
+#[test]
+fn the_slint_defaults_mirror_the_dark_palette() {
+    use crate::palette::Palette;
+    let dark = Palette::DARK;
+    let hex = |rgb: u32| format!("{rgb:06x}");
+    let tokens = extract_colors(THEME_SOURCE);
+    let lookup = |global: &str, name: &str| -> String {
+        tokens
+            .iter()
+            .find(|(g, n, _)| g == global && n == name)
+            .map_or_else(
+                || panic!("theme declares {global}.{name}"),
+                |(_, _, hex)| hex.clone(),
+            )
+    };
+    let pairs = [
+        ("Theme", "background", dark.background),
+        ("Theme", "surface", dark.surface),
+        ("Theme", "surface-raised", dark.surface_raised),
+        ("Theme", "surface-hover", dark.surface_hover),
+        ("Theme", "text-primary", dark.text_primary),
+        ("Theme", "text-secondary", dark.text_secondary),
+        ("Theme", "border", dark.border),
+        ("Theme", "focus-ring", dark.focus_ring),
+        ("Semantic", "success", dark.success),
+        ("Semantic", "warning", dark.warning),
+        ("Semantic", "danger", dark.danger),
+        ("Semantic", "overdue", dark.overdue),
+        ("Semantic", "sync-active", dark.sync_active),
+    ];
+    for (global, name, rgb) in pairs {
+        assert_eq!(
+            lookup(global, name),
+            hex(rgb),
+            "{global}.{name}: the slint default drifted from Palette::DARK — \
+             the .slint literals are the boot-time fallback and must stay the \
+             dark palette verbatim (design D2)"
+        );
+    }
+    // The scrim: same mirror, over the 8-digit literal form.
+    let scrim_line = THEME_SOURCE
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(l).trim())
+        .find(|l| l.starts_with("in-out property <color> scrim:"))
+        .expect("theme declares the scrim token");
+    let value = scrim_line
+        .split_once(':')
+        .unwrap()
+        .1
+        .trim()
+        .trim_end_matches(';');
+    assert_eq!(
+        value,
+        format!("#{:08x}", dark.scrim),
+        "the scrim literal drifted from Palette::DARK.scrim"
+    );
+}
+
+/// The light palette's token vocabulary is total (design §2.3's
+/// completeness rule runs over the union): every non-exempt token the
+/// extractor finds resolves in the light lookup — a new token added
+/// to theme.slint without a `Palette` field fails here.
+#[test]
+fn the_light_palette_covers_every_declared_token() {
+    let tokens = extract_colors(THEME_SOURCE);
+    for (global, name, _) in &tokens {
+        let exempt = NO_TEXT_DUTY_EXEMPT
+            .iter()
+            .any(|(g, n)| g == global && n == name);
+        if exempt {
+            continue;
+        }
+        assert!(
+            !light_lookup((global.as_str(), name.as_str())).is_empty(),
+            "colour token {global}.{name} has no Palette::LIGHT field — \
+             the palette data must cover every declared token (design D1)"
         );
     }
 }
@@ -592,7 +755,7 @@ fn the_scrim_token_is_a_translucent_theme_colour() {
     let line = THEME_SOURCE
         .lines()
         .map(|l| l.split("//").next().unwrap_or(l).trim())
-        .find(|l| l.starts_with("out property <color> scrim:"))
+        .find(|l| l.starts_with("in-out property <color> scrim:"))
         .expect("theme declares the scrim token");
     let value = line.split_once(':').unwrap().1.trim().trim_end_matches(';');
     // #RRGGBBAA — the 8-digit form keeps it out of the contrast

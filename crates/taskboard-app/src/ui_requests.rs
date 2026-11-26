@@ -649,6 +649,9 @@ pub async fn handle_settings(request: UiRequest, workspace: &ConnectionWorkspace
         UiRequest::SetScale { scale, reply } => {
             let _ = reply.send(set_scale(workspace, scale));
         }
+        UiRequest::SetTheme { theme, reply } => {
+            let _ = reply.send(set_theme(workspace, theme));
+        }
         UiRequest::SetDayStart { time, reply } => {
             let _ = reply.send(
                 run_editor_write(workspace, Field::DayStart, |path| {
@@ -1732,6 +1735,18 @@ fn set_scale(workspace: &ConnectionWorkspace, scale: f64) -> Result<(), Settings
         },
     })?;
     crate::connections::overlay_set_ui_scale(&workspace.config_write_path, scale)
+        .map_err(|err| map_io_error(&err))
+}
+
+/// Persists the theme word (#1437 D5): the choice arrives typed (the
+/// closed-set `ThemeName` minted UI-side), so the persist is the
+/// whole lane — the `overlay_set_ui_scale` twin through the same
+/// toml_edit ceremony.
+fn set_theme(
+    workspace: &ConnectionWorkspace,
+    theme: taskboard_ui_slint::palette::ThemeName,
+) -> Result<(), SettingsError> {
+    crate::connections::overlay_set_ui_theme(&workspace.config_write_path, theme)
         .map_err(|err| map_io_error(&err))
 }
 
