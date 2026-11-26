@@ -19,7 +19,15 @@
 /// modules back into the same byte stream it audited before).
 // The list grows as chunk E1 extracts modules; the concatenated
 // byte stream is identical to the former `adapter.rs`.
-const ADAPTER_MODULES: &[&str] = &[include_str!("../../src/adapter/mod.rs")];
+const ADAPTER_MODULES: &[&str] = &[
+    include_str!("../../src/adapter/mod.rs"),
+    include_str!("../../src/adapter/seams/export.rs"),
+    include_str!("../../src/adapter/seams/recur.rs"),
+    include_str!("../../src/adapter/seams/stack_width.rs"),
+    include_str!("../../src/adapter/seams/status_panel.rs"),
+    include_str!("../../src/adapter/seams/toolbar.rs"),
+    include_str!("../../src/adapter/seams/view.rs"),
+];
 
 fn adapter_source() -> String {
     ADAPTER_MODULES.concat()
