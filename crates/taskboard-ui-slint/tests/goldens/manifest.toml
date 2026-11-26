@@ -31,7 +31,7 @@ axes = { scale = 0.5, width = 1000, height = 900 }
 [[golden]]
 name = "track-entries-1.0-1000"
 fixture = "golden_state_enriched_at + two closed fixed-instant entries"
-state = "time-entries overlay; closed rows + armed deletes (enriched base)"
+state = "time-entries overlay; closed rows + armed deletes (enriched base; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
@@ -205,7 +205,7 @@ axes = { scale = 1.0, width = 351, height = 64 }
 [[golden]]
 name = "task-view-overdue-banner-1.0-1000"
 fixture = "today_overdue_enriched_at(PINNED_NOW)"
-state = "task detail over an overdue task; status-bar overdue banner rows"
+state = "task detail over an overdue task; status-bar overdue banner rows; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
@@ -277,7 +277,7 @@ axes = { scale = 1.0, width = 1000, height = 900 }
 [[golden]]
 name = "recur-editor-modal-1.0-1000"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "recur editor modal over the daily series task; closed pattern picker"
+state = "recur editor modal over the daily series task; closed pattern picker; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
@@ -289,7 +289,7 @@ axes = { scale = 0.5, width = 1000, height = 900 }
 [[golden]]
 name = "recur-editor-detach-armed-1.0-1000"
 fixture = "golden_state_enriched_at(PINNED_NOW)"
-state = "recur editor modal; the stop-repeating consequence strip armed"
+state = "recur editor modal; the stop-repeating consequence strip armed; 2026-11-26 #1435 vertical space-2 editor inset)"
 axes = { scale = 1.0, width = 1000, height = 900 }
 
 [[golden]]
