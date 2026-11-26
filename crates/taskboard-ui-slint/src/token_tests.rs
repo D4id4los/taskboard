@@ -268,7 +268,21 @@ const PAIRS: &[(TokenName, TokenName, MinRatio)] = &[
 
 /// Colour tokens with no contrast duty of their own. Empty at seed —
 /// any entry must carry a reason comment (completeness rule 1).
-const NO_TEXT_DUTY_EXEMPT: &[TokenName] = &[];
+/// The picker tokens (schedule-colour-ux journey plan D-4): the hue
+/// strip's pure ramp stops and the SV square's overlay pair are the
+/// projected colour space's own const DATA — they paint the picker's
+/// fill only (never text over them; the thumb ring carries its own
+/// contrast against every ramp stop), so no token pair duty exists.
+const NO_TEXT_DUTY_EXEMPT: &[TokenName] = &[
+    ("Theme", "picker-hue-red"),
+    ("Theme", "picker-hue-yellow"),
+    ("Theme", "picker-hue-green"),
+    ("Theme", "picker-hue-cyan"),
+    ("Theme", "picker-hue-blue"),
+    ("Theme", "picker-hue-magenta"),
+    ("Theme", "picker-sv-white"),
+    ("Theme", "picker-sv-black"),
+];
 
 /// The closed §3.2 role table mapped onto role classes: every
 /// `Typography` role must appear exactly once (completeness rule 2).
@@ -353,6 +367,14 @@ fn extractor_finds_every_declared_theme_token() {
         "Theme.text-secondary",
         "Theme.border",
         "Theme.focus-ring",
+        "Theme.picker-hue-red",
+        "Theme.picker-hue-yellow",
+        "Theme.picker-hue-green",
+        "Theme.picker-hue-cyan",
+        "Theme.picker-hue-blue",
+        "Theme.picker-hue-magenta",
+        "Theme.picker-sv-white",
+        "Theme.picker-sv-black",
         "Semantic.success",
         "Semantic.warning",
         "Semantic.danger",

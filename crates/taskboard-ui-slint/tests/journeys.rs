@@ -23052,13 +23052,14 @@ fn us2_s1_the_multi_bar_routes_per_member() {
         harness.handle.window().invoke_menu_quick_bar_invoked(0);
         harness.driver.advance_time(0);
         let today = chrono::Utc::now().with_timezone(&offset).date_naive();
-        // #893 (2026-11-18): the multi-select batch twin stamps the
-        // day's last covered instant, not the raw exclusive end.
-        let end = taskboard_domain::days::last_covered_instant(
-            taskboard_domain::days::day_window_end(today, day_start, offset),
-        );
+        // #1428 (journey plan D-1/D-2): the multi-select batch twin
+        // commits the PAIR — the day's first covered instant (start)
+        // and its last covered instant (due, #893), per member.
+        let first = taskboard_domain::days::day_first_instant(today, day_start, offset);
+        let last = taskboard_domain::days::day_last_instant(today, day_start, offset);
         let mask = taskboard_domain::TaskChanges {
-            scheduled: Some(Some(end)),
+            scheduled: Some(Some(first)),
+            duedate: Some(Some(last)),
             ..taskboard_domain::TaskChanges::default()
         };
         harness.assert_commands(&[
