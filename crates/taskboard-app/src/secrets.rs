@@ -725,7 +725,7 @@ mod tests {
         for account in [
             "alice@cloud.example.com",
             "u@/:*?\"<>| spaces\n",
-            "é中 ",
+            "é中\u{0}",
             "",
         ] {
             let name = hex_lower(account.as_bytes());

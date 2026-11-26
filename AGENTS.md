@@ -35,6 +35,14 @@ strictly to these dependency boundaries:
   commands and updates local state. Sole source of truth for application
   state; owns the write side of `ArcSwap<AppState>`.
 - `taskboard-sync-nextcloud`: Nextcloud Deck REST API actor.
+- `taskboard-sync-files`: The files-sync substrate's pure core (ADR
+  0020): section-document codecs, tree-layout types, and the per-device
+  fold. **Rule:** pure Rust, no network, UI, or asynchronous runtime
+  dependencies (the domain-crate discipline applies).
+- `taskboard-sync-files-nextcloud`: The files-sync transport actor over
+  the substrate core: the WebDAV client (conditional-PUT discipline) on
+  the workspace `reqwest` stack. **Rule:** network IO lives here, never
+  in the substrate core.
 - `taskboard-storage-sqlite`: Local disk caching actor using `sqlx`.
 - `taskboard-ui-slint`: Swappable UI layer. **Rule:** cannot depend on IO
   crates; presentation logic only.
@@ -145,7 +153,8 @@ The workspace uses a Dual-Tier Licensing model. Include the appropriate
 SPDX header at the top of every new `.rs` file:
 
 - Library/Domain crates (`taskboard-domain`, `taskboard-state`,
-  `taskboard-storage-sqlite`, `taskboard-sync-nextcloud`):
+  `taskboard-storage-sqlite`, `taskboard-sync-nextcloud`,
+  `taskboard-sync-files`, `taskboard-sync-files-nextcloud`):
   `// SPDX-License-Identifier: MIT OR Apache-2.0`
 - Application/UI crates (`taskboard-app`, `taskboard-ui-slint`):
   `// SPDX-License-Identifier: AGPL-3.0-only`
