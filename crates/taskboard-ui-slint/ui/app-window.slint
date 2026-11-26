@@ -331,6 +331,7 @@ export component AppWindow inherits Window {
     callback settings-disconnect-clicked(int);
     callback settings-files-picked(int, int);
     callback settings-preset-picked(int);
+    callback settings-theme-picked(int);
     callback settings-view-mounted();
     callback settings-scale-committed(string);
     callback settings-scale-focus-lost();
@@ -838,6 +839,7 @@ export component AppWindow inherits Window {
                 disconnect-clicked(i) => root.settings-disconnect-clicked(i);
                 files-picked(i, o) => root.settings-files-picked(i, o);
                 preset-picked(i) => root.settings-preset-picked(i);
+                theme-committed(i) => root.settings-theme-picked(i);
                 scale-committed(t) => root.settings-scale-committed(t);
                 scale-focus-lost() => root.settings-scale-focus-lost();
                 scale-pressed() => root.settings-scale-pressed();

@@ -113,6 +113,10 @@ pub(in crate::adapter) struct SettingsVm {
     /// changed only by `apply_keymap_update` — the reply, never the
     /// click, is the selection's source.
     pub(in crate::adapter) preset: crate::keymap::Preset,
+    /// The last-known persisted theme (#1437 D5): seeded at mount,
+    /// changed only by the `SetTheme` reply — the reply, never the
+    /// click, is the selection's source (the `preset` contract).
+    pub(in crate::adapter) theme: crate::palette::ThemeName,
     /// The scale field's staged buffer (round-3 D20a): set per
     /// keystroke on the scale field, discarded on Return commit and
     /// on focus loss. While present it is the field's rendered echo
@@ -378,6 +382,14 @@ pub(in crate::adapter) fn preset_index(preset: crate::keymap::Preset) -> i32 {
         crate::keymap::Preset::Emacs => 1,
         crate::keymap::Preset::Vi => 2,
     }
+}
+
+/// The theme picker's index contract (#1437 D3): `[Dark, Light]` —
+/// the same order `ThemeName::from_index` maps back. One source for
+/// the push; the slint property is an `int` (the `preset_index`
+/// twin).
+pub(in crate::adapter) fn theme_index(theme: crate::palette::ThemeName) -> i32 {
+    theme.index()
 }
 
 /// The form-mirror field → lane field mapping (r2 D34): the save

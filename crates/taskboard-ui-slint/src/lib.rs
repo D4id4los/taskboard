@@ -366,6 +366,7 @@ pub fn mount(
         &window,
         settings.keymap,
         settings.keymap_preset,
+        settings.theme,
         settings.startup,
         commands,
         requests,

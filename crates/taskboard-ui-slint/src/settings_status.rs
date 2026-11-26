@@ -301,6 +301,7 @@ pub const HELP_SCALE: &str =
     "How large the interface renders, from 0.5 to 3.0. Type the exact value and press Return.";
 pub const HELP_KEYMAP: &str =
     "The keyboard scheme: Standard, Emacs, or Vi. Overrides from the config file stay in place.";
+pub const HELP_THEME: &str = "The colour palette: Dark or Light. Switching applies immediately and persists to the config file.";
 pub const HELP_ROWS: &str = "Test verifies the stored password against the server; Remove deletes the config entry and the stored password.";
 // The settings editor's general fields (the GUI settings editor chunk).
 pub const HELP_DAY_START: &str =
@@ -453,6 +454,7 @@ mod tests {
             HELP_APP_PASSWORD,
             HELP_SCALE,
             HELP_KEYMAP,
+            HELP_THEME,
             HELP_ROWS,
             HELP_DAY_START,
             HELP_TICK,
