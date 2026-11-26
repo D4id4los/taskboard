@@ -14,11 +14,14 @@
 //! regardless of macro vs explicit wiring.
 
 /// The adapter source, one `include_str!` per module of the
-/// decomposed `adapter/` tree (the former single `adapter.rs`; the
-/// decomposition is purely mechanical, so the census concatenates the
-/// modules back into the same byte stream it audited before).
-// The list grows as chunk E1 extracts modules; the concatenated
-// byte stream is identical to the former `adapter.rs`.
+/// decomposed `adapter/` tree (the former single `adapter.rs`): the
+/// census counts over the concatenation of every seam-bearing module,
+/// so the totals it audits are the same population the single file
+/// held before the split (the decomposition is purely mechanical).
+// The list grows as chunk E1 extracts modules; every file that can
+// carry a `window.on_`/`window.invoke_` occurrence is listed here
+// (`tests.rs` and `seams/mod.rs` carry neither pattern and are
+// deliberately absent).
 const ADAPTER_MODULES: &[&str] = &[
     include_str!("../../src/adapter/mod.rs"),
     include_str!("../../src/adapter/notices.rs"),

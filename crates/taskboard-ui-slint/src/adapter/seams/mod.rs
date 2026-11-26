@@ -4,8 +4,8 @@
 //! .artifacts/plans/2026-11-25-adapter-decomposition-plan.md §2): one
 //! file per `install_*` family, moved verbatim out of the former
 //! `adapter.rs`. Mechanical split only — every item keeps its
-//! original body; visibility is widened to `pub(super)` exactly where
-//! a sibling or the module root calls it.
+//! original body; visibility is widened to `pub(in crate::adapter)`
+//! exactly where a sibling or the module root calls it.
 
 use super::{Adapter, FocusHandover, MenuAnchor, MenuKind, MenuSubject, parse_effort_row};
 use crate::adapter::settings::{install_settings_back_seam, install_settings_seams};
